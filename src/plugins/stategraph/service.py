@@ -18,13 +18,14 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .engine.backend import NoBackend, ScarabHiveBackend, make_config_check
 from .engine.debugger import Breakpoint, UnknownState, Watchpoint, parse_points
-from .engine.journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore
+from .engine.journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore, utc_now
 from .engine.machine import CompileError
-from .engine.runner import RunManager, failed_transiently
+from .engine.runner import REMOTE_CONTROLS, RunManager, failed_transiently
 from .kinds import describe_kinds
 from .model.loader import MachineTree, load_snapshot
 from .model.spec import agent_entry
 from .model.validate import validate_tree
+from .runners import merged_inject_params, runner_inject_params, runner_of
 from .store import FileInTheWay, MachineStore, VersionConflict, version_of
 
 if TYPE_CHECKING:
@@ -75,9 +76,11 @@ _RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 #: How long terminate waits for the run to end (its finally activities run first) before it answers.
 TERMINATE_WAIT = 10.0
+#: How long a control request waits for the process that holds the run to take it (it looks each second).
+CONTROL_WAIT = 5.0
 #: The statuses a run row has.
 RUN_STATUSES = ("running", "paused", "waiting", "interrupted", "succeeded", "failed", "cancelled")
-#: The folder of machines in the writable roots that name none: the author's own.
+#: The folder of machines in the first writable root that name none: the author's own.
 OWN_GROUP = "My machines"
 
 
@@ -89,15 +92,58 @@ class StateGraphService:
         self.run_store: RunStore = server.run_store
 
     # ------------------------------------------------------------ helpers
-    def config_check(self) -> Optional[Callable[..., Optional[str]]]:
+    def config_check(self, runner: Optional[str] = None) -> Optional[Callable[..., Optional[str]]]:
+        """SG007 against the configuration. The validator's tool questions name the run's root file and get its
+        runner (runners.py); ``runner`` answers the others -- a run's backend passes its own."""
         config = getattr(self.server, "system_config", None)
         if config is None or getattr(config, "plugins", None) is None:
             return None
-        return make_config_check(config, runner=self.server.runner_agent, own_instance=self.server.name,
+        return make_config_check(config, runner=runner or self.server.runner_agent, own_instance=self.server.name,
+                                 default_runner=self.server.runner_agent,
                                  is_agent=getattr(self.server, "is_agent", None))
 
     def _validate(self, tree: MachineTree) -> MachineTree:
-        return validate_tree(tree, self.config_check())
+        checked = validate_tree(tree, self.config_check())
+        config = getattr(self.server, "system_config", None)
+        if config is not None and getattr(config, "plugins", None) is not None:
+            default = self.server.runner_agent
+            name, claimed_twice = runner_of(config, tree.root, default)
+            if claimed_twice:  # no runner can be told: nothing there runs, with or without tool activities
+                checked.add("error", "SG007", claimed_twice, file=tree.root)
+            elif name != default:
+                # the whole tree runs with the root's runner: a file anyone may write (an import by machine id finds
+                # the writable root first) must not get its tools and its params -- unless its folder is that
+                # runner's too
+                for path in sorted({getattr(loaded, "local_of", None) or path for path, loaded in tree.files.items()}):
+                    if self.store.is_writable(Path(path)) and runner_of(config, path, default)[0] != name:
+                        checked.add("error", "SG007", f"{path} lies in a writable folder, and this machine runs with "
+                                    f"{name}, the runner of its folder: import the machines of its tree from that "
+                                    "folder (./x.yaml)", file=tree.root)
+                        break
+        return checked
+
+    def _hides_a_machine(self, machine_id: str, files: dict[str, str]) -> Optional[str]:
+        """Why a file of a save would hide another machine: an ``<x>.yaml`` written into a machine root is machine x
+        there, found before the one of that id that lies elsewhere -- its own runs, and every import of it by id,
+        would take the new file."""
+        base = self.store.base_dir(machine_id)
+        # find() takes the first root that has the id: a file hides one only in a root searched before that one's
+        order = [os.path.realpath(str(directory)) for _, directory in self.store.root_dirs()]
+        for rel in files:
+            target = Path(os.path.normpath(str(base / rel)))
+            here = os.path.realpath(str(target.parent))
+            if target.suffix.lower() != ".yaml" or target.stem == machine_id or here not in order:  # glob is caseless
+                continue
+            found = self.store.find(target.stem)
+            there = os.path.realpath(str(found.path.parent)) if found is not None else None
+            if there in order and order.index(here) < order.index(there):
+                return (f"{rel} would hide machine {target.stem!r} ({found.path}): a file of this name in a machine "
+                        "folder is that machine -- give it another name")
+        return None
+
+    def _runner_of(self, tree: MachineTree) -> str:
+        """The runner a validated tree runs with: its root file's folder's."""
+        return runner_of(self.server.system_config, tree.root, self.server.runner_agent)[0]
 
     def _graph(self, tree: MachineTree) -> dict[str, Any]:
         try:
@@ -128,6 +174,17 @@ class StateGraphService:
                 files[rel] = text
                 versions[rel] = version_of(text)
         return files, versions
+
+    def _own_files(self, machine_id: str) -> set[str]:
+        """The relative paths of the saved machine's files (none when there is no such machine)."""
+        if self.store.find(machine_id) is None:
+            return set()
+        own = {f"{machine_id}.yaml"}
+        try:
+            own |= set(self._files_of(machine_id, self.store.load(machine_id))[0])
+        except Exception:  # a file that does not load: its root file is still its own
+            pass
+        return own
 
     def _require(self, machine_id: str) -> None:
         if self.store.find(machine_id) is None:
@@ -172,7 +229,12 @@ class StateGraphService:
         return {"id": machine_id, "file": str(found.path), "writable": found.writable,
                 "root_file": f"{machine_id}.yaml", "files": files, "versions": versions,
                 "problems": self._problems(tree), "graph": self._graph(tree), "layout": self.store.layout(machine_id),
-                "agents": agents, "offer": offer}
+                "agents": agents, "offer": offer, **self._runner(machine_id)}
+
+    def _runner(self, machine_id: str) -> dict[str, Any]:
+        """The runner a run of the machine gets: its name, and why it is not the folder's when two claim it."""
+        name, problem = self.server.runner_for(machine_id)
+        return {"runner": name, **({"runner_problem": problem} if problem else {})}
 
     def create_machine(self, machine_id: str, title: Optional[str] = None) -> dict[str, Any]:
         from .model.spec import check_name
@@ -275,20 +337,41 @@ class StateGraphService:
         if errors and not force:
             first = "; ".join(f"{p.file.rsplit('/', 1)[-1]}:{p.line or '?'} {p.code} {p.message}" for p in errors[:3])
             raise ServiceError(422, f"{len(errors)} error(s), not saved: {first}")
+        hidden = self._hides_a_machine(machine_id, files)
+        if hidden:
+            raise ServiceError(409, hidden)
         try:
             versions = self.store.write_files(machine_id, files, expected_versions)
-        except (FileInTheWay, VersionConflict) as exc:
+        except FileInTheWay as exc:
+            if exc.rel in self._own_files(machine_id):  # the machine's own file, sent without the version read
+                raise ServiceError(409, f"{exc.rel} is a file of machine {machine_id!r} already: pass its version "
+                                        "from get_machine in expected_versions to change it") from None
+            raise ServiceError(409, str(exc)) from None
+        except VersionConflict as exc:
             raise ServiceError(409, str(exc)) from None
         except PermissionError as exc:
             raise ServiceError(403, str(exc)) from None
         return {"machine_id": machine_id, "versions": versions, "problems": self._problems(tree),
                 "graph": self._graph(tree)}
 
-    async def edit_machine(self, machine_id: str, op: dict[str, Any], expected_version: Optional[str]) -> dict[str, Any]:
+    async def edit_machine(self, machine_id: str, op: dict[str, Any], expected_version: Optional[str],
+                           drafts: Optional[dict[str, str]] = None) -> dict[str, Any]:
+        """One graph edit. On the file (its version the caller read), written at once; or, given ``drafts`` (the
+        caller's unsaved files, by relative path), on the root file's draft, else the file: nothing is written, the
+        answer is ``graph`` and ``problems`` of the drafts and ``draft``, the new root text."""
         from .model.yamledit import EditError, apply_op
 
         self._require(machine_id)
         found, text = self.store.read(machine_id)
+        root = f"{machine_id}.yaml"
+        if drafts is not None:
+            try:
+                draft = await asyncio.to_thread(apply_op, str(drafts.get(root, text)), op)
+            except EditError as exc:
+                raise ServiceError(422, str(exc)) from None
+            tree = self._validate(self._tree_from({**drafts, root: draft}, None, machine_id)[2])
+            return {"machine_id": machine_id, "problems": self._problems(tree), "graph": self._graph(tree),
+                    "draft": draft}
         if expected_version != version_of(text):
             raise ServiceError(409, f"the file changed since you read it (current version {version_of(text)})")
         try:
@@ -297,7 +380,6 @@ class StateGraphService:
             new_text = await asyncio.to_thread(apply_op, text, op)
         except EditError as exc:
             raise ServiceError(422, str(exc)) from None
-        root = f"{machine_id}.yaml"
         try:
             self.store.write_files(machine_id, {root: new_text}, {root: expected_version})
         except VersionConflict as exc:
@@ -323,14 +405,20 @@ class StateGraphService:
         its agents run, and their instance sessions are found, as the run's user -- and its caller's place in a
         sub-agent tree."""
         def make(run_id: str) -> Any:
-            runner = self.server.resolve_runner()
-            if runner is None:
-                return NoBackend()
             row = self.run_store.get_run(run_id) or {}
+            # the runner the run started with (its row; one from before the column: its machine's folder now): its
+            # allowlist bounds the tool activities, its inject_params go into them over the instance's
+            name = row.get("runner") or self.server.runner_for(row.get("machine_id"))[0]
+            runner = self.server.resolve_runner(name)
+            if runner is None:  # gone since the run started (renamed, disabled): it fails, not runs with another
+                return NoBackend(f"its runner {name!r} is not there (renamed, disabled or its plugin off) -- "
+                                 "restore it, or fork the run onto the current definition")
+            inject = merged_inject_params(self.server.inject_params,
+                                          runner_inject_params(self.server.system_config, name))
             return ScarabHiveBackend(runner=runner, system_config=self.server.system_config,
                                      session_id=f"sg_{run_id}", user_id=row.get("user_id"),
                                      token=self.server.cancel_token(run_id), nesting=row.get("nesting"),
-                                     inject_params=self.server.inject_params, config_check=self.config_check())
+                                     inject_params=inject, config_check=self.config_check(name))
         return make
 
     async def start_run(self, machine_id: str, params: Optional[dict[str, Any]] = None,
@@ -389,7 +477,7 @@ class StateGraphService:
                 tree, params=params, mocks=mocks, mock_only=mock_only, breakpoints=breakpoints,
                 watchpoints=watchpoints, pause_at_start=pause_at_start,
                 backend_factory=None if mock_only else self.backend_factory(), user_id=user_id,
-                run_key=run_key, run_id=run_id, nesting=nesting)
+                run_key=run_key, run_id=run_id, nesting=nesting, runner=self._runner_of(checked))
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": run_id}
@@ -422,14 +510,40 @@ class StateGraphService:
             raise ServiceError(409, str(exc)) from None
 
     async def _await_end(self, run_id: str, timeout: float) -> None:
-        """Until the run's task here has ended, at most ``timeout`` seconds (the run itself is never cancelled)."""
+        """Until the run's task here -- or another process's run, by its row -- has ended, at most ``timeout``
+        seconds (the run itself is never cancelled)."""
         live = self.runs.live.get(run_id)
         if live is None:
+            deadline = time.monotonic() + timeout
+            while ((self.run_store.get_run(run_id) or {}).get("status") not in TERMINAL_STATUSES
+                   and time.monotonic() < deadline):
+                await asyncio.sleep(0.2)
             return
         try:
             await asyncio.wait_for(asyncio.shield(live.task), timeout)
         except asyncio.TimeoutError:
             logger.info("stategraph: run %s still ends after %.0fs (finally activities)", run_id, timeout)
+
+    async def _control_elsewhere(self, run_id: str, action: str) -> bool:
+        """Hand ``action`` to the process that holds the run (it looks each second): whether one holds it. One that
+        does not take it within CONTROL_WAIT gets it withdrawn, and the caller hears so."""
+        request = {"action": action, "id": os.urandom(6).hex()}  # its own: a withdraw leaves another's alone
+        asked = self.run_store.request_control(run_id, request, now=utc_now()) if action in REMOTE_CONTROLS else ""
+        if asked == "open":
+            raise ServiceError(409, f"run {run_id}: another control request waits for the process that holds it; "
+                                    "try again in a moment")
+        if asked != "requested":
+            return False
+        try:
+            deadline = time.monotonic() + CONTROL_WAIT
+            while (self.run_store.get_run(run_id) or {}).get("control") == request and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+        finally:  # not taken in time, or the asker stopped: taken back, so no later resume meets it
+            withdrawn = self.run_store.withdraw_control(run_id, request)
+        if withdrawn:
+            raise ServiceError(409, f"run {run_id} is held by {(self.run_store.get_run(run_id) or {}).get('owner')},"
+                                    f" which did not take the {action} within {CONTROL_WAIT:.0f}s")
+        return True
 
     async def _terminate_elsewhere(self, run_id: str) -> None:
         """A run no process here runs: resume it into its termination, so its finally activities run (§3.10).
@@ -458,17 +572,20 @@ class StateGraphService:
 
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50, *, status: Optional[str] = None,
                   user_id: Optional[str] = None, all_users: bool = True,
-                  before: Optional[str] = None) -> list[dict[str, Any]]:
-        """A page of the newest runs; ``before``: the last run id of the page before."""
+                  before: Optional[str] = None, nested: bool = False) -> list[dict[str, Any]]:
+        """A page of the newest runs; ``before``: the last run id of the page before; ``nested``: also the runs the
+        machine ran in as a submachine."""
         if status is not None and status not in RUN_STATUSES:
             raise ServiceError(422, f"status must be one of {', '.join(RUN_STATUSES)}, not {status!r}")
         return self.run_store.list_runs(machine_id, limit=max(1, min(int(limit), 500)), status=status,
-                                        user_id=user_id, all_users=all_users, before=before)
+                                        user_id=user_id, all_users=all_users, before=before, nested=nested)
 
     def get_run(self, run_id: str, steps: int = 50, *, user_id: Optional[str] = None, after: Optional[int] = None,
-                kinds: Optional[list[str]] = None, state: Optional[str] = None) -> dict[str, Any]:
+                kinds: Optional[list[str]] = None, state: Optional[str] = None,
+                frames: bool = False) -> dict[str, Any]:
         """A run and its journal rows: the last ``steps`` -- or, with ``after``, the first ``steps`` after that seq;
-        only rows of ``kinds`` and of ``state`` when given."""
+        only rows of ``kinds`` and of ``state`` when given. ``frames``: with the submachine frames it started
+        (``frames_started``: prefix, machine, path)."""
         self._run(run_id, user_id)
         _check_steps(steps)
         if after is not None and not (_is_int(after) and after >= 0):
@@ -488,6 +605,8 @@ class StateGraphService:
         wanted = kinds or JOURNAL_KINDS
         row["journal"] = (self.run_store.tail(run_id, limit=steps, kinds=wanted, state=state) if after is None
                           else self.run_store.page(run_id, after=after, limit=steps, kinds=wanted, state=state))
+        if frames:
+            row["frames_started"] = self.run_store.frames(run_id)
         return row
 
     def journal(self, run_id: str, after: int = 0, limit: int = 200, kinds: Optional[list[str]] = None) -> list[dict[str, Any]]:
@@ -507,12 +626,13 @@ class StateGraphService:
             if action == "terminate":
                 if run_id in self.runs.live:
                     self.runs.control(run_id, action)
-                else:
+                elif not await self._control_elsewhere(run_id, action):  # none holds it: resumed into its end here
                     await self._terminate_elsewhere(run_id)
                 await self._await_end(run_id, TERMINATE_WAIT)  # its finally activities run first
             elif action in ("pause", "continue", "step", "run_to"):
                 state = _required(kwargs, "state") if action == "run_to" else kwargs.get("state")
-                self.runs.control(run_id, action, state=state, machine=kwargs.get("machine"))
+                if run_id in self.runs.live or not await self._control_elsewhere(run_id, action):
+                    self.runs.control(run_id, action, state=state, machine=kwargs.get("machine"))
             elif action == "resume":
                 await self._resume(run_id)
             elif action == "fork":
@@ -559,7 +679,9 @@ class StateGraphService:
             new_id = await self.runs.fork(run_id, at_step=kwargs.get("at_step"), tree=tree,
                                           backend_factory=None if options.get("mock_only")
                                           else self.backend_factory(), user_id=user_id or row.get("user_id"),
-                                          pause_at_start=bool(kwargs.get("pause")), mocks=kwargs.get("mocks"))
+                                          pause_at_start=bool(kwargs.get("pause")), mocks=kwargs.get("mocks"),
+                                          # the snapshot keeps the source's runner; the current file its folder's
+                                          runner=self._runner_of(checked) if tree else None)
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": new_id, "forked_from": run_id}
@@ -689,9 +811,9 @@ __all__ = ["ServiceError", "StateGraphService", "load_snapshot", "Path"]
 
 
 def _origin(machine: Any) -> str:
-    """The folder a machine that names no group shows in: the author's own for the writable roots, else the folder
-    that holds its machines/ directory -- the plugin it comes with."""
-    if machine.writable:
+    """The folder a machine that names no group shows in: the author's own for the first writable root, else the
+    folder that holds its machines/ directory -- the plugin it comes with, writable in place or not."""
+    if machine.own:
         return OWN_GROUP
     folder = Path(machine.path).parent
     return folder.parent.name if folder.name == "machines" else folder.name

@@ -197,12 +197,13 @@ class TestEnhancedToolServer:
         """Test division by zero error handling."""
         server = ExampleServer("example", system_config, server_config)
 
-        with pytest.raises(ValueError, match="Division by zero"):
-            await server.call("example_calculator", {
-                "operation": "divide",
-                "a": 10,
-                "b": 0
-            })
+        result = await server.call("example_calculator", {
+            "operation": "divide",
+            "a": 10,
+            "b": 0
+        })
+        assert result["status"] == "error"
+        assert "Division by zero" in result["error"]
 
     async def test_single_tool_backward_compatibility(self):
         """Test that single-tool servers still work."""

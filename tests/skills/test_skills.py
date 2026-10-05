@@ -37,14 +37,18 @@ def skill_root(tmp_path):
     return tmp_path / "skills"
 
 
-def _context(agent_config, skill_dirs=None):
+def _context(agent_config, skill_dirs=None, instance="skills", tools=("skills_list", "skills_read"),
+             servers=None):
+    if servers is None:
+        servers = {instance: {"type": "skills", "enabled": True}}
     return PromptContext(
         agent_name="test_agent",
         agent_config=agent_config,
         system_config=AgentSystemConfig(
-            skills={"skill_dirs": [str(d) for d in (skill_dirs or [])]}
+            skills={"skill_dirs": [str(d) for d in (skill_dirs or [])]},
+            plugins={"servers": servers} if servers else None,
         ),
-        available_tools=[],
+        available_tools=list(tools),
         max_steps=5,
         current_step=1,
         agent_instance=object(),  # no get_custom_system_prompt -> strategy skipped
@@ -336,6 +340,13 @@ class TestBundleAccess:
         skill = self._skill(skill_root)
         assert skill.list_files() == ["SKILL.md", "reference/deep.md"]
 
+    def test_bytecode_and_hidden_files_are_not_listed(self, skill_root):
+        skill = self._skill(skill_root)
+        for rel in ("__pycache__/x.cpython-312.pyc", ".git/HEAD", "reference/.hidden.md"):
+            (skill.path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (skill.path / rel).write_bytes(b"\x00")
+        assert skill.list_files() == ["SKILL.md", "reference/deep.md"]
+
     def test_resolves_and_reads_bundled_file(self, skill_root):
         skill = self._skill(skill_root)
         assert skill.resolve("reference/deep.md").read_text(encoding="utf-8") == "DEEP-CONTENT"
@@ -368,14 +379,42 @@ class TestOnDemandIndex:
     """on_demand contributes ONLY a description index — the agent must know a
     skill exists, or it will never fetch it."""
 
-    def _render(self, monkeypatch, skill_root, skills):
+    def _render(self, monkeypatch, skill_root, skills, **context):
         skill_root.mkdir(parents=True, exist_ok=True)
         reg = SkillRegistry()
         monkeypatch.setattr(
             "agent_system.skills.get_skill_registry", lambda *a, **k: reg
         )
         cfg = AgentConfig(system_prompt="BASE-PROMPT", skills=skills)
-        return PromptRenderer().render(_context(cfg, [skill_root]))[0]
+        return PromptRenderer().render(_context(cfg, [skill_root], **context))[0]
+
+    def test_index_names_the_agents_own_skills_tools(self, monkeypatch, skill_root):
+        _write_skill(skill_root, "alpha", "BODY", description="Covers X.")
+        out = self._render(monkeypatch, skill_root, {"on_demand": ["alpha"]},
+                           instance="kb", tools=("kb_list", "kb_read"))
+        assert "`kb_read`" in out and "`kb_list`" in out
+        assert "skills_read" not in out
+
+    def test_an_inherited_skills_instance_is_found(self, monkeypatch, skill_root):
+        _write_skill(skill_root, "alpha", "BODY", description="Covers X.")
+        servers = {"kb": {"type": "skills", "enabled": True}, "kb2": {"type": "kb", "enabled": True}}
+        out = self._render(monkeypatch, skill_root, {"on_demand": ["alpha"]},
+                           servers=servers, tools=("kb2_list", "kb2_read"))
+        assert "`kb2_read`" in out
+
+    def test_no_plugins_section_leaves_the_index_out_without_crashing(self, monkeypatch, skill_root):
+        _write_skill(skill_root, "alpha", "BODY", description="Covers X.")
+        out = self._render(monkeypatch, skill_root, {"on_demand": ["alpha"]}, servers={})
+        assert "BASE-PROMPT" in out and "Available skills" not in out
+
+    def test_no_index_without_a_tool_to_read_it(self, monkeypatch, skill_root, caplog):
+        import agent_system.servers.agent.prompt_strategies as ps
+        ps._reported_missing_skills.clear()
+        _write_skill(skill_root, "alpha", "BODY", description="Covers X.")
+        with caplog.at_level("ERROR"):
+            out = self._render(monkeypatch, skill_root, {"on_demand": ["alpha"]}, tools=())
+        assert "Available skills" not in out
+        assert "no skills tool" in caplog.text
 
     def test_index_lists_description_not_body(self, monkeypatch, skill_root):
         _write_skill(skill_root, "alpha", "FULL-BODY-TEXT",

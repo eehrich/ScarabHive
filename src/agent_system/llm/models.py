@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Optional, Any, List, Dict, Union, Literal
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
@@ -135,7 +136,7 @@ ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, TextF
 
 #: Fields of a ChatMessage that are ours, not the conversation's: never sent to a provider.
 #: A client that serialises the whole message pops these (a list per client drifted).
-PRIVATE_MESSAGE_FIELDS = frozenset({"injected_by", "rd_orphaned", "served_by", "reasoning_model", "request_id",
+PRIVATE_MESSAGE_FIELDS = frozenset({"injected_by", "prefixed_by", "rd_orphaned", "served_by", "reasoning_model", "request_id",
                                     "tool_request_ids", "step"})
 
 
@@ -228,6 +229,12 @@ class ChatMessage(BaseModel):
     # Used by injection hooks to find and replace their previous injections
     # instead of fragile content-based matching.
     injected_by: Optional[str] = None
+    # What a hook put in FRONT of this message's own text, by the hook's
+    # injected_by name -> the exact prefix (simple_prompt_inject "task_start").
+    # The message stays the caller's -- injected_by would turn the task into a
+    # note that every turn counter skips -- so the hook finds its prefix here
+    # to keep, replace or withdraw it. Never sent.
+    prefixed_by: Optional[Dict[str, str]] = None
     # The id of the run this message opened, on the first message a run stores. A
     # session read back tells its runs apart by it. Never sent.
     request_id: Optional[str] = None
@@ -315,6 +322,15 @@ class ChatMessage(BaseModel):
         return count
 
 
+#: What the caller knows about why it abandons a streaming call, set just
+#: before it closes the stream: {"fields": {...}, "reported": False}. The
+#: client's own end report (the abandon) takes the fields and marks it
+#: reported, so the call leaves ONE row with the client's usage and the
+#: caller's reason. The stream closes in the caller's task, so the value is
+#: visible there.
+abandon_report: ContextVar[Optional[Dict[str, Any]]] = ContextVar("llm_abandon_report", default=None)
+
+
 class LLMClient:
     """Base class for LLM clients with streaming support."""
 
@@ -397,6 +413,10 @@ class LLMClient:
         # retry/error notifications (they carry an "error") so the value
         # reflects the response actually returned. Normal use runs one
         # chat_tools per client instance at a time → last-value is unambiguous.
+        pending = abandon_report.get()
+        if pending is not None and response_info.get("error") and not pending.get("reported"):
+            response_info = {**response_info, **pending.get("fields", {})}
+            pending["reported"] = True
         if not response_info.get("error") and response_info.get("duration_ms") is not None:
             self._last_response_duration_ms = response_info.get("duration_ms")
         # Here, not in the hooks: those are wired only while hooks are on.

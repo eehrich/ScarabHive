@@ -389,8 +389,6 @@ class HookRegistry:
             return await hook.on_pre_tool_call(context)
         elif hook_type == HookType.POST_TOOL_CALL:
             return await hook.on_post_tool_call(context)
-        elif hook_type == HookType.FORMAT_OUTPUT:
-            return await hook.on_format_output(context)
         elif hook_type == HookType.SESSION_START:
             return await hook.on_session_start(context)
         elif hook_type == HookType.SESSION_END:
@@ -583,8 +581,6 @@ class HookRegistry:
             llm_response=copy.deepcopy(context.llm_response) if context.llm_response else None,
             tool_call=copy.deepcopy(context.tool_call) if context.tool_call else None,
             tool_result=copy.deepcopy(context.tool_result) if context.tool_result else None,
-            output=context.output,  # String is immutable
-            output_format=context.output_format,  # Add output_format for format hooks
             metadata=copy.deepcopy(context.metadata),
             hook_config=copy.deepcopy(context.hook_config) if context.hook_config else {},
             target_hook_name=context.target_hook_name,
@@ -732,9 +728,6 @@ class HookRegistry:
 
         if original_context.tool_result != modified_context.tool_result:
             audit_entry["modifications"]["tool_result"] = True
-
-        if original_context.output != modified_context.output:
-            audit_entry["modifications"]["output"] = True
 
         if original_context.metadata != modified_context.metadata:
             audit_entry["modifications"]["metadata"] = True

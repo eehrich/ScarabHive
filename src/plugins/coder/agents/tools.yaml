@@ -31,7 +31,6 @@ plugins:
         # root is never hidden by an ignore rule of the root above it.
         - src/
         - .
-      max_file_size_mb: 10
       max_unpaginated_file_size_kb: 200
       default_line_limit: 500
       search:
@@ -58,12 +57,17 @@ plugins:
         # Every five minutes: a coder writes code and then looks for it. The
         # pass only reads what changed.
         auto_reindex_interval: 300
+        # Replaces file_ops' default list instead of extending it: the
+        # defaults are repeated here (a test holds that), dist/build added.
         exclude_patterns:
           - '**/.git/**'
           - '**/__pycache__/**'
           - '**/node_modules/**'
           - '**/.venv/**'
           - '**/*.pyc'
+          - '**/*.min.js'
+          - '**/*.min.css'
+          - '**/*.map'
           - '**/dist/**'
           - '**/build/**'
 
@@ -83,7 +87,6 @@ plugins:
         - src/plugins/coder/skills/
         - src/
         - .
-      max_file_size_mb: 10
       max_unpaginated_file_size_kb: 200
       default_line_limit: 500
       search:
@@ -101,6 +104,9 @@ plugins:
           - '**/node_modules/**'
           - '**/.venv/**'
           - '**/*.pyc'
+          - '**/*.min.js'
+          - '**/*.min.css'
+          - '**/*.map'
           - '**/dist/**'
           - '**/build/**'
 
@@ -149,12 +155,10 @@ plugins:
     # The harness's own knowledge bundle (OKF: git-versioned markdown concepts
     # with a link graph, agent-writable).
     #
-    # A DEDICATED instance, not the shared `okf` server, and that is the whole
-    # point: the shared one is sandboxed to all of `data/okf`, so an agent
-    # using it can write into every other agent's bundle -- the sysadmin's
-    # `infra` runbooks included, which are injected into that agent's prompt.
-    # Rooting this instance at one bundle makes the boundary something the
-    # sandbox enforces rather than something the prompt asks for.
+    # A DEDICATED instance, not the shared `okf` server: rooted at one bundle,
+    # it keeps this agent out of the others, and the shared one excludes
+    # `data/okf/coder` (config/plugins.yaml), which keeps the others out.
+    # The sandbox enforces the boundary, not the prompt.
     coder_okf:
       type: okf
       enabled: true
@@ -187,7 +191,6 @@ plugins:
       max_nesting_depth: 2
       max_sub_agents_per_type: 4
       max_sub_agents_per_session: 20
-      max_message_history: 100
       default_wait_timeout: 3600
       auto_archive_on_limit: true
       allowed_agents:

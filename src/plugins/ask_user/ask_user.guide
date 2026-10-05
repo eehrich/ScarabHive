@@ -1,0 +1,376 @@
+@database "ask_user"
+@author "Enrico Ehrich"
+@$VER: ask_user.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Ask User"
+@{h1}Ask User
+
+Ask User lets an agent stop and ask the person watching the run a question
+-- which of two readings of the request is meant, which option they prefer,
+whether to go ahead with a step that is hard to undo. The question appears
+in the web chat under the run, with up to four options to click and a field
+for an answer in one's own words; the answer goes back to the model as the
+tool's result. A run nobody watches -- an API call, a job, agent-cli, a
+closed tab -- is never asked: the tool answers at once that nobody can
+answer, and the model decides itself and says what it assumed. The plugin
+has one tool and no panel.
+
+@{code}
+For users
+  @{"  Answering a question  " link answering}
+  @{"  Who is asked, and when not  " link attended}
+
+For agents and developers
+  @{"  The tool  " link tool}
+  @{"  Waiting, and what ends it  " link waiting}
+  @{"  Sub-agents and scripts  " link subruns}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node answering "Answering a question"
+@{h1}Answering a question
+
+The question is a row of the run's status lines, @{tt}Question: <text>@{utt},
+on the call that asks. Below it the chat draws a box: the full question, the
+options, a text field and @{b}Send@{ub}. A sub-agent's question appears the
+same way, in the sub-agent's rows inside the run you watch.
+
+@{table}
+The question has | You answer by
+no options | typing an answer in the field (@{i}Your answer@{ui}) and pressing Send or Enter
+options, one to pick | clicking an option -- it is sent at once, together with whatever is in the field; or typing only, and Send
+options, several to pick | ticking the boxes, optionally typing, then Send or Enter
+@{body}
+
+Send with nothing ticked and nothing typed sends nothing; the box says
+@{i}Write an answer first.@{ui} or @{i}Tick an option or write an answer.@{ui}
+The field takes at most 4000 characters.
+
+After sending the box says @{i}Sending…@{ui}, then @{i}Answered: <what you
+sent>@{ui}. The row's last line takes the box down in every tab that shows
+the run: @{tt}answered by <you>: SQLite -- "for now"@{utt}. With
+authentication off the name is @{tt}anonymous@{utt}.
+
+The question, the options and your answer are shown as text, never as
+markup, both in the box and in the call's result.
+
+@{h2}Writing in the chat instead
+
+You do not have to use the box. A message typed into the chat's normal field
+while a question waits ends the question within about a second (the row:
+@{tt}not answered here: the user wrote in the chat instead@{utt}), and the
+model reads your message as your next one. For a sub-agent's question, see
+@{" Sub-agents and scripts " link subruns}.
+
+@{h2}When the answer is refused
+
+@{bullet}@{i}Not taken: No such question is waiting -- it was answered, timed
+out or its run ended.@{ui} -- another tab answered first, or the wait is over.
+The controls stay off.
+@{bullet}@{i}Not taken: Only the user whose run asks, or an admin, may
+answer.@{ui} -- you are signed in as someone else.
+@{bullet}Any other refusal leaves the controls on for a second try.
+
+@{h2}When nobody answers
+
+@{table}
+Case | What happens
+no answer within ask_timeout (300 s by default) | the row ends @{tt}no answer within 300 s@{utt}; the model decides itself
+the tab was closed and not reopened within gone_after_seconds (15 s) | the question stops: @{tt}not answered, nobody reads the run any more@{utt}
+the run is stopped while it asks | the row ends @{tt}not answered, the run was cancelled while the question waited@{utt}; the run stops
+the server restarts | the run ends; open questions are not kept
+@{body}
+
+A page reloaded while a question waits gets the box back within
+@{tt}reask_seconds@{utt} (20 s): the question is sent again that often. A
+reload does not count as leaving -- "nobody reads" is counted from the
+moment the last tab left.
+
+@{h2}Who may answer
+
+The user the run belongs to, or an admin. Only a person's sign-in counts --
+the chat's session or a bearer token -- never an API key: a program that
+answers a question put to a person makes the question pointless.
+
+@{b}With authentication off, anyone who reaches the API can answer@{ub} --
+the agent itself too, through an HTTP tool or @{tt}curl@{utt} in a shell.
+@endnode
+
+@node attended "Who is asked, and when not"
+@{h1}Who is asked, and when not
+
+A question is put only where a person can answer it: a run the web chat
+started for a signed-in user (or with authentication off), while a tab reads
+it. Everything else gets the @{tt}unattended@{utt} error at once, without
+waiting.
+
+@{table}
+Started by | Asked?
+the web chat, signed in or authentication off, while a tab reads the run | yes
+a sub-agent or an agent called as a tool, under such a run | yes, in the stream of the run above it
+the web chat, an anonymous visitor with authentication on | no
+the tab was closed for gone_after_seconds | no; a waiting question stops
+agent-cli, agent-run, the OpenAI-compatible API, a JSON @{tt}/run@{utt}, a job | no
+an async sub-agent after the run above it ended | no
+a call from a tool_script script, a state machine or a slash command | never -- see @{" Sub-agents and scripts " link subruns}
+@{body}
+
+agent-cli shows the run to a person in the terminal, but it neither draws the
+question nor posts answers, so its runs count as unattended.
+
+The web chat marks the runs it starts (@{tt}"attended": true@{utt} on
+@{tt}POST /events@{utt}, form field @{tt}attended@{utt} on @{tt}/run@{utt}
+with files). Another client that shows its user the stream must send the mark
+itself and draw @{tt}meta.ask_user@{utt}; see @{" Setting it up " link setup}.
+
+An agent that has the tool is offered it in every run, watched or not: the
+tool list is built per agent, not per run, and a list that changed between
+runs would break the prompt cache. One refused call costs less.
+@endnode
+
+@node tool "The tool"
+@{h1}The tool
+
+One tool, named like the instance: @{tt}ask_user@{utt}. It asks one question
+and returns when the question is settled.
+
+@{table}
+Parameter | Meaning
+question | required. The question, trimmed; at most 2000 characters
+options | optional. 2 to 4 texts, each trimmed, not empty, at most 200 characters, no two the same (ignoring case). Left out, @{tt}null@{utt} or @{tt}[]@{utt}: an open question
+multi_select | optional, default false. true lets the person pick several options; only with options
+@{body}
+
+Bad arguments are refused before anything is asked, with a text that says
+what to send instead, for example:
+
+@{code json}
+{"status": "error", "error": "options has 5 entries; give 2 to 4, or leave options out and let the user answer in their own words."}
+@{body}
+
+@{h2}The answer
+
+@{code json}
+{"status": "success", "choices": ["SQLite"], "text": "for now"}
+@{body}
+
+@{tt}choices@{utt} are the options picked, exactly as the question lists
+them and in its order, whatever order they were clicked in. @{tt}text@{utt}
+is what the person typed, trimmed; it may be empty when an option was
+clicked. An answer carries at least one of the two. Every other outcome is
+listed in @{" What the model sees " link model}.
+
+@{h2}What an answer may be
+
+The route checks every answer against the question: each choice must be one
+of its options, more than one only with @{tt}multi_select@{utt}, the text at
+most 4000 characters, and not both empty. An answer that does not fit is
+refused with 422 and the question keeps waiting. So what reaches the model is
+bounded: four options of at most 200 characters and 4000 characters of text.
+
+@{h2}Example
+
+@{code json}
+{"question": "The export can go to one CSV per table or one SQLite file. Which do you want?",
+ "options": ["One CSV per table", "One SQLite file"]}
+@{body}
+@endnode
+
+@node waiting "Waiting, and what ends it"
+@{h1}Waiting, and what ends it
+
+The call waits until the first of these, and the row's last line says which:
+
+@{table}
+Event | Row's last line | Result
+the answer | answered by <user>: <choices> -- "<text>" | success, the answer
+the person writes into the run instead | not answered here: the user wrote in the chat instead | success with @{tt}replied_in_chat@{utt}
+the person writes to a run above (a sub-agent's question) | not answered here: the user wrote to the main conversation | error @{tt}replied_above@{utt}
+ask_timeout | no answer within <n> s | error @{tt}timeout@{utt}
+nobody reads the run any more | not answered, nobody reads the run any more | error @{tt}gone@{utt}
+the run is cancelled (Stop) | not answered, the run was cancelled while the question waited | cancelled
+the run is torn down while it waits | question cut off while waiting: <question> | -- (the cancellation goes on)
+@{body}
+
+The question is closed before the last line is written: an answer that
+comes later is refused (404), never taken for a question already settled. Of
+two answers at once, one is taken and the other gets 404.
+
+@{tt}ask_timeout@{utt} is the only limit on the wait. The framework puts no
+timeout on a tool call; the watchdog counts steps and thinking, not time;
+the LLM timeouts run only while a model call streams. A question may wait
+for minutes.
+
+A message typed into the call's own run ends the wait also when it came
+while the model was still thinking and has not been read yet: the question
+then ends at once, and the model reads the message first.
+@endnode
+
+@node subruns "Sub-agents and scripts"
+@{h1}Sub-agents and scripts
+
+@{h2}A sub-agent asks
+
+A sub-agent, or an agent called as a tool, runs under a request id that
+extends the id of the run that started it. Its status lines reach that run's
+stream, and so does its question: the person answers it in the conversation
+they watch, in the sub-agent's rows. Whether a person reads is decided by the
+run above it that the web chat started.
+
+The person may also type into the main chat instead. That message is for the
+run above -- the parent, which sits waiting on the sub-agent -- not for the
+sub-agent. So the sub-agent's question ends with @{tt}replied_above@{utt}:
+the sub-agent is told it cannot see the message and should finish with what
+it has, say what it assumed and return, so the parent can read the message.
+A message waiting for a run outside this chain ends nothing.
+
+An @{b}async@{ub} sub-agent keeps asking in the parent's stream while the
+parent streams. After the parent's run ended nobody can be asked. While the
+parent runs on, a message for it ends the sub-agent's question only if the
+parent has not read it yet when the question looks (about once a second).
+
+Which shipped agents may ask is in @{" Setting it up " link setup}; a
+sub-agent whose answer a coordinator reads should not
+(@{tt}research_worker@{utt} removes the tool with @{tt}!ask_user/*@{utt}).
+
+@{h2}Scripts, state machines, slash commands
+
+Only a call the model makes itself, in its own turn, asks. Such a call
+carries the run's cancellation token. A call from a tool_script script, a
+state machine activity or a slash command has a status row but no
+cancellation token, and its caller would cut the question off with its own
+timeout (tool_script: 60 s per call). It is refused at once with
+@{tt}not_own_call@{utt}, and its row says so.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+The tool description and parameter texts come from the plugin's
+@{tt}schema.yaml@{utt}. They tell the model when to ask (the request can be
+read in ways that lead to different results, the choice is the user's, a
+step is hard to undo) and when not (to confirm, to report progress, for what
+its tools can find out), to write a question that stands on its own, and --
+when nobody can answer -- to decide, go on and say what it assumed.
+
+@{h2}Results
+
+@{table}
+Case | Result
+answered | @{tt}{"status": "success", "choices": [...], "text": "..."}@{utt}
+wrote in the chat instead | @{tt}{"status": "success", "choices": [], "text": "", "replied_in_chat": true, "note": ...}@{utt}
+bad arguments | @{tt}{"status": "error", "error": ...}@{utt}
+cancelled | @{tt}{"error": "Tool 'ask_user' was cancelled.", "cancelled": true, "forced": false}@{utt}
+all others | @{tt}{"status": "error", "reason": ..., "error": ...}@{utt}
+@{body}
+
+The texts, verbatim:
+
+@{table}
+Reason | Text
+(note) replied_in_chat | A message from the user came in while the question waited; it follows as their next message. Read it -- it may answer the question -- and go on from there.
+replied_above | The user wrote to the main conversation instead of answering. That message goes to the agent that started you, and you do not see it. Do not ask again: finish your task with what you have, say in your reply what you assumed, and return, so that agent can read the message.
+unattended | Nobody can answer: no person is watching this run (it runs over the API, as a job, or the chat was closed). Do not ask again in this run. Decide yourself, go on, and say in your reply what you assumed.
+gone | Nobody can answer any more: the person stopped watching this run while the question waited. Do not ask again in this run. Decide yourself, go on, and say in your reply what you assumed.
+timeout | No answer came within <n> seconds. Do not ask the same question again right away: decide yourself, go on, and say in your reply what you assumed -- the user can correct it.
+not_own_call | ask_user answers only a call the model makes itself, in its own turn -- not one made from a script or by another tool. Call it directly.
+@{body}
+
+The argument errors name what to fix: @{i}question is required: the question
+to the user, as text.@{ui}, @{i}options must be a list of short texts (2 to
+4), or left out.@{ui}, @{i}an option is empty; every option needs a
+text.@{ui}, @{i}two options say the same; every option must be
+different.@{ui}, @{i}multi_select needs options to pick from; give 2 to 4
+options, or leave multi_select out.@{ui}, and the length limits.
+
+Nothing else reaches the model: the plugin injects no message and changes
+no prompt. The person's message written instead of an answer arrives as the
+ordinary mid-run user message.
+
+@{h2}Tokens and cache
+
+@{bullet}Tool list: about 440 tokens (cl100k; 1808 characters of JSON) in
+the tool list of every agent that allows the tool -- part of the cached
+prefix, the same in every run.
+@{bullet}Per call: append-only. The call and its result -- a few dozen
+tokens, at most about 1000 more for a long typed answer -- land at the end
+of the history; nothing earlier is rewritten.
+@{bullet}A long wait costs the cache once. The next model call comes when
+the person answers; providers keep a prompt cache for minutes (Anthropic: 5
+by default, the length of the default @{tt}ask_timeout@{utt}). An answer
+after that pays for the whole prefix again.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The default configuration loads the plugin (@{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+ask_user:
+  type: ask_user
+  enabled: true
+  config:
+    ask_timeout: 300          # seconds a question waits; the only limit on the wait
+    reask_seconds: 20
+    gone_after_seconds: 15
+@{body}
+
+An agent gets the tool through its allowlist:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+ask_user/*"
+@{body}
+
+Shipped with it: @{tt}coder@{utt} (and @{tt}gamedev@{utt}, which inherits
+its list), @{tt}sysadmin_agent@{utt} and @{tt}research_agent@{utt} -- agents a
+person works with in the web chat. No extra packages.
+
+tool_approval's shipped instance allows @{tt}ask_user/*@{utt}: approving a
+question before asking it would ask the same person twice, and a run nobody
+watches would get the approval's block instead of "decide yourself". An
+agent that switches approvals on keeps that allow rule.
+
+@{h2}Server settings
+
+Under the entry's @{tt}config:@{utt}, read once when the plugin starts. A
+value that is not a number above 0 is logged and replaced by the default.
+
+@{table}
+Key | Default | Meaning
+ask_timeout | 300 | seconds a question waits for an answer
+reask_seconds | 20 | a waiting question is sent again this often, so a reloaded page shows it again
+gone_after_seconds | 15 | a run nobody has read this long is not asked; a waiting question stops
+@{body}
+
+@{h2}The routes
+
+@{code text}
+POST /plugins/ask_user/answer    {"question_id", "choices": [...], "text": "..."}
+GET  /plugins/ask_user/pending   [?session_id=…&request_id=…]
+@{body}
+
+@{tt}/answer@{utt}: 200 taken; 422 an answer that does not fit (the question
+keeps waiting); 404 a question that no longer waits; 403 someone else's; 401
+no sign-in. @{tt}/pending@{utt} lists the open questions the caller may
+answer; @{tt}request_id@{utt} also takes those of the runs under it,
+@{tt}session_id@{utt} those asked in the sessions of the agents it called as
+tools, at every level.
+
+The question travels as a status line of the call's row, with
+@{tt}meta.ask_user@{utt}: @{tt}id, question, options, multi_select,
+request_id, session_id, agent, asked_at, expires_at, answer_url@{utt}. A
+client other than the web chat draws its box from that and sends
+@{tt}attended@{utt} when it starts a run.
+
+@{h2}Where data lives
+
+Nowhere on disk. Open questions live in the server process; a restart ends
+every run that waits.
+@endnode

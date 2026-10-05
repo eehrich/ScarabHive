@@ -913,3 +913,86 @@ async def test_a_rename_during_set_context_is_not_written_over(server, tmp_path)
     record = await manager.load_session("u1", "s1", bypass_cache=True)
     assert record["title"] == "Neu"
     assert record["context_vars"]["book_id"] == "42"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["set_task", "set_context"])
+async def test_persisted_is_false_when_nothing_was_written(server, tmp_path, tool):
+    """`persisted` reports the write, not the attempt: it said true when the save failed."""
+    from agent_system.services.session_manager import SessionManager
+    from agent_system.services.session_service import SessionService
+
+    manager = SessionManager(storage_path=str(tmp_path))
+    await manager.save_session(await manager.create_session(
+        user_id="u1", session_id="s1", title="t", agent_name="a", llm_profile="p"))
+    agent = MagicMock()
+    agent.agent_config = AgentConfig(template_vars={})
+    agent._session_service = SessionService(manager)
+    agent._session_tracker.get_session_metadata = MagicMock(return_value={"user_id": "u1"})
+    agent._session_tracker.get_session_template_vars = MagicMock(return_value={})
+    params = {"task_name": "analyze"} if tool == "set_task" else {"vars": '{"book_id": 42}'}
+
+    written = await getattr(server, tool)({**params, "_agent": agent, "_session_id": "s1"})
+    assert written["status"] == "success" and written["persisted"] is True
+
+    manager.save_session = AsyncMock(side_effect=OSError("disk full"))
+    failed = await getattr(server, tool)({**params, "_agent": agent, "_session_id": "s1"})
+    assert failed["status"] == "success" and failed["persisted"] is False
+
+    agent._session_service = None
+    unsaved = await getattr(server, tool)({**params, "_agent": agent, "_session_id": "s1"})
+    assert unsaved["persisted"] is False
+
+
+@pytest.mark.asyncio
+async def test_set_task_takes_a_task_name_that_is_not_text(server, mock_agent):
+    """A null or a number answered with an AttributeError instead of a result."""
+    missing = await server.set_task({"task_name": None, "_agent": mock_agent})
+    assert missing == {"status": "error", "error": "task_name is required"}
+    number = await server.set_task({"task_name": 3, "_agent": mock_agent})
+    assert number["status"] == "success" and number["current_task"] == "3"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate", [{"params": {"scope": "plan"}}, {}, None, "validation_tool"])
+async def test_a_gate_without_a_tool_refuses_the_switch(mock_system_config, mock_agent, gate):
+    """A gate entry without `tool` is a config error: it used to let every switch through."""
+    server = TaskSwitchServer("task_switch", mock_system_config, ToolServerConfig(
+        type="task_switch", enabled=True, config={"task_preconditions": {"execute": gate}}))
+    mock_agent.call_tool = AsyncMock(return_value={"can_proceed": True})
+
+    result = await server.set_task({"task_name": "execute", "_agent": mock_agent})
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "Gate for task 'execute' is misconfigured: no tool"
+    assert mock_agent.agent_config.template_vars["current_task"] == "init"
+    mock_agent.call_tool.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["can_proceed", None, ["ok"]])
+async def test_a_gate_tool_that_answers_no_object_refuses_the_switch(
+        server_with_preconditions, mock_agent_with_book_id, answer):
+    """A gate tool whose answer is not a JSON object used to open the gate."""
+    mock_agent_with_book_id.call_tool = AsyncMock(return_value=answer)
+
+    result = await server_with_preconditions.set_task(
+        {"task_name": "content", "_agent": mock_agent_with_book_id})
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "Gate tool 'validation_tool' for task 'content' did not answer an object"
+    assert mock_agent_with_book_id.agent_config.template_vars["workflow_phase"] == "planning"
+
+
+@pytest.mark.asyncio
+async def test_set_context_refuses_the_task_variable(server_with_preconditions, mock_agent_with_book_id):
+    """set_context set the task variable past allowed_tasks and every gate."""
+    result = await server_with_preconditions.set_context(
+        {"vars": '{"workflow_phase": "content", "book_id": 7}', "_agent": mock_agent_with_book_id})
+
+    assert result == {"status": "error", "error":
+                      "'workflow_phase' is the task variable: switch it with task_switch_set_task"}
+    assert mock_agent_with_book_id.agent_config.template_vars == {"workflow_phase": "planning", "book_id": "42"}
+    other = await server_with_preconditions.set_context(
+        {"vars": '{"current_task": "x"}', "_agent": mock_agent_with_book_id})
+    assert other["status"] == "success"

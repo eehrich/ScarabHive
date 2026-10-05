@@ -106,3 +106,6 @@ config:
   cache_enabled: true
   default_max_results: 5
   default_search_depth: "basic"
+  # Characters of raw_content per page the model gets; longer pages are cut
+  # and marked "truncated": <original length>. Not a positive integer: 20000.
+  max_content_chars: 20000

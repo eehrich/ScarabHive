@@ -1,0 +1,202 @@
+@database "batch_monitor"
+@author "Enrico Ehrich"
+@$VER: batch_monitor.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Batch Monitor"
+@{h1}Batch Monitor
+
+Some models are run through a provider's batch API: cheaper, but an
+answer can take minutes or hours. The server collects the requests of such
+a model for a moment, sends them off as one job and waits for the provider
+to finish it. This plugin shows what that machinery is doing: the requests
+waiting to be sent, the jobs running at the providers, the ones that just
+finished, and the totals since the server started. It is for watching
+only -- it gives agents no tools and changes nothing.
+
+@{image docs/panel.png "The Batch Queues panel with running and waiting jobs"}
+
+@{code}
+For users
+  @{"  The Batch Queues panel  " link panel}
+
+For developers
+  @{"  The two calls behind it  " link calls}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Batch Queues panel"
+@{h1}The Batch Queues panel
+
+Open it from the launcher (@{b}System@{ub}, "Batch Queues") or the command
+palette. It belongs to no session: it shows the batch work of the server,
+whichever chat is open.
+
+@{image docs/panel.png "The Batch Queues panel"}
+
+@{h2}The figures
+
+@{table}
+Figure | Counts
+Queues | the queues in the table below
+Jobs running | the jobs listed that are not finished -- also one put together and not yet sent, and one being cancelled
+Jobs completed | jobs the provider finished since the server started; below it, how many failed
+Requests completed | requests answered in completed jobs; below it, how many failed -- in a failed job, every request counts as failed
+Processing time | the mean time from sending a job to its end, with the shortest and the longest below; a dash before the first job has ended
+@{body}
+
+The totals are kept in memory and start at zero with each server start.
+Jobs that expired or were cancelled are in neither count, but their time
+is in the processing time.
+
+@{h2}The table
+
+A queue is one model at one batch provider, named
+@{tt}provider:model@{utt}, for example
+@{tt}openai_httpx:gpt-5.4@{utt}. Each job of a queue is a row -- the
+running ones and those finished within the last three minutes -- and a
+queue with requests waiting for its next job gets one more row with the
+status @{i}pending@{ui}.
+
+@{table}
+Column | A job | The waiting requests
+Job | its id; the tooltip is the provider's id for it | --
+Status | pending (put together, not sent yet), submitted, validating, in progress, finalizing, cancelling, completed, failed, expired, cancelled | pending
+Progress | requests answered of all in the job, and how many failed | how many are waiting
+Input tokens | the estimate for all its requests, kept when the job finishes | the estimate for the waiting requests
+Time | since it was sent; for a finished job, how long it ran | the collection window, "~10s"
+@{body}
+
+A job the server found at a provider when it started -- sent before a
+restart, for a provider with @{tt}cancel_on_startup: false@{utt}; by
+default the server cancels the jobs it had sent instead -- has no requests of its own: its progress, tokens and time are
+dashes, and its id starts with @{tt}rec_@{utt}. A job that failed while
+being sent shows "0 / 5" and the failed status: its requests never reached
+the provider. A job sent again after the provider cancelled it or let it
+expire counts its time from the new start.
+
+The requests of a queue are sent when the collection window closes, or at
+once when there are as many as a job may hold. The window is the first
+provider's @{tt}collection_window_seconds@{utt} in @{tt}llm.yaml@{utt}; it
+applies to all queues.
+
+A click on a column head sorts the rows by it, a second click turns the
+order; the table starts sorted by queue. The order you pick holds through
+every reload and is kept in the browser for next time.
+
+@{h2}Reloading
+
+The panel loads anew every 5 seconds from the start, and not while it is
+hidden. The toolbar reloads at once, turns the automatic reload off and on,
+and the menu next to it sets another interval; the choice is kept in the
+browser. Next to it, the time of the last update.
+
+@{h2}When there is nothing to show
+
+@{bullet}@{b}Batch processing is off@{ub}: the server runs no batch
+manager -- no model uses a batch provider. See
+@{" Setting it up " link setup}.
+@{bullet}@{b}No batch jobs@{ub}: nothing is waiting, running or finished
+in the last three minutes.
+@{bullet}@{b}Batch queues could not be loaded@{ub}, with the server's
+reason, when a call fails.
+
+None of them keeps the figures or rows shown before, so nothing old passes
+for current.
+@endnode
+
+@node calls "The two calls behind it"
+@{h1}The two calls behind it
+
+@{table}
+Call | Answers
+GET /plugins/batch_monitor/queues | queues and collection_window_seconds
+GET /plugins/batch_monitor/metrics | the totals since the server started
+@{body}
+
+Both answer 503 when the server runs no batch manager.
+
+@{h2}queues
+
+@{tt}queues@{utt} lists the queues sorted by key; a queue with neither
+waiting requests nor listed jobs is left out. Each has
+@{tt}queue_key@{utt}, @{tt}pending_requests@{utt},
+@{tt}pending_estimated_tokens@{utt} and @{tt}jobs@{utt} -- the running
+jobs first, then those finished within the last 180 seconds. A job has
+@{tt}job_id@{utt}, @{tt}provider_job_id@{utt} (null until it is sent),
+@{tt}status@{utt}, @{tt}total_requests@{utt},
+@{tt}completed_count@{utt}, @{tt}failed_count@{utt},
+@{tt}elapsed_seconds@{utt} (whole seconds; null for a job not sent) and
+@{tt}estimated_input_tokens@{utt}.
+
+@{code json}
+{"queues": [{"queue_key": "openai_httpx:gpt-5.4", "pending_requests": 2, "pending_estimated_tokens": 240,
+             "jobs": [{"job_id": "a1b2c3", "provider_job_id": "batch_abc", "status": "in_progress",
+                       "total_requests": 5, "completed_count": 3, "failed_count": 1,
+                       "elapsed_seconds": 125, "estimated_input_tokens": 610}]}],
+ "collection_window_seconds": 10.0}
+@{body}
+
+@{h2}metrics
+
+@{code json}
+{"completed_jobs": 3, "failed_jobs": 1, "total_completed_requests": 1200, "total_failed_requests": 7,
+ "processing_time": {"min": 0.0, "max": 3599.7, "mean": 1229.9}}
+@{body}
+
+The times are seconds to one decimal, null before the first job has
+ended.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    batch_monitor:
+      type: batch_monitor
+      enabled: true
+      description: "Monitor and query batch queue status"
+@{body}
+
+It has no settings and keeps no data; the panel is there as soon as the
+plugin is on. What it shows comes from the server's batch manager, and
+that exists only when @{tt}config/llm.yaml@{utt} sets batch processing up:
+a @{tt}batch:@{utt} block with at least one enabled provider, and at least
+one model with @{tt}provider: batch@{utt}. Without all three the panel
+says batch processing is off.
+
+@{code yaml}
+llm_system:
+  batch:
+    storage_path: "data/batch_jobs"
+    providers:
+      openai_httpx:
+        enabled: true
+        collection_window_seconds: 10
+        max_requests_per_batch: 100
+  models:
+    gpt-sol-batch:
+      provider: batch
+      batch_provider: openai_httpx
+      model: gpt-6-sol
+      api_key: ${OPENAI_API_KEY}
+@{body}
+
+An agent sends its requests through the batch manager when it runs on
+such a model; the queue key is the @{tt}batch_provider@{utt} and the
+@{tt}model@{utt} of that entry.
+
+@{h2}What it cannot see
+
+@{bullet}Each process runs its own batch manager. The panel shows the one
+of the API server: the requests of agents running in it. An agent started
+from the command line, or a session woken in a process of its own, sends
+its batches past the panel.
+@{bullet}Finished jobs stay listed for three minutes; older ones and
+every total are gone with a server restart.
+@endnode

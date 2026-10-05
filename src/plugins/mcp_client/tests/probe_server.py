@@ -7,9 +7,9 @@ asserted against hand-written JSON-RPC dicts instead of a real handshake.
 """
 import base64 as _b64
 
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.mcpserver import Image, MCPServer
 
-mcp = FastMCP("probe")
+mcp = MCPServer("probe")
 
 
 @mcp.tool()
@@ -28,6 +28,14 @@ def echo(text: str) -> str:
 def boom() -> str:
     """Always fails, so error handling can be exercised."""
     raise ValueError("intentional failure")
+
+
+@mcp.tool()
+def die() -> str:
+    """Ends the server process mid-call, the way a native crash does (no answer, no cleanup)."""
+    import os
+
+    os._exit(3)
 
 
 @mcp.tool()
@@ -66,7 +74,7 @@ def resource_only():
     from mcp.types import EmbeddedResource, TextResourceContents
 
     return [EmbeddedResource(type="resource", resource=TextResourceContents(
-        uri="file:///probe/notes.txt", mimeType="text/plain", text="a note"))]
+        uri="file:///probe/notes.txt", mime_type="text/plain", text="a note"))]
 
 
 if __name__ == "__main__":

@@ -24,7 +24,8 @@ the format, with comments on the ones that are not obvious from their names.
 ## The loop
 
 1. `stategraph_catalog` -- the activity kinds and their fields, the agents a machine may
-   run (`agents: "v6_*"` narrows the list), the tools the runner may call, the decision
+   run (`agents: "review_*"` narrows the list), the tools the machine's runner may call
+   (pass `machine_id` for a machine that exists: its folder decides the runner), the decision
    profiles. Use nothing else.
 2. Write the tree: `<id>.yaml`, its companion `.py` if it has one, any imported machine.
 3. `stategraph_validate_machine(files={...})` until it reports no error. Fix warnings
@@ -134,7 +135,7 @@ third entry raises `loop_limit`, and the error transition leads to `failed`.
   `guard: error.type == "tool_failed"`), on the state or on an enclosing composite.
   An unhandled error fails the machine.
 - **Only what the catalog lists:** agents, tools (flat names with
-  their instance prefix, e.g. `stategraph_json_manage_json`) the runner may call,
+  their instance prefix, e.g. `stategraph_json_manage_json`) the machine's runner may call,
   decision profiles. The validator refuses anything else (SG007).
 - **Finals** have only `type`, `status` (`succeeded`/`failed`, root region only),
   `output` and `description`.
@@ -143,7 +144,7 @@ third entry raises `loop_limit`, and the error transition leads to `failed`.
 
 | kind | keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task`; `schema`, `parse`, `parse_retries`, `vars`, `advanced`, `continue` | answer text, or the parsed value |
+| `agent: <name>` | `task`; `schema`, `parse`, `parse_retries`, `vars`, `llm_profile`, `llm_params`, `advanced`, `continue` | answer text, or the parsed value |
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result; an error result raises `tool_failed` |
 | `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile`, or `by: <agent>` (an agent decides) | `{value, confidence, probabilities}` |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`, `input` | `{name: {value, confidence, probabilities}}` |
@@ -169,7 +170,8 @@ with `await sg.tool(name, args)`. Details: `references/format.md` §14.
   mock is `{"value": 0.8, "confidence": null, "probabilities": null}`.
 - `{"$visits": [first, second, ...]}` answers per use of that path in the run (the last repeats),
   also across repeated calls of a submachine;
-  `{"$error": {"type": "tool_failed", "message": "..."}}` fails the activity.
+  `{"$error": {"type": "tool_failed", "message": "..."}}` fails the activity;
+  `{"$timeout": true}` at a wait state with `timeout` (or a timer state) makes its time up at once.
 - `call` activities run for real even in a mock-only run; mock them if they reach
   outside.
 

@@ -1,6 +1,6 @@
 """Tests for the central Markdown → HTML renderer (agent_system.utils.markdown_render).
 
-Shared by the markdown_formatter hook (main chat panel) and the debate forum.
+Shared by the debate forum, the help viewer and ``agent-cli --color html``.
 """
 import pytest
 
@@ -29,6 +29,15 @@ def test_fenced_code_has_prism_language_class():
     html = markdown_to_html("```python\ndef f():\n    return 1\n```")
     # fenced_code with lang_prefix='language-' → Prism.highlightAllUnder colours it
     assert '<pre><code class="language-python">' in html
+
+
+def test_an_answer_cut_off_in_its_code_shows_the_code_as_code():
+    """Left open, the code was one paragraph of many lines: slow (200 KB took 48 s) and not code."""
+    html = markdown_to_html("Intro\n\n```python\n" + "x = 1\n" * 2000)
+    assert html.rstrip().endswith("</code></pre>") and "<br" not in html
+    # a line that only starts like the fence does not close it
+    html = markdown_to_html("```\n```python\ncode")
+    assert html.count("<pre>") == 1 and "```python\ncode" in html
 
 
 def test_tables_without_inline_styles():

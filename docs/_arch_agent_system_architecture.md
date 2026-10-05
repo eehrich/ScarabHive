@@ -290,12 +290,11 @@ class Agent(ToolServer):
 - Order management and dependencies
 - Error isolation
 
-**Hook Types** (`HookType` in `hooks/plugin_hook.py`, 10 values):
+**Hook Types** (`HookType` in `hooks/plugin_hook.py`, 9 values):
 - `pre_llm_call` - Before LLM request
 - `post_llm_call` - After LLM response
 - `pre_llm_request` / `post_llm_response` - LLM-client level (exact API payload/response)
 - `llm_progress` - During a streaming LLM call (no messages attached)
-- `format_output` - Output formatting
 - `session_start/end` - Session lifecycle
 - `pre_tool_call` / `post_tool_call` - around every tool call of the model
   (`components/tool_execution.py`) and of a tool_script script
@@ -322,7 +321,7 @@ timed-out hook is logged and skipped. Global `hooks.overrides` accept an exact
 - **`external_servers:`** - External MCP server connections
 - **`agents*/*.yaml`, `src/plugins*/*/agents/*.yaml`** - Config-based agent definitions (as `plugins.servers` entries; there is no top-level `agents:` section)
 
-Files listed under `includes:` contribute `llm_system`, `plugins` and `hooks` (deep-merged) and `external_servers` (the last file that has it wins). Every other top-level section (`auth`, `network`, `logging`, ...) is read from `config.yaml` only; in an included file it is silently ignored.
+Files listed under `includes:` contribute `llm_system`, `plugins` and `hooks` (deep-merged) and `external_servers` (the last file that has it wins). Every other top-level section (`network`, `logging`, ...) an include sets over what came before; `paths`, `auth`, `includes` and `files` are read from `config.yaml` only, and an include setting them is warned about and ignored. The exception is auth's route rules (`endpoint_security`, `llm_security`, `plugin_security`): an include `config.yaml` names by its own path -- never one a glob matched -- may set them, and `config/security.yaml` does. A file `config.yaml` names by its path must exist and load, or the start fails. `config/local.yaml` is read after all includes and may set every section but `includes` and `files`; it may be missing, but where it is there it must load, or the start fails (it names the machine's own signing key).
 
 **Datenverzeichnis (`agent_system/paths.py`):** Alles, was das System schreibt —
 Sessions, Datenbanken, Caches, die Bücher des Writers — liegt unter einem
@@ -482,9 +481,6 @@ User Request (HTTP/CLI)
          ├─► Repeat until complete
          │
          ▼
-   Hook: format_output
-         │
-         ▼
    Save Session
          │
          ▼
@@ -630,7 +626,7 @@ development:
 | **Input Validation** | ✅ Pydantic models | All API inputs validated |
 | **Rate Limiting** | ✅ Sliding 1-minute window | Per client IP (`auth.requests_per_minute`); only with `auth.enabled` and `auth.rate_limit_enabled` (off in the shipped config) |
 | **CORS** | ✅ Configurable | `auth.cors_origins` (default and shipped value `*`); applied only with `auth.enabled` and `auth.cors_enabled` (on by default) |
-| **Secrets Management** | ✅ Env vars / `config/secrets.env` | Provider keys referenced as `${VAR}` in the YAML; `auth.secret_key` and `auth.default_admin_password` are literals in the shipped config and must be changed |
+| **Secrets Management** | ✅ Env vars / `config/secrets.env` | Provider keys referenced as `${VAR}` in the YAML; `auth.secret_key` is a literal in the shipped config and must be replaced (install scripts: own key in `config/local.env`); no admin password is shipped -- the install scripts ask for one, else the API generates one |
 
 ### 8.4 Maintainability
 
@@ -734,7 +730,7 @@ AGENT_ENABLE_PROFILING=1   # debug/profiling endpoints
 ### 10.3 User Guides
 
 - [Plugin Authoring](plugin_authoring.md) - How to create plugins
-- [Configuration Guide](../INSTALLATION.md#configuration) - Configuration reference
+- [Configuration Guide](configuration.md) - Configuration reference
 - API reference: the OpenAPI UI of a running server at `/docs` (`/openapi.json`); design notes in [_arch_app_architecture.md](_arch_app_architecture.md), partly outdated
 - [CLI Reference](cli_reference.md) - Command-line usage
 

@@ -18,7 +18,7 @@ Agent Modi, mitgeben beim request: **"Erstellen", "Diskussion", "Konsens"**
 - Benutze nur diesen einen Forum channel für die Posts. Erstelle nicht mehrere!
 - **Poste alle Agent Antworten** und **auch deine Sub-Agent-Requests** ins Forum für die Nachvollziehbarkeit des Administrators. Mache das parallel zu anderen Tool-Calls um Turns zu sparen.
 
-1. initial spawne mit dem v6_panel_sam parallel die Agents mit dem selben Auftrag den du bekommen hast. Übermittle den Brief **1:1 ohne Veränderung** (du interpretierst seinen Inhalt nicht — reiche ihn komplett durch). use_advanced_model=true
+1. initial spawne mit dem panel_sam parallel die Agents mit dem selben Auftrag den du bekommen hast. Übermittle den Brief **1:1 ohne Veränderung** (du interpretierst seinen Inhalt nicht — reiche ihn komplett durch). use_advanced_model=true
 2. Werte die Ergebnisse aus.
 3. Crosscheck und Diskussion (alle Agents diskutieren mit):
     3.1 gebe jeweils jedem agent das Ergebnis der anderen agents (**1:1, unverändert**) zur Bewertung. Gebe den Agent-Namen mit, damit die Agents auf die Namen reagieren können.

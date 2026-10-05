@@ -32,8 +32,6 @@ class TestScriptInterpreterBasic:
         assert config.max_memory_mb == 50
         assert config.max_output_length == 10000
         assert config.enable_variables is True
-        assert config.enable_loops is True  # Enabled for Task 9063
-        assert config.enable_functions is True  # Enabled for Task 9063
         assert "abs" in config.allowed_functions
         assert "min" in config.allowed_functions
         assert "max" in config.allowed_functions

@@ -92,12 +92,11 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
 
             # Billed figure first, central estimate second — the shared rule
             # lives in llm/pricing.resolve_call_cost so every consumer answers
-            # the same for the same call. Batch clients
-            # (BatchLLMClient.batch_provider = "openai"/...) bill at the
-            # table's batch_discount; without it the estimate would be ~2x.
-            # isinstance-str guard: plain mocks must not look batchy.
-            bp = getattr(context.llm, 'batch_provider', None)
-            is_batch = isinstance(bp, str) and bool(bp)
+            # the same for the same call. An answer from a batch
+            # (BatchLLMClient.last_was_batch) bills at the table's
+            # batch_discount; its sync fallback does not. `is True`: plain
+            # mocks must not look batchy.
+            is_batch = getattr(context.llm, 'last_was_batch', None) is True
             cost, cost_is_estimate = resolve_call_cost(
                 usage, model or None, is_batch=is_batch)
 
@@ -222,7 +221,10 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             # Same rule as the agent path: the figure the provider billed wins
             # over any estimate, which is what makes a decisions call honest --
             # it has no per-token price and reports its cost itself.
-            cost, cost_is_estimate = resolve_call_cost(usage, model or None)
+            # A batch request (BatchLLMClient reports as "batch_<provider>")
+            # bills at the table's batch_discount, as on the agent path.
+            is_batch = (context.llm_provider or "").startswith("batch_")
+            cost, cost_is_estimate = resolve_call_cost(usage, model or None, is_batch=is_batch)
 
             # Who spent it: the provider, because there is no agent. The panel
             # shows it next to the agents, with a context window of 0 -- a call

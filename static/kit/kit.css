@@ -258,10 +258,12 @@
 
 /* -------------------------------------------------------------------- tabs */
 
-/* Each tab as wide as its text while they all fit; short of room they give way down to a few characters (an
-   ellipsis), then the row scrolls sideways -- the wheel turns it too, and the chosen tab is brought into sight
-   (panel-kit.js; a nav of a.pk-tab links too, its current page brought into sight). The line under the row is a
-   shadow: a border would be cut off by the scrolling box, and with it the marker of the chosen tab that sits on it.
+/* Each tab as wide as its text while they all fit; short of room they give way down to five characters and an
+   ellipsis, then the row scrolls sideways -- the wheel turns it too, and the chosen tab is brought into sight
+   (panel-kit.js; a nav of a.pk-tab links too, its current page brought into sight). 4.5em: five characters of our
+   labels in Inter and the ellipsis take up to 4.1em. A shorter label keeps its own width, where the browser has
+   calc-size() (Chromium 129+); elsewhere it is padded out to the least width. The line under the row is a shadow: a
+   border would be cut off by the scrolling box, and with it the marker of the chosen tab that sits on it.
    flex-shrink 0: a scrolling box has no least height of its own, and a column short of room squeezed the row to
    nothing; in a row, a .pk-tabs that is to give way sideways gets flex: 1 1 auto (agent_editor's list bar). */
 .pk-tabs {
@@ -269,12 +271,17 @@
   overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
 }
 .pk-tab {
-  position: relative; display: block; flex: 0 1 auto; min-width: var(--pk-tab-min, 4.5em);
+  position: relative; display: block; flex: 0 1 auto;
+  min-width: var(--pk-tab-min, calc(4.5em + var(--pk-tab-lead, 0px) + 2 * var(--space-3)));
   height: var(--control-h-md); padding: 0 var(--space-3);
   font: 500 var(--text-sm)/var(--control-h-md) var(--font-ui); color: var(--text-secondary);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
   background: none; border: 0; cursor: pointer;
 }
+@supports (min-width: calc-size(max-content, size)) {
+  .pk-tab { min-width: var(--pk-tab-min, calc-size(max-content, min(size, 4.5em + var(--pk-tab-lead, 0px) + 2 * var(--space-3)))); }
+}
+.pk-tab:has(> :is(.pk-icon, .pk-dot):first-child) { --pk-tab-lead: 20px; }  /* an icon or dot ahead of the text */
 .pk-tab:hover { color: var(--text-primary); }
 .pk-tab:focus-visible { outline-offset: -2px; }  /* inside: the scrolling row would cut a ring outside off */
 /* a.pk-tab in a nav: the pages of one panel, the current one marked with aria-current="page" */

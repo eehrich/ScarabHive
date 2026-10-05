@@ -169,6 +169,56 @@ class TestManualPrune:
         assert "size_after_mb" in res
         assert _count_requests(db) == 120
 
+    @pytest.mark.asyncio
+    async def test_prune_and_clear_run_on_the_writer_thread(self, db, monkeypatch):
+        """A VACUUM or clear of a multi-GB file holds the write lock for minutes; run on another connection,
+        every capture made meanwhile gave up after the 10 s busy timeout and was lost. Behind the writer they
+        wait in its queue instead."""
+        import threading
+
+        import plugins.message_debugger.web_endpoints as endpoints
+        from plugins.message_debugger.web_endpoints import MessageDebuggerWebFactory
+
+        monkeypatch.setattr(endpoints, "require_everything", lambda *args: None)
+        ran_on = {}
+        for name in ("vacuum", "clear_all"):
+            real = getattr(db, name)
+
+            def spy(real=real, name=name):
+                ran_on[name] = threading.current_thread().name
+                return real()
+            monkeypatch.setattr(db, name, spy)
+
+        _insert_requests(db, 120)
+        factory = MessageDebuggerWebFactory(db=db)
+        assert (await factory.prune(None, vacuum=True))["vacuumed"] is True
+        assert (await factory.clear_all(None))["requests_deleted"] == 120
+        assert ran_on == {"vacuum": "msgdbg-writer", "clear_all": "msgdbg-writer"}
+
+    def test_a_failure_on_the_writer_reaches_the_caller(self, db):
+        def fails():
+            raise ValueError("disk full")
+        with pytest.raises(ValueError, match="disk full"):
+            db.call(fails)
+        assert db.call(lambda: 7) == 7  # the writer lives on
+
+    def test_a_call_behind_a_stopped_writer_does_not_wait_forever(self, db):
+        import threading
+
+        db._write_q.put(None)  # the writer stops, as a close() between the check and the put leaves it
+        db._writer_thread.join(timeout=3)
+        outcome = {}
+
+        def ask():
+            try:
+                db.call(lambda: 7)
+            except RuntimeError as e:
+                outcome["error"] = str(e)
+        asker = threading.Thread(target=ask, daemon=True)
+        asker.start()
+        asker.join(timeout=5)
+        assert outcome == {"error": "the message debugger database was closed"}
+
 
 class TestDisabled:
     def test_cap_zero_disables(self, tmp_path):

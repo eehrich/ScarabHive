@@ -70,7 +70,7 @@ class ComfyUIClient:
                             "queue_pending": len(queue_data.get("queue_pending", [])),
                             "queue_running": len(queue_data.get("queue_running", []))
                         }
-                    return {"status": "error", "code": resp.status}
+                    return {"status": "error", "code": resp.status, "error": f"HTTP {resp.status}"}
         except asyncio.TimeoutError:
             return {"status": "offline", "error": "Connection timeout"}
         except aiohttp.ClientConnectorError as e:
@@ -141,7 +141,8 @@ class ComfyUIClient:
             return {"error": f"Cannot connect to ComfyUI server at {self.host}:{self.port}"}
         except Exception as e:
             logger.exception("Unexpected error getting history for %s", prompt_id)
-            return {"error": str(e)}
+            # a server that accepts and never answers raises a TimeoutError, whose text is empty
+            return {"error": str(e) or f"{type(e).__name__} after {self.timeout.total}s"}
     
     async def get_status(self, prompt_id: str) -> dict[str, Any]:
         """Get status of a specific job.
@@ -208,7 +209,8 @@ class ComfyUIClient:
             return {"error": f"Cannot connect to ComfyUI server at {self.host}:{self.port}"}
         except Exception as e:
             logger.exception("Unexpected error getting queue")
-            return {"error": str(e)}
+            # a server that accepts and never answers raises a TimeoutError, whose text is empty
+            return {"error": str(e) or f"{type(e).__name__} after {self.timeout.total}s"}
     
     async def get_file(
         self,

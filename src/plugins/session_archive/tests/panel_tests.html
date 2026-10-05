@@ -146,6 +146,17 @@
       && statValue('trees') === '0';
   });
 
+  await check('with the periodic sweep off the empty panel does not promise it', async () => {
+    cookie('sweepoff');
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    const off = await until('the sweep-off text', () => $('#archived .pk-empty')?.textContent
+      .includes('The periodic sweep is off'));
+    cookie('');
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await until('the usual text', () => $('#archived .pk-empty')?.textContent.includes('Conversations move here'));
+    return off;
+  });
+
   await check('a capped pass says how much is still waiting, and a finished one does not', async () => {
     // Live and old enough by now: root_old (2 sessions, seeded) plus the two
     // this page restored again, root_one (3) and root_three (2). root_new is
@@ -171,6 +182,14 @@
     await said('Nothing was old enough to archive', 'info');
     await sleep(200);
     return rows().length === 3;
+  });
+
+  await check('old conversations all in use are not reported as nothing old enough', async () => {
+    cookie('busy');
+    doc().getElementById('sweep').click();
+    await said('Nothing archived: 2 conversation(s) old enough are in use or failed', 'info');
+    cookie('');
+    return !toasts('info').some((text) => text.includes('Nothing was old enough') && text.includes('in use'));
   });
 
   await check('a failed load shows the error instead of what was there before', async () => {

@@ -37,7 +37,7 @@ that path with `media_ops_load`.
 
 `blender_status` first. If nothing answers, Blender is closed or its server is
 stopped: ask the user to open the 3D viewport's N-panel, tab **BlenderMCP**,
-and click **Start MCP Server**. Do not retry in a loop — it will not come back
+and click **Connect to MCP server**. Do not retry in a loop — it will not come back
 on its own.
 
 ## Reporting

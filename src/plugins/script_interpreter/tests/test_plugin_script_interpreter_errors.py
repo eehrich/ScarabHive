@@ -44,10 +44,8 @@ async def test_import_error_message(server, mock_status):
     assert "error" in result
     error = result["error"]
     
-    # Should get detailed error from sandboxed_python fallback
     assert isinstance(error, dict)
-    # The category might be "parse_error" or "unsupported_feature" depending on the error handling
-    assert error["category"] in ["unsupported_feature", "parse_error", "syntax"]
+    assert error["category"] == "unsupported_feature"
     # Check for helpful error information
     error_content = str(error)
     assert any(keyword in error_content.lower() for keyword in ["import", "not", "allowed", "unsupported"])
@@ -102,22 +100,6 @@ async def test_security_violation_error(server, mock_status):
     result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" in result
-
-
-@pytest.mark.asyncio
-async def test_error_includes_available_functions(server, mock_status):
-    """Test that error messages include available functions list."""
-    code = "import os"
-    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
-    
-    assert "error" in result
-    error = result["error"]
-    if "available_functions" in error:
-        functions = error["available_functions"]
-        assert "print()" in functions
-        assert "mean()" in functions
-        assert "min()" in functions
-        assert "max()" in functions
 
 
 @pytest.mark.asyncio

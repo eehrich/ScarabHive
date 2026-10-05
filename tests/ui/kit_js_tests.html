@@ -12,8 +12,9 @@
 </div>
 <div id="t-a" role="tabpanel">a</div>
 <div id="t-b" role="tabpanel" hidden>b</div>
-<!-- a row of page links too narrow for them, the current page last: wired at load (start) -->
-<div style="width: 140px"><nav class="pk-tabs" id="navRow"><a class="pk-tab" href="#first">First page</a><a class="pk-tab" href="#second">Second page</a><a class="pk-tab" href="#third">Third page</a><a class="pk-tab" href="#here" aria-current="page">Current page</a></nav></div>
+<!-- a row of page links too narrow for them, the current page last: wired at load (start); the short one is as wide
+     as its text, so it moves the current page when Inter arrives after start -->
+<div style="width: 140px"><nav class="pk-tabs" id="navRow"><a class="pk-tab" href="#first">First page</a><a class="pk-tab" href="#second">Second page</a><a class="pk-tab" href="#third">Third page</a><a class="pk-tab" href="#sql">SQL</a><a class="pk-tab" href="#here" aria-current="page">Current page</a></nav></div>
 <script type="module">
   import * as pk from '/static/kit/panel-kit.js';
 
@@ -23,6 +24,33 @@
     catch (error) { results[name] = `error: ${error}`; }
   };
   const nextFrame = () => new Promise((r) => setTimeout(r, 0));
+  // Does a tab cut short keep five characters of its text and the ellipsis? The room from its first character to the
+  // end of its box, against those six set in its font.
+  const holdsFive = (box) => {
+    const doc = box.ownerDocument;
+    const walk = doc.createTreeWalker(box, NodeFilter.SHOW_TEXT, { acceptNode: (node) => node.data.trim() ? 1 : 3 });
+    const text = walk.nextNode();
+    const first = doc.createRange();
+    first.setStart(text, text.data.search(/\S/));
+    first.setEnd(text, text.data.search(/\S/) + 1);
+    const style = doc.defaultView.getComputedStyle(box);
+    const room = box.getBoundingClientRect().right - parseFloat(style.paddingRight) - first.getBoundingClientRect().left;
+    const probe = doc.createElement('span');
+    probe.style.cssText = `position: absolute; white-space: pre; font: ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    probe.textContent = `${box.textContent.trim().slice(0, 5)}…`;
+    doc.body.append(probe);
+    const need = probe.getBoundingClientRect().width;
+    probe.remove();
+    return room >= need - 0.5;
+  };
+  // Is a whole tab no wider than its content -- a short label not padded out to the least width?
+  const snug = (box) => {
+    const doc = box.ownerDocument;
+    const content = doc.createRange();
+    content.selectNodeContents(box);
+    const style = doc.defaultView.getComputedStyle(box);
+    return box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - content.getBoundingClientRect().width < 1;
+  };
 
   await check('html escapes interpolated markup', () => {
     const out = String(pk.html`<p title="${'"><img src=x onerror=alert(1)>'}">${'<b>x</b>'}</p>`);
@@ -157,9 +185,11 @@
       && document.querySelector('[data-tab="b"]').getAttribute('aria-selected') === 'true';
   });
 
-  await check('tabs are as wide as their text while they fit, give way down to a few characters, then the row scrolls; the wheel turns it and a chosen tab comes into sight', () => {
+  await check('tabs are as wide as their text while they fit, give way down to five characters, then the row scrolls; the wheel turns it and a chosen tab comes into sight', async () => {
+    await document.fonts.load('500 13px Inter');  // the widths below are Inter's: with a stand-in font they measure that one
     const box = document.createElement('div');
-    const labels = ['Running requests', 'Tool servers and their state', 'Agents', 'LLM requests per session', 'Settings'];
+    const labels = ['Running requests', 'Tool servers and their state', '<span class="pk-dot"></span> Machines',
+      '<svg class="pk-icon"></svg> LLM requests per session', 'Settings', 'SQL'];
     box.innerHTML = `<div class="pk-tabs" role="tablist" data-pk-tabs>${labels.map((label, i) =>
       `<button class="pk-tab" role="tab" aria-selected="${i === 0}" data-tab="w${i}">${label} <span class="pk-tab-count">${i}</span></button>`).join('')}</div>`;
     document.body.append(box);
@@ -169,12 +199,14 @@
     try {
       pk.initTabs(box);
       box.style.width = '2000px';
-      const wide = tabs.every(whole) && list.scrollWidth <= list.clientWidth;
+      const wide = tabs.every((tab) => whole(tab) && snug(tab)) && list.scrollWidth <= list.clientWidth;
       box.style.width = `${Math.round(tabs.reduce((sum, tab) => sum + tab.offsetWidth, 0) * 0.7)}px`;
       const giving = !tabs.every(whole) && list.scrollWidth <= list.clientWidth;
       box.style.width = '120px';
-      const least = parseFloat(getComputedStyle(tabs[0]).minWidth);
-      const scrolling = list.scrollWidth > list.clientWidth && tabs.every((tab) => tab.offsetWidth >= least - 0.5);
+      // the long labels are cut down to five characters, the short one (SQL) keeps its own width
+      const short = tabs.at(-1);
+      const scrolling = list.scrollWidth > list.clientWidth && tabs.slice(0, -1).every((tab) => !whole(tab) && holdsFive(tab))
+        && whole(short) && snug(short);
       const wheel = new WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true });
       list.dispatchEvent(wheel);
       const turned = list.scrollLeft > 0 && wheel.defaultPrevented;
@@ -214,7 +246,9 @@
     }
   });
 
-  await check('a row of page links scrolls as tabs do: its current page in sight from the start, the wheel turns it', () => {
+  await check('a row of page links scrolls as tabs do: its current page in sight from the start, the wheel turns it', async () => {
+    await document.fonts.ready;  // the page as it stands once Inter is in
+    await nextFrame();
     const nav = document.getElementById('navRow');
     const here = nav.querySelector('[aria-current="page"]').getBoundingClientRect();
     const row = nav.getBoundingClientRect();

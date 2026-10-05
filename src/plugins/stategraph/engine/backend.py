@@ -55,11 +55,14 @@ def _stop_grace() -> float:
 
 class Backend(Protocol):
     async def agent_create(self, act: "ActivityRun", *, agent: str, task: str, advanced: bool,
-                           vars: dict[str, Any]) -> tuple[str, Optional[str]]:
-        """Run a new instance of an agent: ``(answer text, instance id)``."""
+                           vars: dict[str, Any], llm_profile: Optional[str] = None,
+                           llm_params: Optional[dict[str, Any]] = None) -> tuple[str, Optional[str]]:
+        """Run a new instance of an agent: ``(answer text, instance id)``. ``llm_profile``, ``llm_params``: the
+        model this call runs on, and params over the agent's own for it (passed only when an activity sets them)."""
 
     async def agent_continue(self, act: "ActivityRun", *, agent: str, instance_id: str, message: str,
-                             advanced: bool, vars: dict[str, Any]) -> str:
+                             advanced: bool, vars: dict[str, Any], llm_profile: Optional[str] = None,
+                             llm_params: Optional[dict[str, Any]] = None) -> str:
         """Follow up an instance of ``agent``: its answer text."""
 
     async def call_tool(self, act: "ActivityRun", *, tool: str, args: dict[str, Any]) -> Any:
@@ -74,6 +77,10 @@ class NoBackend:
     """Refuses every external call: runs without a backend must mock agents, tools and decisions."""
 
     reason = "this run has no backend (mock the activity or start the run through the stategraph plugin)"
+
+    def __init__(self, reason: Optional[str] = None) -> None:
+        if reason:
+            self.reason = reason
 
     async def agent_create(self, act: "ActivityRun", **_: Any) -> tuple[str, Optional[str]]:
         raise ActivityError("no_backend", f"{act.path}: {self.reason}")
@@ -192,8 +199,31 @@ class ScarabHiveBackend:
             raise ActivityError("config", f"continue: instance {instance_id!r} belongs to agent "
                                           f"{data.get('agent_name')!r}, not {agent!r}")
 
+    def _llm_for(self, agent: Any, advanced: bool, profile: Optional[str],
+                 params: Optional[dict[str, Any]]) -> tuple[Any, Optional[str]]:
+        """``(client, label)`` for a call with llm_profile or llm_params: that profile -- else the one the agent
+        runs on, its advanced one with ``advanced`` -- with the params over the agent's own for it
+        (override_for_profile, as --llm builds it). ``(None, None)`` without: the agent's own client. Its
+        fallbacks run as configured."""
+        if not profile and not params:
+            return None, None
+        from agent_system.llm.factory import override_for_profile
+
+        from agent_system.llm.factory import UnknownLLMProfile
+
+        config = agent.agent_config
+        profile = profile or (advanced and config.advanced_llm_profile) or config.default_llm_profile
+        try:
+            return override_for_profile(self.system_config, config, profile, params)
+        except UnknownLLMProfile:
+            raise ActivityError("config", f"{agent.name}: LLM profile {profile!r} is not configured") from None
+        except Exception as exc:  # a value the model's schema refuses
+            raise ActivityError("config", f"{agent.name}: no LLM for profile {profile!r} with {params or {}}: "
+                                          f"{exc}") from exc
+
     async def _run_agent(self, act: "ActivityRun", agent: Any, service: Any, *, instance_id: str, message: str,
-                         advanced: bool, variables: dict[str, Any], new: bool) -> str:
+                         advanced: bool, variables: dict[str, Any], new: bool,
+                         llm: tuple[Any, Optional[str]] = (None, None)) -> str:
         """One run of ``agent`` on its instance session: the run's final answer.
 
         The instance session holds exactly this call's effective vars -- replaced, never accumulated
@@ -216,6 +246,7 @@ class ScarabHiveBackend:
         self._busy.add(instance_id)
         register_request_user(request_id, user)
         work: Optional[asyncio.Future[str]] = None
+        spend = _Spend(getattr(getattr(agent, "llm", None), "model", None))
         try:
             try:
                 # the stored vars too: a save merges into them, and a sub-agent the instance starts
@@ -228,13 +259,15 @@ class ScarabHiveBackend:
             tracker.clear_session_template_vars(instance_id)
             if variables:
                 tracker.set_session_template_vars(instance_id, dict(variables))
-            work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced))
+            work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced, spend, *llm))
             text = await self._guarded(act, agent.name, work)
             if not await service.save_session(agent, user, instance_id, agent.name, profile, was_new_session=new):
                 logger.warning("stategraph: instance %s of %s was not saved; a continue after a restart "
                                "would miss its conversation", instance_id, agent.name)
             return text
         finally:
+            spend.into(act.meta)  # what it cost so far: a failed or stopped run cost too
+
             def release(*_: Any) -> None:
                 self._busy.discard(instance_id)
                 release_request_user_tree(request_id)  # with the ids its tool calls registered
@@ -246,14 +279,18 @@ class ScarabHiveBackend:
                 release()
 
     @staticmethod
-    async def _answer(agent: Any, instance_id: str, message: str, request_id: str, advanced: bool) -> str:
-        """Consume the run's events to its end; the final summary is the answer, an error or cancel a failure."""
+    async def _answer(agent: Any, instance_id: str, message: str, request_id: str, advanced: bool,
+                      spend: _Spend, llm: Any = None, label: Optional[str] = None) -> str:
+        """Consume the run's events to its end; the final summary is the answer, an error or cancel a failure.
+        ``spend`` adds up what its calls cost. ``llm``: the client of a call with llm_params, ``label`` its name."""
         from contextlib import aclosing
 
         text = ""
         async with aclosing(agent.run_events(task=message, request_id=request_id, session_id=instance_id,
+                                             llm_override=llm, llm_profile_info_override=label,
                                              use_advanced_model=advanced)) as events:
             async for event in events:
+                spend.add(event)
                 kind = event.get("type")
                 if kind == "final":
                     text = event.get("summary") or ""  # read on to "end": the run stores its messages there
@@ -304,9 +341,11 @@ class ScarabHiveBackend:
             raise ActivityError("agent_failed", f"{agent}: {exc}") from exc
 
     async def agent_create(self, act: "ActivityRun", *, agent: str, task: str, advanced: bool,
-                           vars: dict[str, Any]) -> tuple[str, Optional[str]]:
+                           vars: dict[str, Any], llm_profile: Optional[str] = None,
+                           llm_params: Optional[dict[str, Any]] = None) -> tuple[str, Optional[str]]:
         target = self._agent(agent)
         service = self._sessions(target)
+        llm = self._llm_for(target, advanced, llm_profile, llm_params)  # refused before an instance exists
         budget = (self.nesting or {}).get("depth_budget")
         if budget is not None and budget < 1:  # the SAM above the run granted no level below its caller
             raise ActivityError("config", f"{agent}: the caller of this run has no sub-agent level left below it "
@@ -325,7 +364,7 @@ class ScarabHiveBackend:
             raise ActivityError("agent_failed", f"{agent}: its session could not be created: {exc}") from exc
         instance = created["session_id"]
         text = await self._run_agent(act, target, service, instance_id=instance, message=task, advanced=advanced,
-                                     variables=vars, new=True)
+                                     variables=vars, new=True, llm=llm)
         return text, instance
 
     # ------------------------------------------------------------ the run's own session
@@ -397,12 +436,14 @@ class ScarabHiveBackend:
                            exc_info=True)
 
     async def agent_continue(self, act: "ActivityRun", *, agent: str, instance_id: str, message: str,
-                             advanced: bool, vars: dict[str, Any]) -> str:
+                             advanced: bool, vars: dict[str, Any], llm_profile: Optional[str] = None,
+                             llm_params: Optional[dict[str, Any]] = None) -> str:
         target = self._agent(agent)
         service = self._sessions(target)
         await self._instance_of_this_run(service, self.user_id or "anonymous", instance_id, target.name)
+        llm = self._llm_for(target, advanced, llm_profile, llm_params)
         return await self._run_agent(act, target, service, instance_id=instance_id, message=message,
-                                     advanced=advanced, variables=vars, new=False)
+                                     advanced=advanced, variables=vars, new=False, llm=llm)
 
     def agent_template_vars(self, agent: str) -> dict[str, Any]:
         from agent_system.config.settings import get_tool_server_config
@@ -493,6 +534,61 @@ def _control_tools() -> tuple[str, ...]:
     return tuple(tool for tool in re.findall(r'name: "\{\{ name \}\}_(\w+)"', text) if tool not in READ_ONLY_TOOLS)
 
 
+class _Spend:
+    """What an agent run cost: its LLM calls and its sub-agents' (their events come as ``sub_run``), each priced by
+    the core's rule -- the provider's billed cost wins, else the price table's estimate. A final event repeats its
+    run's last call: it counts only when it differs (the CLI counts so). LLM calls a tool makes itself are not in
+    the run's events and not in here."""
+
+    def __init__(self, model: Optional[str]) -> None:
+        self.models: dict[str, Optional[str]] = {"": model}  # by run: "" the agent's own, else a sub-agent's run id
+        self.batch: dict[str, bool] = {}
+        self.last: dict[str, Any] = {}
+        self.tokens = {"prompt": 0, "completion": 0, "cached": 0}
+        self.cost = 0.0
+        self.estimated = False
+        self.unpriced = 0
+
+    def add(self, event: dict[str, Any]) -> None:
+        from agent_system.llm.pricing import normalize_usage, resolve_call_cost
+
+        run = ""
+        if event.get("type") == "sub_run" and isinstance(event.get("event"), dict):
+            run, event = str(event.get("run_id") or "?"), event["event"]
+        kind, usage = event.get("type"), event.get("usage")
+        if kind not in ("thinking_complete", "final") or not isinstance(usage, dict):
+            return
+        if kind == "final" and usage == self.last.get(run):
+            return
+        if kind == "thinking_complete" and isinstance(event.get("model"), str) and event["model"]:
+            self.models[run] = event["model"]  # a final names no model, nor a batch: its run's last call does
+            self.batch[run] = event.get("batch") is True
+        self.last[run] = usage
+        call = normalize_usage(usage)
+        self.tokens["prompt"] += call.prompt_tokens
+        self.tokens["completion"] += call.completion_tokens
+        self.tokens["cached"] += call.cached_tokens
+        cost, estimated = resolve_call_cost(usage, self.models.get(run), is_batch=self.batch.get(run, False))
+        if cost is None:
+            self.unpriced += 1
+            return
+        self.cost += cost
+        self.estimated = self.estimated or estimated
+
+    def into(self, meta: dict[str, Any]) -> None:
+        """Add to the activity's meta: a feedback round's run adds to the rounds before it."""
+        tokens = meta.setdefault("tokens", {"prompt": 0, "completion": 0, "cached": 0})
+        for key, value in self.tokens.items():
+            tokens[key] = tokens.get(key, 0) + value
+        meta["cost"] = round((meta.get("cost") or 0.0) + self.cost, 6)
+        if self.models.get(""):
+            meta["model"] = self.models[""]
+        if self.estimated:
+            meta["cost_is_estimate"] = True
+        if self.unpriced:  # the cost leaves these out: no billed figure, no price for their model
+            meta["cost_unpriced_calls"] = meta.get("cost_unpriced_calls", 0) + self.unpriced
+
+
 def _protect(act: "ActivityRun", request_id: str) -> None:
     """A finally or close activity's request runs to its end (§3.10): no cancel of the requests around it cuts it --
     a terminate of its run, nor a cancel of the caller's request tree above the run; only the platform's forced
@@ -511,8 +607,13 @@ def _unprotect(act: "ActivityRun", request_id: str) -> None:
 
 
 def make_config_check(system_config: Any, *, runner: str, own_instance: str,
-                      is_agent: Optional[Callable[[str], Optional[bool]]] = None):
+                      is_agent: Optional[Callable[[str], Optional[bool]]] = None, default_runner: Optional[str] = None):
     """SG007: can the configuration run what a machine names? Same matchers as the runtime.
+
+    ``runner`` is the runner of a machine whose folder no runner claims (runners.py): a tool question that carries
+    the run's root file (``extra["root"]``, as the validator asks it) is checked against the root's runner, one
+    without it -- the run time's, whose backend knows its runner -- against ``runner``. ``default_runner``: the
+    instance's, when ``runner`` is another: it is a runner too, and no agent to call.
 
     ``is_agent(name)`` answers from the running registry whether a server is an agent (None: it does not
     know); without it the configuration alone is checked, and a tool server named as an agent fails at run
@@ -522,7 +623,10 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
     from agent_system.servers.agent.components.server_resolution import resolve_longest_prefix
     from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 
+    from ..runners import DEFAULT_RUNNER, runner_names, runner_of
+
     servers = getattr(getattr(system_config, "plugins", None), "servers", None) or {}
+    runners = runner_names(system_config, runner) | ({default_runner} if default_runner else set())
     @functools.cache
     def final_type(name: str) -> str:
         try:
@@ -542,8 +646,9 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
 
     def own_reason(name: str) -> Optional[str]:
         """Why agent ``name`` itself would save, start or control machines; None when it would not."""
-        if name == runner:
-            return f"{name!r} is the runner: it hosts the run's tool activities and is no agent to call"
+        if name in runners or any((getattr(server(sg), "runner_agent", None) or DEFAULT_RUNNER) == name
+                                  for sg in stategraphs if server(sg) is not None):
+            return f"{name!r} is a runner: it hosts runs' tool activities and is no agent to call"
         if final_type(name) == "stategraph_machine":
             return (f"{name!r} runs a machine as an agent: a machine may not start machines -- import that "
                     "machine and use it as a submachine (machine:)")
@@ -584,16 +689,16 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
             return None
         return config if config is not None and getattr(config, "enabled", False) else None
 
-    def runner_refuses(tool: str, prefix: str) -> Optional[str]:
-        """Why the runner may not call ``tool`` (None: it may): tool activities go through its allowlist."""
-        host = server(runner)
+    def runner_refuses(tool: str, prefix: str, name: str) -> Optional[str]:
+        """Why runner ``name`` may not call ``tool`` (None: it may): tool activities go through its allowlist."""
+        host = server(name)
         if host is None:
-            return f"runner agent {runner!r} is not configured or not enabled"
+            return f"runner agent {name!r} is not configured or not enabled"
         tools = getattr(getattr(host, "agent_config", None), "tools", None)
         allowed = list(getattr(tools, "allowed", None) or [])
         blocked = list(getattr(tools, "blocked", None) or [])
         if not tool_matches_patterns(tool, prefix, allowed) or tool_matches_patterns(tool, prefix, blocked):
-            return f"{tool!r} is not in {runner}'s tool allowlist"
+            return f"{tool!r} is not in {name}'s tool allowlist"
         return None
 
     def check(what: str, name: str, extra: dict[str, Any]) -> Optional[str]:
@@ -615,10 +720,13 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
             if server(prefix) is not None and final_type(prefix) == "sub_agent_manager":
                 return (f"tool {name!r} belongs to the SAM {prefix}: a machine starts agents with an agent activity, "
                         "which the run journals and cancels with itself")
-            refused = runner_refuses(name, prefix)
+            host, claimed_twice = runner_of(system_config, extra.get("root"), runner)
+            if claimed_twice:
+                return f"tool {name!r}: {claimed_twice}"
+            refused = runner_refuses(name, prefix, host)
             if refused is None:
                 return None
-            return refused if server(runner) is None else f"tool {refused} (the runner is the boundary)"
+            return refused if server(host) is None else f"tool {refused} (the runner is the boundary)"
         if what == "offer":  # an agent: block's name: free -- or this machine's own offer, declared at the start
             held = servers.get(name)  # the offer is the machine's, whichever instance (sharing its folder) made it
             same = final_type(name) == "stategraph_machine" and str(getattr(held, "machine", None) or "") == extra.get(
@@ -629,6 +737,9 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
                 return (f"a config entry holds {name!r} for this machine: its settings run, not this block's -- "
                         "remove the entry or name the agent")
             return f"{name!r} is the name of another server ({final_type(name) or 'unknown type'}); name the agent"
+        if what == "llm_profile":
+            llm = getattr(system_config, "llm_system", None)
+            return None if name in (getattr(llm, "profiles", None) or {}) else f"LLM profile {name!r} is not configured"
         if what == "profile":
             llm = getattr(system_config, "llm_system", None)
             profiles = getattr(llm, "decision_profiles", None) or {}

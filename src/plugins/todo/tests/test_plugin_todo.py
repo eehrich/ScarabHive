@@ -1320,5 +1320,63 @@ async def test_hook_max_tasks_limit(server: TodoServer, mock_context: Dict[str, 
 
 
 
+@pytest.mark.asyncio
+async def test_update_sets_the_priority_back_to_medium(server: TodoServer):
+    # medium is the create default; through the tool an update to it must still change the task
+    call = {"task_id": "task_001", "session_id": "s-prio"}
+    await server.execute({"operation": "create", "title": "Ship it", "priority": "high", "session_id": "s-prio"})
+    untouched = await server.execute({"operation": "update", "progress": 10, **call})
+    lowered = await server.execute({"operation": "update", "priority": "medium", **call})
+
+    assert (untouched["task"]["priority"], lowered["task"]["priority"]) == ("high", "medium")
+
+
+
+@pytest.mark.asyncio
+async def test_list_pages_through_the_tasks_with_offset(server: TodoServer):
+    for title in ("Alpha work", "Beta chores", "Gamma review"):
+        await server.execute({"operation": "create", "title": title, "session_id": "s-page"})
+    first = await server.execute({"operation": "list", "limit": 2, "session_id": "s-page"})
+    rest = await server.execute({"operation": "list", "limit": 2, "offset": first["next_offset"], "session_id": "s-page"})
+
+    assert [t["task_id"] for t in first["tasks"]] == ["task_001", "task_002"]
+    assert ([t["task_id"] for t in rest["tasks"]], rest["has_more"]) == (["task_003"], False)
+
+
+@pytest.mark.asyncio
+async def test_leaving_completed_clears_the_completion_time(server: TodoServer):
+    call = {"task_id": "task_001", "session_id": "s-reopen"}
+    await server.execute({"operation": "create", "title": "Reopen me", "session_id": "s-reopen"})
+    done = await server.execute({"operation": "update", "status": "completed", **call})
+    reopened = await server.execute({"operation": "update", "status": "in-progress", **call})
+
+    assert done["task"]["completed_at"] is not None and reopened["task"]["completed_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_missing_dependency_is_refused_also_without_dependency_checks(
+        mock_system_config: MagicMock, mock_server_config: MagicMock):
+    # ids are handed out in order: an unknown one kept now would name a task created later
+    mock_server_config.enable_dependencies = False
+    server = TodoServer(name="todo", system_config=mock_system_config, server_config=mock_server_config)
+
+    refused = await server.execute({"operation": "create", "title": "Loose", "depends_on": ["task_009"],
+                                    "session_id": "s-loose"})
+
+    assert refused == {"status": "validation_failed", "message": "Dependency 'task_009' does not exist"}
+
+
+@pytest.mark.asyncio
+async def test_a_refused_create_takes_no_task_id(server: TodoServer):
+    call = {"operation": "create", "session_id": "s-ids"}
+    bad_priority = await server.execute({"title": "Urgent thing", "priority": "urgent", **call})
+    bad_dependency = await server.execute({"title": "Needs a ghost", "depends_on": ["task_042"], **call})
+    with pytest.raises(TodoError):
+        await server.execute({"title": "x" * 201, **call})  # the title's own limit, checked by the task model
+    created = await server.execute({"title": "The first real task", **call})
+
+    assert (bad_priority["status"], bad_dependency["status"]) == ("validation_failed", "validation_failed")
+    assert created["task_id"] == "task_001"
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--cov=plugins.todo.server", "--cov-report=html"])

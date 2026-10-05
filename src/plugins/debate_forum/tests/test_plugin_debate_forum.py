@@ -212,11 +212,11 @@ class TestDebateForumDB:
         db.post_message(cid, "Sven", "critic", 1, "Synopsis A has weak pacing.")
 
         text = db.format_thread(cid)
-        assert "FORUM-DEBATTE: synopsis-debate" in text
+        assert "FORUM DEBATE: synopsis-debate" in text
         assert "TOPIC: Best synopsis?" in text
-        assert "KONTEXT:\nFantasy book" in text
-        assert '[ADVOCATE "Mira" | Runde 1]' in text
-        assert '[CRITIC "Sven" | Runde 1]' in text
+        assert "CONTEXT:\nFantasy book" in text
+        assert '[ADVOCATE "Mira" | Round 1]' in text
+        assert '[CRITIC "Sven" | Round 1]' in text
 
     def test_format_thread_with_verdict(self, db: DebateForumDB):
         ch = db.create_channel(name="ch", topic="t")
@@ -301,6 +301,40 @@ class TestDebateForumServer:
     async def test_create_channel_missing_fields(self, server: DebateForumServer):
         result = await server.create_channel({"name": "", "topic": ""})
         assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_null_takes_the_default(self, server: DebateForumServer):
+        """The framework fills no schema defaults, and models send null for a parameter they leave open."""
+        cid = (await server.create_channel({"name": "a", "topic": "t"}))["channel_id"]
+        assert (await server.create_group({"name": "reviews", "description": None}))["status"] != "error"
+        posted = await server.post_message({"channel_id": cid, "agent_name": "Ada", "round": None,
+                                            "append": None, "agent_role": None, "content": "x" * 60})
+        assert server.db.get_message(posted["message_id"])["round"] == 1
+        assert (await server.get_thread({"channel_id": cid, "max_messages": None, "format": None}))["message_count"] == 1
+        assert (await server.list_channels({"limit": None}))["count"] == 1
+        assert (await server.list_groups({"limit": None}))["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_false_as_text_is_false(self, server: DebateForumServer):
+        cid = (await server.create_channel({"name": "a", "topic": "t"}))["channel_id"]
+        mid = (await server.post_message({"channel_id": cid, "agent_name": "Ada", "content": "x" * 60}))["message_id"]
+        assert (await server.pin_message({"message_id": mid, "pinned": "false"}))["status"] == "unpinned"
+        assert not server.db.get_message(mid)["pinned"]
+        assert (await server.pin_message({"message_id": mid, "pinned": None}))["status"] == "pinned"
+        await server.pin_message({"message_id": mid, "pinned": False})
+        assert (await server.pin_message({"message_id": mid, "pinned": ""}))["status"] == "pinned"  # empty: the default
+        posted = await server.post_message({"channel_id": cid, "agent_name": "Ada", "append": "false",
+                                            "message_id": mid, "content": "y" * 60})
+        assert posted["status"] == "posted" and posted["message_id"] != mid
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_group_is_refused_with_a_message(self, server: DebateForumServer):
+        """The foreign key would raise a bare IntegrityError; the model needs to know which id is wrong."""
+        result = await server.create_channel({"name": "a", "topic": "t", "group_id": 99})
+        assert result == {"error": "Group 99 not found (see list_groups)"}
+        assert server.db.list_channels() == []
+        group = server.db.create_group("reviews")["group_id"]
+        assert (await server.create_channel({"name": "a", "topic": "t", "group_id": group}))["group_id"] == group
 
     @pytest.mark.asyncio
     async def test_post_message_tool(self, server: DebateForumServer, status_mock: AsyncMock):
@@ -420,7 +454,7 @@ class TestDebateForumServer:
         })
         result = await server.get_thread({"channel_id": ch["channel_id"]})
         assert "thread" in result
-        assert "FORUM-DEBATTE" in result["thread"]
+        assert "FORUM DEBATE" in result["thread"]
         assert result["message_count"] == 1
 
     @pytest.mark.asyncio

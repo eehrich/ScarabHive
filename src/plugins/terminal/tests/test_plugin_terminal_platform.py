@@ -38,16 +38,14 @@ class TestPlatformDetector:
                 assert bash_path == git_bash_path
                 assert shell_name == 'Git Bash'
 
-    def test_detect_wsl_on_windows(self):
-        """Test WSL bash detection on Windows."""
+    def test_wsl_exe_alone_is_no_bash(self):
+        """wsl.exe answers `-c <command>` with "invalid command line argument"
+        (measured): taken as the bash, it ran nothing. Refused at load instead."""
         with patch('platform.system', return_value='Windows'):
             with patch('os.path.exists', return_value=False):  # Git Bash not found
                 with patch('shutil.which', side_effect=lambda x: 'wsl.exe' if x == 'wsl' else None):
-                    detector = PlatformDetector()
-                    bash_path, shell_name = detector.detect_bash()
-                    
-                    assert bash_path == 'wsl.exe'
-                    assert shell_name == 'WSL'
+                    with pytest.raises(RuntimeError, match="platform.bash_path"):
+                        PlatformDetector().detect_bash()
 
     def test_detect_bash_in_path_windows(self):
         """Test bash in PATH detection on Windows."""

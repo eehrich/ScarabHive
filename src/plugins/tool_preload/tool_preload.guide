@@ -1,0 +1,341 @@
+@database "tool_preload"
+@author "Enrico Ehrich"
+@$VER: tool_preload.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Tool Preload"
+@{h1}Tool Preload
+
+Some agents always open a turn the same way. Asked "change the intro in
+document plan-a", the first thing the model does is load plan-a -- a full
+LLM round trip, paid for with the prompt tokens of the whole context, whose
+outcome was known before it started. Tool Preload makes those opening calls
+itself: a rule in the agent's YAML matches the user's message with a regular
+expression, the tools it names run before the first LLM call, and their
+results go into the conversation exactly as if the model had called them.
+The model's first answer then starts where its second would have.
+
+The plugin has no tools and no panel. It is installed and on in the shipped
+configuration, but does nothing for an agent until that agent's YAML
+switches it on and gives it rules.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+  @{"  Writing rules  " link rules}
+
+For agents and developers
+  @{"  The hook  " link hook}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt}, as shipped:
+
+@{code yaml}
+plugins:
+  servers:
+    tool_preload:
+      type: tool_preload
+      enabled: true
+@{body}
+
+No settings go here: the plugin reads none from its entry. No allowlist line
+for the plugin itself -- it has no tools. No extra packages, no data of its
+own.
+
+@{h2}Switching it on for an agent
+
+Everything happens in the agent's YAML, under the full hook name
+@{tt}tool_preload.preload@{utt}:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "notes/*"
+  hooks:
+    overrides:
+      tool_preload.preload:
+        enabled: true
+        rules:
+          - match: "document\\s+(?P<doc>[\\w-]+)"
+            tool: notes_manage_json
+            params:
+              operation: read
+              doc: "{doc}"
+@{body}
+
+The tools a rule names must be in the agent's own allowlist -- a preload may
+call exactly what the model may call (see @{" The hook " link hook}).
+
+@{h2}Settings
+
+All of them come from the agent's override. They are read on every call, so
+an edited agent YAML takes effect as soon as the agent's configuration is
+reloaded.
+
+@{table}
+Key | Default | Meaning
+rules | none | the rules, tried in order; without rules the hook does nothing. See @{" Writing rules " link rules}
+max_calls_per_turn | 5 | the most tool calls all rules together make in one turn
+dedup | true | skip a rule whose calls are all already in the conversation
+max_seconds | 45 | seconds the preload of a turn may take, counted from the start of the hook; once used up, no further call starts. Anything but a positive number means 45
+@{body}
+
+@{tt}enabled@{utt} switches the hook on; @{tt}timeout@{utt} and
+@{tt}order@{utt} in the agent's override are ignored. A plugin-wide key
+(@{tt}tool_preload:@{utt} instead of @{tt}tool_preload.preload:@{utt}) does
+nothing here.
+
+@{h2}Trying it
+
+@{tt}config/agents/tool_preload_test_agent.yaml@{utt} is a complete test
+agent with a store and one rule, shipped switched off; the file says how to
+run it. The proof that it works: the agent names the document's content,
+and the only read in its session is a call whose id starts with
+@{tt}preload_@{utt}.
+@endnode
+
+@node rules "Writing rules"
+@{h1}Writing rules
+
+A rule is a regular expression and the calls to make when it matches:
+
+@{code yaml}
+rules:
+  # one call: the shorthand
+  - match: "document\\s+(?P<doc>[\\w-]+)"
+    tool: notes_manage_json
+    params: {operation: read, doc: "{doc}"}
+
+  # several calls: run one after the other, in this order
+  - match: "chapter\\s+(?P<n>\\d+)"
+    calls:
+      - tool: project_set_var
+        params: {name: current_chapter, value: "{n}"}
+      - tool: project_get_chapter
+        params: {chapter: "{n}"}
+@{body}
+
+@{h2}Matching
+
+@{bullet}@{tt}match@{utt} is a Python regular expression, searched anywhere
+in the message (@{tt}re.search@{utt}), case-sensitive unless the pattern
+says @{tt}(?i)@{utt}.
+@{bullet}It sees the text of the user's message only -- the text parts of a
+message with images -- and only its first 2000 characters. A trigger further
+down is not seen.
+@{bullet}Every rule that matches runs, not just the first, in the order they
+are listed.
+@{bullet}A pattern that is not a valid expression is skipped with a warning
+in the log; the other rules still run.
+@{bullet}A match cannot be interrupted, and it runs on the server's event
+loop: a pattern with nested repetition (@{tt}(a+)+@{utt}) can stall
+everything for seconds. A rule that takes longer than 0.1 s is named in the
+log.
+
+@{h2}Placeholders
+
+Parameter values may contain two kinds of placeholder:
+
+@{table}
+Placeholder | Filled from
+{name} | the named group @{tt}(?P<name>...)@{utt} of the rule's expression -- something the user typed
+{{ name }} | the session's template variable of that name -- the same value the prompt template gets
+@{body}
+
+@{tt}{{ name }}@{utt} is for state the user never types. The variables are
+the agent's @{tt}template_vars@{utt}, overridden key by key by the session's
+own (@{tt}/vars KEY=VALUE@{utt} in the chat, or a tool that sets them). A
+sub-agent starts with the variables of the session that spawned it, so a
+rule can name the parent's store without the task text mentioning it:
+
+@{code yaml}
+- match: "Task:\\s*(?P<task>\\w+)"
+  tool: notes_manage_json
+  params: {operation: read, doc: outline, namespace: "{{ project }}"}
+@{body}
+
+How they are filled:
+
+@{bullet}Placeholders work at any depth -- inside nested mappings and lists
+too.
+@{bullet}A value that is exactly one placeholder becomes a number when the
+text is a plain integer that reads back the same: @{tt}"42"@{utt} becomes
+42, @{tt}"007"@{utt} stays @{tt}"007"@{utt}. A value with more around it
+(@{tt}"chapter_{n}"@{utt}) stays text.
+@{bullet}A filled-in value is not read again: a variable whose text
+contains @{tt}{x}@{utt} is passed on as it is.
+@{bullet}Values that are not text pass unchanged; what JSON cannot hold (an
+unquoted YAML date) becomes text.
+@{bullet}A placeholder with no such group or variable -- or a variable set
+to null -- skips the whole rule, with a warning in the log. The tool is
+never called with a literal @{tt}{doc}@{utt}.
+
+@{h2}A rule is all or nothing
+
+@{tt}max_calls_per_turn@{utt} and @{tt}dedup@{utt} work on whole rules:
+
+@{bullet}A rule whose calls would go past the limit is skipped whole, with a
+warning; the model makes those calls itself. A chain cut in half -- the
+variable set, the content never loaded -- would be worse than no preload.
+@{bullet}A rule is skipped as already done only when every one of its calls,
+with the same parameters, is already somewhere in the conversation -- made
+by the model or by an earlier preload. The comparison uses the filled-in
+parameters; a rule the model already carried out differently runs again.
+
+@{h2}Rules that change things
+
+Nothing limits rules to reading. A rule may set a variable or write, and
+the user's text chooses the parameters. Preloaded calls do not pass
+@{tt}tool_approval@{utt} (see @{" The hook " link hook}). Write rules whose
+match is specific enough that running them is always right.
+@endnode
+
+@node hook "The hook"
+@{h1}The hook
+
+@{tt}preload@{utt}, a @{tt}pre_llm_call@{utt} hook, off by default; its
+time limit is 60 seconds.
+
+@{h2}When it acts
+
+Before every LLM call of an agent that has it on -- chat agents, sub-agents
+and woken runs alike -- but it only acts on the first call of a turn: when
+the last message is the user's. Notes a hook or the loop put behind it
+(marked @{tt}injected_by@{utt}) are looked past. After a preload the last
+message is a tool result, so the later calls of the turn leave it alone.
+
+For a sub-agent the user message is its task. A woken run has no user
+message -- its task is the run's own note -- so nothing is preloaded there.
+
+@{h2}What it does
+
+@{bullet}Finds the rules that match and fills in their parameters (see
+@{" Writing rules " link rules}).
+@{bullet}Runs the calls one after the other, each waiting for the one
+before -- a later call may depend on what an earlier one set.
+@{bullet}Appends, behind the user message, one pair per call: an assistant
+message with the tool call, and the tool's answer (shown in
+@{" What the model sees " link model}).
+
+The calls go through the agent's own tool dispatch:
+
+@{bullet}Only tools in the agent's @{tt}tools.allowed@{utt} and not in
+@{tt}tools.blocked@{utt}, the same patterns the model's tool list is built
+from. An external MCP tool (a name with a dot) cannot be preloaded.
+@{bullet}With the same session, request and user as the model's own calls:
+a session-scoped tool answers from the right session, and the user is the
+run's owner.
+@{bullet}Without the @{tt}pre_tool_call@{utt} and @{tt}post_tool_call@{utt}
+hooks. @{tt}tool_approval@{utt} does not ask before a preloaded call, and
+no hook that shortens or redacts tool results sees it.
+
+@{h2}When something fails
+
+@{table}
+Case | What happens
+the dispatch refuses the call (unknown tool, not allowed, blocked) | nothing is recorded for it, the rest of its rule's chain is dropped, the pairs before it stay, the next rule runs; a warning in the log
+the tool raises | recorded as an error answer, the way the model's own call would be; the rest of its rule's chain is dropped, the next rule runs
+the tool answers with an error | recorded like any answer; the chain goes on
+a placeholder cannot be filled, a pattern is invalid | that rule is skipped, the others run
+the time budget (max_seconds) is used up | no further call starts; each call left gets a "not run" answer
+anything else goes wrong in the hook | logged; the turn runs without a preload
+@{body}
+
+A preload never stops the run. Whatever ran is in the conversation, so the
+model does not call it again blind.
+
+@{h2}Time
+
+Two limits apply. @{tt}max_seconds@{utt} (45 s) is checked before each
+call: once it is used up, the calls done so far are kept and every call
+left is answered "not run" without running, so the model makes it itself.
+A call that has started is never interrupted by it. Above that stands the
+hook's own time limit of 60 seconds, enforced by the hook system: a single
+call that runs past it ends the whole hook, and then nothing is appended,
+not even for calls that finished. Keep @{tt}max_seconds@{utt} below it,
+with room for the slowest call. The 60 seconds can be changed only for all
+agents, under @{tt}hooks.overrides@{utt} in @{tt}config/plugins.yaml@{utt}
+(@{tt}tool_preload.preload: {timeout: 120}@{utt}); an agent's override
+cannot.
+
+@{h2}Order
+
+It runs before the hooks of the categories @{tt}context_engineering@{utt},
+@{tt}prompt_injection@{utt}, @{tt}message_validation@{utt} and
+@{tt}message_debugging@{utt}: compaction sees an oversized preloaded result
+in the same pass, and the hooks that read the end of the list see it with
+the preload already there.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+For each call, two messages behind the user's, the same shape as the
+model's own tool calls:
+
+@{code json}
+{"role": "assistant", "content": null,
+ "tool_calls": [{"id": "preload_3f9c2a61b0", "type": "function",
+                 "function": {"name": "notes_manage_json",
+                              "arguments": "{\"operation\": \"read\", \"doc\": \"plan-a\"}"}}]}
+{"role": "tool", "tool_call_id": "preload_3f9c2a61b0", "name": "notes_manage_json",
+ "content": "{\"status\": \"success\", \"data\": ...}"}
+@{body}
+
+To the model it looks as if it had made the call. Only the
+@{tt}preload_@{utt} id and the assistant message's
+@{tt}injected_by: tool_preload@{utt} mark tell them apart, and the mark is
+never sent to a provider. The agent's system prompt is not told about
+preloading.
+
+A failing tool answers as the model's own call would:
+
+@{code json}
+{"error": "Tool 'notes_manage_json' execution failed: <message>", "type": "RuntimeError"}
+@{body}
+
+A call the time budget left unrun has an id starting with
+@{tt}preload_skipped_@{utt} and answers:
+
+@{code json}
+{"error": "Not run: the preload time budget was used up. Call the tool yourself if you need it."}
+@{body}
+
+Such a call does not count as made: the rule runs again in a later turn.
+
+There is no status line in the chat and no tool event while the preload
+runs. The session's messages are the record, and every executed
+preload is logged at INFO with its tool and parameters.
+
+@{h2}Tokens and cache
+
+The pairs are appended behind the user message and never changed or moved
+afterwards: every request stays a prefix of the next, so the provider's
+prompt cache is untouched. They are kept with the session like the model's
+own calls, and a later turn's preload lands behind that turn's user
+message. Other plugins see the marked assistant message as not written by
+the model: compaction counts the preloaded results as part of the round no
+request has carried yet.
+
+The plugin sets no size limit on a result: what the tool returns goes in
+whole, as it would for the model's own call. For an agent that runs
+@{tt}context_engineer@{utt}, a result larger than a quarter of the model's
+context window (its default) is stored away and replaced by a pointer in
+the same pass, before it is sent; otherwise keep preloads to tools whose answers are
+small, and let the model page through the rest.
+
+@{h2}Known gaps
+
+@{bullet}Preloaded calls bypass @{tt}tool_approval@{utt} and every other
+tool-call hook.
+@{bullet}One call that outlasts the hook's time limit ends the hook; then
+no call of that turn is recorded, though they ran.
+@{bullet}No size limit of its own on a result.
+@{bullet}A match cannot be interrupted; a slow pattern stalls the server.
+@endnode

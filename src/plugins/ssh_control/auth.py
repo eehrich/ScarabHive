@@ -50,8 +50,17 @@ class SSHAuthenticator:
         # the previous code silently downgraded to "accept any key" - a silent
         # MITM exposure while the operator believes strict checking is on.
         # Fail closed instead: only disable verification when strict checking
-        # is explicitly False.
-        if strict_host_key_checking and known_hosts_file:
+        # is explicitly False -- an empty YAML value (None) keeps it on.
+        strict_host_key_checking = strict_host_key_checking is not False
+        if strict_host_key_checking and not known_hosts_file:
+            # An empty or null known_hosts_file used to fall into the else
+            # branch below -- known_hosts=None, verification off -- while the
+            # operator had strict checking on.
+            raise ValueError(
+                "strict_host_key_checking is enabled but no known_hosts_file is "
+                "set. Refusing to connect without host key verification."
+            )
+        if strict_host_key_checking:
             expanded_known_hosts = os.path.expanduser(known_hosts_file)
             if os.path.exists(expanded_known_hosts):
                 connect_kwargs['known_hosts'] = expanded_known_hosts
@@ -88,8 +97,9 @@ class SSHAuthenticator:
             logger.debug(f"Connecting to {machine_config.name} with password authentication")
             
         elif machine_config.auth_method == 'agent':
-            # Use SSH agent
-            connect_kwargs['agent_path'] = asyncssh.SSHAgentClient.get_agent_path()
+            # asyncssh's default: the agent named by SSH_AUTH_SOCK, plus the
+            # default keys in ~/.ssh. (SSHAgentClient.get_agent_path, called
+            # here before, does not exist -- every agent machine failed.)
             logger.debug(f"Connecting to {machine_config.name} with SSH agent")
             
         else:

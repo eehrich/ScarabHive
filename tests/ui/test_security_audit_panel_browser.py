@@ -1,6 +1,6 @@
 """The Security Audit panel in a real browser, against the real routes, middleware and audit.
 
-The app: the UI and admin routers behind configure_security_middleware with the route rules of config/config.yaml
+The app: the UI and admin routers behind configure_security_middleware with the route rules of config/security.yaml
 (plus open rules for the test's own routes), a users database and logs/security.log under tmp_path, a test signing
 secret. Accounts: ``root`` (admin) and ``bob`` (user). What the panel shows is what the page's own requests left in the
 audit: ``GET|POST|DELETE /tools/probe/<anything>?status=<code>`` answers that status, open to anyone, so the page seeds
@@ -16,7 +16,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -62,10 +61,12 @@ def panel_app(root: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setattr(logging.getLogger(AUDIT_LOGGER_NAME), "propagate", True)
     monkeypatch.setattr(SecurityAuditMiddleware, "_instance", None)
 
-    shipped = yaml.safe_load((REPO / "config" / "config.yaml").read_text(encoding="utf-8"))["auth"]["endpoint_security"]["rules"]
+    from agent_system.config.settings import load_settings
+    # as the API gets them: config.yaml with its include config/security.yaml
+    shipped = load_settings(str(REPO / "config" / "config.yaml")).auth.endpoint_security.rules
     rules = [EndpointSecurityRule(pattern=pattern, policy="allow_anonymous") for pattern in OPEN]
     auth = AuthConfig(enabled=True, secret_key=SECRET, endpoint_security=EndpointSecurityConfig(
-        rules=rules + [EndpointSecurityRule(**rule) for rule in shipped]))
+        rules=rules + list(shipped)))
     app = FastAPI()
     app.state.config = SimpleNamespace(auth=auth)
     asked = {"loads": 0, "last": ""}

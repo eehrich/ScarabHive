@@ -126,6 +126,9 @@ class ExtractionResult(BaseModel):
     confirmed_count: int = 0
     skipped_count: int = 0
     token_usage: int = 0
+    #: Names the last message read, when the reading was logged; None: the
+    #: same messages are read again next time.
+    anchor: Optional[str] = None
 
 
 # Default categories

@@ -18,7 +18,7 @@ web_ui:
 
   # Every endpoint answers about the REQUESTING user's archive only; the
   # handlers resolve that themselves (endpoints.py), on top of the route rules
-  # in config.yaml.
+  # in config/security.yaml.
   endpoints:
     - path: "/"
       method: "GET"

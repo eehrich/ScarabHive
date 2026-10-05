@@ -206,6 +206,8 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
                 # Whose turn it is: a user reads only their own (None: nobody's).
                 'user_id': context.user_id,
                 'step': context.step,
+                # When the call was made, not when the lagging writer gets to it.
+                'timestamp_ms': time.time() * 1000,
                 # Compacted here, on the loop: _compact copies, so the writer
                 # thread never reads a dict the agent is still changing.
                 'llm_response': (_compact(context.llm_response, self.max_field_chars)
@@ -279,11 +281,9 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
         # The whole response, already compacted on the loop (_capture_turn).
         llm_response = ctx.get('llm_response') if snapshot_type == 'post_llm' else None
 
-        timestamp_ms = time.time() * 1000
-
         if self.db:
             self.db.insert_turn(
-                timestamp_ms=timestamp_ms,
+                timestamp_ms=ctx['timestamp_ms'],
                 snapshot_type=snapshot_type,
                 agent_name=ctx.get('agent_name', ''),
                 request_id=ctx.get('request_id', ''),

@@ -37,6 +37,7 @@ from typing import Any, TYPE_CHECKING
 
 from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.path_sandbox import remote_outside
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
@@ -112,7 +113,7 @@ class BlenderServer(SchemaBasedToolServer):
                 raise BlenderNotReachable(
                     f"nothing is listening on {self._host}:{self._port} ({exc.__class__.__name__}). "
                     "Start Blender, open the N-panel in the 3D viewport, tab "
-                    "'BlenderMCP', and click 'Start MCP Server'."
+                    "'BlenderMCP', and click 'Connect to MCP server'."
                 ) from exc
 
             sock.sendall(json.dumps({"type": command, "params": params or {}}).encode("utf-8"))
@@ -176,12 +177,20 @@ class BlenderServer(SchemaBasedToolServer):
         Blender writes wherever it is told, so this is the only thing standing
         between a model-chosen name and an overwritten file somewhere else.
         """
+        # Judged on the text alone: resolving \\host\share makes Windows sign in
+        # to that host with the user's credentials before containment refuses it.
+        if remote_outside(filename, self._out_dir, (self._out_dir,)):
+            raise ValueError(
+                f"'{filename}' is a network or device path outside the output directory; "
+                "pass a plain name or a path below it"
+            )
         candidate = (self._out_dir / filename).resolve()
         root = self._out_dir.resolve()
         # A drive or share (C:/..., \\server\share) is absolute wherever it is written: on
         # POSIX it read as a folder named "C:" below the output directory, and was written there.
+        # The root itself is no file name: "." made a screenshot write <root>.png beside it.
         if (PureWindowsPath(filename).drive and not Path(filename).is_absolute()) or (
-                candidate != root and root not in candidate.parents):
+                root not in candidate.parents):
             raise ValueError(
                 f"'{filename}' resolves outside the output directory ({root}); "
                 "pass a plain name or a path below it"
@@ -373,7 +382,7 @@ class BlenderServer(SchemaBasedToolServer):
                 target = target.with_suffix(".png")
             before = self._fingerprint(target)
             await self._call("get_viewport_screenshot",
-                             {"max_size": int(params.get("max_size") or 1000),
+                             {"max_size": max(128, min(4096, int(params.get("max_size") or 1000))),
                               "filepath": str(target), "format": "png"},
                              timeout=self._long_timeout)
         except Exception as exc:
@@ -409,7 +418,17 @@ class BlenderServer(SchemaBasedToolServer):
                     "supported": sorted(_EXPORTERS), "error_type": "ValueError"}
 
         name = params.get("filename") or f"export.{fmt}"
-        selected_only = bool(params.get("selected_only", False))
+        # Not bool(): the arguments are not validated, and bool("false") is True.
+        # Anything but a boolean is refused: guessing would export the wrong scope.
+        selected_only = params.get("selected_only")
+        if selected_only is None:
+            selected_only = False
+        elif isinstance(selected_only, str) and selected_only.lower() in ("true", "false"):
+            selected_only = selected_only.lower() == "true"
+        if not isinstance(selected_only, bool):
+            await status.error(self._short(f"selected_only {selected_only!r} is not a boolean"))
+            return {"status": "error", "error": "'selected_only' must be true or false",
+                    "error_type": "ValueError"}
         try:
             target = self._resolve_output(name)
             kwargs: dict[str, Any] = {"filepath": str(target), **spec["extra"]}
@@ -436,6 +455,7 @@ class BlenderServer(SchemaBasedToolServer):
                     "error": f"Blender reported success but did not write {target}",
                     "error_type": "MissingOutput"}
         size = after[1]
-        scope = "selection" if selected_only else "whole scene"
+        # A .blend has no selection: it is the whole session whatever was asked.
+        scope = "selection" if selected_only and spec["selection"] else "whole scene"
         await status.end(self._short(f"{scope} -> {target.name} ({fmt}), {size // 1024} KB"))
         return {"status": "success", "path": str(target), "bytes": size, "format": fmt}

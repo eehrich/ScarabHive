@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from agent_system.config.settings import config_files, load_settings
 
 
@@ -25,6 +27,10 @@ def test_config_files_follow_the_include_order_and_skip_missing_files(tmp_path: 
     assert [path.resolve() for path in files] == [
         master.resolve(), (tmp_path / "agents" / "a.yaml").resolve(),
         (tmp_path / "agents" / "z.yaml").resolve(), (tmp_path / "b.yaml").resolve()]
+    # a start does not skip a file the master names by its path: it may hold the route rules (config/security.yaml)
+    with pytest.raises(ValueError, match="named in config.yaml but missing"):
+        load_settings(str(master))
+    write(master, "includes:\n  - agents/*.yaml\n  - nomatch/*.yaml\n  - b.yaml\n")
     loaded = load_settings(str(master))
     assert loaded.plugins.servers["shared"].description == "from z", "the later file wins, as config_files orders them"
     assert loaded.plugins.servers["only_b"].description == "from b"

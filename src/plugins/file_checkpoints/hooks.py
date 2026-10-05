@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import threading
 import time
 from collections import OrderedDict
@@ -736,7 +737,9 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
                     info = os.lstat(path)
                 except OSError:
                     continue
-                if info.st_size <= self.max_file_bytes:
+                # A directory keeps no bytes; its st_size (64 KB for a big one) made
+                # older turns give way for nothing.
+                if info.st_size <= self.max_file_bytes and not stat.S_ISDIR(info.st_mode):
                     total += info.st_size
         return min(total, self.max_call_bytes)
 

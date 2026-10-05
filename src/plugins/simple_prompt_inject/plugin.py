@@ -23,7 +23,7 @@ def PLUGIN_FACTORY(
     """Factory function to create plugin instance.
 
     Args:
-        name: Plugin name (ignored, for compatibility)
+        name: Server instance name; marks the injected messages
         system_config: System configuration (ignored, for compatibility)
         server_config: tool server configuration (contains config from plugins.yaml)
 
@@ -31,4 +31,4 @@ def PLUGIN_FACTORY(
         SimplePromptInjectPlugin instance
     """
     plugin_dir = Path(__file__).parent
-    return SimplePromptInjectPlugin(plugin_dir, server_config)
+    return SimplePromptInjectPlugin(plugin_dir, server_config, name)

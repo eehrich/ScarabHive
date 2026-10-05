@@ -38,6 +38,10 @@ _CMD_DISPLAY_LIMIT = 70
 #: same order of magnitude instead of writing a whole build log to disk.
 _RECORDED_STREAM_CAP = 30_000
 
+#: The host-wide cap on running background processes, as a multiple of the
+#: per-session limits.max_concurrent_background.
+_HOST_CAP_FACTOR = 4
+
 
 def _yaml_quoted_fragment(text: str) -> str:
     """``text`` as the inside of a double-quoted YAML (= JSON-escaped) string."""
@@ -104,11 +108,13 @@ class TerminalServer(SchemaBasedToolServer):
             blacklist = security_config.get('blacklist')
             allow_command_chains = security_config.get('allow_command_chains', True)
             extra_dangerous_patterns = security_config.get('dangerous_patterns')
+            pass_secrets_env = bool(security_config.get('pass_secrets_env', False))
         else:
             whitelist = None
             blacklist = None
             allow_command_chains = True
             extra_dangerous_patterns = None
+            pass_secrets_env = False
 
         # Extract limits configuration
         limits_config = getattr(server_config, 'limits', {})
@@ -116,11 +122,12 @@ class TerminalServer(SchemaBasedToolServer):
             self.max_output_kb = limits_config.get('max_output_size_kb', 60)
             self.default_timeout = limits_config.get('default_timeout_seconds', 300)
             self.max_timeout = limits_config.get('max_timeout_seconds', 3600)
-            # max_concurrent_background is available for future use
+            self.max_background = limits_config.get('max_concurrent_background', 10)
         else:
             self.max_output_kb = 60
             self.default_timeout = 300
             self.max_timeout = 3600
+            self.max_background = 10
 
         # Extract platform configuration
         platform_config = getattr(server_config, 'platform', {})
@@ -184,6 +191,7 @@ class TerminalServer(SchemaBasedToolServer):
             initial_cwd=initial_cwd,
             max_output_kb=self.max_output_kb,
             sandbox=self.sandbox,
+            pass_secrets_env=pass_secrets_env,
         )
 
         # Where a finished process's outcome survives THIS process: a woken
@@ -192,6 +200,9 @@ class TerminalServer(SchemaBasedToolServer):
         # process_ids between their check and their registration, see
         # execute_background.
         self._starting: set[str] = set()
+        # Background starts between the limit check and their registration.
+        # {owner session: count}.
+        self._launching: dict[Any, int] = {}
 
         # Initialize process manager for background processes
         self.process_manager = ProcessManager(max_buffer_lines=1000)
@@ -207,6 +218,7 @@ class TerminalServer(SchemaBasedToolServer):
             "name": self.name,
             "max_timeout": self.max_timeout,
             "default_timeout": self.default_timeout,
+            "max_output_kb": self.max_output_kb,
             # A whitelisted terminal offers no cwd and no env_vars (CommandExecutor.refusal).
             "whitelisted": self._whitelisted(),
             # Rendered once with the schema, so the same text on every request:
@@ -271,15 +283,22 @@ class TerminalServer(SchemaBasedToolServer):
         """
         command = params["command"]
         cwd = params.get("cwd")
-        timeout = params.get("timeout", self.default_timeout)
+        timeout = params.get("timeout")
+        if timeout is None:
+            timeout = self.default_timeout
         env_vars = params.get("env_vars")
-        # capture_output is available in schema but not currently used in executor
-        # params.get("capture_output", True)
 
         # Get status context for updates
         status = params["_status"]
 
-        # Validate timeout
+        # Validate timeout. Nothing validates arguments against the schema: a
+        # null or a string used to raise out of the comparison, and 0 or less
+        # spawned the command only to kill it at once.
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 1:
+            error_msg = (f"timeout must be a number of seconds from 1 to {self.max_timeout}, "
+                         f"got {timeout!r}")
+            await status.error(error_msg)
+            return {"status": "error", "error": error_msg, "error_type": "InvalidTimeout"}
         if timeout > self.max_timeout:
             error_msg = f"Timeout {timeout}s exceeds maximum of {self.max_timeout}s"
             await status.error(error_msg)
@@ -306,7 +325,8 @@ class TerminalServer(SchemaBasedToolServer):
             cwd=cwd,
             timeout=timeout,
             env=env_vars,
-            is_background=False
+            is_background=False,
+            cancellation_token=cancellation_token,
         )
 
         if result["status"] == "success":
@@ -423,49 +443,63 @@ class TerminalServer(SchemaBasedToolServer):
             await params["_status"].error(message[:140])
             return {"status": "error", "error": message,
                     "error_type": "ProcessIdInUse"}
-        if taken is not None:
-            # Its armed wake goes with it: once the id belongs to another run
-            # the old outcome is unreachable under it either way, and nobody
-            # will mutate the entry the ring holds any more.
-            taken["read_after_finish"] = True
-            # The recording goes with it. A record left under this id would
-            # answer get_output for the NEW process with the OLD result, and
-            # that is worse than the refusal this branch just lifted. The entry
-            # itself needs no removal: register_process replaces it below.
-            try:
-                await self._recorded.delete(custom_process_id)
-            except Exception as e:  # noqa: BLE001 - reusing the id must not fail over it
-                logger.warning(f"Could not drop the record of {custom_process_id}: {e}")
-        on_finish, wake_note = (self._wake_callback(params) if params.get("wake")
-                                else (None, ""))
+        refused = self._over_background_limit(params.get("_session_id"))
+        if refused:
+            await params["_status"].error(refused[:140])
+            return {"status": "error", "error": refused,
+                    "error_type": "TooManyProcesses"}
+        # Reserved until the process is registered: the awaits below would
+        # let calls made at the same moment all pass the count above.
+        owner = params.get("_session_id")
+        self._launching[owner] = self._launching.get(owner, 0) + 1
+        try:
+            if taken is not None:
+                # Its armed wake goes with it: once the id belongs to another run
+                # the old outcome is unreachable under it either way, and nobody
+                # will mutate the entry the ring holds any more.
+                taken["read_after_finish"] = True
+                # The recording goes with it. A record left under this id would
+                # answer get_output for the NEW process with the OLD result, and
+                # that is worse than the refusal this branch just lifted. The entry
+                # itself needs no removal: register_process replaces it below.
+                try:
+                    await self._recorded.delete(custom_process_id)
+                except Exception as e:  # noqa: BLE001 - reusing the id must not fail over it
+                    logger.warning(f"Could not drop the record of {custom_process_id}: {e}")
+            on_finish, wake_note = (self._wake_callback(params) if params.get("wake")
+                                    else (None, ""))
 
-        # Get status context
-        status = params["_status"]
+            # Get status context
+            status = params["_status"]
 
-        await status.progress(f"Starting background process: {_short_cmd(command)}")
+            await status.progress(f"Starting background process: {_short_cmd(command)}")
 
-        # Execute in background (a separate process of its own)
-        result = await self.executor.execute_background(
-            command=command,
-            cwd=cwd,
-            env=env_vars
-        )
+            # Execute in background (a separate process of its own)
+            result = await self.executor.execute_background(
+                command=command,
+                cwd=cwd,
+                env=env_vars
+            )
 
-        if result["status"] != "success":
-            await status.error(f"Failed to start background process: {result.get('error')}")
-            return result
+            if result["status"] != "success":
+                await status.error(f"Failed to start background process: {result.get('error')}")
+                return result
 
-        # Register with process manager, tagging the owning session so other
-        # sessions can't read/kill this process (cross-user isolation).
-        process = result["process"]
-        process_id = await self.process_manager.register_process(
-            process=process,
-            command=command,
-            cwd=cwd,
-            process_id=custom_process_id,
-            owner_session=params.get("_session_id"),
-            on_finish=on_finish
-        )
+            # Register with process manager, tagging the owning session so other
+            # sessions can't read/kill this process (cross-user isolation).
+            process = result["process"]
+            process_id = await self.process_manager.register_process(
+                process=process,
+                command=command,
+                cwd=result["cwd"],
+                process_id=custom_process_id,
+                owner_session=params.get("_session_id"),
+                on_finish=on_finish
+            )
+        finally:
+            self._launching[owner] -= 1
+            if not self._launching[owner]:
+                del self._launching[owner]
 
         # process_id is what the follow-up tools take, so it leads. The wake
         # goes in front of the command, not behind it: the WebUI cuts the row
@@ -484,7 +518,7 @@ class TerminalServer(SchemaBasedToolServer):
             "process_id": process_id,
             "pid": process.pid,
             "command": command,
-            "cwd": cwd or self.executor.initial_cwd,
+            "cwd": self.process_manager.processes[process_id]["cwd"],
             "started_at": self.process_manager.processes[process_id]["started_at"]
         }
         # Only when it was asked for: an answer about a wake nobody wanted is
@@ -494,6 +528,32 @@ class TerminalServer(SchemaBasedToolServer):
             if wake_note:
                 result["wake_note"] = wake_note
         return result
+
+    def _over_background_limit(self, session_id: Any) -> str | None:
+        """Why one more background process may not start, or None.
+
+        limits.max_concurrent_background counts per session: another
+        session's processes are invisible to this one (ProcessNotFound) and
+        nothing ends them with their session, so a count over all sessions let
+        a few leftovers lock every session out until a restart. The host-wide
+        cap, a multiple of it, still bounds what the server runs.
+        """
+        running = [entry for entry in self.process_manager.processes.values()
+                   if entry["process"].returncode is None]
+        mine = sum(1 for entry in running if entry.get("owner_session") == session_id)
+        mine += self._launching.get(session_id, 0)
+        everyone = len(running) + sum(self._launching.values())
+        if mine >= self.max_background:
+            return (f"{mine} background processes of this session are running, the limit is "
+                    f"{self.max_background} per session; kill_process one of them or wait "
+                    f"for one to end")
+        cap = self.max_background * _HOST_CAP_FACTOR
+        if everyone >= cap:
+            yours = (f"{mine} of them are this session's and can be ended with kill_process"
+                     if mine else "none of them is this session's")
+            return (f"{everyone} background processes are running on this terminal, the cap for "
+                    f"all sessions together is {cap}; {yours}, or wait for one to end")
+        return None
 
     async def _held_by_another_session(self, taken: Any, process_id: str,
                                        session_id: Any) -> str | None:
@@ -589,11 +649,18 @@ class TerminalServer(SchemaBasedToolServer):
             dict: Output data with stdout, stderr, is_running, exit_code
         """
         process_id = params["process_id"]
-        stream = params.get("stream", "both")
+        stream = params.get("stream") or "both"
         clear_buffer = params.get("clear_buffer", False)
 
         # Get status context
         status = params["_status"]
+
+        if stream not in ("stdout", "stderr", "both"):
+            # Answered with both streams empty before: "no output" to a model
+            # that only misspelt the choice.
+            message = f"stream must be stdout, stderr or both, got {stream!r}"
+            await status.error(message)
+            return {"status": "error", "error": message, "error_type": "InvalidStream"}
 
         await status.progress(f"Retrieving output from process: {process_id}")
 
@@ -626,6 +693,15 @@ class TerminalServer(SchemaBasedToolServer):
                 result = recorded
 
         if result["status"] == "success":
+            # The live buffers hold the last 1000 lines per stream, of any
+            # length; a foreground answer is capped at max_output_size_kb, and
+            # so is this one -- the tail, which is what a log is read for.
+            cap = self.max_output_kb * 1024
+            for name in ("stdout", "stderr"):
+                text = result.get(name) or ""
+                if len(text) > cap:
+                    result[name] = text[-cap:]
+                    result["truncated"] = True
             is_running = result.get("is_running", False)
             status_msg = "running" if is_running else "finished"
             stdout_len = len(result.get("stdout", ""))

@@ -37,4 +37,4 @@ tools:
         additionalProperties: false
 config:
   max_wait_seconds: 3600
-  default_update_interval: 5.0
+  default_update_interval: 1.0

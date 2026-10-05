@@ -37,7 +37,6 @@ from .cli_utils.session_listing import DEFAULT_LIMIT, parse_listing, print_sessi
 from .cli_utils.common import (
     set_color_mode,
     status_subscriber,
-    format_output_with_hooks,
     print_agent_response,
     format_error
 )
@@ -400,15 +399,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             summary = result.get("summary", "") if isinstance(result, dict) else str(result)
 
             if summary:
-                formatted_summary, content_format = await format_output_with_hooks(
-                    output=summary,
-                    agent_instance=agent,
-                    session_id=actual_session_id,
-                    request_id="agent_run",
-                    output_format='ansi'  # Request ANSI format for terminal display
-                )
-
-                print_agent_response(formatted_summary, content_format)
+                print_agent_response(summary)
             else:
                 import json
                 # default=str: a non-JSON tool value must not fail a finished run.

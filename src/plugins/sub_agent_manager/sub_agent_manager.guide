@@ -1,0 +1,621 @@
+@database "sub_agent_manager"
+@author "Enrico Ehrich"
+@$VER: sub_agent_manager.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Sub-Agent Manager"
+@{h1}Sub-Agent Manager
+
+An agent with a bigger job hands parts of it to other agents: a researcher
+for a question, a reviewer for a change, three workers side by side. The
+Sub-Agent Manager (SAM) lets it do that. Each sub-agent runs in a session
+of its own, keeps its history, and can be given follow-up work later
+instead of starting over. The coordinating agent sees what its sub-agents
+are doing -- running, idle, or how their last run ended -- and you see the
+same in the @{b}Sub-Agents@{ub} panel, down to the sub-agents of
+sub-agents, with every transcript.
+
+A SAM is a server entry; there can be many, each with its own list of
+agents it may start and its own limits. Which agents a SAM may start is
+decided there, not by the model.
+
+@{image docs/panel.png "The Sub-Agents panel: the sub-agents of a session with what each is doing"}
+
+@{code}
+For users
+  @{"  The Sub-Agents panel  " link panel}
+
+For agents and developers
+  @{"  The manage_sub_agent tool  " link tool}
+  @{"  Instances, limits and waking  " link rules}
+  @{"  The sub-agent list hook  " link hook}
+  @{"  What the model sees  " link model}
+  @{"  Web endpoints  " link endpoints}
+  @{"  Setting it up  " link setup}
+  @{"  Making an agent spawnable  " link register}
+@{body}
+@endnode
+
+@node panel "The Sub-Agents panel"
+@{h1}The Sub-Agents panel
+
+Open it from the launcher (@{b}Agents & tools@{ub}, "Sub-Agents"), or from
+a session's info button, which opens it on that session. Every SAM
+instance has a panel of its own, and each shows the same thing: the
+sub-agents of the session, whichever instance started them.
+
+@{h2}Which session it shows
+
+The panel follows the chat: it shows the sub-agents of the session open
+there and switches when you switch sessions. Opened from a session's info
+button it is pinned to that session instead; the toolbar says so and lets
+go of it again. With no session open it says so and asks for nothing. It
+reloads every 10 seconds; the menu next to the reload button sets another
+interval or turns it off. Only your own sessions are shown: a session of
+another user reads as one without sub-agents.
+
+@{h2}The map
+
+The panel opens on the @{b}Map@{ub}: the session at the top and every
+sub-agent below it, nested -- a sub-agent that started sub-agents of its
+own carries them under it. Each node shows the task (or the agent type),
+the agent type, the instance id, the messages of its transcript, the
+tokens of its last model call, how long it was at it (from its creation to
+its last use) and its state. A running node also shows what it is doing
+right now. Click a node to open its transcript. On a very large tree the
+map stops at 300 nodes, 60 session reads or 20 levels and says that not
+everything is shown.
+
+@{image docs/map.png "The map: a session, its sub-agents and a sub-agent's own sub-agent"}
+
+@{h2}The list
+
+The @{b}List@{ub} shows the level right below the session, with figures at
+the top: all sub-agents, and how many are running, idle, interrupted, and
+failed, cancelled or archived. If the SAM filters agents by workflow phase,
+a line names the phase and the agents it lets the SAM start.
+
+The filter in the toolbar (on the List only) shows the open ones
+(running, idle, interrupted), only the running ones, or all, archived
+included. Each card has the state, the instance id, the agent type, the
+messages and tokens, when it was last used, the task, and for a running
+one its current activity.
+
+@{table}
+State | Means
+Running | a run is under way, in this process or in any other
+Idle | its last run is done; the answer is in the transcript
+Interrupted | its run was cut off -- the process running it ended first
+Failed | its last run ended with an error
+Cancelled | its last run was stopped
+Archived | put away by its coordinator or by you; its history stays
+@{body}
+
+The tokens are the prompt tokens of the sub-agent's last model call as the
+provider counted them, with the share of the model's window, or "(compacted
+since)" once its history was compacted. They come from the context usage
+tracker; without that plugin the figure is left out.
+
+@{h2}What you can do
+
+@{table}
+Button | Shown on | Does
+Transcript | every card, every node of the map | opens the transcript in a drawer
+Archive | an idle, running or interrupted one | archives it, after asking
+Earlier messages | the drawer, while there are older ones | loads older messages above the ones shown
+@{body}
+
+The drawer shows the session, agent type, state, times and task, then the
+most recent messages (20 by default), each with its role, its text, and
+the tool calls it made. Archiving keeps the sub-agent's history, and its
+coordinator can still continue it; a running one runs to its end.
+
+The panel only reads: it never marks anything interrupted, unlike the
+tool's @{tt}list@{utt}. When the server refuses -- the sub-agent is gone,
+or is not in this session -- the panel shows a notice; after an archive
+it also loads the list anew. When the list cannot be loaded it says so and shows none of the old
+one; the map is loaded on its own and fails on its own.
+@endnode
+
+@node tool "The manage_sub_agent tool"
+@{h1}The manage_sub_agent tool
+
+Each SAM instance gives an agent one tool, named after the instance:
+@{tt}<instance>_manage_sub_agent@{utt} (@{tt}sub_agent_manager_manage_sub_agent@{utt}
+in the default setup). Every call names an @{tt}operation@{utt}.
+
+@{h2}Operations
+
+@{table}
+operation | Needs | Does
+create | agent_type, task | starts a new sub-agent with the task; waits for its answer unless blocking is false
+continue | instance_id, message | sends a follow-up; the sub-agent sees its whole history; always waits
+poll | instance_id | how a background run stands, at once
+wait | instance_id | waits until it ends, at most default_wait_timeout
+wait_all | instance_ids | waits for several at once
+cancel | instance_id | stops a running one
+list | -- | this instance's sub-agents of the session and their state
+info | instance_id | a page of the transcript
+delete | instance_id or instance_ids | archives
+@{body}
+
+When @{tt}operation@{utt} is missing, two argument shapes are taken as
+meant: @{tt}agent_type@{utt} without @{tt}instance_id@{utt} is a create,
+@{tt}instance_id@{utt} with a @{tt}message@{utt} (or @{tt}task@{utt}) and no
+@{tt}agent_type@{utt} is a continue. Anything else answers "Missing
+'operation' parameter".
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+agent_type | create | the name of the agent's server entry; must be allowed by this SAM (see @{" Making an agent spawnable " link register})
+task | create | the first message; continue takes it when message is missing
+instance_label | create | goes into the instance id: sub_<label>_<number>, characters other than letters, digits, _ and - become _; without it sub_<agent_type>_<number>
+blocking | create | true (default): the answer comes when the run is over; false: the run goes on in the background, answer status running
+wake_when_done | create | with blocking false: the session is woken when the run ends (see @{" Instances, limits and waking " link rules}); default false
+use_advanced_model | create, continue | runs the agent on its advanced model chain; default false; ignored when the SAM sets allow_advanced_model false, and on continue for the agent types in advanced_create_only_agents
+instance_id | continue, poll, wait, cancel, info, delete | the id an answer returned
+instance_ids | wait_all, delete | a list; duplicates count once
+message | continue | the follow-up
+include_completed | list | true: archived ones too; failed and cancelled ones are always listed
+limit | info | messages per page; default 20, at most 200 (info_default_limit, info_max_limit)
+offset | info | 0-based index to start at; without it the page is the last limit messages
+max_chars | info | each text and each tool call's arguments are cut after it, saying how much was left out; default 4000; 0 or less: no cut
+@{body}
+
+@{h2}Answers
+
+@{bullet}@{b}create@{ub} (waiting) and @{b}continue@{ub}: @{tt}instance_id@{utt},
+@{tt}status: completed@{utt} (the run is over), @{tt}outcome@{utt}
+(@{tt}completed@{utt}, or @{tt}error@{utt}/@{tt}cancelled@{utt} when the run
+aborted -- @{tt}result@{utt} then starts with "Error:" or "Cancelled:"),
+@{tt}result@{utt} (the sub-agent's answer), @{tt}message_count@{utt} and
+@{tt}agent_type@{utt}.
+@{bullet}@{b}create@{ub} with @{tt}blocking: false@{utt}: @{tt}instance_id@{utt},
+@{tt}status: running@{utt}, @{tt}agent_type@{utt} and a @{tt}message@{utt}
+that says whether this session will be woken.
+@{bullet}@{b}list@{ub}: @{tt}instances@{utt} -- each with @{tt}instance_id@{utt},
+@{tt}agent_type@{utt}, @{tt}status@{utt} (@{tt}running@{utt}, @{tt}idle@{utt},
+@{tt}interrupted@{utt}, @{tt}failed@{utt}, @{tt}cancelled@{utt},
+@{tt}archived@{utt}), @{tt}created_at@{utt}, @{tt}last_used@{utt},
+@{tt}task_summary@{utt} (the first 100 characters of the task),
+@{tt}current_activity@{utt}, @{tt}message_count@{utt} -- and
+@{tt}count@{utt}. A sub-agent found with an activity but no run behind it is
+written @{tt}interrupted@{utt} here.
+@{bullet}@{b}info@{ub}: the instance's @{tt}status@{utt}, times, task and
+@{tt}message_count@{utt}, @{tt}messages@{utt} (each with @{tt}index@{utt},
+@{tt}role@{utt}, @{tt}content@{utt}, @{tt}tool_calls@{utt} with name and
+arguments, @{tt}tool_name@{utt} on a tool result) and @{tt}window@{utt}
+(@{tt}mode@{utt} tail or offset, @{tt}start_index@{utt},
+@{tt}returned@{utt}, @{tt}total@{utt}, @{tt}has_more_before@{utt},
+@{tt}has_more_after@{utt}).
+@{bullet}@{b}poll@{ub} and @{b}wait@{ub}: @{tt}status@{utt} @{tt}running@{utt},
+@{tt}completed@{utt} with @{tt}result@{utt}, @{tt}failed@{utt} with
+@{tt}error@{utt}, @{tt}cancelled@{utt} (with @{tt}error@{utt} only when the
+run answered "Cancelled: ..."), or @{tt}interrupted@{utt}. The
+first poll or wait that sees the ending takes the result with it; later
+ones read it from the stored transcript (its last answer).
+@{bullet}@{b}wait_all@{ub}: @{tt}results@{utt} (one answer as wait gives it
+per id), @{tt}total@{utt}, @{tt}completed@{utt}, @{tt}failed@{utt} (failed,
+cancelled, interrupted and errors together).
+@{bullet}@{b}cancel@{ub}: @{tt}cancelled@{utt} for a background run;
+@{tt}cancelling@{utt} for a waiting create or continue, which stops at its
+next step.
+@{bullet}@{b}delete@{ub}: @{tt}status: archived@{utt} for one id; for
+several @{tt}archived_count@{utt}, @{tt}failed_count@{utt}, @{tt}total@{utt}
+and @{tt}results@{utt}.
+
+A refused call answers @{tt}status: error@{utt} with @{tt}error@{utt}, and
+for some an @{tt}error_type@{utt}: @{tt}missing_parameter@{utt},
+@{tt}agent_blocked@{utt}, @{tt}phase_blocked@{utt},
+@{tt}agent_role_gate@{utt} (the caller's role may not run that agent),
+@{tt}session_locked@{utt} or @{tt}foreign_session@{utt} (the agent refused
+the run before it started). A limit answers @{tt}status: limit_reached@{utt}.
+
+@{h2}An example
+
+@{code json}
+{"operation": "create", "agent_type": "research_agent", "task": "Compare the SLAs of the three vendors", "blocking": false}
+{"operation": "create", "agent_type": "research_agent", "task": "Summarise their pricing pages", "blocking": false}
+{"operation": "wait_all", "instance_ids": ["sub_research_agent_4803112", "sub_research_agent_4803113"]}
+{"operation": "continue", "instance_id": "sub_research_agent_4803112", "message": "Which of them covers restores?"}
+{"operation": "info", "instance_id": "sub_research_agent_4803112", "offset": 0, "limit": 20}
+@{body}
+
+Instance ids are made by the SAM; an agent uses the id an answer returned,
+never one it puts together from a label.
+@endnode
+
+@node rules "Instances, limits and waking"
+@{h1}Instances, limits and waking
+
+@{h2}A sub-agent is a session
+
+@{tt}create@{utt} makes a session for the sub-agent below the caller's
+session and runs the agent in it; @{tt}continue@{utt} runs it again in the
+same session. The sub-agent inherits the caller's session variables when it
+is created. On every continue they are refreshed from the caller's current
+ones, except those the sub-agent set itself. A caller whose own session was
+not saved yet gets one ("Coordinator Session").
+
+One instance never runs twice at the same time: a continue while it runs
+is refused ("already running", or "already running in another process"),
+so wait for it first. @{tt}cancel@{utt} reaches the run's own tool calls
+and sub-agents too.
+
+@{h2}Which sub-agents an instance sees
+
+@{tt}list@{utt}, @{tt}poll@{utt} and the hook see only the sub-agents this
+SAM instance started. @{tt}continue@{utt}, @{tt}info@{utt} and
+@{tt}delete@{utt} take any sub-agent of the calling session. The panel
+shows all of them.
+
+@{h2}Limits
+
+@{bullet}@{tt}max_sub_agents_per_type@{utt} and
+@{tt}max_sub_agents_per_session@{utt} count the sub-agents stored as open:
+running, idle, and an interrupted one until the tool's @{tt}list@{utt}
+marks it interrupted (the panel and the hook show it interrupted before
+that). Failed, cancelled, archived and marked ones do not count. The type's limit is checked first.
+@{bullet}At a limit a create answers @{tt}limit_reached@{utt}. With
+@{tt}auto_archive_on_limit: true@{utt} the oldest counted one of that type
+(or of the session) is archived instead, even while it runs, and the create
+goes on.
+@{bullet}Continuing a sub-agent that is not counted -- interrupted, failed,
+cancelled, archived -- takes a place like a new one: the limits apply, and
+an archived one is open again.
+@{bullet}@{tt}max_nesting_depth@{utt} is how many levels of sub-agents this
+SAM allows below its caller. A sub-agent inherits the rest; a SAM further
+down can only lower it. With none left, create answers "Maximum nesting
+depth exceeded".
+
+@{h2}Background runs and waking
+
+@{tt}create@{utt} with @{tt}blocking: false@{utt} starts the run and answers
+at once. The caller then polls or waits, or -- with
+@{tt}wake_when_done: true@{utt} -- ends its turn and is woken when the run
+ends, however it ends, except by its own cancel or delete. The answer of
+the create says whether the wake is armed. It is not when session presence
+is switched off, when the call runs on a session nobody continues, when
+the caller is itself a sub-agent (its caller takes its answer), or when the
+chain of wakes is already as deep as it may go; the answer names the
+reason, and the caller should stay awake and poll.
+
+A background run lives in the process that started it: the API server, or
+an @{tt}agent-cli chat@{utt}. A one-shot @{tt}agent-cli run@{utt} that
+ends its turn takes its background runs with it. A run whose process ended
+reads as interrupted afterwards.
+
+An ending nobody picks up is kept in memory for an hour once it is stored,
+for a day when it could not be stored; after that a poll reads the stored
+state and the transcript.
+@endnode
+
+@node hook "The sub-agent list hook"
+@{h1}The sub-agent list hook
+
+@{tt}inject_sub_agent_context@{utt} runs before each model call and shows
+the agent its sub-agents, so it continues or waits on them instead of
+starting a second one for the same job. It is off until an agent switches
+it on.
+
+@{h2}What the model gets
+
+A message at the end of the history, from the plugin: the agents this SAM
+may start, a table of this instance's sub-agents of the session -- open
+ones first, then the newest -- and what the states mean. Archived ones are
+left out unless @{tt}show_completed@{utt} is true.
+
+@{code markdown}
+## Sub-Agents
+
+**Available agents:** research_agent, code_reviewer
+
+| Type | Instance ID | Status | Task |
+|------|-------------|--------|------|
+| research_agent | `sub_research_agent_4803113` | running | Summarise their pricing pages |
+| research_agent | `sub_research_agent_4803112` | idle | Compare the SLAs of the three vendors |
+
+running: working now. idle: its last run is done; poll or info for the answer, continue for more. interrupted, failed, cancelled: its last run did not finish.
+Continue: `sub_agent_manager_manage_sub_agent(operation='continue', instance_id='...', message='...')`
+@{body}
+
+The "Available agents" line names the phase's agents while phase filtering
+is on and a phase is set -- by the session, or else by the agent's
+configured default; otherwise @{tt}allowed_agents@{utt} as written, and
+nothing when that contains @{tt}*@{utt}. With @{tt}format: text@{utt} the
+block is a plain numbered list. When the last sub-agent is archived, the
+hook says so once ("None left -- every sub-agent of this session is
+archived.").
+
+The message is added only when it differs from the last one the hook
+added. It carries no counts or times, so it stays the same until a
+sub-agent comes, goes or changes state; the earlier ones stay where they
+are and the cached prompt in front of them is untouched.
+
+@{h2}When it does nothing
+
+@{bullet}its @{tt}enabled@{utt} setting is false;
+@{bullet}the call has no session or no messages;
+@{bullet}the session's sub-agents cannot be read (a new session not saved yet);
+@{bullet}there are none and there never were in this history;
+@{bullet}the block would be the same as the last one.
+
+An error is logged and the model call goes on without a block. The hook
+has 5 seconds.
+
+@{h2}Switching it on
+
+In the agent's YAML, with the SAM instance's name in front:
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      research_sam.inject_sub_agent_context:
+        enabled: true
+        max_sub_agents_shown: 4
+@{body}
+
+@{h2}Settings
+
+@{table}
+Key | Default | Meaning
+enabled | true | false: the hook stays silent even where an agent switched it on
+max_sub_agents_shown | 10 | how many rows: open ones first, then the newest
+show_completed | false | true: archived ones too
+format | markdown | markdown, or text
+@{body}
+
+The defaults come from the code; the SAM's server entry changes them for
+every agent in a @{tt}hook_config.inject_sub_agent_context@{utt} block,
+and the agent's own override wins over both.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The tool description and every parameter's description come from the
+plugin's @{tt}schema.yaml@{utt}, about 4,000 characters in every request of
+an agent that has the tool. Its "Available:" list is drawn anew each time
+the tools are listed: the registered agents that are visible to tools or
+the UI and that this SAM allows. With phase filtering on, a note says the
+list depends on the phase.
+
+@{h2}Errors it gets
+
+The texts say what to change, for example:
+
+@{bullet}"Missing required parameter(s) for 'create': task. 'create' needs 'agent_type' (one of: research_agent) and 'task' (the instruction text for the sub-agent)."
+@{bullet}"Agent 'x' not allowed by this sub-agent manager. Allowed agents: research_agent"
+@{bullet}"Agent 'x' not allowed in current phase 'planning'. Allowed agents for this phase: ..."
+@{bullet}"Sub-agent 'x' not found. This session's sub-agents are: ... Use the instance_id exactly as returned, never assembled from a label and a guessed number." (the 30 most recently used)
+@{bullet}"Maximum number of active sub-agents of type 'research_agent' (3) reached."
+@{bullet}"Sub-agent 'x' is already running. Cannot execute the same sub-agent instance concurrently. Wait for current execution to complete."
+@{bullet}"Timeout waiting for instance 'x' (waited 3600.2s)" -- the sub-agent runs on.
+
+@{h2}The status line
+
+The chat's status line ends with the result: "Created sub-agent x (type:
+y), 1234 chars", "Continued sub-agent ...", "Async execution started: x",
+"Listed 3 sub-agents: a, b, c", "Retrieved info for x (type: y, showing 20
+of 45 messages)", "Completed: 2, Failed: 0 of 2 instances", "Cancelled x",
+"Archived sub-agent x (type: y)". An aborted run shows as an error line.
+
+@{h2}Slash commands
+
+In the chat, @{tt}/subagents@{utt} runs @{tt}list@{utt} and
+@{tt}/cancel <instance-id>@{utt} runs @{tt}cancel@{utt} -- the same call
+the agent makes, with the same checks.
+
+@{h2}Tokens and cache
+
+Tool answers are ordinary results appended to the history. A waiting
+create or continue brings back the sub-agent's whole answer; the
+sub-agent's own work stays in its session, which is the point of it.
+@{tt}info@{utt} is paged and cut per message, so one call cannot pour a
+long transcript into the caller's context. The hook appends its block only
+when it changed and never rewrites anything before it.
+
+@{h2}Known gaps
+
+@{bullet}@{tt}continue@{utt} does not check @{tt}allowed_agents@{utt} or
+the phase again -- only the role gate. A sub-agent stays continuable after
+its type was taken off the list.
+@{bullet}An agent missing from the "Available" list because it is private
+can still be started by its exact name when the SAM allows it.
+@{bullet}How long @{tt}wait@{utt} waits is the server's
+@{tt}default_wait_timeout@{utt}; a call cannot ask for another.
+@{bullet}The limits are counted under a lock per process: two processes
+starting sub-agents in the same session at the same moment can pass them.
+@endnode
+
+@node endpoints "Web endpoints"
+@{h1}Web endpoints
+
+Under @{tt}/plugins/<instance>/@{utt}, for the panel. Each takes the parent
+session as @{tt}session_id@{utt} and answers only for the signed-in user's
+own sessions ("anonymous" without a login).
+
+@{table}
+Method and path | Answers
+GET / | the panel
+GET /sub-agents | every sub-agent of the session, archived ones included, whichever instance started it: the stored fields, state, message_count, context_tokens, context_window, context_stale; and phase (null without phase filtering)
+GET /agent-map | the session and everything below it, nested (children), and truncated when the map stopped at 300 nodes, 60 session reads or 20 levels
+GET /sub-agents/{id} | the transcript, paged as info pages it (offset, limit)
+DELETE /sub-agents/{id} | archives it, as delete does
+@{body}
+
+On the @{tt}/sub-agents/{id}@{utt} routes a sub-agent that is not in the
+session, or a session that is not yours, answers 404; the list and the
+map answer a session that is not yours as an empty one. Any other
+failure answers 500 with its reason. The list and the map only read: unlike the tool's list they never mark anything interrupted.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin needs @{tt}anyio@{utt}, which comes with the web server. The
+default entry in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    sub_agent_manager:
+      type: sub_agent_manager
+      enabled: true
+      max_nesting_depth: 5
+      max_sub_agents_per_type: 6
+      auto_archive_on_limit: true
+      allowed_agents:
+        - research_agent
+        - sysadmin_agent
+        - comfyui_agent
+        - chat_agent
+      hook_config:
+        enabled: true
+        inject_sub_agent_context:
+          enabled: true
+          max_sub_agents_shown: 5
+          format: "markdown"
+@{body}
+
+An agent gets the tool when its allowlist names the instance:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+sub_agent_manager/*"
+@{body}
+
+A harness usually brings its own instance next to its agents, with its
+own list and limits: @{tt}skills_sam@{utt}, @{tt}coder_sam@{utt},
+@{tt}gamedev_sam@{utt}, @{tt}research_sam@{utt}, @{tt}debate_sam@{utt}
+and @{tt}panel_sam@{utt} are such instances.
+
+@{h2}Server settings
+
+Every key is a top-level key of the server entry. The @{tt}config:@{utt}
+block in the plugin's @{tt}schema.yaml@{utt} only repeats the defaults;
+it is not read.
+
+@{table}
+Key | Default | Meaning
+allowed_agents | ["*"] | which agents it may start: server entry names or patterns (fnmatch)
+blocked_agents | [] | never these, whatever allowed_agents says; exact names
+max_nesting_depth | 5 | levels of sub-agents below the caller
+max_sub_agents_per_session | 10 | running or idle sub-agents per session
+max_sub_agents_per_type | 3 | the same, per agent type
+auto_archive_on_limit | false | true: archive the oldest instead of answering limit_reached
+default_wait_timeout | 3600 | seconds wait and wait_all wait
+allow_advanced_model | true | false: use_advanced_model is ignored (logged)
+advanced_create_only_agents | [] | agent types whose use_advanced_model counts on create only
+info_default_limit | 20 | messages per info page without limit
+info_max_limit | 200 | the most one info page returns
+info_default_max_chars | 4000 | the cut per message without max_chars
+hook_config | none | the hook's settings, see @{" The sub-agent list hook " link hook}
+phase_filtering | off | see below
+@{body}
+
+@{h2}Phase filtering
+
+A SAM can narrow the agents it starts to a workflow phase, read from a
+session variable:
+
+@{code yaml}
+      phase_filtering:
+        enabled: true
+        phase_variable: workflow_phase
+        phase_agents:
+          research: [research_agent]
+          review: [code_reviewer]
+          _default: []
+@{body}
+
+The phase is the session's variable, or else the default the calling
+agent's @{tt}template_vars@{utt} set. A phase with a non-empty list allows only those
+agents (and only those that @{tt}allowed_agents@{utt} allows); a phase not
+in the map, or with an empty list, falls back to @{tt}_default@{utt}, and an empty or missing
+@{tt}_default@{utt} allows every agent @{tt}allowed_agents@{utt} allows. No
+phase set: no narrowing.
+
+@{h2}Reloading
+
+@{tt}agent-cli reload@{utt} (POST @{tt}/admin/reload-config@{utt}) applies
+changed lists, limits, the timeout, the info settings, the hook settings
+and phase filtering to a running SAM without touching its running
+sub-agents. A new agent needs a restart.
+
+@{h2}Where the data lives
+
+A sub-agent's session is an ordinary session file of the caller's user in
+the session store, linked to its parent. The parent's session keeps an
+entry per sub-agent (type, times, state, task, current activity) under
+@{tt}metadata.sub_agents@{utt}. Archiving keeps both.
+@endnode
+
+@node register "Making an agent spawnable"
+@{h1}Making an agent spawnable
+
+There is no global list: each SAM instance says which agents it may
+start. For an agent to be started by another one through a SAM:
+
+@{bullet}The agent is a server entry with @{tt}enabled: true@{utt} whose
+type resolves -- otherwise "Agent type 'x' not found in registry". A new
+entry needs a restart.
+@{bullet}The SAM's @{tt}allowed_agents@{utt} names it (or a pattern
+matches it) and @{tt}blocked_agents@{utt} does not; with phase filtering
+the current phase allows it too. Otherwise @{tt}agent_blocked@{utt} or
+@{tt}phase_blocked@{utt}. A reload is enough.
+@{bullet}Its @{tt}metadata.visibility@{utt} is @{tt}tool@{utt},
+@{tt}both@{utt} or @{tt}ui@{utt}: a private agent (the default) is left out of the
+"Available" list, and the model never learns its name.
+@{bullet}The calling agent's allowlist names the SAM: @{tt}"+<sam instance>/*"@{utt}.
+@{bullet}If the agent sets @{tt}metadata.min_role@{utt}, the user of the
+calling run has that role -- otherwise @{tt}agent_role_gate@{utt}, before a
+session is made.
+
+An example of a harness wiring its own roles:
+
+@{code yaml}
+plugins:
+  servers:
+    review_sam:
+      type: sub_agent_manager
+      enabled: true
+      max_nesting_depth: 1
+      max_sub_agents_per_type: 4
+      default_wait_timeout: 1800
+      allowed_agents:
+        - code_reviewer
+
+    code_reviewer:
+      type: basic_agent
+      enabled: true
+      description: "Reviews a change and names the problems"
+      metadata:
+        visibility: tool
+
+    lead:
+      type: multi_turn_agent
+      enabled: true
+      agent_config:
+        tools:
+          allowed:
+            - "+review_sam/*"
+        hooks:
+          enabled: true
+          overrides:
+            review_sam.inject_sub_agent_context:
+              enabled: true
+@{body}
+
+A @{tt}max_nesting_depth@{utt} of 1 keeps the reviewers from starting
+sub-agents of their own -- they own no SAM anyway, which is the surer
+way.
+@endnode

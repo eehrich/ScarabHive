@@ -106,7 +106,7 @@ def tree(root: Path) -> Dict[str, Any]:
     for base, dirs, files in os.walk(root, followlinks=False):
         for name in dirs + files:
             path = Path(base) / name
-            key = str(path.relative_to(root))
+            key = path.relative_to(root).as_posix()
             if path.is_symlink():
                 found[key] = ("link", os.readlink(path))
             elif path.is_dir():

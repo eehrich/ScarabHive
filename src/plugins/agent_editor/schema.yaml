@@ -15,7 +15,7 @@ web_ui:
     keywords: [agents, llm, model, tools, allowlist, prompt, hooks, yaml, config]
     window: {width: 1240, height: 820}
 
-  # Every endpoint checks for an active admin itself (endpoints.py), on top of the route rules in config.yaml.
+  # Every endpoint checks for an active admin itself (endpoints.py), on top of the route rules in config/security.yaml.
   # Writes take JSON only and answer 409 when the file changed on disk, 422 when the result does not load.
   endpoints:
     - path: "/"

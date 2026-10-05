@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import re
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, model_validator
+from pydantic import ValidationError as FieldError
 
 from agent_system.paths import data_path
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
@@ -71,6 +72,11 @@ class Memory(BaseModel):
         return dt.isoformat().replace('+00:00', 'Z')
 
 
+def highest_number(known: int, memory_ids) -> int:
+    """The highest of ``known`` and the numbers of the ``mem_NNN`` ids given."""
+    return max([known] + [int(memory_id[4:]) for memory_id in memory_ids if re.fullmatch(r"mem_\d+", memory_id)])
+
+
 class MemoryCollection(BaseModel):
     """Session-scoped memory collection (metadata only, vectors in ChromaDB)"""
 
@@ -79,6 +85,14 @@ class MemoryCollection(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     total_memories: int = Field(default=0, ge=0)
+    #: the highest memory number ever handed out in the session -- a deleted newest one is not handed out again
+    last_number: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _numbers_seen(self) -> "MemoryCollection":
+        """A file written before the number was kept: the ids it holds count, before a delete takes one away."""
+        self.last_number = highest_number(self.last_number, self.memories)
+        return self
 
     @field_serializer('created_at', 'updated_at')
     def serialize_datetime(self, dt: datetime, _info) -> str:
@@ -108,6 +122,11 @@ class StorageError(MemoryError):
 class ChromaDBError(MemoryError):
     """ChromaDB operation failed"""
     pass
+
+
+def _field_problems(error: FieldError) -> str:
+    """What is wrong with the fields, in a line the model can act on."""
+    return "; ".join(f"{'.'.join(str(part) for part in problem['loc'])}: {problem['msg']}" for problem in error.errors())
 
 
 # =============================================================================
@@ -162,9 +181,8 @@ class MemoryServer(SchemaBasedHookToolServer):
         # these were dead config — the inject hook hardcoded values and the
         # per-session cap was never enforced (unbounded growth).
         self.max_memories = int(getattr(server_config, 'max_memories', None) or 10)
-        self.max_memories_per_session = int(
-            getattr(server_config, 'max_memories_per_session', None) or 5000
-        )
+        _cap = getattr(server_config, 'max_memories_per_session', None)
+        self.max_memories_per_session = 5000 if _cap is None else int(_cap)  # 0: no cap
         self.search_n_results = int(getattr(server_config, 'search_n_results', None) or 5)
         _semantic = getattr(server_config, 'use_semantic_injection', None)
         self.use_semantic_injection = True if _semantic is None else bool(_semantic)
@@ -204,9 +222,9 @@ class MemoryServer(SchemaBasedHookToolServer):
                     # Try to load from storage (async)
                     collection = await self._load_collection(session_id)
 
-                if collection and collection.memories:
-                    # Find highest memory number
-                    max_num = 0
+                if collection and (collection.memories or collection.last_number):
+                    # Find highest memory number, also of memories deleted since
+                    max_num = collection.last_number
                     for memory_id in collection.memories.keys():
                         if memory_id.startswith("mem_"):
                             try:
@@ -214,11 +232,12 @@ class MemoryServer(SchemaBasedHookToolServer):
                                 max_num = max(max_num, num)
                             except (IndexError, ValueError):
                                 pass
-                    self._memory_counters[session_id] = max_num
+                    # setdefault: another store may have counted on while this one waited for the file
+                    self._memory_counters.setdefault(session_id, max_num)
                 else:
-                    self._memory_counters[session_id] = 0
+                    self._memory_counters.setdefault(session_id, 0)
             except Exception:
-                self._memory_counters[session_id] = 0
+                self._memory_counters.setdefault(session_id, 0)
 
         # Increment counter
         counter = self._memory_counters.get(session_id, 0)
@@ -341,6 +360,9 @@ class MemoryServer(SchemaBasedHookToolServer):
         try:
             # Run sync file I/O in thread pool
             collection = await asyncio.to_thread(self._load_collection_sync, session_id)
+            cached = self._collections_cache.get(session_id)
+            if cached is not None:  # another call loaded it meanwhile: its copy is the one changes go to
+                return cached
             self._add_to_cache(session_id, collection)
             return collection
 
@@ -371,7 +393,7 @@ class MemoryServer(SchemaBasedHookToolServer):
         for sid in expired:
             self._collections_cache.pop(sid, None)
             self._cache_access_times.pop(sid, None)
-            self._memory_counters.pop(sid, None)
+            # the counter stays: a store still under way may hold a number the file does not have yet
         
         if expired:
             logger.debug(f"MemoryServer: Cleaned up {len(expired)} expired cache entries")
@@ -384,7 +406,6 @@ class MemoryServer(SchemaBasedHookToolServer):
             oldest = min(self._cache_access_times, key=self._cache_access_times.get)  # type: ignore[arg-type]
             self._collections_cache.pop(oldest, None)
             self._cache_access_times.pop(oldest, None)
-            self._memory_counters.pop(oldest, None)
             logger.debug(f"MemoryServer: Evicted cache entry {oldest} (LRU)")
 
     def _save_collection_sync(self, collection: MemoryCollection) -> None:
@@ -401,6 +422,7 @@ class MemoryServer(SchemaBasedHookToolServer):
             # Update timestamp and count
             collection.updated_at = datetime.now(UTC)
             collection.total_memories = len(collection.memories)
+            collection.last_number = highest_number(collection.last_number, collection.memories)
 
             # Run sync file I/O in thread pool
             await asyncio.to_thread(self._save_collection_sync, collection)
@@ -483,12 +505,9 @@ class MemoryServer(SchemaBasedHookToolServer):
         if self.auto_extract_keywords and (keywords is None or len(keywords) == 0):
             keywords = self._extract_keywords(f"{title} {content}")
 
-        # Generate memory ID with session-specific counter (async)
-        memory_id = await self._generate_memory_id(session_id)
-
-        # Create memory object
+        # Create memory object -- checked (lengths, importance) before it takes an id or reaches the vector store
         memory = Memory(
-            memory_id=memory_id,
+            memory_id="",
             title=title,
             content=content,
             keywords=keywords or [],
@@ -497,6 +516,7 @@ class MemoryServer(SchemaBasedHookToolServer):
             importance=importance,
             tags=tags or []
         )
+        memory_id = memory.memory_id = await self._generate_memory_id(session_id)
 
         # Store in ChromaDB
         await self._store_memory_in_chroma(session_id, memory)
@@ -575,7 +595,6 @@ class MemoryServer(SchemaBasedHookToolServer):
         # Update access tracking
         memory.access_count += 1
         memory.accessed_at = datetime.now(UTC)
-        memory.updated_at = datetime.now(UTC)
 
         await self._save_collection(collection)
 
@@ -775,9 +794,26 @@ class MemoryServer(SchemaBasedHookToolServer):
             }
 
         memory = collection.memories[memory_id]
+        given = {field: value for field, value in
+                 (("title", title), ("content", content), ("keywords", keywords), ("importance", importance),
+                  ("tags", tags))
+                 if value is not None}
+        try:
+            # a value the model gets wrong (importance 0 or "7", a text too long) is refused here: kept, it made
+            # the whole session unreadable the next time its file was loaded
+            checked = Memory.model_validate({**memory.model_dump(), **given})
+        except FieldError as error:
+            return {"error": f"Cannot update {memory_id}: {_field_problems(error)}"}
+        title, content, keywords, importance, tags = (
+            getattr(checked, field) if field in given else None
+            for field in ("title", "content", "keywords", "importance", "tags"))
 
         # Track what changed
         changed_fields = []
+
+        if content is not None:
+            # Re-index in ChromaDB first: a failing vector store leaves the memory as it was
+            await self._store_memory_in_chroma(session_id, checked)
 
         # Update fields if provided
         if title is not None:
@@ -787,9 +823,6 @@ class MemoryServer(SchemaBasedHookToolServer):
         if content is not None:
             memory.content = content
             changed_fields.append("content")
-
-            # Re-index in ChromaDB if content changed
-            await self._store_memory_in_chroma(session_id, memory)
 
         if keywords is not None:
             memory.keywords = keywords
@@ -835,7 +868,7 @@ class MemoryServer(SchemaBasedHookToolServer):
 
         operation = arguments.get("operation")
         if not operation:
-            raise ValidationError("Missing 'operation' parameter")
+            return {"error": "Missing 'operation' parameter: one of store, recall, search, list, delete, update"}
 
         # Get session ID from context (injected by agent system as _session_id)
         session_id = arguments.get("_session_id") or arguments.get("session_id", "default")
@@ -1015,6 +1048,12 @@ class MemoryServer(SchemaBasedHookToolServer):
             else:
                 raise ValidationError(f"Unknown operation: {operation}")
 
+        except FieldError as e:  # a value out of its range: title, content, importance
+            error_msg = f"Cannot {operation}: {_field_problems(e)}"
+            logger.info(f"Memory operation refused: {error_msg}")
+            if status:
+                await status.error(error_msg)
+            return {"error": error_msg}
         except (ValidationError, StorageError, ChromaDBError) as e:
             error_msg = str(e)
             logger.info(f"Memory operation failed: {error_msg}")
@@ -1028,11 +1067,9 @@ class MemoryServer(SchemaBasedHookToolServer):
 
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
         """
-        Inject memory context into system prompt.
-
-        Adds relevant memories to system prompt before LLM call.
+        Append the ids and titles of the relevant memories to the history (a developer turn at its end).
         Can use semantic search (if config.use_semantic_injection=true)
-        or just recent memories.
+        or the most important, the most recently accessed first among equals.
         """
         try:
             # Get session ID from context
@@ -1044,9 +1081,10 @@ class MemoryServer(SchemaBasedHookToolServer):
             if not collection.memories or len(collection.memories) == 0:
                 return HookResult(success=True, modified=False)
 
-            # Config-driven (wired from server_config in __init__)
-            max_memories = self.max_memories
-            use_semantic = self.use_semantic_injection
+            # The server entry's settings, and on top what THIS agent set in its hooks.overrides for the hook
+            overrides = context.hook_config or {}
+            max_memories = int(overrides.get("max_memories", self.max_memories))
+            use_semantic = bool(overrides.get("use_semantic_injection", self.use_semantic_injection))
 
             # Get user's current message for semantic search.
             # The LAST message is not it: notes the run or a hook appended sit
@@ -1064,20 +1102,24 @@ class MemoryServer(SchemaBasedHookToolServer):
                     break
 
             # Select memories to inject
+            relevant_memories = None
             if use_semantic and user_message:
                 # Semantic search based on current user message
-                search_result = await self._operation_search(
-                    session_id=session_id,
-                    query=user_message,
-                    n_results=max_memories
-                )
-                relevant_memories = [
-                    collection.memories[r["memory_id"]]
-                    for r in search_result.get("results", [])
-                    if r["memory_id"] in collection.memories
-                ]
-            else:
-                # Just use most recently accessed
+                try:
+                    search_result = await self._operation_search(
+                        session_id=session_id,
+                        query=user_message,
+                        n_results=max_memories
+                    )
+                    relevant_memories = [
+                        collection.memories[r["memory_id"]]
+                        for r in search_result.get("results", [])
+                        if r["memory_id"] in collection.memories
+                    ]
+                except ChromaDBError as error:  # the vector store failing: the memories by importance instead
+                    logger.warning(f"Memory hook: semantic search failed, choosing by importance: {error}")
+            if relevant_memories is None:
+                # The most important, the most recently accessed first among equals
                 memories_list = sorted(
                     collection.memories.values(),
                     key=lambda m: (m.importance, m.accessed_at),
@@ -1091,7 +1133,7 @@ class MemoryServer(SchemaBasedHookToolServer):
             # Build injection text with unique marker
             injection_marker = "AVAILABLE MEMORIES"
             lines = [f"\n## {injection_marker}"]
-            lines.append("\nUse `memory(operation='recall', memory_id='...')` to access full content:\n")
+            lines.append(f"\nUse `{self.name}(operation='recall', memory_id='...')` to access full content:\n")
             for mem in relevant_memories:
                 # Limit title length to 80 chars with ellipsis
                 title = mem.title if len(mem.title) <= 80 else mem.title[:77] + "..."
@@ -1109,17 +1151,17 @@ class MemoryServer(SchemaBasedHookToolServer):
             from agent_system.llm.models import ChatMessage
             previous = next(
                 (msg for msg in reversed(context.messages)
-                 if getattr(msg, 'injected_by', None) == "memory"), None)
+                 if getattr(msg, 'injected_by', None) == self.name), None)
             if previous is not None and previous.content == injection:
                 return HookResult(success=True, modified=False, context=context)
 
             context.messages.append(ChatMessage(
                 role=DEVELOPER,
                 content=injection,
-                injected_by="memory",
+                injected_by=self.name,
             ))
 
-            logger.info(f"Injected {len(relevant_memories)} memories into system prompt")
+            logger.info(f"Appended {len(relevant_memories)} memory titles to the history")
 
             return HookResult(
                 success=True,

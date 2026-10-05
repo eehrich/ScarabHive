@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from agent_system.config.models import LLMModelConfig
-from agent_system.llm.models import ChatMessage, MultimodalToolContent
+from agent_system.llm.models import ChatMessage, LLMServerError, MultimodalToolContent
 from plugins.llm_ollama.ollama_client import OllamaNativeAsyncClient
 from plugins.llm_ollama.provider import build_ollama
 
@@ -212,7 +212,7 @@ class TestOllamasReasonSurvives:
         client = OllamaNativeAsyncClient(model="m")
         _serve(client, lambda r: httpx.Response(502, text="upstream proxy gave up"))
 
-        with pytest.raises(httpx.HTTPStatusError, match="upstream proxy gave up"):
+        with pytest.raises(LLMServerError, match="upstream proxy gave up"):
             await client.chat_tools(ASK, [])
 
     @pytest.mark.asyncio
@@ -230,13 +230,12 @@ class TestOllamasReasonSurvives:
         assert "runner process has terminated" in seen[-1][1]["error"]
 
     @pytest.mark.asyncio
-    async def test_a_stream_reports_it(self):
+    async def test_a_stream_raises_with_it(self):
         client = OllamaNativeAsyncClient(model="m")
         _serve(client, lambda r: NOT_FOUND)
 
-        events = [e async for e in client.chat_tools_streaming(ASK, [])]
-
-        assert "model 'm' not found" in events[-1]["assistant"]["error"]["message"]
+        with pytest.raises(httpx.HTTPStatusError, match="model 'm' not found"):
+            [e async for e in client.chat_tools_streaming(ASK, [])]
 
 
 class TestTheHooksSeeEveryCall:
@@ -269,10 +268,10 @@ class TestTheHooksSeeEveryCall:
         seen = _hooks(client)
         _serve(client, lambda r: NOT_FOUND)
 
-        if streaming:
-            [e async for e in client.chat_tools_streaming(ASK, [])]
-        else:
-            with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(httpx.HTTPStatusError):
+            if streaming:
+                [e async for e in client.chat_tools_streaming(ASK, [])]
+            else:
                 await client.chat_tools(ASK, [])
 
         assert seen[-1][0] == "post" and "not found" in seen[-1][1]["error"]
@@ -292,3 +291,13 @@ def test_a_tools_image_reaches_the_model(tmp_path):
 
     assert [m["role"] for m in wire] == ["user", "tool", "user"]
     assert wire[2]["images"] == [base64.b64encode(png.read_bytes()).decode()]
+
+
+def test_openai_compat_mode_warns_about_an_unwired_key_once(caplog):
+    """The delegated openai factory warned a second time, under provider=openai."""
+    caplog.set_level("WARNING")
+    client = build_ollama(LLMModelConfig(provider="ollama", model="m", reasoning_details_mode="strip"))
+
+    warnings = [r.getMessage() for r in caplog.records if "reasoning_details_mode" in r.getMessage()]
+    assert warnings == ["reasoning_details_mode is not wired for provider=ollama and will be ignored (model=m)."]
+    assert type(client).__name__ == "OpenAIAsyncClient"

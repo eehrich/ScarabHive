@@ -9,10 +9,15 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal, Optional
-from pydantic import AfterValidator, BaseModel, EmailStr, Field, ConfigDict
+from pydantic import AfterValidator, BaseModel, EmailStr, Field, ConfigDict, ValidationError
 from pydantic_core import PydanticCustomError
 
 PASSWORD_MAX_BYTES = 72  # bcrypt refuses longer passwords
+
+
+def validation_reasons(error: ValidationError) -> str:
+    """Field and reason per error, never the input: pydantic's own text echoes it, a password among it."""
+    return "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in error.errors())
 
 
 def _check_password_bytes(password: str) -> str:

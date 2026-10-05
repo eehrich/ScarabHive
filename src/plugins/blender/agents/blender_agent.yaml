@@ -23,7 +23,7 @@ plugins:
 
       self_tool_descriptions:
         blender_agent_execute_task: "Model, modify or inspect a 3D scene in the running Blender and export the result into the workspace"
-        blender_agent_list_available_tools: "List the Blender tools available (scene, object, bpy, screenshot, export)"
+        blender_agent_list_available_tools: "List this agent's tools"
 
       agent_config:
         # Flash leads because this work is iterative and VISUAL: the agent

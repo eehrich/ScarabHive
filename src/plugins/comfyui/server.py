@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -23,6 +25,24 @@ if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
+
+# the most of a text an answer carries; the file keeps all of it
+TEXT_CONTENT_MAX_CHARS = 100_000
+
+
+def capped_text(text: str) -> dict[str, Any]:
+    """A text for an answer: its content up to TEXT_CONTENT_MAX_CHARS, its size, and whether it was cut."""
+    record: dict[str, Any] = {"content": text[:TEXT_CONTENT_MAX_CHARS], "size_bytes": len(text.encode("utf-8"))}
+    if len(text) > TEXT_CONTENT_MAX_CHARS:
+        record["truncated"] = True
+    return record
+
+
+def bad_prefix(prefix: Any) -> str | None:
+    """Why an output_prefix is refused, or None. It becomes part of a file name: one plain name, no path."""
+    if isinstance(prefix, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", prefix):
+        return None
+    return f"output_prefix {prefix!r} must be 1 to 64 letters, digits, '_', '.' or '-'"
 
 
 class ComfyUIServer(SchemaBasedToolServer):
@@ -114,9 +134,13 @@ class ComfyUIServer(SchemaBasedToolServer):
         if isinstance(raw_allowlist, (str, Path)):
             raw_allowlist = [raw_allowlist]
         self._upload_source_dirs: list[Path] = []
+        # the roots as configured too: a file named through a link to a root is judged against these before the file
+        # system is asked (see _lexically_inside)
+        self._upload_source_roots_as_named: list[Path] = []
         for p in raw_allowlist:
             try:
                 self._upload_source_dirs.append(Path(p).resolve())
+                self._upload_source_roots_as_named.append(Path(os.path.abspath(p)))
             except (TypeError, OSError) as e:
                 logger.warning(
                     "Skipping invalid comfyui.upload_source_dirs entry %r: %s", p, e,
@@ -654,7 +678,8 @@ class ComfyUIServer(SchemaBasedToolServer):
                 # on "error" alone would have called that one "unavailable".
                 prompt_id = params.get("prompt_id")
                 job_status = result.get("status")
-                if job_status is None:
+                # "unknown" with an error: the server could not be asked, not a job it does not know
+                if job_status is None or (job_status == "unknown" and result.get("error")):
                     await status.error(
                         f"Job status unavailable: {result.get('error', 'unknown reason')}")
                 elif job_status == "failed":
@@ -741,7 +766,7 @@ class ComfyUIServer(SchemaBasedToolServer):
         workflows = []
         
         for wf_id, wf_config in self.workflows.items():
-            if category and wf_config.get("category") != category:
+            if category and wf_config.get("category", "general") != category:  # the category list shows
                 continue
             
             workflows.append({
@@ -955,6 +980,11 @@ class ComfyUIServer(SchemaBasedToolServer):
         download = params.get("download", True)
         include_content = params.get("include_content", False)
         output_prefix = params.get("output_prefix", "comfy")
+        refusal = bad_prefix(output_prefix)
+        if refusal:
+            if status:
+                await status.error(refusal)
+            return {"error": refusal}
         
         # Resolve output directory with session isolation if configured
         session_id = params.get("_session_id")
@@ -973,9 +1003,21 @@ class ComfyUIServer(SchemaBasedToolServer):
             # early) from genuinely "not found" (never queued or already cleared).
             live = await job_client.get_status(prompt_id)
             live_state = live.get("status", "unknown")
-            if live_state in ("pending", "running"):
+            if live_state == "unknown" and live.get("error"):
+                # the server could not be asked (its queue or its history): the job may well be there, and "not
+                # found" would send the agent to run it again
+                msg = f"Results of job {prompt_id} could not be fetched: {live['error']}"
+                hint = "The ComfyUI server that runs the job did not answer; ask again later."
+            elif live_state in ("pending", "running"):
                 msg = f"Job {prompt_id} is still {live_state}, result not available yet"
                 hint = "Use operation='wait_for_completion' (with include_content=true) instead of polling result manually."
+            elif live_state == "completed":
+                # it reached the history between the two lookups
+                msg = f"Job {prompt_id} has just finished"
+                hint = "Call operation='result' again."
+            elif live_state == "failed":
+                msg = f"Job {prompt_id} failed: {live.get('error')}"
+                hint = "Look at the error: run unchanged, the job will likely fail the same way."
             else:
                 msg = f"Job {prompt_id} not found in queue or history"
                 hint = "The job was never queued, was cleared, or the prompt_id is wrong."
@@ -1012,7 +1054,15 @@ class ComfyUIServer(SchemaBasedToolServer):
             "text": [],
             "other": []
         }
-        
+
+        def target(local_filename: str) -> Path:
+            """Where an output is saved. The name comes from the server and the prefix: judged on the text before
+            the file system is asked, as a '..' or a UNC path would write outside the output folder."""
+            local_path = effective_output_dir / local_filename
+            if not self._lexically_inside(str(local_path), [effective_output_dir]):
+                raise ValueError(f"{local_filename!r} would be saved outside the output folder")
+            return local_path
+
         for node_id, node_output in job_data.get("outputs", {}).items():
             # Process media outputs (images, audio, video, gifs)
             for output_type in ["images", "audio", "video", "gifs"]:
@@ -1023,17 +1073,17 @@ class ComfyUIServer(SchemaBasedToolServer):
                             "subfolder": file_info.get("subfolder", ""),
                             "type": file_info.get("type", "output")
                         }
-                        
+
                         if download:
                             # Download file locally
                             try:
+                                local_filename = f"{output_prefix}_{file_info['filename']}"
+                                local_path = target(local_filename)
                                 file_data = await job_client.get_file(
                                     file_info["filename"],
                                     file_info.get("subfolder", ""),
                                     file_info.get("type", "output")
                                 )
-                                local_filename = f"{output_prefix}_{file_info['filename']}"
-                                local_path = effective_output_dir / local_filename
                                 local_path.parent.mkdir(parents=True, exist_ok=True)
                                 local_path.write_bytes(file_data)
                                 # Return filename only (relative to output_dir) for LLM/audio_ops compatibility
@@ -1043,7 +1093,7 @@ class ComfyUIServer(SchemaBasedToolServer):
                             except Exception as e:
                                 logger.error("Failed to download %s: %s", file_info["filename"], e)
                                 file_record["download_error"] = str(e)
-                        
+
                         # Categorize
                         if output_type == "images":
                             outputs["images"].append(file_record)
@@ -1053,62 +1103,34 @@ class ComfyUIServer(SchemaBasedToolServer):
                             outputs["video"].append(file_record)
                         else:
                             outputs["other"].append(file_record)
-            
-            # Process text outputs (from ShowText, SaveText, etc.)
-            # Text can appear as 'text' list or direct string values in outputs
-            if "text" in node_output:
-                text_data = node_output["text"]
-                # Handle both list and single value formats
-                if isinstance(text_data, list):
-                    for idx, text_item in enumerate(text_data):
-                        text_content = text_item if isinstance(text_item, str) else str(text_item)
-                        text_record: dict[str, Any] = {
-                            "content": text_content,
-                            "node_id": node_id,
-                            "index": idx
-                        }
-                        
-                        if download:
-                            # Save text to file
-                            try:
-                                text_filename = f"{output_prefix}_text_{node_id}_{idx}.txt"
-                                local_path = effective_output_dir / text_filename
-                                local_path.parent.mkdir(parents=True, exist_ok=True)
-                                local_path.write_text(text_content, encoding="utf-8")
-                                # Return filename only (relative to output_dir) for LLM compatibility
-                                text_record["local_path"] = text_filename
-                                text_record["filename"] = text_filename
-                                # Store full path for multimodal content encoding
-                                text_record["full_path"] = str(local_path)
-                            except Exception as e:
-                                logger.error("Failed to save text output: %s", e)
-                                text_record["save_error"] = str(e)
-                        
-                        outputs["text"].append(text_record)
-                elif isinstance(text_data, str):
-                    text_record = {
-                        "content": text_data,
-                        "node_id": node_id,
-                        "index": 0
-                    }
-                    
-                    if download:
-                        try:
-                            text_filename = f"{output_prefix}_text_{node_id}.txt"
-                            local_path = effective_output_dir / text_filename
-                            local_path.parent.mkdir(parents=True, exist_ok=True)
-                            local_path.write_text(text_data, encoding="utf-8")
-                            # Return filename only (relative to output_dir) for LLM compatibility
-                            text_record["local_path"] = text_filename
-                            text_record["filename"] = text_filename
-                            # Store full path for multimodal content encoding
-                            text_record["full_path"] = str(local_path)
-                        except Exception as e:
-                            logger.error("Failed to save text output: %s", e)
-                            text_record["save_error"] = str(e)
-                    
-                    outputs["text"].append(text_record)
-        
+
+            # Process text outputs (from ShowText, SaveText, etc.): a list of texts, or a single string
+            text_data = node_output.get("text")
+            if isinstance(text_data, list):
+                texts = [(f"{output_prefix}_text_{node_id}_{idx}.txt", item if isinstance(item, str) else str(item))
+                         for idx, item in enumerate(text_data)]
+            elif isinstance(text_data, str):
+                texts = [(f"{output_prefix}_text_{node_id}.txt", text_data)]
+            else:
+                texts = []
+            for idx, (text_filename, text_content) in enumerate(texts):
+                # the whole text lands in the file; the answer carries at most TEXT_CONTENT_MAX_CHARS of it
+                text_record: dict[str, Any] = {**capped_text(text_content), "node_id": node_id, "index": idx}
+                if download:
+                    try:
+                        local_path = target(text_filename)
+                        local_path.parent.mkdir(parents=True, exist_ok=True)
+                        local_path.write_text(text_content, encoding="utf-8")
+                        # Return filename only (relative to output_dir) for LLM compatibility
+                        text_record["local_path"] = text_filename
+                        text_record["filename"] = text_filename
+                        # Store full path for multimodal content encoding
+                        text_record["full_path"] = str(local_path)
+                    except Exception as e:
+                        logger.error("Failed to save text output: %s", e)
+                        text_record["save_error"] = str(e)
+                outputs["text"].append(text_record)
+
         # Update tracker
         self.job_tracker.update_status(prompt_id, "completed")
         
@@ -1122,15 +1144,19 @@ class ComfyUIServer(SchemaBasedToolServer):
         ):
             self._cleanup_task = asyncio.create_task(self._cleanup_old_files())
         
-        # Store output paths. A text output that was not saved (download=false,
-        # or the write failed) has neither a local path nor a filename.
+        # Store output paths: only what landed on disk (a file record's filename is the name on the SERVER).
         # A type whose outputs all lack a path is left out: an empty list would
-        # tell operation='load' there are outputs to load.
+        # tell operation='load' there are outputs to load. With nothing saved -- download=false -- the outputs an
+        # earlier call saved stay recorded.
         output_paths = {
             k: paths for k, v in outputs.items()
-            if (paths := [p for f in v if (p := f.get("local_path") or f.get("filename"))])
+            if (paths := [p for f in v if (p := f.get("local_path"))])
         }
-        self.job_tracker.set_outputs(prompt_id, output_paths)
+        if output_paths:
+            # merged per type: a type whose files all failed this time keeps what an earlier call saved
+            recorded = (self.job_tracker.get_job(prompt_id) or {}).get("outputs")
+            self.job_tracker.set_outputs(
+                prompt_id, {**(recorded if isinstance(recorded, dict) else {}), **output_paths})
         
         if status:
             # Count what actually LANDED: a download failure only writes
@@ -1198,23 +1224,9 @@ class ComfyUIServer(SchemaBasedToolServer):
                         "mime_type": mime_type,
                         "description": f"Generated {content_type}: {filename}"
                     })
-        
-        # Add text outputs. Like files, only with a saved file: an attachment
-        # needs a path, and the text itself is already in outputs["text"].
-        for text_record in outputs.get("text", []):
-            full_path = text_record.get("full_path")
-            if not full_path:
-                continue
-            filename = text_record.get("filename", f"text_{text_record.get('node_id', 'unknown')}.txt")
 
-            multimodal.append({
-                "type": "text",
-                "path": full_path,
-                "mime_type": "text/plain",
-                "description": f"Generated text: {filename}",
-                "content": text_record.get("content", ""),  # Include text content directly
-            })
-        
+        # Texts are not attached: their content is in outputs["text"] already, and only Gemini would read a text
+        # attachment -- the OpenAI and Anthropic injections show a note in its place, Gemini got the text twice.
         return multimodal
     
     def _guess_mime_type(self, filename: str, content_type: str) -> str:
@@ -1329,9 +1341,11 @@ class ComfyUIServer(SchemaBasedToolServer):
                     # `f"{output_prefix}_{filename}"`). Resolve against
                     # the output dir; otherwise Path(filename).exists()
                     # evaluates against the process CWD and never matches.
-                    path_obj = Path(path)
-                    if not path_obj.is_absolute():
-                        path_obj = effective_output_dir / path_obj
+                    path_obj = effective_output_dir / path  # an absolute path (older rows) stays as it is
+                    if not self._lexically_inside(str(path_obj), [effective_output_dir]):
+                        logger.warning("Stored output path %s lies outside output dir %s; skipping",
+                                       path_obj, effective_output_dir)
+                        continue
                     # Defensive containment check — the stored local_path
                     # is server-set, but resolve anyway in case the output
                     # dir contains symlinks pointing elsewhere.
@@ -1346,65 +1360,35 @@ class ComfyUIServer(SchemaBasedToolServer):
                         )
                         continue
                     if path_obj.exists():
-                        mime_type = self._guess_mime_type(path_obj.name, content_type)
-                        
-                        # For text files, also load content directly
-                        if content_type == "text":
-                            try:
-                                text_content = path_obj.read_text(encoding="utf-8")
-                                multimodal.append({
-                                    "type": content_type,
-                                    "path": str(path_obj),
-                                    "mime_type": "text/plain",
-                                    "content": text_content,
-                                    "description": f"Generated text from job {prompt_id}: {path_obj.name}"
-                                })
-                            except Exception as e:
-                                logger.warning("Failed to read text file %s: %s", path_obj, e)
-                                multimodal.append({
-                                    "type": content_type,
-                                    "path": str(path_obj),
-                                    "mime_type": "text/plain",
-                                    "description": f"Generated text from job {prompt_id}: {path_obj.name}",
-                                    "read_error": str(e)
-                                })
-                        else:
-                            multimodal.append({
-                                "type": content_type,
-                                "path": str(path_obj),
-                                "mime_type": mime_type,
-                                "description": f"Generated {content_type} from job {prompt_id}: {path_obj.name}"
-                            })
-                        
-                        loaded_files.append({
-                            "path": str(path_obj),
-                            "filename": path_obj.name,
-                            "type": content_type,
-                            "size_bytes": path_obj.stat().st_size
-                        })
+                        self._add_loaded(path_obj, content_type, f"Generated {content_type} from job {prompt_id}",
+                                         loaded_files, multimodal)
         
         # Load by file_path or filename
         else:
-            # Determine path
-            if file_path:
-                path_obj = effective_output_dir / file_path
-            else:
-                # Search by filename
-                path_obj = effective_output_dir / filename
-                if not path_obj.exists():
-                    # Try to find in subdirectories
-                    matches = list(effective_output_dir.rglob(filename))
-                    if matches:
-                        path_obj = matches[0]
+            name = file_path or filename
+            # SECURITY: file_path/filename are LLM-controlled. Refused on the joined path as written, before the
+            # file system is asked anything: exists() or resolve() on a UNC path (\\host\share\x.png) makes
+            # Windows authenticate to that host.
+            if not self._lexically_inside(str(effective_output_dir / name), [effective_output_dir]):
+                if status:
+                    await status.error("File path escapes the output directory")
+                return {
+                    "error": "Invalid file path (outside the allowed output directory)",
+                    "searched_in": str(effective_output_dir),
+                }
+            path_obj = effective_output_dir / name
+            # a bare name not found at the top is looked for in the subfolders; a path is not hunted for (and rglob
+            # raises on an anchored pattern)
+            if not file_path and not path_obj.exists() and Path(filename).name == filename:
+                matches = list(effective_output_dir.rglob(filename))
+                if matches:
+                    path_obj = matches[0]
 
-            # SECURITY: contain the resolved path inside the output dir. The
-            # file_path/filename are LLM-controlled; an absolute path or '..'
-            # segments would otherwise escape effective_output_dir and read
-            # arbitrary host files into the model context.
+            # contain the resolved path too: a link inside the output dir may point out of it
             try:
                 path_obj = path_obj.resolve()
                 path_obj.relative_to(effective_output_dir.resolve())
-            except ValueError:
+            except (ValueError, OSError):
                 if status:
                     await status.error("File path escapes the output directory")
                 return {
@@ -1412,69 +1396,81 @@ class ComfyUIServer(SchemaBasedToolServer):
                     "searched_in": str(effective_output_dir),
                 }
 
-            if not path_obj.exists():
+            if not path_obj.is_file():  # a folder (file_path "." names the output directory) is no file to attach
                 if status:
-                    await status.error(f"File not found: {file_path or filename}")
+                    await status.error(f"File not found: {name}")
                 return {
-                    "error": f"File not found: {file_path or filename}",
+                    "error": f"File not found: {name}",
                     "searched_in": str(effective_output_dir),
                     "hint": "Provide a valid file path or use prompt_id to load job outputs"
                 }
             
-            # Determine content type from extension
             content_type = self._get_content_type_from_path(path_obj)
-            mime_type = self._guess_mime_type(path_obj.name, content_type)
-            
-            # For text files, also load content directly
-            if content_type == "text":
-                try:
-                    text_content = path_obj.read_text(encoding="utf-8")
-                    multimodal.append({
-                        "type": content_type,
-                        "path": str(path_obj),
-                        "mime_type": "text/plain",
-                        "content": text_content,
-                        "description": f"Loaded text: {path_obj.name}"
-                    })
-                except Exception as e:
-                    logger.warning("Failed to read text file %s: %s", path_obj, e)
-                    multimodal.append({
-                        "type": content_type,
-                        "path": str(path_obj),
-                        "mime_type": "text/plain",
-                        "description": f"Loaded text: {path_obj.name}",
-                        "read_error": str(e)
-                    })
-            else:
-                multimodal.append({
-                    "type": content_type,
-                    "path": str(path_obj),
-                    "mime_type": mime_type,
-                    "description": f"Loaded {content_type}: {path_obj.name}"
-                })
-            
-            loaded_files.append({
-                "path": str(path_obj),
-                "filename": path_obj.name,
-                "type": content_type,
-                "size_bytes": path_obj.stat().st_size
-            })
+            self._add_loaded(path_obj, content_type, f"Loaded {content_type}", loaded_files, multimodal)
         
-        if not multimodal:
+        if not loaded_files:
             if status:
                 await status.error("No valid media files found to load")
             return {"error": "No valid media files found to load"}
         
         if status:
-            await status.end(f"Loaded {len(multimodal)} file(s)")
+            await status.end(f"Loaded {len(loaded_files)} file(s)")
         
-        return {
+        result: dict[str, Any] = {
             "status": "success",
             "loaded_files": loaded_files,
             "count": len(loaded_files),
             "message": f"Loaded {len(loaded_files)} file(s). You can now analyze the content.",
-            "_multimodal_content": multimodal
         }
+        if multimodal:
+            result["_multimodal_content"] = multimodal
+        return result
+
+    def _add_loaded(
+        self, path: Path, content_type: str, description: str,
+        loaded_files: list[dict[str, Any]], multimodal: list[dict[str, Any]],
+    ) -> None:
+        """One loaded file: a text goes into the answer itself, anything else is attached.
+
+        A text attachment reaches only Gemini -- the OpenAI and Anthropic injections put a note in its place -- so
+        the content has to be in the JSON the model reads.
+        """
+        record: dict[str, Any] = {
+            "path": str(path),
+            "filename": path.name,
+            "type": content_type,
+            "size_bytes": path.stat().st_size,
+        }
+        if content_type == "text":
+            try:
+                record.update(capped_text(path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning("Failed to read text file %s: %s", path, e)
+                record["read_error"] = str(e)
+        else:
+            multimodal.append({
+                "type": content_type,
+                "path": str(path),
+                "mime_type": self._guess_mime_type(path.name, content_type),
+                "description": f"{description}: {path.name}",
+            })
+        loaded_files.append(record)
+
+    @staticmethod
+    def _lexically_inside(path: str, roots: list[Path]) -> bool:
+        """Is ``path`` inside one of ``roots``, judged on the text alone? Nothing here touches the file system."""
+        try:
+            target = os.path.normcase(os.path.abspath(path))
+            for root in roots:
+                base = os.path.normcase(os.path.abspath(root))
+                try:
+                    if os.path.commonpath([target, base]) == base:
+                        return True
+                except ValueError:  # another drive, or a UNC root against a drive
+                    continue
+        except (ValueError, TypeError):  # an embedded NUL
+            return False
+        return False
     
     def _get_content_type_from_path(self, path: Path) -> str:
         """Determine content type from file extension."""
@@ -1506,10 +1502,11 @@ class ComfyUIServer(SchemaBasedToolServer):
         also retrieves outputs and includes multimodal content for LLM analysis.
         
         Unknown Job Detection:
-        - If a job stays "unknown" (not in queue, not in history) for 60 seconds,
-          it's considered lost and marked as failed immediately.
-        - This handles cases where ComfyUI didn't receive the job (network issues,
-          dropped connections, etc.)
+        - If a job stays "unknown" (not in queue, not in history) for unknown_threshold_seconds,
+          it's considered lost and marked as failed.
+        - A server that cannot be asked is not a job it does not know: after the same time the answer is
+          "unreachable" and nothing is recorded -- the panel and the startup sync settle the job once the
+          server is back.
         """
         prompt_id = params.get("prompt_id")
         if not prompt_id:
@@ -1520,14 +1517,19 @@ class ComfyUIServer(SchemaBasedToolServer):
         # Timeout only from plugin config, not from tool params
         timeout = self.timeout
         # Clamp poll_interval to a sane lower bound: it is LLM-controlled and
-        # unbounded in the schema, so poll_interval=0 would busy-loop two HTTP
+        # nothing enforces the schema's minimum, so poll_interval=0 would busy-loop two HTTP
         # round-trips per iteration against ComfyUI for the full timeout window.
         try:
             poll_interval = max(1, int(params.get("poll_interval", 2)))
         except (TypeError, ValueError):
             poll_interval = 2
         include_content = params.get("include_content", False)
-        
+        refusal = bad_prefix(params.get("output_prefix", "comfy")) if include_content else None
+        if refusal:
+            if status:
+                await status.error(refusal)
+            return {"error": refusal}
+
         # Unknown status threshold - if job stays unknown for this long, fail early
         # Jobs should appear in queue within seconds of submission
         # Configurable via unknown_threshold_seconds in plugin config
@@ -1536,6 +1538,7 @@ class ComfyUIServer(SchemaBasedToolServer):
         import time
         start_time = time.time()
         first_unknown_time: float | None = None  # Track when we first saw "unknown"
+        first_unreachable_time: float | None = None  # ... and when the server first could not be asked
         
         if status:
             await status.progress(f"Waiting for job {prompt_id} to complete (timeout: {timeout}s)")
@@ -1568,8 +1571,29 @@ class ComfyUIServer(SchemaBasedToolServer):
             job_status = await (await self._client_for_job(prompt_id, self.output_dir)).get_status(prompt_id)
             current_status = job_status.get("status", "unknown")
             
+            # An "unknown" with an error key (empty or not) is a server that could not be asked
+            if current_status == "unknown" and "error" in job_status:
+                first_unknown_time = None
+                if first_unreachable_time is None:
+                    first_unreachable_time = time.time()
+                unreachable_duration = time.time() - first_unreachable_time
+                if unreachable_duration >= unknown_threshold:
+                    error_msg = (
+                        f"The ComfyUI server of job {prompt_id} could not be asked for "
+                        f"{int(unreachable_duration)}s: {job_status.get('error') or 'no answer'}"
+                    )
+                    if status:
+                        await status.error(error_msg)
+                    return {
+                        "status": "unreachable",
+                        "prompt_id": prompt_id,
+                        "elapsed_seconds": elapsed,
+                        "error": error_msg,
+                        "hint": "The job may still be running. Ask operation='status' later; do not run it again yet.",
+                    }
             # Track unknown status duration
-            if current_status == "unknown":
+            elif current_status == "unknown":
+                first_unreachable_time = None
                 if first_unknown_time is None:
                     first_unknown_time = time.time()
                     logger.debug("Job %s first seen as unknown", prompt_id)
@@ -1601,6 +1625,7 @@ class ComfyUIServer(SchemaBasedToolServer):
                     logger.debug("Job %s found after being unknown for %.1fs", 
                                 prompt_id, time.time() - first_unknown_time)
                 first_unknown_time = None
+                first_unreachable_time = None
             
             # Update status message periodically (every 10s)
             if status and int(elapsed) % 10 == 0:
@@ -1613,6 +1638,8 @@ class ComfyUIServer(SchemaBasedToolServer):
             
             # Check if completed or failed
             if current_status == "completed":
+                # recorded when it is seen: the panel's finish time and duration are the job's, not a later call's
+                self.job_tracker.update_status(prompt_id, "completed")
                 job_info = self.job_tracker.get_job(prompt_id)
                 wf_name = job_info.get("workflow_name", "workflow") if job_info else "workflow"
 
@@ -1652,6 +1679,7 @@ class ComfyUIServer(SchemaBasedToolServer):
                     "elapsed_seconds": elapsed
                 }
             elif current_status == "failed":
+                self.job_tracker.update_status(prompt_id, "failed", str(job_status.get("error", "Unknown error")))
                 if status:
                     await status.error(f"Job {prompt_id} failed after {int(elapsed)}s")
                 return {
@@ -1716,6 +1744,15 @@ class ComfyUIServer(SchemaBasedToolServer):
             )
             return
 
+        if parts[-1] not in obj:
+            # a misspelt field would be added beside the real one, which ComfyUI ignores
+            logger.warning(
+                "Workflow field path not present: node %s has no '%s' (field=%s) "
+                "— check workflow YAML parameter mapping",
+                node_id, parts[-1], field_path,
+            )
+            return
+
         obj[parts[-1]] = value
 
     @staticmethod
@@ -1753,6 +1790,9 @@ class ComfyUIServer(SchemaBasedToolServer):
         raw = Path(value)
         candidates = [raw] if raw.is_absolute() else [raw, Path.cwd() / value]
         for candidate in candidates:
+            # judged on the text first: resolve() or exists() on a UNC path makes Windows authenticate to its host
+            if not self._lexically_inside(str(candidate), self._upload_source_dirs + self._upload_source_roots_as_named):
+                continue
             try:
                 resolved = candidate.resolve()
             except (OSError, RuntimeError):
@@ -1853,6 +1893,9 @@ class ComfyUIServer(SchemaBasedToolServer):
         candidates = [raw] if raw.is_absolute() else [raw, Path.cwd() / raw]
         file_path: Path | None = None
         for candidate in candidates:
+            # judged on the text first: resolve() or exists() on a UNC path makes Windows authenticate to its host
+            if not self._lexically_inside(str(candidate), self._upload_source_dirs + self._upload_source_roots_as_named):
+                continue
             try:
                 resolved = candidate.resolve()
             except (OSError, RuntimeError):

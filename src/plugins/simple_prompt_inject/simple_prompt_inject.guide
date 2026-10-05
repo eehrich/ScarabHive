@@ -1,0 +1,303 @@
+@database "simple_prompt_inject"
+@author "Enrico Ehrich"
+@$VER: simple_prompt_inject.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Simple Prompt Inject"
+@{h1}Simple Prompt Inject
+
+Puts one fixed piece of text in front of the model before every LLM call --
+a standing instruction, a reminder, a house rule -- without editing any
+agent's system prompt. The text comes from the plugin's settings or from a
+Markdown file, may use the agent's template variables, and goes in as one
+message at a place you choose: right behind the system prompt, just before
+the last user message, or at the end.
+
+The shipped configuration has it on for every agent, sub-agents and chat
+agents included, with one line right behind the system prompt:
+
+@{code text}
+If you start to repeat yourself with tool calls or thinking, try a different approach.
+@{body}
+
+The plugin has no tools and no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+  @{"  Where the text goes  " link position}
+
+For agents and developers
+  @{"  The hook  " link hook}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt}, as shipped:
+
+@{code yaml}
+plugins:
+  servers:
+    simple_prompt_inject:
+      type: simple_prompt_inject
+      enabled: true
+      config:
+        prompt_text: |
+          If you start to repeat yourself with tool calls or thinking, try a different approach.
+        injection_position: "after_system" # or "before_last_user" or "end"
+        # make it at system role, else the llm is confused about injections
+        role: "system"
+@{body}
+
+No allowlist line -- there are no tools. No extra packages. The hook is on
+for every agent as soon as the entry is enabled; see
+@{" The hook " link hook} for switching it off for one agent.
+
+@{h2}Settings
+
+They go under @{tt}config:@{utt}, are read once when the plugin starts and
+hold for every agent; a change takes effect after a restart.
+
+@{table}
+Key | Default | Meaning
+prompt_text | empty | the text; empty means nothing is injected
+prompt_file | empty | a Markdown file whose content is the text; relative to the installation's @{tt}config/@{utt} directory, or absolute. When set, it replaces prompt_text -- an empty file injects nothing
+injection_position | before_last_user | @{tt}after_system@{utt}, @{tt}task_start@{utt}, @{tt}before_last_user@{utt} or @{tt}end@{utt}; see @{" Where the text goes " link position}
+role | developer | @{tt}developer@{utt}, @{tt}user@{utt} or @{tt}system@{utt}
+@{body}
+
+An unknown position or role is logged as an error and the default is used.
+@{tt}role: system@{utt} always stands behind the system prompt: with another
+position the plugin logs an error and places it there anyway.
+@{tt}task_start@{utt} writes into the user's task, so its role is
+@{tt}user@{utt}; another role is logged as an error and ignored.
+
+@{h2}The file
+
+@{tt}prompt_file@{utt} is read once, when the plugin starts. HTML comments
+(@{tt}<!-- ... -->@{utt}) are removed from it -- notes for whoever edits the
+file never reach the model; @{tt}prompt_text@{utt} is sent as written. A
+file that does not exist stops this plugin from starting ("Failed to register
+plugin simple_prompt_inject" in the log, with the path); everything else
+starts.
+
+@{h2}Template variables
+
+The text is a Jinja template. The variables are the agent's
+@{tt}template_vars@{utt} from its YAML, overridden key by key by the
+session's own variables (@{tt}/vars KEY=VALUE@{utt} in the chat):
+
+@{code yaml}
+agent_config:
+  template_vars:
+    lang: "German"
+@{body}
+
+@{code yaml}
+prompt_text: "Answer in {{ lang }}."
+@{body}
+
+@{bullet}Without any variable at all the text is sent as it is, braces
+included.
+@{bullet}A variable that does not exist renders as nothing.
+@{bullet}A text that is not valid Jinja is sent as written, with a warning in
+the log.
+@{bullet}A text that renders empty sends nothing, and takes out the copy an
+earlier call put in.
+
+Only these variables exist here -- not the date, the tool list or the other
+values the system prompt template gets. Nothing in the text changes with time
+unless one of your variables does.
+
+@{h2}Several texts
+
+One entry holds one text. For a second one, add a second entry with its own
+name:
+
+@{code yaml}
+    style_reminder:
+      type: simple_prompt_inject
+      enabled: true
+      config:
+        prompt_text: "Keep answers short."
+        injection_position: "before_last_user"
+@{body}
+
+Its hook is @{tt}style_reminder.inject_prompt@{utt}, and its message is
+marked with that name, so the two never replace each other. This is also the
+way to give some agents a different text: the agent's override can switch a
+hook on or off, it cannot change the text.
+@endnode
+
+@node position "Where the text goes"
+@{h1}Where the text goes
+
+@{table}
+Position | Where | What a new turn does
+after_system | right behind the system prompt (behind every system message at the head) | nothing: same place, same text
+task_start | in front of the task, inside the first user message a caller wrote | nothing: same place, same text
+before_last_user | just in front of the last message the model is asked to answer | the text moves in front of the new message
+end | appended at the end of the list | depends on the role, see below
+@{body}
+
+@{h2}after_system
+
+Part of the instructions. It stays where it is for the whole session and is
+written again only when the rendered text changes -- and then the whole
+history behind it has to be sent to the provider uncached once. Keep a text
+built from variables stable within a session. This is the position to use
+for a standing rule.
+
+@{h2}task_start
+
+The text stands at the start of the task itself, followed by a
+@{tt}---@{utt} line -- the first user message that no hook put there. The
+message stays the user's: it keeps no @{tt}injected_by@{utt} mark, so turn
+counters and @{tt}tool_preload@{utt} still find the task. What the hook
+wrote is recorded on the message (@{tt}prefixed_by@{utt}, saved with the
+session, never sent): an unchanged text is left alone, a changed one
+replaces the old, an empty one is taken out. Several entries can write in
+front of the same task. A copy the same entry left at another position
+(the setting changed over a restart) is taken out; a task sent again with
+the text already in front, but without the record, is taken over, not
+written twice. Only in front counts: the same words further inside the
+task are the task's own. @{tt}/retry@{utt} in the web chat gives back the
+words without the text, and the hook writes it anew. An archive
+placeholder of @{tt}context_engineer@{utt} is never the task.
+@{tt}tool_preload@{utt} matches its rules on the task without the text.
+On writer agents a list of overused motifs was followed a little more
+here than as a message of its own; the difference was not significant.
+
+@{h2}before_last_user
+
+For a reminder the model should read just before it answers. The anchor is
+the last user message of any kind -- one a person typed, a delivered direct
+message, a scripted follow-up -- or the wake of a woken run; without one the
+text is appended. Within a turn it stays put while tool results pile up
+behind it. With the next turn it moves: the copy in front of the old message
+goes, a new one goes in front of the new message. Everything from the old
+copy on -- the whole previous turn, with its tool calls -- is then no longer
+cached.
+
+@{h2}end
+
+Appended once, then left alone. A changed text is appended again behind the
+old copy, which stays. What happens at the next turn depends on the role:
+
+@{bullet}@{tt}user@{utt}: the message is saved with the session and stays
+where it was appended, for good. The most cache-friendly choice after
+@{tt}after_system@{utt} -- but the text stands in the history at the place
+it first appeared, not at the end.
+@{bullet}@{tt}developer@{utt}: a developer note is not saved with the
+session. The next turn appends it anew, behind the new user message, and the
+previous turn is no longer cached from the old copy on.
+@endnode
+
+@node hook "The hook"
+@{h1}The hook
+
+@{tt}inject_prompt@{utt}, a @{tt}pre_llm_call@{utt} hook: it runs before
+every LLM call of every agent's loop -- chat agents, sub-agents and woken
+runs alike. On by default; its time limit is one second.
+
+@{h2}What it does
+
+It renders the text (see @{" Setting it up " link setup}) and places one
+message with the configured role, marked @{tt}injected_by@{utt} with the
+instance name (@{tt}simple_prompt_inject@{utt} for the shipped entry), at the
+configured position. The mark is how it finds its own copy of the call
+before: that copy is left alone, moved or replaced as
+@{" Where the text goes " link position} describes; there is never more
+than one copy of the current text.
+
+@{h2}When it does nothing
+
+@{bullet}The text is empty, or renders empty (an existing copy is then taken
+out).
+@{bullet}The call carries no message list.
+@{bullet}The copy of the call before is still right: @{tt}after_system@{utt}
+with the same text at the same place, @{tt}end@{utt} with the same text,
+@{tt}task_start@{utt} with the same text in the task.
+@{bullet}@{tt}task_start@{utt} finds no task (no user message without a
+mark), or no text in it, or only blanks.
+
+@{h2}Switching it off for an agent
+
+In the agent's YAML, with the full hook name:
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      simple_prompt_inject.inject_prompt:
+        enabled: false
+@{body}
+
+The other way round, @{tt}hook_config: {enabled: false}@{utt} in the server
+entry turns the hook off for all agents, and an agent's override with
+@{tt}enabled: true@{utt} turns it back on for that one. Other keys in the
+agent's override are ignored: the settings come only from the server entry.
+
+@{h2}Order
+
+The hook has no category and only asks to run between the start and the end
+of the chain. In the shipped set it runs early: after
+@{tt}project_instructions.withdraw_project_instructions@{utt}, before
+compaction (context_engineer, context_summarizer) and before the hooks that
+add messages of their own -- debate_forum's direct messages, forge's webhook
+events, the project instructions. Compaction therefore sees the note like any
+other message. A direct message delivered in the same call lands behind a
+@{tt}before_last_user@{utt} reminder; the next call moves the reminder in
+front of it.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+The rendered text, verbatim, as one message of the configured role -- no
+heading, no frame. With the shipped entry that is a system message right
+behind the system prompt:
+
+@{code text}
+If you start to repeat yourself with tool calls or thinking, try a different approach.
+@{body}
+
+With @{tt}task_start@{utt} it is no message of its own: the task begins
+with the text, a @{tt}---@{utt} line, then the task as written.
+
+A @{tt}developer@{utt} message goes out on the rung its client picks
+(@{tt}llm/message_roles.py@{utt}): a developer turn, a @{tt}system@{utt}
+turn, or a @{tt}user@{utt} turn wrapped in @{tt}<developer_note>@{utt}. A
+@{tt}system@{utt} message always stands at the head because Anthropic and
+Gemini have no system role inside a history and would hoist it there anyway.
+There is no status line in the chat.
+
+@{h2}Tokens and cache
+
+The text costs its size on every call; there is no size limit, so a long
+file is paid for on every call. Whether it is cached depends on the place:
+
+@{table}
+Position and role | Every request a prefix of the next?
+after_system, any role | yes -- until the rendered text changes
+task_start (user) | yes -- until the rendered text changes
+end, user | yes
+end, developer | within a turn; each new turn loses the cache from the previous copy on
+before_last_user, any role | within a turn; each new turn loses the cache from the previous copy on
+@{body}
+
+Measured through the hook dispatcher over two turns with a tool round each,
+the session saved in between the way the agent saves it.
+
+@{h2}Known gaps
+
+@{bullet}One text per entry, the same for every agent that has the hook on;
+a per-agent text needs its own entry.
+@{bullet}No size limit on the text or the file.
+@{bullet}The file is read only at start; an edit needs a restart.
+@{bullet}Where the hook runs relative to compaction and the other
+injections is not pinned by its schema -- see @{" The hook " link hook}.
+@endnode

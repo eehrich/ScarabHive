@@ -1665,19 +1665,20 @@ class TestPluginIntegration:
     def plugin_instance(self, tmp_path, monkeypatch):
         """Create plugin instance for testing."""
         from agent_system.config.models import AgentSystemConfig, ToolServerConfig
-        
-        # Patch storage path
-        monkeypatch.setattr(
-            "plugins.context_engineer.hooks.ContextEngineerPlugin._storage_base",
-            tmp_path,
-            raising=False
-        )
-        
+        from plugins.context_engineer.server import ContextEngineerServer
+
+        # The storage path through the config: apply_config sets it on the
+        # instance, so a patched class attribute left the stores in the real
+        # data directory. And the real history file stays unread.
+        monkeypatch.setattr(ContextEngineerServer, "_load_history", lambda self: None)
         system_config = AgentSystemConfig()
-        server_config = ToolServerConfig()
+        server_config = ToolServerConfig(config={"storage_path": str(tmp_path)})
         
         from plugins.context_engineer.plugin import PLUGIN_FACTORY
-        return PLUGIN_FACTORY("context_engineer", system_config, server_config)
+        plugin = PLUGIN_FACTORY("context_engineer", system_config, server_config)
+        # The hook saves its compaction list through this path: never the real one.
+        plugin.server._history_file = tmp_path / "history.json"
+        return plugin
     
     def test_plugin_factory_creates_instance(self, plugin_instance):
         """Test that PLUGIN_FACTORY creates valid instance."""
@@ -1714,7 +1715,58 @@ class TestPluginIntegration:
         )
         
         assert result["success"] is True
-        assert result["fact_id"] is not None
+        assert (result["category"], result["importance"]) == ("facts", 0.7)
+
+    @pytest.mark.asyncio
+    async def test_store_fact_answers_what_core_memory_keeps(self, plugin_instance):
+        """An unknown category is filed under facts, the importance clamped, and a
+        repeated fact keeps its first category and the higher importance: the
+        answer echoed the request instead."""
+        store = plugin_instance.server._hooks_impl._handle_store_fact
+        first = await store(fact="Deploy on Mondays", category="rules", importance=7,
+                            session_id="kept-session")
+        again = await store(fact="deploy on mondays ", category="decisions", importance=0.2,
+                            session_id="kept-session")
+
+        assert (first["category"], first["importance"]) == ("facts", 1.0)
+        assert (again["category"], again["importance"]) == ("facts", 1.0)
+        assert "fact_id" not in first
+
+    @pytest.mark.asyncio
+    async def test_a_blank_fact_is_refused(self, plugin_instance):
+        """Whitespace passed the check and was kept as an empty line."""
+        answer = await plugin_instance.server.store_fact({"fact": "  \n ", "_session_id": "blank"})
+
+        assert answer == {"status": "error", "error": "Fact parameter is required"}
+        memory = plugin_instance.server._hooks_impl._get_session_components("blank")["core_memory"]
+        assert memory.facts == []
+
+    @pytest.mark.asyncio
+    async def test_a_fact_pushed_out_while_it_was_saved_is_no_success(self, plugin_instance):
+        """A parallel store_fact can push the fact out during add_fact's save;
+        the answer then echoed the request as a success."""
+        hooks = plugin_instance.server._hooks_impl
+        memory = hooks._get_session_components("pushed")["core_memory"]
+
+        async def save_while_another_call_evicts():
+            memory.facts = [f for f in memory.facts if f.content != "Short-lived"]
+
+        memory._save = save_while_another_call_evicts
+        answer = await plugin_instance.server.store_fact({"fact": "Short-lived", "_session_id": "pushed"})
+
+        assert answer["status"] == "error" and "pushed out" in answer["error"], answer
+
+    @pytest.mark.asyncio
+    async def test_an_anthropic_tool_call_id_reads_its_result(self, plugin_instance):
+        """toolu_… ids were refused as 'not a known reference'; call_… ids worked."""
+        hooks = plugin_instance.server._hooks_impl
+        store = hooks._get_session_components("anthropic")["tool_store"]
+        store.store_and_reference(tool_call_id="toolu_01A09q90qw90lq917835", tool_name="read_file",
+                                  content="the stored body")
+
+        answer = await hooks._handle_context_read(ref="toolu_01A09q90qw90lq917835", session_id="anthropic")
+
+        assert answer["status"] == "success" and answer["content"] == "the stored body", answer
 
 
 # =============================================================================

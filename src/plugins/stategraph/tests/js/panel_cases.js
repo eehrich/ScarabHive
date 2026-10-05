@@ -7,6 +7,8 @@ import { FIELDS, HOOKS, MACHINE, RUN, RUNS, KINDS } from './fixtures.js';
 import { ApiError } from './fake_kit.js';
 
 load('./fake_dom.js');
+// the cases edit the file at once, as with auto-save; those without it take the setting back before they boot
+localStorage.setItem('stategraph:autosave', 'true');
 
 globalThis.RENDERS = []; globalThis.ICONS = new Set(); globalThis.TOASTS = []; globalThis.CALLS = []; globalThis.ASKED = [];
 globalThis.TABS = {}; globalThis.ANSWERS = { prompt: [], confirm: true, dialog: null };
@@ -31,18 +33,28 @@ const JOURNAL2 = [
   { seq: 8, kind: 'trace', key: 's3:final:verdict', state: 'verdict', status: 'final', data: { frame: 's2/m/', machine: 'critique', status: 'failed' } },
   { seq: 9, kind: 'trace', key: 's4:final:done', state: 'done', status: 'final', data: { frame: '', status: 'succeeded' } },
 ];
-let journalOf = { r1: RUN.journal, r2: JOURNAL2 };
+let journalOf = { r1: RUN.journal, r2: JOURNAL2, r3: [] };
+// a third run of the machine, running beside r1
+const RUN3 = { ...RUN, id: 'r3', status: 'running', debug: { ...RUN.debug, paused: null } };
 const CATALOG = { agents: [{ name: 'scene_writer', description: 'Writes one scene' }], tools: [{ name: 'store_put', description: 'Store a value' }],
   profiles: ['fast'] };
 let editAnswer = null;
+// review and loop, both composites; loop holds one state, inner
+const stateLike = (name, from, fields) => ({ ...MACHINE.graph.states.find((s) => s.name === from), name, ...fields });
+const TWO_COMPOSITES = { ...MACHINE, graph: { ...MACHINE.graph, states: [...MACHINE.graph.states,
+  stateLike('loop', 'review', { parent: null, initial: 'inner', line: 90 }),
+  stateLike('inner', 'verdict', { parent: 'loop', line: 93 })] } };
 let reviewAnswer = MACHINE;  // GET of the review machine
+const WITH_NOTE = { ...MACHINE, graph: { ...MACHINE.graph, notes: [{ name: 'why', text: 'Because the review\nneeds a second look.\n' }] } };  // a | block: a line break at the end
+let layoutsKept = false;  // a layout PUT to review changes what its GET answers, as the server's does
 let runAnswer = RUN;
 let controlAnswer = null;  // r1's control answer, when it is not runAnswer
 let runsAnswer = null;  // (query) -> the runs list, when not the two runs
+let catalogDown = null;  // (path) -> true: the catalog answers 503
 globalThis.SERVER = (method, path, json) => {
   const p = path.replace('/plugins/stategraph/api', '');
   if (p === '/kinds') return KINDS;
-  if (p === '/catalog') return CATALOG;
+  if (p.split('?')[0] === '/catalog') return catalogDown?.(p) ? new ApiError(503, 'restarting') : CATALOG;
   if (p === '/machines' && method === 'GET') {
     const groups = { review: 'Writer/v6', other: 'Writer', ro: 'stategraph' };
     return ['review', 'other', 'hooks', 'ro', 'empty', 'plain', 'fields'].map((id) => ({ id, title: id, errors: 0, warnings: 0, writable: id !== 'ro',
@@ -65,7 +77,11 @@ globalThis.SERVER = (method, path, json) => {
   if (copy) return method === 'PUT' ? { machine_id: copy[1], versions: {}, problems: [], graph: MACHINE.graph } : { ...MACHINE, id: copy[1] };
   if (p === '/machines/review' && method === 'DELETE') return { deleted: 'review', files: ['review.yaml'], kept_module: null };
   if (p.endsWith('/edit')) return editAnswer || MACHINE;
-  if (p.endsWith('/layout')) return {};
+  if (p === '/validate') return { machine_id: 'review', problems: [], graph: MACHINE.graph };
+  if (p.endsWith('/layout')) {
+    if (layoutsKept && p === '/machines/review/layout') reviewAnswer = { ...reviewAnswer, layout: json.layout };
+    return {};
+  }
   if (p.startsWith('/runs?')) return runsAnswer ? runsAnswer(new URLSearchParams(p.split('?')[1]))
     : [...RUNS, { ...RUNS[0], id: 'r2', status: 'succeeded', final_state: 'done' }];
   if (p === '/runs/r1/events') return { accepted: true, frame: '' };
@@ -73,6 +89,7 @@ globalThis.SERVER = (method, path, json) => {
   if (p.startsWith('/runs/r1?')) return runAnswer;
   if (p === '/runs/r1/control') return controlAnswer || runAnswer;
   if (p.startsWith('/runs/r2?')) return RUN2;
+  if (p.startsWith('/runs/r3?')) return RUN3;
   const journal = p.match(/^\/runs\/(r\d)\/journal\?(.*)$/);
   if (journal) {
     const query = new URLSearchParams(journal[2]);
@@ -301,6 +318,60 @@ const CASES = {
     await release();
   },
 
+  async runs_live_at_once_are_all_offered_in_the_bar_and_picked_there() {
+    let r1 = 'paused';
+    runsAnswer = () => [{ ...RUNS[0], id: 'r3', status: 'running' }, { ...RUNS[0], id: 'r2', status: 'succeeded', final_state: 'done' },
+      { ...RUNS[0], status: r1 }];
+    await boot('?machine=review&run=r1');
+    const picks = () => [...$('debugBar').innerHTML.matchAll(/data-pick-run="(r\d)" data-key="[^"]+"\s+aria-pressed="(true|false)"/g)]
+      .map(([, id, on]) => (on === 'true' ? `[${id}]` : id)).join(',');
+    check(picks() === '[r1],r3', `offered: ${picks()}`);  // in the order they started; the ended r2 is not
+    const lists = POLLERS.find((p) => p.ms === 3000);
+    check(lists?.running, 'the list is not asked again while another run is live');
+    HOLD = (method, path) => path.includes('/runs?');
+    const asked = () => CALLS.filter(([, path]) => path.includes('/runs?')).length;
+    const before = asked();
+    lists.fn();
+    await settle();
+    lists.fn();
+    await settle();
+    check(asked() === before + 1 && !ABORTED.length, `ticks while the list was out: ${asked() - before}, aborted: ${ABORTED}`);
+    HOLD = () => false;
+    await release();
+    await $('debugBar').fire('click', { target: element('button', { 'data-pick-run': 'r3' }) });
+    await settle();
+    await release();
+    check(picks() === 'r1,[r3]', `after the pick: ${picks()}`);
+    check(CALLS.some(([, path]) => path.includes('/runs/r3?')), 'the run picked is not asked for');
+    r1 = 'succeeded';
+    lists.fn();
+    await settle();
+    await release();
+    const bar = $('debugBar').innerHTML;
+    check(!bar.includes('data-pick-run') && bar.includes('title="r3"'), `a run that ended is still offered: ${picks()}`);
+    check(!lists.running, 'the list is still asked with no other run live');
+    await $('runList').fire('rowselect', { detail: { id: 'r2' } });
+    await settle();
+    check(picks() === '[r2],r3' && lists.running, `an ended run shown beside a live one: ${picks()}, followed: ${lists.running}`);
+    const listed = $('runList').innerHTML;
+    runsAnswer = () => new ApiError(503, 'restarting');
+    lists.fn();
+    await settle();
+    check($('runList').innerHTML === listed && !TOASTS.length && lists.running, `a failed tick: ${TOASTS}`);
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'close' }) });
+    await settle();
+    check(!lists.running, 'the list is still asked with no run shown');
+  },
+
+  async a_run_shown_the_list_does_not_hold_is_offered_beside_the_live_ones_by_their_ends() {
+    runsAnswer = () => [{ ...RUNS[0], id: 'k3j9x0p2qa_m01x9z_sgzz98yy', status: 'running' }];
+    await boot('?machine=review&run=r1');
+    const bar = $('debugBar').innerHTML;
+    const picks = [...bar.matchAll(/data-pick-run="([^"]+)" data-key="[^"]+"\s+aria-pressed="true"/g)].map(([, id]) => id);
+    check(bar.includes('data-pick-run="k3j9x0p2qa_m01x9z_sgzz98yy"') && picks.join() === 'r1', `pressed: ${picks}`);
+    check(bar.includes('…_sgzz98yy</span>'), 'a run a machine tool started is not told by its end');
+  },
+
   async a_refresh_neither_drops_a_machine_click_nor_draws_the_machine_left() {
     await boot('?machine=review');
     HOLD = (method, path) => /\/machines(\/other|\/review)?$/.test(path);
@@ -333,6 +404,7 @@ const CASES = {
     check(bar.includes('title="r2"') && !bar.includes('title="r1"'), `the bar shows ${(bar.match(/title="(r\d)"/) || [])[1]}`);
     const row = $('runList').innerHTML.match(/data-id="r1"[\s\S]*?<\/tr>/)?.[0] || '';
     check(row.includes('cancelled'), `the list does not know r1 ended: ${row}`);
+    check(!POLLERS.find((p) => p.ms === 3000).running, 'the list is still asked though no other run is live');
   },
 
   async the_run_list_follows_a_terminate() {
@@ -403,6 +475,21 @@ const CASES = {
     await boot('?machine=review&run=r1');
     const bar = $('debugBar').innerHTML;
     check(bar.includes('data-control="terminate"') && !/data-control="terminate" disabled/.test(bar), 'Terminate is off');
+  },
+
+  async a_run_of_another_process_can_be_paused_continued_and_terminated_but_not_run_to_a_state() {
+    const enabled = (bar, control) => bar.includes(`data-control="${control}"`)
+      && !new RegExp(`data-control="${control}" disabled`).test(bar);
+    runAnswer = { ...RUN, status: 'running', active: false, debug: { ...RUN.debug, paused: null } };
+    await boot('?machine=review&run=r1');
+    let bar = $('debugBar').innerHTML;
+    check(enabled(bar, 'pause') && enabled(bar, 'terminate') && !enabled(bar, 'run_to') && bar.includes('in another process'),
+      `running elsewhere: ${bar}`);
+    runAnswer = { ...runAnswer, status: 'paused' };
+    POLLERS.find((p) => p.ms === 1000).fn();
+    await settle();
+    bar = $('debugBar').innerHTML;
+    check(enabled(bar, 'continue') && enabled(bar, 'step') && !enabled(bar, 'pause'), `paused elsewhere: ${bar}`);
   },
 
   async a_click_on_a_states_handle_connects_nothing() {
@@ -493,10 +580,13 @@ const CASES = {
     await boot('?machine=review');
     const node = (name) => $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name);
     await choose('write');
-    await $('canvas').fire('pointerdown', { button: 0, target: node('failed'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
-    await $('canvas').fire('pointerup', { target: node('failed'), clientX: 10, clientY: 10 });
-    await settle();
-    check($('side-inspect').innerHTML.includes('2 states'), 'not two states selected');
+    const link = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'write#1');  // write → failed
+    for (const target of [node('failed'), link]) {
+      await $('canvas').fire('pointerdown', { button: 0, target, ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+      await $('canvas').fire('pointerup', { target, clientX: 10, clientY: 10 });
+      await settle();
+    }
+    check($('side-inspect').innerHTML.includes('2 states, 1 transition'), 'not two states and a transition selected');
     reviewAnswer = { ...MACHINE, versions: { ...MACHINE.versions, 'review.yaml': 'v2' }, graph: { ...MACHINE.graph,
       states: MACHINE.graph.states.filter((s) => s.name !== 'failed'),
       transitions: MACHINE.graph.transitions.filter((t) => t.target !== 'failed') } };
@@ -520,7 +610,21 @@ const CASES = {
     const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop();
     const moved = saved && Object.keys(saved[2].layout.positions).sort();
     check(JSON.stringify(moved) === JSON.stringify(['done', 'failed', 'write']), `positions saved: ${JSON.stringify(moved)}`);
+    check(saved[2].layout.auto === 'classic', `dragged against the classic layout, it stays: ${JSON.stringify(saved[2].layout)}`);
     check($('side-inspect').innerHTML.includes('2 states'), 'the drag lost the selection');
+  },
+
+  async the_first_drag_keeps_a_machine_laid_out_flow() {
+    reviewAnswer = { ...MACHINE, layout: { version: 1, positions: {} } };
+    await boot('?machine=review');
+    const node = (name) => $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointermove', { target: node('write'), clientX: 60, clientY: 30 });
+    await $('canvas').fire('pointerup', { target: node('write'), clientX: 60, clientY: 30 });
+    await settle();
+    const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop()?.[2].layout;
+    check(saved?.auto === 'flow' && Object.keys(saved.positions).join() === 'write',
+      `the first position turned the layout classic: ${JSON.stringify(saved)}`);
   },
 
   async a_shift_drag_on_the_empty_canvas_selects_the_states_inside_the_band() {
@@ -578,6 +682,81 @@ const CASES = {
       `review at ${JSON.stringify(saved.review)}, expected x ${before.x + 40 / k}, y ${before.y}`);
   },
 
+  async a_state_dropped_on_a_composite_goes_into_it_and_keeps_its_place() {
+    await boot('?machine=review');
+    const { client, boxOf, node } = canvasGeometry();
+    const read = boxOf('read');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('read'), pointerId: 1, ...client(read.x + 5, read.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('read'), ...client(read.x + 25, read.y + 5) });
+    await $('canvas').fire('pointerup', { target: node('read'), ...client(read.x + 25, read.y + 5) });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')), `a move inside its own composite went into it again: ${JSON.stringify(lastEdit())}`);
+    const from = boxOf('write');
+    const into = boxOf('review');
+    const at = client(into.x + into.w / 2, into.y + into.h - 6);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), pointerId: 1, ...client(from.x + 5, from.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...at });
+    check(node('review').getAttribute('class').includes('sg-node--drop'), 'the composite under the pointer is not marked');
+    await $('canvas').fire('pointerup', { target: node('review'), ...at });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'move_state', name: 'write', into: 'review' }), `sent: ${JSON.stringify(lastEdit())}`);
+    const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop()?.[2].layout.positions;
+    check(saved?.write && saved.write.x >= 0 && saved.write.y >= 0 && saved.write.x < into.w,
+      `its place counts from the composite now: ${JSON.stringify(saved?.write)}`);
+    check(!$('canvas').querySelectorAll('.sg-node--drop').length, 'the drop mark stays');
+  },
+
+  async a_refused_drop_keeps_the_state_where_it_was_dropped() {
+    await boot('?machine=review');
+    editAnswer = new ApiError(422, "'write' cannot go there");
+    const { client, boxOf, node } = canvasGeometry();
+    const from = boxOf('write');
+    const into = boxOf('review');
+    const at = client(into.x + into.w / 2, into.y + into.h - 6);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), pointerId: 1, ...client(from.x + 5, from.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...at });
+    await $('canvas').fire('pointerup', { target: node('review'), ...at });
+    await settle();
+    const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop()?.[2].layout.positions;
+    check(saved?.write && Math.abs(saved.write.x - (into.x + into.w / 2 - 5)) <= 1,
+      `a refused move is a plain move: ${JSON.stringify(saved?.write)}`);
+  },
+
+  async a_drop_on_a_read_only_machine_is_a_plain_move() {
+    await boot('?machine=ro');
+    const { client, boxOf, node } = canvasGeometry();
+    const from = boxOf('write');
+    const into = boxOf('review');
+    const at = client(into.x + into.w / 2, into.y + into.h - 6);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), pointerId: 1, ...client(from.x + 5, from.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...at });
+    await $('canvas').fire('pointerup', { target: node('review'), ...at });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')) && !TOASTS.some(([, text]) => text.includes('read-only')),
+      `a read-only machine was edited or refused a drag: ${JSON.stringify(TOASTS)}`);
+    check(!$('canvas').querySelectorAll('.sg-node--drop').length, 'the drop mark stays');
+  },
+
+  async the_inspector_moves_a_state_to_another_composite_or_the_top_level() {
+    await boot('?machine=review');
+    await choose('review');
+    const choices = ($('side-inspect').innerHTML.match(/data-act="parent"[^>]*>([\s\S]*?)<\/select>/) || [])[1] || '';
+    check(choices.includes('(top level)') && !choices.includes('value="review"'), `a composite goes into itself: ${choices}`);
+    await choose('read');
+    const select = element('select', { 'data-act': 'parent' });
+    select.value = '';
+    await $('side-inspect').fire('change', { target: select });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'move_state', name: 'read', into: null }), `sent: ${JSON.stringify(lastEdit())}`);
+    editAnswer = new ApiError(422, "'read' cannot go there");
+    await choose('read');
+    const refused = element('select', { 'data-act': 'parent' });
+    refused.value = '';
+    await $('side-inspect').fire('change', { target: refused });
+    await settle();
+    check(refused.value === 'review', `a refused move leaves the choice at ${JSON.stringify(refused.value)}`);
+  },
+
   async a_composite_named_like_its_first_state_gets_another_one() {
     await boot('?machine=review');
     ANSWERS.prompt.push('start');
@@ -595,7 +774,7 @@ const CASES = {
     await settle();
     check($('side-inspect').innerHTML.includes('Remove 2 states'), 'the button does not count what goes (read goes with review)');
     ANSWERS.confirm = true;
-    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove-states' }) });
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove-selection' }) });
     await settle();
     const asked = ASKED.filter(([kind]) => kind === 'confirm').pop()?.[1] || '';
     check(asked.startsWith('Remove 2 states write, review with the states inside?'), `asked: ${asked}`);
@@ -640,6 +819,339 @@ const CASES = {
       document.elementFromPoint = () => null;
     }
     check(!ASKED.some(([kind]) => kind === 'prompt'), `asked: ${JSON.stringify(ASKED)}`);
+  },
+
+  async ctrl_click_on_transitions_selects_them_with_states_and_delete_removes_them_in_one_edit() {
+    await boot('?machine=review');
+    const { node } = canvasGeometry();
+    const link = (id) => $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id);
+    const click = async (target) => {
+      await $('canvas').fire('pointerdown', { button: 0, target, ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+      await $('canvas').fire('pointerup', { target, clientX: 10, clientY: 10 });
+      await settle();
+    };
+    await choose('done');
+    for (const id of ['write#0', 'write#1', 'review#0', 'write#1']) await click(link(id));  // write#1 on and off again
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">1 state, 2 transitions</h3>'),
+      'the inspector does not show 1 state and 2 transitions');
+    check(link('write#0').classList.contains('is-selected') && !link('write#1').classList.contains('is-selected')
+      && node('done').classList.contains('is-selected'), 'the selected transitions are not marked');
+    // review → done goes with done anyway: it is not counted, nor sent
+    check($('side-inspect').innerHTML.includes('Remove 1 state and 1 transition'), 'the button does not count what goes');
+    // a band around no state keeps the transitions
+    await $('canvas').fire('pointerdown', { button: 0, target: $('canvas'), shiftKey: true, clientX: -9000, clientY: -9000, pointerId: 1 });
+    await $('canvas').fire('pointermove', { target: $('canvas'), clientX: -8000, clientY: -8000 });
+    await $('canvas').fire('pointerup', { target: $('canvas'), clientX: -8000, clientY: -8000 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">1 state, 2 transitions</h3>'), 'the band dropped the transitions');
+    ANSWERS.confirm = true;
+    await $('canvas').fire('keydown', { key: 'Delete', target: $('canvas') });
+    await settle();
+    const asked = ASKED.filter(([kind]) => kind === 'confirm').pop()?.[1] || '';
+    check(asked === 'Remove the state done and the transition write → review? 1 transition into it goes too.', `asked: ${asked}`);
+    check(JSON.stringify(lastEdit()?.ops) === JSON.stringify([{ op: 'remove_transition', source: 'write', index: 0 },
+      { op: 'remove_state', name: 'done' }]), `sent: ${JSON.stringify(lastEdit())}`);
+    await $('side-inspect').fire('click', { target: element('button', { 'data-select-transition': 'write#0' }) });
+    await settle();
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">Transition</h3>'), 'the inspector\'s button did not open the transition');
+  },
+
+  async transitions_of_one_state_are_removed_from_its_last_one_on() {
+    await boot('?machine=review');
+    const link = (id) => $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id);
+    await $('canvas').fire('pointerdown', { button: 0, target: link('write#0'), clientX: 10, clientY: 10, pointerId: 1 });
+    await settle();
+    for (const id of ['read#0', 'write#1']) {
+      await $('canvas').fire('pointerdown', { button: 0, target: link(id), shiftKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+      await $('canvas').fire('pointerup', { target: link(id), clientX: 10, clientY: 10 });
+      await settle();
+    }
+    ANSWERS.confirm = true;
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove-selection' }) });
+    await settle();
+    check(JSON.stringify(lastEdit()?.ops) === JSON.stringify([{ op: 'remove_transition', source: 'read', index: 0 },
+      { op: 'remove_transition', source: 'write', index: 1 }, { op: 'remove_transition', source: 'write', index: 0 }]),
+    `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async group_puts_the_selected_states_into_a_composite_where_they_are_and_an_undo_puts_them_back() {
+    layoutsKept = true;
+    await boot('?machine=review');
+    const { node, boxOf } = canvasGeometry();
+    const circle = node('done').querySelector('.sg-shape');  // a final is drawn as circles in its box
+    const [cx, cy, r] = ['cx', 'cy', 'r'].map((key) => Number(circle.getAttribute(key)));
+    const drawn = { write: boxOf('write'), done: { x: cx - r, y: cy - r } };
+    await choose('write');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('done'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: node('done'), clientX: 10, clientY: 10 });
+    await settle();
+    ANSWERS.prompt.push('drafting');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'group' }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'group_states', names: ['write', 'done'], name: 'drafting' }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+    const layouts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).map(([, , json]) => json.layout.positions);
+    const spots = layouts().pop();
+    for (const name of ['write', 'done']) {
+      const at = { x: spots.drafting.x + spots[name].x, y: spots.drafting.y + spots[name].y };
+      check(Math.abs(at.x - drawn[name].x) <= 1 && Math.abs(at.y - drawn[name].y) <= 1,
+        `${name} at ${JSON.stringify(at)} in the composite, drawn at ${JSON.stringify(drawn[name])}`);
+    }
+    // another state dragged after the group keeps its place through the undo and the redo
+    await $('canvas').fire('pointerdown', { button: 0, target: node('failed'), clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointermove', { target: node('failed'), clientX: 60, clientY: 30 });
+    await $('canvas').fire('pointerup', { target: node('failed'), clientX: 60, clientY: 30 });
+    await settle();
+    const failed = layouts().pop().failed;
+    const sorted = (spotsByName) => JSON.stringify(Object.keys(spotsByName).sort().map((key) => [key, spotsByName[key]]));
+    await $('undo').fire('click', {});
+    await settle();
+    check(sorted(layouts().pop()) === sorted({ ...MACHINE.layout.positions, failed }), `undone to ${JSON.stringify(layouts().pop())}`);
+    await $('redo').fire('click', {});
+    await settle();
+    check(sorted(layouts().pop()) === sorted({ ...spots, failed }), `redone to ${JSON.stringify(layouts().pop())}`);
+  },
+
+  async states_of_two_levels_are_not_grouped_a_composite_takes_its_own_along_and_unplaced_ones_get_no_position() {
+    await boot('?machine=review');
+    const { node } = canvasGeometry();
+    const add = async (name) => {
+      await $('canvas').fire('pointerdown', { button: 0, target: node(name), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+      await $('canvas').fire('pointerup', { target: node(name), clientX: 10, clientY: 10 });
+      await settle();
+    };
+    await choose('write');
+    await add('read');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'group' }) });
+    await settle();
+    check(!ASKED.some(([kind]) => kind === 'prompt') && TOASTS.some(([, text]) => text.includes('side by side')),
+      `asked ${JSON.stringify(ASKED)}, told ${JSON.stringify(TOASTS)}`);
+    await add('read');
+    await add('failed');
+    ANSWERS.prompt.push('ends');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'group' }) });
+    await settle();
+    check(lastEdit()?.op === 'group_states' && !CALLS.some(([method, path]) => method === 'PUT' && path.endsWith('/layout')),
+      'states laid out by ELK got positions');
+    await choose('review');
+    await add('read');  // inside review: it goes along, the two are one level
+    ANSWERS.prompt.push('outer');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'group' }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'group_states', names: ['review'], name: 'outer' }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_renamed_states_position_goes_back_with_an_undo() {
+    await boot('?machine=review');
+    ANSWERS.prompt.push('finished');
+    document.elementFromPoint = () => canvasGeometry().node('done');
+    try {
+      await $('canvas').fire('dblclick', { target: $('canvas'), clientX: 10, clientY: 10 });
+      await settle();
+    } finally {
+      document.elementFromPoint = () => null;
+    }
+    const layouts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).map(([, , json]) => json.layout.positions);
+    check(JSON.stringify(layouts().pop()) === JSON.stringify({ finished: MACHINE.layout.positions.done }), `renamed: ${JSON.stringify(layouts())}`);
+    await $('undo').fire('click', {});
+    await settle();
+    check(JSON.stringify(layouts().pop()) === JSON.stringify(MACHINE.layout.positions), `undone: ${JSON.stringify(layouts())}`);
+  },
+
+  async a_transition_back_between_two_states_is_drawn_beside_the_other() {
+    const there = MACHINE.graph.transitions.find((t) => t.source === 'write' && t.target === 'review');
+    reviewAnswer = { ...MACHINE, layout: { ...MACHINE.layout, line: 'straight' },  // straight lanes; right-angled: graph_tests
+      graph: { ...MACHINE.graph, transitions: [...MACHINE.graph.transitions,
+        { ...there, id: 'review#9', source: 'review', target: 'write', index: 9, path: 'states.review.transitions[9]' }] } };
+    await boot('?machine=review');
+    const middle = (id) => {
+      const d = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id).querySelector('.sg-edge').getAttribute('d');
+      const [x1, y1, x2, y2] = d.match(/-?\d+(?:\.\d+)?/g).map(Number);
+      return [(x1 + x2) / 2, (y1 + y2) / 2];
+    };
+    const [a, b] = [middle(there.id), middle('review#9')];
+    const apart = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    check(Math.abs(apart - 12) < 0.5, `the two lines are ${apart} apart, not 12: ${JSON.stringify([a, b])}`);
+    // one without a transition back goes through the middles of its states: write → failed (a box, a circle)
+    const { boxOf, node } = canvasGeometry();
+    const box = boxOf('write');
+    const circle = node('failed').querySelector('.sg-shape');
+    const [p, q] = [[box.x + box.w / 2, box.y + box.h / 2], [Number(circle.getAttribute('cx')), Number(circle.getAttribute('cy'))]];
+    const m = middle('write#1');
+    const off = Math.abs((q[0] - p[0]) * (m[1] - p[1]) - (q[1] - p[1]) * (m[0] - p[0])) / Math.hypot(q[0] - p[0], q[1] - p[1]);
+    check(off < 0.5, `a transition without one back is drawn ${off} beside the middle line`);
+  },
+
+  async a_moved_states_transition_stays_right_angled_and_its_line_is_set_at_once_in_its_inspector() {
+    await boot('?machine=review');
+    const points = (id) => {
+      const d = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id).querySelector('.sg-edge').getAttribute('d');
+      const numbers = d.match(/-?\d+(?:\.\d+)?/g).map(Number);
+      return numbers.reduce((out, n, i) => (i % 2 ? out : [...out, [n, numbers[i + 1]]]), []);
+    };
+    const square = (ps) => ps.slice(1).every((p, i) => p[0] === ps[i][0] || p[1] === ps[i][1]);
+    check(points('review#0').length === 4 && square(points('review#0')), `review → done (done moved) is not right-angled at first: ${JSON.stringify(points('review#0'))}`);
+    await $('canvas').fire('pointerdown', { button: 0, target: $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'review#0'),
+      clientX: 10, clientY: 10, pointerId: 1 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('data-line="review#0"'), 'the transition inspector offers no line style');
+    check($('side-inspect').innerHTML.includes('As the machine: Right-angled'), 'the machine\'s default is not named right-angled');
+    const select = element('select', { 'data-line': 'review#0' });
+    element('form', { 'data-transition': 'review#0' }).appendChild(select);  // in the transition's form, as drawn
+    select.value = 'straight';
+    await $('side-inspect').fire('input', { target: select });
+    check(!DIRTY, 'choosing a line style made a draft to apply');
+    await $('side-inspect').fire('change', { target: select });
+    await settle();
+    const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop()?.[2].layout;
+    check(JSON.stringify(saved?.lines) === JSON.stringify({ 'review→done': 'straight' })
+      && JSON.stringify(saved.positions) === JSON.stringify(MACHINE.layout.positions), `saved ${JSON.stringify(saved)}`);
+    check(points('review#0').length === 2 && !square(points('review#0')), `not straight: ${JSON.stringify(points('review#0'))}`);
+    select.value = '';
+    await $('side-inspect').fire('change', { target: select });
+    await settle();
+    check(points('review#0').length === 4 && square(points('review#0')), 'the machine\'s style (right-angled) is not back');
+  },
+
+  async the_start_line_stays_right_angled_when_its_composite_grows() {
+    load((await import('./paths.js')).ELK_PATH);  // ELK draws the start lines: the grid has none
+    // review is the start state; a state placed deep inside it grows it, and the start dot stays where ELK put it
+    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, initial: 'review' },
+      layout: { ...MACHINE.layout, positions: { ...MACHINE.layout.positions, verdict: { x: 20, y: 400 } } } };
+    await boot('?machine=review');
+    await settle();
+    const lines = $('canvas').querySelectorAll('.sg-edge--initial').map((line) => line.getAttribute('d'));
+    const square = (d) => {
+      const n = d.match(/-?\d+(?:\.\d+)?/g).map(Number);
+      const ps = n.reduce((out, v, i) => (i % 2 ? out : [...out, [v, n[i + 1]]]), []);
+      return ps.slice(1).every((p, i) => p[0] === ps[i][0] || p[1] === ps[i][1]);
+    };
+    check(lines.length === 2 && lines.every(square), `a start line is not right-angled: ${JSON.stringify(lines)}`);
+    await $('side-inspect').fire('change', { target: Object.assign(element('select', { 'data-line-default': '' }), { value: 'straight' }) });
+    await settle();
+    const straight = $('canvas').querySelectorAll('.sg-edge--initial').map((line) => line.getAttribute('d'));
+    check(straight.some((d) => !square(d)), `the start lines do not follow the machine's straight line: ${JSON.stringify(straight)}`);
+  },
+
+  async a_machine_without_positions_is_drawn_top_down() {
+    load((await import('./paths.js')).ELK_PATH);  // the direction is ELK's: the grid has none
+    reviewAnswer = { ...MACHINE, layout: { version: 1, positions: {} } };
+    await boot('?machine=review');
+    await settle();
+    const [write, review] = ['write', 'review'].map(canvasGeometry().boxOf);
+    // above it, not beside it: left to right puts it left of review, and higher up than review's top as well
+    check(write.y + write.h <= review.y && write.x < review.x + review.w && review.x < write.x + write.w,
+      `write is not above review: ${JSON.stringify([write, review])}`);
+  },
+
+  async a_machine_dragged_before_flow_came_stays_left_to_right() {
+    load((await import('./paths.js')).ELK_PATH);
+    await boot('?machine=review');  // MACHINE's layout: done placed by hand, no auto
+    await settle();
+    const [write, review] = ['write', 'review'].map(canvasGeometry().boxOf);
+    check(write.x + write.w <= review.x, `write is not left of review: ${JSON.stringify([write, review])}`);
+  },
+
+  async a_stored_line_style_no_longer_offered_is_named_right_angled_as_drawn() {
+    reviewAnswer = { ...MACHINE, layout: { ...MACHINE.layout, line: 'auto', lines: { 'review→done': 'auto', 'write→review': 'orthogonal' } } };
+    await boot('?machine=review');
+    check($('side-inspect').innerHTML.includes('value="orthogonal" selected'), 'the machine\'s line is not shown right-angled');
+    await $('canvas').fire('pointerdown', { button: 0, target: $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'review#0'),
+      clientX: 10, clientY: 10, pointerId: 1 });
+    await settle();
+    const shown = $('side-inspect').innerHTML;
+    check(shown.includes('As the machine: Right-angled') && shown.includes('value="orthogonal" selected'),
+      `the transition's line is not shown right-angled: ${shown.slice(shown.indexOf('data-line='), shown.indexOf('data-line=') + 400)}`);
+    const other = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'write#0');
+    await $('canvas').fire('pointerdown', { button: 0, target: other, ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: other, clientX: 10, clientY: 10 });
+    await settle();
+    const both = $('side-inspect').innerHTML;
+    check(both.includes('data-line="*"') && both.includes('value="orthogonal" selected') && !both.includes('Several styles'),
+      'with a right-angled one, it is not one right-angled style');
+  },
+
+  async the_machines_line_and_a_selections_lines_are_set_from_the_inspector() {
+    await boot('?machine=review');
+    check($('side-inspect').innerHTML.includes('data-line-default'), 'the machine overview offers no line style');
+    const layouts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).map(([, , json]) => json.layout);
+    await $('side-inspect').fire('change', { target: Object.assign(element('select', { 'data-line-default': '' }), { value: 'straight' }) });
+    await settle();
+    check(layouts().pop()?.line === 'straight', `machine line: ${JSON.stringify(layouts())}`);
+    const link = (id) => $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id);
+    const d = link('review#0').querySelector('.sg-edge').getAttribute('d');
+    check((d.match(/L/g) || []).length === 1, `review → done is not drawn straight by the machine's line: ${d}`);
+    await $('canvas').fire('pointerdown', { button: 0, target: link('write#0'), clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerdown', { button: 0, target: link('write#1'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: link('write#1'), clientX: 10, clientY: 10 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('data-line="*"'), 'a selection of transitions offers no line style');
+    await $('side-inspect').fire('change', { target: Object.assign(element('select', { 'data-line': '*' }), { value: 'orthogonal' }) });
+    await settle();
+    const last = layouts().pop();
+    check(JSON.stringify(last?.lines) === JSON.stringify({ 'write→review': 'orthogonal', 'write→failed': 'orthogonal' }) && last.line === 'straight',
+      `selection lines: ${JSON.stringify(last)}`);
+    ANSWERS.confirm = true;
+    await $('autoLayout').fire('click', {});
+    await settle();
+    const laid = layouts().pop();
+    check(JSON.stringify(laid?.positions) === '{}' && laid.line === 'straight' && Object.keys(laid.lines || {}).length === 2,
+      `auto layout dropped the line styles: ${JSON.stringify(laid)}`);
+    check(laid.auto === 'flow', `auto layout lays the classic machine out flow: ${JSON.stringify(laid)}`);
+  },
+
+  async a_renamed_state_takes_its_line_styles_along_and_an_undo_puts_them_back() {
+    layoutsKept = true;
+    reviewAnswer = { ...MACHINE, layout: { ...MACHINE.layout, lines: { 'write→failed': 'orthogonal', 'review→done': 'straight' } } };
+    editAnswer = reviewAnswer;
+    await boot('?machine=review');
+    ANSWERS.prompt.push('writer');
+    document.elementFromPoint = () => canvasGeometry().node('write');
+    try {
+      await $('canvas').fire('dblclick', { target: $('canvas'), clientX: 10, clientY: 10 });
+      await settle();
+    } finally {
+      document.elementFromPoint = () => null;
+    }
+    const layouts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).map(([, , json]) => json.layout);
+    const sorted = (lines) => JSON.stringify(Object.entries(lines || {}).sort());
+    check(sorted(layouts().pop()?.lines) === sorted({ 'writer→failed': 'orthogonal', 'review→done': 'straight' }),
+      `renamed: ${JSON.stringify(layouts())}`);
+    await $('undo').fire('click', {});
+    await settle();
+    check(sorted(layouts().pop()?.lines) === sorted({ 'review→done': 'straight', 'write→failed': 'orthogonal' }),
+      `undone: ${JSON.stringify(layouts())}`);
+  },
+
+  async a_duplicate_takes_the_line_styles_along_without_positions() {
+    plainAnswer = { ...PLAIN, layout: { version: 1, positions: {}, line: 'orthogonal', lines: { 'a→b': 'straight' } } };
+    await boot('?machine=plain');
+    ANSWERS.prompt.push('plain_copy');
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'duplicate-machine' }) });
+    await settle();
+    const layout = CALLS.find(([method, path]) => method === 'PUT' && path.endsWith('/machines/plain_copy/layout'))?.[2].layout;
+    check(layout?.line === 'orthogonal' && layout.lines['a→b'] === 'straight', `copied layout: ${JSON.stringify(layout)}`);
+  },
+
+  async an_internal_transition_offers_no_line() {
+    const write = MACHINE.graph.transitions.find((t) => t.source === 'write');
+    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, transitions: [...MACHINE.graph.transitions,
+      { ...write, id: 'write#7', index: 7, target: null, trigger: 'approve', path: 'states.write.transitions[7]' }] } };
+    await boot('?machine=review');
+    await choose('write');
+    const shown = $('side-inspect').innerHTML;
+    check(shown.includes('data-transition="write#7"') && !shown.includes('data-line="write#7"') && shown.includes('data-line="write#0"'),
+      'an internal transition offers a line style, or the others none');
+    // chosen in the inspector (it is not drawn), then a state added: a selection with no line to set
+    await $('side-inspect').fire('click', { target: element('button', { 'data-select-transition': 'write#7' }) });
+    await settle();
+    const done = canvasGeometry().node('done');
+    await $('canvas').fire('pointerdown', { button: 0, target: done, ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: done, clientX: 10, clientY: 10 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('1 state, 1 transition') && !$('side-inspect').innerHTML.includes('data-line="*"'),
+      'a selection whose transitions have no line offers one');
   },
 
   async a_click_zoomed_out_selects_and_moves_nothing() {
@@ -1557,7 +2069,7 @@ const CASES = {
   async a_text_over_lines_is_a_text_area() {
     await boot('?machine=fields');
     await choose('idle');
-    check(/name="description" data-shape="text"[^>]*>\nline one\nline two/.test($('side-inspect').innerHTML),
+    check(/name="description" data-shape="prose"[^>]*>\nline one\nline two/.test($('side-inspect').innerHTML),
       'a description over two lines sits in a one-line field');
   },
 
@@ -1577,6 +2089,656 @@ const CASES = {
     check(ABORTED.some((path) => path.endsWith('/review')), 'the refresh was not abandoned');
     await release();
     check(headName() === 'other', `open: ${headName()}`);
+  },
+
+  async without_auto_save_an_edit_and_a_move_wait_for_save() {
+    localStorage.removeItem('stategraph:autosave');
+    const drafted = MACHINE.files['review.yaml'].replace('    max_visits: 5\n', '    max_visits: 5  # drafted\n');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: drafted };
+    await boot('?machine=review');
+    const module = 'def f():\n    return 2\n';
+    $('yamlFile').value = 'review.py';
+    await $('yamlFile').fire('change', {});
+    $('yamlText').value = module;
+    await $('yamlText').fire('input', {});
+    $('yamlFile').value = 'review.yaml';
+    await $('yamlFile').fire('change', {});
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    check(!ASKED.some(([, text]) => String(text).includes('graph edits change the saved file')), 'a second edit asked about the first');
+    await choose('write');
+    check($('side-inspect').innerHTML.includes('# drafted'), 'the state\'s YAML is not cut from the draft the graph shows');
+    await $('autoLayout').fire('click', {});
+    await settle();
+    const edits = CALLS.filter(([, path]) => path.endsWith('/edit')).map(([, , json]) => json);
+    check(edits.length === 2 && !('expected_version' in edits[0]) && edits[0].drafts['review.yaml'] === MACHINE.files['review.yaml']
+      && edits[1].drafts['review.yaml'] === drafted && edits[0].drafts['review.py'] === module, `edits ${JSON.stringify(edits)}`);
+    check($('yamlProblems').innerHTML.includes('Unsaved text'), 'the draft\'s problems are called the saved file\'s');
+    const writes = () => CALLS.filter(([method]) => method === 'PUT');
+    check(!writes().length, `written before Save: ${JSON.stringify(writes())}`);
+    check(DIRTY && $('yamlText').value === drafted, `dirty ${DIRTY}`);
+    check(!/data-act="save"[^>]*disabled/.test($('machineHead').innerHTML), 'Save not offered');
+    ANSWERS.confirm = false;
+    await $('startForm').fire('submit', {});
+    await settle();
+    check(!CALLS.some(([method, path]) => method === 'POST' && path.endsWith('/api/runs')), 'a run started from the saved file unasked');
+    ANSWERS.confirm = true;
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'duplicate-machine' }) });
+    await settle();
+    check(!CALLS.some(([, path]) => path.includes('_copy')) && TOASTS.some(([, text]) => text.includes('Save or revert')),
+      'a copy of the saved machine made while the open one has unsaved changes');
+    DOC_LISTENERS.keydown.forEach((fn) => fn({ key: 's', ctrlKey: true, preventDefault() {} }));
+    DOC_LISTENERS.keydown.forEach((fn) => fn({ key: 's', ctrlKey: true, preventDefault() {} }));  // a held key
+    await settle();
+    const [file, layout, ...more] = writes();
+    check(file && file[1].endsWith('/machines/review') && file[2].files['review.yaml'] === drafted
+      && file[2].expected_versions['review.yaml'] === MACHINE.versions['review.yaml'], `save ${JSON.stringify(file)}`);
+    check(layout && layout[1].endsWith('/machines/review/layout'), `the layout after the text: ${JSON.stringify(layout)}`);
+    check(!more.length, `saved twice: ${JSON.stringify(more)}`);
+    check(!DIRTY, 'still unsaved after Save');
+  },
+
+  async without_auto_save_undo_and_redo_move_the_draft_and_write_nothing() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    editAnswer = { ...editAnswer, draft: 'drafted twice' };
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    const shown = () => CALLS.filter(([, path]) => path.endsWith('/validate')).map(([, , json]) => json.files['review.yaml']);
+    await $('undo').fire('click', {});
+    await settle();
+    check(DIRTY && shown().pop() === 'drafted' && $('yamlText').value === 'drafted', `one undo: drawn from ${shown().pop()}`);
+    await $('undo').fire('click', {});
+    await settle();
+    check(!DIRTY && shown().pop() === MACHINE.files['review.yaml'] && $('yamlText').value === MACHINE.files['review.yaml'],
+      `two undos: dirty ${DIRTY}, drawn from ${shown().pop()}`);
+    await $('redo').fire('click', {});
+    await settle();
+    check(DIRTY && shown().pop() === 'drafted' && $('yamlText').value === 'drafted', `after the redo: dirty ${DIRTY}`);
+    check(!CALLS.some(([method]) => method === 'PUT'), 'an undo without auto-save wrote');
+    await $('autoLayout').fire('click', {});
+    await settle();
+    const gets = () => CALLS.filter(([method, path]) => method === 'GET' && path.endsWith('/machines/review')).length;
+    const before = gets();
+    await $('yamlRevert').fire('click', {});
+    await settle();
+    check(gets() === before + 1 && !DIRTY && $('yamlText').value === MACHINE.files['review.yaml'], `revert: dirty ${DIRTY}`);
+    check($('undo').disabled && $('redo').disabled, 'steps of the reverted drafts are still offered');
+    check(/data-act="save"[^>]*disabled/.test($('machineHead').innerHTML), 'Save still offered after the revert');
+    check(!CALLS.some(([method]) => method === 'PUT'), 'a revert wrote');
+    await $('autoLayout').fire('click', {});
+    await settle();
+    await choose('write');
+    check(DIRTY, 'a click on a state forgot the unsaved move');
+    ANSWERS.confirm = false;
+    await clickMachine('other');
+    await settle();
+    check(headName() === 'review' && ASKED.pop()[1].includes('unsaved changes'), 'a move alone let another machine open unasked');
+  },
+
+  async turning_auto_save_on_saves_the_drafts_first_and_is_kept() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    check(/data-act="autosave" aria-pressed="false"/.test($('machineHead').innerHTML), 'auto-save on by default');
+    await $('autoLayout').fire('click', {});
+    await settle();
+    check(!$('yamlSave').disabled && !$('yamlRevert').disabled, 'the YAML tab offers no Save or Revert for a move');
+    await $('yamlSave').fire('click', {});
+    await settle();
+    check(CALLS.some(([method, path]) => method === 'PUT' && path.endsWith('/machines/review/layout')) && !DIRTY,
+      'the YAML tab\'s Save left the layout unsaved');
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'autosave' }) });
+    await settle();
+    const put = CALLS.find(([method, path]) => method === 'PUT' && path.endsWith('/machines/review'));
+    check(put && put[2].files['review.yaml'] === 'drafted', `not saved first: ${JSON.stringify(put)}`);
+    check(localStorage.getItem('stategraph:autosave') === 'true'
+      && /data-act="autosave" aria-pressed="true"/.test($('machineHead').innerHTML), 'auto-save not on, or not kept');
+    editAnswer = null;
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    const edit = CALLS.filter(([, path]) => path.endsWith('/edit')).pop();
+    check(edit[2].expected_version && !edit[2].drafts, `with auto-save the edit went to ${JSON.stringify(edit[2])}`);
+  },
+
+  async with_auto_save_an_undo_writes_back_the_saved_text_not_discarded_yaml() {
+    editAnswer = { ...MACHINE, versions: { ...MACHINE.versions, 'review.yaml': 'v2' } };
+    await boot('?machine=review');
+    await typeDraft();
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });  // discards the draft
+    await settle();
+    await $('undo').fire('click', {});
+    await settle();
+    const put = CALLS.find(([method, path]) => method === 'PUT' && path.endsWith('/machines/review'));
+    check(put && put[2].files['review.yaml'] === MACHINE.files['review.yaml'], `undo wrote ${JSON.stringify(put?.[2])}`);
+  },
+  async without_auto_save_text_the_graph_does_not_show_is_asked_about_and_validate_draws_it() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    await typeDraft();
+    check(!$('yamlSave').disabled, 'typing offers no Save');
+    ANSWERS.confirm = false;
+    ANSWERS.prompt.push('judge');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')) && ASKED.some(([, text]) => String(text).includes('does not show yet')),
+      'an edit on the graph drawn before the typed text went on unasked');
+    await $('yamlValidate').fire('click', {});
+    await settle();
+    const validated = CALLS.filter(([, path]) => path.endsWith('/validate')).pop();
+    check(validated && validated[2].files['review.yaml'].includes('# unsaved'), 'Validate did not draw the typed text');
+    const asked = confirms();
+    ANSWERS.prompt.push('judge');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await settle();
+    const edit = CALLS.filter(([, path]) => path.endsWith('/edit')).pop();
+    check(confirms() === asked && edit && edit[2].drafts['review.yaml'].includes('# unsaved'),
+      `after Validate: asked ${confirms() - asked}, sent ${JSON.stringify(edit?.[2]?.drafts)}`);
+    $('yamlText').value = 'drafted\n# again\n';
+    await $('yamlText').fire('input', {});
+    ANSWERS.confirm = true;
+    editAnswer = new ApiError(422, 'refused');
+    ANSWERS.prompt.push('judge');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await settle();
+    $('yamlFile').value = 'review.yaml';
+    await $('yamlFile').fire('change', {});  // the text drawn anew from the drafts
+    check($('yamlText').value.includes('# again'), 'a refused edit dropped the typed text');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted twice' };
+    ANSWERS.prompt.push('judge');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await settle();
+    const made = CALLS.filter(([, path]) => path.endsWith('/edit')).pop();
+    check(made[2].drafts['review.yaml'] === 'drafted' && $('yamlText').value === 'drafted twice',
+      `a discarding edit sent ${JSON.stringify(made[2].drafts)}, shows ${$('yamlText').value}`);
+  },
+
+  async without_auto_save_undo_steps_go_when_the_file_changes_under_them() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await $('undo').fire('click', {});
+    await settle();
+    check(!DIRTY && !$('redo').disabled, 'no redo after the undo');
+    reviewAnswer = { ...MACHINE, versions: { ...MACHINE.versions, 'review.yaml': 'v-other' } };  // another editor saved
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: true } }));
+    await settle();
+    check($('redo').disabled && $('undo').disabled, 'steps drafted from the older file are offered over the new one');
+  },
+
+  async an_edit_answered_after_another_machine_opened_is_dropped() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    HOLD = (method, path) => path.endsWith('/edit');
+    await choose('write');
+    const removing = $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await clickMachine('plain');
+    await settle();
+    await release();
+    await removing;
+    check($('machineHead').innerHTML.includes('>plain<') && !DIRTY && !$('yamlFile').innerHTML.includes('(unsaved)'),
+      'the answer for review went into plain');
+  },
+  async without_auto_save_an_edit_answered_after_a_revert_is_dropped() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    HOLD = (method, path) => path.endsWith('/edit');
+    editAnswer = { ...editAnswer, draft: 'drafted twice' };
+    await choose('write');
+    const removing = $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await $('yamlRevert').fire('click', {});
+    await settle();
+    await release();
+    await removing;
+    check(!DIRTY && $('yamlText').value === MACHINE.files['review.yaml'] && TOASTS.some(([, text]) => text.includes('not applied')),
+      `the answer brought the reverted drafts back: dirty ${DIRTY}, ${$('yamlText').value.slice(0, 20)}`);
+  },
+
+  async without_auto_save_text_typed_while_an_edit_is_on_its_way_is_kept() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    HOLD = (method, path) => path.endsWith('/edit');
+    await choose('write');
+    const removing = $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await typeDraft();
+    await release();
+    await removing;
+    $('yamlFile').value = 'review.yaml';
+    await $('yamlFile').fire('change', {});
+    check($('yamlText').value.includes('# unsaved') && TOASTS.some(([, text]) => text.includes('YAML tab changed')),
+      `the answer overwrote the typed text: ${$('yamlText').value.slice(-20)}`);
+  },
+
+  async auto_save_is_not_switched_under_an_edit_on_its_way() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    HOLD = (method, path) => path.endsWith('/edit');
+    await choose('write');
+    const removing = $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'autosave' }) });
+    await settle();
+    await release();
+    await removing;
+    check(localStorage.getItem('stategraph:autosave') !== 'true' && /data-act="autosave" aria-pressed="false"/.test($('machineHead').innerHTML)
+      && DIRTY && $('yamlText').value === 'drafted', 'auto-save switched while the edit was on its way, or the edit lost');
+  },
+  async a_selection_dragged_by_a_state_inside_its_composite_moves_the_composite_only() {
+    reviewAnswer = TWO_COMPOSITES;
+    await boot('?machine=review');
+    const { client, boxOf, node } = canvasGeometry();
+    await choose('review');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('read'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: node('read'), clientX: 10, clientY: 10 });
+    await settle();
+    const read = boxOf('read');
+    const loop = boxOf('loop');
+    const at = client(loop.x + loop.w / 2, loop.y + loop.h - 6);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('read'), pointerId: 1, ...client(read.x + 5, read.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('loop'), ...at });
+    await $('canvas').fire('pointerup', { target: node('loop'), ...at });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')), `the state it was dragged by went into loop: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_cancelled_drag_puts_nothing_into_a_composite() {
+    await boot('?machine=review');
+    const { client, boxOf, node } = canvasGeometry();
+    const from = boxOf('write');
+    const into = boxOf('review');
+    const at = client(into.x + into.w / 2, into.y + into.h - 6);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), pointerId: 1, ...client(from.x + 5, from.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...at });
+    await $('canvas').fire('pointercancel', { target: node('review'), ...at });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')), `a cancelled drag moved write into review: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_drop_answered_after_another_machine_opened_leaves_that_ones_layout_alone() {
+    await boot('?machine=review');
+    const { client, boxOf, node } = canvasGeometry();
+    const from = boxOf('write');
+    const into = boxOf('review');
+    const at = client(into.x + into.w / 2, into.y + into.h - 6);
+    HOLD = (method, path) => path.endsWith('/edit');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), pointerId: 1, ...client(from.x + 5, from.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...at });
+    const dropping = $('canvas').fire('pointerup', { target: node('review'), ...at });
+    await settle();
+    await clickMachine('other');
+    await settle();
+    await release();
+    await dropping;
+    await settle();
+    check(!CALLS.some(([method, path]) => method === 'PUT' && path.endsWith('/machines/other/layout')),
+      'the drop went into the layout of the machine opened meanwhile');
+  },
+
+  async a_composites_last_state_is_not_removed_after_asking() {
+    reviewAnswer = TWO_COMPOSITES;
+    await boot('?machine=review');
+    await choose('inner');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    check(!confirms() && TOASTS.some(([, text]) => text.includes('loop keeps at least one state')), `inner: ${JSON.stringify(TOASTS)}`);
+    await choose('read');
+    const { node } = canvasGeometry();
+    await $('canvas').fire('pointerdown', { button: 0, target: node('verdict'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: node('verdict'), clientX: 10, clientY: 10 });
+    await settle();
+    await $('canvas').fire('keydown', { key: 'Delete', target: $('canvas'), preventDefault() {} });
+    await settle();
+    check(!confirms() && TOASTS.some(([, text]) => text.includes('review keeps at least one state')), `read and verdict: ${JSON.stringify(TOASTS)}`);
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')), 'an edit went out');
+  },
+  async a_note_from_the_bar_goes_into_the_file_and_the_middle_of_the_view() {
+    await boot('?machine=review');
+    editAnswer = { ...MACHINE, graph: { ...MACHINE.graph, notes: [{ name: 'note_1', text: 'New note' }] } };
+    await $('palette').fire('click', { target: element('button', { 'data-add-note': '' }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'set_note', name: 'note_1', text: 'New note' }), `sent: ${JSON.stringify(lastEdit())}`);
+    const puts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/review/layout')).map(([, , json]) => json.layout.positions);
+    const { k, client } = canvasGeometry();
+    const [tx, ty] = [client(0, 0).clientX, client(0, 0).clientY];
+    const middle = { x: Math.round((450 - tx) / k) - 110, y: Math.round((300 - ty) / k) - 30 };  // the fake canvas: 900 x 600
+    check(JSON.stringify(puts().pop()?.['note:note_1']) === JSON.stringify(middle), `placed: ${JSON.stringify(puts().pop())}, the middle ${JSON.stringify(middle)}`);
+    check($('side-inspect').innerHTML.includes('data-form="note"'), 'the new note is not the one shown');
+    check($('canvas').querySelectorAll('.sg-note').length === 1, 'the note is not drawn');
+    await $('undo').fire('click', {});
+    await settle();
+    check(puts().length === 2 && !('note:note_1' in puts().pop()), `an undo keeps the new note's place: ${JSON.stringify(puts())}`);
+    reviewAnswer = editAnswer;  // the redo's reload reads the file with the note again
+    await $('redo').fire('click', {});
+    await settle();
+    check($('canvas').querySelectorAll('.sg-note').length === 1, 'the redo did not bring the note back');
+    check(!$('side-inspect').innerHTML.includes('data-form="note"'), 'the note the undo took stayed chosen, and the redo showed it again');
+  },
+
+  async a_note_is_added_once_and_asked_about_only_as_it_is() {
+    await boot('?machine=review');
+    await choose('write');
+    const form = element('form', { 'data-form': 'set-state' });
+    await $('side-inspect').fire('input', { target: form.appendChild(element('textarea', { name: 'yaml' })) });  // not applied
+    editAnswer = { ...MACHINE, graph: { ...MACHINE.graph, notes: [{ name: 'note_1', text: 'New note' }] } };
+    ANSWERS.confirm = false;  // keep the state's text
+    const click = () => $('palette').fire('click', { target: element('button', { 'data-add-note': '' }) });
+    await Promise.all([click(), click()]);  // a double click
+    await release();
+    await settle();
+    const sent = CALLS.filter(([, path, json]) => path.endsWith('/edit') && json.op?.op === 'set_note');
+    check(sent.length === 1, `a double click sent ${sent.length} notes`);
+    check(!ASKED.some(([, message]) => String(message).includes('this edit changes the state')),
+      `a note's edit asked about the state: ${JSON.stringify(ASKED)}`);
+  },
+
+  async a_shared_notes_block_is_read_only_in_the_inspector() {
+    reviewAnswer = { ...WITH_NOTE, graph: { ...WITH_NOTE.graph, locked: ['notes'] } };
+    await boot('?machine=review');
+    const note = $('canvas').querySelectorAll('.sg-note').find((n) => n.dataset.note === 'why');
+    await $('canvas').fire('keydown', { key: 'Enter', target: note, preventDefault() {} });
+    await settle();
+    const shown = $('side-inspect').innerHTML;
+    check(shown.includes('YAML anchor') && /sg-note-input"[^>]*readonly/.test(shown) && !shown.includes('remove-note'), shown);
+    await $('palette').fire('click', { target: element('button', { 'data-add-note': '' }) });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')) && TOASTS.some(([, message]) => String(message).startsWith('Notes:')),
+      `a note was added to a shared block: ${JSON.stringify(TOASTS)}`);
+  },
+
+  async a_note_s_text_is_applied_and_an_emptied_note_is_removed_after_asking() {
+    reviewAnswer = WITH_NOTE;
+    editAnswer = WITH_NOTE;
+    await boot('?machine=review');
+    const note = $('canvas').querySelectorAll('.sg-note').find((n) => n.dataset.note === 'why');
+    check(note, 'the note is not drawn');
+    await $('canvas').fire('keydown', { key: 'Enter', target: note, preventDefault() {} });
+    await settle();
+    check($('side-inspect').innerHTML.includes('data-form="note"'), 'Enter on the note does not show it');
+    await $('canvas').fire('keydown', { key: 'Escape', target: $('canvas'), preventDefault() {} });
+    await settle();
+    await $('canvas').fire('dblclick', { target: note, clientX: 10, clientY: 10 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('data-form="note"'), 'a double click on the note does not open it');
+    await $('canvas').fire('keydown', { key: 'Escape', target: $('canvas'), preventDefault() {} });
+    await settle();
+    check(!$('side-inspect').innerHTML.includes('data-form="note"'), 'Escape left the note chosen');
+    await $('canvas').fire('pointerdown', { button: 0, target: note, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: note, clientX: 10, clientY: 10 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('data-form="note"') && $('side-inspect').innerHTML.includes('needs a second look'),
+      'a click on the note shows its text');
+    await $('side-inspect').fire('submit', { target: formOf('note', { text: ['kind', '', 'Because the review\nneeds a second look.\n'] }) });
+    await settle();
+    check(!lastEdit() && TOASTS.some(([, text]) => text === 'Nothing changed'), `sent: ${JSON.stringify(lastEdit())}`);
+    await $('side-inspect').fire('submit', { target: formOf('note', { text: ['kind', '', 'Look twice.'] }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'set_note', name: 'why', text: 'Look twice.' }), `sent: ${JSON.stringify(lastEdit())}`);
+    ANSWERS.confirm = false;
+    await $('side-inspect').fire('submit', { target: formOf('note', { text: ['kind', '', '  \n'] }) });
+    await settle();
+    check(confirms() === 1 && lastEdit().text === 'Look twice.', 'an emptied note went without asking');
+    ANSWERS.confirm = true;
+    await $('side-inspect').fire('submit', { target: formOf('note', { text: ['kind', '', ''] }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'set_note', name: 'why', text: null }), `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_note_dragged_keeps_its_place_and_delete_removes_it_with_its_place() {
+    reviewAnswer = { ...WITH_NOTE, layout: { version: 1, positions: { 'note:why': { x: 500, y: 50 } } } };
+    await boot('?machine=review');
+    const { client } = canvasGeometry();
+    const note = () => $('canvas').querySelectorAll('.sg-note').find((n) => n.dataset.note === 'why');
+    await $('canvas').fire('pointerdown', { button: 0, target: note(), pointerId: 1, ...client(510, 60) });
+    await $('canvas').fire('pointermove', { target: note(), ...client(610, 100) });
+    await $('canvas').fire('pointerup', { target: note(), ...client(610, 100) });
+    await settle();
+    const put = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/review/layout')).map(([, , json]) => json.layout.positions).pop();
+    check(JSON.stringify(put()?.['note:why']) === JSON.stringify({ x: 600, y: 90 }), `kept: ${JSON.stringify(put())}`);
+    check(!$('side-inspect').innerHTML.includes('data-form="note"'), 'a drag chose the note');
+    editAnswer = MACHINE;
+    await $('canvas').fire('pointerdown', { button: 0, target: note(), pointerId: 1, ...client(600, 100) });
+    await $('canvas').fire('pointerup', { target: note(), ...client(600, 100) });
+    await settle();
+    await $('canvas').fire('keydown', { key: 'Delete', target: $('canvas'), preventDefault() {} });
+    await settle();
+    check(confirms() === 1 && JSON.stringify(lastEdit()) === JSON.stringify({ op: 'set_note', name: 'why', text: null }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+    check(put() && !('note:why' in put()), `the removed note's place stays: ${JSON.stringify(put())}`);
+    await $('undo').fire('click', {});
+    await settle();
+    check(JSON.stringify(put()?.['note:why']) === JSON.stringify({ x: 600, y: 90 }), `an undo does not put the place back: ${JSON.stringify(put())}`);
+  },
+
+  async a_state_s_description_is_free_text_at_the_top_and_applies_alone() {
+    await boot('?machine=fields');
+    await choose('judge');
+    const shown = $('side-inspect').innerHTML;
+    check(/data-form="state-description"[^]*?<textarea[^>]*id="sd-description" name="description" data-shape="prose"[^]*?<\/form>/.test(shown)
+      && shown.indexOf('id="sd-description"') < shown.indexOf('data-form="activity"'), 'no description box at the top');
+    check(!/id="sf-description"/.test(shown), 'the description is in the settings as well');
+    await $('side-inspect').fire('submit', { target: formOf('state-description', { description: ['prose', '', 'Judges\nthe draft.'] }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'update_state', name: 'judge', fields: { description: 'Judges\nthe draft.' } }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+  },
+  async the_overview_names_the_machine_s_runner_and_the_catalog_is_its() {
+    reviewAnswer = { ...MACHINE, runner: 'v6_machine_runner', runner_problem: 'runners a, b both claim /m in runs_machines_in' };
+    await boot('?machine=review');
+    const shown = $('side-inspect').innerHTML;
+    check(/<dt>runner<\/dt><dd[^>]*>v6_machine_runner<\/dd>/.test(shown), 'the runner is not shown');
+    check(shown.includes('both claim /m'), 'the runner problem is not shown');
+    const asked = () => CALLS.filter(([, path]) => path.includes('/catalog')).map(([, path]) => path.split('/api')[1]);
+    check(JSON.stringify(asked()) === JSON.stringify(['/catalog?machine_id=review']), `catalog asked: ${JSON.stringify(asked())}`);
+    await clickMachine('other');
+    await settle();
+    check(asked().pop() === '/catalog?machine_id=other', `another machine keeps the first one's tools: ${JSON.stringify(asked())}`);
+  },
+
+  async a_submachine_lists_the_runs_it_ran_in_and_its_canvas_shows_the_frame_picked() {
+    const asked = [];
+    runsAnswer = (query) => {
+      asked.push(`${query.get('machine_id')}:${query.get('nested')}`);
+      return query.get('machine_id') === 'other' ? [{ ...RUNS[0], machine_id: 'review' }] : RUNS;
+    };
+    // r1 is a run of review; other ran in it twice: s3/m/ runs now, s5/m/ has ended -- only its trace says where
+    const live = { machine: 'other', prefix: 's3/m/', path: 'read', step: 2, state: 'write', config: ['write'],
+      visits: { write: 4 }, ctx: {}, params: {}, accepts: [] };
+    runAnswer = { ...RUN, view: { ...RUN.view, frames: [RUN.view.frames[0], live] },
+      frames_started: [{ prefix: 's3/m/', machine: 'other', path: 'read' }, { prefix: 's5/m/', machine: 'other', path: 'read' }] };
+    journalOf = { ...journalOf, r1: [...RUN.journal,
+      { seq: 50, kind: 'trace', key: 's5/m/s1:enter:done', state: 'done', status: 'enter', data: { machine: 'other', frame: 's5/m/', visit: 1 } },
+      { seq: 51, kind: 'trace', key: 's5/m/s1:final:done', state: 'done', status: 'final', data: { machine: 'other', frame: 's5/m/', status: 'succeeded' } }] };
+    await boot('?machine=other&run=r1');
+    const current = () => $('canvas').querySelectorAll('.sg-node').filter((n) => n.classList.contains('is-current')).map((n) => n.dataset.state);
+    const bar = () => $('debugBar').innerHTML;
+    check(asked.includes('other:true'), `the submachine's list did not ask for the runs it ran in: ${asked}`);
+    check($('runList').innerHTML.includes('in review'), 'the run is not named as one of review');
+    check(JSON.stringify(current()) === '["write"]', `the canvas shows ${current()}, not the live frame's state`);
+    check(!$('canvas').querySelectorAll('.sg-node').some((n) => n.classList.contains('is-paused')), 'the pause of the root is drawn on the submachine');
+    check(bar().includes('data-frame-choice') && bar().includes('under read #1 · running') && bar().includes('under read #2 · ended in done'), bar());
+    const picker = element('select', { 'data-frame-choice': '' });
+    picker.value = 's5/m/';
+    await $('debugBar').fire('change', { target: picker });
+    await settle();
+    check(JSON.stringify(current()) === '["done"]', `the ended frame picked: the canvas shows ${current()}`);
+    controlAnswer = { ...runAnswer, frames_started: undefined };  // a control's answer lists no frames
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'step' }) });
+    await release();
+    await settle();
+    check(JSON.stringify(current()) === '["done"]', `after a control the frame picked is lost: ${current()}`);
+    check(bar().includes('under read #2'), `the recorded frames are lost with a control's answer: ${bar()}`);
+    const nowhere = element('button', { 'data-open-frame': 'zz/m/', 'data-machine': 'gone' });  // its GET fails
+    await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target: nowhere })));
+    await release();
+    await settle();
+    POLLERS.find((p) => p.ms === 1000).fn();  // drawn again: the frame shown is the one picked still
+    await release();
+    await settle();
+    check(headName() === 'other' && JSON.stringify(current()) === '["done"]', `a switch that failed moved the frame: ${current()}`);
+    // a pick while a switch is out: the switch that fails does not take it back
+    HOLD = (method, path) => path.endsWith('/machines/gone');
+    await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target: nowhere })));
+    await settle();
+    const picker2 = element('select', { 'data-frame-choice': '' });
+    picker2.value = 's3/m/';
+    await $('debugBar').fire('change', { target: picker2 });
+    HOLD = () => false;
+    await release();
+    await settle();
+    POLLERS.find((p) => p.ms === 1000).fn();
+    await release();
+    await settle();
+    check(JSON.stringify(current()) === '["write"]', `the pick made meanwhile was taken back: ${current()}`);
+    const back =element('button', { 'data-open-frame': '', 'data-machine': 'review' });
+    await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target: back })));
+    await release();
+    await settle();
+    check(headName() === 'review' && JSON.stringify(current()) === '["read"]', `back on review: ${headName()}, ${current()}`);
+    check(!bar().includes('data-frame-choice') && bar().includes('r1'), 'the run is not kept on its own machine');
+  },
+
+  async a_state_that_ran_a_submachine_lists_its_runs_in_the_inspector() {
+    // review's state read ran other twice (s3 ended, s5 runs); other's own child (s3/m/s1/m/) ran under it, not under read
+    const live = { machine: 'other', prefix: 's5/m/', path: 'read', step: 1, state: 'write', config: ['write'], visits: {},
+      ctx: {}, params: {}, accepts: [] };
+    runAnswer = { ...RUN, view: { ...RUN.view, frames: [RUN.view.frames[0], live] },
+      frames_started: [{ prefix: 's3/m/', machine: 'other', path: 'read' }, { prefix: 's3/m/s1/m/', machine: 'other', path: 'read/write' },
+        { prefix: 's5/m/', machine: 'other', path: 'read' }] };
+    journalOf = { ...journalOf, r1: [...RUN.journal,
+      { seq: 50, kind: 'trace', key: 's3/m/s1:final:done', state: 'done', status: 'final', data: { machine: 'other', frame: 's3/m/', status: 'succeeded' } }] };
+    await boot('?machine=review&run=r1');
+    const badges = (name) => $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name)
+      .querySelectorAll('.sg-badge-text').map((text) => text.textContent);
+    check(badges('read').includes('2 runs') && !badges('write').some((text) => / runs?$/.test(text)),
+      `the canvas does not say where submachines ran: read ${badges('read')}, write ${badges('write')}`);
+    await choose('read');
+    await settle();
+    const box = () => $('stateFrames').innerHTML;
+    check(!$('stateFrames').hidden && box().includes('other #1') && box().includes('other #2'), box());
+    const pane = $('side-inspect').innerHTML;
+    check(pane.indexOf('id="stateFrames"') > pane.indexOf('sg-fragment'), 'the list is not last in the inspector');
+    check(box().includes('Submachine runs (2)') && !/data-state-frames\s+open/.test(box()), `not folded: ${box()}`);
+    const fold = element('details', { 'data-state-frames': '' });
+    fold.open = true;
+    await $('side-inspect').fire('toggle', { target: fold });
+    check(box().includes('ended in done') && box().includes('running'), `how they stand: ${box()}`);
+    check(box().includes('data-open-frame="s3/m/"') && box().includes('data-open-frame="s5/m/"')
+      && !box().includes('data-open-frame="s3/m/s1/m/"'), `a grandchild is listed under read: ${box()}`);
+    // s5 ends while the list is open: the next poll's journal says how
+    journalOf.r1.push({ seq: 60, kind: 'trace', key: 's5/m/s2:final:failed', state: 'failed', status: 'final',
+      data: { machine: 'other', frame: 's5/m/', status: 'failed' } });
+    runAnswer = { ...runAnswer, view: { ...runAnswer.view, frames: [RUN.view.frames[0]] }, journal: journalOf.r1.slice(-5) };
+    POLLERS.find((p) => p.ms === 1000).fn();
+    await release();
+    await settle();
+    check(box().includes('ended in failed') && !box().includes('running'), `the ended frame is not followed: ${box()}`);
+    check(/data-state-frames\s+open/.test(box()), 'opened, the list folds again on a poll');
+    const third = { machine: 'other', prefix: 's7/m/', path: 'read', step: 1, state: 'write', config: ['write'], visits: {},
+      ctx: {}, params: {}, accepts: [] };
+    runAnswer = { ...runAnswer, view: { ...runAnswer.view, frames: [RUN.view.frames[0], third] } };  // no new result row
+    POLLERS.find((p) => p.ms === 1000).fn();
+    await release();
+    await settle();
+    check(box().includes('other #3') && box().includes('running'), `a frame started meanwhile is not listed: ${box()}`);
+    await choose('write');
+    await settle();
+    check($('stateFrames').hidden && !box().includes('other'), 'a state that ran none lists runs');
+    // on other's graph, its frame s3/m/: the child its state write started, by the path past the frame's own
+    const show = element('button', { 'data-open-frame': 's3/m/', 'data-machine': 'other' });
+    await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target: show })));
+    await release();
+    await settle();
+    await choose('write');
+    await settle();
+    check(headName() === 'other' && box().includes('data-open-frame="s3/m/s1/m/"') && !box().includes('data-open-frame="s5/m/"'), box());
+    check(badges('write').includes('1 run'), `on other's graph: write ${badges('write')}`);
+    check(!/data-state-frames\s+open/.test(box()), `opened for read, the list of another state starts open: ${box()}`);
+  },
+
+  async a_catalog_that_fails_leaves_no_other_machine_s_tools_and_is_asked_again() {
+    await boot('?machine=review');
+    check($('sgTools').innerHTML.includes('store_put'), 'the catalog of review is not offered');
+    catalogDown = (path) => path.includes('machine_id=other');
+    await clickMachine('other');
+    await settle();
+    check(!$('sgTools').innerHTML.includes('store_put'), 'the tools of review are offered for other');
+    catalogDown = null;
+    await clickMachine('other');
+    await settle();
+    const asked = CALLS.filter(([, path]) => path.includes('/catalog?machine_id=other')).length;
+    check(asked === 2 && $('sgTools').innerHTML.includes('store_put'), `the catalog of other is not asked again (${asked})`);
+  },
+
+  async a_run_from_before_the_frame_record_finds_its_frames_in_the_journal_and_shows_the_last() {
+    runsAnswer = () => [{ ...RUNS[0], machine_id: 'review' }];
+    // no frames_started (a run from before the record), no live frame of other: only the journal names them
+    runAnswer = { ...RUN, view: { ...RUN.view, frames: RUN.view.frames } };
+    const trace = (seq, frame, state, status, data = {}) => ({ seq, kind: 'trace', key: `${frame}s1:${status}:${state}`, state, status,
+      data: { machine: 'other', frame, ...data } });
+    // s7's second attempt ran it (s7/a2/m/), s9 once; their paths are their activities'
+    const started = (seq, key) => ({ seq, kind: 'activity', key, state: 'read', status: 'done', data: { kind: 'machine', path: 'read' } });
+    journalOf = { ...journalOf, r1: [...RUN.journal, started(49, 's7'), trace(50, 's7/a2/m/', 'write', 'enter', { visit: 1 }),
+      trace(51, 's7/a2/m/', 'write', 'end', { reason: 'failed' }), started(59, 's9'), trace(60, 's9/m/', 'done', 'enter', { visit: 1 }),
+      trace(61, 's9/m/', 'done', 'final', { status: 'succeeded' })] };
+    await boot('?machine=other&run=r1');
+    const current = () => $('canvas').querySelectorAll('.sg-node').filter((n) => n.classList.contains('is-current')).map((n) => n.dataset.state);
+    const bar = $('debugBar').innerHTML;
+    check(bar.includes('under read #1 · failed in write') && bar.includes('under read #2 · ended in done'), bar);
+    check(JSON.stringify(current()) === '["done"]', `none live, none picked: the last frame, not ${current()}`);
+    const frames = $('dbgFrames').innerHTML;
+    check(frames.includes('data-machine="review"') && !frames.includes('data-machine="critique"'),
+      'a machine without a graph of its own (not in the list) is offered to be shown');
+  },
+
+  async the_run_s_own_graph_counts_the_frames_only_its_journal_names() {
+    // a run from before the record: no frames_started, no live frame of other -- its journal names one under read
+    runAnswer = { ...RUN, view: { ...RUN.view, frames: [RUN.view.frames[0]] } };
+    journalOf = { ...journalOf, r1: [...RUN.journal,
+      { seq: 40, kind: 'activity', key: 's3', state: 'read', status: 'done', data: { kind: 'machine', path: 'read' } },
+      { seq: 41, kind: 'trace', key: 's3/m/s1:final:done', state: 'done', status: 'final', data: { machine: 'other', frame: 's3/m/', status: 'succeeded' } }] };
+    await boot('?machine=review&run=r1');
+    const badges = $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === 'read')
+      .querySelectorAll('.sg-badge-text').map((text) => text.textContent);
+    check(badges.includes('1 run'), `read's badge: ${badges}`);
+  },
+
+  async the_frames_of_an_interrupted_run_run_no_more() {
+    runsAnswer = () => [{ ...RUNS[0], machine_id: 'review' }];
+    const left = { machine: 'other', prefix: 's3/m/', path: 'read', step: 1, state: 'write', config: ['write'], visits: {},
+      ctx: {}, params: {}, accepts: [] };  // the view the crash left
+    runAnswer = { ...RUN, status: 'interrupted', active: false, debug: { ...RUN.debug, paused: null },
+      view: { ...RUN.view, frames: [RUN.view.frames[0], left] }, frames_started: [{ prefix: 's3/m/', machine: 'other', path: 'read' }] };
+    await boot('?machine=other&run=r1');
+    const bar = $('debugBar').innerHTML;
+    check(bar.includes('under read · interrupted') && !bar.includes('running'), bar);
   },
 };
 

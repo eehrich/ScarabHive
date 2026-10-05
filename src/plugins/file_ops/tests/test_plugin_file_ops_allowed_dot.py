@@ -6,6 +6,7 @@ they let the agent into the directory they ARE in -- reading it as the
 checkout would hand the agent the repository instead and leave the one
 directory they meant locked.
 """
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -70,3 +71,39 @@ class TestADotIsWhereThePersonStands:
         server = _server(["src"])
 
         assert server.validator.allowed_dirs == [(project / "src").resolve()]
+
+    @pytest.mark.parametrize("spelling", ["./"] + ([".\\"] if sys.platform == "win32" else []))
+    def test_every_spelling_of_the_dot_means_the_same(self, here_and_project, spelling):
+        here, _ = here_and_project
+
+        server = _server([spelling])
+
+        assert server.validator.allowed_dirs == [here.resolve()]
+
+
+def test_an_empty_list_allows_nothing(tmp_path, monkeypatch):
+    """Fail closed: an empty allow-list is not the missing key's defaults."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src").mkdir()
+
+    server = _server([])
+
+    assert server.validator.allowed_dirs == []
+    with pytest.raises(SecurityError):
+        server.validator.validate_path(str(tmp_path / "src" / "a.py"))
+
+
+@pytest.mark.parametrize("spelling", [".", "./", "src"] + ([".\\"] if sys.platform == "win32" else []))
+def test_project_instructions_reads_a_root_as_file_ops_does(here_and_project, spelling):
+    """project_instructions finds AGENTS.md in the folder file_ops allows;
+    two readings of the same entry pointed the hook at another folder."""
+    from plugins.project_instructions.hooks import resolve_configured_root
+    _, project = here_and_project
+    (project / "src").mkdir()
+
+    assert resolve_configured_root(spelling) == _server([spelling]).validator.allowed_dirs[0]
+
+
+def test_an_empty_entry_allows_nothing(here_and_project):
+    """pathlib reads "" as "." -- the entry must not open the launch folder."""
+    assert _server([""]).validator.allowed_dirs == []

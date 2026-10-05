@@ -1,0 +1,315 @@
+@database "media_ops"
+@author "Enrico Ehrich"
+@$VER: media_ops.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Media operations"
+@{h1}Media operations
+
+Moves images, sounds and videos between the disk and an agent's
+conversation, in both directions. An agent loads a file that is already on
+disk -- a render, a recording, a screenshot -- so its model can look at it
+or listen to it. And an agent writes media that only exists in the
+conversation -- an image you pasted into the chat -- to a file, so it
+survives the run and other tools can use it. Every path, read or written,
+must lie inside the folders the plugin is given.
+
+The plugin has no panel and no hooks.
+
+@{code}
+For agents and developers
+  @{"  Loading a file  " link load}
+  @{"  Listing and saving the conversation's media  " link save}
+  @{"  Where it may read and write  " link sandbox}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node load "Loading a file"
+@{h1}Loading a file
+
+@{tt}media_ops_load@{utt} (the instance name followed by @{tt}_load@{utt})
+attaches one file to its answer, for the model to see or hear.
+
+@{table}
+Parameter | Meaning
+path | the file; absolute, or relative to the folder the server was started in (the project); data/... names the data directory
+@{body}
+
+The file must lie inside @{tt}allowed_directories@{utt} (see
+@{" Where it may read and write " link sandbox}), exist, carry one of these
+extensions (upper or lower case) and not be too large:
+
+@{table}
+Kind | Extensions
+image | .png .jpg .jpeg .gif .webp .bmp
+audio | .wav .mp3 .ogg .flac .m4a .aac
+video | .mp4 .webm .avi .mov
+@{body}
+
+The kind and the mime type come from the extension alone; the file's
+content is not looked at, and nothing is decoded.
+
+@{h2}The size limit
+
+A file larger than @{tt}max_file_size_mb@{utt} (default 20) is refused
+with its size. The limit can be raised only up to what a request attaches:
+20 MB for an image or a video, 25 MB for a sound. A file above those would
+be left out of every request without a word, so the plugin refuses it
+instead, and the error names the limit that applies.
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+status | success
+path | the resolved, absolute path
+type | image, audio or video
+mime_type | e.g. image/png
+size_mb | the file's size, rounded to two places
+@{body}
+
+The file itself is attached beside the answer; how it reaches the model
+is in @{" What the model sees " link model}. Errors are answers, not
+exceptions: @{tt}status: error@{utt}, @{tt}error@{utt} and
+@{tt}error_type@{utt}:
+
+@{table}
+error_type | When
+ValidationError | path missing or not a string
+PermissionError | the path lies outside the folders, or cannot be resolved
+FileNotFoundError | no file there (also for a folder)
+UnsupportedMediaType | an extension not in the table; the error lists the ones that work
+FileTooLarge | above the limit; the error names size and limit
+@{body}
+
+@{h2}An example
+
+@{code json}
+{"path": "data/comfyui/outputs/comfy_00012_.png"}
+@{body}
+@endnode
+
+@node save "Listing and saving the conversation's media"
+@{h1}Listing and saving the conversation's media
+
+Media that arrived in the conversation inline -- an image pasted into the
+chat, a picture a tool returned as data -- exists only there. These two
+tools put it on disk.
+
+@{h2}media_ops_list_context
+
+Takes no parameters. Reads the calling agent's current conversation (the
+live messages, else the stored session) and lists every image, sound and
+video in it: the items of a message's content and the files tools
+attached. Remote URLs and text are skipped. An item that occurs twice
+(same bytes, or same path) is listed once, at its first place.
+
+@{table}
+Field | Meaning
+id | a handle for save: m and 12 hex digits from the bytes, or from the path of a file; the same item keeps its id between calls
+type | image, audio or video
+message_index | the message it sits in
+origin | content (the message itself) or multimodal_content (a tool's attachment)
+inline | true: the bytes are in the conversation; false: a file on disk
+mime_type | as the item states it
+size_bytes | the payload's size; for a file its size on disk, empty when it is gone
+path | only for a file
+name | only inline, when the item carries a file name
+error | only for an item whose base64 cannot be decoded; its id is then empty
+@{body}
+
+The answer is @{tt}status: success@{utt}, @{tt}count@{utt} and
+@{tt}media@{utt}. Called outside a session (no agent or no session id) it
+answers @{tt}error_type: SessionContextMissing@{utt} rather than an empty
+list, so "nothing there" and "could not look" do not read alike.
+
+@{h2}media_ops_save
+
+@{table}
+Parameter | Meaning
+id | an id from media_ops_list_context
+path | the target file, with a supported extension; absolute or relative as for load
+overwrite | true replaces an existing file; otherwise it is refused
+@{body}
+
+What happens, in this order:
+
+@{bullet}A read-only instance refuses at once (@{tt}PermissionError@{utt}),
+whatever the arguments.
+@{bullet}Missing id or path: @{tt}ValidationError@{utt}. No session:
+@{tt}SessionContextMissing@{utt}.
+@{bullet}The conversation is read again and the id looked up: unknown is
+@{tt}MediaNotFound@{utt} (the error says how many items there are), an
+undecodable item @{tt}MediaUnreadable@{utt}.
+@{bullet}An item that is already a file is not copied: the answer is
+@{tt}copied: false@{utt} with its existing @{tt}path@{utt}, and the
+@{tt}path@{utt} argument is not used at all.
+@{bullet}Otherwise the target must lie inside the folders
+(@{tt}PermissionError@{utt}), carry an extension from the load table
+(@{tt}UnsupportedMediaType@{utt}) and not exist unless
+@{tt}overwrite@{utt} is true (@{tt}FileExists@{utt}).
+@{bullet}Missing folders are created and the bytes written as they are.
+The extension is not checked against the content: an image saved as
+@{tt}.mp3@{utt} is written.
+
+The answer: @{tt}status: success@{utt}, @{tt}path@{utt},
+@{tt}copied: true@{utt}, @{tt}bytes@{utt} and @{tt}type@{utt}. A write the
+operating system refuses (a folder at the target, no permission) ends the
+call with that error.
+
+@{h2}An example
+
+@{code json}
+{}
+{"id": "m3f2a9c01b7de", "path": "data/workspace/pasted_diagram.png"}
+@{body}
+@endnode
+
+@node sandbox "Where it may read and write"
+@{h1}Where it may read and write
+
+The paths come from the model, so without a boundary @{tt}load@{utt} would
+read any file into the conversation and @{tt}save@{utt} write anywhere.
+Both go through the core's path sandbox, the same check
+@{" file_ops " link file_ops/sandbox} uses:
+
+@{bullet}The path is resolved first -- @{tt}..@{utt} collapsed, links and
+junctions followed -- and must then lie inside one of
+@{tt}allowed_directories@{utt}. A link inside that points outside is
+refused.
+@{bullet}A network or device path (@{tt}\\\\host\\share\\x.png@{utt},
+@{tt}//host/share/x.png@{utt}, @{tt}\\\\?\\UNC\\...@{utt},
+@{tt}\\??\\...@{utt}) is refused on its text alone, before anything is
+opened -- resolving it would make Windows sign in to that host with your
+credentials.
+@{bullet}A path starting with @{tt}~@{utt} is refused: it is not your home
+folder here.
+@{bullet}A relative path counts from the folder the server started in; a
+@{tt}data/...@{utt} path, and a @{tt}data/...@{utt} entry in the list,
+follow the data directory when it is moved.
+@{bullet}Without @{tt}allowed_directories@{utt} the instance gets the data
+directory. An empty list allows nothing.
+@{bullet}@{tt}read_only: true@{utt} keeps loading and listing, but
+@{tt}save@{utt} is not offered to the model and refuses if called anyway.
+
+Each folder in the list can be read into the model's context and written
+by every agent that has the tools. Keep it small.
+
+@{tt}list_context@{utt} reads file paths out of the conversation, which
+tools put there. It never looks at a network or device path on disk; such
+an item is listed with an empty size.
+
+@{h2}Undo
+
+The file checkpoints plugin records a @{tt}save@{utt} before it runs --
+the target and any folder it creates, resolved by this plugin's own
+sandbox -- so a rewind restores what was there
+(@{" What is recorded " link file_checkpoints/recorded}). A save the
+sandbox refuses is not recorded.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The descriptions come from the plugin's @{tt}schema.yaml@{utt}. A
+read-only instance offers only @{tt}load@{utt} and
+@{tt}list_context@{utt}. Refusals the model gets verbatim include:
+
+@{code}
+Path is outside the allowed directories: <path>. Allowed: <folders>
+File is too large for the context: 31.4 MB (limit 20 MB): <path>
+Unsupported file type: .txt. Supported extensions: .aac, .avi, ...
+No media with id 'm...' in the current context. Call media_ops_list_context for the current ids (3 item(s) available).
+File already exists: <path>. Pass overwrite=true to replace it.
+Sandbox is read-only, refusing to write: <path>
+@{body}
+
+The chat's status line ends with "Loaded shot.png [image, 1.2 MB]",
+"3 media item(s) in context", "Saved image -> diagram.png (84.0 KB)" or
+"Already on disk: <path> -- nothing written"; a refusal shows as an error.
+
+@{h2}The attached file
+
+The conversation keeps only the file's path. Each request to the model
+reads the file again and sends it along, base64-encoded, after the tool
+answer -- so a file changed on disk later is seen as it is then, and a
+deleted one drops out. What arrives depends on the model and its
+provider:
+
+@{bullet}A model without image input gets a note naming the file, not the
+file.
+@{bullet}Images reach every provider with image input.
+@{bullet}Sound reaches a model that takes audio input; otherwise a note.
+.flac, .ogg and the other formats besides .wav and .mp3 are converted to
+MP3 first when pydub (with ffmpeg) is installed.
+@{bullet}Video arrives as a video only where the provider takes inline
+video (Gemini's own client); elsewhere as a note.
+
+@{h2}Tokens and cache
+
+Answers are appended; nothing earlier changes. The JSON of a load costs
+tens of tokens; the attachment costs what the provider charges for it --
+the core's context estimate counts 1,120 tokens per image -- on every later
+request of the run,
+since it stays in the conversation. Sound and video cost by length. The
+attachment is built the same way each time, so an unchanged file does not
+break the prompt cache. @{tt}list_context@{utt} sends no media, only the
+list.
+
+@{h2}Known gaps
+
+@{bullet}The size limit is per file; there is no limit on how many files
+are loaded or saved, nor on the pixel count of an image. Its dimensions
+are the provider's business.
+@{bullet}@{tt}save@{utt} writes the bytes of an item; it cannot convert
+between formats.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    media_ops:
+      type: media_ops
+      enabled: true
+      description: "Load media files from disk into the agent's context, and save context media back to disk"
+      allowed_directories:
+        - data
+      max_file_size_mb: 20
+@{body}
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+media_ops/*"
+@{body}
+
+The plugin needs nothing beyond the core. Converting sound for some
+providers uses pydub and ffmpeg when they are there.
+
+@{h2}Server settings
+
+The settings may stand in the entry itself or under @{tt}config:@{utt};
+the latter wins. They are read when the server starts.
+
+@{table}
+Key | Default | Meaning
+allowed_directories | the data directory | the folders load reads and save writes; an empty list allows nothing
+max_file_size_mb | 20 | the largest file load takes, at most 20 for images and videos and 25 for sound
+read_only | false | true: save is not offered and refuses
+@{body}
+
+The plugin keeps no data of its own; it writes only the files
+@{tt}save@{utt} is told to write.
+@endnode

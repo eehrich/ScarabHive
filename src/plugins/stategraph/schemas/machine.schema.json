@@ -42,6 +42,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -57,6 +58,32 @@
           "default": null,
           "description": "may a resumed run start it again if it was in flight at the crash? default: true, tool: false",
           "title": "Idempotent"
+        },
+        "llm_params": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "LLM params for this call (service_tier, thinking_level, ...) over the agent's own for the model it runs on: a map of templates, or one template that renders to an object; not which model (provider, model, ...)",
+          "title": "Llm Params"
+        },
+        "llm_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the LLM profile this call runs on instead of the agent's own, as --llm does: a literal, or {{ params.x }} with an enum; the agent's chain stays its fallback. Not with advanced",
+          "title": "Llm Profile"
         },
         "parse": {
           "anyOf": [
@@ -88,7 +115,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "schema": {
           "anyOf": [
@@ -164,6 +192,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -189,7 +218,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -227,6 +257,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -270,7 +301,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -339,6 +371,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -410,7 +443,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -444,6 +478,7 @@
       "properties": {
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -473,7 +508,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -506,6 +542,7 @@
       "properties": {
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -542,7 +579,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -589,6 +627,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -635,7 +674,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -682,6 +722,7 @@
       "properties": {
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -743,7 +784,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -782,6 +824,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -820,7 +863,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -1670,7 +1714,7 @@
     },
     "group": {
       "default": "",
-      "description": "its folder in the panel's machine list, nested by / (Writer/v6); empty: the folder of where it comes from",
+      "description": "its folder in the panel's machine list, nested by / (Reviews/nightly); empty: the folder of where it comes from",
       "title": "Group",
       "type": "string"
     },
@@ -1699,6 +1743,14 @@
       },
       "description": "machines inside this file: machine: <name> runs one in its own frame; they share the companion module and the imports",
       "title": "Machines",
+      "type": "object"
+    },
+    "notes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "name -> free text for the reader, drawn as a note on the canvas; the engine ignores it",
+      "title": "Notes",
       "type": "object"
     },
     "params": {

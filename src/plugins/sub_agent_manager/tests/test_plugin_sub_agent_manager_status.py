@@ -308,6 +308,28 @@ async def test_an_aborted_async_run_is_not_a_completed_job(server):
     assert "failed" in persisted, persisted
 
 
+async def test_the_first_poll_of_an_aborted_run_names_the_error(server):
+    """The reason went to the stored state only: the first poll, which reads the
+    job in memory, answered failed with error null."""
+    _wire(server, [{"type": "start"}, {"type": "error", "message": "LLM refused it"}])
+    await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "create", "agent_type": "basic_agent", "task": "do the thing",
+        "blocking": False, "_session_id": "parent_session",
+    })
+    for _ in range(300):
+        async with server._async_jobs_lock:
+            if (server._async_jobs.get("sub_session_1") or {}).get("status") == "failed":
+                break
+        await asyncio.sleep(0.01)
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "poll", "instance_id": "sub_session_1", "_session_id": "parent_session",
+    })
+
+    assert result["status"] == "failed", result
+    assert (result.get("error") or "").startswith("Error:"), result
+
+
 @pytest.mark.parametrize("persisted_status", ["failed", "cancelled"])
 async def test_a_poll_after_the_job_left_memory_still_says_it_failed(server, persisted_status):
     """The DB fallback used to answer "completed" for everything it found.

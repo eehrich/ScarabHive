@@ -410,8 +410,8 @@ class TestTheirRecordCountsAsMuchAsTheirEntry:
 
 
 class _Pipe:
-    async def readline(self):
-        return b""
+    async def readuntil(self, separator=b"\n"):
+        raise asyncio.IncompleteReadError(b"", None)
 
 
 class _HeldChild:

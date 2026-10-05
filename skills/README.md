@@ -33,7 +33,7 @@ tools that look for them; discovery cares about `SKILL.md` alone.
 
 ```markdown
 ---
-name: amiga-coding                # 1-64 chars, lowercase a-z/0-9 and single
+name: adversarial-review          # 1-64 chars, lowercase a-z/0-9 and single
                                   # hyphens; must equal the directory name
 description: One line — what this covers and WHEN to use it. This is the only
   text the agent sees before deciding to load the skill, so name the trigger.
@@ -68,11 +68,11 @@ Reference it by name from the agent config — no prompt file has to be touched:
 
 ```yaml
 agent_config:
-  skills: ["amiga-coding"]          # shorthand for always
-  # or, explicit (what src/plugins/amiga/agents/amiga_coder.yaml does):
+  skills: ["adversarial-review"]    # shorthand for always
+  # or, explicit (what src/plugins/coder/agents/coder_reviewer.yaml does):
   skills:
-    always:    ["amiga-coding"]     # full body goes into the system prompt
-    on_demand: ["m68k-assembly"]    # only a one-line index goes in
+    always:    ["adversarial-review"]  # full body goes into the system prompt
+    on_demand: ["codebase-design"]     # only a one-line index goes in
 ```
 
 Skills are addressed by **name**, never by path — moving a skill between groups
@@ -105,12 +105,13 @@ tools:
 
 It provides:
 
-- `skills_list()` — available skills, their descriptions and bundled files
+- `skills_list()` — available skills and their descriptions; `skills_list(name)` adds its bundled files
 - `skills_read(name)` — the skill's `SKILL.md`
 - `skills_read(name, path="references/catalog.md")` — a bundled file
 
 Reads are confined to the skill directory (no `..`, no absolute paths, symlinks
-resolved) and truncated at 100k characters so one file cannot flood the context.
+resolved) and truncated at 100k characters so one file cannot flood the context; `offset`
+continues a cut-off read.
 
 A miss returns `files` (what the bundle actually holds) and, when the request was
 close enough to be a typo, `did_you_mean`. Agents slip on `reference/` vs

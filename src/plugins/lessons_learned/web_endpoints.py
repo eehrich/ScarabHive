@@ -105,11 +105,11 @@ class LessonsWebFactory:
 
     async def create_lesson(self, request: Request, form: LessonForm) -> dict:
         """400 for what the store refuses: the lesson limit of the agent reached."""
-        return answered(await self.server.store_lesson(**form.model_dump()), 400)
+        return answered(await self.server.store_lesson(**form.model_dump(), by_person=True), 400)
 
     async def update_lesson(self, request: Request, lesson_id: str, form: LessonForm) -> dict:
         """The panel sends every field, so the only refusal left is a lesson gone meanwhile."""
-        return answered(await self.server.update_lesson(lesson_id, **form.model_dump()), 404)
+        return answered(await self.server.update_lesson(lesson_id, by_person=True, **form.model_dump()), 404)
 
     async def delete_lesson(self, request: Request, lesson_id: str) -> dict:
         return answered(await self.server.delete_lesson(lesson_id), 404)

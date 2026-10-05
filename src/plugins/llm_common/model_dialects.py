@@ -118,6 +118,15 @@ DIALECT_KEYS = ("tool_schema_dialect", "assistant_reasoning_field",
                 "provider_affinity_minutes")
 
 
+def affinity_minutes(config: Any) -> Optional[float]:
+    """The backend pin's window: the entry's own, else as long as its prompt cache lives.
+
+    Neither set leaves the core default (backend_affinity.DEFAULT_WINDOW_MINUTES).
+    """
+    own = getattr(config, "provider_affinity_minutes", None)
+    return own if own is not None else getattr(config, "prompt_cache_ttl_minutes", None)
+
+
 def warn_unwired(config: Any, *, provider: str, wired: Sequence[str], logger: Any) -> None:
     """A declared key this route cannot honour says so, instead of being accepted and doing nothing.
 

@@ -143,9 +143,11 @@ async def _authenticate(
                 if (last is None
                         or (datetime.now(timezone.utc) - last).total_seconds() > 3600):
                     await asyncio.to_thread(db.update_last_login, user_in_db.id)
-                # Read with the key, after the wait above: a password changed since the lookup revoked it
+                # Read with the key, after the wait above: a password changed since the lookup revoked it,
+                # and a demotion or deactivation since the lookup is the account this request acts as
                 request.state.login_generation = db.api_key_generation(api_key_hash)
-                if request.state.login_generation is None:
+                user_in_db = db.get_user_by_api_key(api_key_hash)
+                if request.state.login_generation is None or user_in_db is None:
                     raise credentials_exception
                 return User(
                     id=user_in_db.id,

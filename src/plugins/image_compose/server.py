@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict
 from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
-from .compositor import CompositionError, analyze_image, compose, find_text_region
+from .compositor import CompositionError, analyze_image, check_local, compose, find_text_region
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -22,6 +22,7 @@ _MIME_BY_FORMAT = {
     "webp": "image/webp",
     "jpeg": "image/jpeg",
 }
+MAX_WARNINGS = 20
 
 
 class ImageComposeServer(SchemaBasedToolServer):
@@ -83,10 +84,10 @@ class ImageComposeServer(SchemaBasedToolServer):
         spec_path = params.get("spec_path")
 
         # `spec` accepts either a dict (internal/test callers) or a JSON string
-        # (LLM callers). String is the schema-declared form because Gemini's
-        # constrained decoder collapses on freeform objects with
-        # `additionalProperties: true` — emitting JSON-as-string sidesteps that
-        # entirely (see MALFORMED_FUNCTION_CALL incidents 2026-05-26).
+        # (LLM callers). The schema declares an object; the string form stays
+        # accepted because Gemini's constrained decoder collapsed on freeform
+        # objects and models fell back to JSON-as-string (see
+        # MALFORMED_FUNCTION_CALL incidents 2026-05-26).
         if isinstance(spec, str):
             try:
                 spec = json.loads(spec)
@@ -98,7 +99,7 @@ class ImageComposeServer(SchemaBasedToolServer):
             return _error("output_path is required (string)", "ValidationError")
 
         try:
-            out_full = self._confine(self._resolve_out(output_path), "output_path")
+            out_full = self._confine(self._resolve_out(output_path, "output_path"), "output_path")
             out_full.parent.mkdir(parents=True, exist_ok=True)
 
             # Per-layer PNG export:
@@ -112,7 +113,7 @@ class ImageComposeServer(SchemaBasedToolServer):
             if layers_dir_param is False or layers_dir_param == "":
                 layers_dir = None  # explicit opt-out
             elif layers_dir_param:
-                layers_dir = self._resolve_out(layers_dir_param)
+                layers_dir = self._resolve_out(layers_dir_param, "layers_dir")
                 # compose() clears layer_*.png from this directory before
                 # writing. Pointed at the directory the composite goes to,
                 # that deletes delivered assets whose name starts with
@@ -133,7 +134,7 @@ class ImageComposeServer(SchemaBasedToolServer):
             # and its layer directory on disk under an error result.
             spec_full: Path | None = None
             if spec_path and isinstance(spec_path, str):
-                spec_full = self._confine(self._resolve_out(spec_path), "spec_path")
+                spec_full = self._confine(self._resolve_out(spec_path, "spec_path"), "spec_path")
 
             n_layers = len(spec.get("layers") or [])
             if status:
@@ -146,6 +147,12 @@ class ImageComposeServer(SchemaBasedToolServer):
             )
 
             warnings_list = meta.get("warnings", []) or []
+            n_warnings = len(warnings_list)
+            # Overlap warnings grow with the square of the text/svg layers:
+            # forty stacked labels would put 780 of them into the context.
+            if len(warnings_list) > MAX_WARNINGS:
+                warnings_list = warnings_list[:MAX_WARNINGS] + [
+                    f"... and {len(warnings_list) - MAX_WARNINGS} more warnings"]
             # If anything is off-canvas or otherwise dubious, surface it via
             # status="warning" so the calling agent can't ignore the warnings
             # field. The file is still written either way.
@@ -202,13 +209,13 @@ class ImageComposeServer(SchemaBasedToolServer):
                     f"{meta['size'][0]}x{meta['size'][1]} ({meta['bytes']} bytes)"
                 )
                 if warnings_list:
-                    end_msg += f" — {len(warnings_list)} warning(s)"
+                    end_msg += f" — {n_warnings} warning(s)"
                 await status.end(
                     end_msg,
                     meta={
                         "output_path": str(out_full),
                         "bytes": meta["bytes"],
-                        "warnings": len(warnings_list),
+                        "warnings": n_warnings,
                     },
                 )
             return result
@@ -224,7 +231,7 @@ class ImageComposeServer(SchemaBasedToolServer):
                 await status.error(f"Unexpected error: {e}")
             return _error(str(e), type(e).__name__)
 
-    def _resolve_out(self, value: str) -> Path:
+    def _resolve_out(self, value: str, what: str) -> Path:
         """A write path: relative to the project root, or absolute.
 
         The same rule the read side has always used (``analyze``,
@@ -244,8 +251,20 @@ class ImageComposeServer(SchemaBasedToolServer):
         ``base / absolute`` is that absolute path, so absolutes need no
         branch of their own -- nor does a configured data directory: a
         ``data/...`` path lands there (agent_system/paths.py), absolute.
+
+        A host path is refused on its text first, unless it lies in an
+        output directory: ``resolve()`` would already reach the host.
         """
+        check_local(value, what, self.output_directories)
         return (self.project_root / resolve_data_path(value)).resolve()
+
+    def _resolve_in(self, value: str) -> Path:
+        """An image to read: same rule as ``_resolve_out``, but never a host path."""
+        check_local(value, "path")
+        full = (self.project_root / resolve_data_path(value)).resolve()
+        if not full.exists():
+            raise FileNotFoundError(f"image not found: {full}")
+        return full
 
     def _confine(self, path: Path, what: str) -> Path:
         """``path`` if it lies inside one of ``output_directories`` (or the
@@ -279,11 +298,8 @@ class ImageComposeServer(SchemaBasedToolServer):
         ):
             return _error("region must be [x, y, w, h] (4 numbers)", "ValidationError")
 
-        full = (self.project_root / resolve_data_path(path)).resolve()
-        if not full.exists():
-            return _error(f"image not found: {full}", "FileNotFoundError")
-
         try:
+            full = self._resolve_in(path)
             region_tuple: tuple[int, int, int, int] | None = (
                 (int(region[0]), int(region[1]), int(region[2]), int(region[3]))
                 if region else None
@@ -319,7 +335,13 @@ class ImageComposeServer(SchemaBasedToolServer):
         path = params.get("path")
         region_size = params.get("region_size")
         prefer = params.get("prefer", "any")
-        max_candidates = int(params.get("max_candidates", 3))
+        # The schema's 1..10 is not enforced by the framework: 0 answered
+        # "list index out of range", a negative dropped the last candidates,
+        # and a non-number raised out of the handler.
+        try:
+            max_candidates = max(1, min(10, int(params.get("max_candidates", 3))))
+        except (TypeError, ValueError, OverflowError):
+            return _error("max_candidates must be an integer 1-10", "ValidationError")
 
         if not path or not isinstance(path, str):
             return _error("path is required (string)", "ValidationError")
@@ -330,11 +352,8 @@ class ImageComposeServer(SchemaBasedToolServer):
         if not isinstance(prefer, str):
             return _error("prefer must be a string", "ValidationError")
 
-        full = (self.project_root / resolve_data_path(path)).resolve()
-        if not full.exists():
-            return _error(f"image not found: {full}", "FileNotFoundError")
-
         try:
+            full = self._resolve_in(path)
             size_tuple: tuple[int, int] = (int(region_size[0]), int(region_size[1]))
             if status:
                 await status.progress(f"Searching {full.name} for best {size_tuple[0]}x{size_tuple[1]} text region")

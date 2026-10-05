@@ -1,0 +1,276 @@
+@database "tavily_search"
+@author "Enrico Ehrich"
+@$VER: tavily_search.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Tavily search"
+@{h1}Tavily search
+
+Web search for agents through the paid Tavily API. An agent searches with
+a question or keywords and gets back ranked results with a short excerpt
+each -- on request the page text, and a short answer Tavily writes from
+the results. A second tool fetches the readable content of up to 20
+pages at once. Results are cached on disk for half an hour, so the same
+question asked twice costs one request. Without a Tavily API key the plugin
+offers no tools at all; agents then search with @{tt}duckduckgo_search@{utt}
+instead. It has no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  Searching the web  " link search}
+  @{"  Reading pages  " link extract}
+  @{"  Errors and the cache  " link errors}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration (@{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    tavily_search:
+      type: tavily_search
+      enabled: true
+      api_key: "${TAVILY_API_KEY}"  # Set via TAVILY_API_KEY env var (recommended) or here
+      cache_ttl: 1800  # 30 minutes
+      cache_enabled: true
+      default_max_results: 5
+      default_search_depth: "basic"  # "basic" or "advanced" (2x credits)
+@{body}
+
+It still needs a key. Get one at @{tt}app.tavily.com@{utt} and put it in
+@{tt}config/secrets.env@{utt} as @{tt}TAVILY_API_KEY=...@{utt} (see
+@{" Configuration files " link scarabhive/config}), or set the environment
+variable before the server starts. An unset variable becomes an empty
+key, and with an empty key the plugin loads but offers no tools; the log
+says "Tavily API key not configured". The key is read when the plugin's
+server is created: after adding it, restart.
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+tavily_search/*"
+@{body}
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+api_key | empty | the Tavily key; empty falls back to the environment variable @{tt}TAVILY_API_KEY@{utt}, and without either there are no tools
+cache_ttl | 1800 | seconds a result is kept in the cache
+cache_enabled | true | false: every call goes to Tavily, nothing is stored
+default_max_results | 5 | results per search when the model does not say
+default_search_depth | basic | search depth when the model does not say
+max_content_chars | 20000 | characters of a page's @{tt}raw_content@{utt} the model gets; a longer page is cut. Anything but a positive whole number (0, negative, text) means 20000
+@{body}
+
+@{h2}What it costs
+
+Every call that is not answered from the cache is a request to Tavily and
+uses credits of your plan. By Tavily's price list a basic search costs
+one credit and an advanced one two; extraction costs one credit per five
+pages (two with @{tt}extract_depth@{utt} advanced). Check the current prices
+at @{tt}tavily.com@{utt}. A cache hit costs nothing.
+
+@{h2}Where data lives
+
+The cache is one JSON file per call under @{tt}cache/tavily_search@{utt}
+in the data directory. It survives a restart; an expired entry is removed
+when it is read. It is one cache for all users, sessions and instances of
+the plugin: results of the public web, nothing personal.
+
+The plugin needs @{tt}tavily-python@{utt}, listed in its
+@{tt}plugin.toml@{utt}. The library honours @{tt}TAVILY_HTTP_PROXY@{utt}
+and @{tt}TAVILY_HTTPS_PROXY@{utt} for a proxy.
+@endnode
+
+@node search "Searching the web"
+@{h1}Searching the web
+
+@{tt}tavily_search_web_search@{utt} (the name follows the plugin instance)
+sends one query to Tavily and answers with its results.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+query | required; a question or keywords. Empty or only spaces is an error
+max_results | how many results; default @{tt}default_max_results@{utt} (5)
+search_depth | basic, or advanced for a more thorough search at twice the credits; default @{tt}default_search_depth@{utt} (basic)
+topic | general (default), news or finance
+time_range | day, week, month or year: only results that recent
+include_domains | only results from these domains, e.g. ["wikipedia.org"]
+exclude_domains | no results from these domains
+include_raw_content | true: each result also carries the page as markdown, up to @{tt}max_content_chars@{utt}
+include_answer | true: Tavily adds a short answer written from the results
+ignore_cache | true: ask Tavily again even when the cache has an answer; the new result replaces the cached one
+@{body}
+
+The plugin passes these values on as the model sends them. It does not
+check them against the ranges and choices the tool description names
+(1 to 20 results, the listed words); what Tavily does with a value outside
+them is Tavily's answer, usually a @{tt}BadRequestError@{utt}. An empty
+@{tt}time_range@{utt} or domain list is left out of the request.
+
+@{h2}Answers
+
+@{tt}query@{utt} (as sent, trimmed), @{tt}results@{utt},
+@{tt}result_count@{utt}, and @{tt}answer@{utt} when one was asked for
+and Tavily gave one. Each result has @{tt}title@{utt}, @{tt}url@{utt},
+@{tt}content@{utt} (Tavily's excerpt), @{tt}score@{utt} (its relevance),
+plus @{tt}raw_content@{utt} when asked for (cut to
+@{tt}max_content_chars@{utt}, see @{" Size of an answer " link model}) and
+@{tt}published_date@{utt} when Tavily knows one. Other fields of Tavily's
+answer -- images, follow-up questions, timing -- are dropped. Errors: see
+@{" Errors and the cache " link errors}.
+
+@{h2}An example
+
+@{code json}
+{"query": "What changed in the HTTP/3 specification in 2025?", "include_answer": true}
+{"query": "SQLite WAL checkpoint", "include_domains": ["sqlite.org"], "max_results": 3}
+{"query": "central bank interest rate decision", "topic": "news", "time_range": "week"}
+@{body}
+@endnode
+
+@node extract "Reading pages"
+@{h1}Reading pages
+
+@{tt}tavily_search_extract@{utt} has Tavily fetch pages and answers with
+their readable content. Tavily fetches them, not this machine: pages
+behind your firewall or a login are out of reach. To read one long page
+in parts, @{" web_scraper " link web_scraper/main} pages it; this tool
+returns the start of each page only, up to @{tt}max_content_chars@{utt}.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+urls | required; 1 to 20 URLs. A single URL sent as a string counts as one
+extract_depth | basic (default), or advanced for pages that are hard to read (dynamic content); costs more
+format | markdown (default) or text
+include_images | true: each page also lists the image URLs found on it
+ignore_cache | true: fetch again even when the cache has the pages
+@{body}
+
+More than 20 URLs is refused before anything is sent. The order of the
+URLs does not matter to the cache.
+
+@{h2}Answers
+
+@{tt}results@{utt} with @{tt}url@{utt}, @{tt}raw_content@{utt} (cut to
+@{tt}max_content_chars@{utt}, see @{" Size of an answer " link model}) and @{tt}images@{utt} when asked for and found;
+@{tt}failed_results@{utt} with @{tt}url@{utt} and @{tt}error@{utt} for the
+pages Tavily could not read; @{tt}success_count@{utt} and
+@{tt}failed_count@{utt}. Some pages failing is not an error of the call.
+When the whole call fails, the answer carries @{tt}error@{utt},
+empty @{tt}results@{utt}, and every URL in @{tt}failed_results@{utt} with
+that error.
+
+@{h2}An example
+
+@{code json}
+{"urls": ["https://www.sqlite.org/wal.html"]}
+{"urls": ["https://example.org/a", "https://example.org/b"], "format": "text"}
+@{body}
+@endnode
+
+@node errors "Errors and the cache"
+@{h1}Errors and the cache
+
+Every error comes back as an answer with @{tt}error@{utt}, never as a
+failed tool call. The texts:
+
+@{table}
+error | When
+Empty query provided | search without a query
+No URLs provided | extract without URLs
+Too many URLs (N). Maximum is 20 per request. | extract with more than 20
+Search cancelled, Extraction cancelled | the run was stopped before the request went out; the answer also has @{tt}cancelled: true@{utt}
+Invalid Tavily API key. Please check your configuration. | Tavily answered 401
+Tavily API rate limit exceeded. Please try again later. | Tavily answered 429
+ForbiddenError: <Tavily's text> | Tavily answered 403, 432 or 433 -- the last two when the plan's or the pay-as-you-go credits are used up; waiting does not help
+BadRequestError: <Tavily's text> | Tavily answered 400, for instance a value it does not accept
+TimeoutError: Request timed out after 60 seconds. | no answer in time: 60 seconds for a search, 30 for an extraction
+HTTPStatusError: ... | any other error status from Tavily
+<class>: <message> | a network error, or @{tt}tavily-python@{utt} not installed
+@{body}
+
+When Tavily sends no explanation, the error is the class name alone
+(@{tt}ForbiddenError@{utt}). A stop is checked once, before the request is
+sent; a request already on its way is not interrupted by the plugin.
+
+@{h2}The cache
+
+@{bullet}A search is cached with its query -- trimmed, in lower case, so
+"SQLite" and "sqlite" share one entry -- and every parameter but
+@{tt}ignore_cache@{utt}. A search with no results is cached too.
+@{bullet}An extraction is cached with its set of URLs and its parameters,
+when at least one page was read. Pages that failed are part of the cached
+answer: they stay failed until the entry expires, unless the model sends
+@{tt}ignore_cache@{utt}.
+@{bullet}An error is never cached.
+@{bullet}The cache holds whole pages; @{tt}max_content_chars@{utt} cuts
+them on the way out, so a changed limit applies to cached answers too.
+Otherwise a cached answer is returned as stored, including the query as it
+was first spelled.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Tool and parameter descriptions come from the plugin's
+@{tt}schema.yaml@{utt}; together they are about 3000 characters in every
+request of an agent that has them. Without an API key they are not
+rendered, so a model is never offered a tool whose every call fails.
+
+The chat's status line shows "🔍 Searching: <query>" and ends with "5
+results -- <query>", "5 results (cached) -- <query>" or "Search failed:
+<error>". For pages: "📄 Extracting content from 3 URL(s)", then
+"Extracted 2 page(s), 1 failed", "2 page(s) (cached)" or "Extraction
+failed: <error>".
+
+@{h2}Size of an answer
+
+A search without @{tt}include_raw_content@{utt} is small: a title, an
+address and an excerpt per result. Page content -- @{tt}raw_content@{utt}
+of a search result or of an extracted page -- is cut per page to
+@{tt}max_content_chars@{utt} (20000) characters. A cut item says so with
+@{tt}"truncated": <length of the whole page>@{utt}; an item without it is
+complete. There is no way to fetch the rest through this plugin; for that
+the model reads the page with @{" web_scraper " link web_scraper/main}.
+
+An extraction takes at most 20 pages, and Tavily documents 20 as the
+most results a search returns (the plugin passes @{tt}max_results@{utt} on
+unchecked), so an answer holds about 20 times the limit: with stubbed
+pages of 200,000 characters, 20 results gave 402,177 characters instead
+of 4,001,757. The excerpts (@{tt}content@{utt}) and Tavily's
+@{tt}answer@{utt} are short texts from Tavily and are not cut. An agent
+that reads many pages still benefits from @{tt}context_engineer@{utt}'s
+limit for large tool results
+(@{" What a compaction does " link context_engineer/layers}).
+
+@{h2}Tokens and cache
+
+Answers are ordinary tool results, appended to the history; nothing
+earlier is changed, so the prompt cache stays intact.
+
+@{h2}Page content is untrusted
+
+Excerpts, pages and Tavily's answer are text from the web, handed to the
+model as data. A page can carry instructions aimed at the model. The
+plugin does not filter or mark them; what the model does with them is up
+to its prompt and the tools it has.
+@endnode

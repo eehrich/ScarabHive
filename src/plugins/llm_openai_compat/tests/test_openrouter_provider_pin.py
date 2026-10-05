@@ -689,3 +689,122 @@ class TestARefusalReleasesThePin:
             await client._make_request_non_streaming(list(self.FIRST_TURN), tools=[])
         assert sent == [self.PINNED, VERTEX_FIRST]
         assert client.recent_backend() is None
+
+
+def _answer(served, text="ok"):
+    """A Responses answer of *served*: a reasoning item and the text, as the alias resolved it."""
+    return {"model": served, "output": [
+        {"type": "reasoning", "id": f"rs_{served}_{text}", "encrypted_content": "sig", "summary": []},
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}]}
+
+
+class TestARunStaysOnTheModelItsAliasResolvedTo:
+    """OpenRouter walks an alias down to an older model when the newest fails (a 504
+    from 3.8 -> 3.7). A shorts_producer run on 30.09.2026 flipped between them on
+    23 of 69 calls, and every flip found a cold prompt cache."""
+
+    ALIAS = "~google/gemini-flash-latest"
+
+    def _client(self, answers, model=ALIAS, base_url=OPENROUTER):
+        client = OpenAIResponsesClient(model=model, api_key="k", base_url=base_url,
+                                       ssl_verify=False, max_retries=1, retry_backoff=0.0)
+        sent = []
+
+        async def post(_client, _url, payload, **_kwargs):
+            sent.append(copy.deepcopy(payload))
+            answer = answers[len(sent) - 1]
+            return answer if isinstance(answer, httpx.Response) else httpx.Response(200, json=answer)
+        client._post = post
+        return client, sent
+
+    def _turn(self, client, served, text="ok"):
+        assistant = client._format_response(_answer(served, text))["assistant"]
+        return ChatMessage(role="assistant", content=assistant["content"],
+                           reasoning_details=assistant["reasoning_details"])
+
+    async def test_the_next_call_goes_to_the_model_that_answered(self):
+        client, sent = self._client([_answer("google/gemini-3.8-flash"), _answer("google/gemini-3.8-flash")])
+        history = [ChatMessage(role="user", content="go")]
+        first = await client.chat_tools(history, [])
+        history += [ChatMessage(role="assistant", content=first["assistant"]["content"],
+                                reasoning_details=first["assistant"]["reasoning_details"]),
+                    ChatMessage(role="user", content="next")]
+        await client.chat_tools(history, [])
+        assert [p["model"] for p in sent] == [self.ALIAS, "google/gemini-3.8-flash"]
+
+    async def test_a_turn_another_model_answered_is_not_replayed_to_it(self):
+        """Its encrypted items verify only on the model that wrote them."""
+        client, sent = self._client([_answer("google/gemini-3.8-flash")])
+        history = [ChatMessage(role="user", content="go"),
+                   self._turn(client, "google/gemini-3.7-flash", "old"),
+                   ChatMessage(role="user", content="next"),
+                   self._turn(client, "google/gemini-3.8-flash", "new"),
+                   ChatMessage(role="user", content="again")]
+        await client.chat_tools(history, [])
+        replayed = [i["id"] for i in sent[0]["input"] if i.get("type") == "reasoning"]
+        assert sent[0]["model"] == "google/gemini-3.8-flash"
+        assert replayed == ["rs_google/gemini-3.8-flash_new"]
+
+    async def test_a_merged_turn_with_a_foreign_half_is_rebuilt_whole(self):
+        """The message validator merges consecutive assistant turns, blocks and calls alike. Replayed
+        in part, the request lost the 3.7 half's call and kept its output: a 400 on every request."""
+        client, sent = self._client([_answer("google/gemini-3.8-flash")])
+        old = self._turn(client, "google/gemini-3.7-flash", "old")
+        new = self._turn(client, "google/gemini-3.8-flash", "new")
+        for turn, call in ((old, "c1"), (new, "c2")):
+            turn.reasoning_details[0]["items"].append(
+                {"type": "function_call", "call_id": call, "name": "echo", "arguments": "{}"})
+        merged = ChatMessage(role="assistant", content="",
+                             tool_calls=[{"id": c, "type": "function", "function": {"name": "echo", "arguments": "{}"}}
+                                         for c in ("c1", "c2")],
+                             reasoning_details=old.reasoning_details + new.reasoning_details)
+        history = [ChatMessage(role="user", content="go"), merged,
+                   ChatMessage(role="tool", tool_call_id="c1", content="1"),
+                   ChatMessage(role="tool", tool_call_id="c2", content="2")]
+        await client.chat_tools(history, [])
+        calls = [i["call_id"] for i in sent[0]["input"] if i.get("type") == "function_call"]
+        assert sent[0]["model"] == "google/gemini-3.8-flash" and calls == ["c1", "c2"]
+
+    async def test_a_merged_turn_whose_other_half_has_no_block_is_rebuilt_whole(self):
+        """The other half came from another route (no Responses block): its call was missing."""
+        client, sent = self._client([_answer("google/gemini-3.8-flash")])
+        own = self._turn(client, "google/gemini-3.8-flash", "own")
+        merged = ChatMessage(role="assistant", content="own and other",
+                             tool_calls=[{"id": "c2", "type": "function", "function": {"name": "echo", "arguments": "{}"}}],
+                             reasoning_details=own.reasoning_details)
+        history = [ChatMessage(role="user", content="go"), merged, ChatMessage(role="tool", tool_call_id="c2", content="2")]
+        await client.chat_tools(history, [])
+        calls = [i["call_id"] for i in sent[0]["input"] if i.get("type") == "function_call"]
+        assert calls == ["c2"]
+
+    async def test_the_newest_turn_decides_even_without_a_record(self):
+        """A turn that names no served model is the alias's: the run is not pinned to an older one."""
+        client, sent = self._client([_answer("google/gemini-3.8-flash")])
+        newest = self._turn(client, "google/gemini-3.8-flash", "new")
+        del newest.reasoning_details[0]["served_model"]
+        history = [ChatMessage(role="user", content="go"), self._turn(client, "google/gemini-3.7-flash", "old"),
+                   ChatMessage(role="user", content="next"), newest, ChatMessage(role="user", content="again")]
+        await client.chat_tools(history, [])
+        assert sent[0]["model"] == self.ALIAS
+
+    async def test_a_refusal_sends_the_retry_to_the_alias(self):
+        """The pinned model failing is exactly when the alias's walk-down helps."""
+        client, sent = self._client([httpx.Response(503, text="upstream timeout"),
+                                     _answer("google/gemini-3.7-flash")])
+        history = [ChatMessage(role="user", content="go"),
+                   self._turn(client, "google/gemini-3.8-flash"),
+                   ChatMessage(role="user", content="next")]
+        await client.chat_tools(history, [])
+        assert [p["model"] for p in sent] == ["google/gemini-3.8-flash", self.ALIAS]
+
+    @pytest.mark.parametrize("model,base_url", [
+        ("google/gemini-3.8-flash", OPENROUTER),                  # no alias: nothing to resolve
+        (ALIAS, "https://llm-proxy.internal/v1"),                  # another gateway's names
+    ])
+    async def test_only_an_openrouter_alias_is_pinned(self, model, base_url):
+        client, sent = self._client([_answer("google/gemini-3.8-flash-001")], model, base_url)
+        history = [ChatMessage(role="user", content="go"),
+                   self._turn(client, "google/gemini-3.8-flash-001"),
+                   ChatMessage(role="user", content="next")]
+        await client.chat_tools(history, [])
+        assert sent[0]["model"] == model

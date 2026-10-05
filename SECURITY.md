@@ -110,7 +110,7 @@ control.
 The shipped configuration gates every agent with a shell (`terminal`,
 `coder_shell`), `coding_cli`, `ssh_control`, a tool that runs arbitrary code
 (`blender_execute`, `godot_script`) or file access to the whole checkout at
-`admin`: `amiga_coder`, `blender_agent`, `claude_code_agent`, `coder`,
+`admin`: `blender_agent`, `claude_code_agent`, `coder`,
 `coder_explorer`, `coder_reviewer`, `coder_tester`, `file_ops_test_agent`,
 `gamedev`, `gamedev_tester`, `godot_agent`, `skills_agent`,
 `skills_agent_multimodal`, `sysadmin_agent`. `state_graph_agent` and
@@ -118,8 +118,7 @@ The shipped configuration gates every agent with a shell (`terminal`,
 analysis script (`state_graph_terminal`: one command per call, started in the
 directory the server runs from -- the checkout, as every relative path of the
 configuration assumes; a whitelisted terminal takes no `cwd` and no `env_vars`
-from the model and refuses control characters), and are gated at `user`, so the
-writer's book runs keep working for ordinary accounts.
+from the model and refuses control characters), and are gated at `user`.
 Gate every agent you add with such tools, and every agent with file access to
 the checkout or above, to `config/`, to `data/` itself (it holds the user store
 and every user's sessions; a folder of the agent's own below it, such as
@@ -143,9 +142,12 @@ Remaining limits:
 
 ## Hardening a deployment
 
-- Change `auth.secret_key` and `auth.default_admin_password` in
-  `config/config.yaml` before the first start; the shipped values are for
-  development. The config loader expands `${VAR}` placeholders from the
+- Give the installation its own `auth.secret_key` and the admin its own
+  password before the first start: the install scripts do both
+  (`python -m agent_system.config.local_layer signing-key`,
+  `python -m agent_system.auth.first_admin`). The shipped signing key is for
+  development; the shipped config sets no admin password, so the API generates
+  one on its first start and shows it on the console once. The config loader expands `${VAR}` placeholders from the
   environment and `config/secrets.env`, e.g. `secret_key: "${AUTH_SECRET_KEY}"`.
   The server does not start with an empty or short (under 32 characters) key,
   and logs an error for a published one, such as the shipped development key;

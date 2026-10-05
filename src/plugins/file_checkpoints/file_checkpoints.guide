@@ -1,0 +1,333 @@
+@database "file_checkpoints"
+@author "Enrico Ehrich"
+@$VER: file_checkpoints.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "File checkpoints"
+@{h1}File checkpoints
+
+Checkpoints for files, not only for the conversation. @{tt}/undo@{utt}
+takes the last exchange out of the chat but leaves the files the agent wrote
+in it as they are. With this plugin the agent's file changes are recorded
+turn by turn -- how each file looked before the agent first touched it -- so
+the chat can put them back: @{tt}/undo files@{utt} drops the last exchange
+together with its file changes, @{tt}/rewind@{utt} lists the checkpoints of
+a session and @{tt}/rewind <n>@{utt} puts the files back as they were before
+checkpoint n. A rewind never touches a file the agent did not change, and
+refuses when a file was changed by someone else since. The model gets no
+tool: undoing its work is the person's call. It has no panel.
+
+@{code}
+For users
+  @{"  Undo and rewind in the chat  " link using}
+  @{"  What a rewind does and refuses  " link rewind}
+
+For agents and developers
+  @{"  What is recorded  " link recorded}
+  @{"  The two hooks  " link hooks}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node using "Undo and rewind in the chat"
+@{h1}Undo and rewind in the chat
+
+The same words work in the terminal chat (@{tt}agent-cli@{utt}) and in the
+browser chat. They only have something to rewind when the agent of the
+session records checkpoints (see @{" Setting it up " link setup}); the coder
+agent and its sub-agents do.
+
+@{table}
+Command | Does
+/undo files | puts back every file the last exchange changed, then drops the exchange
+/retry files | the same, then asks the question again
+/rewind | lists the checkpoints of the session
+/rewind <n> | puts the files back as they were before checkpoint n; the conversation stays as it is
+/undo files overwrite | also puts back files changed outside the agent since
+/rewind <n> overwrite | the same for a checkpoint
+@{body}
+
+A word may carry leading dashes (@{tt}/undo --files@{utt}).
+@{tt}overwrite@{utt} goes only with @{tt}files@{utt} or with a checkpoint
+number; @{tt}/rewind overwrite@{utt} alone is refused with the usage line.
+In the browser, @{tt}force@{utt} takes over a session a crashed process
+still holds, as with plain @{tt}/undo@{utt}.
+
+@{h2}The list
+
+@{code}
+File checkpoints -- /rewind <n> puts the files back as they were before checkpoint n:
+   3  turn 2: "add a config loader"
+      2 file(s): created src/config.py, modified src/main.py
+   5  dropped turn (after turn 2): "try it with yaml"
+      1 file(s): modified src/config.py
+    Not tracked: coder_shell_execute x2 -- whatever they changed is still as they left it.
+@{body}
+
+One entry per turn that changed files, oldest first, with the question that
+opened it and up to five of its files. The number is the record's own and
+never shifts: when an old checkpoint is forgotten, @{tt}/rewind 5@{utt}
+still means the same one -- so numbers have gaps. A "dropped turn" is one
+@{tt}/undo@{utt} took out of the conversation without its files; its changes
+are still on disk, and a rewind to a turn before it undoes them too.
+
+@{h2}What the answer says
+
+A rewind answers with one of four results:
+
+@{table}
+Result | Meaning
+rewound | every recorded change since the checkpoint is undone; "put back" and "removed" name the files
+nothing | no file needed putting back
+refused | nothing was touched; the files that stopped it are named with the reason
+partial | the rest was put back; the named files were not, and stay recorded -- rewind again once the reason is gone
+@{body}
+
+A number that names no checkpoint answers with the numbers there are.
+
+@{tt}/undo files@{utt} drops the exchange only after "rewound" or
+"nothing". After "refused" or "partial" the exchange stays, so you can look
+and try again; a plain @{tt}/undo@{utt} drops it and leaves the files (their
+record stays for a later @{tt}/rewind@{utt}).
+
+Tools that change files without naming them -- shell commands and the like
+-- are not recorded, only counted: the answer ends with "Not tracked:
+<tool> xN", so a "rewound" is never mistaken for "exactly as before".
+
+In the browser the answers come from the server: a refusal is a 409, an
+unknown checkpoint a 404, a partial rewind a 500 with the same text, and
+503 when the plugin is not loaded ("File checkpoints are off"). A session
+whose run is still going is refused with 409 -- the run could write while
+files are put back.
+@endnode
+
+@node rewind "What a rewind does and refuses"
+@{h1}What a rewind does and refuses
+
+For every path changed since the checkpoint, the target is the state before
+the agent's first change, and the plugin knows the state the agent's last
+change left. It compares both with the disk before it writes anything.
+
+@{h2}Refused -- nothing is touched
+
+@{bullet}
+@{b}Changed outside the agent.@{ub} The file is not what the agent left
+(someone edited it since), or it changed between two of the agent's calls --
+in one turn or between turns. The path is named; @{tt}overwrite@{utt} puts
+it back anyway.
+@{b}Cannot be put back.@{ub} Its content was never kept (larger than
+@{tt}max_file_bytes@{utt}, the store was full, it could not be read); a
+directory beyond @{tt}max_entries_per_call@{utt}; the tool server that
+recorded it is not loaded or no longer allows the path; a link now stands in
+its path; a directory that holds files the agent did not create. With
+@{tt}overwrite@{utt} the rest is put back and these are named.
+@{b}A run is going.@{ub} A run of the session, or a sub-agent it started,
+is still working.
+@{body}
+
+@{h2}What it never does
+
+@{bullet}
+It never deletes a path it has no record of. A directory the agent created
+is removed only when everything in it goes with it; otherwise it is kept,
+named, and stays recorded until you clear it.
+It never writes outside the directories of the tool server that recorded a
+path. Paths are recorded as that server's own sandbox resolved them, and
+every write is checked again -- on its resolved parent directory, on the
+disk as it is at that moment. A link the rewind itself puts back higher up
+cannot carry a write out.
+It never writes through a link: a file is replaced by a rename, a link is
+recreated as a link, a delete removes the link, not its target.
+It never overwrites a file that changed while the rewind ran: each path is
+looked at again right before it is written and left as it is if it moved.
+@{body}
+
+@{h2}What stays recorded
+
+Paths that could not be written (no permission, a file held open by another
+program on Windows) and paths refused for a reason that may pass (server not
+loaded, a link in the path, your files in a directory) stay recorded: the
+answer is "partial", and a later rewind finishes them. What can never come
+back (content not kept) is forgotten with the rest. After a rewind the turns
+it undid are forgotten; a files-only @{tt}/rewind@{utt} leaves them in the
+conversation.
+
+@{h2}Two sessions, one file
+
+Each session has its own record. If two sessions change the same file, a
+rewind in the first finds the file is not what its agent left and refuses;
+@{tt}overwrite@{utt} would put back the first session's older state over the
+second's work.
+@endnode
+
+@node recorded "What is recorded"
+@{h1}What is recorded
+
+@{table}
+Tool (server type) | Recorded
+file_ops manage create, delete, move, rename; replace_string_in_file | the state before: content and mode, a link's target, a directory, or "did not exist"; every instance, whatever its name
+media_ops save | the target file, the same way
+terminal execute, coding_cli run_task, blender, godot, audio_ops, image_compose, comfyui, sqlite_query, stategraph machine tools, and untracked_tools | not recorded, counted per turn
+everything else | nothing
+@{body}
+
+@{bullet}
+@{b}Once per turn and path.@{ub} A file edited twenty times in a turn costs
+one copy; a file nobody touches costs nothing. Identical content is stored
+once (by its SHA-256).
+@{b}Directories.@{ub} A recursive delete, a move or a rename of a directory
+records every entry under it (links not followed), up to
+@{tt}max_entries_per_call@{utt}; beyond that, the directory is recorded as
+one whose contents were not kept. Directories a create makes on its way are
+recorded as new.
+@{b}The path the tool writes.@{ub} Paths come from the server's own sandbox
+(file_ops' validator, media_ops' sandbox). A path the sandbox refuses is not
+recorded -- the tool refuses it too. A read-only instance records nothing.
+@{b}One file, one record.@{ub} On a case-insensitive file system
+@{tt}Foo.txt@{utt} and @{tt}foo.txt@{utt} are one file: paths are recorded
+under the spelling the directory stores, and a file comes back under the
+name it had.
+@{b}Calls that changed nothing@{ub} (a replace that did not match) are
+dropped again after the call.
+@{body}
+
+@{h2}Turns
+
+A change belongs to the turn that was the conversation's last one when it
+was recorded -- the message @{tt}/undo@{utt} cuts at. Turns are identified
+by their first message (role, run id, timestamp), and each keeps the keys of
+the turns before it. That places every record in the conversation as it is
+now, even after @{tt}/undo@{utt}, @{tt}/retry@{utt} or compaction.
+
+@{h2}Sub-agents and scripts
+
+A run started under a recorded run records into that run's session and turn
+-- if its agent has the hooks on too. "Started under" means its request id
+extends the run's by what the framework appends (@{tt}_NNN@{utt} tool call,
+@{tt}_tsNN@{utt} script call, @{tt}_sub_@{utt} or @{tt}_async_@{utt}
+sub-agent) and its session is the run's own or a sub-session of it. A
+sub-agent without the hooks records nothing; the call that started it is
+counted like a shell command ("... (agent 'x' records no checkpoints)").
+tool_script calls pass the same hooks and are recorded like the model's.
+
+@{h2}Not recorded
+
+@{bullet}
+Throwaway sessions (@{tt}ephemeral-...@{utt}: openai_api without
+@{tt}store@{utt}, a stateless collect_final_result) and the runs they start.
+Runs without a user or without a session id a chat could name.
+Anything a shell command, a machine activity, a slash command or a web
+button writes -- these pass no file hook.
+@{body}
+@endnode
+
+@node hooks "The two hooks"
+@{h1}The two hooks
+
+@{table}
+Hook | Type | Does
+record_before_change | pre_tool_call | before a call that changes named files: records each path's current state; counts calls that change files without naming them
+record_after_change | post_tool_call | after such a call: records what it left, or drops the row when the call changed nothing
+@{body}
+
+Both are off for every agent. An agent switches @{b}both@{ub} on in its YAML,
+with the full names:
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      file_checkpoints.record_before_change: {enabled: true}
+      file_checkpoints.record_after_change: {enabled: true}
+@{body}
+
+One without the other records nothing and logs an error once per agent:
+what a call left is how a rewind tells the agent's change from one made
+outside it. There are no other per-agent settings -- every agent of a
+session writes into the same record; the limits are the instance's (see
+@{" Setting it up " link setup}).
+
+@{tt}record_before_change@{utt} runs after the hooks that change arguments
+and after tool_approval: a call blocked there is not recorded, and the
+arguments recorded are the ones the call runs with. Its timeout is 60
+seconds (a recursive delete of a big tree is the slow case). Neither hook
+changes the call or its result, and neither blocks it: a record that cannot
+be written is logged and the call runs unrecorded.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+Nothing. There is no tool, no injected message and no status line; both
+hooks pass the call and its result through unchanged. Nothing reaches the
+prompt or the history, so there is no token cost and no effect on the
+prompt cache.
+
+@{h2}Known gaps
+
+@{bullet}
+Shell commands and other tools that write without naming the file are only
+counted. Recording them would need a snapshot of the whole tree around every
+call.
+A sub-agent without the hooks records nothing; the call that started it is
+named instead.
+Stategraph machines call their tools without hooks: their runs are counted,
+their file changes are not recorded.
+Slash commands and web buttons that write files pass no tool hook.
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The instance in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+    file_checkpoints:
+      type: file_checkpoints
+      enabled: true
+      config:
+        max_checkpoints: 50
+        retention_days: 0
+@{body}
+
+That loads it and makes the chat commands work; nothing is recorded until
+an agent switches the two hooks on (see @{" The two hooks " link hooks}). The
+coder agent and its sub-agents coder_explorer, coder_reviewer and
+coder_tester do. There is no tool, so nothing goes in the allowlist. No
+extra packages.
+
+@{h2}Settings
+
+Under @{tt}config:@{utt} in the instance entry, read once when the plugin
+starts.
+
+@{table}
+Key | Default | Meaning
+storage_path | "" | where the records live; empty: a directory file_checkpoints beside the session directory; relative paths count from the installation
+max_checkpoints | 50 | turns with recorded changes kept per session (at least 1); the oldest is forgotten first
+max_file_bytes | 10485760 | a file larger than this is recorded but not copied; a rewind names it
+max_call_bytes | 268435456 | content copied for one call at most; the rest is recorded without content
+max_session_bytes | 536870912 | content kept per session; older turns are forgotten to make room, the turn being recorded never
+max_entries_per_call | 2000 | a directory with more entries is recorded as one, its contents not kept
+retention_days | 0 | records untouched this many days are deleted, at start and once a day while recording; 0: never
+untracked_tools | [] | more "server_type/tool" patterns (fnmatch) counted like shell commands
+@{body}
+
+Forgetting old turns only shortens how far back a rewind reaches: it deletes
+copies this plugin made, never your files. Deleting whole records by age is
+the operator's decision, hence off by default.
+
+@{h2}Where the data lives
+
+@{tt}data/file_checkpoints/<user>/<session>/@{utt} -- with
+@{tt}AGENT_SESSION_STORAGE_PATH@{utt} set, next to those sessions instead.
+Each holds @{tt}journal.db@{utt} (SQLite: turns, changes, counted calls) and
+@{tt}blobs/<sha256>@{utt} (the replaced bytes, each once). The user is part
+of the address and the journal names its owner: a rewind only reads the
+asking user's record, and the chat endpoints check that the session is
+theirs first. Deleting a session (@{tt}DELETE /api/sessions/<id>@{utt}) takes
+its record along; archiving does not, so a restored session keeps its
+checkpoints.
+@endnode

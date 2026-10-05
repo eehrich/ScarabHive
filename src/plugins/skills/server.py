@@ -22,7 +22,16 @@ if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 #: Guard against a huge reference file blowing up the context in one call.
+#: A longer file is read in pieces: the answer names ``next_offset``.
 MAX_READ_CHARS = 100_000
+
+#: One status row (tests/plugins/test_status_end_lines.py: MAX_LINE).
+MAX_STATUS_LINE = 140
+
+
+def _line(text: str) -> str:
+    """Fit a status line into one row; a long file or skill list is cut."""
+    return text if len(text) <= MAX_STATUS_LINE else text[:MAX_STATUS_LINE - 2] + " …"
 
 
 class SkillsServer(SchemaBasedToolServer):
@@ -48,10 +57,10 @@ class SkillsServer(SchemaBasedToolServer):
         return registry
 
     async def list(self, params: dict[str, Any]) -> dict[str, Any]:
-        """List skills; with ``name`` restrict to one and show its files."""
+        """List skills (name + description); with ``name`` one skill in detail."""
         status = params["_status"]  # Status is mandatory from framework
         registry = self._registry()
-        wanted = (params.get("name") or "").strip()
+        wanted = str(params.get("name") or "").strip()
 
         if wanted:
             skill = registry.get(wanted)
@@ -68,9 +77,9 @@ class SkillsServer(SchemaBasedToolServer):
                     "available": names,
                 }
             files = skill.list_files()
-            await status.end(
+            await status.end(_line(
                 f"{skill.name} v{skill.version}: {len(files)} file(s) — {', '.join(files)}"
-            )
+            ))
             return {
                 "status": "success",
                 "skill": {
@@ -84,30 +93,23 @@ class SkillsServer(SchemaBasedToolServer):
 
         skills = registry.list_skills()
         names = [s.name for s in skills]
-        await status.end(
+        await status.end(_line(
             f"{len(names)} skill(s) available: {', '.join(names)}" if names
             else f"no skills found (searched {', '.join(registry.scanned_dirs) or 'no dirs'})"
-        )
+        ))
+        # Compact on purpose: with every file of every skill this answer was
+        # ~25,700 chars for 42 skills. The files come with ``name``.
         return {
             "status": "success",
             "count": len(names),
-            "skills": [
-                {
-                    "name": s.name,
-                    "version": s.version,
-                    "description": s.description,
-                    "tags": list(s.tags),
-                    "files": s.list_files(),
-                }
-                for s in skills
-            ],
+            "skills": [{"name": s.name, "description": s.description} for s in skills],
         }
 
     async def read(self, params: dict[str, Any]) -> dict[str, Any]:
         """Read SKILL.md, or a bundled file when ``path`` is given."""
         status = params["_status"]  # Status is mandatory from framework
         registry = self._registry()
-        name = (params.get("name") or "").strip()
+        name = str(params.get("name") or "").strip()
         if not name:
             await status.error("'name' is required")
             return {"status": "error", "error": "'name' is required",
@@ -123,7 +125,15 @@ class SkillsServer(SchemaBasedToolServer):
             return {"status": "error", "error": msg,
                     "did_you_mean": hint, "available": names}
 
-        rel = (params.get("path") or "").strip()
+        rel = str(params.get("path") or "").strip()
+        raw_offset = params.get("offset")
+        offset_text = "" if raw_offset is None else str(raw_offset).strip()
+        # 18 digits: past any file, and below int()'s 4300-digit limit.
+        if offset_text and not (offset_text.isascii() and offset_text.isdigit() and len(offset_text) <= 18):
+            msg = f"'offset' must be a whole number >= 0, got {raw_offset!r}"
+            await status.error(f"{name}: {msg}")
+            return {"status": "error", "error": msg}
+        offset = int(offset_text or 0)
         await status.progress(f"Reading {name}/{rel or DEFAULT_ENTRY}")
         try:
             target = skill.resolve(rel) if rel else skill.entry_path
@@ -152,18 +162,27 @@ class SkillsServer(SchemaBasedToolServer):
             return {"status": "error",
                     "error": f"Cannot read '{rel or target.name}': {e}"}
 
-        truncated = len(content) > MAX_READ_CHARS
-        if truncated:
-            content = content[:MAX_READ_CHARS]
+        total = len(content)
+        if offset > total:
+            msg = f"'offset' {offset} is past the end ({total} chars)"
+            await status.error(f"{name}/{rel or DEFAULT_ENTRY}: {msg}")
+            return {"status": "error", "error": msg}
+        end = offset + MAX_READ_CHARS
+        truncated = total > end
+        content = content[offset:end]
 
-        await status.end(
-            f"{name}/{rel or DEFAULT_ENTRY} — {len(content)} chars"
-            + (f" (truncated at {MAX_READ_CHARS})" if truncated else "")
-        )
-        return {
+        await status.end(_line(
+            f"{name}/{rel or DEFAULT_ENTRY} — {len(content)} of {total} chars"
+            + (f" from {offset}" if offset else "")
+            + (f" (truncated, next_offset {end})" if truncated else "")
+        ))
+        result = {
             "status": "success",
             "skill": skill.name,
             "path": rel or skill.entry_path.name,
             "truncated": truncated,
             "content": content,
         }
+        if truncated:
+            result["next_offset"] = end
+        return result

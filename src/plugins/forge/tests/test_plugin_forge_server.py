@@ -112,6 +112,7 @@ def make_server(tmp_path, monkeypatch, *, allow_merge=True, token="tok", **extra
     cfg.hosts = {"gl": {"provider": "gitlab", "api_url": "https://gl.test/api/v4", "token_env": "FORGE_TEST_TOKEN"}}
     cfg.repos = {"app": {"host": "gl", "project": "team/app", "path": str(tmp_path / "clone"),
                          "allow_merge": allow_merge}}
+    cfg.allowed_users = ["tester"]
     for key, value in extra.items():
         setattr(cfg, key, value)
     server = ForgeServer("forge", AgentSystemConfig(), cfg)
@@ -122,7 +123,7 @@ def make_server(tmp_path, monkeypatch, *, allow_merge=True, token="tok", **extra
 
 async def call(server, tool, **params):
     status = Status()
-    result = await getattr(server, tool)({"repo": "app", **params, "_status": status})
+    result = await getattr(server, tool)({"repo": "app", "_user_id": "tester", **params, "_status": status})
     assert len(status.lines) == 1, f"{tool}: one closing line expected, got {status.lines}"
     kind, line = status.lines[0]
     assert kind == ("end" if result.get("status") == "success" else "error"), (tool, result, status.lines)
@@ -142,6 +143,22 @@ def test_a_repo_without_its_token_is_left_out(tmp_path, monkeypatch):
     assert tool_names(server) == set()
 
 
+@pytest.mark.parametrize("api_url, warned", [("http://192.168.1.5:8929/api/v4", True),
+                                             ("https://gl.test/api/v4", False),
+                                             ("http://localhost:8929/api/v4", False)])
+def test_a_plain_http_host_is_warned_about_once(tmp_path, monkeypatch, caplog, api_url, warned):
+    monkeypatch.setenv("FORGE_TEST_TOKEN", "tok")
+    cfg = ToolServerConfig()
+    cfg.hosts = {"gl": {"provider": "gitlab", "api_url": api_url, "token_env": "FORGE_TEST_TOKEN"}}
+    cfg.repos = {name: {"host": "gl", "project": f"team/{name}", "path": str(tmp_path / name)}
+                 for name in ("app", "docs")}
+    with caplog.at_level("WARNING", logger=server_module.__name__):
+        ForgeServer("forge", AgentSystemConfig(), cfg)
+    lines = [r.getMessage() for r in caplog.records if "unencrypted" in r.getMessage()]
+    assert lines == (["forge forge: host gl is plain HTTP (%s): its token travels unencrypted, to the API and "
+                      "to git" % api_url] if warned else [])
+
+
 def test_pr_merge_is_offered_only_where_a_repo_allows_it(tmp_path, monkeypatch):
     assert "forge_pr_merge" in tool_names(make_server(tmp_path, monkeypatch, allow_merge=True))
     names = tool_names(make_server(tmp_path, monkeypatch, allow_merge="yes"))     # only a real true counts
@@ -153,6 +170,59 @@ def test_every_tool_offers_exactly_the_configured_repos(tmp_path, monkeypatch):
     for tool in server.get_tools():
         function = tool["function"]
         assert function["parameters"]["properties"]["repo"]["enum"] == ["app"], function["name"]
+
+
+# ── who may use the token ─────────────────────────────────────────────────
+
+class Untouchable:
+    """A backend that records any use: a refused user must not reach the platform."""
+
+    def __init__(self):
+        self.used = []
+
+    def __getattr__(self, name):
+        self.used.append(name)
+        raise AssertionError(f"backend.{name} used")
+
+
+ALL_TOOLS = ["checkout", "push", "issue_list", "issue_get", "issue_comment", "issue_update", "pr_list", "pr_get",
+             "pr_diff", "pr_discussions", "pr_create", "pr_update", "pr_comment", "pr_merge", "ci_status",
+             "ci_job_log", "ci_retry"]
+
+
+def test_the_gated_list_is_every_tool_the_schema_offers(tmp_path, monkeypatch):
+    assert {f"forge_{t}" for t in ALL_TOOLS} == tool_names(make_server(tmp_path, monkeypatch))
+
+
+@pytest.mark.parametrize("tool", ALL_TOOLS)
+@pytest.mark.parametrize("user, listed", [("mallory", ["tester"]), ("", ["tester"]), ("", ["", "tester"]),
+                                          ("tester", None), ("tester", [])])
+async def test_a_user_not_in_allowed_users_reaches_nothing(tmp_path, monkeypatch, tool, user, listed):
+    server = make_server(tmp_path, monkeypatch, allowed_users=listed)
+    backend = server._backends["app"] = Untouchable()
+    result, line = await call(server, tool, _user_id=user, number=7, job_id=3, branch="scarabhive/x", body="b",
+                              title="t", source_branch="scarabhive/x", sha=HEAD, state="closed", pr=7)
+    assert result["status"] == "error" and "allowed_users" in result["error"], result
+    assert "allowed_users" in line and backend.used == []
+
+
+async def test_a_listed_user_passes(tmp_path, monkeypatch):
+    result, _ = await call(make_server(tmp_path, monkeypatch), "pr_get", number=7)
+    assert result["status"] == "success"
+
+
+async def test_a_single_name_without_brackets_is_one_user(tmp_path, monkeypatch):
+    """`allowed_users: tester` became the letters t, e, s, r and locked everybody out."""
+    server = make_server(tmp_path, monkeypatch, allowed_users="tester")
+    result, _ = await call(server, "pr_get", number=7)
+    assert result["status"] == "success"
+
+
+@pytest.mark.parametrize("listed, warned", [(["tester"], True), (["admin"], False)])
+def test_a_webhook_user_outside_allowed_users_is_warned_about(tmp_path, monkeypatch, caplog, listed, warned):
+    with caplog.at_level("WARNING", logger=server_module.__name__):
+        make_server(tmp_path, monkeypatch, allowed_users=listed, webhook={"user": "admin"})
+    assert any("webhook.user admin is not in allowed_users" in r.getMessage() for r in caplog.records) is warned
 
 
 async def test_an_unknown_repo_names_the_configured_ones(tmp_path, monkeypatch):

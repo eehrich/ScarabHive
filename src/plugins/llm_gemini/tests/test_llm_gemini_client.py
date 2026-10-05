@@ -865,8 +865,12 @@ class TestGeminiClientStreaming:
             assert final_events[0]["usage"]["total_tokens"] == 15
 
     @pytest.mark.asyncio
-    async def test_streaming_thought_parts_stream_as_content_delta(self):
-        """Gemini thought summaries (thought=true) stream as content_delta for unified response display."""
+    async def test_streaming_thought_parts_stream_as_thinking_delta(self):
+        """Gemini thought summaries (thought=true) stream as thinking_delta, the answer as content_delta.
+
+        As content_delta the chat showed the thinking as answer text, and the agent server's
+        reasoning-loop detectors and llm_progress hooks never saw it: they watch thinking_delta.
+        """
         gemini_client = GeminiClient(
             model="gemini-3-pro-preview",
             api_key="test-api-key",
@@ -911,11 +915,9 @@ class TestGeminiClientStreaming:
             async for event in gemini_client.chat_tools_streaming(messages, tools):
                 events.append(event)
 
-            # Both thought and content are streamed as content_delta
-            content_deltas = [e for e in events if e["type"] == "content_delta"]
-            assert len(content_deltas) == 2
-            assert content_deltas[0]["delta"] == "Thinking..."
-            assert content_deltas[1]["delta"] == "Hi"
+            kinds = [(e["type"], e.get("delta")) for e in events if e["type"] != "final"]
+            assert kinds == [("thinking_delta", "Thinking..."), ("content_delta", "Hi")]
+            assert events[1]["accumulated"] == "Hi"
 
             final_events = [e for e in events if e["type"] == "final"]
             assert len(final_events) == 1

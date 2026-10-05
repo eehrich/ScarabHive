@@ -3,8 +3,9 @@ from agent_system.cli_utils import common
 
 
 def test_supports_color_modes(monkeypatch):
-    # Ensure NO_COLOR env cleared
+    # Ensure NO_COLOR env cleared, and a terminal that is not dumb
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
     # A Windows console renders ANSI only once VT processing is enabled; that
     # probe needs a real console handle, which pytest's captured stdout is not.
     monkeypatch.setattr(common, "_enable_windows_vt", lambda: True)
@@ -50,6 +51,8 @@ def test_auto_yields_text_when_the_console_cannot_render_ansi(monkeypatch):
     processing is on. Deciding on isatty() alone put raw escapes in the output.
     """
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
     monkeypatch.setattr(common, "_IS_WINDOWS", True)
     monkeypatch.setattr(common, "_enable_windows_vt", lambda: False)
 

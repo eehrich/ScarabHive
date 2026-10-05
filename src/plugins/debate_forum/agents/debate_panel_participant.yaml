@@ -40,7 +40,7 @@ plugins:
       type: debate_panel_participant_flash
       enabled: true
       agent_config:
-        llm_profile: [gpt-mini]
+        llm_profile: [or-gpt-mini]
         llm_profile_advanced: []
 
     debate_panel_participant_chat:

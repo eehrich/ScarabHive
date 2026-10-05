@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 JOURNAL_FORMAT = 1
 LEASE_SECONDS = 60
 HEARTBEAT_SECONDS = 20
+#: How often the owner of live runs takes the control requests of other processes (RunStore.request_control).
+CONTROL_POLL_SECONDS = 1.0
+#: The control actions another process may ask the owner for: no arguments to check against the owner's machine.
+REMOTE_CONTROLS = ("pause", "continue", "step", "terminate")
 #: Pauses between the tries of a run's end write: the view may fail to store, the end must not (§5.7).
 END_WRITE_DELAYS = (0.5, 1.0, 2.0, 4.0, 8.0)
 _STEP = re.compile(r"s(\d+)")
@@ -139,6 +143,20 @@ def _fork_point_of(rows: list[dict[str, Any]], at_step: Optional[int]
 
 def _utc(seconds_from_now: float = 0.0) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds_from_now)).isoformat(timespec="milliseconds")
+
+
+def _times_out(mock: Any) -> bool:
+    """A wait state's mock that ends its wait as its time up would."""
+    return isinstance(mock, dict) and mock.get("$timeout") is True
+
+
+def row_event_due(row: dict[str, Any]) -> bool:
+    """Whether a waiting run's row holds an event in its inbox that a waiting frame takes: sent, not taken yet (the
+    stored view of another process's run, or a live run's view)."""
+    view = row.get("view") or {}
+    return row.get("status") == "waiting" and any(
+        event.get("name") in (frame.get("accepts") or []) and event.get("frame") in (None, frame.get("prefix", ""))
+        for frame in view.get("frames") or [] for event in view.get("inbox") or [])
 
 
 @dataclass
@@ -262,6 +280,8 @@ class RunContext:
                 elif row["status"] == "vars_from":
                     self.var_snapshots[data.get("agent", "")] = data.get("vars") or {}
                 elif row["status"] == "wait":
+                    if data.get("mock"):  # a wait that asked its mock (a $visits count goes on from here)
+                        self.mock_uses[data["mock"]] = self.mock_uses.get(data["mock"], 0) + 1
                     if data.get("deadline") is not None:
                         self.deadlines[key] = float(data["deadline"])
                     if data.get("since") is not None:
@@ -534,12 +554,19 @@ class RunContext:
         deadline = self.deadlines.get(wait_key) if timeout is not None else None
         if since is None or (timeout is not None and deadline is None):
             since = since if since is not None else time.time()
+            mock: dict[str, Any] = {}
             if timeout is not None and deadline is None:
-                deadline = since + timeout
+                # a mock at the state's path, {"$timeout": true}: its time is up at once -- a test drives the timeout
+                # path without waiting it out. Asked once per entry and kept as the deadline in the row below, so
+                # neither a resume nor an internal transition asks again; "mock" lets a resume count its use.
+                path = frame.state_path(leaf)
+                timed_out = _times_out(self.mock_for(path))
+                mock = {"mock": path} if path in self.mocks else {}
+                deadline = since if timed_out else since + timeout
                 self.deadlines[wait_key] = deadline
             self.wait_since[wait_key] = since
             self.write("trace", wait_key, state=leaf.name, status="wait",
-                       data={"deadline": deadline, "since": since, "frame": frame.prefix})
+                       data={"deadline": deadline, "since": since, "frame": frame.prefix, **mock})
         accepts = frame.accepts()
         self.waiting.add(frame.prefix)
         frame.waiting_since, frame.wait_deadline = since, deadline
@@ -590,6 +617,11 @@ class RunContext:
 
     def frame_started(self, frame: Frame) -> None:
         self.frames.append(frame)
+        if frame.prefix and not self.lost:
+            try:  # what the panel lists a submachine's runs by: for display, like the view
+                self.store.add_frame(self.id, frame.prefix, frame.machine.id, frame.path)
+            except Exception:
+                logger.warning("stategraph: could not record frame %s of run %s", frame.prefix, self.id, exc_info=True)
         self.persist()
 
     def frame_ended(self, frame: Frame) -> None:
@@ -745,6 +777,7 @@ class RunManager:
         self.live: dict[str, LiveRun] = {}
         self._stopping = False
         self._heartbeat: Optional[asyncio.Task] = None
+        self._controls: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------ lifecycle
     async def start(self, tree: MachineTree, *, params: Optional[dict[str, Any]] = None,
@@ -755,9 +788,11 @@ class RunManager:
                     parent_run: Optional[str] = None, fork_step: Optional[int] = None,
                     copy_rows: Optional[list[dict[str, Any]]] = None,
                     fork_resources: Optional[dict[str, Any]] = None,
-                    nesting: Optional[dict[str, Any]] = None, strict_points: bool = True) -> str:
+                    nesting: Optional[dict[str, Any]] = None, strict_points: bool = True,
+                    runner: Optional[str] = None) -> str:
         """``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
         with the run so its agent instances count as one level below the caller (backend.agent_create).
+        ``runner``: the runner agent the run is hosted by (runners.py), kept with it for every resume.
         ``strict_points``: a breakpoint naming no state is refused; else (a fork's inherited points) it is dropped."""
         self._refuse_while_stopping()
         machine = compile_tree(tree)
@@ -781,7 +816,7 @@ class RunManager:
                               mocks={"mocks": mocks or {}, "mock_only": mock_only}, debug=debugger.state(),
                               user_id=user_id, session_id=f"sg_{run_id}", parent_run=parent_run,
                               fork_step=fork_step, run_key=run_key, owner=self.owner, lease_until=_utc(LEASE_SECONDS),
-                              journal_format=JOURNAL_FORMAT, nesting=nesting)
+                              journal_format=JOURNAL_FORMAT, nesting=nesting, runner=runner)
         if copy_rows:
             self.store.copy_rows(parent_run or "", run_id, copy_rows)
         if fork_resources is not None:  # journaled, so a resume of the fork runs its fork hooks where it did
@@ -857,7 +892,7 @@ class RunManager:
                    backend: Any = None, backend_factory: Optional[Callable[[str], Any]] = None,
                    token_factory: Optional[Callable[[str], Any]] = None, breakpoints: Any = None,
                    watchpoints: Any = None, pause_at_start: bool = False, user_id: Optional[str] = None,
-                   mocks: Optional[dict[str, Any]] = None) -> str:
+                   mocks: Optional[dict[str, Any]] = None, runner: Optional[str] = None) -> str:
         """A new run that replays ``run_id``'s journal before top-level step ``at_step`` and continues live.
 
         ``mocks`` go over the source's (an activity replayed from the journal keeps its outcome); ``pause_at_start``
@@ -865,7 +900,8 @@ class RunManager:
 
         ``tree`` is the definition to use (``definition: current``); default: the source run's snapshot. The fork
         is ``user_id``'s run, and its own: no caller's place in a sub-agent tree (``nesting``) comes with it -- the
-        forking user started it, not the agent that started the source.
+        forking user started it, not the agent that started the source. ``runner``: default the source's -- its
+        snapshot ran with it; a fork onto the current definition passes the runner of where the machine is now.
         """
         row = self.store.get_run(run_id)
         if row is None:
@@ -908,7 +944,8 @@ class RunManager:
             watchpoints=debug.get("watchpoints") if watchpoints is None else watchpoints,
             pause_at_start=pause_at_start, backend=backend, backend_factory=backend_factory,
             token_factory=token_factory, user_id=user_id or row.get("user_id"), parent_run=run_id,
-            fork_step=at_step, copy_rows=keep, fork_resources={"sources": sources, "chain": chain, "at": at_step})
+            fork_step=at_step, copy_rows=keep, fork_resources={"sources": sources, "chain": chain, "at": at_step},
+            runner=runner if runner is not None else row.get("runner"))
 
     def _launch(self, run_id: str, machine: Machine, params: Optional[dict[str, Any]],
                 mocks: Optional[dict[str, Any]], mock_only: bool, debugger: Debugger, backend: Any,
@@ -1047,11 +1084,32 @@ class RunManager:
     def _ensure_heartbeat(self) -> None:
         if self._heartbeat is None or self._heartbeat.done():
             self._heartbeat = asyncio.ensure_future(self._renew_leases())
+        if self._controls is None or self._controls.done():
+            self._controls = asyncio.ensure_future(self._take_controls())
 
     async def _renew_leases(self) -> None:
         while self.live:
             await asyncio.sleep(HEARTBEAT_SECONDS)
             self.renew_leases()
+
+    async def _take_controls(self) -> None:
+        while self.live:
+            await asyncio.sleep(CONTROL_POLL_SECONDS)
+            self.take_controls()
+
+    def take_controls(self) -> None:
+        """Carry out what other processes asked for our runs (pause them in the panel of another process)."""
+        try:
+            requests = self.store.take_controls(self.owner)
+        except Exception:
+            logger.debug("stategraph: control requests could not be read", exc_info=True)
+            return
+        for run_id, request in requests:
+            try:
+                self.control(run_id, (request or {}).get("action"))  # one of REMOTE_CONTROLS: the asker checks
+            except Exception:
+                logger.info("stategraph: control request %s for run %s not carried out", request, run_id,
+                            exc_info=True)
 
     def renew_leases(self) -> None:
         """Extend our runs' leases; a run whose owner changed is lost and stops locally (§5.7)."""
@@ -1079,8 +1137,9 @@ class RunManager:
             if not live.ctx.finished:  # a finished run only tells its session how it ended: cut, it never would
                 live.task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        if self._heartbeat is not None:
-            self._heartbeat.cancel()
+        for task in (self._heartbeat, self._controls):
+            if task is not None:
+                task.cancel()
 
     # ------------------------------------------------------------ control
     def _live(self, run_id: str) -> LiveRun:
@@ -1183,14 +1242,26 @@ class RunManager:
     def send_event(self, run_id: str, name: str, data: Any = None, frame: Optional[str] = None) -> dict[str, Any]:
         return self._live(run_id).ctx.send_event(name, data, frame)
 
+    async def taken(self, run_id: str, timeout: float = 1.0) -> None:
+        """Until the run of this process took the events its waiting frames accept, at most ``timeout``: after a
+        send_event, a read shows what the event started, not the old wait with the event in the inbox."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while (live := self.live.get(run_id)) is not None and not live.task.done() and row_event_due(
+                {"status": live.ctx.status, "view": live.ctx.view()}):
+            if loop.time() >= deadline:
+                return
+            await asyncio.sleep(0.01)
+
     async def wait(self, run_id: str, timeout: Optional[float] = None) -> dict[str, Any]:
-        """Until the run ends, pauses or waits for an event (or ``timeout``); the run's row."""
+        """Until the run ends, pauses or waits for an event it has not got yet (or ``timeout``); the run's row."""
         loop = asyncio.get_running_loop()
         deadline = None if timeout is None else loop.time() + timeout
         await asyncio.sleep(0)
         while True:
             live = self.live.get(run_id)
             if live is not None:
+                # the sleep above gave it its turn: an event sent before is taken, the wait is a new one
                 if live.task.done() or live.ctx.status in ("paused", "waiting"):
                     break
                 pause = 0.05
@@ -1198,7 +1269,7 @@ class RunManager:
                 row = self.store.get_run(run_id)
                 if row is None:
                     raise KeyError(run_id)
-                if row["status"] != "running":
+                if row["status"] != "running" and not row_event_due(row):
                     return row
                 pause = 0.5
             if deadline is not None and loop.time() >= deadline:

@@ -124,6 +124,7 @@ class BasicAgent(SchemaBasedAgent):
             result_text = ""
             step_count = 0
             tool_calls = []
+            cancelled_event = None
 
             async for event in self.run_events(
                 task,
@@ -179,6 +180,24 @@ class BasicAgent(SchemaBasedAgent):
                         # (Agent.run_events: REFUSED_BEFORE_THE_RUN) says which, as Agent.call's answer does
                         **({"error_type": event["error_type"]} if event.get("error_type") else {}),
                     }
+
+                elif event_type == "cancelled":
+                    # Read to the end: the run closes its own scope after this event.
+                    cancelled_event = event
+
+            if cancelled_event is not None:
+                # Without this the run answered "success" with the invented
+                # result "Task completed successfully" -- nothing was completed.
+                message = f"Task cancelled at step {cancelled_event.get('step', '?')}"
+                if status:
+                    await status.error(message)
+                return {
+                    "status": "cancelled",
+                    "cancelled": True,
+                    "error": message,
+                    "tool_calls": tool_calls,
+                    "request_id": request_id,
+                }
 
             if status:
                 # end, not progress: this was the last thing said, so the

@@ -1,0 +1,449 @@
+@database "llm_anthropic"
+@author "Enrico Ehrich"
+@$VER: llm_anthropic.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Anthropic LLM provider"
+@{h1}Anthropic LLM provider
+
+This plugin lets agents talk to Claude through Anthropic's own Messages API,
+using the official @{tt}anthropic@{utt} SDK, and runs Claude requests through
+the Message Batches API. It is an LLM provider plugin: it has no tools, no
+hooks and no panel. You use it by writing @{tt}provider: anthropic@{utt} in a
+model entry of @{tt}config/llm.yaml@{utt}; agents reach that entry through a
+profile.
+
+@{table}
+Provider name | Kind | Endpoint
+anthropic | chat | POST <base_url>/v1/messages, always streamed
+anthropic | batch | the Message Batches API at api.anthropic.com
+@{body}
+
+Claude behind OpenRouter is not this plugin: that goes through
+@{tt}openai_httpx@{utt} (@{" OpenAI-compatible providers " link llm_openai_compat/main}).
+How models, profiles and fallback chains work in general is in
+@{" LLM models and profiles " link scarabhive/llm}; this manual covers what
+this provider does with an entry.
+
+@{code}
+For users (the operator writing llm.yaml)
+  @{"  Model entry keys  " link keys}
+  @{"  Timeouts and streaming  " link timeouts}
+  @{"  Retries  " link retries}
+  @{"  Thinking  " link thinking}
+  @{"  Prompt caching  " link caching}
+  @{"  Usage, cost and the hooks  " link usage}
+  @{"  Errors  " link errors}
+  @{"  Batch  " link batch}
+
+For agents and developers
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node keys "Model entry keys"
+@{h1}Model entry keys
+
+The keys of a model entry this provider reads. Everything else in
+@{tt}LLMModelConfig@{utt} is either handled by the core (@{tt}extends@{utt},
+profiles) or not read here.
+
+@{table}
+Key | Default | What the client does with it
+provider | -- | anthropic
+model | -- | the model id sent to the API
+api_key | ANTHROPIC_API_KEY | without either, building the client fails ("ANTHROPIC_API_KEY is required when provider=anthropic")
+base_url | the SDK's: ANTHROPIC_BASE_URL, else https://api.anthropic.com | the endpoint, without /v1
+context_window | 200000 | only reported to the core (compaction, context sizing), never sent
+request_timeout | 180 | seconds; see @{" Timeouts and streaming " link timeouts}
+max_tokens | 8192 | output cap, always sent; 0 also means 8192
+temperature | none | sent when set -- except on tool calls while thinking is on
+include_thoughts | false | turns thinking on for tool calls (see @{" Thinking " link thinking})
+thinking_request_shape | budget | budget or adaptive: the form of the thinking request
+thinking_budget | 8192 | budget_tokens, only with thinking_request_shape: budget
+reasoning_details_mode | keep_all | how many turns' thinking blocks travel back
+enable_prompt_caching | true | cache markers on the system prompt, the last tool and (by mode) the conversation
+prompt_cache_mode | none | whether the conversation's tail gets a marker too (see @{" Prompt caching " link caching})
+capabilities | all defaults | streaming decides which call the agent makes; image_input gates images a tool returns; structured_output allows response formats; developer_role cannot go above user
+batch_provider | none | anthropic sends this entry's batch requests here (see @{" Batch " link batch})
+@{body}
+
+@{bullet}@{tt}thinking_level@{utt} is not wired: the client logs "thinking_level
+is not wired for provider=anthropic and will be ignored" when it is built. Use
+include_thoughts and the request shape.
+@{bullet}@{tt}tool_schema_dialect@{utt}, @{tt}assistant_reasoning_field@{utt},
+@{tt}stream_silence_timeout@{utt} and @{tt}provider_affinity_minutes@{utt} are
+logged as "not wired ... will be ignored". Other keys --
+@{tt}httpx_timeouts@{utt}, the prompt_cache_key/marker keys, OpenRouter
+routing, safety settings, service tier -- are not read at all.
+@{bullet}An unknown value for thinking_request_shape or reasoning_details_mode
+is refused when the client is built.
+
+@{code yaml}
+llm_system:
+  models:
+    claude-opus-thinking:
+      provider: anthropic
+      model: claude-opus-5-5
+      api_key: ${ANTHROPIC_API_KEY}
+      thinking_request_shape: adaptive
+      include_thoughts: true
+      context_window: 1000000
+      request_timeout: 600
+      max_tokens: 32768
+@{body}
+@endnode
+
+@node timeouts "Timeouts and streaming"
+@{h1}Timeouts and streaming
+
+@{h2}Streaming or not
+
+The client always streams on the wire for the agent's calls: with
+@{tt}capabilities.streaming: false@{utt} the agent server waits for the whole
+answer instead of showing it as it arrives, but the request underneath is the
+same stream. Only @{tt}chat()@{utt} -- a plain text call without tools, which
+the @{" LLM router " link llm_router/main} and other helpers use -- sends one
+non-streamed request.
+
+@{h2}The timeout
+
+@{tt}request_timeout@{utt} (default 180 s) is handed to the SDK as one number,
+so it is the connect, read, write and pool timeout at once. While streaming,
+read means the longest gap between two pieces of the stream. The API sends
+keep-alive pings during long pauses, which reset it; a model thinking for
+minutes without visible output is therefore not cut, but neither is an
+upstream that only pings. @{tt}httpx_timeouts@{utt} and the system's
+@{tt}llm_system.httpx_timeouts@{utt} are not read by this provider.
+
+@{h2}Cancelling
+
+A cancelled run ends the stream at once, also while nothing but pings
+arrives -- the pause of a model thinking with its text omitted is not billed
+to the end. The cancellation reaches the agent as a cancellation, never as an
+answer. @{tt}chat()@{utt} is watched the same way while its request is out.
+
+@{h2}How a stream ends
+
+An answer is handed over when the SDK has assembled the final message: its
+text, tool calls, thinking blocks with their signatures, usage and stop
+reason. A stream that breaks off before (dropped connection, read timeout,
+an error event from the API) is retried from scratch, see
+@{" Retries " link retries}.
+@endnode
+
+@node retries "Retries"
+@{h1}Retries
+
+The SDK's own retries are off; the client retries itself. Every retry is
+reported to the post_llm_response hooks as its own row (@{tt}[RETRY n/m]
+...@{utt}, finish reason @{tt}retry@{utt}) and as a status line in the chat.
+A cancelled run interrupts every wait. A retry starts from scratch: when the
+caller has already received deltas of the failed attempt, the stream first
+sends one @{tt}{"type": "stream_restart"}@{utt} chunk, and the caller drops
+what it has shown of that attempt.
+
+@{table}
+What happened | What the client does
+HTTP 429, or a rate_limit_error event in the stream | up to 2 retries; wait: the retry-after header's seconds, else 60 s, plus 0-50 % jitter (a value that is no wait -- negative, inf, nan -- counts as none). A retry-after above 60 s is not slept: LLMRateLimitError at once with that retry_after, so the server blocks the model and falls back. After the retries: LLMQuotaExhaustedError if the message says "quota" or "exhausted", else LLMRateLimitError
+HTTP 5xx (529 overloaded included), or an overloaded_error / api_error event in the stream | up to 3 retries after 2 s, 4 s, 8 s, then LLMServerError
+connection error, read timeout, a stream that drops | up to 3 retries after 2 s, 4 s, 8 s, then LLMConnectionError
+any other 4xx | no retry: httpx.HTTPStatusError
+@{body}
+
+All retries share one attempt counter: at most four attempts in all, and a
+429 is retried only while fewer than three attempts have been made. The counts
+are fixed by the provider (max_retries 3, rate limit 2); no entry key changes
+them.
+
+@{tt}chat()@{utt} makes a single attempt; its failures are typed the same way.
+
+The agent server's own fallback chain (@{tt}llm_profile@{utt} with more than
+one profile) takes over where these retries end; see
+@{" Writing an agent " link scarabhive/agentdev}.
+@endnode
+
+@node thinking "Thinking"
+@{h1}Thinking
+
+@{h2}Asking for it
+
+@{tt}include_thoughts: true@{utt} adds a thinking request to every tool call
+(the agent's steps). @{tt}chat()@{utt} never asks for thinking. The form is
+declared per entry, never guessed from the model name:
+
+@{table}
+thinking_request_shape | Sent | For
+budget (default) | thinking: {type: enabled, budget_tokens: <thinking_budget or 8192>} | models that take a fixed budget (Haiku 4.5)
+adaptive | thinking: {type: adaptive} | models that decide themselves and refuse a budget with 400 (Opus 5); thinking_budget is ignored
+@{body}
+
+With the budget form the API requires the budget to be below
+@{tt}max_tokens@{utt}. Both default to 8192, so an entry that turns thinking
+on must set @{tt}max_tokens@{utt} (or a smaller @{tt}thinking_budget@{utt}):
+an entry whose budget is not below its max_tokens is refused when the client
+is built, naming the model and both values -- not by a 400 on every call.
+
+While thinking is on, @{tt}temperature@{utt} is left out of tool calls: the
+API refuses sampling settings together with thinking.
+
+@{h2}Watching it
+
+Thinking the model shows arrives in the chat live as thinking deltas. Newer
+models (Opus 5, Sonnet 5) omit the text by default: then nothing is shown,
+while the thinking still happens and is billed.
+
+@{h2}Sending it back
+
+The final message's thinking and redacted_thinking blocks, signatures
+included, are stored verbatim on the assistant message together with the
+model that produced them. They travel back in the order the model emitted
+them, before the text and the tool calls: the API refuses a tool round trip
+whose thinking blocks are missing or changed.
+
+@{bullet}@{tt}reasoning_details_mode@{utt}: @{tt}keep_all@{utt} (default)
+sends every turn's blocks back and keeps the cached prefix byte-identical;
+@{tt}keep_last@{utt} only the latest assistant message's; @{tt}strip@{utt}
+none.
+@{bullet}Blocks from another model (a fallback profile answered that turn)
+are dropped: the API would ignore them but bill them as input.
+@{bullet}A plain text turn keeps its blocks only beside non-empty text.
+
+@{h2}Usage
+
+Anthropic counts thinking in @{tt}output_tokens@{utt} and reports no separate
+reasoning figure, so the usage has no
+@{tt}completion_tokens_details.reasoning_tokens@{utt}.
+@endnode
+
+@node caching "Prompt caching"
+@{h1}Prompt caching
+
+How the core splits a prompt into cacheable blocks is described in
+@{" LLM models and profiles " link scarabhive/llm}. This provider places
+Anthropic's @{tt}cache_control@{utt} markers itself, with
+@{tt}enable_prompt_caching@{utt} on (the default):
+
+@{bullet}on the last block of the system prompt, always;
+@{bullet}on the last tool definition, always;
+@{bullet}on the conversation's tail, depending on @{tt}prompt_cache_mode@{utt}:
+
+@{table}
+prompt_cache_mode | Tail marker
+multi_turn | from the first call on
+auto, or unset | once the conversation has history (an assistant or tool message)
+task_sequence, one_shot, off | never
+@{body}
+
+Never more than Anthropic's four markers go out; if there were more, the
+oldest are removed.
+
+@{b}Turning cache writes off.@{ub} @{tt}prompt_cache_mode: off@{utt} only
+drops the tail marker -- the system prompt and the tools are still written to
+the cache. Only @{tt}enable_prompt_caching: false@{utt} sends no marker at
+all. The markers sit on the static prefix, so a second call of the same agent
+within the cache lifetime already reads it at a tenth of the price; turning
+caching off saves only the write surcharge, and only where the prefix never
+recurs.
+
+@{h2}Keeping the prefix stable
+
+@{bullet}A developer note is never given a marker: its text changes every
+call. Notes are turned into user turns only after the markers are placed.
+@{bullet}With @{tt}keep_all@{utt}, older thinking blocks stay in the history
+unchanged turn by turn.
+@{bullet}A response format goes out on every step of a run: changing it
+invalidates the conversation's cache.
+@endnode
+
+@node usage "Usage, cost and the hooks"
+@{h1}Usage, cost and the hooks
+
+Each request is reported to the @{tt}pre_llm_request@{utt} hooks before it
+is sent, and to the @{tt}post_llm_response@{utt} hooks when it ends --
+@{tt}chat()@{utt} as well as the agent's tool calls. The message debugger,
+the OpenTelemetry chat span and the cost figures are built from these reports
+(@{" Hooks " link scarabhive/hooks},
+@{" The capture hooks " link message_debugger/hooks},
+@{" What gets exported " link otel/spans},
+@{" What it records " link context_usage_tracker/hooks}).
+
+@{h2}What the hooks see
+
+The pre_llm_request report carries the request as sent to the SDK: model,
+messages, system, tools, max_tokens, thinking, output_config -- with its
+cache markers. Provider @{tt}anthropic@{utt}, the endpoint as url,
+@{tt}is_streaming@{utt} true for tool calls and false for @{tt}chat()@{utt}.
+
+@{h2}One report per ending
+
+@{table}
+The request ended with | post_llm_response carries
+an answer | usage, finish reason
+a retry | an error @{tt}[RETRY n/m] ...@{utt}, finish reason retry, no usage
+a refusal after the retries | the error (@{tt}HTTP 400: ...@{utt}, @{tt}Rate limit: ...@{utt}, @{tt}HTTP 529: ...@{utt}, @{tt}Network/protocol error: ...@{utt}), no usage
+a cancellation while the request was out | the error @{tt}Request cancelled during streaming@{utt} (or @{tt}cancelled@{utt} when the run's task itself was cancelled)
+a cancellation during a retry wait | the error @{tt}Request cancelled during retry wait@{utt}, after the retry's row
+a cancellation before it was sent | the error @{tt}Request cancelled by user@{utt}
+a stream the caller stopped reading | the error @{tt}stream abandoned by the caller@{utt}
+anything unexpected | the exception's text
+@{body}
+
+A cancelled stream is billed for what the model generated, but its usage
+comes with the final message, so the report has none: the tokens of a
+cancelled call are missing from the figures.
+
+@{h2}The usage
+
+Mapped to the OpenAI shape every consumer reads. Anthropic's
+@{tt}input_tokens@{utt} counts only the input that was neither read from nor
+written to the cache, so:
+
+@{table}
+Field | Value
+prompt_tokens | input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+completion_tokens | output_tokens (thinking included)
+total_tokens | the sum of both
+prompt_tokens_details.cached_tokens | cache_read_input_tokens
+prompt_tokens_details.cache_creation_tokens | cache_creation_input_tokens
+@{body}
+
+The details are there only when the cache was read or written. The core
+prices the tokens from @{tt}config/llm_pricing.yaml@{utt}; the API reports no
+cost of its own.
+@endnode
+
+@node errors "Errors"
+@{h1}Errors
+
+What reaches the agent server when a request cannot be answered. The server
+decides from the type whether to fall back to the next profile of the chain
+(@{" Writing an agent " link scarabhive/agentdev}); none of the SDK's own
+exceptions is such a type, so the client translates them.
+
+@{table}
+Raised | When
+LLMRateLimitError | 429 after the retries, with a retry_after
+LLMQuotaExhaustedError | the same, with "quota" or "exhausted" in the message. Unverified: an exhausted credit balance is said to come as a 400 invalid_request_error ("Your credit balance is too low"), which is raised as httpx.HTTPStatusError, not as this; no such answer has been seen here
+LLMServerError | 5xx or an overload/api error event after the retries; its status is the HTTP status, 529 for an overload event inside a stream
+httpx.HTTPStatusError | any other 4xx; the message is @{tt}HTTP <status>: <the API's message>@{utt}. 401 to 404 make the server block this model for every agent for a while
+LLMConnectionError | connection error, timeout or dropped stream after the retries
+asyncio.CancelledError | the run was cancelled
+StructuredOutputUnsupported | a response format this entry cannot send, refused before the request
+ValueError at build time | no API key; an unknown thinking_request_shape or reasoning_details_mode; thinking with the budget form whose budget is not below max_tokens
+@{body}
+
+An error event of another kind inside a stream (an invalid request found
+mid-way) is raised as httpx.HTTPStatusError with the stream's status 200.
+
+@{h2}Stop reasons
+
+@{table}
+stop_reason | finish reason the agent sees
+end_turn, stop_sequence | stop
+tool_use | tool_calls
+max_tokens, model_context_window_exceeded | length
+refusal | content_filter
+anything else | passed through as it is
+@{body}
+@endnode
+
+@node batch "Batch"
+@{h1}Batch
+
+A model entry with @{tt}provider: batch@{utt} and @{tt}batch_provider:
+anthropic@{utt} runs its requests
+through Anthropic's Message Batches API: all requests of a job in one
+@{tt}POST /v1/messages/batches@{utt}, polled until it has ended, the results
+downloaded when it is done. The queue, its polling and its settings
+(@{tt}llm_system.batch.providers.anthropic@{utt}) belong to the core; see
+@{" Batch Monitor " link batch_monitor/main}.
+
+@{bullet}Always api.anthropic.com, with the entry's @{tt}api_key@{utt} or
+ANTHROPIC_API_KEY; without a key the backend is skipped (the core logs it).
+base_url is not used.
+@{bullet}Each request carries model, messages, system, tools and max_tokens
+(the request's, else 8192) -- nothing else: no thinking, no temperature, no
+cache markers.
+@{bullet}Each HTTP call has a 60 s timeout. A 429 raises LLMRateLimitError
+(LLMQuotaExhaustedError when the body says "quota" or "insufficient"), any
+other refusal a plain error.
+@{bullet}A batch that ended is judged by its request counts: any success is
+completed; only cancelled requests make it cancelled, only expired ones
+expired, anything else failed.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}Messages
+
+@{bullet}All system messages are joined into the one top-level
+@{tt}system@{utt} parameter, in order.
+@{bullet}Developer notes -- the run speaking mid-conversation -- become user
+turns wrapped in note tags: the Messages API has no role for them, and the
+top-level system parameter would read as if the note had held from the first
+turn. An entry declaring @{tt}developer_role@{utt} above user is logged and
+lowered.
+@{bullet}Tool results go back as @{tt}tool_result@{utt} blocks in a user turn.
+Images a tool returned follow as a user message. An entry without a
+@{tt}capabilities@{utt} block sends them; one with a block but without
+@{tt}image_input: true@{utt} replaces them by a text note. Images in the
+user's own messages are always sent.
+@{bullet}Audio and video parts are dropped; text files become text blocks
+starting @{tt}[File: <name>]@{utt}.
+@{bullet}Arguments of an earlier tool call that are not valid JSON are
+repaired for the replay, else sent as @{tt}{}@{utt}. The arguments of a new
+call reach the agent exactly as the model sent them.
+
+@{h2}Tools
+
+Tool schemas are sent as @{tt}input_schema@{utt} with
+@{tt}additionalProperties@{utt}, @{tt}examples@{utt}, @{tt}$schema@{utt} and
+@{tt}$id@{utt} removed; every other constraint (minimum, pattern, enum,
+oneOf ...) stays. A tool without parameters gets an empty object schema. The
+model chooses freely whether to call a tool.
+
+@{h2}Structured output
+
+A JSON schema response format is sent as
+@{tt}output_config.format@{utt}, beside the tools, when the entry declares
+@{tt}capabilities.structured_output@{utt}. The Messages API has no
+schema-less JSON mode, so a json_object format is refused before the
+request. The schema goes out as written: the API refuses one it cannot
+enforce with 400.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing to enable: the core finds LLM provider plugins by their
+@{tt}plugin.toml@{utt} (@{tt}type = ["llm-provider"]@{utt}) and loads
+@{tt}provider.py@{utt} when a model entry names @{tt}anthropic@{utt}. There
+is no entry in @{tt}config/plugins.yaml@{utt} and no allowlist line.
+
+@{table}
+Manifest key | Names
+provides | anthropic
+provides_batch | anthropic
+@{body}
+
+@{h2}Dependencies
+
+The @{tt}anthropic@{utt} SDK, at least 0.77.0 (the first version that takes
+@{tt}output_config@{utt}); it is imported when the first client is built, so
+a missing package fails there with the plugin named. @{tt}httpx@{utt} comes
+with it.
+
+@{h2}TLS
+
+With the app's @{tt}network.ssl_verify: false@{utt} the client uses its own
+HTTP connection without certificate checks, for TLS-intercepting proxies. The
+batch backend follows the app's setting too.
+
+@{h2}Where things live
+
+Nothing on disk. Changes to @{tt}llm.yaml@{utt} reach an agent when it builds
+its client, i.e. after a restart.
+@endnode

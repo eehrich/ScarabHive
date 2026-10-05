@@ -1,0 +1,422 @@
+@database "mcp_client"
+@author "Enrico Ehrich"
+@$VER: mcp_client.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "MCP client"
+@{h1}MCP client
+
+Other programs offer tools over the Model Context Protocol (MCP): a
+documentation search, a Blender bridge, a company's own service. This
+plugin connects ScarabHive to such external MCP servers and hands their
+tools to the agents, next to the tools of the local plugins. A server is
+either started as a local program (stdio) or dialled over HTTP. You
+declare the servers in @{tt}config/mcp_servers.yaml@{utt}; an agent uses a
+server's tools only when its allowlist names them. The plugin also has
+four small tools, and matching chat commands, to see and steer the
+connections.
+
+An external server is foreign code: a stdio server runs with the
+server's rights, and whatever it says about its tools and in its answers
+reaches the model. Read @{" Security and limits " link security} before
+you add one.
+
+@{code}
+For users
+  @{"  Chat commands  " link commands}
+  @{"  Security and limits  " link security}
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  External tools  " link external}
+  @{"  The management tools  " link tools}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node commands "Chat commands"
+@{h1}Chat commands
+
+Four commands at the chat prompt run the plugin's management tools
+through the agent's own dispatch. They work only for an agent whose
+allowlist grants @{tt}mcp_client/*@{utt}.
+
+@{table}
+Command | Does
+/mcp | the enabled servers with connection state, transport and protocol version
+/mcp-connect <server> | connect a server, or reconnect one whose connection dropped
+/mcp-disconnect <server> | close a server's connection
+/mcp-tools [server] | the tools the connected servers offer, blocked ones marked
+@{body}
+
+@{tt}/mcp-connect@{utt} on a server that is still connected does nothing
+and reports success. To restart a live server -- a stdio program that
+hangs, a server whose tools changed -- disconnect it first, then connect.
+
+The connections belong to the process: the API server holds one set for
+every user and every agent, and a disconnect there is a disconnect for
+everyone (see @{" Security and limits " link security}).
+
+On the command line, @{tt}agent-cli mcp list@{utt}, @{tt}status@{utt},
+@{tt}tools <server>@{utt} and @{tt}test <server>@{utt} inspect the same
+configuration from a process of their own.
+@endnode
+
+@node external "External tools"
+@{h1}External tools
+
+@{h2}Names and allowlists
+
+An external tool is called @{tt}<server>.<tool>@{utt}, with a dot:
+@{tt}everything.get-sum@{utt}, @{tt}blender.execute_blender_code@{utt}. The
+dot is what the runtime uses to send a call out to a server instead of to
+a local plugin, and what the permission patterns match on. An agent opts
+in with the dot form:
+
+@{code yaml}
+tools:
+  allowed:
+    - "+everything.*"               # every tool of the server 'everything'
+    - "+blender.get_scene_info"     # one tool by name
+@{body}
+
+@{tt}everything/*@{utt} or a bare @{tt}everything@{utt} do NOT admit
+dotted tools, and @{tt}mcp_client/*@{utt} grants only the four
+management tools, no external tool. An agent's own
+@{tt}tools.blocked@{utt} patterns apply to external tools as well.
+
+Only connected servers contribute tools. When a server failed to
+connect, its tools were never discovered and every pattern for it
+matches nothing -- look for "External MCP servers: N connected, M
+failed" in the log before you suspect the pattern.
+
+@{h2}Blocked tools
+
+A server's @{tt}tools.blocked@{utt} list in @{tt}mcp_servers.yaml@{utt}
+refuses those tools by exact name. They are not offered to any model,
+whatever an agent's allowlist says; @{tt}/mcp-tools@{utt} and the
+management tool still show them, marked @{tt}blocked: true@{utt}. A call
+that names one anyway is refused with "Tool '<tool>' is blocked on MCP
+server '<server>'". The server's @{tt}tools.allowed@{utt} list is not
+read.
+
+@{h2}What a call returns
+
+The arguments go to the server as the model wrote them; keys beginning
+with @{tt}_@{utt} (the runtime's own) are removed first. The answer:
+
+@{table}
+The server sends | The model gets
+an error result (isError) | an error with the server's text blocks
+image or audio blocks | the files, written to disk and shown to the model as media; the text blocks as message
+text blocks | all of them in order, a blank line apart, as one string; resource blocks next to them are dropped
+no text block | the structured content, or else the whole result as JSON
+@{body}
+
+An answer longer than @{tt}max_result_chars@{utt} (50000 characters) is
+cut there and ends with @{tt}…[<full length> chars]@{utt}; for media
+answers the message is cut. A structured answer is measured as JSON, and
+when it is too long it goes on cut, as text. A server's error text is cut
+the same way.
+
+Image and audio blocks are written to
+@{tt}media/external_mcp/<server>/@{utt} in the data directory, named after
+the tool (characters other than letters, digits, @{tt}_ . -@{utt} become
+@{tt}_@{utt}), the time and a random part, so no file replaces another. Nothing cleans that directory up. Video has no
+MCP content block of its own; a server that sends video as a resource is
+not unpacked.
+
+@{h2}Timeouts
+
+@{table}
+What | Limit
+the handshake of a new connection | the server's timeout, but at least 60 seconds; then "did not complete the handshake"
+one call or tool listing | the server's timeout; then "did not answer within Ns", and the call is abandoned
+closing a connection | the server's timeout, then the connection is cancelled
+@{body}
+
+The server's timeout is its own @{tt}timeout@{utt}, else
+@{tt}external_servers.connection.timeout@{utt} (5 seconds in the shipped
+file). Slow tools need their own: the Blender entry sets 300, because a
+render takes minutes. The handshake gets at least a minute whatever the
+timeout, because a stdio program has to start first -- through
+@{tt}npx@{utt} it downloads its package on the first start. If that takes
+longer, install the package (@{tt}everything_local@{utt} shows how).
+
+Calls to one server run side by side: a slow call does not hold up the
+others. When a call times out, the waiting call is cancelled; the server
+may still be working on it.
+
+@{h2}Starting, dropping, reconnecting
+
+When the plugin starts it connects every enabled server, all at the
+same time. A server that fails is logged and skipped; it does not stop
+the others or the start. Servers that never answer hold the start up
+once for the longest handshake limit among them (a stdio program about
+two seconds more to be ended), not once each. A disconnect that comes
+while a server is still shaking hands wins: the new connection is
+closed again.
+
+A server with @{tt}connect: on_demand@{utt} is left out of that start.
+It is connected when an agent of the process begins a run and names it
+in @{tt}tools.allowed@{utt} -- @{tt}<server>.*@{utt} or
+@{tt}<server>.<tool>@{utt}, the server spelled out; @{tt}*@{utt} does
+not count. Until then the process never starts the program, which is
+the point for heavy stdio servers such as a browser: every process that
+boots the plugins -- the API, each @{tt}agent-cli@{utt}, each task
+worker -- would otherwise start its own copy. Once connected it stays
+for the process. A connect that fails is logged and not tried again for
+five minutes; the run goes on without that server's tools. Views that
+only show an agent's tools (system prompt, token count) do not connect.
+
+When a connection drops -- a stdio program exits, a remote server goes
+away -- nothing reconnects it by itself. Its calls fail with "External MCP
+server '<server>' is not connected" until someone reconnects it with
+@{tt}/mcp-connect@{utt} or the management tool, or the process restarts.
+An on_demand server is reconnected by the next run that names it.
+The agents' tool list may keep showing the dropped server's tools until
+the next connect or disconnect.
+@endnode
+
+@node tools "The management tools"
+@{h1}The management tools
+
+Four tools, named after the plugin instance (@{tt}mcp_client_...@{utt} in
+the default setup). They need @{tt}mcp_client/*@{utt} in the allowlist.
+
+@{table}
+Tool | Parameters | Answers
+mcp_client_list_servers | none | servers (name, description, url, transport, enabled, connected, server_info, protocol_version), connected (names), total
+mcp_client_connect | server (required) | success, server, server_info (name, version), protocol_version
+mcp_client_disconnect | server (required) | success, server, message: "disconnected" or "was not connected"
+mcp_client_tools | server (optional), force_refresh | servers: name to a list of name, description, input_schema, blocked; total
+@{body}
+
+@{bullet}@{tt}list_servers@{utt} shows the enabled servers only; a server
+with @{tt}enabled: false@{utt} is not there.
+@{bullet}@{tt}connect@{utt} answers @{tt}success: false@{utt} with an
+@{tt}error@{utt} naming the cause: "External MCP server '<server>' is not
+configured or not enabled", "Could not connect to MCP server '<server>':
+<cause>", "MCP server '<server>' did not complete the handshake within
+Ns", "... has unknown transport ...", "... has no url configured",
+"... uses transport 'stdio' but has no 'command' configured".
+@{bullet}@{tt}disconnect@{utt} with a server that was not connected
+answers @{tt}success: false@{utt}, "was not connected" -- an answer, not
+an error.
+@{bullet}@{tt}tools@{utt} with the name of a server that is not
+connected answers an empty list for it. The tool list is kept for
+@{tt}external_servers.cache.tool_list_ttl@{utt} seconds, and dropped on
+every connect and disconnect; @{tt}force_refresh: true@{utt} asks the
+servers again. A server that does not answer the listing keeps its last
+known tools.
+@{bullet}Without @{tt}server@{utt}, connect and disconnect answer "Parameter
+'server' is required".
+
+@{code json}
+{"server": "everything"}
+{"server": "everything", "force_refresh": true}
+@{body}
+@endnode
+
+@node security "Security and limits"
+@{h1}Security and limits
+
+@{h2}A stdio server is a program you run
+
+A stdio entry is started as a child process of the API server (or of
+@{tt}agent-cli@{utt}), with its rights, in the folder the server was
+started in. Its standard error goes to the server's own. It does not get
+the server's environment: only a fixed set of variables
+(@{tt}PATH@{utt}, @{tt}PATHEXT@{utt}, @{tt}SYSTEMROOT@{utt},
+@{tt}TEMP@{utt}, @{tt}APPDATA@{utt}, @{tt}USERPROFILE@{utt} and a few more
+on Windows; @{tt}HOME@{utt}, @{tt}PATH@{utt}, @{tt}SHELL@{utt},
+@{tt}USER@{utt} and a few more elsewhere) plus what the entry's
+@{tt}env@{utt} sets. API keys in the server's environment do not reach
+it unless you pass them there. @{tt}${VAR}@{utt} in the file is replaced
+from the environment when the configuration is read.
+
+Pin the version of what you start: @{tt}npx -y <package>@{utt} without a
+version fetches whatever is newest on every start.
+
+@{h2}HTTP servers
+
+@{tt}auth@{utt} adds a header: @{tt}bearer@{utt} (Authorization: Bearer),
+@{tt}api_key@{utt} (the key in @{tt}api_key_header@{utt}, default
+Authorization) or @{tt}basic@{utt}. HTTPS certificates are checked when
+@{tt}network.ssl_verify@{utt} is true, as the shipped
+@{tt}config/config.yaml@{utt} sets it. A configuration without that key
+checks NO certificates -- the setting's default is false. Redirects are
+followed within the server's origin only (the SDK's rule).
+
+@{h2}What a server can put in front of the model
+
+Everything a server says reaches the model:
+
+@{bullet}Its tool descriptions and parameter schemas go into the tool
+definitions the model reads on every call. The plugin marks them only
+with @{tt}[<server>]@{utt} in front and cuts a description at
+@{tt}max_description_chars@{utt} (1024); the parameter schemas pass
+whole. They reach the model once an agent's allowlist admits the tool --
+with @{tt}<server>.*@{utt} that is every tool the server announces, now
+or after its next update.
+@{bullet}Its answers come back as ordinary tool results, cut at
+@{tt}max_result_chars@{utt} (50000). The runtime removes invisible
+characters (zero-width and bidi marks, tag characters) from them; it does
+not mark them as foreign.
+
+An answer can carry instructions aimed at the model. Admit only the
+tools an agent needs, by name, from servers you trust.
+
+@{h2}Several users
+
+One process, one set of connections. In the API server every user's
+agents use the same connections with the same credentials: whoever's
+agent may call @{tt}<server>.*@{utt} acts as the account configured in
+@{tt}auth@{utt}. A disconnect through the management tools or
+@{tt}/mcp-disconnect@{utt} closes the server for everyone. Images and
+audio from all users land in the same directory. Grant
+@{tt}mcp_client/*@{utt} only to agents trusted with that.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The four management tools are described by the plugin's
+@{tt}schema.yaml@{utt}. An external tool reaches the model as
+@{tt}<server>_<tool>@{utt} -- the dot becomes @{tt}_@{utt}, a slash
+@{tt}__@{utt}, and characters outside letters, digits, @{tt}_@{utt} and
+@{tt}-@{utt} are removed -- with the description @{tt}[<server>]
+<the server's description>@{utt} and the server's input schema as the
+parameters.
+
+@{h2}Errors
+
+A failed external call reaches the model as
+@{tt}{"error": "Tool invocation failed: <message>"}@{utt}, with messages
+such as:
+
+@{bullet}"External MCP server 'everything' is not connected"
+@{bullet}"Tool 'x' is blocked on MCP server 'everything'"
+@{bullet}"MCP server 'everything' did not answer within 5.0s"
+@{bullet}"Tool call failed: <the server's error text>"
+@{bullet}"MCP server 'everything' disconnected: <cause>"
+
+@{h2}The status line
+
+An external call shows "Starting tool call: <tool>", then "Tool call
+completed: <tool>" or "Tool call failed: <tool>". The management tools
+end with "2 server(s) configured, 1 connected", "Connected everything
+(protocol 2025-06-18)", "everything: disconnected", "13 tool(s) on
+everything" or "everything: not connected".
+
+@{h2}Tokens and cache
+
+Results are appended like any tool result; nothing earlier changes. The
+tool definitions change when a server connects, drops or disconnects,
+or updates its tools -- then the tools section of the next call differs
+and the provider's prompt cache starts again from there.
+
+@{h2}Known gaps
+
+@{bullet}Two external tools whose names differ only in characters that
+are removed or replaced (@{tt}a.b_c@{utt} and @{tt}a_b.c@{utt}) get the
+same name for the model.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration. Leave it on even when no
+external server is: the runtime asks it for external tools, and without
+it an outage looks like "nothing configured".
+
+@{code yaml}
+plugins:
+  servers:
+    mcp_client:
+      type: mcp_client
+      enabled: true
+@{body}
+
+It needs the @{tt}mcp@{utt} package (2.2 or newer, below 3). The management tools
+need @{tt}"+mcp_client/*"@{utt} in an agent's allowlist; external tools
+need their dotted names, see @{" External tools " link external}.
+
+@{h2}Declaring servers
+
+Servers are declared in @{tt}config/mcp_servers.yaml@{utt}, under
+@{tt}external_servers.remote_servers@{utt}. Declare them in that file: a
+later configuration file that declares @{tt}remote_servers@{utt} replaces
+the whole list instead of adding to it.
+
+@{code yaml}
+external_servers:
+  connection:
+    timeout: 5.0
+  cache:
+    tool_list_ttl: 3600.0
+  remote_servers:
+    docs:                          # a remote server
+      enabled: true
+      transport: streaming
+      url: "https://mcp.example.org/mcp"
+      auth:
+        type: bearer
+        bearer_token: "${DOCS_MCP_TOKEN}"
+      tools:
+        blocked: [delete_page]
+    blender:                       # a local program over stdio
+      enabled: false
+      transport: stdio
+      timeout: 300
+      command: external/mcp/blender_mcp/.venv/Scripts/blender-mcp.exe
+      env:
+        BLENDER_MCP_DISABLE_TELEMETRY: "true"
+@{body}
+
+@{h2}Server entry
+
+@{table}
+Key | Default | Meaning
+enabled | false | only enabled servers are connected, listed and callable
+transport | streaming | streaming, streamable_http, streamable-http, http, smithery: streamable HTTP; sse, http_sse, http+sse: HTTP with SSE; stdio, local: start a program
+url | empty | the endpoint, for the HTTP transports
+command, args, env | none | the program, its arguments and extra environment, for stdio
+timeout | the connection timeout | seconds for the handshake and for each answer
+auth | none | type none, bearer, api_key or basic, with bearer_token, api_key and api_key_header (Authorization), username and password
+tools.blocked | none | tool names a call is refused for
+description | none | shown in the server listing
+@{body}
+
+Read but without effect: @{tt}initialization_options@{utt} (the protocol
+has no such field; connecting logs a warning that it is not sent),
+@{tt}features@{utt}, @{tt}tools.allowed@{utt}, @{tt}auth.max_retries@{utt}
+and @{tt}auth.retry_delay@{utt}.
+
+@{h2}Plugin settings
+
+In the plugin's entry in @{tt}config/plugins.yaml@{utt}; a value that is
+not a positive whole number means the default.
+
+@{table}
+Key | Default | Meaning
+max_result_chars | 50000 | characters of an external answer the model gets; the rest is cut
+max_description_chars | 1024 | characters of a foreign tool description; it is sent with every request of every agent that allows the tool
+@{body}
+
+@{h2}Shared settings
+
+@{table}
+Key | Default | Meaning
+connection.timeout | 5 | seconds, for servers without their own timeout
+connection.parallel_connect | true | not read: servers always connect at the same time
+cache.tool_list_ttl | 30 (shipped file: 3600) | seconds the plugin keeps the tool lists
+cache.enabled, cache.max_size | true, none | the runtime's catalogue of all tools, which is kept until a connect, disconnect or configuration change
+network.ssl_verify | false (shipped config: true) | check HTTPS certificates
+@{body}
+
+Image and audio results are written to @{tt}media/external_mcp/@{utt}
+in the data directory.
+@endnode

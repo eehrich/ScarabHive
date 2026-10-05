@@ -59,18 +59,20 @@ async def async_main():
         try:
             from unittest.mock import AsyncMock
             mock_status = AsyncMock()
-            result = await server.call("twitter_search", {
-                "query": args.query,
-                "max_results": args.max_results,
-                "lang": args.lang,
+            # The tool has no language parameter; X's search operator does it.
+            query = f"{args.query} lang:{args.lang}" if args.lang else args.query
+            result = await server.call("twitter_search_tweets", {
+                "query": query,
+                "limit": args.max_results,
                 "_status": mock_status
             })
-            print(f"Twitter search results for '{args.query}':")
+            print(f"Twitter search results for '{query}':")
             if isinstance(result, dict) and "tweets" in result:
                 for i, tweet in enumerate(result["tweets"], 1):
-                    print(f"{i}. @{tweet.get('username', 'unknown')}: {tweet.get('text', 'No text')[:100]}...")
-                    print(f"   Date: {tweet.get('date', 'Unknown')}")
-                    print(f"   URL: {tweet.get('url', 'No URL')}\n")
+                    author = (tweet.get("author") or {}).get("username", "unknown")
+                    print(f"{i}. @{author}: {tweet.get('text', 'No text')[:100]}...")
+                    print(f"   Date: {tweet.get('created_at') or 'Unknown'}")
+                    print(f"   URL: https://x.com/{author}/status/{tweet.get('id')}\n")
             else:
                 print(result)
         except Exception as e:

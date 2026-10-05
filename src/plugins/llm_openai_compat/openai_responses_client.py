@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import aclosing
 import logging
 import time as _time
 from typing import Any, Optional
@@ -95,6 +96,7 @@ from plugins.llm_common.model_dialects import (
 )
 from .httpx_client import (
     HTTPXTimeoutConfig,
+    _ending_error,
     openrouter_routing_info,
     release_provider_pin,
     routing_pinned_to_last_backend,
@@ -440,7 +442,7 @@ class OpenAIResponsesClient(LLMClient):
             else:
                 item["content"] = as_note(content if isinstance(content, str) else "")
 
-    def _extract_verbatim_items(self, msg: Any) -> Optional[list]:
+    def _extract_verbatim_items(self, msg: Any, model: Optional[str] = None) -> Optional[list]:
         """Return the verbatim output items stored on an assistant message,
         or None if the message carries none (foreign/legacy history).
 
@@ -459,18 +461,36 @@ class OpenAIResponsesClient(LLMClient):
         returning only the first silently dropped the second turn's items
         (reasoning, text AND function_calls), and a tool result answering a
         dropped call is a 400.
+
+        ``model``: where this request goes when it is not ``self.model`` -- the
+        concrete model a run on an alias is pinned to (``_run_model``). A block
+        another model of that alias answered is foreign there as well.
+
+        One foreign block makes the whole message foreign. Replaying a merged
+        message in part dropped the foreign half's function_calls while their
+        outputs stayed in the request -- a 400 that no heal recognised, on every
+        later request of the run.
         """
         collected: list = []
         for block in (_get(msg, "reasoning_details") or []):
             if isinstance(block, dict) and block.get("format") == RESPONSES_ITEMS_FORMAT:
                 if block.get("model") != self.model:
-                    continue
+                    return None
+                if model and model != self.model and block.get("served_model") != model:
+                    return None
                 items = block.get("items")
                 if isinstance(items, list) and items:
                     collected.extend(items)
-        return collected or None
+        if not collected:
+            return None
+        # A merged message whose other half came from another route has no block for that half:
+        # its calls would be missing while their outputs stay.
+        replayed = {i.get("call_id") for i in collected if isinstance(i, dict) and i.get("type") == "function_call"}
+        if any(_get(call, "id") not in replayed for call in (_get(msg, "tool_calls") or [])):
+            return None
+        return collected
 
-    def _messages_to_input(self, messages: list) -> list:
+    def _messages_to_input(self, messages: list, model: Optional[str] = None) -> list:
         """Build the Responses `input` item list from a ChatMessage history.
 
         Assistant turns produced by THIS client replay their output items
@@ -516,7 +536,7 @@ class OpenAIResponsesClient(LLMClient):
                 # a PARTIAL chain, which fails verification. Reconstruct from
                 # content/tool_calls instead (clean chain restart).
                 verbatim = None if (_get(msg, "rd_orphaned") or not may_replay[index]) \
-                    else self._extract_verbatim_items(msg)
+                    else self._extract_verbatim_items(msg, model)
                 if verbatim is not None:
                     # The block keeps the model's RAW arguments string, while
                     # tool_calls on the same message carry the copy
@@ -724,7 +744,33 @@ class OpenAIResponsesClient(LLMClient):
         if anthropic_cache_conversation(self.prompt_cache_mode, has_history):
             payload["cache_control"] = {"type": "ephemeral"}
 
-    def _build_payload(self, messages: list, tools: Optional[list]) -> dict:
+    def _run_model(self, messages: list) -> str:
+        """The model this run's request goes to.
+
+        A gateway alias (``~google/gemini-flash-latest``) is resolved per
+        request, and OpenRouter walks it down to an older model when the newest
+        fails (429/5xx; undocumented, OpenRouterTeam/docs#601). Measured on a
+        shorts_producer run 2026-09-30: 23 of 69 calls went to 3.7 after a 504
+        from 3.8, interleaved -- every switch a cold prompt cache (20 % read on
+        those calls, 74 % on the others), and each one had waited ~25 s for the
+        504 first. So a run stays on the model that answered its latest turn, as
+        it stays on its backend (``routing_pinned_to_last_backend``); a refusal
+        sends the retry to the alias again. A run without a history of its own
+        starts at the alias; a continued session stays on its model until that
+        refuses.
+        """
+        if not (self._is_openrouter and self.model.startswith("~")):
+            return self.model
+        for msg in reversed(messages):
+            for block in reversed(_get(msg, "reasoning_details") or []):
+                if (isinstance(block, dict) and block.get("format") == RESPONSES_ITEMS_FORMAT
+                        and block.get("model") == self.model):
+                    served = block.get("served_model")
+                    return served if isinstance(served, str) else self.model
+        return self.model
+
+    def _build_payload(self, messages: list, tools: Optional[list],
+                       model: Optional[str] = None) -> dict:
         # No `instructions` field. It used to carry the newest volatile note
         # (a developer message with `injected_by`), lifted out of `input` --
         # the one place a text can sit without joining the conversation, since
@@ -737,8 +783,8 @@ class OpenAIResponsesClient(LLMClient):
         # the max-steps request, which only works as the LAST thing the model
         # reads -- was the most likely one to be carried off to the head.
         payload: dict = {
-            "model": self.model,
-            "input": self._messages_to_input(messages),
+            "model": model or self.model,
+            "input": self._messages_to_input(messages, model),
             "store": False,
         }
         if self.thinking_level:
@@ -920,6 +966,9 @@ class OpenAIResponsesClient(LLMClient):
                 # Who produced these items. The encrypted payload only verifies
                 # against this model, so the replay side checks it.
                 "model": self.model,
+                # What an alias resolved to (the run stays on it: _run_model).
+                **({"served_model": response_data["model"]}
+                   if isinstance(response_data.get("model"), str) else {}),
                 "items": output,
             }]
         # Which backend answered: the next request of this run goes back to
@@ -1100,6 +1149,11 @@ class OpenAIResponsesClient(LLMClient):
                         # Upstream failure mid-stream: hand it over in the body
                         # shape the loop already knows how to read.
                         body = {"error": event.get("error") or event}
+                # Again before waiting for the next bytes: a cancel that came
+                # while a delta was out would otherwise wait for the upstream
+                # to send something -- up to the read timeout.
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise asyncio.CancelledError("Request cancelled by user")
                 if silence_limit and _time.monotonic() - last_event > silence_limit:
                     raise httpx.ReadTimeout(
                         f"no stream event for {silence_limit:g}s, only keep-alives")
@@ -1172,13 +1226,14 @@ class OpenAIResponsesClient(LLMClient):
         # A pin is one backend with no fallbacks, so a refusal reaches us.
         # Local, never on self: one client serves parallel runs.
         pinned = provider is not self.provider_routing
+        model = self._run_model(messages)
 
         # Refused before the first byte: sending the request without the field would hand back
         # free text as if the provider had constrained it.
         self._require_response_format(response_format)
 
         def build_payload() -> dict:
-            payload = self._build_payload(messages, tools)
+            payload = self._build_payload(messages, tools, model)
             if provider:
                 payload["provider"] = provider
             # Here, beside the pin, and not in _build_payload: the heals below rebuild the
@@ -1191,9 +1246,14 @@ class OpenAIResponsesClient(LLMClient):
 
         def release_pin_after_refusal() -> bool:
             """A refusal sends the retry out as the model entry is configured."""
-            nonlocal pinned, provider
+            nonlocal pinned, provider, model
+            released = model != self.model
+            if released:
+                # The input stays as built: the alias most likely answers with the same model.
+                model = payload["model"] = self.model
+                logger.info("Model pin released after a refusal (alias=%s)", self.model)
             if not pinned:
-                return False
+                return released
             pinned = False
             provider = self.provider_routing
             self.forget_backend()
@@ -1209,338 +1269,373 @@ class OpenAIResponsesClient(LLMClient):
         # gemini-3.6-flash-Lauf: "cannot access local variable '_tier_dropped'").
         _tier_dropped = False
 
+        # One end report per request, as in the Chat Completions client: set by
+        # every terminal report below, read by the guard around the loop.
+        ended = False
+        _request_start: Optional[float] = None
+        # Whether the caller has seen a delta of an attempt that did not finish:
+        # a retry starts from scratch, so it is told to drop what it has.
+        yielded_delta = False
+
+        async def report_error(url: str, duration_ms: float, error_msg: str,
+                               is_streaming: bool = False) -> None:
+            nonlocal ended
+            ended = True
+            await self._notify_error(url, duration_ms, error_msg, is_streaming)
+
         timeout = httpx.Timeout(
             connect=self.timeout_config.connect,
             read=self.timeout_config.read,
             write=self.timeout_config.write,
             pool=self.timeout_config.pool,
         )
-        async with httpx.AsyncClient(timeout=timeout, verify=httpx_verify(self.ssl_verify)) as client:
-            # while-loop with explicit increments: the one-shot
-            # encrypted-reasoning heal must NOT consume a retry slot — with a
-            # for-loop a heal on the final attempt would strip the session and
-            # then never send the healed request.
-            attempt = 0
-            while attempt <= self.max_retries:
-                if cancellation_token and cancellation_token.is_cancelled:
-                    raise asyncio.CancelledError("Request cancelled by user")
+        try:
+            async with httpx.AsyncClient(timeout=timeout, verify=httpx_verify(self.ssl_verify)) as client:
+                # while-loop with explicit increments: the one-shot
+                # encrypted-reasoning heal must NOT consume a retry slot — with a
+                # for-loop a heal on the final attempt would strip the session and
+                # then never send the healed request.
+                attempt = 0
+                while attempt <= self.max_retries:
+                    if cancellation_token and cancellation_token.is_cancelled:
+                        raise asyncio.CancelledError("Request cancelled by user")
 
-                # What actually travels. The loop mutates ``payload`` (the tier
-                # drop pops a key), so the stream flag is added per attempt
-                # instead of being baked into the payload builder.
-                sent_payload = {**payload, "stream": True} if stream else payload
+                    if yielded_delta:
+                        yielded_delta = False
+                        yield {"type": "stream_restart"}
 
-                _request_start = _time.time()
-                await self._notify_pre_request({
-                    "provider": self._PROVIDER, "model": self.model, "url": url,
-                    "is_streaming": stream, "payload": sent_payload,
-                    "timestamp_ms": _request_start * 1000,
-                })
-                response_data = None
-                body_text = ""
-                streamed = False
-                partial_text = ""
-                try:
-                    if stream:
-                        async with self._stream(client, url, sent_payload) as response:
-                            if (response.status_code >= 400 or "event-stream"
-                                    not in response.headers.get("content-type", "")):
-                                # Nothing to read event by event: either an
-                                # error status, or the gateway answered the
-                                # stream request with a plain JSON body — which
-                                # is how it proxies upstream errors on
-                                # /responses (see the body-error branch below).
-                                # Both are small, so pull the body in before
-                                # leaving the context and let the branches below
-                                # read it exactly as on the non-streaming path.
-                                await response.aread()
-                                body_text = response.text or ""
-                            else:
-                                streamed = True
-                                async for kind, item in self._consume_stream(
-                                        response, cancellation_token):
-                                    if kind == "delta":
-                                        if item["type"] == "content_delta":
-                                            partial_text = item["accumulated"]
-                                        yield item
-                                    else:
-                                        response_data = item
-                    else:
-                        response = await self._post(client, url, payload)
-                        body_text = response.text or ""
-                except (httpx.TimeoutException, httpx.TransportError) as e:
-                    if attempt < self.max_retries:
-                        backoff = self.retry_backoff * (2 ** attempt)
-                        logger.warning(
-                            f"Responses request transport error ({type(e).__name__}), "
-                            f"retry {attempt + 1}/{self.max_retries} in {backoff:.0f}s: {self.model}"
-                        )
-                        await self._notify_retry(
-                            self._PROVIDER, self.model, url, stream,
-                            f"transport: {type(e).__name__}", attempt, self.max_retries + 1)
-                        await self._cancellable_sleep(backoff, cancellation_token)
-                        attempt += 1
-                        continue
-                    await self._notify_error(
-                        url, (_time.time() - _request_start) * 1000,
-                        f"transport exhausted: {type(e).__name__}: {e}", stream)
-                    raise
+                    # What actually travels. The loop mutates ``payload`` (the tier
+                    # drop pops a key), so the stream flag is added per attempt
+                    # instead of being baked into the payload builder.
+                    sent_payload = {**payload, "stream": True} if stream else payload
 
-                duration_ms = (_time.time() - _request_start) * 1000
-
-                if response.status_code == 429:
-                    # Flex-tier fallback (parity with the httpx route): flex
-                    # queues saturate with 429s while the standard tier is
-                    # fine. Drop service_tier ONCE and retry immediately —
-                    # does not consume a retry slot (the request changes
-                    # substantially). Only after that: typed raise so the
-                    # agent-level fallback chain takes over.
-                    if payload.pop("service_tier", None) is not None:
-                        _tier_dropped = True
-                        logger.warning(
-                            f"HTTP 429 on flex tier — dropping service_tier and "
-                            f"retrying at standard tier: {self.model}")
-                        await self._notify_retry(
-                            self._PROVIDER, self.model, url, stream,
-                            "429 flex->standard tier drop", attempt, self.max_retries + 1)
-                        continue
-                    if release_pin_after_refusal():
-                        # Like the tier drop above: the request changes
-                        # substantially (another backend may answer), so this
-                        # costs no retry slot.
-                        await self._notify_retry(
-                            self._PROVIDER, self.model, url, stream,
-                            "429, provider pin released", attempt, self.max_retries + 1)
-                        continue
-                    retry_after = None
+                    _request_start = _time.time()
+                    await self._notify_pre_request({
+                        "provider": self._PROVIDER, "model": self.model, "url": url,
+                        "is_streaming": stream, "payload": sent_payload,
+                        "timestamp_ms": _request_start * 1000,
+                    })
+                    response_data = None
+                    body_text = ""
+                    streamed = False
+                    partial_text = ""
                     try:
-                        retry_after = float(response.headers.get("retry-after", ""))
-                    except (TypeError, ValueError):
-                        pass
-                    await self._notify_error(url, duration_ms, f"HTTP 429: {body_text[:200]}", stream)
-                    if "quota" in body_text.lower() or "exhausted" in body_text.lower():
-                        raise LLMQuotaExhaustedError(
-                            f"Quota exhausted: {body_text[:200]}",
+                        if stream:
+                            async with self._stream(client, url, sent_payload) as response:
+                                if (response.status_code >= 400 or "event-stream"
+                                        not in response.headers.get("content-type", "")):
+                                    # Nothing to read event by event: either an
+                                    # error status, or the gateway answered the
+                                    # stream request with a plain JSON body — which
+                                    # is how it proxies upstream errors on
+                                    # /responses (see the body-error branch below).
+                                    # Both are small, so pull the body in before
+                                    # leaving the context and let the branches below
+                                    # read it exactly as on the non-streaming path.
+                                    await response.aread()
+                                    body_text = response.text or ""
+                                else:
+                                    streamed = True
+                                    async for kind, item in self._consume_stream(
+                                            response, cancellation_token):
+                                        if kind == "delta":
+                                            if item["type"] == "content_delta":
+                                                partial_text = item["accumulated"]
+                                            yielded_delta = True
+                                            yield item
+                                        else:
+                                            response_data = item
+                        else:
+                            response = await self._post(client, url, payload)
+                            body_text = response.text or ""
+                    except (httpx.TimeoutException, httpx.TransportError) as e:
+                        if attempt < self.max_retries:
+                            backoff = self.retry_backoff * (2 ** attempt)
+                            logger.warning(
+                                f"Responses request transport error ({type(e).__name__}), "
+                                f"retry {attempt + 1}/{self.max_retries} in {backoff:.0f}s: {self.model}"
+                            )
+                            await self._notify_retry(
+                                self._PROVIDER, self.model, url, stream,
+                                f"transport: {type(e).__name__}", attempt, self.max_retries + 1)
+                            await self._cancellable_sleep(backoff, cancellation_token)
+                            attempt += 1
+                            continue
+                        await report_error(
+                            url, (_time.time() - _request_start) * 1000,
+                            f"transport exhausted: {type(e).__name__}: {e}", stream)
+                        raise
+
+                    duration_ms = (_time.time() - _request_start) * 1000
+
+                    if response.status_code == 429:
+                        # Flex-tier fallback (parity with the httpx route): flex
+                        # queues saturate with 429s while the standard tier is
+                        # fine. Drop service_tier ONCE and retry immediately —
+                        # does not consume a retry slot (the request changes
+                        # substantially). Only after that: typed raise so the
+                        # agent-level fallback chain takes over.
+                        if payload.pop("service_tier", None) is not None:
+                            _tier_dropped = True
+                            logger.warning(
+                                f"HTTP 429 on flex tier — dropping service_tier and "
+                                f"retrying at standard tier: {self.model}")
+                            await self._notify_retry(
+                                self._PROVIDER, self.model, url, stream,
+                                "429 flex->standard tier drop", attempt, self.max_retries + 1)
+                            continue
+                        if release_pin_after_refusal():
+                            # Like the tier drop above: the request changes
+                            # substantially (another backend may answer), so this
+                            # costs no retry slot.
+                            await self._notify_retry(
+                                self._PROVIDER, self.model, url, stream,
+                                "429, pin released", attempt, self.max_retries + 1)
+                            continue
+                        retry_after = None
+                        try:
+                            retry_after = float(response.headers.get("retry-after", ""))
+                        except (TypeError, ValueError):
+                            pass
+                        await report_error(url, duration_ms, f"HTTP 429: {body_text[:200]}", stream)
+                        if "quota" in body_text.lower() or "exhausted" in body_text.lower():
+                            raise LLMQuotaExhaustedError(
+                                f"Quota exhausted: {body_text[:200]}",
+                                provider=self._PROVIDER, model=self.model, retry_after=retry_after)
+                        raise LLMRateLimitError(
+                            f"Rate limit exceeded: {body_text[:200]}",
                             provider=self._PROVIDER, model=self.model, retry_after=retry_after)
-                    raise LLMRateLimitError(
-                        f"Rate limit exceeded: {body_text[:200]}",
-                        provider=self._PROVIDER, model=self.model, retry_after=retry_after)
 
-                if response.status_code >= 500:
-                    if attempt < self.max_retries:
-                        backoff = 0.0 if release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
+                    if response.status_code >= 500:
+                        if attempt < self.max_retries:
+                            backoff = 0.0 if release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
+                            logger.warning(
+                                f"Responses request {response.status_code}, "
+                                f"retry {attempt + 1}/{self.max_retries} in {backoff:.0f}s: {self.model}")
+                            await self._notify_retry(
+                                self._PROVIDER, self.model, url, stream,
+                                f"HTTP {response.status_code}", attempt, self.max_retries + 1)
+                            await self._cancellable_sleep(backoff, cancellation_token)
+                            attempt += 1
+                            continue
+                        await report_error(
+                            url, duration_ms,
+                            f"HTTP {response.status_code}: {body_text[:300]}", stream)
+                        raise LLMServerError(
+                            f"HTTP {response.status_code}: {body_text[:300]}",
+                            provider=self._PROVIDER, model=self.model,
+                            status_code=response.status_code)
+
+                    if response.status_code >= 400:
+                        # A 404 under our own pin: that backend does not serve this
+                        # model (endpoint list changed, alias moved on). Not a dead
+                        # model until a request without the pin says so. Costs no
+                        # retry slot -- the request changes substantially.
+                        if response.status_code == 404 and release_pin_after_refusal():
+                            await self._notify_retry(
+                                self._PROVIDER, self.model, url, stream,
+                                "404, pin released", attempt, self.max_retries + 1)
+                            continue
+
+                        # Backstop only — the native item round-trip is the fix for
+                        # the encrypted-reasoning 400s of the Chat Completions
+                        # bridge. Should one still occur (defective item straight
+                        # from the provider), heal exactly like the httpx client:
+                        # drop the artifacts (session AND next payload) and retry
+                        # once with a fresh chain. Does NOT consume a retry slot.
+                        # 404 is included because the gateway answers a cross-model
+                        # replay with it — but ONLY via the body test, since 404 is
+                        # also "no such model", which must keep reaching the chain.
+                        if (response.status_code in (400, 404) and not _enc_retried
+                                and self._is_reasoning_artifact_rejection(body_text)):
+                            _enc_retried = True
+                            n = strip_all_reasoning_artifacts(messages)
+                            payload = build_payload()
+                            if _tier_dropped:
+                                payload.pop("service_tier", None)
+                            logger.warning(
+                                "Responses-%d retry: stripped reasoning artifacts from "
+                                "%d message(s) (defective reasoning item). model=%s detail=%r",
+                                response.status_code, n, self.model, body_text[:500])
+                            await self._notify_retry(
+                                self._PROVIDER, self.model, url, stream,
+                                f"http-{response.status_code} reasoning-items strip",
+                                attempt, self.max_retries + 1)
+                            continue
+                        error_msg = f"HTTP {response.status_code}: {body_text[:300]}"
+                        logger.error(f"Responses request failed: {error_msg}")
+                        await report_error(url, duration_ms, error_msg, stream)
+                        raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
+
+                    if response_data is None and streamed:
+                        # The stream ended without ``response.completed``. Whatever
+                        # deltas arrived are NOT a result: the items, the usage and
+                        # the backend all live in that final object, so this is
+                        # retried like an unreadable body rather than assembled
+                        # from fragments.
+                        if attempt < self.max_retries:
+                            logger.warning(
+                                "Responses stream ended without a completed event, "
+                                "retry %d/%d: %s", attempt + 1, self.max_retries, self.model)
+                            await self._notify_retry(
+                                self._PROVIDER, self.model, url, stream,
+                                "stream ended without completed event",
+                                attempt, self.max_retries + 1)
+                            await self._cancellable_sleep(self.retry_backoff, cancellation_token)
+                            attempt += 1
+                            continue
+                        # Retries spent. Deliberately NOT an error: the agent
+                        # server spells out why in its own incomplete_stream
+                        # branch — an error here switches the fallback profile
+                        # persistently and ends a run that has no fallback chain,
+                        # far too heavy a hammer for a dropped connection. The
+                        # sibling client hands over what arrived under exactly
+                        # this flag; this one does the same, so that decision
+                        # stays in one place instead of two.
                         logger.warning(
-                            f"Responses request {response.status_code}, "
-                            f"retry {attempt + 1}/{self.max_retries} in {backoff:.0f}s: {self.model}")
-                        await self._notify_retry(
-                            self._PROVIDER, self.model, url, stream,
-                            f"HTTP {response.status_code}", attempt, self.max_retries + 1)
-                        await self._cancellable_sleep(backoff, cancellation_token)
-                        attempt += 1
-                        continue
-                    await self._notify_error(
-                        url, duration_ms,
-                        f"HTTP {response.status_code}: {body_text[:300]}", stream)
-                    raise LLMServerError(
-                        f"HTTP {response.status_code}: {body_text[:300]}",
-                        provider=self._PROVIDER, model=self.model,
-                        status_code=response.status_code)
+                            "Responses stream ended without a terminal event, "
+                            "handing over %d char(s) as incomplete: %s",
+                            len(partial_text), self.model)
+                        ended = True
+                        await self._notify_post_response({
+                            "provider": self._PROVIDER, "model": self.model, "url": url,
+                            "is_streaming": True, "duration_ms": duration_ms,
+                            "finish_reason": "incomplete_stream",
+                            "timestamp_ms": _time.time() * 1000,
+                        })
+                        yield {"type": "final",
+                               "assistant": {"role": "assistant", "content": partial_text},
+                               "finish_reason": "incomplete_stream"}
+                        return
 
-                if response.status_code >= 400:
-                    # A 404 under our own pin: that backend does not serve this
-                    # model (endpoint list changed, alias moved on). Not a dead
-                    # model until a request without the pin says so. Costs no
-                    # retry slot -- the request changes substantially.
-                    if response.status_code == 404 and release_pin_after_refusal():
-                        await self._notify_retry(
-                            self._PROVIDER, self.model, url, stream,
-                            "404, provider pin released", attempt, self.max_retries + 1)
-                        continue
+                    if response_data is None:
+                        try:
+                            response_data = response.json()
+                        except json.JSONDecodeError:
+                            if attempt < self.max_retries:
+                                logger.warning(
+                                    f"Responses body JSON decode failed (len={len(body_text)}), "
+                                    f"retry {attempt + 1}/{self.max_retries}: {self.model}")
+                                await self._notify_retry(
+                                    self._PROVIDER, self.model, url, stream,
+                                    "JSON decode failed", attempt, self.max_retries + 1)
+                                await self._cancellable_sleep(self.retry_backoff, cancellation_token)
+                                attempt += 1
+                                continue
+                            await report_error(
+                                url, duration_ms, f"JSON decode failed (len={len(body_text)})", stream)
+                            raise
 
-                    # Backstop only — the native item round-trip is the fix for
-                    # the encrypted-reasoning 400s of the Chat Completions
-                    # bridge. Should one still occur (defective item straight
-                    # from the provider), heal exactly like the httpx client:
-                    # drop the artifacts (session AND next payload) and retry
-                    # once with a fresh chain. Does NOT consume a retry slot.
-                    # 404 is included because the gateway answers a cross-model
-                    # replay with it — but ONLY via the body test, since 404 is
-                    # also "no such model", which must keep reaching the chain.
-                    if (response.status_code in (400, 404) and not _enc_retried
-                            and self._is_reasoning_artifact_rejection(body_text)):
+                    # Body-level error inside an HTTP 200 (OpenRouter proxies
+                    # upstream errors this way on /responses too). Two cases are
+                    # handled here instead of surfacing as assistant.error (which
+                    # would trigger an unnecessary persistent model fallback):
+                    body_err = response_data.get("error")
+
+                    # 1) Transient upstream rate limit (flex-tier overload sends
+                    #    "rate_limit_exceeded ... too many requests" as a body
+                    #    error). Backoff and retry like the httpx client does for
+                    #    body-429s — the condition clears within seconds.
+                    if body_err and attempt < self.max_retries:
+                        err_code = str(body_err.get("code", "")) if isinstance(body_err, dict) else ""
+                        err_msg = str(body_err.get("message", "")) if isinstance(body_err, dict) else str(body_err)
+                        if ("rate_limit" in err_code or err_code == "429"
+                                or "too many requests" in err_msg.lower()):
+                            # First 429: drop the flex tier (saturated flex queue,
+                            # standard is usually fine) and retry without consuming
+                            # a slot — ported from the httpx route's body-429 heal.
+                            if payload.pop("service_tier", None) is not None:
+                                _tier_dropped = True
+                                logger.warning(
+                                    f"Body rate-limit on flex tier — dropping "
+                                    f"service_tier, retrying at standard: {self.model}")
+                                await self._notify_retry(
+                                    self._PROVIDER, self.model, url, stream,
+                                    "body-429 flex->standard tier drop",
+                                    attempt, self.max_retries + 1)
+                                continue
+                            backoff = self.retry_backoff * (2 ** attempt)
+                            logger.warning(
+                                f"Responses body rate-limit, retry {attempt + 1}/"
+                                f"{self.max_retries} in {backoff:.0f}s: {self.model}")
+                            await self._notify_retry(
+                                self._PROVIDER, self.model, url, stream,
+                                "body rate-limit", attempt, self.max_retries + 1)
+                            await self._cancellable_sleep(backoff, cancellation_token)
+                            attempt += 1
+                            continue
+
+                    # 2) Defective encrypted reasoning item reported body-level.
+                    if body_err and not _enc_retried and \
+                            self._is_reasoning_artifact_rejection(json.dumps(body_err, ensure_ascii=False)):
                         _enc_retried = True
                         n = strip_all_reasoning_artifacts(messages)
                         payload = build_payload()
                         if _tier_dropped:
                             payload.pop("service_tier", None)
                         logger.warning(
-                            "Responses-%d retry: stripped reasoning artifacts from "
-                            "%d message(s) (defective reasoning item). model=%s detail=%r",
-                            response.status_code, n, self.model, body_text[:500])
+                            "Responses body-error retry: stripped reasoning artifacts "
+                            "from %d message(s) (defective reasoning item). model=%s detail=%r",
+                            n, self.model, str(body_err)[:500])
                         await self._notify_retry(
                             self._PROVIDER, self.model, url, stream,
-                            f"http-{response.status_code} reasoning-items strip",
-                            attempt, self.max_retries + 1)
+                            "body-error reasoning-items strip", attempt, self.max_retries + 1)
                         continue
-                    error_msg = f"HTTP {response.status_code}: {body_text[:300]}"
-                    logger.error(f"Responses request failed: {error_msg}")
-                    await self._notify_error(url, duration_ms, error_msg, stream)
-                    raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
-                if response_data is None and streamed:
-                    # The stream ended without ``response.completed``. Whatever
-                    # deltas arrived are NOT a result: the items, the usage and
-                    # the backend all live in that final object, so this is
-                    # retried like an unreadable body rather than assembled
-                    # from fragments.
-                    if attempt < self.max_retries:
+                    # 3) Transient upstream failure reported body-level: the 5xx
+                    #    class in a 200 envelope. Retried here because the agent
+                    #    server's only lever on assistant.error is a model switch.
+                    #    Code-gated, not blanket: a deterministic refusal (content
+                    #    filter) must keep reaching the fallback chain at once.
+                    if (body_err and attempt < self.max_retries
+                            and self._is_transient_body_error(body_err)):
+                        backoff = 0.0 if release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
                         logger.warning(
-                            "Responses stream ended without a completed event, "
-                            "retry %d/%d: %s", attempt + 1, self.max_retries, self.model)
+                            "Responses body server-error, retry %d/%d in %.0fs: %s (%s)",
+                            attempt + 1, self.max_retries, backoff, self.model,
+                            str(body_err)[:200])
                         await self._notify_retry(
                             self._PROVIDER, self.model, url, stream,
-                            "stream ended without completed event",
-                            attempt, self.max_retries + 1)
-                        await self._cancellable_sleep(self.retry_backoff, cancellation_token)
-                        attempt += 1
-                        continue
-                    # Retries spent. Deliberately NOT an error: the agent
-                    # server spells out why in its own incomplete_stream
-                    # branch — an error here switches the fallback profile
-                    # persistently and ends a run that has no fallback chain,
-                    # far too heavy a hammer for a dropped connection. The
-                    # sibling client hands over what arrived under exactly
-                    # this flag; this one does the same, so that decision
-                    # stays in one place instead of two.
-                    logger.warning(
-                        "Responses stream ended without a terminal event, "
-                        "handing over %d char(s) as incomplete: %s",
-                        len(partial_text), self.model)
-                    await self._notify_post_response({
-                        "provider": self._PROVIDER, "model": self.model, "url": url,
-                        "is_streaming": True, "duration_ms": duration_ms,
-                        "finish_reason": "incomplete_stream",
-                        "timestamp_ms": _time.time() * 1000,
-                    })
-                    yield {"type": "final",
-                           "assistant": {"role": "assistant", "content": partial_text},
-                           "finish_reason": "incomplete_stream"}
-                    return
-
-                if response_data is None:
-                    try:
-                        response_data = response.json()
-                    except json.JSONDecodeError:
-                        if attempt < self.max_retries:
-                            logger.warning(
-                                f"Responses body JSON decode failed (len={len(body_text)}), "
-                                f"retry {attempt + 1}/{self.max_retries}: {self.model}")
-                            await self._cancellable_sleep(self.retry_backoff, cancellation_token)
-                            attempt += 1
-                            continue
-                        await self._notify_error(
-                            url, duration_ms, f"JSON decode failed (len={len(body_text)})", stream)
-                        raise
-
-                # Body-level error inside an HTTP 200 (OpenRouter proxies
-                # upstream errors this way on /responses too). Two cases are
-                # handled here instead of surfacing as assistant.error (which
-                # would trigger an unnecessary persistent model fallback):
-                body_err = response_data.get("error")
-
-                # 1) Transient upstream rate limit (flex-tier overload sends
-                #    "rate_limit_exceeded ... too many requests" as a body
-                #    error). Backoff and retry like the httpx client does for
-                #    body-429s — the condition clears within seconds.
-                if body_err and attempt < self.max_retries:
-                    err_code = str(body_err.get("code", "")) if isinstance(body_err, dict) else ""
-                    err_msg = str(body_err.get("message", "")) if isinstance(body_err, dict) else str(body_err)
-                    if ("rate_limit" in err_code or err_code == "429"
-                            or "too many requests" in err_msg.lower()):
-                        # First 429: drop the flex tier (saturated flex queue,
-                        # standard is usually fine) and retry without consuming
-                        # a slot — ported from the httpx route's body-429 heal.
-                        if payload.pop("service_tier", None) is not None:
-                            _tier_dropped = True
-                            logger.warning(
-                                f"Body rate-limit on flex tier — dropping "
-                                f"service_tier, retrying at standard: {self.model}")
-                            await self._notify_retry(
-                                self._PROVIDER, self.model, url, stream,
-                                "body-429 flex->standard tier drop",
-                                attempt, self.max_retries + 1)
-                            continue
-                        backoff = self.retry_backoff * (2 ** attempt)
-                        logger.warning(
-                            f"Responses body rate-limit, retry {attempt + 1}/"
-                            f"{self.max_retries} in {backoff:.0f}s: {self.model}")
-                        await self._notify_retry(
-                            self._PROVIDER, self.model, url, stream,
-                            "body rate-limit", attempt, self.max_retries + 1)
+                            "body server-error", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(backoff, cancellation_token)
                         attempt += 1
                         continue
 
-                # 2) Defective encrypted reasoning item reported body-level.
-                if body_err and not _enc_retried and \
-                        self._is_reasoning_artifact_rejection(json.dumps(body_err, ensure_ascii=False)):
-                    _enc_retried = True
-                    n = strip_all_reasoning_artifacts(messages)
-                    payload = build_payload()
-                    if _tier_dropped:
-                        payload.pop("service_tier", None)
-                    logger.warning(
-                        "Responses body-error retry: stripped reasoning artifacts "
-                        "from %d message(s) (defective reasoning item). model=%s detail=%r",
-                        n, self.model, str(body_err)[:500])
-                    await self._notify_retry(
-                        self._PROVIDER, self.model, url, stream,
-                        "body-error reasoning-items strip", attempt, self.max_retries + 1)
-                    continue
+                    routing = openrouter_routing_info(response_data)
+                    if routing:
+                        logger.debug("Routing %s: %s", self.model, routing)
+                    ended = True
+                    await self._notify_post_response({
+                        "provider": self._PROVIDER, "model": self.model, "url": url,
+                        "is_streaming": stream, "duration_ms": duration_ms,
+                        "response_data": response_data,
+                        # Own key, not just buried in response_data: the message
+                        # debugger and any cost/routing audit read the flat
+                        # fields, and "which backend served this call" was not
+                        # answerable at all before.
+                        "routing": routing,
+                        # Chat-shaped usage: session_costs.py & co. read
+                        # $.prompt_tokens/$.completion_tokens from the stored
+                        # usage_json — the raw Responses shape would yield 0s.
+                        "usage": self._map_usage(response_data.get("usage")),
+                        "timestamp_ms": _time.time() * 1000,
+                    })
+                    yield {"type": "final", **self._format_response(response_data)}
+                    return
 
-                # 3) Transient upstream failure reported body-level: the 5xx
-                #    class in a 200 envelope. Retried here because the agent
-                #    server's only lever on assistant.error is a model switch.
-                #    Code-gated, not blanket: a deterministic refusal (content
-                #    filter) must keep reaching the fallback chain at once.
-                if (body_err and attempt < self.max_retries
-                        and self._is_transient_body_error(body_err)):
-                    backoff = 0.0 if release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
-                    logger.warning(
-                        "Responses body server-error, retry %d/%d in %.0fs: %s (%s)",
-                        attempt + 1, self.max_retries, backoff, self.model,
-                        str(body_err)[:200])
-                    await self._notify_retry(
-                        self._PROVIDER, self.model, url, stream,
-                        "body server-error", attempt, self.max_retries + 1)
-                    await self._cancellable_sleep(backoff, cancellation_token)
-                    attempt += 1
-                    continue
-
-                routing = openrouter_routing_info(response_data)
-                if routing:
-                    logger.debug("Routing %s: %s", self.model, routing)
-                await self._notify_post_response({
-                    "provider": self._PROVIDER, "model": self.model, "url": url,
-                    "is_streaming": stream, "duration_ms": duration_ms,
-                    "response_data": response_data,
-                    # Own key, not just buried in response_data: the message
-                    # debugger and any cost/routing audit read the flat
-                    # fields, and "which backend served this call" was not
-                    # answerable at all before.
-                    "routing": routing,
-                    # Chat-shaped usage: session_costs.py & co. read
-                    # $.prompt_tokens/$.completion_tokens from the stored
-                    # usage_json — the raw Responses shape would yield 0s.
-                    "usage": self._map_usage(response_data.get("usage")),
-                    "timestamp_ms": _time.time() * 1000,
-                })
-                yield {"type": "final", **self._format_response(response_data)}
-                return
-
-        raise LLMServerError(  # pragma: no cover — loop always returns/raises
-            "Responses request retries exhausted",
-            provider=self._PROVIDER, model=self.model, status_code=599)
+            raise LLMServerError(  # pragma: no cover — loop always returns/raises
+                "Responses request retries exhausted",
+                provider=self._PROVIDER, model=self.model, status_code=599)
+        except BaseException as error:
+            # Whatever ends the request without a report yet -- a cancel while
+            # it is out (what streamed so far is billed) or during a retry wait,
+            # a caller abandoning the stream (GeneratorExit; awaiting is allowed
+            # while it closes), an unexpected exception -- is reported here,
+            # once. Nothing to report before the first request went out.
+            if not ended and _request_start is not None:
+                await report_error(url, (_time.time() - _request_start) * 1000,
+                                   _ending_error(error), stream)
+            raise
 
     # ------------------------------------------------------------------
     # LLMClient interface
@@ -1596,10 +1691,13 @@ class OpenAIResponsesClient(LLMClient):
         carries the assistant, the usage and the ``finish_reason`` that the
         server's truncation and content-filter guards read.
         """
-        async for chunk in self._request_events(
+        # aclosing: the request loop must close when the caller stops reading
+        # (see the Chat Completions client).
+        async with aclosing(self._request_events(
                 messages, tools, cancellation_token, status_scope,
-                stream=self.supports_streaming(), response_format=response_format):
-            yield chunk
+                stream=self.supports_streaming(), response_format=response_format)) as events:
+            async for chunk in events:
+                yield chunk
 
     async def close(self) -> None:  # per-request AsyncClient — nothing to close
         return None

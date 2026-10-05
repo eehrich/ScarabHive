@@ -5,7 +5,7 @@ hooks:
     type: pre_llm_call
     enabled: true
     timeout: 10.0
-    description: "Validates and sanitizes messages before LLM calls"
+    description: "Checks and repairs the message history structure before LLM calls"
     category: "message_validation"
     order:
       after: ["prompt_injection"]
@@ -15,7 +15,7 @@ hooks:
     type: pre_llm_call
     enabled: true
     timeout: 10.0
-    description: "Validates message structure and role sequences"
+    description: "Logs messages without a role"
     category: "message_validation"
     order:
       after: ["prompt_injection"]
@@ -23,17 +23,6 @@ hooks:
 
 # Configuration schema for this plugin
 config:
-  log_level:
-    type: string
-    default: "warning"
-    enum: ["debug", "info", "warning", "error"]
-    description: "Logging level for validation issues"
-  
-  strict_mode:
-    type: boolean
-    default: false
-    description: "Reject invalid messages instead of fixing them"
-  
   max_tool_response_size_kb:
     type: integer
     default: 50

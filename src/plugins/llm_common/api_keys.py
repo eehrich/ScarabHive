@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import socket
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -41,6 +42,19 @@ _HOST_KEYS = {
 _LOCAL_KEY_VAR = "OPENAI_API_KEY"
 
 
+#: IPv6 "local" is spelled out: ``is_private`` also covers 6to4 (2002::/16)
+#: and Teredo (2001::/32), which embed a PUBLIC v4 address and route there.
+_LOCAL_V6 = (ipaddress.ip_network("fc00::/7"), ipaddress.ip_network("fe80::/10"))
+
+
+def _ip_is_local(address: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
+    if address.version == 6:
+        if address.ipv4_mapped is not None:
+            return _ip_is_local(address.ipv4_mapped)
+        return address.is_loopback or any(address in net for net in _LOCAL_V6)
+    return address.is_loopback or address.is_private
+
+
 def _is_local(hostname: str) -> bool:
     # An IP decides on its own range — and it must be asked FIRST: an IPv6
     # address carries no dot, so the "no TLD" rule below would wave through
@@ -51,7 +65,13 @@ def _is_local(hostname: str) -> bool:
     except ValueError:
         pass
     else:
-        return address.is_loopback or address.is_private
+        return _ip_is_local(address)
+    # The resolver also reads "134744072" or "0x08080808" as 8.8.8.8 -- a
+    # dotless name the "no TLD" rule below would otherwise call local.
+    try:
+        return _ip_is_local(ipaddress.ip_address(socket.inet_aton(hostname)))
+    except (OSError, ValueError):
+        pass
     # A name without a dot has no TLD, so it cannot be a public endpoint:
     # "localhost", a docker-compose service ("ollama", "vllm"), a k8s service,
     # a LAN hostname.
@@ -68,6 +88,14 @@ def key_var_for(base_url: str) -> Optional[str]:
         if hostname == host or hostname.endswith("." + host):
             return var
     return _LOCAL_KEY_VAR if _is_local(hostname) else None
+
+
+def _shown(url: str) -> str:
+    """The url for an error message: a password in its userinfo is a secret too."""
+    parts = urlparse(url)
+    if parts.password is None:
+        return url
+    return parts._replace(netloc=parts.netloc.rpartition("@")[2]).geturl()
 
 
 def resolve_api_key(
@@ -88,6 +116,9 @@ def resolve_api_key(
     ``api_key`` gets ``""``: no key, and the caller sends no Authorization.
     """
     effective_url = base_url or default_base_url
+    # Whitespace is no key: "  " or a stray newline from a secrets file would
+    # otherwise count as set and go out as the Authorization header.
+    api_key = (api_key or "").strip()
     if api_key:
         return api_key, effective_url
     hostname = (urlparse(effective_url).hostname or "").lower()
@@ -98,13 +129,13 @@ def resolve_api_key(
     wanted = key_var_for(effective_url)
     if wanted is None:
         raise ValueError(
-            f"provider={provider} targets {effective_url}, and no environment "
+            f"provider={provider} targets {_shown(effective_url)}, and no environment "
             f"variable is configured for that host — set `api_key:` on the "
             f"model entry (e.g. api_key: ${{YOUR_PROVIDER_API_KEY}}). Falling "
             f"back to {_LOCAL_KEY_VAR} would send that secret there.")
-    key = os.getenv(wanted)
+    key = (os.getenv(wanted) or "").strip()
     if not key:
         raise ValueError(
             f"{wanted} is required when provider={provider} targets "
-            f"{effective_url}")
+            f"{_shown(effective_url)}")
     return key, effective_url

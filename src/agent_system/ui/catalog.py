@@ -19,7 +19,7 @@ Three sources, one shape:
             request: "/plugins/{{ name }}/?request_id={request_id}"
 
 Who sees a plugin panel is not declared here: it is whoever the route security
-in config.yaml lets open its endpoint (see roles_allowed). A plugin panel lives
+in config/security.yaml lets open its endpoint (see roles_allowed). A plugin panel lives
 under its own ``/plugins/<instance>/``.
 
 The launcher, the command palette and the chat's context links all read this

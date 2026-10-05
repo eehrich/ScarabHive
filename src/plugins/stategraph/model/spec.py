@@ -329,7 +329,9 @@ class MachineSpec(Strict):
     id: str
     title: str = ""
     description: str = ""
-    group: str = Field("", description="its folder in the panel's machine list, nested by / (Writer/v6); empty: "
+    notes: dict[str, str] = Field(default_factory=dict, description="name -> free text for the reader, drawn as a note "
+                                                                     "on the canvas; the engine ignores it")
+    group: str = Field("", description="its folder in the panel's machine list, nested by / (Reviews/nightly); empty: "
                                        "the folder of where it comes from")
     python: Optional[str] = Field(None, description="companion module, relative to this file")
     imports: dict[str, str] = Field(default_factory=dict, description="alias -> ./relative.yaml or machine id")
@@ -378,6 +380,13 @@ class MachineSpec(Strict):
     def _machines(cls, value: dict[str, Any]) -> dict[str, Any]:
         for name in value:
             check_name(name, "machine name")
+        return value
+
+    @field_validator("notes")
+    @classmethod
+    def _notes(cls, value: dict[str, str]) -> dict[str, str]:
+        for name in value:
+            check_name(name, "note name")
         return value
 
     @field_validator("params", "context", "events")

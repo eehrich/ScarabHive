@@ -1,5 +1,5 @@
 // Setup: what this installation still lacks, and one request to see whether the chat answers.
-import { api, html, update, toast, notice, withBusy, emptyState, isAborted } from '/static/kit/panel-kit.js';
+import { api, html, update, toast, notice, withBusy, emptyState, isAborted, confirm } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -13,21 +13,38 @@ const KEY_STATES = {
 
 const badge = (kind, text) => html`<span class="${kind ? `pk-badge pk-badge--${kind}` : 'pk-badge'}">${text}</span>`;
 
-// update() draws only what changed: a half-typed password survives every reload of the rest.
+const keyForms = () => [...$('keys').querySelectorAll('form[data-name]')];
+
+// update() draws only what changed; when a row changed -- a key saved in another row -- the whole table is drawn
+// anew, so what is typed in the other rows is put back (the kit gives the focus back by data-key).
 function renderKeys(keys) {
   if (!keys.length) {
     update($('keys'), emptyState('key-round', 'The configuration names no key'));
     return;
   }
-  update($('keys'), html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="keys">
-    <thead><tr><th>Key</th><th>State</th><th>Named in</th></tr></thead>
+  const typed = keyForms().map((form) => [form.dataset.name, form.querySelector('[name=value]').value])
+    .filter(([, value]) => value);
+  const drew = update($('keys'), html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="keys">
+    <thead><tr><th>Key</th><th>State</th><th>Named in</th><th data-pk-nosort>Enter</th></tr></thead>
     <tbody>${keys.map((key) => {
       const [kind, text] = KEY_STATES[key.state] || ['', key.state];
       const more = key.named_in.length > 3 ? ` +${key.named_in.length - 3}` : '';
       return html`<tr><td><code>${key.name}</code></td>
         <td data-sort-value="${key.state}">${badge(kind, text)}</td>
-        <td title="${key.named_in.join('\n')}">${key.named_in.slice(0, 3).join(', ')}${more}</td></tr>`;
+        <td title="${key.named_in.join('\n')}">${key.named_in.slice(0, 3).join(', ')}${more}</td>
+        <td>${key.from_environment
+          ? html`<span class="pk-help">set by the environment the API started with</span>`
+          : html`<form class="pk-row" data-name="${key.name}" autocomplete="off">
+            <input class="pk-input" type="password" name="value" required aria-label="${key.name}"
+              data-key="value:${key.name}" placeholder="${key.state === 'set' ? 'replace' : 'paste the key'}"
+              autocomplete="off">
+            <button type="submit" class="pk-btn pk-btn--sm" aria-label="Save ${key.name}">Save</button></form>`}</td></tr>`;
     })}</tbody></table></div>`);
+  if (!drew) return;
+  for (const [name, value] of typed) {
+    const form = keyForms().find((one) => one.dataset.name === name);
+    if (form) form.querySelector('[name=value]').value = value;
+  }
 }
 
 /** true: something to fix; false: fine; null or missing: cannot be told here -- never read as fine. */
@@ -59,6 +76,9 @@ function renderAccess(auth, me) {
       'a known one (printed in the repository, the model’s default, or empty): replace it',
       'this installation’s own', 'cannot be told here')}${nextKey(auth)}</dd>
   </dl>
+  ${auth.configured_signing_key_known === true
+    ? html`<div><button type="button" class="pk-btn pk-btn--sm" id="ownKey">Make an own signing key</button></div>`
+    : ''}
   ${own ? html`<form id="password" class="pk-form pk-stack" autocomplete="off">
     <div class="pk-row">
       <label class="pk-field pk-grow"><span class="pk-label">Current password</span>
@@ -86,6 +106,52 @@ $('access').addEventListener('submit', async (event) => {
     form.reset();
     // Nothing on other logins: whether they end with the password is the auth system's (token generations).
     toast('Password changed.', { kind: 'ok' });
+    await load();
+  });
+});
+
+$('access').addEventListener('click', async (event) => {
+  const button = event.target.closest('button');
+  if (button?.id !== 'ownKey') return;
+  const ok = await confirm('A random key is saved in config/local.env on this machine and named in '
+    + 'config/local.yaml. It applies after the next restart of the API, and everyone logs in again then.',
+  { title: 'Own signing key', confirmLabel: 'Make it', danger: true });
+  if (!ok) return;
+  await withBusy(button, async () => {
+    try {
+      const result = await api(`${BASE}signing-key`, { method: 'POST', json: {} });
+      toast(result.message, { kind: 'ok' });
+    } catch {
+      return;  // the kit's toast says why
+    }
+    await load();
+  });
+});
+
+$('keys').addEventListener('submit', async (event) => {
+  const form = event.target.closest('form[data-name]');
+  if (!form) return;
+  event.preventDefault();
+  const name = form.dataset.name;
+  // a plugin reads its key when the API starts; the chat builds its model's client for each message
+  const plugin = (lastState?.keys ?? []).find((key) => key.name === name)?.named_in
+    .some((section) => section.startsWith('plugins.'));
+  const value = new FormData(form).get('value');
+  await withBusy(form.querySelectorAll('input, button'), async () => {
+    let result;
+    try {
+      result = await api(`${BASE}key`, { method: 'POST', json: { name, value } });
+    } catch {
+      return;  // the kit's toast says why; what was typed stays
+    }
+    // the form drawn now: a refresh while the request ran may have drawn the table anew, the key put back in it
+    (keyForms().find((one) => one.dataset.name === name) ?? form).reset();
+    toast(result.reload_error
+      ? `${name} saved; the configuration did not reload (${result.reload_error}): restart the API.`
+      : plugin
+        ? `${name} saved. A plugin that uses it takes it after a restart of the API.`
+        : `${name} saved. Test the chat to see whether the provider takes it.`,
+    { kind: result.reload_error ? 'warn' : 'ok' });
     await load();
   });
 });

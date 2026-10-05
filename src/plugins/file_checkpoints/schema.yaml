@@ -91,7 +91,7 @@ config:
     description: >
       Records untouched for this many days are deleted (at start and once a
       day while recording). 0: never -- deleting is the operator's decision.
-      The record of a deleted or archived session stays until then.
+      An archived session's record stays until then.
 
   untracked_tools:
     type: array

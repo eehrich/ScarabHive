@@ -67,6 +67,10 @@ class SessionArchiveWebEndpoints:
         return {
             "user_id": user_id,
             "retention_days": service.retention_days,
+            # Whether the periodic sweep runs: without it nothing moves here
+            # until somebody presses "Archive now", and the panel must not
+            # promise otherwise.
+            "sweep_enabled": self.plugin.system_config.session_archive.enabled,
             "archived": await service.list_archived(user_id),
         }
 
@@ -101,6 +105,10 @@ class SessionArchiveWebEndpoints:
             result = await service.forget(user_id, root_session_id)
         except ArchiveNotFound as error:
             raise HTTPException(status_code=404, detail=str(error))
+        except ArchiveError as error:
+            # The archive index is held by another process (a sweep writing
+            # it): a refusal to try again, not a server failure.
+            raise HTTPException(status_code=409, detail=str(error))
         logger.info("User %s deleted archived session %s", user_id, root_session_id)
         return result
 

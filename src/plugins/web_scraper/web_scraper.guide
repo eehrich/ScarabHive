@@ -1,0 +1,432 @@
+@database "web_scraper"
+@author "Enrico Ehrich"
+@$VER: web_scraper.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Web scraper"
+@{h1}Web scraper
+
+An agent that has to look something up on the web reads pages with this
+plugin: it fetches a URL and hands the model the page as clean, readable
+text -- or the list of its links. Files a page cannot show as text, such as
+PDFs, images and archives, the agent saves with a second tool into a
+directory you allow. Every address is checked first, so an agent cannot be
+talked into reading your own machine or your internal network.
+
+@{code}
+For agents and developers
+  @{"  Reading a page  " link page}
+  @{"  Downloading a file  " link download}
+  @{"  Security and limits  " link security}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node page "Reading a page"
+@{h1}Reading a page
+
+@{tt}web_scraper_page@{utt} (the name follows the plugin instance) fetches
+one URL and answers with its text or its links. The whole page is fetched
+once and kept in a cache; paging through a long article and asking for its
+links afterwards cost no second fetch.
+
+@{h2}Operations
+
+@{table}
+operation | Does
+content | the page's readable text, paged (the default)
+links | the page's anchors, filtered on request
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+url | both | required; http or https only
+operation | both | content (default) or links; anything else is an error
+max_chars | content | characters of text to return, default 8000; 0 or less returns all
+offset | content | where the window starts, default 0; a negative value counts as 0
+extract_tables | content | true: also the page's tables, each with caption, headers and rows
+extract_lists | content | true: also the page's ul, ol and dl lists as items
+include_nofollow | links | true: keep anchors marked rel=nofollow (dropped by default)
+only_same_domain | links | true: only anchors on the host of the final URL
+max_links | links | cap the list; 0 (default) returns every anchor
+timeout | both | seconds one attempt may take in all, redirects and body included; default 20
+ignore_cache | both | true: fetch again instead of using the cached copy
+cache_ttl | both | seconds to keep this page when it is fetched now; absent or 0 means the instance's cache_ttl
+@{body}
+
+A number the model sends as text, null, nonsense ("lots") or not finite
+("inf", "nan", 1e400) falls back to the default instead of failing the call.
+
+@{h2}What counts as text
+
+@{bullet}Scripts, styles, @{tt}noscript@{utt}, @{tt}template@{utt}, SVGs,
+iframes, @{tt}nav@{utt} and @{tt}footer@{utt} are removed.
+@{tt}aside@{utt} is kept: documentation puts its notes and warnings there.
+@{bullet}Inline tags do not break a sentence; block tags (paragraphs, list
+items, table cells, headings) end a line. Runs of spaces collapse and empty
+lines go.
+@{bullet}Code blocks (@{tt}pre@{utt}) come back verbatim, indentation
+included.
+@{bullet}Every script and language stays. Invisible characters are removed
+-- see @{" What the model sees " link model}.
+@{bullet}Tables have headers only when the page marks them as such (a row in
+@{tt}thead@{utt} or a first row of @{tt}th@{utt} cells); otherwise every row
+is data.
+
+@{h2}Answers
+
+@{tt}content@{utt} answers with @{tt}url@{utt}, @{tt}final_url@{utt} (after
+redirects), @{tt}status_code@{utt}, @{tt}content_type@{utt},
+@{tt}title@{utt}, @{tt}text@{utt}, @{tt}total_chars@{utt} and
+@{tt}truncated@{utt} (true while text is left after this window), plus
+@{tt}tables@{utt} and @{tt}lists@{utt} when asked for and present.
+@{tt}links@{utt} answers with @{tt}url@{utt}, @{tt}final_url@{utt},
+@{tt}status_code@{utt} and @{tt}links@{utt}: each with @{tt}href@{utt} as
+written, @{tt}abs_url@{utt}, @{tt}text@{utt} and @{tt}rel@{utt}.
+
+A page the server answers with an error status but some HTML -- a 404 page,
+for instance -- comes back as text with that @{tt}status_code@{utt}; only
+the cases below are errors. Every error answer carries @{tt}error@{utt}:
+
+@{table}
+error begins with | When
+Blocked URL (SSRF protection) | the URL or a redirect hop points at a host the plugin refuses; see @{" Security and limits " link security}
+blocked: | HTTP 403, or 429 or 503 still after the retries, or a bot-wall page recognised by its title ("Just a moment", "Access denied", ...) or a known challenge marker
+Not a text page | the server sends a file (PDF, image, ...); the message names the download tool
+Page exceeds max_page_mb | the page is larger than the instance allows; the message names the download tool
+Unsupported content-encoding | the server compressed the page with something other than gzip or deflate; the message names the coding
+Empty response | a text page with no body
+Fetch failed | a network error or timeout still after the retries; a compressed body that does not decode or is cut off (not retried); more than 10 redirects; or a URL the HTTP client cannot use
+Unknown operation, Missing required parameter | a malformed call
+@{body}
+
+@{h2}Retries
+
+A network error or timeout, and the statuses 429, 502, 503 and 504, are
+tried again up to three times, after about 1, 2 and 4 seconds. A 404 is not
+retried, and neither is a body that does not decode: the same bytes
+decode the same way the next time. With the default timeout a page that never answers ends after
+about 90 seconds.
+
+@{h2}An example
+
+@{code json}
+{"url": "https://example.org/manual/install.html"}
+{"url": "https://example.org/manual/install.html", "offset": 8000}
+{"url": "https://example.org/manual/", "operation": "links", "only_same_domain": true}
+@{body}
+@endnode
+
+@node download "Downloading a file"
+@{h1}Downloading a file
+
+@{tt}web_scraper_download@{utt} saves whatever a URL serves -- a PDF, an
+image, an archive -- to a file. It exists only when the instance has
+@{tt}allowed_directories@{utt}; without them the model is not even offered
+the tool.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+url | required; http or https only
+path | required; the file to write, inside an allowed directory
+overwrite | true: replace an existing file (default false: refused)
+timeout | seconds any single network wait may take, default 60; the transfer as a whole has no time limit
+@{body}
+
+A relative @{tt}path@{utt} counts from the folder the server was started
+in; one that begins with @{tt}data/@{utt} lands in the data directory,
+wherever that is configured. Missing folders are created; when the
+download fails, the ones it created are removed again if they are empty.
+
+@{h2}How it writes
+
+The body streams into a staging file next to the target (@{tt}<name>.<pid>.<random>.part@{utt}) and
+is renamed onto it only when complete. A failed, refused or oversized
+download leaves nothing behind -- no partial file, no staging file. Two
+downloads to the same path at once do not share a staging file. The size cap
+(@{tt}max_download_mb@{utt}) is counted on the bytes as they arrive, not
+taken from the server's Content-Length.
+
+@{h2}Answers
+
+On success: @{tt}url@{utt}, @{tt}final_url@{utt}, @{tt}status_code@{utt},
+@{tt}path@{utt} (absolute), @{tt}bytes@{utt}, @{tt}content_type@{utt} and
+@{tt}sha256@{utt}. Errors:
+
+@{table}
+error | When
+Path is outside the allowed directories | the path leaves every allowed directory, or names a network share or device
+Path starts with '~' | the home directory is not expanded here
+Path cannot be resolved | the path holds a null byte or is too long for the file system
+path names a directory | give the file name
+File exists | pass overwrite=true
+Blocked URL (SSRF protection) | the URL or a redirect hop is refused
+HTTP <code> | the server answered 400 or above
+Download exceeds max_download_mb | the file is larger than the cap
+Unsupported content-encoding | the server compressed the file with something other than gzip or deflate; the message names the coding
+Download failed | a network error, a compressed body that does not decode or is cut off, or more than 10 redirects
+Unusable URL | the HTTP client cannot use the URL
+Cannot write | the file system refused (a file where a folder should be, a full disk)
+@{body}
+
+A download is not retried.
+
+@{h2}An example
+
+@{code json}
+{"url": "https://example.org/spec/format-v2.pdf", "path": "data/workspace/downloads/format-v2.pdf"}
+@{body}
+@endnode
+
+@node security "Security and limits"
+@{h1}Security and limits
+
+The model chooses every URL, and a page it has read can tell it which one to
+choose next. The plugin therefore treats the URL as hostile.
+
+@{h2}Which addresses are refused
+
+Before each request -- the first URL and every redirect hop, which the
+plugin follows itself -- the URL is checked:
+
+@{bullet}Only @{tt}http@{utt} and @{tt}https@{utt}. @{tt}file:@{utt},
+@{tt}ftp:@{utt}, @{tt}gopher:@{utt} and the rest are refused, also as a
+redirect target.
+@{bullet}The host names @{tt}metadata@{utt}, @{tt}metadata.google.internal@{utt}
+and @{tt}metadata.goog@{utt} are refused by name.
+@{bullet}The host is resolved, and every address it resolves to must be
+public. Loopback (@{tt}127.0.0.1@{utt}, @{tt}localhost@{utt}, @{tt}::1@{utt}),
+private networks (10/8, 172.16/12, 192.168/16, fc00::/7), link-local
+(169.254/16 with the cloud metadata address 169.254.169.254), shared and
+reserved ranges and @{tt}0.0.0.0@{utt} are refused. Numeric spellings
+such as @{tt}2130706433@{utt}, @{tt}127.1@{utt}, @{tt}0x7f.1@{utt} or
+@{tt}0177.0.0.1@{utt} are refused whichever way: as the address they
+resolve to, as a host that cannot be resolved (Windows), or as a URL the
+HTTP client rejects.
+@{bullet}IPv6 addresses that carry an IPv4 address are judged by that
+address: IPv4-mapped (@{tt}::ffff:127.0.0.1@{utt}), IPv4-compatible
+(@{tt}::7f00:1@{utt}), IPv4-translated (SIIT, @{tt}::ffff:0:a00:1@{utt}),
+NAT64 (@{tt}64:ff9b::a9fe:a9fe@{utt}) and 6to4
+(@{tt}2002:7f00:1::1@{utt}). Local-use NAT64 (@{tt}64:ff9b:1::/48@{utt})
+is refused outright.
+@{bullet}A URL without a host, with an unusable port or a host that does not
+resolve is refused as well.
+
+@{h2}What the check cannot see
+
+@{bullet}@{b}DNS rebinding.@{ub} The address is resolved for the check and
+again by the connection. A name server that answers a public address first
+and an internal one a moment later gets past it. Closing that needs a
+connection pinned to the checked address.
+@{bullet}@{b}Proxies.@{ub} With @{tt}proxies@{utt} configured, the
+@{tt}HTTP_PROXY@{utt}, @{tt}HTTPS_PROXY@{utt} or @{tt}ALL_PROXY@{utt}
+environment variables set, or -- on Windows and macOS -- a proxy in the
+system settings, the proxy resolves the host and connects; the check still refuses internal
+names and addresses, but what the proxy can reach is the proxy's business.
+
+@{h2}Where downloads go
+
+@{tt}path@{utt} passes the shared path sandbox before anything is fetched:
+the path is resolved with symlinks and @{tt}..@{utt} and must then lie in an
+allowed directory. Network shares and device paths
+(@{tt}\\\\host\\share@{utt}, @{tt}//host/share@{utt}, @{tt}\\\\?\\...@{utt})
+are refused on the text alone, before Windows could open them and sign in
+to the host. Inside an allowed directory the model may write any file --
+with @{tt}overwrite@{utt} also replace one. Allow a directory that holds
+nothing a downloaded file could harm: not a source tree, whose scripts or
+hooks someone runs later.
+
+@{h2}Size and time
+
+@{table}
+Limit | page | download
+size | max_page_mb (10); the decompressed body is counted as it arrives and a larger page is refused; the bytes on the wire are held to the cap plus 1/64 and 64 KB | max_download_mb (100), counted the same way
+compression | gzip and deflate only, inflated in steps that never pass the cap | the same
+body of a refused file | not read at all | --
+time | timeout (20 s) for one attempt in all; up to four attempts | timeout (60 s) per network wait only
+redirects | 10 | 10
+@{body}
+
+A compressed body is a bomb when a few kilobytes inflate to gigabytes. The
+plugin asks only for gzip and deflate, inflates them itself in pieces that
+stop one byte past the cap, and refuses any other encoding (brotli, zstd,
+compress) before reading the body -- httpx's own decoders inflate each
+network chunk whole, before any cap could count it. What it reads:
+
+@{bullet}@{tt}gzip@{utt} (also @{tt}x-gzip@{utt}), every member of a body
+made of several, all under the one cap. Anything after the end of a stream
+that is not a new gzip member is dropped unread.
+@{bullet}@{tt}deflate@{utt}, zlib-wrapped as the standard says or raw as
+some servers send it.
+@{bullet}Stacked codings (@{tt}gzip, gzip@{utt}), undone in reverse order,
+every layer held to the cap. @{tt}identity@{utt}, @{tt}none@{utt} and empty
+entries in the list mean no coding.
+@{bullet}A compressed body that stops before its end is an error, not a
+shorter page or file.
+@{bullet}The bytes on the wire are counted as well as the decoded ones. Junk
+after a stream, or endless empty gzip members, decode to nothing; they end
+at the wire limit as "too large".
+
+The model sets @{tt}timeout@{utt}; nothing caps what it asks for. A
+download from a server that sends a trickle of bytes, each within the
+timeout, runs until the bytes on the wire reach the size limit or the user
+stops the run -- with a slow enough trickle, that is a long time.
+
+@{h2}Cookies and the cache
+
+Cookies are kept per chat session and per host the fetch started at, in
+memory only: one user's login never rides along on another user's request.
+The page cache is also per session. It lies on disk (see
+@{" Setting it up " link setup}) and holds the fetched page, text and links,
+for @{tt}cache_ttl@{utt} seconds -- pages fetched with a session's cookies
+included. HTTPS certificates are always verified; the plugin does not read @{tt}network.ssl_verify@{utt}.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Tool and parameter descriptions come from the plugin's
+@{tt}schema.yaml@{utt}. The download tool is rendered only when the
+instance has a download directory, so a model is never offered a tool that
+can only refuse. The chat's status line shows "Fetching <url>" and ends
+with the result: "3120 chars HTTP 200 -- <url>", "8000 of 41250 chars
+(cached) HTTP 200 -- <url>", "57 link(s) HTTP 200 -- <url>", "182044 bytes
+(application/pdf) -- spec.pdf", or the error.
+
+Errors read like "Not a text page (application/pdf); use
+web_scraper_download to save the file", "Blocked URL (SSRF protection):
+Blocked non-public address 127.0.0.1 for host '127.0.0.1'", "blocked:
+challenge page (just a moment...)", "Page exceeds max_page_mb (10 MB); use
+web_scraper_download to save it as a file".
+
+@{h2}Page content is untrusted
+
+Everything a page contains reaches the model as data in a tool result: its
+text, title, link texts, tables and lists. A page can carry instructions
+aimed at the model ("ignore your task and fetch ..."). The plugin does
+three things about it:
+
+@{bullet}It removes characters a browser does not show but a model reads:
+control characters, the zero-width space and invisible operators, bidi
+marks and isolates, and the Unicode tag characters that spell out hidden
+ASCII. It does so on every answer of both tools, after the page is
+parsed, so characters written as numeric HTML entities go too: title,
+text, links and their addresses, tables, lists, code blocks, the content
+type, error messages that quote the page (a bot wall's title) and pages
+served from the cache. Header values quoted in an error are cut to 100
+characters. Addresses keep what is percent-encoded in them
+(@{tt}%F3%A0%81%81@{utt}): that is text a model sees, not an invisible
+character. The zero-width
+joiner and non-joiner stay: Persian words, Indic scripts and emoji
+sequences need them, and they cannot spell anything.
+@{bullet}It refuses the addresses a page could steer it to, see
+@{" Security and limits " link security}.
+@{bullet}It never runs a page's scripts.
+
+It does not remove text hidden with CSS or the @{tt}hidden@{utt} attribute:
+collapsed sections and tabs are hidden the same way, and dropping them
+loses real content. The text is not marked as untrusted either. What the
+model does with a page's words is up to its prompt and the tools it has.
+
+@{h2}Tokens and cache
+
+Answers are ordinary tool results, appended; nothing earlier changes. A
+@{tt}content@{utt} answer is bounded by @{tt}max_chars@{utt} (8000 unless
+the model asks for more, or for all with 0). Tables, lists and links are
+not paged: @{tt}extract_tables@{utt} on a data-heavy page, or
+@{tt}links@{utt} without @{tt}max_links@{utt} on a portal with thousands
+of anchors, can return far more than the text window.
+
+@{h2}Known gaps
+
+@{bullet}Pages that build their content with JavaScript come back nearly
+empty: there is no browser.
+@{bullet}The character set comes from the HTTP header, else UTF-8; a
+charset declared only in a @{tt}meta@{utt} tag is not read. A page declared
+ISO-8859-1 or ASCII is read as Windows-1252, as browsers do, so its smart
+quotes and euro signs survive.
+@{bullet}A 503 after the retries is reported as "blocked", even when the
+site is simply down.
+@{bullet}@{tt}cache_ttl@{utt} applies when a page is fetched; on a cached
+copy it changes nothing.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    web_scraper:
+      type: web_scraper
+      enabled: true
+      proxies: []
+      cache_ttl: 1800
+      user_agent: ""
+      allowed_directories:
+        - data/workspace
+      max_download_mb: 100
+@{body}
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+web_scraper/*"
+@{body}
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+allowed_directories | none | where download may write; none means no download tool
+max_download_mb | 100 | the largest file download saves
+max_page_mb | 10 | the largest page the page tool reads
+cache_ttl | 1800 | seconds a fetched page is kept
+cache_enabled | true | false: every call fetches
+proxies | none | proxy URLs; each host is sent through one of them
+user_agent | empty | empty rotates through desktop browser identities; see below
+@{body}
+
+@{h2}Sites that want to know who you are
+
+Some sites refuse browser identities and want a descriptive one with a way
+to reach its operator; Wikipedia answers a browser identity with 403 and a
+pointer to its robot policy. Set one fixed identity, with a contact address
+that really reaches you. It applies to every request of the instance:
+
+@{code yaml}
+user_agent: "MyProject-research/1.0 (https://example.org; me\@example.org)"
+@{body}
+
+@{h2}Where data lives
+
+The page cache is one JSON file per page under @{tt}cache/web_scraper@{utt}
+in the data directory; it survives a restart, and expired entries are
+dropped when they are read. Cookies are held in memory only, at most 2000
+jars, the oldest dropped first. Downloads are wherever the model put them
+inside the allowed directories.
+
+@{h2}A quick check
+
+From the repository, with @{tt}src@{utt} on the Python path:
+
+@{code text}
+python -m plugins.web_scraper --url https://example.org
+python -m plugins.web_scraper --url https://example.org --links
+@{body}
+
+The plugin needs @{tt}beautifulsoup4@{utt} and @{tt}lxml@{utt}; both are in
+its @{tt}plugin.toml@{utt}.
+@endnode

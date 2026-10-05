@@ -35,7 +35,9 @@ aus:
 2. der ERSTEN Nicht-System-Message, auf ``PREFIX_CHARS`` Zeichen gekappt.
    Nur die erste: spaeter angehaengte Turns derselben Session aendern den
    Key damit nie — alle Calls einer Konversation bleiben in derselben
-   Cache-Gruppe.
+   Cache-Gruppe. Injected messages are skipped here too: a note behind the
+   system prompt is the same for every run and names no book. Only when no
+   user task follows does the first injected one count, as before.
 
 Damit gilt automatisch: gleicher stabiler Prefix <-> gleicher Key.
 
@@ -339,6 +341,8 @@ def derive_prompt_cache_key(configured: str, messages: list) -> str:
     if configured != PROMPT_CACHE_KEY_AUTO:
         return configured
     h = hashlib.sha256()
+    first: Any = None      # the message that names the run
+    injected: Any = None   # the first injected one, if no task follows it
     for msg in messages:
         # Was keine Message ist, wird uebersprungen — wie vorher, nur dass ein
         # ChatMessage-Objekt jetzt eine ist. Ohne die zweite Haelfte faellt so
@@ -365,17 +369,30 @@ def derive_prompt_cache_key(configured: str, messages: list) -> str:
             for frag in _iter_msg_texts(msg):
                 h.update(frag.encode("utf-8", "replace"))
             continue
-        # Erste Nicht-System-Message: gekapptes Fenster, dann Schluss —
-        # spaetere Messages (auch nachgeschobene System-Injections) sind
-        # nicht Teil des stabilen Prefix.
-        taken = 0
-        for frag in _iter_msg_texts(msg):
-            if taken >= PREFIX_CHARS:
-                break
-            piece = frag[: PREFIX_CHARS - taken]
-            h.update(piece.encode("utf-8", "replace"))
-            taken += len(piece)
+        if _key_field(msg, "injected_by"):
+            # The same rule outside the head: a note injected as a user
+            # message right behind the system prompt (simple_prompt_inject,
+            # after_system) is the same text for every run of the agent.
+            # Taken for "the first message", it put every book on one shard.
+            injected = injected if injected is not None else msg
+            continue
+        # A run whose only task is injected (forge news on a woken session, a
+        # summary heading a compacted chat) keeps it: hashing the answer
+        # behind it put those sessions on one key and moved it after call 1.
+        first = msg if role == "user" or injected is None else injected
         break
+    else:
+        first = injected
+    # Erste Nicht-System-Message: gekapptes Fenster, dann Schluss —
+    # spaetere Messages (auch nachgeschobene System-Injections) sind
+    # nicht Teil des stabilen Prefix.
+    taken = 0
+    for frag in _iter_msg_texts(first) if first is not None else ():
+        if taken >= PREFIX_CHARS:
+            break
+        piece = frag[: PREFIX_CHARS - taken]
+        h.update(piece.encode("utf-8", "replace"))
+        taken += len(piece)
     return f"auto-{h.hexdigest()[:16]}"
 
 

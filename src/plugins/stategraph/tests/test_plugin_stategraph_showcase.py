@@ -11,6 +11,7 @@ shipped config is test_plugin_stategraph_config.py's (every shipped machine).
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any, Literal, get_args, get_origin
 
@@ -36,6 +37,7 @@ ONE_TEMPLATE = ("MachineSpec", "vars", "one template")  # vars: "{{ ... }}" inst
 #: What the showcase leaves out, and why; each must stay unused (else it belongs back in the check).
 LEFT_OUT = {
     ("decide", "profile"): "names a profile of the operator's LLM config, which another installation lacks",
+    ("agent", "llm_profile"): "names a profile of the operator's LLM config, which another installation lacks",
     ("map", "fail", "collect"): "parallel's fail: collect shows it (review)",
     ("MachineAgentSpec", "input", "json"): "one agent: block shows one choice of each",
     ("MachineAgentSpec", "on_wait", "block"): "one agent: block shows one choice of each",
@@ -144,6 +146,17 @@ def test_the_agent_block_in_the_comment_would_be_valid():
     assert spec is not None and not tree.problems, [p.as_dict() for p in tree.problems]
     assert spec.agent is not None and spec.agent.task_param == "topic"
     assert agent_params_problems(spec.id, spec.params, spec.agent) == []
+
+
+def test_the_shipped_layout_places_every_state_and_names_no_other():
+    def names(states: dict[str, Any]) -> set[str]:
+        return set(states) | {inner for state in states.values() for inner in names(state.states or {})}
+
+    positions = json.loads((MACHINES / "showcase.layout.json").read_text(encoding="utf-8"))["positions"]
+    states = names(validate(FILES, ROOT).files[ROOT].spec.states)
+
+    assert set(positions) == states, f"placed, no state: {sorted(set(positions) - states)}; " \
+                                     f"a state ELK would lay out among them: {sorted(states - set(positions))}"
 
 
 # ------------------------------------------------------------------ runs

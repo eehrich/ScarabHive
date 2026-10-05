@@ -10,6 +10,8 @@ The task on stdin is a script, one command per line:
   ERROR                 end with an error result
   DIE                   exit without a result, "boom" on stderr
   GARBAGE               a line that is no JSON
+  OUTPUT <json>         with --json-schema, the result's structured_output (else {"done": true})
+  DEEP <n>              a tool call whose arguments nest n deep
 With FAKE_CLAUDE_LOG set, argv and the environment's names go there as JSON.
 """
 import json
@@ -71,15 +73,26 @@ def main():
         elif word == "DIE":
             sys.stderr.write("boom\n")
             sys.exit(3)
+        elif word == "DEEP":
+            # Written by hand: json.dumps refuses such a depth as the parser does.
+            deep = "[" * int(rest) + "]" * int(rest)
+            sys.stdout.write('{"type": "assistant", "session_id": "%s", "message": {"content": [{"type": "tool_use", '
+                             '"id": "deep", "name": "Write", "input": {"a": %s}}]}}\n' % (session, deep))
+            sys.stdout.flush()
         elif word == "GARBAGE":
             sys.stdout.write("this is no json\n")
             sys.stdout.flush()
     emit({"type": "assistant", "session_id": session, "message": {"content": [{"type": "text", "text": "done\nall of it"}]}})
-    emit({"type": "result", "subtype": "error_during_execution" if error else "success", "is_error": error,
-          "num_turns": turns, "duration_ms": 5002, "result": "failed" if error else f"did: {task.splitlines()[0]}",
-          "session_id": session, "total_cost_usd": 0.07, "permission_denials": [
-              {"tool_name": "Write", "tool_use_id": "x", "tool_input": {"file_path": "/elsewhere/outside.txt"}}],
-          "usage": {"input_tokens": 18, "output_tokens": 291}})
+    result = {"type": "result", "subtype": "error_during_execution" if error else "success", "is_error": error,
+              "num_turns": turns, "duration_ms": 5002, "result": "failed" if error else f"did: {task.splitlines()[0]}",
+              "session_id": session, "total_cost_usd": 0.07, "permission_denials": [
+                  {"tool_name": "Write", "tool_use_id": "x", "tool_input": {"file_path": "/elsewhere/outside.txt"}}],
+              "usage": {"input_tokens": 18, "output_tokens": 291}}
+    if "--json-schema" in argv:
+        # M-CC-10: the object matching the schema, beside the text result.
+        result["structured_output"] = next((json.loads(line[7:]) for line in task.splitlines()
+                                            if line.startswith("OUTPUT ")), {"done": True})
+    emit(result)
 
 
 if __name__ == "__main__":

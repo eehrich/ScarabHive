@@ -9,6 +9,7 @@ Test coverage:
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
 import warnings
@@ -2560,3 +2561,379 @@ class TestEventLoopOffload:
 
         assert seen.get("ident") is not None, "subprocess.run was never reached"
         assert seen["ident"] != main_ident, "ffmpeg subprocess ran on the event-loop thread"
+
+
+class TestGuideFindings:
+    """Bugs found while writing audio_ops.guide."""
+
+    @pytest.mark.asyncio
+    async def test_unc_path_is_refused_before_it_is_resolved(self, server, monkeypatch):
+        # resolve() of \\host\share makes Windows sign in to that host.
+        import os
+        touched = []
+        real_resolve, real_realpath = Path.resolve, os.path.realpath
+
+        def spy_resolve(self, *a, **k):
+            touched.append(str(self))
+            return real_resolve(self, *a, **k)
+
+        def spy_realpath(p, *a, **k):
+            touched.append(str(p))
+            return real_realpath(p, *a, **k)
+
+        monkeypatch.setattr(Path, "resolve", spy_resolve)
+        monkeypatch.setattr(os.path, "realpath", spy_realpath)
+        for name in (r"\\evilhost\share\x.wav", "//evilhost/share/x.wav", r"\\?\UNC\evilhost\share\x.wav"):
+            result = await server.info({"file": name})
+            assert result["error_type"] == "SecurityError", name
+        assert not [t for t in touched if "evilhost" in t]
+
+    @pytest.mark.asyncio
+    async def test_load_refuses_audio_the_request_would_drop(self, server, sample_wav, temp_storage, monkeypatch):
+        import plugins.audio_ops.server as server_module
+        monkeypatch.setattr(server_module, "DEFAULT_MAX_AUDIO_SIZE_MB", 0.1)
+        result = await server.load({"file": sample_wav.name})
+        assert result["error_type"] == "FileTooLarge"
+        result = await server.load({"file": sample_wav.name, "start_time": 0, "end_time": 4})
+        assert result["error_type"] == "FileTooLarge"
+        assert not list(temp_storage.glob("_temp_segment_*"))
+
+    @pytest.mark.asyncio
+    async def test_dots_inside_a_name_are_not_traversal(self, server, sample_wav, temp_storage):
+        sample_wav.rename(temp_storage / "take..2.wav")
+        assert (await server.info({"file": "take..2.wav"}))["status"] == "success"
+        assert (await server.list({"pattern": "take..*"}))["total_count"] == 1
+        assert (await server.info({"file": "../take..2.wav"}))["error_type"] == "SecurityError"
+
+    @pytest.mark.asyncio
+    async def test_written_file_is_not_left_open(self, server, sample_wav, temp_storage):
+        # pydub's export() returns the open file; on Windows it blocks deletion.
+        result = await server.cut({"source_file": sample_wav.name, "dest_file": "part.wav",
+                                   "start_time": 0, "end_time": 1})
+        assert result["status"] == "success"
+        (temp_storage / "part.wav").unlink()
+
+    @pytest.mark.asyncio
+    async def test_envelope_mix_syncs_rate_and_channels(self, server, temp_storage):
+        from pydub.generators import Sine
+        voice = Sine(440).to_audio_segment(duration=2000).set_frame_rate(24000).set_channels(1)
+        music = Sine(220).to_audio_segment(duration=2000).set_frame_rate(44100).set_channels(2)
+        voice.export(str(temp_storage / "voice.wav"), format="wav")
+        music.export(str(temp_storage / "music.wav"), format="wav")
+        result = await server.mix({
+            "file1": "music.wav", "file2": "voice.wav", "dest_file": "out.wav",
+            "envelope": [{"time": 0, "factor": 1}, {"time": 2, "factor": 1}],
+        })
+        assert result["status"] == "success"
+        out = AudioSegment.from_file(str(temp_storage / "out.wav"))
+        assert abs(len(out) - 2000) < 20
+
+    @staticmethod
+    def _fake_ffmpeg(monkeypatch, stderr):
+        commands = []
+
+        def fake_run(cmd, *args, **kwargs):
+            commands.append(cmd)
+            out = '{"format": {"duration": "5.0"}}' if cmd[0] == "ffprobe" else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr=stderr)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return commands
+
+    @pytest.mark.asyncio
+    async def test_compress_silence_encodes_for_the_dest_format(self, server, sample_wav, monkeypatch):
+        commands = self._fake_ffmpeg(monkeypatch, "silence_start: 1.0\nsilence_end: 4.0 | silence_duration: 3.0\n")
+        result = await server.compress_silence({"source_file": sample_wav.name, "dest_file": "out.wav"})
+        assert result["status"] == "success"
+        assert "libmp3lame" not in commands[-2]  # the encode; the last call probes the result
+
+        commands = self._fake_ffmpeg(monkeypatch, "")  # no silence: the file is re-encoded, not stream-copied
+        result = await server.compress_silence({"source_file": sample_wav.name, "dest_file": "out.mp3"})
+        assert result["status"] == "success"
+        assert "copy" not in commands[-1] and "libmp3lame" in commands[-1]
+
+        result = await server.compress_silence({"source_file": sample_wav.name, "dest_file": "out.txt"})
+        assert result["error_type"] == "FormatError"
+
+    @pytest.mark.asyncio
+    async def test_cli_compress_silence_writes_pcm_to_wav(self, sample_wav, temp_storage, monkeypatch):
+        import argparse
+        import plugins.audio_ops.__main__ as cli
+        monkeypatch.setattr(cli, "_workdir_override", temp_storage)
+        commands = self._fake_ffmpeg(monkeypatch, "silence_start: 1.0\nsilence_end: 4.0 | silence_duration: 3.0\n")
+        args = argparse.Namespace(source=sample_wav.name, dest="out.wav", max_silence=1.0, threshold=-40, bitrate=192)
+        await cli.cmd_compress_silence(args)
+        encodes = [c for c in commands if c[0] == "ffmpeg" and "-filter_complex" in c]
+        assert encodes and "libmp3lame" not in encodes[0]
+
+    @pytest.mark.asyncio
+    async def test_cli_reports_a_failing_ffmpeg(self, sample_wav, temp_storage, monkeypatch):
+        import argparse
+        import plugins.audio_ops.__main__ as cli
+        monkeypatch.setattr(cli, "_workdir_override", temp_storage)
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Invalid data"))
+        detect = argparse.Namespace(file=sample_wav.name, threshold=-40, min_duration=0.5, json=True)
+        assert await cli.cmd_detect_silence(detect) == 1
+        compress = argparse.Namespace(source=sample_wav.name, dest="out.wav", max_silence=1.0, threshold=-40, bitrate=192)
+        assert await cli.cmd_compress_silence(compress) == 1
+
+
+def _limited_server(storage: Path, **settings) -> "AudioOpsServer":
+    from plugins.audio_ops.server import AudioOpsServer
+    config = MagicMock()
+    config.storage_path = str(storage)
+    for key in ("max_duration_seconds", "max_input_mb", "ffmpeg_timeout_seconds"):
+        setattr(config, key, settings.get(key))
+    return AudioOpsServer("audio_ops", MagicMock(), config)
+
+
+def _fake_run(monkeypatch, stderr="", returncode=0):
+    commands = []
+
+    def fake_run(cmd, *args, **kwargs):
+        commands.append(cmd)
+        out = '{"format": {"duration": "5.0"}}' if cmd[0] == "ffprobe" else ""
+        return subprocess.CompletedProcess(cmd, returncode, stdout=out, stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return commands
+
+
+class TestLimits:
+    """max_duration_seconds, max_input_mb and ffmpeg_timeout_seconds (5 s sample_wav)."""
+
+    def test_invalid_settings_mean_the_defaults(self, temp_storage):
+        for bad in (None, "300", -1, 0, True, float("nan")):
+            server = _limited_server(temp_storage, max_duration_seconds=bad, max_input_mb=bad, ffmpeg_timeout_seconds=bad)
+            assert (server.max_duration_seconds, server.max_input_mb, server.ffmpeg_timeout_seconds) == (3600, 200, 300), bad
+        server = _limited_server(temp_storage, max_duration_seconds=10, max_input_mb=1.5, ffmpeg_timeout_seconds=7)
+        assert (server.max_duration_seconds, server.max_input_mb, server.ffmpeg_timeout_seconds) == (10, 1.5, 7)
+
+    @pytest.mark.asyncio
+    async def test_create_refuses_a_longer_result(self, temp_storage):
+        server = _limited_server(temp_storage, max_duration_seconds=3)
+        result = await server.create({"dest_file": "long.wav", "duration_ms": 4000})
+        assert result["error_type"] == "TooLong"
+        assert not (temp_storage / "long.wav").exists()
+        assert (await server.create({"dest_file": "ok.wav", "duration_ms": 3000}))["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_input_longer_than_the_limit_is_refused_and_decoded_only_to_it(self, temp_storage, sample_wav, monkeypatch):
+        # A small FLAC of long silence would decode to far more PCM than its size.
+        AudioSegment.silent(duration=5000, frame_rate=8000).export(str(temp_storage / "quiet.flac"), format="flac")
+        real = AudioSegment.from_file
+        durations = []
+
+        def spy(*args, **kwargs):
+            durations.append(kwargs.get("duration"))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(AudioSegment, "from_file", spy)
+        server = _limited_server(temp_storage, max_duration_seconds=3)
+        for name in ("quiet.flac", sample_wav.name):
+            assert (await server.info({"file": name}))["error_type"] == "TooLong", name
+        cut = await server.cut({"source_file": sample_wav.name, "dest_file": "c.wav", "start_time": 0, "end_time": 1})
+        assert cut["error_type"] == "TooLong" and not (temp_storage / "c.wav").exists()
+        assert durations and set(durations) == {4}  # the limit plus one second
+        server = _limited_server(temp_storage, max_duration_seconds=5)
+        assert (await server.info({"file": sample_wav.name}))["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_merge_stops_decoding_once_the_result_is_too_long(self, temp_storage, sample_wav, monkeypatch):
+        server = _limited_server(temp_storage, max_duration_seconds=8)
+        real = server._load_audio
+        loaded = []
+
+        async def counting(path):
+            loaded.append(path)
+            return await real(path)
+
+        monkeypatch.setattr(server, "_load_audio", counting)
+        result = await server.merge({"source_files": [sample_wav.name] * 3, "dest_file": "m.wav"})
+        assert result["error_type"] == "TooLong" and len(loaded) == 2
+        assert not (temp_storage / "m.wav").exists()
+        # crossfades count: 5 + 5 - 4.5 = 5.5 s, within 6
+        server = _limited_server(temp_storage, max_duration_seconds=6)
+        result = await server.merge({"source_files": [sample_wav.name] * 2, "dest_file": "m.wav", "crossfade_ms": 4500})
+        assert result["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_encode_timeout_keeps_the_old_file_and_leaves_no_temp_files(self, temp_storage, sample_wav, monkeypatch):
+        dest = temp_storage / "old.mp3"
+        dest.write_bytes(b"previous take")
+
+        def run_times_out(cmd, *args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        class PopenTimesOut:  # pydub's own encode, should it still run ffmpeg
+            def __init__(self, args, *rest, **kwargs):
+                self.args, self.returncode = args, 0
+
+            def communicate(self, input=None, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired(self.args, timeout)
+                return b"", b""
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "run", run_times_out)
+        monkeypatch.setattr(subprocess, "Popen", PopenTimesOut)
+        server = _limited_server(temp_storage, ffmpeg_timeout_seconds=7)
+        result = await server.volume({"source_file": sample_wav.name, "dest_file": "old.mp3", "gain_db": 3})
+        assert result["error_type"] == "Timeout"
+        assert dest.read_bytes() == b"previous take"
+        assert sorted(p.name for p in temp_storage.iterdir()) == ["old.mp3", sample_wav.name]
+
+    @pytest.mark.asyncio
+    async def test_compress_silence_refuses_a_longer_result(self, temp_storage, sample_wav, monkeypatch):
+        commands = _fake_run(monkeypatch, "silence_start: 1.0\nsilence_end: 4.0 | silence_duration: 3.0\n")
+        server = _limited_server(temp_storage, max_duration_seconds=2)
+        result = await server.compress_silence({"source_file": sample_wav.name, "dest_file": "c.wav"})
+        assert result["error_type"] == "TooLong"  # 1.5 s + 1.5 s kept
+        assert not [c for c in commands if "-filter_complex" in c]
+
+    @pytest.mark.asyncio
+    async def test_input_above_the_limit_is_not_decoded(self, temp_storage, sample_wav, monkeypatch):
+        decoded = []
+        monkeypatch.setattr(AudioSegment, "from_file", lambda *a, **k: decoded.append(a))
+        server = _limited_server(temp_storage, max_input_mb=0.1)  # sample_wav is 0.4 MB
+        result = await server.info({"file": sample_wav.name})
+        assert result["error_type"] == "FileTooLarge" and not decoded
+
+    @pytest.mark.asyncio
+    async def test_input_above_the_limit_never_reaches_ffmpeg(self, temp_storage, sample_wav, monkeypatch):
+        commands = _fake_run(monkeypatch)
+        server = _limited_server(temp_storage, max_input_mb=0.1)
+        detect = await server.detect_silence({"source_file": sample_wav.name})
+        compress = await server.compress_silence({"source_file": sample_wav.name, "dest_file": "c.wav"})
+        assert [detect["error_type"], compress["error_type"]] == ["FileTooLarge", "FileTooLarge"]
+        assert commands == []
+
+    @pytest.mark.asyncio
+    async def test_ffmpeg_gets_the_timeout_and_its_expiry_is_an_error(self, temp_storage, sample_wav, monkeypatch):
+        def fake_run(cmd, *args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        server = _limited_server(temp_storage, ffmpeg_timeout_seconds=7)
+        result = await server.detect_silence({"source_file": sample_wav.name})
+        assert result["error_type"] == "Timeout" and "7 s" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_failed_copy_is_an_error(self, temp_storage, sample_wav, monkeypatch):
+        _fake_run(monkeypatch, returncode=0)
+        real = subprocess.run
+
+        def copy_fails(cmd, *args, **kwargs):
+            done = real(cmd, *args, **kwargs)
+            return subprocess.CompletedProcess(cmd, 1 if "-filter_complex" not in cmd and "null" not in cmd else 0,
+                                               stdout=done.stdout, stderr="disk full")
+
+        monkeypatch.setattr(subprocess, "run", copy_fails)
+        server = _limited_server(temp_storage)
+        result = await server.compress_silence({"source_file": sample_wav.name, "dest_file": "c.mp3"})
+        assert result["error_type"] == "ProcessingError"
+
+    @pytest.mark.asyncio
+    async def test_pydub_ffmpeg_gets_the_timeout(self, temp_storage, sample_mp3, monkeypatch):
+        # pydub's own ffmpeg/ffprobe calls: communicate() must receive the limit.
+        from plugins.audio_ops.server import _PYDUB_TIMEOUT
+        received, kills = [], []
+
+        class FakeProcess:
+            def __init__(self, args, *rest, **kwargs):
+                self.args, self.returncode = args, 0
+
+            def communicate(self, input=None, timeout=None):
+                received.append(timeout)
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired(self.args, timeout)
+                return b"", b""
+
+            def kill(self):
+                kills.append(self.args)
+
+        monkeypatch.setattr(subprocess, "Popen", FakeProcess)
+        server = _limited_server(temp_storage, ffmpeg_timeout_seconds=7)
+        result = await server.info({"file": sample_mp3.name})
+        assert result["error_type"] == "Timeout", result
+        assert received == [7, None]  # the limit, then collecting the killed process
+        assert len(kills) == 1
+        assert _PYDUB_TIMEOUT.get() is None
+
+
+class TestWriteAndListRobustness:
+    """CLI writes through export_audio; replace retry on Windows; list and temps."""
+
+    @pytest.mark.asyncio
+    async def test_cli_failed_encode_keeps_the_old_file(self, sample_wav, temp_storage, monkeypatch):
+        import argparse
+        import plugins.audio_ops.__main__ as cli
+        dest = temp_storage / "old.mp3"
+        dest.write_bytes(b"previous take")
+        commands = []
+
+        def run(cmd, *args, **kwargs):
+            commands.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="encoder failed")
+
+        class PopenFails:  # pydub's own encode, should it still run ffmpeg
+            def __init__(self, args, *rest, **kwargs):
+                self.args, self.returncode = args, 1
+
+            def communicate(self, input=None, timeout=None):
+                return b"", b"encoder failed"
+
+        monkeypatch.setattr(cli, "_workdir_override", temp_storage)
+        monkeypatch.setattr(subprocess, "run", run)
+        monkeypatch.setattr(subprocess, "Popen", PopenFails)
+        args = argparse.Namespace(source=sample_wav.name, dest="old.mp3", gain=3.0, normalize=False)
+        assert await cli.cmd_volume(args) == 1
+        assert dest.read_bytes() == b"previous take"
+        assert sorted(p.name for p in temp_storage.iterdir()) == ["old.mp3", sample_wav.name]
+        assert commands and "192k" in commands[0]
+
+    @pytest.mark.skipif(os.name != "nt", reason="the retry is Windows-only")
+    @pytest.mark.asyncio
+    async def test_replace_is_retried_while_the_destination_is_held(self, server, temp_storage, monkeypatch):
+        import plugins.audio_ops.server as server_module
+        real_replace, attempts = os.replace, []
+
+        def held(src, dst):
+            attempts.append(dst)
+            if len(attempts) < 3:
+                raise PermissionError(5, "Access is denied")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(server_module.os, "replace", held)
+        monkeypatch.setattr(server_module.time, "sleep", lambda s: None)
+        result = await server.create({"dest_file": "s.wav", "duration_ms": 100})
+        assert result["status"] == "success" and len(attempts) == 3
+
+        attempts.clear()
+        def always_held(src, dst):
+            attempts.append(dst)
+            raise PermissionError(5, "Access is denied")
+
+        monkeypatch.setattr(server_module.os, "replace", always_held)
+        result = await server.create({"dest_file": "t.wav", "duration_ms": 100})
+        assert result["status"] == "error" and len(attempts) == 5
+
+    @pytest.mark.asyncio
+    async def test_list_skips_export_temps_and_files_that_vanish(self, server, sample_wav, temp_storage, monkeypatch):
+        import shutil
+        shutil.copy(sample_wav, temp_storage / ".audio_ops_abc123.wav")
+        shutil.copy(sample_wav, temp_storage / "gone.wav")
+        real = server._load_audio
+
+        async def vanishing(path):
+            if path.name == "gone.wav":
+                path.unlink()
+                raise FileNotFoundError(path)
+            return await real(path)
+
+        monkeypatch.setattr(server, "_load_audio", vanishing)
+        result = await server.list({})
+        assert result["status"] == "success", result
+        assert [f["name"] for f in result["files"]] == [sample_wav.name]

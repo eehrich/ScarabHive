@@ -1,0 +1,479 @@
+@database "openai_api"
+@author "Enrico Ehrich"
+@$VER: openai_api.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "OpenAI-compatible API"
+@{h1}OpenAI-compatible API
+
+This plugin puts the agents behind the OpenAI @{b}Responses@{ub} and
+@{b}Chat Completions@{ub} API. Any OpenAI client -- the @{tt}openai@{utt}
+SDK, Open WebUI, LibreChat, n8n, an IDE plugin -- can then talk to an agent
+as if it were a model: the model name is the agent's name, and the agent's
+own prompt, tools, sub-agents and memory do the work. A Responses
+conversation is an ordinary session of the calling user and shows up in the
+web UI; Chat Completions calls are stateless and leave nothing behind. The
+plugin has no tools, no hooks and no panel.
+
+@{code}
+For users
+  @{"  Connecting a client  " link client}
+  @{"  The endpoints  " link endpoints}
+  @{"  How a request becomes a turn  " link turn}
+  @{"  Structured output  " link structured}
+  @{"  Stored conversations  " link conversations}
+  @{"  Errors  " link errors}
+
+For agents and developers
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node client "Connecting a client"
+@{h1}Connecting a client
+
+@{table}
+Setting | Value
+Base URL | http(s)://<host>/plugins/openai_api/v1 (the instance name is the path segment)
+API key | the user's ScarabHive API key, or an access token
+Model | the name of an agent, as GET /models lists it
+@{body}
+
+A user gets an API key with @{tt}POST /auth/api-key@{utt} while logged in,
+or with @{tt}agent-cli users generate-api-key <user>@{utt}. Clients send it
+as @{tt}Authorization: Bearer <key>@{utt}; @{tt}X-API-Key@{utt} works too.
+The plugin declares @{tt}accept_api_keys@{utt} in its security config: of
+all plugin routes, only its routes take an API key; every other plugin route
+stays tokens-only. Every call runs as the key's user -- their sessions,
+their role. With auth switched off every caller is @{tt}anonymous@{utt}.
+
+@{code python}
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/plugins/openai_api/v1", api_key="<API key>")
+
+first = client.responses.create(model="chat_agent", input="Remember the code word QUARTZ-17.")
+second = client.responses.create(model="chat_agent", previous_response_id=first.id,
+                                 input="Which code word did I give you?")
+print(second.output_text)
+
+for chunk in client.chat.completions.create(model="chat_agent", stream=True,
+                                            messages=[{"role": "user", "content": "Hello!"}]):
+    print(chunk.choices[0].delta.content or "", end="")
+@{body}
+@endnode
+
+@node endpoints "The endpoints"
+@{h1}The endpoints
+
+All under @{tt}/plugins/<instance>/v1@{utt}.
+
+@{table}
+Endpoint | What it does
+GET /models | the agents offered, sorted by name (@{tt}owned_by: scarabhive@{utt}, @{tt}created: 0@{utt})
+GET /models/{model} | one of them, or 404 model_not_found
+POST /responses | one agent turn on a stored conversation (or a throwaway one with store: false)
+POST /chat/completions | one agent turn, stateless: the history comes with the call, no session is kept
+@{body}
+
+@{h2}Which agents are offered
+
+The agents the web UI lists (agents whose @{tt}metadata.visibility@{utt} is
+@{tt}ui@{utt} or @{tt}both@{utt}), narrowed by the plugin's
+@{tt}agents@{utt} and @{tt}blocked_agents@{utt} patterns and by each
+agent's role gate (@{tt}metadata.min_role@{utt}): an agent the caller's role
+does not reach is not listed, and asking for it by name is the same 404
+@{tt}model_not_found@{utt} as for a model that does not exist.
+
+@{h2}POST /responses
+
+@{table}
+Field | Taken as
+model | the agent; required for a new conversation, optional when continuing (then it must be the conversation's)
+input | a string (one user message) or a list of message items; required
+instructions | a string, put in front of the turn (see @{" How a request becomes a turn " link turn})
+previous_response_id | continue the conversation of that response -- its latest response only
+store | default true; false runs on a throwaway session and records no id
+stream | true: Server-Sent Events (below)
+text.format | structured output (see @{" Structured output " link structured})
+background | true is refused (400)
+tools | a non-empty list is refused (400): the agent brings its own tools
+@{body}
+
+The answer is a @{tt}response@{utt} object with one output message: the
+agent's final message, as it wrote it (Markdown, not the web UI's HTML).
+@{tt}usage@{utt} sums every LLM call of the turn; cached and reasoning
+tokens are always reported as 0.
+
+Streamed, the events come in this order: @{tt}response.created@{utt},
+@{tt}response.in_progress@{utt}, @{tt}response.output_item.added@{utt},
+@{tt}response.content_part.added@{utt}, any number of
+@{tt}response.output_text.delta@{utt}, then
+@{tt}response.output_text.done@{utt}, @{tt}response.content_part.done@{utt},
+@{tt}response.output_item.done@{utt} and @{tt}response.completed@{utt} --
+or @{tt}response.failed@{utt} for a run that failed, or an @{tt}error@{utt}
+event for a turn refused after the stream began.
+
+@{h2}POST /chat/completions
+
+@{table}
+Field | Taken as
+model | the agent; required
+messages | the conversation, last message from the user; required
+n | only 1
+stream | true: @{tt}chat.completion.chunk@{utt}s, then @{tt}data: [DONE]@{utt}
+stream_options.include_usage | adds a last chunk with usage and no choices
+response_format | structured output
+tools | a non-empty list is refused (400)
+@{body}
+
+The answer is one choice with @{tt}finish_reason: stop@{utt}. A failed
+stream sends an @{tt}{"error": ...}@{utt} chunk and then
+@{tt}[DONE]@{utt}.
+
+@{h2}Ignored
+
+Sampling parameters (@{tt}temperature@{utt}, @{tt}top_p@{utt},
+@{tt}max_tokens@{utt}, @{tt}text.verbosity@{utt}, ...) and every other field
+not named above are ignored: the agent's LLM profile decides.
+
+@{h2}The request body
+
+JSON only: any other Content-Type is a 415 -- a form or text post is what a
+page of another origin could send with a logged-in user's cookie. A body
+over 16 MiB is a 413 before it is held in memory whole.
+@endnode
+
+@node turn "How a request becomes a turn"
+@{h1}How a request becomes a turn
+
+@{bullet}The last user message is the turn. The user and assistant messages
+before it become the earlier turns of the conversation (Chat Completions:
+all of them; Responses: those in @{tt}input@{utt}, on top of the stored
+conversation).
+@{bullet}@{tt}system@{utt} and @{tt}developer@{utt} messages, and the
+Responses @{tt}instructions@{utt}, reach the agent in front of the turn,
+under the line @{tt}Instructions from the client application:@{utt}. The
+agent keeps its own system prompt.
+@{bullet}Unlike at OpenAI, instructions stay in a stored conversation: they
+are part of its turn. The same instructions sent again on a later turn (the
+Agents SDK sends them every time) are not added again; changed ones are.
+@{bullet}Only text. Content may be a string or a list of @{tt}text@{utt},
+@{tt}input_text@{utt} or @{tt}output_text@{utt} parts. Image parts, tool
+messages, function-call items and other roles are refused with a 400 naming
+the field -- never silently dropped.
+@{bullet}A new stored conversation is named, as the web UI names one, by
+the first 50 characters of the user's first message -- not by the
+instructions in front of it.
+
+@{h2}What a stream carries
+
+A stream's deltas are the work as it happens: what every LLM call of the
+turn writes, the calls set apart by a blank line -- the steps of a
+multi-step run (a note before a tool call, say), and a call asked again
+after it broke off. The deltas of a multi-step turn are therefore more than
+its final message. A Responses stream ends on the final message
+(@{tt}response.output_text.done@{utt} and the events after it); a Chat
+Completions stream has no final text, its deltas are all a client gets.
+
+What of a call's content never came as a delta follows it: the rest a
+client salvaged at the end of a stream, or -- when the turn's last call ran
+on a model that does not stream -- the whole final message as one delta at
+the end.
+
+A structured turn streams differently (see
+@{" Structured output " link structured}).
+
+@{h2}A client that leaves
+
+A client that disconnects stops the agent: a stream notices at once, a JSON
+request asks the connection every second (and once more before its turn is
+kept). The run's cancellation token is cancelled first, so an agent inside
+a tool call stops too; the plugin then waits up to 12 seconds for the run to
+end. The conversation stays busy until the run has really stopped.
+@endnode
+
+@node structured "Structured output"
+@{h1}Structured output
+
+@{code python}
+class Trip(BaseModel):
+    city: str
+    days: int
+
+trip = client.chat.completions.parse(model="chat_agent", response_format=Trip,
+                                     messages=[{"role": "user", "content": "Plan a weekend trip."}])
+print(trip.choices[0].message.parsed)
+print(client.responses.parse(model="chat_agent", input="Plan one.", text_format=Trip).output_parsed)
+@{body}
+
+@{bullet}Chat Completions @{tt}response_format@{utt} and Responses
+@{tt}text.format@{utt} take @{tt}json_schema@{utt} (@{tt}name@{utt} and
+@{tt}schema@{utt}; @{tt}strict@{utt} and @{tt}description@{utt} optional)
+and @{tt}json_object@{utt}; @{tt}text@{utt} changes nothing.
+@{bullet}The format holds for the agent's @{b}final@{ub} answer. The steps
+before it call the agent's tools as always.
+@{bullet}Where the agent's model takes structured output (its model entry
+declares @{tt}capabilities.structured_output@{utt}), the format goes to the
+provider as a field of its own; otherwise it is described to the model in
+the conversation. Either way the answer is checked against the schema, sent
+back once with what is wrong with it, and a turn whose answer still does
+not match fails with @{tt}500@{utt}, code
+@{tt}structured_output_invalid@{utt} and the header
+@{tt}x-should-retry: false@{utt} -- the run already had its correction
+round, and the SDK's automatic retries would buy two more whole runs for the
+same verdict.
+@{bullet}The answer is the JSON as the agent wrote it, a Markdown fence
+around the whole answer taken off, so the SDK's @{tt}parse()@{utt} helpers
+work.
+@{bullet}Streamed, a structured turn sends its answer as @{b}one@{ub} delta
+once it has been checked, and nothing of the steps before it: the joined
+deltas are the JSON. Meanwhile the stream sends an SSE comment
+(@{tt}: keep-alive@{utt}) every 15 seconds, so a proxy does not drop a long
+run.
+@{bullet}An agent that cannot hold its answer to a format at all -- one
+whose run takes no format, a state machine behind the stategraph facade --
+is refused before it runs: 400, @{tt}unsupported_parameter@{utt}.
+
+@{h2}The schema subset
+
+A strict subset of JSON Schema, as OpenAI's strict mode has one:
+@{tt}type@{utt}, @{tt}properties@{utt}, @{tt}required@{utt},
+@{tt}additionalProperties@{utt}, @{tt}items@{utt}, @{tt}prefixItems@{utt},
+@{tt}enum@{utt}, @{tt}const@{utt}, @{tt}anyOf@{utt}, @{tt}$defs@{utt},
+@{tt}$ref@{utt}, @{tt}description@{utt}, @{tt}title@{utt},
+@{tt}pattern@{utt}, @{tt}format@{utt} (not checked), the four number
+bounds, @{tt}multipleOf@{utt}, @{tt}minLength@{utt}/@{tt}maxLength@{utt},
+@{tt}minItems@{utt}/@{tt}maxItems@{utt}. @{tt}default@{utt},
+@{tt}examples@{utt}, @{tt}$comment@{utt}, @{tt}deprecated@{utt},
+@{tt}readOnly@{utt} and @{tt}writeOnly@{utt} are taken out. A root
+@{tt}$schema@{utt} may name 2020-12, 2019-09 or draft-07; a draft-07
+@{tt}definitions@{utt} is taken as @{tt}$defs@{utt}. The schemas pydantic
+and the openai SDK write for plain models are inside it; @{tt}oneOf@{utt},
+@{tt}uniqueItems@{utt} and @{tt}minProperties@{utt} are not.
+
+@{table}
+Limit | Value
+schema size | 100 000 characters
+nesting | 10 levels
+properties | 5000
+enum / const values | 1000
+one pattern | 1000 characters
+fan-out through anyOf and $ref | 1000 subschemas
+answer size | 1 000 000 characters
+@{body}
+
+Anything outside is a 400 @{tt}invalid_value@{utt} naming the keyword and
+where it stands; a missing @{tt}name@{utt} or @{tt}schema@{utt} is
+@{tt}missing_required_parameter@{utt}, a value of the wrong kind
+@{tt}invalid_type@{utt}. Nothing outside the schema is ever fetched.
+
+@{h2}The checker
+
+The schema is a client's input, so it is built and every answer is checked
+in a separate worker process: at most two at once, one per user at a time,
+each request under a 5-second deadline past which the worker is killed and
+the request fails closed. A request waits at most 30 seconds for a worker;
+a checker that is busy or broke answers @{tt}503@{utt},
+@{tt}structured_output_unavailable@{utt} -- retryable.
+@endnode
+
+@node conversations "Stored conversations"
+@{h1}Stored conversations
+
+A Responses call with @{tt}store@{utt} left on runs on a stored session of
+the calling user. It is listed in the web UI and can be continued there;
+what the web chat adds becomes part of the conversation, and the next API
+turn from the latest response id builds on it.
+
+@{bullet}@{b}Only the latest response continues.@{ub} A session is one line
+of turns; continuing from an older response would silently build on turns
+the client did not mean, so it is a 409.
+@{bullet}@{b}Another user's response id@{ub} is unknown: 404
+@{tt}previous_response_not_found@{utt}.
+@{bullet}@{b}A conversation no longer stored@{ub} -- deleted in the web UI,
+archived, unreadable -- is not continued: 404
+@{tt}previous_response_not_found@{utt}, before the agent runs.
+@{bullet}@{b}One turn at a time.@{ub} A second request on the same
+conversation while one runs is a 409. The conversation is also held against
+runs elsewhere (session presence, as the web chat holds its sessions): one
+that the web chat or an agent-cli run has in hand is refused with a 409.
+@{bullet}@{b}A turn is kept only once it is delivered.@{ub} The session is
+saved, then the response id recorded. Any other end -- the run failed or was
+stopped, the client left before the answer went out, the save failed --
+puts the conversation back as it was before the turn (messages and session
+variables), so a retry from the last response does not build on a turn the
+client never got. A new conversation is deleted then; a continued one is
+only restored. Messages the user appended meanwhile stay, and the sessions
+of agents the run called as tools are put back with it where only this turn
+wrote them.
+@{bullet}@{b}A client that leaves while its answer is being sent@{ub} is not
+seen by the server: the turn is kept, the client never got the id, and a
+call from the response before it is refused (409, not the latest). Such a
+client starts a new conversation.
+
+@{h2}Throwaway sessions
+
+Chat Completions and @{tt}store: false@{utt} run on a throwaway session
+that is dropped when the turn ends. Sub-agents such a turn left running in
+the background are stopped -- nobody can continue the session to read their
+answers. The record a sub-agent manager writes for the parent
+(@{tt}Coordinator Session@{utt}) is deleted; the sub-agents' own sessions
+stay on disk, hidden below it, as when a session is deleted in the web UI.
+
+@{h2}Shutdown
+
+When the plugin stops it waits up to 12 seconds for runs still stopping,
+so their conversations are put back before the process ends. After that it
+records nothing: a stored Responses call is a 503.
+@endnode
+
+@node errors "Errors"
+@{h1}Errors
+
+Errors are OpenAI-shaped, @{tt}{"error": {"message", "type", "param",
+"code"}}@{utt}, so an SDK raises the matching exception. A streamed request
+is refused with the same status as a JSON one, before its stream starts.
+
+@{table}
+Status | Type / code | When
+400 | invalid_request_error | a malformed or unsupported field; @{tt}param@{utt} names it
+401 | invalid_api_key | no valid user (see below)
+403 | permission_error | the conversation belongs to another user
+404 | model_not_found | an unknown agent, or one the caller may not run
+404 | previous_response_not_found | an unknown or foreign response id, or its conversation is gone
+409 | conflict | the conversation is answering another request, or another run has it
+409 | invalid_request_error | previous_response_id is not the conversation's latest
+413 | invalid_request_error | the body is over 16 MiB
+415 | invalid_request_error | the Content-Type is not application/json
+500 | server_error | the agent run failed; the message is the run's
+500 | server_error / structured_output_invalid | the answer did not match the format after its correction (x-should-retry: false)
+503 | server_error | the plugin is stopped, the app is still starting, or the schema checker is unavailable
+@{body}
+
+An unexpected failure inside the plugin answers
+@{tt}internal error: <exception type>@{utt} -- its text is only logged,
+also in a stream. A missing or wrong key is usually refused by the app's
+auth layer before the request reaches the plugin: a 401 with
+@{tt}{"detail": "Authentication required for this plugin endpoint"}@{utt},
+which the openai SDK raises as its @{tt}AuthenticationError@{utt} all the
+same.
+
+In a stream, a run the agent refused before it started (its role gate, a
+conversation held for another user) is a Responses @{tt}error@{utt} event,
+or an error chunk in Chat Completions, with the codes above; a run that
+failed after it started is @{tt}response.failed@{utt} (code
+@{tt}server_error@{utt}) or an error chunk carrying the structured-output
+code where there is one.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The turn
+
+The agent runs exactly as in the web UI, with its own system prompt, tools
+and LLM profile. What the client adds reaches the model as ordinary
+conversation:
+
+@{bullet}the client's earlier turns (Chat Completions @{tt}messages@{utt},
+Responses @{tt}input@{utt} items) as user and assistant messages before the
+turn;
+@{bullet}the client's system/developer messages and instructions inside the
+user message, in front of the user's text:
+
+@{code text}
+Instructions from the client application:
+Answer in one sentence.
+
+What is the capital of France?
+@{body}
+
+The agent's own system prompt is never replaced, so a client cannot turn
+an agent into a different one by instructions alone -- only steer it.
+
+@{h2}Structured output
+
+With a format, the model either gets it as a provider field on every call
+of the turn (the same field on every call, so the cached prefix holds), or
+-- where its model takes no such field -- a description of the format as a
+note of the run. A wrong answer is sent back once with what is wrong with
+it.
+
+@{h2}Tokens and cache
+
+The plugin adds no text of its own beyond the instructions block. In a
+stored conversation that block becomes part of the history (sent once per
+change of instructions), so later turns stay a prefix of the ones before and
+the prompt cache holds. A structured turn continued without its format
+changes the request once, because the provider field is part of the prefix.
+Chat Completions sends the whole history with every call, so each call is a
+fresh run on it.
+
+@{h2}Known gaps
+
+@{bullet}No images, audio or files; no client-side function calling.
+@{bullet}No background mode, no @{tt}GET /responses/{id}@{utt}, no
+conversation items API.
+@{bullet}Continuing from an older response (a branch) is refused, not
+forked.
+@{bullet}Runs through this API are not web UI jobs: the chat panel does not
+follow them live, and a stored conversation appears after its turn.
+@{bullet}With session presence off nothing holds a conversation against a
+run in another process.
+@{bullet}A Gemini model's thought summaries reach a stream's deltas (its
+clients stream them as text); the final texts and every JSON answer do not
+have them.
+@{bullet}Structured output never answers a @{tt}refusal@{utt}: a model's
+refusal is no answer in the format, and the turn fails.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry shipped in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    openai_api:
+      type: openai_api
+      enabled: true
+@{body}
+
+No allowlist line: the plugin has no tools. The API is up once the app has
+started with the entry enabled.
+
+@{h2}Settings
+
+Flat in the server entry, next to @{tt}type@{utt} -- not in a
+@{tt}config:@{utt} block.
+
+@{table}
+Key | Default | Meaning
+agents | (all) | fnmatch patterns of the agents offered as models; empty: every agent the web UI lists
+blocked_agents | (none) | fnmatch patterns never offered, even if @{tt}agents@{utt} matches
+responses_db | data/openai_api/responses.db | the SQLite file mapping response ids to sessions; a path starting with data/ lands in the data directory
+@{body}
+
+@{code yaml}
+    openai_api:
+      type: openai_api
+      enabled: true
+      agents: ["chat_agent", "research_*"]
+      blocked_agents: ["sysadmin_*"]
+@{body}
+
+@{h2}Where data lives
+
+The conversations are the users' ordinary sessions. The plugin's own file,
+@{tt}responses.db@{utt}, holds per response its user, session and agent,
+per conversation its latest response, and the instructions it was last
+given. It is opened on first use and closed when the plugin stops.
+
+@{h2}Dependencies
+
+@{tt}anyio@{utt} (it comes with Starlette). The @{tt}openai@{utt} SDK is
+only needed by clients and the tests.
+@endnode

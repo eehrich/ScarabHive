@@ -7,7 +7,13 @@ import ast
 import time
 import builtins
 import math
+import re
 from .errors import UnsupportedFeatureError
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover - psutil is a core dependency
+    psutil = None
 
 #: Seeded into every sandbox's variable table so ``isinstance(x, int)`` works.
 #: They are NOT user variables: anything that counts or lists variables has to
@@ -24,6 +30,136 @@ _SEEDED_TYPES = {
     'set': set,
 }
 SEEDED_TYPE_NAMES = frozenset(_SEEDED_TYPES)
+#: The seeded types by identity: `f = set; f(big)` must meet the same guard
+#: as `set(big)` -- keyed on the called NAME, the alias walked past it.
+_SEEDED_BY_TYPE = {t: n for n, t in _SEEDED_TYPES.items()}
+
+#: Largest int an arithmetic operation may produce or work on, in bits (about
+#: 60,000 decimal digits). One big-int C call holds the GIL for its whole run:
+#: measured, a 100,000-bit square takes ~1.5 ms, a 2,000,000-bit one 160 ms,
+#: and `%` grows quadratically from there -- the event loop of the whole
+#: process stood still for seconds.
+_MAX_INT_BITS = 200_000
+#: Three-argument pow(): the exponent's and the modulus's bit lengths. 1024/1024
+#: took ~2 ms, 8192/8192 over 700 ms.
+_MAX_POWMOD_BITS = 2048
+#: Items one sort may order.
+_MAX_SORT_LEN = 1_000_000
+#: Text methods whose result can be much longer than their inputs.
+_GROWING_STR_METHODS = frozenset({"ljust", "rjust", "center", "zfill", "replace", "join"})
+#: List methods guarded the same way.
+_GUARDED_LIST_METHODS = frozenset({"extend", "sort"})
+#: round(int, -n) computes 10**n in C.
+_MAX_ROUND_DIGITS = 60_000
+#: Estimated text size of what one aggregate C call (sum, min, max, set,
+#: sorted, the statistics) walks: summing or hashing 6.5 million copies of a
+#: 200,000-bit int is one call of many seconds.
+_MAX_CONTENT_CHARS = 30_000_000
+#: Growth of the process's resident memory during one script, and how often
+#: it is read. A loop that keeps what it builds grew by ~6.4 GB/s.
+_MEMORY_FUSE_MB = 1024
+_MEMORY_CHECK_SECONDS = 0.05
+
+
+def estimate_text_size(value, limit):
+    """About how many characters ``str``/``repr``/JSON of ``value`` takes.
+
+    Walks containers iteratively and stops as soon as the count passes
+    ``limit`` (the result is then > limit): turning a container into text is
+    one C call, and ``str([10**4000] * 6_500_000)`` would take ~19 minutes and
+    26 GB before any check after it. A cycle only adds up and ends the walk.
+    """
+    total = 0
+    stack = [value]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, str):
+            total += len(v) + 2
+        elif isinstance(v, bool) or v is None:
+            total += 5
+        elif isinstance(v, int):
+            total += int(v.bit_length() * 0.30103) + 2
+        elif isinstance(v, float):
+            total += len(repr(v))
+        elif isinstance(v, (bytes, bytearray)):
+            total += 4 * len(v) + 3
+        elif isinstance(v, dict):
+            total += 2 + 4 * len(v)
+            if total > limit:
+                return total
+            stack.extend(v.keys())
+            stack.extend(v.values())
+        elif isinstance(v, (list, tuple, set, frozenset)):
+            total += 2 + 2 * len(v)
+            if total > limit:
+                return total
+            stack.extend(v)
+        elif not isinstance(v, type) and hasattr(v, "__len__") and hasattr(v, "__iter__"):
+            # Anything else sized and iterable -- dict views above all -- is
+            # walked like a list: counted as 64, `f"{d.values()}"` built
+            # 80 M characters.
+            try:
+                total += 2 + 2 * len(v)
+                if total > limit:
+                    return total
+                stack.extend(v)
+            except Exception:
+                total += 64
+        else:
+            total += 64
+        if total > limit:
+            return total
+    return total
+
+
+_SCALAR_TYPES = frozenset({float, bool, type(None)})
+_NUMBER_TYPES = frozenset({int, float, bool})
+_FLAT_SEQUENCES = (list, tuple, set, frozenset,
+                   type({}.keys()), type({}.values()))
+
+
+def estimate_content_size(value, limit):
+    """How much an aggregate C call (sum, min, max, set, sorted, ...) has
+    to walk, in characters of content -- floats, bools and None count 2
+    each: the call does constant work per item for them.
+
+    A flat sequence of one kind is measured at C speed: the Python walk made
+    `x / max(nums)` in a loop about 15 times slower than before the guard.
+    Only a mixed or nested value, or one the quick bound puts over the
+    limit, is walked item by item.
+    """
+    if isinstance(value, _FLAT_SEQUENCES):
+        kinds = set(map(type, value))
+        n = len(value)
+        if kinds <= _SCALAR_TYPES:
+            return 2 * n
+        if kinds <= _NUMBER_TYPES:
+            largest = max(map(abs, value), default=0)
+            if not isinstance(largest, int) or largest.bit_length() <= 64:
+                return 2 * n  # machine-size numbers: constant work per item
+            quick = n * (int(largest.bit_length() * 0.30103) + 2)
+            if quick <= limit:
+                return quick
+        elif kinds == {str}:
+            return sum(map(len, value)) + 2 * n
+    return estimate_text_size(value, limit)
+
+
+def _rss_bytes():
+    """This process's resident memory, or None without psutil."""
+    if psutil is None:  # pragma: no cover
+        return None
+    return psutil.Process().memory_info().rss
+
+
+class OutputLimitExceeded(BaseException):
+    """print() went past max_output_length. A BaseException, so a script's
+    ``except Exception:`` cannot catch it and print on."""
+
+
+class MemoryLimitExceeded(BaseException):
+    """The process grew by more than the memory fuse during the script.
+    Not catchable, like OutputLimitExceeded."""
 
 
 class FunctionReturn(Exception):
@@ -43,8 +179,14 @@ class SafeExecutor:
         self.variables = dict(_SEEDED_TYPES)
         self.user_functions = {}  # Store user-defined functions
         self.output_buffer = []
+        self._output_len = 0  # length of "\n".join(output_buffer), kept running
         self.start_time = None
         self.loop_count = 0
+        # Memory fuse: the RSS reader is an attribute so a test can fake it.
+        self._read_rss = _rss_bytes
+        self._rss_start = None
+        self._next_memory_check = 0.0
+        self._memory_fuse_bytes = _MEMORY_FUSE_MB * 1024 * 1024
 
         # DoS guards for single uninterruptible C-level operations. A `**` or a
         # sequence `*` int runs as ONE C call, so check_timeout() (only evaluated
@@ -53,57 +195,201 @@ class SafeExecutor:
         # it. (resource.setrlimit would be the OS-level alternative but is
         # Unix-only.) Pow is bounded by compute time (~1 MB result is sub-100ms);
         # sequence-multiply by the configured memory budget (worst-case 8 B/elem).
-        self._max_pow_result_bits = 8 * 1024 * 1024
+        self._max_pow_result_bits = _MAX_INT_BITS
+        # One cap on the length of any text or list an operation builds
+        # (`*`, `+`, extend, ljust/center/replace/join, format widths).
         self._max_seq_len = max(1, int(getattr(self.config, "max_memory_mb", 50)) * 1024 * 1024 // 8)
 
+    def _refuse_length(self, what, length):
+        if length > self._max_seq_len:
+            raise ValueError(
+                f"{what} result too large ({length} elements exceeds the "
+                f"{self._max_seq_len}-element limit); rejected"
+            )
+
     def _guard_binop_size(self, op, left, right):
-        """Reject `**` / sequence-`*` whose result would be huge, before it runs.
+        """Reject an operation whose result would be huge, before it runs.
 
         Raises ValueError (formatted into a clean error result by execute()).
-        No-op for every other operator and for value combinations that cannot
-        blow up (e.g. int*int, negative/zero exponents, base in {-1,0,1}).
+        Covers `**`, and `*`, `//`, `%` on big ints (one C call each, holding
+        the GIL), `*`/`+` building a long text or list, and `%` formatting.
         """
+        if isinstance(op, ast.Mod) and isinstance(left, str):
+            self._guard_percent(left, right)
+            return
         if isinstance(op, ast.Pow):
             if (isinstance(left, int) and isinstance(right, int)
                     and right > 0 and left not in (-1, 0, 1)):
-                est_bits = right * left.bit_length()
+                est_bits = (right * math.log2(abs(left)) if right.bit_length() < 64
+                            else math.inf)
                 if est_bits > self._max_pow_result_bits:
                     raise ValueError(
                         f"'**' result too large (~{est_bits} bits exceeds the "
                         f"{self._max_pow_result_bits}-bit limit); rejected to "
                         f"avoid blocking the interpreter"
                     )
-        elif isinstance(op, ast.Mult):
+            return
+        if (isinstance(op, (ast.Mult, ast.FloorDiv, ast.Mod))
+                and isinstance(left, int) and isinstance(right, int)):
+            bits = left.bit_length() + right.bit_length()
+            if bits > _MAX_INT_BITS:
+                raise ValueError(
+                    f"int operands too large ({bits} bits exceeds the "
+                    f"{_MAX_INT_BITS}-bit limit); rejected to avoid blocking "
+                    f"the interpreter"
+                )
+            return
+        if isinstance(op, ast.Mult):
             seq, n = None, None
             if isinstance(left, (str, bytes, bytearray, list, tuple)) and isinstance(right, int):
                 seq, n = left, right
             elif isinstance(right, (str, bytes, bytearray, list, tuple)) and isinstance(left, int):
                 seq, n = right, left
-            if seq is not None and n > 0 and len(seq) * n > self._max_seq_len:
+            if seq is not None and n > 0:
+                self._refuse_length("'*'", len(seq) * n)
+        elif isinstance(op, ast.Add):
+            if (isinstance(left, (str, list, tuple)) and isinstance(right, (str, list, tuple))):
+                self._refuse_length("'+'", len(left) + len(right))
+
+    def _guard_method_size(self, obj, name, args, kwargs):
+        """Reject a text or list method whose result would be huge."""
+        if isinstance(obj, str) and name in ("ljust", "rjust", "center", "zfill"):
+            width = args[0] if args else kwargs.get("width")
+            if isinstance(width, int):
+                self._refuse_length(f"'{name}'", width)
+        elif isinstance(obj, str) and name == "replace" and len(args) >= 2:
+            old, new = args[0], args[1]
+            if isinstance(old, str) and isinstance(new, str) and len(new) > len(old):
+                n = obj.count(old) if old else len(obj) + 1
+                if len(args) > 2 and isinstance(args[2], int) and args[2] >= 0:
+                    n = min(n, args[2])
+                self._refuse_length("'replace'", len(obj) + n * (len(new) - len(old)))
+        elif isinstance(obj, str) and name == "join" and args and hasattr(args[0], "__len__"):
+            items = args[0]
+            chars = len(items) if isinstance(items, str) else sum(
+                len(i) for i in items if isinstance(i, str))
+            self._refuse_length("'join'", chars + len(obj) * max(len(items) - 1, 0))
+        elif isinstance(obj, list) and name == "extend" and args and hasattr(args[0], "__len__"):
+            self._refuse_length("'extend'", len(obj) + len(args[0]))
+        elif isinstance(obj, list) and name == "sort":
+            self._refuse_sort(len(obj))
+
+    def _refuse_sort(self, length):
+        """A sort is one C call that holds the GIL: 6.5 million items took
+        0.8 s, one million about a tenth of that."""
+        if length > _MAX_SORT_LEN:
+            raise ValueError(
+                f"sort too large ({length} items exceeds the {_MAX_SORT_LEN}-item "
+                f"limit); rejected to avoid blocking the interpreter")
+
+    def _guard_text(self, value, extra=0):
+        """Reject turning ``value`` into a text longer than the length cap."""
+        size = estimate_text_size(value, self._max_seq_len) + extra
+        if size > self._max_seq_len:
+            raise ValueError(
+                f"text result too large (over {self._max_seq_len} characters); rejected")
+
+    def _guard_content(self, value):
+        """Reject an aggregate C call (sum, min, max, set, sorted, the
+        statistics) over more content than it can walk in milliseconds."""
+        if estimate_content_size(value, _MAX_CONTENT_CHARS) > _MAX_CONTENT_CHARS:
+            raise ValueError(
+                "argument too large for one call (over "
+                f"{_MAX_CONTENT_CHARS} characters of content); rejected")
+
+    def _guard_type_call(self, func_name, args):
+        """Size guards of the type constructors. ``int``, ``str``, ``set`` and
+        ``dict`` are seeded as variables, so a script's call reaches the type
+        itself, not safe_builtin_function -- the guards must run on that path."""
+        if func_name == "str" and args:
+            self._guard_text(args[0])
+        elif func_name in ("set", "dict") and args:
+            self._guard_content(args[0])
+        elif (func_name == "int" and len(args) == 2 and isinstance(args[0], str)
+                and isinstance(args[1], int)):
+            # Base 10 has CPython's 4300-digit limit; power-of-two bases do
+            # not: int("1" * 6_000_000, 2) built a 6M-bit int.
+            bits = len(args[0]) * math.log2(args[1] if args[1] >= 2 else 36)
+            if bits > _MAX_INT_BITS:
                 raise ValueError(
-                    f"'*' result too large ({len(seq) * n} elements exceeds the "
-                    f"{self._max_seq_len}-element limit); rejected"
-                )
+                    f"int() result too large (~{int(bits)} bits exceeds the "
+                    f"{_MAX_INT_BITS}-bit limit); rejected")
+
+    def _guard_percent(self, fmt, values):
+        """Reject ``fmt % values`` whose widths, precisions or values would
+        build a huge text. A ``*`` width is taken from the values, in order."""
+        self._guard_text(values, len(fmt))
+        args = list(values) if isinstance(values, tuple) else [values]
+        i = 0
+        for m in re.finditer(r"%(?:\([^)]*\))?[-+ #0]*(\*|\d+)?(?:\.(\*|\d+))?([a-zA-Z%])", fmt):
+            if m.group(3) == "%":
+                continue
+            for field in (m.group(1), m.group(2)):
+                if field == "*":
+                    n = args[i] if i < len(args) else 0
+                    i += 1
+                elif field:
+                    n = int(field) if len(field) <= 9 else self._max_seq_len + 1
+                else:
+                    continue
+                if isinstance(n, int) and abs(n) > self._max_seq_len:
+                    raise ValueError(
+                        f"'%' width/precision too large ({n}); rejected")
+            i += 1
+
+    def _exception_text(self, error):
+        """``str(error)``, unless its arguments would make a huge text."""
+        if estimate_text_size(error.args, self._max_seq_len) > self._max_seq_len:
+            return f"{type(error).__name__} with a message too large to show"
+        return str(error)
+
+    def _guard_format_spec(self, spec):
+        """Reject a format spec whose width or precision would build a huge text."""
+        for digits in re.findall(r"\d+", str(spec)):
+            if len(digits) > 9 or int(digits) > self._max_seq_len:
+                raise ValueError(
+                    f"format width/precision too large ({digits[:12]}); rejected")
 
     def safe_print(self, *args):
         """Safe print function that captures output."""
-        if not args:
-            output = ""
-        else:
-            str_args = [str(arg) for arg in args]
-            output = " ".join(str_args)
-        
+        # Checked BEFORE appending, and not catchable: appended first and
+        # raised as a RuntimeError, a script's `except Exception:` kept
+        # printing and the buffer kept growing. The size is estimated before
+        # str() runs -- str() of a big container is one long C call.
+        separator = 1 if self.output_buffer else 0
+        remaining = self.config.max_output_length - self._output_len - separator
+        estimate = sum(len(a) if isinstance(a, str) else estimate_text_size(a, remaining)
+                       for a in args) + max(len(args) - 1, 0)
+        # A container's estimate may run a little over its text; twice the
+        # remaining room refuses only what is clearly too large, the exact
+        # check below does the rest.
+        if estimate > 2 * remaining + 64:
+            raise OutputLimitExceeded("Output exceeds maximum allowed length")
+        output = " ".join(str(arg) for arg in args)
+        if len(output) > remaining:
+            raise OutputLimitExceeded("Output exceeds maximum allowed length")
         self.output_buffer.append(output)
-        
-        # Check output size limit
-        total_output = "\n".join(self.output_buffer)
-        if len(total_output) > self.config.max_output_length:
-            raise RuntimeError("Output exceeds maximum allowed length")
+        self._output_len += separator + len(output)
     
     def check_timeout(self):
-        """Check if execution has timed out."""
-        if self.start_time and time.time() - self.start_time > self.config.max_execution_time:
+        """Check if execution has timed out -- and the memory fuse."""
+        now = time.time()
+        if self.start_time and now - self.start_time > self.config.max_execution_time:
             raise TimeoutError(f"Execution exceeded {self.config.max_execution_time} seconds")
+        if now >= self._next_memory_check:
+            self._next_memory_check = now + _MEMORY_CHECK_SECONDS
+            self._check_memory()
+
+    def _check_memory(self):
+        rss = self._read_rss()
+        if rss is None:
+            return
+        if self._rss_start is None:
+            self._rss_start = rss
+        elif rss - self._rss_start > self._memory_fuse_bytes:
+            raise MemoryLimitExceeded(
+                f"Memory grew by more than {self._memory_fuse_bytes // (1024 * 1024)} MB "
+                f"during the script; aborted")
     
     def check_loop_timeout(self, loop_start_time):
         """Check if a loop has timed out."""
@@ -122,12 +408,16 @@ class SafeExecutor:
             if len(args) != 1:
                 raise ValueError("mean() takes exactly one argument")
             values = args[0]
+            self._guard_content(values)
             if not values:
                 raise ValueError("mean() requires non-empty sequence")
             return sum(values) / len(values)
         elif func_name == "median":
             if len(args) != 1:
                 raise ValueError("median() takes exactly one argument")
+            if hasattr(args[0], "__len__"):
+                self._refuse_sort(len(args[0]))
+            self._guard_content(args[0])
             values = sorted(args[0])
             n = len(values)
             if n == 0:
@@ -140,6 +430,7 @@ class SafeExecutor:
             if len(args) != 1:
                 raise ValueError("mode() takes exactly one argument")
             values = args[0]
+            self._guard_content(values)
             if not values:
                 raise ValueError("mode() requires non-empty sequence")
             counts = {}
@@ -152,6 +443,7 @@ class SafeExecutor:
             if len(args) != 1:
                 raise ValueError("stdev() takes exactly one argument")
             values = args[0]
+            self._guard_content(values)
             if len(values) < 2:
                 raise ValueError("stdev() requires at least 2 values")
             mean_val = sum(values) / len(values)
@@ -161,20 +453,25 @@ class SafeExecutor:
         elif func_name == "print":
             self.safe_print(*args)
             return None
-        elif func_name == "min":
+        elif func_name in ("min", "max"):
+            # key= (a lambda) and default= pass through; they were dropped,
+            # so max(rows, key=...) failed.
+            extra = {k: kwargs[k] for k in ("key", "default") if k in kwargs}
             if len(args) == 1:
-                return min(args[0])
-            else:
-                return min(args)
-        elif func_name == "max":
-            if len(args) == 1:
-                return max(args[0])
-            else:
-                return max(args)
+                self._guard_content(args[0])
+                return getattr(builtins, func_name)(args[0], **extra)
+            self._guard_content(args)
+            return getattr(builtins, func_name)(args, **extra)
         elif func_name == "sum":
+            self._guard_content(args[0] if args else args)
             if len(args) == 1:
                 return sum(args[0])
             elif len(args) == 2:
+                # A list or text start makes sum() a quadratic concatenation
+                # of everything in one C call.
+                if not isinstance(args[1], (int, float)):
+                    raise ValueError("sum() adds numbers; use extend() for lists "
+                                     "or join() for text")
                 return sum(args[0], args[1])
             else:
                 return sum(args[0])
@@ -202,6 +499,18 @@ class SafeExecutor:
             except Exception as e:
                 raise ValueError(f"Error evaluating range(): {e}")
         elif func_name in ["round", "abs", "int", "float", "str", "bool", "sorted"]:
+            if func_name == "sorted" and args and hasattr(args[0], "__len__"):
+                self._refuse_sort(len(args[0]))
+                self._guard_content(args[0])
+            elif func_name in ("str", "int"):
+                self._guard_type_call(func_name, args)
+            elif (func_name == "round" and len(args) == 2 and isinstance(args[0], int)
+                    and isinstance(args[1], int) and args[1] < -_MAX_ROUND_DIGITS):
+                # CPython computes 10**-ndigits for an int: round(1, -10**7)
+                # stood the event loop still for 5.75 s.
+                raise ValueError(
+                    f"round() ndigits too small ({args[1]}); rejected to avoid "
+                    f"blocking the interpreter")
             return getattr(builtins, func_name)(*args, **kwargs)
         elif func_name == "list":
             if len(args) == 0:
@@ -228,6 +537,7 @@ class SafeExecutor:
             if len(args) == 0:
                 return set()
             elif len(args) == 1:
+                self._guard_type_call("set", args)
                 return set(args[0])
             else:
                 raise ValueError("set() takes at most 1 argument")
@@ -354,7 +664,13 @@ class SafeExecutor:
             if len(args) == 2:
                 return math.pow(args[0], args[1])
             elif len(args) == 3:
-                # pow(base, exp, mod) - Python builtin version
+                # pow(base, exp, mod) - Python builtin version; one C call.
+                if any(isinstance(a, int) and abs(a).bit_length() > _MAX_POWMOD_BITS
+                       for a in args[1:]):
+                    raise ValueError(
+                        f"pow() exponent or modulus too large (over "
+                        f"{_MAX_POWMOD_BITS} bits); rejected to avoid blocking "
+                        f"the interpreter")
                 return pow(args[0], args[1], args[2])
             else:
                 raise ValueError("pow() takes 2 or 3 arguments")
@@ -370,9 +686,11 @@ class SafeExecutor:
         elif func_name == "format":
             if len(args) < 1 or len(args) > 2:
                 raise ValueError("format() takes 1 or 2 arguments")
+            self._guard_text(args[0])
             if len(args) == 1:
                 return format(args[0])
             else:
+                self._guard_format_spec(args[1])
                 return format(args[0], args[1])
         elif func_name == "hex":
             if len(args) != 1:
@@ -716,7 +1034,7 @@ class SafeExecutor:
                     if should_handle:
                         # Bind exception to variable if specified
                         if handler.name:
-                            self.variables[handler.name] = str(e)
+                            self.variables[handler.name] = self._exception_text(e)
                         
                         # Execute except block
                         try:
@@ -776,7 +1094,7 @@ class SafeExecutor:
                     raise exc_value
             
         else:
-            # Use a specific exception type to trigger fallback to sandboxed_python
+            # Answered as an unsupported_feature error
             raise UnsupportedFeatureError(f"Unsupported AST node type: {type(node).__name__}")
     
     def eval_expression(self, node):
@@ -917,7 +1235,8 @@ class SafeExecutor:
                 kwargs = {}
                 for keyword in node.keywords:
                     kwargs[keyword.arg] = self.eval_expression(keyword.value)
-                
+                self._guard_method_size(obj, method_name, args, kwargs)
+
                 # Allow safe list methods
                 if isinstance(obj, list) and method_name in [
                     "append", "extend", "insert", "remove", "pop", "clear", "count", "index",
@@ -966,6 +1285,9 @@ class SafeExecutor:
             # Check if it's a lambda or callable variable
             elif func_name in self.variables:
                 func_obj = self.variables[func_name]
+                seeded = _SEEDED_BY_TYPE.get(func_obj) if isinstance(func_obj, type) else None
+                if seeded is not None:
+                    self._guard_type_call(seeded, args)
                 if callable(func_obj):
                     return func_obj(*args, **kwargs)
                 else:
@@ -1004,6 +1326,7 @@ class SafeExecutor:
                 elif isinstance(value, ast.FormattedValue):
                     # Formatted expression part like {name} or {x:.2f}
                     expr_value = self.eval_expression(value.value)
+                    self._guard_text(expr_value)
                     
                     # Handle format specification if present
                     if value.format_spec:
@@ -1011,6 +1334,7 @@ class SafeExecutor:
                         if isinstance(format_spec, ast.JoinedStr):
                             # Nested f-string in format spec - evaluate it
                             format_spec = self.eval_expression(format_spec)
+                        self._guard_format_spec(format_spec)
                         try:
                             formatted = format(expr_value, str(format_spec))
                         except (ValueError, TypeError) as e:
@@ -1315,7 +1639,16 @@ class SafeExecutor:
             # Attribute access: obj.attr
             obj = self.eval_expression(node.value)
             attr_name = node.attr
-            
+
+            # A method taken as a value (`f = s.ljust`) is size-guarded when
+            # called, like a direct method call.
+            if ((isinstance(obj, str) and attr_name in _GROWING_STR_METHODS)
+                    or (isinstance(obj, list) and attr_name in _GUARDED_LIST_METHODS)):
+                def guarded(*args, **kwargs):
+                    self._guard_method_size(obj, attr_name, args, kwargs)
+                    return getattr(obj, attr_name)(*args, **kwargs)
+                return guarded
+
             # Safe attribute access for common types
             if isinstance(obj, dict):
                 if attr_name == "items":
@@ -1471,13 +1804,16 @@ class SafeExecutor:
                 raise RuntimeError(f"Attribute access not allowed on {type(obj).__name__}")
             
         else:
-            # Use UnsupportedFeatureError to trigger fallback for other unsupported expressions
+            # Answered as an unsupported_feature error
             raise UnsupportedFeatureError(f"Unsupported expression type: {type(node).__name__}")
     
     def execute(self, code):
         """Execute Python code with loop and if statement support."""
         self.start_time = time.time()
         self.output_buffer.clear()
+        self._output_len = 0
+        self._rss_start = None
+        self._next_memory_check = 0.0
         
         try:
             # Parse the code
@@ -1504,17 +1840,19 @@ class SafeExecutor:
                 "error": None
             }
             
-        except UnsupportedFeatureError:
-            # Re-raise to trigger fallback to sandboxed_python
-            raise
-        except Exception as e:
+        except (Exception, OutputLimitExceeded, MemoryLimitExceeded) as e:
             from .errors import format_error_for_llm, SyntaxError as ScriptSyntaxError
+
+            # str() of an error whose argument is a huge container (a KeyError
+            # on a tuple key, ValueError(big_list)) is the same long C call as
+            # str() of the container.
+            if estimate_text_size(e.args, self._max_seq_len) > self._max_seq_len:
+                e = ValueError(self._exception_text(e)).with_traceback(e.__traceback__)
             
-            # Determine error type and format appropriately
-            error_str = str(e).lower()
-            if ("expected" in error_str or "invalid syntax" in error_str or 
-                "unexpected eof" in error_str or "incomplete" in error_str or
-                isinstance(e, (SyntaxError, ScriptSyntaxError))):
+            # By type only: matching words in the message ("expected",
+            # "incomplete") made `raise ValueError("expected a number")` and
+            # an unpacking error syntax errors without a line.
+            if isinstance(e, (SyntaxError, ScriptSyntaxError)):
                 error_info = format_error_for_llm(ScriptSyntaxError(str(e)), code)
             else:
                 error_info = format_error_for_llm(e, code)
@@ -1592,4 +1930,5 @@ class SafeExecutor:
         })
         self.user_functions.clear()
         self.output_buffer.clear()
+        self._output_len = 0
         self.start_time = None

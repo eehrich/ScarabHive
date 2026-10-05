@@ -1,0 +1,283 @@
+@database "example"
+@author "Enrico Ehrich"
+@$VER: example.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Example plugin"
+@{h1}Example plugin
+
+This plugin is a template for plugin authors: a small tool server to copy
+when you start a plugin of your own. Its three tools are deliberately
+trivial -- a calculator, a text formatter and a status report -- so that
+what remains to read is the pattern: how tools are declared and routed,
+how settings are read, and the contract every tool handler keeps. It has
+no hooks, no panel and stores nothing. It is switched on in the shipped
+configuration, but no shipped agent is allowed its tools.
+
+@{code}
+For plugin authors
+  @{"  What each part shows  " link template}
+
+For agents and developers
+  @{"  The calculator  " link calculator}
+  @{"  The formatter  " link formatter}
+  @{"  The status report  " link status}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node template "What each part shows"
+@{h1}What each part shows
+
+Copy the folder, rename it (the folder name is the plugin type), then
+replace the tools. The long form of every point is
+@{" Writing a plugin " link scarabhive/plugins} and
+@{" Tools " link scarabhive/tools}.
+
+@{table}
+File | Shows
+plugin.toml | the manifest: name, @{tt}type = ["tool-server"]@{utt}, the entrypoint @{tt}plugin:PLUGIN_FACTORY@{utt}, @{tt}requires@{utt}
+plugin.py | the factory: the server class itself, called as (name, system_config, server_config)
+schema.yaml | tools named @{tt}{{ name }}_calculator@{utt}: the instance name becomes the prefix. The @{tt}config:@{utt} block only documents the settings; the code holds the defaults
+server.py | a @{tt}SchemaBasedToolServer@{utt} with one async method per tool, named without the prefix -- @{tt}example_calculator@{utt} runs @{tt}calculator()@{utt}; no @{tt}call()@{utt} of its own
+cli.py | an optional command line that drives the handlers without an agent
+tests/ | tools called directly and through @{tt}call_with_status@{utt}, the path agents use
+@{body}
+
+@{h2}The handler contract
+
+Every handler in @{tt}server.py@{utt} does the four things the framework
+does not do for it:
+
+@{bullet}@{b}Checks its own arguments.@{ub} The framework does not validate
+arguments against the schema; @{tt}required@{utt} and @{tt}enum@{utt} are
+hints to the model. The status tool, for instance, refuses the string
+@{tt}"false"@{utt} for @{tt}verbose@{utt} -- it is truthy and would switch
+the detail on.
+@{bullet}@{b}Answers errors, does not raise them.@{ub}
+@{tt}{"status": "error", "error": "..."}@{utt}, the text telling the model
+what to change.
+@{bullet}@{b}Ends its status line with the result.@{ub} The helper
+@{tt}_end()@{utt} calls @{tt}status.end()@{utt} with a line such as
+@{tt}add 10, 5 = 15@{utt}; without it the chat shows only "completed". An
+error answer needs no line of its own: the framework reports it.
+@{bullet}@{b}Keeps its answer bounded.@{ub} The formatter refuses text
+longer than @{tt}max_text_length@{utt} instead of echoing any length back.
+
+@{h2}What it does not show
+
+Hooks, a panel, storage (data paths come from @{tt}data_path()@{utt}),
+cancellation, and reloading settings without a restart. Plugins that do:
+@{" Hooks " link scarabhive/hooks},
+@{" Panels and the UI kit " link scarabhive/panels}.
+@endnode
+
+@node calculator "The calculator"
+@{h1}The calculator
+
+@{tt}example_calculator@{utt} (the prefix follows the instance name)
+applies one arithmetic operation to two numbers and rounds the result.
+
+@{table}
+Parameter | Meaning
+operation | required; @{tt}add@{utt}, @{tt}subtract@{utt}, @{tt}multiply@{utt} or @{tt}divide@{utt}
+a | required; a number, or text that reads as one (@{tt}"5"@{utt}, @{tt}"1e3"@{utt}). Not true/false, not infinite
+b | required; as @{tt}a@{utt}
+@{body}
+
+The operation runs in decimal arithmetic, then the result is rounded to
+@{tt}precision@{utt} decimals (setting, default 2; halves round to even).
+A result with more digits than decimal arithmetic holds (28) is returned
+unrounded -- at that size a float has no decimals left anyway.
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+operation | the operation
+operands | a and b, as floats
+result | the rounded result, as a float
+precision | the decimals it was rounded to
+@{body}
+
+@{h2}Errors
+
+@{table}
+error | When
+Invalid operation '<operation>'. Valid: ['add', 'subtract', 'multiply', 'divide'] | missing or unknown operation
+Missing required parameters: a, b | a or b missing
+a and b must be numbers, got <a> and <b> | not readable as a number
+a and b must be finite numbers within float range | infinite, not a number, or beyond a float
+Division by zero is not allowed | divide with b 0
+The result of <operation> is too large for a float | the result is beyond a float (1e200 times 1e200)
+@{body}
+
+@{h2}An example
+
+@{code json}
+{"operation": "divide", "a": 1, "b": 3}
+@{body}
+
+@{code json}
+{"operation": "divide", "operands": [1.0, 3.0], "result": 0.33, "precision": 2}
+@{body}
+@endnode
+
+@node formatter "The formatter"
+@{h1}The formatter
+
+@{tt}example_formatter@{utt} applies one transformation to a text.
+
+@{table}
+Parameter | Meaning
+text | required; at most @{tt}max_text_length@{utt} characters (setting, default 1000). Longer text is refused, not cut
+format | required; @{tt}uppercase@{utt}, @{tt}lowercase@{utt}, @{tt}title@{utt} or @{tt}reverse@{utt}
+@{body}
+
+@{tt}title@{utt} is Python's: every letter after a non-letter becomes a
+capital, so "it's" becomes "It'S". @{tt}reverse@{utt} reverses the
+characters; an emoji built from several characters falls apart.
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+original | the text as given
+format | the transformation
+formatted | the result
+length | characters in the result -- can differ from the original ("ß" in uppercase is "SS")
+@{body}
+
+@{h2}Errors
+
+@{table}
+error | When
+text must be a string | text missing or not text
+Text length <n> exceeds maximum <max> | text longer than the setting
+Invalid format '<format>'. Valid: ['uppercase', 'lowercase', 'title', 'reverse'] | missing or unknown format
+@{body}
+
+@{h2}An example
+
+@{code json}
+{"text": "hello world", "format": "title"}
+@{body}
+
+@{code json}
+{"original": "hello world", "format": "title", "formatted": "Hello World", "length": 11}
+@{body}
+@endnode
+
+@node status "The status report"
+@{h1}The status report
+
+@{tt}example_status@{utt} reports the server's name, how many tools it
+has and, on request, its settings.
+
+@{table}
+Parameter | Meaning
+verbose | true adds the settings and the tool names; default false. Anything but true or false is an error: "verbose must be true or false, got <value>"
+@{body}
+
+@{table}
+Field | Meaning
+server_name | the instance name
+status | always @{tt}active@{utt}
+tools_count | 3
+version | @{tt}1.0.0@{utt}, fixed in the code
+config | with verbose: @{tt}precision@{utt} and @{tt}max_text_length@{utt}
+available_tools | with verbose: the three tool names
+@{body}
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Tool and parameter descriptions come from @{tt}schema.yaml@{utt}; the
+three tools together are about 1,230 characters in every request of an
+agent allowed them.
+
+@{h2}Errors
+
+Every refusal is an answer with @{tt}status@{utt} @{tt}error@{utt} and the
+texts listed under each tool; none raises. The model reads what to
+change from the text.
+
+@{h2}The status line
+
+The chat's status line ends with the result:
+
+@{table}
+Tool | Line
+calculator | @{tt}add 10, 5 = 15@{utt}
+formatter | @{tt}reverse: 5 -> 5 chars@{utt}
+status | @{tt}example: active, 3 tools@{utt}
+@{body}
+
+An error ends the line with the error text.
+
+@{h2}Tokens and cache
+
+Answers are ordinary tool results appended to the history; the plugin
+injects nothing and changes nothing earlier, so the prompt cache stays
+intact. The largest answer is the formatter's: the text twice, at most
+about 2,000 characters with the default setting.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt} is there and switched on:
+
+@{code yaml}
+plugins:
+  servers:
+    example:
+      type: example
+      enabled: true
+@{body}
+
+No shipped agent allows its tools. To give them to an agent, add to its
+list:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+example/*"
+@{body}
+
+@{h2}Server settings
+
+Flat keys in the server entry, read once when the server is created;
+after a change, restart.
+
+@{table}
+Key | Default in code | Meaning
+precision | 2 | decimals the calculator rounds to
+max_text_length | 1000 | longest text the formatter accepts
+@{body}
+
+Both go through @{tt}int()@{utt}: a fraction is cut (2.9 is 2), and a
+value that is no number stops the server from being created.
+
+@{h2}Dependencies and data
+
+None beyond the core. The plugin stores nothing.
+
+@{h2}Running it on its own
+
+From the repository root, with @{tt}src@{utt} on the Python path:
+
+@{code text}
+python -m plugins.example.cli calculator -o add -a 10 -b 5 [-p 2]
+python -m plugins.example.cli formatter -t "hello world" -f uppercase [-m 1000]
+python -m plugins.example.cli status [-v] [-p 2] [-m 1000]
+@{body}
+
+It builds a server named @{tt}cli@{utt} with the given settings, prints
+the answer as JSON and exits with 1 when the answer is an error.
+@endnode

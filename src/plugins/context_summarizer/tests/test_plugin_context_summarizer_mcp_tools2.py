@@ -333,10 +333,10 @@ async def test_summarize_preserves_system_messages(plugin, mock_agent_with_sessi
     # Get the updated messages
     updated_messages = mock_agent_with_session._session_tracker.set_compacted_messages.call_args[0][1]
 
-    # First message should still be system message
-    first_msg = updated_messages[0]
-    first_msg_dict = first_msg.model_dump() if hasattr(first_msg, 'model_dump') else first_msg
-    assert first_msg_dict['role'] == 'system'
+    # The prompt is not summarized -- and not staged either: the session keeps the conversation, the prompts
+    # are rendered anew each turn (staged, the stale copy went out behind the fresh one on every later turn).
+    assert [m for m in updated_messages if m.role == 'system'] == []
+    assert updated_messages[0].name == '__context_summary__'
 
 
 @pytest.mark.asyncio

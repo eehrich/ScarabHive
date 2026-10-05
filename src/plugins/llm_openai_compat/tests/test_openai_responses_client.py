@@ -113,7 +113,9 @@ class TestExtractVerbatimItems:
         items = c._extract_verbatim_items(msg)
         assert [i["id"] for i in items] == ["rs_1", "fc_2"]
 
-    def test_foreign_model_blocks_are_skipped(self):
+    def test_a_foreign_block_makes_the_whole_message_foreign(self):
+        """A merged message replayed in part lost the foreign half's calls and kept their outputs:
+        rebuilt from content/tool_calls instead."""
         c = _client()
         msg = {"role": "assistant", "reasoning_details": [
             {"format": RESPONSES_ITEMS_FORMAT, "model": "other/model",
@@ -121,8 +123,7 @@ class TestExtractVerbatimItems:
             {"format": RESPONSES_ITEMS_FORMAT, "model": c.model,
              "items": [{"type": "reasoning", "id": "rs_ours"}]},
         ]}
-        items = c._extract_verbatim_items(msg)
-        assert [i["id"] for i in items] == ["rs_ours"]
+        assert c._extract_verbatim_items(msg) is None
 
     def test_no_matching_block_returns_none(self):
         c = _client()

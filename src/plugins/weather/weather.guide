@@ -1,0 +1,304 @@
+@database "weather"
+@author "Enrico Ehrich"
+@$VER: weather.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Weather"
+@{h1}Weather
+
+Weather gives an agent one tool that looks up the current weather and a
+forecast of up to seven days for a place. It asks free public services --
+met.no (the Norwegian Meteorological Institute) and wttr.in worldwide,
+the US National Weather Service for places in the US -- so it needs no
+account and no key. The answer starts with a few lines of plain text that
+sum it up; the data follows, one entry per day. It has no hooks and no
+panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  The forecast tool  " link forecast}
+  @{"  The sources  " link sources}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node forecast "The forecast tool"
+@{h1}The forecast tool
+
+The tool is named after the instance: @{tt}weather_forecast@{utt} in the
+default setup. It looks up the place, fetches its weather from one source
+and answers with a summary and the source's data.
+
+@{h2}Parameters
+
+The framework does not check the arguments against the schema; what
+follows is what the code does with them.
+
+@{table}
+Parameter | Meaning
+location | the place; required. What a source accepts differs, see @{" The sources " link sources}
+source | met.no (default), wttr.in or weather.gov; case does not matter. Anything else answers an error
+days | forecast days, counted from today; default 3, also when null. A value below 1 is taken as 1, above 7 as 7, a fraction is cut (2.9 is 2). Not a number: an error
+units | metric (default) or imperial. Only wttr.in follows it; the other sources answer in their own units
+summary_format | daily (default) or hourly. hourly adds each day's time steps to the met.no and wttr.in data; the summary is the same. Any other value counts as daily
+@{body}
+
+An empty or null @{tt}source@{utt}, @{tt}units@{utt} or
+@{tt}summary_format@{utt} takes the default.
+
+@{h2}Which source answers
+
+wttr.in with more than 3 days: met.no answers instead (wttr.in has
+only three).
+
+The @{tt}source@{utt} field of the answer says which one it was.
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+summary | a few lines of text, see below
+status | success or error
+location | the location as it was asked for
+source | the source that answered
+units | metric or imperial: the units the numbers are in, which need not be the requested ones
+coordinates | lat and lon the place was found at (not with wttr.in)
+current | the current conditions (met.no and wttr.in; missing with weather.gov)
+forecast | one entry per day; what an entry holds depends on the source
+@{body}
+
+The summary, for met.no:
+
+@{code text}
+Weather for Munich:
+Currently: 12.2°C, humidity 84.4%, wind 1.5 m/s
+
+Forecast:
+  2026-09-30: 10.8°C to 24.2°C
+  2026-10-01: 12.0°C to 23.6°C
+  2026-10-02: 14.6°C to 16.2°C, rain expected (7.4 mm)
+@{body}
+
+@{bullet}It lists at most the first three forecast days, however many
+were asked for; the data has all of them.
+@{bullet}The units are those of the answer: °C for metric, °F for
+imperial; wind in m/s for met.no, km/h or mph for wttr.in.
+@{bullet}Humidity or wind of 0 are left out of the current line.
+@{bullet}Rain is only noted for met.no: the day's total, see
+@{" The sources " link sources}.
+@{bullet}For weather.gov a day's range is its night and day temperature.
+A day whose lowest and highest value are the same -- one weather.gov
+period, a met.no first day of a single hour -- shows one value
+("2026-09-29: 60°F").
+
+@{h2}Errors
+
+@{table}
+error | When
+Missing required parameter: location | location is empty or missing
+days must be a whole number from 1 to 7, got 'many' | days is not a number
+Unsupported weather source: <name> | an unknown source
+Weather request cancelled by user | the agent's run was stopped before the lookup began; the answer also has @{tt}cancelled: true@{utt}
+@{body}
+
+A failed lookup answers @{tt}status: error@{utt} with the failure in
+@{tt}error@{utt}, the @{tt}location@{utt} and @{tt}source@{utt}, and
+@{tt}message@{utt} "Failed to fetch weather data from met.no". The usual
+@{tt}error@{utt} texts:
+
+@{bullet}"Could not find coordinates for location: Xyz" -- the place was
+not found (met.no).
+@{bullet}"Could not find coordinates for US location: Seattle" --
+weather.gov found no US address.
+@{bullet}The HTTP error of a service, for example "Client error '404 Not
+Found' for url ...", or a network error. A service that does not connect
+or answer within 30 seconds fails the call.
+
+The plugin looks for a stopped run only before the lookup begins.
+
+@{h2}An example
+
+@{code json}
+{"location": "Munich"}
+{"location": "Oslo", "days": 7}
+{"location": "Oslo", "days": 2, "summary_format": "hourly"}
+{"location": "London", "source": "wttr.in", "units": "imperial"}
+{"location": "1600 Pennsylvania Ave NW, Washington, DC", "source": "weather.gov"}
+@{body}
+@endnode
+
+@node sources "The sources"
+@{h1}The sources
+
+@{table}
+source | Where | Location | Days | Units
+met.no | worldwide | a place name, an address or "lat,lon" | 1 to 7 | always metric, wind in m/s
+wttr.in | worldwide | a place name or "lat,lon" | 1 to 3 | metric or imperial
+weather.gov | US only | a US street address with city and state | 1 to 7 | always imperial
+@{body}
+
+met.no finds the place with OpenStreetMap's
+Nominatim and take its first hit. Nominatim allows about one request per
+second; many lookups in a row can be refused.
+
+@{h2}met.no
+
+@{bullet}@{tt}current@{utt}: time, temperature, humidity, pressure,
+wind speed (m/s) and wind direction (degrees) of the first time step.
+@{bullet}@{tt}forecast@{utt}: one entry per local day with
+@{tt}date@{utt}, @{tt}min_temp@{utt}, @{tt}max_temp@{utt},
+@{tt}precipitation@{utt} (mm), @{tt}wind_max@{utt} (m/s) and
+@{tt}symbols@{utt}, met.no's weather symbols ("rain", "partlycloudy_day").
+@{bullet}Precipitation and symbols come from the six-hour periods that
+start at 00, 06, 12 and 18 UTC: the total of their amounts and their
+symbols in order. Before the first of these periods -- the rest of the
+current one -- the rain is added hour by hour, so today's total covers
+the rest of today.
+@{bullet}min_temp and max_temp take every time step of the day and the
+lowest and highest temperature met.no gives for each six-hour period, so
+the later days, which have only four time steps, still get their real
+range. wind_max is the highest wind of the time steps.
+@{bullet}A six-hour period counts for the local day its middle falls
+in. Where the local offset is not a multiple of six hours, up to three
+hours of its rain and its temperatures belong to the neighbouring day.
+@{bullet}The local day is estimated from the longitude -- one hour per 15
+degrees, without daylight saving time -- so a day can start an hour off.
+Today counts as the first day and begins at the current hour: its range,
+rain and symbols cover only the rest of it.
+@{bullet}With @{tt}summary_format: hourly@{utt} each day also has
+@{tt}hourly@{utt}, its time steps: hourly for about two and a half days,
+six-hourly after that, each with temperature, humidity, pressure, wind
+and, where met.no gives it, @{tt}precipitation@{utt} (mm in the next six
+hours) and a @{tt}weather_symbol@{utt}.
+
+@{h2}wttr.in
+
+@{bullet}@{tt}current@{utt}: temperature, feels_like, humidity,
+wind speed and direction, pressure, visibility, a description and the
+observation time. The numbers come as text ("15").
+@{bullet}@{tt}forecast@{utt}: per day max_temp, min_temp and avg_temp
+(as text), and from the day's three-hour steps @{tt}wind_speed@{utt} (the
+highest), @{tt}humidity@{utt} (the mean, %), @{tt}chance_of_rain@{utt}
+(the highest, %) and @{tt}weather_desc@{utt}, the different descriptions
+in order ("Sunny", "Light rain").
+@{bullet}With @{tt}summary_format: hourly@{utt} each day also has
+@{tt}hours@{utt}, eight three-hour steps with temperature, wind,
+humidity, pressure, description and chance_of_rain.
+@{bullet}@{tt}units: imperial@{utt} gives °F and mph; any other value
+metric (°C, km/h).
+
+@{h2}weather.gov
+
+The address goes to the US Census geocoder, which wants a street
+address: "Seattle, WA" alone is not found. The forecast is the National
+Weather Service's, in day and night periods.
+
+@{bullet}No @{tt}current@{utt}.
+@{bullet}@{tt}forecast@{utt}: per date a @{tt}day@{utt} and a
+@{tt}night@{utt} period, each with temperature, temperature_unit (F),
+wind_speed and wind_direction as text ("5 to 10 mph"), a short and a
+detailed forecast.
+@{bullet}A night on its own is dated by the evening it belongs to (its
+start minus 12 hours). A forecast issued in the evening starts with that
+night ("Tonight"), one issued after midnight with the rest of the night
+before ("Overnight", dated yesterday). The last date may have only its
+day. At most twice @{tt}days@{utt} periods are read, so the list can
+have one date more than asked for.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The description and the parameters come from the plugin's
+@{tt}schema.yaml@{utt}, the same for every instance but the name:
+
+@{code text}
+Get current weather and multi-day forecasts. weather.gov covers only the US.
+@{body}
+
+The parameter texts are short: location "City or coordinates ('Munich',
+'48.1351,11.5820'); weather.gov: US street address", units "Units; only
+wttr.in follows them", summary_format "hourly adds the time
+steps"; source has only its list of values. The schema's defaults
+(met.no, 3, metric, daily) are the ones the code applies.
+
+@{h2}Errors, word for word
+
+@{bullet}"Missing required parameter: location"
+@{bullet}"days must be a whole number from 1 to 7, got 'many'"
+@{bullet}"Unsupported weather source: foo"
+@{bullet}"Weather request cancelled by user"
+@{bullet}"Could not find coordinates for location: Xyz"
+@{bullet}"Could not find coordinates for US location: Seattle"
+
+@{h2}The status line
+
+"Fetching weather for Munich", then "Successfully fetched weather for
+Munich", or "Exception during weather fetch: <error>" when the lookup
+failed. A refused call shows its error text.
+
+@{h2}Tokens and cache
+
+The tool definition is the same on every request, so the prompt cache
+holds; the plugin adds nothing to the system prompt. The answer is an
+ordinary tool result, appended. Measured for Munich: met.no about 600
+characters for one day, 1,000 for three and 1,700 for seven; wttr.in
+about 1,100 for three days; weather.gov 2,000 to
+3,000. @{tt}summary_format: hourly@{utt} makes it many times larger --
+met.no 17,000 characters for seven days, wttr.in 5,200 for three -- so
+ask for it only when the course of a day matters.
+
+@{h2}Known gaps
+
+@{bullet}No sea data: the former source marine.weather.gov computed sea
+temperature and wave height from latitude and month -- invented, so it
+was removed. A source name it knew now answers an error.
+@{bullet}Only wttr.in follows @{tt}units@{utt}; the answer's
+@{tt}units@{utt} field says what the numbers are.
+@{bullet}met.no's local day is estimated from the longitude and ignores
+daylight saving time.
+@{bullet}A stopped run is only noticed before the lookup begins.
+@{bullet}Nothing is cached: every call asks the services again, and
+Nominatim may refuse fast repeats.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration
+(@{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    weather:
+      type: weather
+      enabled: true
+@{body}
+
+An agent sees the tool when its allowlist names it:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+weather/*"
+@{body}
+
+It needs internet access to the services (api.met.no, wttr.in,
+nominatim.openstreetmap.org, geocoding.geo.census.gov, api.weather.gov)
+and httpx, which the core already installs. No key, no account.
+
+@{h2}Server settings
+
+There are none. The @{tt}ssl_verify@{utt} in the @{tt}config:@{utt} block
+of @{tt}schema.yaml@{utt} is not read: certificates are always verified.
+
+The plugin keeps nothing on disk and caches nothing; every call asks the
+services again.
+@endnode

@@ -1,0 +1,220 @@
+@database "llm_router"
+@author "Enrico Ehrich"
+@$VER: llm_router.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "LLM router"
+@{h1}LLM router
+
+This plugin lets an agent ask another model a question: it sends messages
+to an LLM profile of @{tt}config/llm.yaml@{utt} -- one call, no tools --
+and hands the answer back as a tool result. An agent running on a fast,
+cheap model can get a second opinion from a stronger one, or the other way
+round hand a bulk job to a cheap one, without a sub-agent. It has two tools,
+no hooks and no panel, and it is off by default.
+
+How models and profiles are configured is in
+@{" LLM models and profiles " link scarabhive/llm}; this manual covers what
+the router does with a profile.
+
+@{code}
+For agents and developers
+  @{"  llm_router_chat  " link chat}
+  @{"  llm_router_list_profiles  " link list}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node chat "llm_router_chat"
+@{h1}llm_router_chat
+
+Sends a conversation to the model behind one profile and returns its text
+answer. The tool is named after the instance: @{tt}<instance>_chat@{utt}.
+
+@{h2}What the called model gets
+
+@{bullet}Exactly the messages given: no system prompt of its own, no tools,
+nothing of the calling agent's conversation.
+@{bullet}The profile's model entry as configured. The calling agent's
+@{tt}llm_params@{utt} do not apply, and there is no fallback: a profile is
+one model entry, and a failed call answers an error. (An agent's
+@{tt}llm_profile@{utt} is a chain with fallbacks; the router's
+@{tt}profile@{utt} is not.)
+@{bullet}A new client for every call, built the way the core builds all
+clients; a profile whose model entry is a batch model goes through the
+batch queue when the batch system runs, and the call waits for it.
+
+@{h2}Parameters
+
+@{table}
+Name | Meaning
+profile | required; a profile name of @{tt}llm_system.profiles@{utt}. The schema lists them as an enum, but nothing checks the enum: an unknown name answers the error below
+messages | a list of @{tt}{role, content}@{utt} objects, the fields of a chat message; content may be a string or a list of content parts. Wins over @{tt}message@{utt}
+message | one text, sent as a single user message; used when @{tt}messages@{utt} is missing, null or empty
+@{body}
+
+Text content goes through the core's sanitizer, which removes null
+bytes, control and zero-width characters; symbols, emoji and superscripts
+stay. Content parts are passed on unchanged. Other arguments are ignored.
+
+@{h2}Answer
+
+@{code json}
+{"content": "...", "profile": "fast", "provider": "openai_httpx", "model": "some/model-id"}
+@{body}
+
+@{table}
+Field | Meaning
+content | the model's text answer
+profile | the profile asked for
+provider | the @{tt}provider@{utt} of the profile's model entry in llm.yaml
+model | the model id the client used
+@{body}
+
+@{h2}Errors
+
+@{table}
+Answer | When
+No message or messages provided | neither argument, or both empty; a message that is not a string
+messages must be a list of {role, content} objects | @{tt}messages@{utt} is not a list
+messages[i] is not a {role, content} object | item i has no role, is not an object, or has a field of the wrong type
+Profile parameter is required | no profile (checked after the messages)
+Chat failed with profile 'x': Failed to create LLM client for profile 'x': Profile 'x' not found in LLM system profiles | an unknown profile
+Chat failed with profile 'x': <error> | the client could not be built or the call failed; the error is the provider's
+LLM routing request cancelled by user | the user cancelled the run; the answer also carries @{tt}cancelled: true@{utt} and @{tt}forced@{utt}
+@{body}
+
+Every error answer carries @{tt}error@{utt}; the two "Chat failed"
+answers also carry @{tt}profile@{utt}. A cancel the user did not ask for (the task itself was
+cancelled) is not answered: it ends the tool.
+
+@{h2}Example
+
+@{code json}
+{"profile": "think", "messages": [
+  {"role": "system", "content": "Answer in one paragraph."},
+  {"role": "user", "content": "Is a B-tree or an LSM tree better for a write-heavy log?"}]}
+@{body}
+@endnode
+
+@node list "llm_router_list_profiles"
+@{h1}llm_router_list_profiles
+
+Lists every profile of @{tt}llm_system.profiles@{utt} with the model entry
+it points at. No parameters.
+
+@{code json}
+{"profiles": {"fast": {"description": "Everyday work", "model_ref": "my-model",
+  "provider": "openai_httpx", "model": "some/model-id"}},
+ "total_count": 1}
+@{body}
+
+@{table}
+Field | Meaning
+description | the profile's description, null when it has none
+model_ref | the model entry the profile names
+provider, model | from that entry; @{tt}unknown@{utt} and the model_ref when the entry is missing
+@{body}
+
+Without an @{tt}llm_system@{utt} section the answer is
+@{tt}Failed to list profiles: Profile-based routing requires LLM system
+configuration@{utt}.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool descriptions
+
+They come from @{tt}schema.yaml@{utt}, rendered once when the server is
+built:
+
+@{code text}
+llm_router_chat: Send messages to another LLM profile and return its answer (one call, no tools).
+  profile: LLM profile name. Available: <names>. Each defines provider, model, settings.
+  messages: Array of chat messages
+  message: Single message text (alternative to messages array)
+llm_router_list_profiles: List the LLM profiles with their model and description.
+@{body}
+
+The profile names appear twice, in the enum and in the description, so the
+tool costs more tokens the more profiles llm.yaml has. The list is the one
+the server was built with; a profile added to llm.yaml reaches it after a
+restart.
+
+@{h2}Status line
+
+@{tt}Chat request using profile 'x'@{utt} while the call runs, then
+@{tt}<n> chars via 'x' -- <model>@{utt}. A failed call shows its error.
+@{tt}llm_router_list_profiles@{utt} ends with
+@{tt}Retrieved <n> profile(s)@{utt}.
+
+@{h2}Tokens and cache
+
+The answer is an ordinary tool result appended to the conversation; the
+plugin has no hooks and rewrites nothing, so the prompt cache is untouched.
+The called model's tokens are not part of the calling agent's context --
+only the answer is.
+
+@{h2}Where the call shows up
+
+The router hands the client's request reports to the
+@{tt}pre_llm_request@{utt} and @{tt}post_llm_response@{utt} hooks as calls
+without an agent, the way the decisions and speech clients report theirs:
+the message debugger and OpenTelemetry see them, and the usage tracker
+books their cost once, under the provider's name (openai_httpx, ...) with a
+context window of 0, in the calling session. The calling agent's own
+totals do not include them. This holds only for clients that report their
+plain chat calls -- see the gaps below.
+
+@{h2}Known gaps
+
+@{bullet}Not every client reports a plain chat call to the hooks. The
+batch client (a model entry with @{tt}provider: batch@{utt}), the
+@{tt}anthropic@{utt} client and the @{tt}openai@{utt} SDK client (outside
+realtime) never do, so a profile on one of them is neither seen nor booked.
+The fix belongs to those clients, not to the router.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is off in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    llm_router:
+      type: llm_router
+      enabled: false
+@{body}
+
+Set @{tt}enabled: true@{utt}; an agent sees the tools when its allowlist
+names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+llm_router/*"
+@{body}
+
+There are no server settings and no dependencies beyond the LLM provider
+plugins the profiles use, and the plugin stores nothing. The profiles are
+those of @{tt}llm_system.profiles@{utt}; which ones an agent can reach is
+not limited -- every profile in llm.yaml is offered. SSL verification
+follows @{tt}network.ssl_verify@{utt}.
+
+@{h2}From the command line
+
+@{code sh}
+python -m plugins.llm_router --profile fast --message "Hello"
+python -m plugins.llm_router --server --port 8081
+@{body}
+
+The first sends one message to a profile of the loaded configuration
+(@{tt}--config@{utt}, else @{tt}config/config.yaml@{utt} or
+@{tt}AGENT_CONFIG_PATH@{utt}) and prints the answer; it exits 1 on an error
+answer. The second serves the tools over HTTP (default port 8081).
+@endnode

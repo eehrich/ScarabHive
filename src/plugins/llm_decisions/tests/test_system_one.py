@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parents[3]))
 
 from agent_system.core.cancellation import CancellationToken
 from plugins.llm_decisions.system_one import (
+    OLLAMA,
     OPENROUTER,
     SYSTEM_ONE,
     DecisionsClient,
@@ -234,6 +235,36 @@ async def test_a_local_laya_answer_reads_like_a_jev_one():
     # nothing this host leaves out is invented: unknown cost, no id, no gateway
     assert result.cost is None and result.id is None and result.provider is None
     assert result.model == "laya-rl-agent" and result.input_tokens == 108
+
+
+#: Ollama's own example (docs.ollama.com/capabilities/decision, 0.35) -- from its
+#: documentation, not recorded here: this machine still ran 0.34.
+OLLAMA_LABEL = {"label": {"type": "choice", "instructions": "Which label fits this ticket?",
+                          "criteria": {"billing": "Payments and refunds", "bug": "Software errors",
+                                       "account": "Login and account access"}}}
+OLLAMA_ANSWER = {
+    "model": "nimble",
+    "answers": {"label": {"type": "choice", "choice": "bug",
+                          "probabilities": {"billing": 0.0125, "bug": 0.9781, "account": 0.0093},
+                          "confidence": 0.8906}},
+    "usage": {"input_tokens": 174, "output_tokens": 1},
+}
+
+
+async def test_a_local_ollama_gets_no_key_and_no_session_and_its_calls_are_booked_as_ollama_at_no_cost(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-secret")
+    sent = []
+    registry, watching = _watching_hooks()
+    with watching, _respond(_response(payload=OLLAMA_ANSWER), record=sent):
+        result = await DecisionsClient(model="nimble", host=OLLAMA, max_retries=0).decide(
+            "Our checkout has returned 500 errors since 9am.", OLLAMA_LABEL, session_id="s-9")
+
+    assert sent[0]["url"] == "http://127.0.0.1:11434/v1/systemone"
+    assert "Authorization" not in sent[0]["headers"] and "session_id" not in sent[0]["json"]
+    assert [c.llm_provider for _, c in registry.seen] == ["ollama_decisions"] * 2
+    assert result["label"].value == "bug" and result["label"].probabilities["bug"] == 0.9781
+    # Ollama bills nothing: 0, not unknown -- no price row for every model pulled.
+    assert result.cost == 0.0 and result.model == "nimble" and result.input_tokens == 174
 
 
 async def test_a_state_of_nothing_is_refused():

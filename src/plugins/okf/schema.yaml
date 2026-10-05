@@ -54,6 +54,7 @@ tools:
         required: ["bundle", "path"]
         additionalProperties: false
 
+{% if not read_only %}
   - type: function
     function:
       name: "{{ name }}_write_concept"
@@ -61,9 +62,8 @@ tools:
         Create or overwrite a concept document. A non-empty 'type' in
         'frontmatter' is REQUIRED (the write is rejected otherwise). On
         overwrite, existing extra frontmatter keys are preserved and merged
-        under the supplied ones; setting a key to null removes it. The BODY
-        is not merged — it is replaced by what you send, so always send the
-        full body, even when you only change frontmatter. Writes atomically.
+        under the supplied ones; setting a key to null removes it. A sent
+        body replaces the old one whole; omit it to keep the body.
       parameters:
         type: object
         properties:
@@ -81,6 +81,7 @@ tools:
             description: "Markdown body of the concept (may use # Schema / # Examples / # Citations sections and bundle-relative links like /tables/customers.md)."
         required: ["bundle", "path", "frontmatter"]
         additionalProperties: false
+{% endif %}
 
   - type: function
     function:
@@ -176,6 +177,7 @@ tools:
         required: ["bundle", "query"]
         additionalProperties: false
 
+{% if not read_only %}
   - type: function
     function:
       name: "{{ name }}_append_log"
@@ -227,9 +229,10 @@ tools:
             description: "Optional bundle-relative subdirectory to index. Omit for the bundle root."
           heading:
             type: string
-            description: "Optional heading for the index (defaults to the directory name)."
+            description: "Heading of the index; without 'dir' only the root's."
         required: ["bundle"]
         additionalProperties: false
+{% endif %}
 
 # Consumer hook: fold a configured bundle into agent context before each LLM
 # call ("wiki as context"). Disabled by default — enable per agent via
@@ -239,5 +242,5 @@ hooks:
     type: pre_llm_call
     enabled: false
     timeout: 5.0
-    description: "Inject relevant OKF concepts (lexical + graph-expanded) into the system prompt before LLM calls"
+    description: "Append relevant OKF concepts (lexical + graph-expanded) to the history before LLM calls"
     category: "prompt_injection"

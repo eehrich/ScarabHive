@@ -535,7 +535,7 @@
           "title": "Default Admin Password"
         },
         "default_admin_email": {
-          "default": "admin@localhost",
+          "default": "admin@example.com",
           "title": "Default Admin Email",
           "type": "string"
         },
@@ -1410,6 +1410,19 @@
           ],
           "default": null,
           "title": "Provider Affinity Minutes"
+        },
+        "prompt_cache_ttl_minutes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Cache Ttl Minutes"
         },
         "reasoning_details_mode": {
           "anyOf": [
@@ -2420,6 +2433,15 @@
           "default": null,
           "title": "Timeout"
         },
+        "connect": {
+          "default": "startup",
+          "enum": [
+            "startup",
+            "on_demand"
+          ],
+          "title": "Connect",
+          "type": "string"
+        },
         "auth": {
           "anyOf": [
             {
@@ -2720,6 +2742,20 @@
             }
           ],
           "title": "Blocked"
+        },
+        "deferred": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deferred"
         }
       },
       "title": "ToolConfig",

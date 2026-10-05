@@ -132,16 +132,17 @@ def panel_app(tmp_path: Path):
     app.dependency_overrides[get_optional_user] = lambda: viewer["user"]
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/message_debugger", StaticFiles(directory=TESTS), name="panel-tests")
-    return app, plugin
+    app.state.plugin = plugin  # the fixture closes its database; the screenshot script takes the app alone
+    return app
 
 
 @pytest.fixture(scope="module")
 def results(tmp_path_factory):
-    app, plugin = panel_app(tmp_path_factory.mktemp("message_debugger_panel"))
+    app = panel_app(tmp_path_factory.mktemp("message_debugger_panel"))
     try:
         return run_app_test_page(BROWSER, app, "tests/message_debugger/panel_tests.html", timeout=PAGE_TIMEOUT)
     finally:
-        plugin._db.close()
+        app.state.plugin._db.close()
 
 
 EXPECTED = [

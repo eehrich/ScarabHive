@@ -93,8 +93,6 @@ plugins:
             # Node definitions and execution data are large.
             context_engineer.engineer_context:
               enabled: true
-            markdown_formatter.format_markdown_output:
-              enabled: true
             # Folds in what the user's message is about: the lexical hit and
             # its linked concepts. Without hook_bundle it does nothing, silently.
             n8n_okf.okf_context_injection:

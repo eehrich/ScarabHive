@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import secrets
@@ -512,6 +513,17 @@ class FileOperations:
         import shutil
         
         try:
+            # A link goes, never what it points to: rmtree would refuse a
+            # directory link, is_file would follow one to its target.
+            if path.is_symlink() or path.is_junction():
+                os.unlink(path)
+                return {
+                    "status": "success",
+                    "path": str(path),
+                    "type": "link",
+                    "message": "Link deleted; what it pointed to is untouched"
+                }
+
             if not path.exists():
                 return {
                     "status": "error",
@@ -547,8 +559,10 @@ class FileOperations:
                             "type": "directory",
                             "message": "Empty directory deleted"
                         }
-                    except OSError as e:
-                        if "not empty" in str(e).lower() or "directory not empty" in str(e).lower():
+                    except OSError:
+                        # Asked of the directory, not of the message: Windows
+                        # words it in the system language ("ist nicht leer").
+                        if any(path.iterdir()):
                             return {
                                 "status": "error",
                                 "error": f"Directory not empty: {path}. Use recursive=true to delete non-empty directories.",
@@ -587,7 +601,7 @@ class FileOperations:
         import shutil
         
         try:
-            if not source.exists():
+            if not (source.exists() or source.is_symlink()):  # a dangling link moves too
                 return {
                     "status": "error",
                     "error": f"Source not found: {source}",
@@ -606,10 +620,28 @@ class FileOperations:
             # Create parent directories if needed
             destination.parent.mkdir(parents=True, exist_ok=True)
 
-            path_type = "file" if source.is_file() else "directory"
-            
-            # Use shutil.move for cross-device moves
-            shutil.move(str(source), str(destination))
+            link = source.is_symlink() or source.is_junction()
+            path_type = "link" if link else "file" if source.is_file() else "directory"
+
+            if path_type == "file":
+                shutil.move(str(source), str(destination))  # copies across drives
+            else:
+                # A rename, never shutil.move's copy fallback: across drives it
+                # copytree's a junction -- islink() is False for one -- and so
+                # copied what it points to, from outside, into the sandbox. A
+                # folder may hold such a junction too.
+                try:
+                    os.rename(source, destination)
+                except OSError as e:
+                    return {
+                        "status": "error",
+                        "error": f"Cannot move this {path_type} to {destination}: {e}."
+                                 + (" A link or a folder only moves within one drive."
+                                    if e.errno == errno.EXDEV else ""),
+                        "error_type": type(e).__name__,
+                        "source": str(source),
+                        "destination": str(destination)
+                    }
 
             return {
                 "status": "success",
@@ -641,7 +673,7 @@ class FileOperations:
             Dict with status, old_path, new_path, type
         """
         try:
-            if not path.exists():
+            if not (path.exists() or path.is_symlink()):  # a dangling link is renamed too
                 return {
                     "status": "error",
                     "error": f"Path not found: {path}",
@@ -667,7 +699,8 @@ class FileOperations:
                     "new_path": str(new_path)
                 }
 
-            path_type = "file" if path.is_file() else "directory"
+            link = path.is_symlink() or path.is_junction()
+            path_type = "link" if link else "file" if path.is_file() else "directory"
             path.rename(new_path)
 
             return {

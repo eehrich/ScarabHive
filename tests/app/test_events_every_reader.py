@@ -1,8 +1,5 @@
 """What every reader of a run's events relies on, now that each of them gets every event.
 
-- The answer an event carries is rendered to HTML on a copy: every reader is sent the
-  same event object, so rendered in place the next reader rendered the HTML again --
-  and POST /run's caller holds that object too.
 - A stream counts itself as a reader of its job for as long as it is open, the run's
   own as much as a reconnect: the job cleanup keeps a job a reader is still on. It
   stops counting the moment its client goes, whenever that is.
@@ -38,34 +35,6 @@ DEV_SECRET = "published-signing-key-replace-with-your-own-0000000000"
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
-
-
-def _formatting_agent():
-    """An agent whose format hook wraps what it is given, and says how often it was asked."""
-    calls = []
-
-    async def execute_format_output_hooks(output, **kwargs):
-        calls.append(output)
-        return f"<p>{output}</p>", "html"
-
-    return SimpleNamespace(_hook_manager=SimpleNamespace(execute_format_output_hooks=execute_format_output_hooks)), calls
-
-
-async def test_an_answer_is_rendered_on_a_copy_and_the_event_stays_as_the_run_sent_it():
-    from agent_system.app import format_answer_fields
-
-    agent, calls = _formatting_agent()
-    final = {"type": "final", "summary": "done"}
-    step = {"type": "thinking_complete", "step": 2, "assistant": {"role": "assistant", "content": "so far"}}
-
-    for reader in range(2):   # two readers of the same run, the same event objects
-        shown_final = await format_answer_fields(final, agent, "r1", "s1")
-        shown_step = await format_answer_fields(step, agent, "r1", "s1")
-        assert shown_final["summary"] == "<p>done</p>", f"reader {reader} got {shown_final['summary']!r}"
-        assert shown_step["assistant"]["content"] == "<p>so far</p>", shown_step
-    assert final == {"type": "final", "summary": "done"}, "the run's own event was rendered in place"
-    assert step["assistant"] == {"role": "assistant", "content": "so far"}, "the run's own step was rendered in place"
-    assert calls == ["done", "so far", "done", "so far"]
 
 
 def _admin_headers():

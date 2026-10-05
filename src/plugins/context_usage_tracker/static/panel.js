@@ -245,7 +245,7 @@ function drawAgents() {
         ${cell(value('total_completion_tokens'), number(agent.total_completion_tokens))}
         ${cell(value('total_cached_tokens'), html`${number(agent.total_cached_tokens)} <span class="pk-muted">${share === null ? '(–)' : `(${share.toFixed(0)}%)`}</span>`)}
         ${cell(value('total_cache_write_tokens'), number(agent.total_cache_write_tokens))}
-        ${cell(value('total_cost'), cost(agent.total_cost ?? 0, estimated))}
+        ${cell(value('total_cost'), cost(agent.cost_known_calls || agent.total_cost ? agent.total_cost : null, estimated))}
         ${cell(value('avg_cost'), cost(value('avg_cost'), estimated))}
         ${cell(value('avg_latency'), latency(value('avg_latency')))}
         ${cell(value('peak_tokens'), number(agent.peak_tokens))}
@@ -285,7 +285,7 @@ function drawLlms() {
   const p95 = (values) => {
     if (!values.length) return null;
     const sorted = [...values].sort((a, b) => a - b);
-    return sorted[Math.min(sorted.length - 1, Math.floor(0.95 * sorted.length))];
+    return sorted[Math.ceil(0.95 * sorted.length) - 1];  // nearest rank
   };
   // the most used first, until the viewer picks another column
   render($('llms'), html`<div class="pk-table-wrap"><table class="pk-table cu-table" data-pk-sort="llms">

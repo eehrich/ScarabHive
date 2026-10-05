@@ -109,16 +109,15 @@ class LiveRun:
         """Relay what the stream said since the last feed."""
         if self._closed:
             return
-        try:
-            for event in events:
+        for event in events:                         # one that breaks costs itself, not the rest
+            try:
                 kind = event.get("type")
-                content = (event.get("message") or {}).get("content") or []
                 if kind == "assistant":
-                    await self._assistant(event.get("message") or {}, content)
+                    await self._assistant(cli.message(event), cli.content(event))
                 elif kind == "user":
-                    await self._results(content)
-        except Exception:  # noqa: BLE001 - see the module docstring
-            logger.exception("coding_cli: relaying a run's stream failed")
+                    await self._results(cli.content(event))
+            except Exception:  # noqa: BLE001 - see the module docstring
+                logger.exception("coding_cli: relaying a run's stream failed")
 
     async def _assistant(self, message: dict, content: list) -> None:
         # Claude Code sends one event per content block of a model turn, all
@@ -145,8 +144,12 @@ class LiveRun:
         line = cli.tool_line(name, block.get("input"), self._root)[:CAP_LINE]
         self._open[str(block.get("id"))] = (request_id, name, line)
         await publish_status(AGENT, line, request_id=request_id, phase=StatusPhase.START)
+        args = block.get("input")
+        # _capped recurses: arguments nested past what it takes would cost the rest of the batch.
+        params = (_capped(args) if cli.nesting(args) <= cli.MAX_NESTING
+                  else f"(arguments nested deeper than {cli.MAX_NESTING}, not shown)")
         self._relay({"type": "tool_call", "request_id": request_id, "action": name, "step": self._step,
-                     "params": _capped(block.get("input"))})
+                     "params": params})
         self._names.append(name)
         # The step's header names what it called, as an agent's step does.
         self._relay({"type": "thinking", "step": self._step, "assistant": {

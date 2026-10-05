@@ -1,0 +1,274 @@
+@database "memory"
+@author "Enrico Ehrich"
+@$VER: memory.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Memory"
+@{h1}Memory
+
+Notes an agent keeps for later: a fact it learned, a decision, a
+preference you told it. Each memory has a title, a text, keywords and an
+importance from 1 to 10, and belongs to the chat session it was stored in.
+The agent finds them again by id or by meaning -- "how do we deploy?"
+finds a note titled "Deploy checklist". You see and search them in the
+@{b}Memory@{ub} panel; an optional hook reminds the model which memories it
+has.
+
+@{image docs/panel.png "The Memory panel with the memories of a session"}
+
+@{code}
+For users
+  @{"  The Memory panel  " link panel}
+
+For agents and developers
+  @{"  The memory tool  " link tool}
+  @{"  The memory hook  " link hook}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Memory panel"
+@{h1}The Memory panel
+
+Open it from the launcher (@{b}Context@{ub}, "Memory"), or from a session's
+info button, which opens it on that session.
+
+@{image docs/panel.png "The Memory panel"}
+
+@{h2}Which memories it shows
+
+The panel follows the chat: it shows the memories of the session open
+there and switches with it. Opened from a session's info button it stays
+on that session -- the toolbar says so, and @{b}Follow the chat@{ub} lets go
+of it. With no session open it says so.
+
+@{h2}What you see
+
+@{bullet}Three figures: how many memories, their average importance, and
+how often agents have recalled them.
+@{bullet}The 100 most recently used memories with title, the start of the
+text, id, keywords, importance, accesses and last access. A session with
+more says how many there are.
+
+@{h2}What you can do
+
+@{bullet}@{b}Search@{ub} finds memories by meaning and lists the 20
+closest with how well they match. Switching sessions drops the search.
+The list reloads every 5 seconds (the menu next to the reload button
+changes that); a search stays and only the figures are brought up to
+date, the reload button runs it again.
+@{bullet}A row -- click, Enter or Space -- opens the memory with all its
+text. @{b}Delete@{ub} there removes it, after asking.
+
+Looking at or searching memories in the panel counts as no access: the
+figures and the order of the list stay the agents' own.
+@endnode
+
+@node tool "The memory tool"
+@{h1}The memory tool
+
+The plugin gives an agent one tool, named like the plugin instance
+(@{tt}memory@{utt} in the default setup). Every call names an
+@{tt}operation@{utt}. The memories belong to the session the agent runs
+in; ids count per session: @{tt}mem_001@{utt}, @{tt}mem_002@{utt}, ...
+An id is never handed out twice, also after a delete.
+
+@{h2}Operations
+
+@{table}
+operation | Needs | Does
+store | title, content | saves a new memory
+recall | memory_id | the whole memory; counts as an access
+search | query | the memories closest in meaning, with a similarity
+list | -- | memories with their text, 50 at a time
+update | memory_id | changes the fields given, leaves the rest
+delete | memory_id | removes the memory
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+title | store, update | up to 200 characters
+content | store, update | up to 5000 characters; the text the search compares
+keywords | store, update | up to 20; left out on store, up to ten are taken from title and text
+importance | store, update | 1 to 10; a store without it is 5
+tags | store, update | free labels, returned by recall
+memory_id | recall, update, delete | an id an earlier answer returned
+query | search | what to look for, in words
+n_results | search | 1 to 20; without it the server's search_n_results (5)
+limit, offset | list | a page: up to 100, without limit 50
+sort_by | list | accessed (default), created, updated or importance
+sort_order | list | desc (default) or asc
+@{body}
+
+@{h2}Answers
+
+@{bullet}store: the new @{tt}memory_id@{utt}, title, keywords and time.
+@{bullet}recall: the whole memory, with @{tt}access_count@{utt} and
+@{tt}accessed_at@{utt} counted up; nothing else changes.
+@{bullet}search: @{tt}results@{utt} with id, title, text, similarity,
+importance, keywords and accesses, the closest first; a search counts as
+no access. The similarity is 1.0 for the same meaning; unrelated text
+still scores about 0.5, so compare results with each other rather than
+with a fixed number.
+@{bullet}list: @{tt}memories@{utt}, @{tt}total@{utt}, @{tt}count@{utt}.
+@{bullet}update: @{tt}updated_fields@{utt}; delete: @{tt}deleted: true@{utt}.
+@{bullet}A refusal is @{tt}{"error": "..."}@{utt} saying what is missing
+or which value is out of range (an importance of 11, a title over 200
+characters); nothing is kept then.
+An id that does not exist also brings @{tt}available@{utt}: the 15 most
+recently used memories with id and title, so the agent can pick the right
+one without another call. Only recall adds a @{tt}did_you_mean@{utt} --
+update and delete never guess, so no memory is changed or lost by a
+guess.
+
+@{h2}An example
+
+@{code json}
+{"operation": "store", "title": "Deploy checklist", "content": "Run the migrations before restarting the service.", "importance": 7}
+{"operation": "search", "query": "how do we roll out a release?"}
+{"operation": "recall", "memory_id": "mem_001"}
+{"operation": "update", "memory_id": "mem_001", "importance": 9}
+@{body}
+
+@{h2}When a session is full
+
+A session keeps at most @{tt}max_memories_per_session@{utt} memories
+(the shipped configuration sets 1000, the plugin's own default is 5000,
+0 means no limit). A store beyond that removes the least important one
+first -- the oldest of those -- to make room.
+@endnode
+
+@node hook "The memory hook"
+@{h1}The memory hook
+
+@{tt}inject_memory_context@{utt} runs before each LLM call and tells the
+model which memories it has, so it thinks of recalling them. It is off
+until an agent switches it on.
+
+@{h2}What the model gets
+
+A message at the end of the history, from the plugin, with the id and
+title of each chosen memory (titles cut at 80 characters) -- the text
+itself stays out until the model recalls it:
+
+@{code markdown}
+## AVAILABLE MEMORIES
+
+Use `memory(operation='recall', memory_id='...')` to access full content:
+
+- `mem_001`: Deploy checklist
+- `mem_004`: Python type hints
+@{body}
+
+Which memories: with semantic injection (the default) the ones closest in
+meaning to the last message a person wrote; without it -- or when there
+is no such message yet, or the search fails -- the most important, the
+most recently used first among equals. A session without memories gets nothing. The message is
+added only when it differs from the last one the hook added, so the
+cached prompt in front of it stays as it was.
+
+@{h2}Switching it on
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      memory.inject_memory_context:
+        enabled: true
+        max_memories: 5
+@{body}
+
+@{h2}Settings
+
+@{table}
+Key | Default | Meaning
+max_memories | 10 | how many memories the message names
+use_semantic_injection | true | false: by importance and last use, not by meaning
+@{body}
+
+Both are read from the plugin's server entry; an agent's override, as
+above, wins for that agent.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The tool description and every parameter's description come from the
+plugin's @{tt}schema.yaml@{utt}. A refused call answers
+@{tt}{"error": "Missing required parameter 'title' for store
+operation"}@{utt}, @{tt}{"error": "Cannot update mem_001: importance:
+Input should be less than or equal to 10"}@{utt} and the like. In the
+chat, the call's status line ends with its result: "Stored: Deploy
+checklist (mem_004)", "Recalled: Deploy checklist", "Updated mem_001:
+importance".
+
+@{h2}Tokens and cache
+
+Tool answers are ordinary tool results: appended, nothing earlier
+changes. @{tt}list@{utt} and @{tt}search@{utt} return each memory's
+whole text -- up to 5000 characters each; a small @{tt}limit@{utt} or
+@{tt}n_results@{utt} keeps an answer short. The hook appends only ids and
+titles, at the end of the history, and only when they changed; it never
+rewrites the system prompt or an earlier message.
+
+@{h2}Known gaps
+
+@{bullet}Memories belong to one session. A new chat starts without the
+memories of the last one.
+@{bullet}Tags are stored and returned by recall, but neither list nor
+search can filter by them.
+@{bullet}The search compares the text: a title changed by update is shown
+at once, but only a new text changes what a search finds.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    memory:
+      type: memory
+      enabled: true
+      max_memories: 10
+      max_memories_per_session: 1000
+@{body}
+
+An agent sees the tool when its allowlist names it:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+memory/*"
+@{body}
+
+The plugin needs a vector store: @{tt}chromadb@{utt} (recommended), or
+@{tt}sqlite-vec@{utt} with @{tt}sentence-transformers@{utt}; without one
+it does not start. The embeddings are made locally with
+all-MiniLM-L6-v2, which is downloaded once on first use; no memory text
+leaves the machine.
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+storage_path | memories in the data directory | where memories are kept
+max_memories_per_session | 5000 | the most a session keeps, 0 no limit; see "When a session is full"
+auto_extract_keywords | true | false: a memory stored without keywords keeps none
+search_n_results | 5 | results of a search that names no n_results
+max_memories | 10 | the hook: how many memories it names
+use_semantic_injection | true | the hook: chosen by meaning, not by importance
+@{body}
+
+Each session's memories are one JSON file, named after the session, in the
+storage folder; the search index lies beside it in @{tt}vectors/@{utt}.
+@endnode

@@ -232,10 +232,15 @@ class DecisionServer(SchemaBasedToolServer):
                 q_text = str(item.get("question") or "").strip()
                 crit_true = str(item.get("criteria_true") or "").strip()
                 crit_false = str(item.get("criteria_false") or "").strip()
-                if crit_true and crit_false:
-                    criteria = {"true": crit_true, "false": crit_false}
-                else:
-                    criteria = None
+                if bool(crit_true) != bool(crit_false):
+                    # One side alone was dropped silently before: the caller
+                    # thought it steered the answer, and it never reached the model.
+                    err_msg = (f"Question at index {idx} gives only one of criteria_true and "
+                               "criteria_false; give both or neither.")
+                    if status is not None:
+                        await status.error(_cap_status_line(f"Question criteria error: {err_msg}"))
+                    return {"status": "error", "error": err_msg}
+                criteria = {"true": crit_true, "false": crit_false} if crit_true else None
             else:
                 err_msg = f"Question at index {idx} must be a string or object."
                 if status is not None:
@@ -383,6 +388,9 @@ class DecisionServer(SchemaBasedToolServer):
                 "status": "error",
                 "error": err_msg,
                 "errors": errors,
+                # a refused answer was billed even when no item succeeded
+                "summary": {"total_items": len(items), "successful_items": 0,
+                            "failed_items": fail_count, **_spend(answered), "model": None},
             }
 
         if fail_count > 0:
@@ -626,6 +634,9 @@ class DecisionServer(SchemaBasedToolServer):
                 "status": "error",
                 "error": err_msg,
                 "errors": errors,
+                # a refused answer was billed even when no item succeeded
+                "summary": {"total_items": len(items), "successful_items": 0,
+                            "failed_items": fail_count, **_spend(answered), "model": None},
             }
 
         if fail_count > 0:

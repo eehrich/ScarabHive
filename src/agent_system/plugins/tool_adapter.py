@@ -175,6 +175,10 @@ class PluginToolRegistry:
         
         # Create tool adapter
         tool_adapter = PluginToolAdapter(name, plugin_instance, schema)
+        # The instance's hook default travels with it: hook registration looks it up in the calling agent's config,
+        # and an agent built on another config (a test's, a CLI's) does not know this server -- without this its
+        # hooks would register on schema defaults, i.e. on for every agent, whatever the instance said.
+        tool_adapter.instance_hook_config = getattr(server_config, "hook_config", None)
         self.plugin_servers[name] = tool_adapter
         
         # Register web capabilities if supported
@@ -543,6 +547,8 @@ class PluginToolRegistry:
 
         # Create tool adapter
         tool_adapter = PluginToolAdapter(name, plugin_server, schema)
+        # The instance's hook default travels with it, as in register_existing_plugin_instance.
+        tool_adapter.instance_hook_config = getattr(server_config, "hook_config", None)
         self.plugin_servers[name] = tool_adapter
 
         # Register web capabilities if plugin supports them

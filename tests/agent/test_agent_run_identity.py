@@ -296,7 +296,7 @@ async def test_a_preloaded_tool_runs_for_the_runs_user_and_the_models_next_call_
     context = HookContext(hook_type=HookType.PRE_LLM_CALL, request_id=rid, session_id="S", agent=caller,
                           agent_name=caller.name, messages=[], hook_config={"rules": []})
     try:
-        pairs = await preload._execute_plan([("b", {"task": "time?"})], context)
+        pairs = await preload._execute_plan([(0, "b", {"task": "time?"})], context)
         items = [item async for item in ToolExecutionManager(registry).execute_tools_streaming(
             tool_calls=[{"id": "t1", "function": {"name": "b", "arguments": json.dumps({"task": "time?"})}}],
             tool_name_mapping={"b": "b"}, available_tools=["b"], step=1,

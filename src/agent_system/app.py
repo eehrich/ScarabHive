@@ -32,7 +32,7 @@ from .tools.base import ToolServerRegistry
 # skips the server -- an import cycle would then empty the UI dropdown
 # in silence instead of failing loud at start.
 from .runtime import ServerView
-from .utils.logging import setup_role_logging
+from .utils.logging import setup_role_logging, unblock_console
 from .services.initialization_service import apply_ssl_verify_to_environment
 from .tools.status import get_status_metrics
 from .tools.integration import initialize_tools, shutdown_tools
@@ -195,42 +195,6 @@ async def resolve_agent_for_request(
     return default_agent
 
 
-async def format_answer_fields(payload: dict, selected_agent, request_id: str, session_id: str) -> dict:
-    """The event with the answer it carries rendered to HTML: a final's summary, a finished step's content.
-
-    A copy where anything changes, never the event itself: every reader of a job is sent
-    the same event object, and rendered in place the next reader would render the HTML
-    again -- and the run's own caller (POST /run) holds it too.
-    """
-    kind = payload.get("type")
-    if kind == "final" and payload.get("summary"):
-        try:
-            formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                output=payload["summary"],
-                request_id=request_id,
-                session_id=session_id,
-                output_format='html'
-            )
-            return {**payload, "summary": formatted_summary, "content_format": content_format}
-        except Exception as e:
-            logging.getLogger(__name__).error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
-
-    # Also format thinking_complete content to HTML (for streaming)
-    elif kind == "thinking_complete" and payload.get("assistant", {}).get("content"):
-        try:
-            formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                output=payload["assistant"]["content"],
-                request_id=request_id,
-                session_id=session_id,
-                output_format='html'
-            )
-            return {**payload, "assistant": {**payload["assistant"], "content": formatted_content},
-                    "content_format": content_format}
-        except Exception as e:
-            logging.getLogger(__name__).error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
-    return payload
-
-
 # Lives in llm.capabilities so the command-line entry points share it without
 # importing FastAPI; imported here for this module and its tests.
 from .llm.capabilities import capability_model_name  # noqa: E402,F401
@@ -353,9 +317,9 @@ def _build_entry_agent(entry_name: str, config, registry, session_service):
 def _default_config_path() -> str:
     """The config the API loads when none is passed: AGENT_CONFIG_PATH, else the
     project's config/config.yaml -- the variable agent-cli and agent-run honour too."""
-    from .paths import PROJECT_ROOT
+    from .paths import default_config_path
 
-    return os.environ.get("AGENT_CONFIG_PATH") or str(PROJECT_ROOT / "config" / "config.yaml")
+    return str(default_config_path())
 
 
 def _gated_agent_names(config) -> list[str]:
@@ -416,6 +380,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Setup full logging via ConfigService (may reconfigure handlers)
     _config_service.setup_logging()
+    unblock_console()  # a console that stops reading must not stop the server
     
     # Get logger AFTER logging is configured
     logger = logging.getLogger(__name__)
@@ -1082,35 +1047,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     is_active=True
                 )
                 db.create_user(default_admin)
-                logger.warning(
-                    "╔═══════════════════════════════════════════════════════════════╗"
-                )
-                logger.warning(
-                    "║  DEFAULT ADMIN USER CREATED - SAVE THESE CREDENTIALS!        ║"
-                )
-                logger.warning(
-                    "╠═══════════════════════════════════════════════════════════════╣"
-                )
-                logger.warning(
-                    f"║  Username: {config.auth.default_admin_username:<50}║"
-                )
-                logger.warning(
-                    f"║  Password: {admin_password:<50}║"
-                )
-                logger.warning(
-                    f"║  Email:    {config.auth.default_admin_email:<50}║"
-                )
-                logger.warning(
-                    "╠═══════════════════════════════════════════════════════════════╣"
-                )
-                logger.warning(
-                    "║  ⚠️  CHANGE PASSWORD IMMEDIATELY AFTER FIRST LOGIN!          ║"
-                )
-                logger.warning(
-                    "╚═══════════════════════════════════════════════════════════════╝"
-                )
+                # The password goes to the console (docker compose logs) only, never through the logger:
+                # logs/api.log kept it readable for as long as the file lived, and a log level above
+                # WARNING dropped it before anyone saw it.
+                logger.warning("Default admin %r created; its password is shown on the console, once",
+                               config.auth.default_admin_username)
+                import sys
+                print(f"\nDefault admin created -- save these credentials, the log file does not hold them:\n"
+                      f"  Username: {config.auth.default_admin_username}\n"
+                      f"  Password: {admin_password}\n", file=sys.stderr, flush=True)
             except Exception as e:
-                logger.error(f"Failed to create default admin user: {e}")
+                from pydantic import ValidationError
+                from .auth.models import validation_reasons
+                # a configured password the model refuses would stand in pydantic's own text
+                reason = validation_reasons(e) if isinstance(e, ValidationError) else e
+                logger.error(f"Failed to create default admin user: {reason}")
 
         # Configure security middleware
         configure_security_middleware(
@@ -1221,16 +1172,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         }
 
     async def _format_and_yield_event(ev: dict, selected_agent, request_id: str, session_id: str) -> str:
-        """An event as an SSE data line, its answer rendered to HTML."""
+        """An event as an SSE data line. An answer in it stays the Markdown the model wrote: the chat draws it."""
         payload = ev.to_dict() if hasattr(ev, 'to_dict') else ev
-
-        if selected_agent._hook_manager:
-            payload = await format_answer_fields(payload, selected_agent, request_id, session_id)
-            # A sub-agent's answer is the same text and is shown the same way.
-            if payload.get("type") == "sub_run" and isinstance(payload.get("event"), dict):
-                payload = {**payload, "event": await format_answer_fields(
-                    payload["event"], selected_agent, request_id, session_id)}
-
         try:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         except (TypeError, ValueError) as e:
@@ -1950,20 +1893,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     llm_profile_info_override=llm_profile_info,
                     on_event=on_event,
                 )
-
-                # Format summary from Markdown to HTML for web display
-                if result.get("summary") and selected_agent._hook_manager:
-                    try:
-                        formatted_summary, _ = await selected_agent._hook_manager.execute_format_output_hooks(
-                            output=result["summary"],
-                            request_id=request_id,
-                            session_id=session_id or "unknown",
-                            output_format='html'
-                        )
-                        result["summary"] = formatted_summary
-                    except Exception as e:
-                        logger.warning(f"Failed to format summary to HTML: {e}")
-                        # Keep original markdown on error
 
                 # Save session after execution (if session_id was provided or created) --
                 # not one the run was refused, nor one somebody holds after it
@@ -3793,11 +3722,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if dropped is None:
             return {"session_id": session_id, "dropped": None, "files": None}
         content = getattr(dropped, "content", None)
+        # The person's words go back into the input, not what a hook wrote in
+        # front of them (simple_prompt_inject task_start): sent again, the
+        # hook writes it anew.
+        text = message_text(dropped)
+        for prefix in (getattr(dropped, "prefixed_by", None) or {}).values():
+            text = text.replace(prefix, "", 1)
         return {
             "session_id": session_id,
             "dropped": {
                 "role": message_role(dropped),
-                "text": message_text(dropped),
+                "text": text,
                 "had_attachments": isinstance(content, list) and len(content) > 1,
             },
             "files": report,
@@ -3896,7 +3831,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # With the session id: the prompt this SESSION sends, template
             # vars and all. Rendered without them it is short by the whole
             # var payload, on the one line the command exists to show.
-            prompt, tools = await target_agent.describe_context_inputs(session_id)
+            # And with the stored messages: the deferred tools they loaded are
+            # sent again, and this process's tracker may not hold the session.
+            prompt, tools = await target_agent.describe_context_inputs(session_id, messages)
         except Exception as e:  # noqa: BLE001 - a missing line, not a failed request
             logging.getLogger(__name__).warning("No context inputs for %s: %s",
                                                 session_id, e)

@@ -58,6 +58,9 @@ Special forms:
 - `{"$error": {"type": "tool_failed", "message": "doc not found", "data": {...}}}` --
   the activity fails with that error. Combine: `{"$visits": [{"$error": {...}},
   "second try works"]}`.
+- `{"$timeout": true}` at a wait state with a `timeout` (or a timer state, `after`) -- its
+  time is up at once, so the test drives the timeout path without waiting it out; in
+  `$visits`, any other value lets that visit wait as usual.
 
 ### Proving a machine
 
@@ -167,7 +170,7 @@ Conditions and watch expressions are read-only Python over the scope at that hoo
 Arguments of the wrong type are refused before anything acts, and so are malformed
 breakpoints and watchpoints (a list of strings or objects; `enabled` a boolean). A stored
 point that no longer parses is dropped, not refused: it never blocks a resume, terminate or
-fork. `steps` (1-200) makes the answer carry that many journal rows.
+fork. `steps` (1-500) makes the answer carry that many journal rows.
 
 `run_machine` with `wait: "finish"` also returns when the run pauses, so you can
 inspect and continue.

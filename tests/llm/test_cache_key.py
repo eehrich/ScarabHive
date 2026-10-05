@@ -288,6 +288,42 @@ class TestTheKeyTheRequestReallyCarries:
         assert a == b, "der Key wandert mit der Todo-Liste"
         assert a != other, "zwei Agenten teilen sich eine Shard"
 
+    @classmethod
+    def _noted_task(cls, task: str, note: bool = True):
+        from agent_system.llm.models import ChatMessage
+        head = [ChatMessage(role="system", content=cls.PROMPT)]
+        if note:
+            head.append(ChatMessage(role="user", content="Schon oft gelesen: Akten, Stempel.",
+                                    injected_by="oft_gelesen_inject"))
+        return head + [ChatMessage(role="user", content=task)]
+
+    @pytest.mark.asyncio
+    async def test_a_note_behind_the_system_prompt_keeps_books_apart(self):
+        """A user note injected right behind the system prompt is the same for
+        every run of the agent; hashed as "the first message" it put every
+        book on one shard."""
+        one, two = "Buch 1, Kapitel 3: Mila am Hafen.", "Buch 2, Kapitel 3: Jonas im Stellwerk."
+        chat = [await self._httpx_payload(self._noted_task(t)) for t in (one, two)]
+        responses = [self._responses_payload(self._noted_task(t)) for t in (one, two)]
+        for name, (a, b) in (("chat", chat), ("responses", responses)):
+            assert a != b, f"{name}: two books share one shard"
+        assert chat[0] == await self._httpx_payload(self._noted_task(one, note=False)), \
+            "the note moved the key"
+
+    def test_an_injected_task_without_a_user_task_behind_it_still_names_the_run(self):
+        """Forge news on a woken session, a summary heading a compacted chat:
+        the injected message is the only task. Skipped, the key fell to the
+        answer behind it -- one key for all such sessions, and a new one after
+        the first call."""
+        def run(news, *answers):
+            return derive_prompt_cache_key("auto", [
+                {"role": "system", "content": "der agent"},
+                {"role": "developer", "content": "Wake up."},
+                {"role": "user", "content": news, "injected_by": "forge"}, *answers])
+        answer = {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]}
+        assert run("[forge] Issue 12 opened") != run("[forge] PR 7 merged")
+        assert run("[forge] Issue 12 opened") == run("[forge] Issue 12 opened", answer)
+
 
 class TestFormats:
     def test_chat_and_responses_format_extract_same_text(self):

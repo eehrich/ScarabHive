@@ -6,7 +6,7 @@
 #   prompt  <- system_template "./prompts/x.md" resolves next to the YAML
 #   skill   <- config/config.yaml skills.skill_dirs has src/plugins*/*/skills
 # The tools it uses (tavily_search, duckduckgo_search, web_scraper) are the
-# shared instances in config/plugins.yaml. Same shape as coder and amiga.
+# shared instances in config/plugins.yaml. Same shape as coder.
 [plugin]
 name = "research"
 version = "1.0.0"

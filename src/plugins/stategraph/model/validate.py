@@ -427,7 +427,7 @@ def _check_schema(fc: _FileContext, schema: Any, path: list[Any], code: str) -> 
 # ------------------------------------------------------------------ activities
 
 def _check_vars_shape(fc: _FileContext, value: Any, path: list[Any]) -> None:
-    """``vars`` is a map of templates, or ONE template (it must render to an object of names)."""
+    """``vars`` (and ``llm_params``) is a map of templates, or ONE template (it must render to an object of names)."""
     if not isinstance(value, str):
         return
     try:
@@ -436,8 +436,8 @@ def _check_vars_shape(fc: _FileContext, value: Any, path: list[Any]) -> None:
         return  # reported by the template check
     text = value.strip()
     if len(expressions) != 1 or not (text.startswith("{{") and text.endswith("}}")):
-        fc.problem("error", "SG005", "vars must be a map, or exactly one {{ }} template that renders to an object",
-                   path)
+        fc.problem("error", "SG005", f"{path[-1]} must be a map, or exactly one {{{{ }}}} template that renders to "
+                                     "an object", path)
 
 
 def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]) -> None:
@@ -458,8 +458,9 @@ def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]
 
     bound = set(BINDINGS["state"]) | extra
     _check_schema(fc, raw.get("schema"), path + ["schema"], "SG005")
-    if "vars" in kind.template_fields and "vars" in raw:
-        _check_vars_shape(fc, raw["vars"], path + ["vars"])
+    for key in ("vars", "llm_params"):
+        if key in kind.template_fields and key in raw:
+            _check_vars_shape(fc, raw[key], path + [key])
     for key in kind.template_fields:
         if key in raw:
             _check_template(fc, raw[key], path + [key], bound, extra)
@@ -535,13 +536,13 @@ def _check_references(fc: _FileContext, kind: ActivityKind, spec: KindSpec, path
                                      "enum -- a computed name would bypass the configuration check", path + [kind.key])
         return
     refs = kind.references(spec)
-    for key in ("agent_param", "tool_param"):
+    for key, field in (("agent_param", kind.key), ("tool_param", kind.key), ("llm_profile_param", "llm_profile")):
         if key in refs:
             param = fc.spec.params.get(refs[key])
             if param is None or not param.enum:
-                fc.problem("error", "SG005", f"{kind.key}: {{{{ params.{refs[key]} }}}} needs a parameter "
+                fc.problem("error", "SG005", f"{field}: {{{{ params.{refs[key]} }}}} needs a parameter "
                                              f"{refs[key]!r} with an enum (so the configuration check can see every "
-                                             "value)", path + [kind.key])
+                                             "value)", path + [field])
     if fc.config_check is None:
         return
     checks: list[tuple[str, str, dict[str, Any]]] = []
@@ -549,12 +550,17 @@ def _check_references(fc: _FileContext, kind: ActivityKind, spec: KindSpec, path
         checks.append(("agent", refs["agent"], {}))
     if "agent_param" in refs and (param := fc.spec.params.get(refs["agent_param"])) and param.enum:
         checks.extend(("agent", str(value), {}) for value in param.enum)
+    root = {"root": fc.tree.root}  # a tool goes through the runner of the run's root machine (runners.py)
     if "tool" in refs:
-        checks.append(("tool", refs["tool"], {}))
+        checks.append(("tool", refs["tool"], root))
     if "tool_param" in refs and (param := fc.spec.params.get(refs["tool_param"])) and param.enum:
-        checks.extend(("tool", str(value), {}) for value in param.enum)
+        checks.extend(("tool", str(value), root) for value in param.enum)
     if "profile" in refs:
         checks.append(("profile", refs["profile"], {}))
+    if "llm_profile" in refs:
+        checks.append(("llm_profile", refs["llm_profile"], {}))
+    if "llm_profile_param" in refs and (param := fc.spec.params.get(refs["llm_profile_param"])) and param.enum:
+        checks.extend(("llm_profile", str(value), {}) for value in param.enum)
     for what, name, extra in checks:
         problem = fc.config_check(what, name, extra)
         if problem:

@@ -237,12 +237,19 @@ tools:
   blocked:
     - "dangerous_plugin/*"   # Block entire plugin
     - "plugin_name/tool_y"   # Block specific tool
+  deferred:
+    - "rare_plugin/*"        # Allowed, but its schema is loaded on demand
 ```
 
 **Access Logic:**
-1. If `allowed` is empty, all tools are allowed by default
+1. If `allowed` is empty, the agent has no tools (deny-all)
 2. `blocked` takes precedence over `allowed`
 3. Patterns support wildcards (`*`)
+
+**Deferred tools:** `deferred` takes the same patterns and changes nothing about
+what the agent may call. It only holds the schemas back: the model sees those
+tools as a name and one line in the description of the core tool `tool_search`,
+and loads the ones it needs. See `docs/deferred_tools.md`.
 
 **List Merge Syntax for Inheritance:**
 
@@ -332,11 +339,9 @@ hooks:
   disabled_hooks:
     - "request_logger.log_pre_llm"  # Disable specific hooks
   hook_overrides:
-    "markdown_formatter.format_markdown_output":
+    "context_engineer.engineer_context":
       enabled: true
       timeout: 5.0
-      config:
-        convert_to_html: false
 ```
 
 See [Plugin Hooks](plugin_hooks.md) for details.
@@ -709,7 +714,7 @@ agents:
       hooks:
         enabled: true
         hook_overrides:
-          "markdown_formatter.format_markdown_output":
+          "context_engineer.engineer_context":
             enabled: true
     metadata:
       author: "DevOps Team"

@@ -1,55 +1,19 @@
 # Ollama Provider
 
-Local models through Ollama, in either of two modes.
+Models served by Ollama, local or on another machine. An LLM provider plugin: no tools, no hooks, no panel.
 
-## What it provides
+- **`ollama`, `ollama_mode: native`** -- Ollama's own `/api/chat` over httpx: sends `context_window` as `num_ctx`,
+  `thinking_level` as `think`, `max_tokens` as `num_predict`; streams text, thinking and tool calls, with its own
+  retries.
+- **`ollama`, `ollama_mode: openai_compat`** (the default) -- Ollama's `/v1` endpoint through the `openai` provider
+  of the llm_openai plugin (delegated through the registry). No context size, no thinking switch.
 
-| Name | Kind | Module |
-|---|---|---|
-| `ollama` | LLM | `ollama_client.py`, `ollama_utils.py` |
+Nothing to enable: write `provider: ollama` in a model entry of `config/llm.yaml` and point a profile at it. No pip
+dependency of its own; openai_compat mode needs llm_openai.
 
-```yaml
-my-model:
-  provider: ollama
-  model: llama3.3
-  base_url: http://localhost:11434
-  ollama_mode: native          # native | openai_compat (default)
-  context_window: 32768        # becomes num_ctx
-  thinking_level: high         # native only: becomes `think` (none = off)
-  max_tokens: 4096             # native only: becomes num_predict
-```
-
-No pip dependency: `native` mode talks to Ollama's HTTP API with httpx, which
-is a core requirement.
-
-## The two modes
-
-* **`native`** — Ollama's own `/api/chat`. Needed for `num_ctx` and the other
-  options Ollama exposes outside the OpenAI dialect.
-* **`openai_compat`** (default) — Ollama's OpenAI-compatible endpoint. The
-  factory does **not** import `llm_openai` directly; it delegates through the
-  registry to the `openai` provider. Plugin-to-plugin imports would make the
-  load order matter, and the registry is the seam that already answers "who
-  serves this name". Consequence: this mode needs `llm_openai` present.
-
-## Thinking
-
-A thinking model's reasoning arrives in `message.thinking`, beside the answer.
-`native` streams it as `thinking_delta` and stores it as `reasoning_content`,
-like every other route, and sends it back as `thinking` on the next request.
-`thinking_level` maps onto Ollama's three levels (`minimal` -> `low`,
-`xhigh`/`max` -> `high`, `none` -> `false`); without it the model decides.
-`thinking_budget` has no Ollama counterpart. Some models ignore `think: false`
-(qwen3-vl always thinks; the `qwen3:4b` tag then thinks in the answer text).
-
-`openai_compat` gets no `num_ctx`: Ollama's `/v1` ignores it, and the model
-loads with the server's `OLLAMA_CONTEXT_LENGTH` instead -- on a small GPU that
-can mean most of the model runs on the CPU.
-
-## Tests
-
-`tests/` next to the code: client behaviour and the option/format helpers.
+The full manual -- the two modes, model entry keys, context size and GPU memory, thinking, timeouts and retries,
+what the hooks and cost figures see, errors -- is the plugin's guide, `llm_ollama.guide`, in the Help panel.
 
 ## License
 
-Apache-2.0 — see `LICENSE`.
+Apache-2.0 -- see `LICENSE`.

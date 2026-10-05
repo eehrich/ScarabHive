@@ -706,7 +706,7 @@ states:
 async def test_a_machine_agent_s_instances_sit_one_level_below_its_session(env, tmp_path, monkeypatch):
     """The v4 path: a SAM made the facade's session; the machine's agents are the next level of that tree."""
     host = AgentHost(tmp_path / "sessions", FakeAgent("writer"))
-    monkeypatch.setattr(env.server, "resolve_runner", lambda: host)
+    monkeypatch.setattr(env.server, "resolve_runner", lambda name=None: host)
     (tmp_path / "machines" / "m.yaml").write_text(FACADE_NESTED, encoding="utf-8")
     session = await host.sessions.create_session(user_id="ann", session_id="sub_story_1", agent_name="story_machine")
     session["depth"], session["depth_budget"] = 2, 3

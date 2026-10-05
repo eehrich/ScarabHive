@@ -15,7 +15,8 @@ The contract behind them is `docs/stategraph_design.md` (§2 format, §3 semanti
 stategraph: 1                       # format version: the integer 1
 id: my_machine                      # = file name; names match [a-z][a-z0-9_]*
 title: My machine
-# group: Writer/v6                  # folder in the panel's machine list
+# notes: {why: "free text"}         # drawn as notes on the panel's canvas; never run
+# group: Reviews/nightly            # folder in the panel's machine list
 # python: my_machine.py             # companion module: its public functions are in scope
 # imports: {sub: ./sub.yaml}        # submachines, by alias: do: {machine: sub, params: {...}}
 params:                             # run input / submachine parameters
@@ -60,11 +61,11 @@ states:
 
 | Kind (`do:`) | Keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task`, `schema`, `parse`, `parse_retries`, `vars`, `advanced`, `continue` | answer text or parsed value |
+| `agent: <name>` | `task`, `schema`, `parse`, `parse_retries`, `vars`, `llm_profile`, `llm_params`, `advanced`, `continue` | answer text or parsed value |
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result |
 | `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile` -- or `by` (an agent decides), `advanced`, `parse_retries` | `{value, confidence, probabilities}` |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`, `input`, `profile` or `by` | `{name: {...}}` |
-| `call: <function>` | `args` | return value; `fn(sg, …)` gets `sg.tool()` (journaled tool calls) and `sg.Error`; a sync function runs in a worker thread (a timeout or terminate drops its late result; `sg.tool()` only from an async one, or returned) |
+| `call: <function>` | `args` | return value; `fn(sg, …)` gets `sg.tool()` (journaled tool calls) and `sg.Error`; a sync function runs in a worker thread (a timeout or terminate drops its late result and sets `sg.cancelled`, a `threading.Event` a long one checks; `sg.tool()` only from an async one, or returned) |
 | `machine: <alias>` | `params` | the submachine's final output |
 | `parallel: {branch: activity}` | `fail: fast\|collect` | `{branch: out}` |
 | `map: <expression>` | `each`, `as`, `concurrency`, `fail` | list in item order |
@@ -104,4 +105,4 @@ engine: `loop_limit`, `no_transition`, `guard_failed`, `action_failed`,
 
 Mocks (test runs): `{"state": out}`, paths `review/critique` (submachine),
 `opinions/style` (branch), `translate/2` (map item); `{"$visits": [...]}` per use of the path in the run;
-`{"$error": {"type", "message"}}` to fail.
+`{"$error": {"type", "message"}}` to fail; `{"$timeout": true}` on a wait state with `timeout` (or a timer state, `after`): its time is up at once.

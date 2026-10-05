@@ -877,8 +877,9 @@ async def register_bootstrapped_plugin_hooks(settings: Any | None = None) -> Lis
 
     ``settings`` is the caller's already-loaded AgentSystemConfig; it supplies
     the global ``hooks:`` overrides and each instance's ``hook_config``
-    registration default. Without it hooks register on schema defaults
-    alone -- no config file is re-read here.
+    registration default. Without it (or for an instance it does not know)
+    the hook_config the instance was built with applies -- no config file is
+    re-read here.
 
     Returns:
         List of all registered hook names (full ``plugin.hook`` form).
@@ -908,10 +909,12 @@ async def register_bootstrapped_plugin_hooks(settings: Any | None = None) -> Lis
 
         try:
             server_cfg = get_tool_server_config(server_name, settings) if settings else None
-            instance_hook_config = getattr(server_cfg, 'hook_config', None) if server_cfg else None
         except Exception:
             logger.debug("No merged config for '%s'", server_name, exc_info=True)
-            instance_hook_config = None
+            server_cfg = None
+        # Not in these settings: the one the instance was built with (PluginToolRegistry keeps its hook_config).
+        instance_hook_config = (getattr(server_cfg, 'hook_config', None) if server_cfg
+                                else getattr(server, 'instance_hook_config', None))
 
         try:
             registered = await register_plugin_hooks(

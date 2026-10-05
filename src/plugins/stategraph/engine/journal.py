@@ -15,11 +15,15 @@ display. Kinds (docs/stategraph_design.md §4.3):
 from __future__ import annotations
 
 import json
+import logging
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = ("running", "paused", "waiting")
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
@@ -48,7 +52,9 @@ CREATE TABLE IF NOT EXISTS runs (
     owner TEXT,
     lease_until TEXT,
     journal_format INTEGER,
-    nesting TEXT
+    nesting TEXT,
+    control TEXT,
+    runner TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_key ON runs(run_key);
 CREATE INDEX IF NOT EXISTS runs_machine ON runs(machine_id, created_at);
@@ -78,6 +84,16 @@ CREATE TABLE IF NOT EXISTS callbacks (
     expires_at REAL NOT NULL,
     used_at TEXT
 );
+-- the submachine frames each run started (prefix: its journal keys' start, path: the activity it runs under) -- a
+-- machine's runs list the runs it ran in as a submachine too
+CREATE TABLE IF NOT EXISTS frames (
+    run_id TEXT NOT NULL,
+    prefix TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    path TEXT,
+    PRIMARY KEY (run_id, prefix)
+);
+CREATE INDEX IF NOT EXISTS frames_machine ON frames(machine_id, run_id);
 -- schedules.py: per stategraph instance, the one process that starts the slots of its schedules
 CREATE TABLE IF NOT EXISTS scheduler_leases (
     instance TEXT PRIMARY KEY,
@@ -86,9 +102,44 @@ CREATE TABLE IF NOT EXISTS scheduler_leases (
 );
 """
 
-_JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting")
+#: The key of the activity that started a submachine frame: its prefix without "/m/" (and a retry's "/a<n>").
+_STARTED_BY = re.compile(r"(/a\d+)?/m/$")
+
+
+def _frames_from_journal(conn: sqlite3.Connection) -> None:
+    """A runs.db from before ``frames``: the submachine frames its runs ended, from their journal's end rows, each
+    with the path of the activity that started it and in the order they started (that activity's seq)."""
+    found = []
+    for row in conn.execute("SELECT run_id, seq, data FROM journal WHERE kind = 'trace' AND status = 'end'"):
+        try:
+            end = json.loads(row["data"] or "{}")
+        except ValueError:  # a row it cannot read names no frame
+            continue
+        prefix, machine = (end.get("frame"), end.get("machine")) if isinstance(end, dict) else (None, None)
+        if not isinstance(prefix, str) or not prefix or not isinstance(machine, str):  # the root's own end, or none
+            continue
+        started = conn.execute("SELECT seq, data FROM journal WHERE run_id = ? AND kind = 'activity' AND key = ?",
+                               (row["run_id"], _STARTED_BY.sub("", prefix))).fetchone()
+        try:
+            data = json.loads(started["data"] or "{}") if started else None
+        except ValueError:
+            data = None
+        path = data.get("path") if isinstance(data, dict) and isinstance(data.get("path"), str) else None
+        found.append((row["run_id"], started["seq"] if started else row["seq"], prefix, machine, path))
+    found.sort(key=lambda frame: (frame[0], frame[1]))
+    conn.execute("BEGIN")  # one write, not one per frame
+    try:
+        conn.executemany("INSERT OR IGNORE INTO frames (run_id, prefix, machine_id, path) VALUES (?, ?, ?, ?)",
+                         [(run_id, prefix, machine, path) for run_id, _, prefix, machine, path in found])
+        conn.execute("COMMIT")
+    except sqlite3.Error:
+        conn.execute("ROLLBACK")
+        raise
+
+
+_JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting", "control")
 #: Columns a runs.db from before them lacks: added when it is opened.
-_ADDED_COLUMNS = {"nesting": "TEXT"}
+_ADDED_COLUMNS = {"nesting": "TEXT", "control": "TEXT", "runner": "TEXT"}
 
 
 def utc_now() -> str:
@@ -119,7 +170,14 @@ class RunStore:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
+            had_frames = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'frames'").fetchone()
             conn.executescript(_SCHEMA)
+            if not had_frames:
+                try:  # for the panel only: a journal it cannot read must not keep the runs from opening
+                    _frames_from_journal(conn)
+                except sqlite3.Error:
+                    logger.warning("stategraph: frames of the runs before %s not filled from the journal", self.path,
+                                   exc_info=True)
             present = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
             for column, kind in _ADDED_COLUMNS.items():
                 if column not in present:
@@ -128,6 +186,9 @@ class RunStore:
                     except sqlite3.OperationalError as exc:  # another process added it meanwhile
                         if "duplicate column" not in str(exc):
                             raise
+            # the owners' poll for control requests (request_control) reads this, not the rows: it holds only
+            # the few runs with a request open, and control lies behind the payloads of the rows
+            conn.execute("CREATE INDEX IF NOT EXISTS runs_control ON runs(owner) WHERE control IS NOT NULL")
             self._conn = conn
         return self._conn
 
@@ -156,16 +217,16 @@ class RunStore:
                    session_id: Optional[str] = None, parent_run: Optional[str] = None,
                    fork_step: Optional[int] = None, run_key: Optional[str] = None, owner: Optional[str] = None,
                    lease_until: Optional[str] = None, journal_format: int = 1, status: str = "running",
-                   nesting: Any = None) -> None:
+                   nesting: Any = None, runner: Optional[str] = None) -> None:
         now = utc_now()
         with self._lock:
             self._db().execute(
                 "INSERT INTO runs (id, machine_id, status, created_at, updated_at, params, mocks, definition, debug,"
-                " user_id, session_id, parent_run, fork_step, run_key, owner, lease_until, journal_format, nesting)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " user_id, session_id, parent_run, fork_step, run_key, owner, lease_until, journal_format, nesting,"
+                " runner) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, machine_id, status, now, now, _dumps(params), _dumps(mocks), _dumps(definition),
                  _dumps(debug), user_id, session_id, parent_run, fork_step, run_key, owner, lease_until,
-                 journal_format, _dumps(nesting)))
+                 journal_format, _dumps(nesting), runner))
 
     def update_run(self, run_id: str, *, fence: Optional[str] = None, **fields: Any) -> int:
         """Update a run; with ``fence`` only while that owner still holds it. Returns the rows changed."""
@@ -198,14 +259,18 @@ class RunStore:
 
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50, *, status: Optional[str] = None,
                   user_id: Optional[str] = None, all_users: bool = True,
-                  before: Optional[str] = None) -> list[dict[str, Any]]:
+                  before: Optional[str] = None, nested: bool = False) -> list[dict[str, Any]]:
         """The newest runs; ``all_users=False``: only ``user_id``'s and runs of nobody (what that user may see);
-        ``before``: a run id -- the runs listed after it (older, or as old and of a smaller id)."""
+        ``before``: a run id -- the runs listed after it (older, or as old and of a smaller id); ``nested``: with
+        ``machine_id``, also the runs of other machines it ran in as a submachine."""
         sql = ("SELECT id, machine_id, status, created_at, updated_at, finished_at, final_state, error, user_id,"
                " parent_run, fork_step, run_key FROM runs")
         where: list[str] = []
         args: list[Any] = []
-        if machine_id:
+        if machine_id and nested:
+            where.append("(machine_id = ? OR id IN (SELECT run_id FROM frames WHERE machine_id = ?))")
+            args += [machine_id, machine_id]
+        elif machine_id:
             where.append("machine_id = ?")
             args.append(machine_id)
         if status:
@@ -244,7 +309,8 @@ class RunStore:
             swept = []
             for row in rows:  # the condition again AT WRITE TIME: a run renewed or finished meanwhile is left alone
                 cursor = self._db().execute(
-                    f"UPDATE runs SET status = 'interrupted', updated_at = ? WHERE id = ? AND status IN ({active})"
+                    f"UPDATE runs SET status = 'interrupted', control = NULL, updated_at = ?"  # nobody takes it now
+                    f" WHERE id = ? AND status IN ({active})"
                     " AND (lease_until IS NULL OR lease_until < ?)", (utc_now(), row["id"], *ACTIVE_STATUSES, now))
                 if cursor.rowcount == 1:
                     swept.append(row["id"])
@@ -261,13 +327,43 @@ class RunStore:
                 (_dumps(debug), utc_now(), run_id, now))
             return cursor.rowcount == 1
 
+    def request_control(self, run_id: str, request: dict[str, Any], *, now: str) -> str:
+        """Ask the process that holds a live lease on the run for a control action: it takes the request within a
+        second (take_controls). ``requested``; ``open`` while another request waits for it (one at a time: a second
+        would replace the first unseen); ``unheld`` when nobody holds a live lease -- no process would take it."""
+        with self._lock:
+            db = self._db()
+            if db.execute("UPDATE runs SET control = ?, updated_at = ? WHERE id = ? AND owner IS NOT NULL"
+                          " AND lease_until >= ? AND control IS NULL",
+                          (_dumps(request), utc_now(), run_id, now)).rowcount:
+                return "requested"
+            row = db.execute("SELECT control, lease_until FROM runs WHERE id = ?", (run_id,)).fetchone()
+            return "open" if row and row["control"] is not None and (row["lease_until"] or "") >= now else "unheld"
+
+    def take_controls(self, owner: str) -> list[tuple[str, dict[str, Any]]]:
+        """The control requests for the runs ``owner`` holds, each cleared as it is taken."""
+        with self._lock:
+            db = self._db()
+            rows = db.execute("SELECT id, control FROM runs WHERE owner = ? AND control IS NOT NULL",
+                              (owner,)).fetchall()
+            return [(row["id"], _loads(row["control"])) for row in rows
+                    if db.execute("UPDATE runs SET control = NULL WHERE id = ? AND control = ?",
+                                  (row["id"], row["control"])).rowcount]
+
+    def withdraw_control(self, run_id: str, request: dict[str, Any]) -> bool:
+        """Take back a request its owner has not taken: whether it was still there."""
+        with self._lock:
+            return self._db().execute("UPDATE runs SET control = NULL WHERE id = ? AND control = ?",
+                                      (run_id, _dumps(request))).rowcount == 1
+
     def take_lease(self, run_id: str, owner: str, until: str, *, now: str) -> bool:
         """Take the run for ``owner`` if nobody holds a live lease on it (one conditional update)."""
         with self._lock:
             cursor = self._db().execute(
-                "UPDATE runs SET owner = ?, lease_until = ?, updated_at = ? WHERE id = ?"
+                "UPDATE runs SET control = CASE WHEN owner = ? THEN control END,"  # asked of the owner before
+                " owner = ?, lease_until = ?, updated_at = ? WHERE id = ?"
                 " AND (lease_until IS NULL OR lease_until < ? OR owner = ?)",
-                (owner, until, utc_now(), run_id, now, owner))
+                (owner, owner, until, utc_now(), run_id, now, owner))
             return cursor.rowcount == 1
 
     def add_callback(self, digest: str, run_id: str, event: str, frame: Optional[str], expires_at: float, *,
@@ -402,6 +498,13 @@ class RunStore:
         with self._lock:
             return [self._journal_row(r) for r in self._db().execute(sql + " ORDER BY seq", args).fetchall()]
 
+    def callback_urls(self, run_id: str) -> list[str]:
+        """The URLs the run's callback activities answered with -- read from those rows only, not every activity's."""
+        sql = ("SELECT json_extract(data, '$.out.url') FROM journal WHERE run_id = ? AND kind = 'activity'"
+               " AND json_extract(data, '$.kind') = 'callback'")
+        with self._lock:
+            return [url for (url,) in self._db().execute(sql, (run_id,)).fetchall() if isinstance(url, str)]
+
     def has_row(self, run_id: str, kind: str, key: str) -> bool:
         with self._lock:
             return self._db().execute("SELECT 1 FROM journal WHERE run_id = ? AND kind = ? AND key = ?",
@@ -436,6 +539,19 @@ class RunStore:
         with self._lock:
             rows = self._db().execute(sql + " ORDER BY seq DESC LIMIT ?", (*args, int(limit))).fetchall()
         return [self._journal_row(r) for r in reversed(rows)]
+
+    def add_frame(self, run_id: str, prefix: str, machine_id: str, path: Optional[str]) -> None:
+        """A submachine frame the run started -- again on a replay: kept once."""
+        with self._lock:
+            self._db().execute("INSERT OR IGNORE INTO frames (run_id, prefix, machine_id, path) VALUES (?, ?, ?, ?)",
+                               (run_id, prefix, machine_id, path))
+
+    def frames(self, run_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        """The submachine frames the run started, the first ``limit`` in the order they started."""
+        with self._lock:
+            rows = self._db().execute("SELECT prefix, machine_id AS machine, path FROM frames WHERE run_id = ?"
+                                      " ORDER BY rowid LIMIT ?", (run_id, int(limit))).fetchall()
+        return [dict(row) for row in rows]
 
     def copy_rows(self, source_run: str, target_run: str, rows: Iterable[dict[str, Any]]) -> None:
         for row in rows:

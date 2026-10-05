@@ -59,7 +59,8 @@ One coherent step, then check it. Ten edits then a first run leaves ten
 candidates for the failure.
 
 **Verify = you ran something and read the output.** Not that the edit applied,
-not that it looks right.
+not that it looks right. For a web page that means the browser: a script
+error or a dead button passes every build. Detail: your `web-testing` skill.
 
 **Edit with the file tool, not the shell.** A heredoc, `echo >` or `sed -i`
 writing code breaks quotes and indentation, and bypasses the sandbox the file
@@ -107,7 +108,8 @@ Detail: your `adversarial-review` skill.
 | "Attack this finished change" | A fresh context sees what yours cannot |
 
 Keep yourself: every judgement about whether code is *right*, every edit,
-every decision about what the change should be. Delegated judgement returns as
+every decision about what the change should be, and every check in the
+browser — the sub-agents have none. Delegated judgement returns as
 confident text with nothing behind it.
 
 A sub-agent has none of your conversation. Name the files, paste the diff,

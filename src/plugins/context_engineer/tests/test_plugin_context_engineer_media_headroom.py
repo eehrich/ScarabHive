@@ -87,6 +87,25 @@ class TestTheWindow:
         assert result.media_always_compacted == images - kept
 
     @pytest.mark.asyncio
+    async def test_images_the_model_has_not_seen_yet_stay(self, tmp_path):
+        """Four previews from one turn's parallel calls: the pass kept only the newest, so the
+        model never saw the other three."""
+        messages = _run(tmp_path, 1)                     # an image the model has seen
+        calls = [f"preview_{n}" for n in range(4)]
+        messages.append({"role": "assistant", "content": None, "tool_calls": [
+            {"id": c, "type": "function", "function": {"name": "preview", "arguments": "{}"}} for c in calls]})
+        for n, call in enumerate(calls):
+            path = tmp_path / f"{call}.png"
+            path.write_bytes(bytes([10 + n]) * 1000)
+            messages.append({"role": "tool", "tool_call_id": call, "name": "preview", "content": '{"status": "ok"}',
+                             "multimodal_content": [{"type": "image", "path": str(path), "mime_type": "image/png"}]})
+        with_media = _with_media(messages)
+        result = await _strategy(tmp_path, always_compact_media_keep_last=2,
+                                 always_compact_media_headroom=1).compact(messages, current_tokens=10)
+
+        assert _with_media(result.modified_messages) == with_media[1:]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("headroom, breaks", [(0, 10), (1, 5)])
     async def test_one_break_buys_headroom_quiet_calls(self, tmp_path, headroom, breaks):
         """An image loop of 12 steps with keep_last 2: without headroom every call
@@ -161,6 +180,7 @@ class TestTheWindow:
         for filler in ("B", "A"):   # two evictable images: the older one goes
             messages.insert(0, {"role": "user", "content": [{"type": "image_url", "image_url": {
                 "url": f"data:image/png;base64,iVBORw0KGgo{filler * 4000}"}}]})
+        messages.append({"role": "assistant", "content": "seen"})   # what the model has not seen stays
 
         result = await strategy.compact(messages, current_tokens=100, force=True)
 

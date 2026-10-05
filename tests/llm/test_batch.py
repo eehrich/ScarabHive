@@ -1205,6 +1205,20 @@ class TestBatchQueueManager:
             assert req.request_id not in manager._request_to_job
 
     @pytest.mark.asyncio
+    async def test_a_finished_job_keeps_its_input_estimate(self, mock_config):
+        """The estimate is counted from the messages, which completion clears to free memory."""
+        manager = BatchQueueManager(mock_config)
+        job = BatchJob(job_id="job-done", provider="openai", model="gpt-4", requests=[
+            BatchRequest(request_id="req-1", custom_id="c-1", model="gpt-4",
+                         messages=[{"role": "user", "content": "x" * 4000}])])
+        before = job.estimated_input_tokens
+        manager._active_jobs[job.job_id] = job
+        job.status = BatchStatus.COMPLETED
+        await manager._complete_job(job)
+        assert job.requests[0].messages == []
+        assert before > 0 and job.estimated_input_tokens == before
+
+    @pytest.mark.asyncio
     async def test_expired_job_retries(self, mock_config, tmp_path):
         """Test that expired jobs are retried up to max_retries times."""
         # Create a properly structured mock config with max_retries

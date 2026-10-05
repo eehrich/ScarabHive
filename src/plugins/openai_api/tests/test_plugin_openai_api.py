@@ -2372,3 +2372,54 @@ def test_the_shipped_config_enables_the_plugin():
 
     config = get_tool_server_config("openai_api", load_settings())
     assert config is not None and config.enabled and config.type == "openai_api"
+
+
+@pytest.mark.parametrize("api", ["/responses", "/chat/completions"])
+async def test_a_stream_that_breaks_inside_names_only_the_error_s_type(tmp_path, api):
+    """An exception that is neither the API's nor the run's own reaches a stream as the JSON answer has it --
+    its type, not its text, which can hold a path of the server."""
+    async def breaks(call: dict) -> Any:
+        raise OSError(r"unable to open C:\srv\secret\sessions.db")
+
+    app, _ = build(tmp_path, ScriptedAgent("chat_agent", breaks))
+    body = ({"input": "hi"} if api == "/responses" else {"messages": [{"role": "user", "content": "hi"}]})
+    async with raw(app) as web:
+        answer = await web.post(api, json={"model": "chat_agent", "stream": True, **body})
+
+    assert answer.status_code == 200 and "internal error: OSError" in answer.text, answer.text
+    assert "secret" not in answer.text
+
+
+async def test_a_body_nested_too_deep_is_a_400_not_a_500(tmp_path):
+    """json.loads raises RecursionError, no ValueError, on deep nesting."""
+    agent = ScriptedAgent("chat_agent")
+    app, _ = build(tmp_path, agent)
+    async with raw(app) as web:
+        answer = await web.post("/responses", content=b"[" * 200_000 + b"]" * 200_000,
+                                headers={"Content-Type": "application/json"})
+    assert answer.status_code == 400, answer.text
+    assert agent.calls == []
+
+
+@pytest.mark.parametrize("sent", ["sized", "chunked"])
+async def test_a_body_over_the_limit_is_refused(tmp_path, monkeypatch, sent):
+    """A 413 as an OpenAI error, before the agent runs -- with or without a Content-Length."""
+    from plugins.openai_api import plugin as module
+
+    monkeypatch.setattr(module, "MAX_BODY_BYTES", 200)
+    agent = ScriptedAgent("chat_agent")
+    app, _ = build(tmp_path, agent)
+    data = json.dumps({"model": "chat_agent", "input": "x" * 300}).encode()
+
+    async def pieces():
+        for start in range(0, len(data), 64):
+            yield data[start:start + 64]
+
+    async with raw(app) as web:
+        answer = await web.post("/responses", content=data if sent == "sized" else pieces(),
+                                headers={"Content-Type": "application/json"})
+        small = await web.post("/responses", json={"model": "chat_agent", "input": "hi"})
+
+    assert answer.status_code == 413 and answer.json()["error"]["message"], answer.text
+    assert small.status_code == 200, small.text
+    assert len(agent.calls) == 1

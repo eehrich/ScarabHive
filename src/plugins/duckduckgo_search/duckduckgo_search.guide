@@ -1,0 +1,243 @@
+@database "duckduckgo_search"
+@author "Enrico Ehrich"
+@$VER: duckduckgo_search.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "DuckDuckGo search"
+@{h1}DuckDuckGo search
+
+DuckDuckGo search gives an agent one tool that searches the web and
+answers with a list of hits: title, address and a short snippet each. It
+needs no account and no key. It finds pages; it does not read them -- an
+agent that wants a page's text fetches it afterwards, for example with
+the web scraper. Results are kept for a while, so asking the same thing
+twice costs no second search. It has no hooks and no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  The search tool  " link search}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node search "The search tool"
+@{h1}The search tool
+
+The tool is named after the instance: @{tt}duckduckgo_search_web_search@{utt}
+in the default setup. It sends the query through the @{tt}ddgs@{utt}
+package and answers with the hits.
+
+@{h2}Where the hits come from
+
+Despite the name, not only from DuckDuckGo. @{tt}ddgs@{utt} asks several
+search engines, a few at a time -- Wikipedia and Grokipedia first, then,
+in a random order, Brave, DuckDuckGo, Google, Mojeek, Startpage and
+Yahoo -- until it has enough hits, merges them (one entry per address, the longer
+snippet wins) and ranks them against the query. Which engines answered
+is not part of the answer; the address shows where a hit lives. The
+search runs for the region "us-en" with moderate safe search; neither
+can be changed.
+
+@{h2}Parameters
+
+The framework does not check the arguments against the schema; what
+follows is what the code does with them.
+
+@{table}
+Parameter | Meaning
+query | the search terms; required. Leading and trailing spaces are removed; empty answers an error
+max_results | how many hits at most; default 10, also when null. A value below 1 is taken as 1, above 20 as 20, a fraction is cut (5.9 is 5), a number as text ("5") is read. Not a number: an error
+ignore_cache | true: do not use a kept result, search again. A new result with hits replaces the kept one. Default false
+cache_ttl | how long this result is kept, in seconds; default the server's @{tt}cache_ttl@{utt} (900). Not a number: the server's value. 0 or less: kept, but already expired
+@{body}
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+engine | always "duckduckgo"
+query | the query, without leading and trailing spaces
+results | the hits, best first: @{tt}title@{utt}, @{tt}href@{utt} (the address) and @{tt}body@{utt} (the snippet)
+error | only when the search failed or was refused, see below
+cancelled | true when the agent's run was stopped before a search attempt
+@{body}
+
+@{code json}
+{"engine": "duckduckgo", "query": "godot texture filter",
+ "results": [
+   {"title": "Texture filtering -- Godot Engine documentation",
+    "href": "https://docs.godotengine.org/...",
+    "body": "Godot supports several texture filtering modes ..."},
+   ...]}
+@{body}
+
+Snippets are usually one to three sentences. A Wikipedia hit is the
+exception: its snippet is the article's whole introduction, which can run
+to a few thousand characters. There is at most one of those per search.
+
+@{h2}Nothing found is not an error
+
+A search where every engine answered and none had a hit comes back as
+@{tt}results: []@{utt} without an @{tt}error@{utt}. An empty
+@{tt}results@{utt} with an @{tt}error@{utt} means the search itself
+failed. Only this difference tells "no hits for this query" from "the
+search did not work".
+
+@{h2}Retries and errors
+
+A failed attempt -- rate limit, timeout, every engine failing -- is tried
+again twice, after a pause of one to two and then two to three seconds. A
+search that still fails answers @{tt}results: []@{utt} and the failure
+in @{tt}error@{utt}; it never raises.
+
+@{table}
+error | When
+Empty query | query is empty, missing or only spaces
+max_results must be a whole number from 1 to 20, got 'many' | max_results is not a number
+DuckDuckGo search failed for 'godot': RatelimitException: ... | all three attempts failed; the text names the last failure
+Search cancelled by user | the agent's run was stopped before an attempt; also @{tt}cancelled: true@{utt}
+@{body}
+
+A stop is noticed only before an attempt, not while one is running. An
+attempt waits up to about five seconds for each round of engines.
+
+If @{tt}ddgs@{utt} is not installed the call does raise, with "Install
+`ddgs` for the duckduckgo_search plugin: pip install ddgs": a missing
+package must never look like a search that found nothing.
+
+@{h2}What is kept
+
+A result is kept per query and @{tt}max_results@{utt}; case and leading
+or trailing spaces of the query do not matter, so "Godot " and "godot"
+share one entry. A kept result is returned as it was stored, including
+the query as first asked. An empty result is never kept: it is more
+often a hiccup on the engines' side than a fact about the query, and the
+next call asks again. The kept results are shared by every instance of
+the plugin.
+
+@{h2}An example
+
+@{code json}
+{"query": "godot texture filter"}
+{"query": "python asyncio timeout", "max_results": 5}
+{"query": "ddgs release notes", "ignore_cache": true}
+@{body}
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The description and the parameters come from the plugin's
+@{tt}schema.yaml@{utt}, the same for every instance but the name:
+
+@{code text}
+Search the web with DuckDuckGo. Returns titles, URLs and snippets; no account needed. Snippets are short -- read a promising page with the scraper afterwards.
+@{body}
+
+query says "Search terms. Keywords work better than full sentences.",
+ignore_cache "Bypass the cache and query DuckDuckGo again", cache_ttl
+"Cache lifetime for this result in seconds (default from config)".
+max_results has only its range 1 to 20 and its default 10, which the
+code applies. The whole tool definition is about 800 characters.
+
+@{h2}Errors, word for word
+
+@{bullet}"Empty query"
+@{bullet}"max_results must be a whole number from 1 to 20, got 'many'"
+@{bullet}"DuckDuckGo search failed for 'godot': RatelimitException: ..."
+@{bullet}"Search cancelled by user"
+@{bullet}Without @{tt}ddgs@{utt}: "Tool 'duckduckgo_search_web_search'
+execution failed: Install `ddgs` for the duckduckgo_search plugin: pip
+install ddgs"
+
+@{h2}The status line
+
+"Searching: godot texture filter", then "10 results -- godot texture
+filter" or "10 results (cached) -- ..." (the query cut to 60
+characters). A failed search shows its error text, as does a refused
+call.
+
+@{h2}Tokens and cache
+
+The tool definition is the same on every request, so the prompt cache
+holds; the plugin adds nothing to the system prompt. The answer is an
+ordinary tool result, appended. Measured: 10 hits about 4,300 to 4,600
+characters, 20 hits about 9,700 -- the largest answer the tool can give,
+apart from an unusually long Wikipedia introduction. Asking for fewer
+hits is the way to keep it small.
+
+@{h2}Known gaps
+
+@{bullet}The hits come from several engines, not only DuckDuckGo; the
+answer does not say which one found a hit.
+@{bullet}Region and safe search are fixed (us-en, moderate).
+@{bullet}A stop is noticed only between attempts.
+@{bullet}Snippets are for choosing a page, not for answering from; read
+the page before relying on it.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration
+(@{tt}config/plugins.yaml@{utt}), as the search for agents without a
+Tavily key:
+
+@{code yaml}
+plugins:
+  servers:
+    duckduckgo_search:
+      type: duckduckgo_search
+      enabled: true
+      cache_ttl: 900
+@{body}
+
+An agent sees the tool when its allowlist names it:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+duckduckgo_search/*"
+@{body}
+
+It needs internet access and the package @{tt}ddgs@{utt} (9.16 or
+newer), which the plugin declares in its @{tt}plugin.toml@{utt}. Do not
+install the older @{tt}duckduckgo-search@{utt} next to it: it is the same
+project under its previous name, and against today's search pages it
+returns no hits at all, without an error.
+
+@{h2}Server settings
+
+@{table}
+Key | Default in code | Meaning
+cache_ttl | 900 | seconds a result is kept, unless the call sets its own
+cache_enabled | true | false: never keep or reuse a result
+@{body}
+
+The @{tt}config:@{utt} block of @{tt}schema.yaml@{utt} is not read; the
+defaults above are the code's own.
+
+@{h2}Where data lives
+
+Kept results are files under @{tt}data/cache/duckduckgo_search/@{utt},
+one per query. An expired entry is removed when it is next looked up;
+@{tt}python -m agent_system.plugins.cache_manager clean --plugin
+duckduckgo_search@{utt} removes all expired ones, @{tt}clear@{utt}
+instead of @{tt}clean@{utt} all of them.
+
+@{h2}A quick check
+
+@{code text}
+python -m plugins.duckduckgo_search --query "godot texture filter"
+@{body}
+
+runs one search from the command line (five hits by default,
+@{tt}--max-results@{utt} changes it) and prints title, address and
+snippet. It uses the same kept results as the agents.
+@endnode

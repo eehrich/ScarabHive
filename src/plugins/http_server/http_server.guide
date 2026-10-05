@@ -1,0 +1,233 @@
+@database "http_server"
+@author "Enrico Ehrich"
+@$VER: http_server.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "HTTP Server"
+@{h1}HTTP Server
+
+The HTTP server puts one plugin behind a small REST interface, so that a
+program outside ScarabHive -- a script, a cron job, another service -- can
+call that plugin's tools with a plain HTTP request. You start it from the
+command line, name the plugin to serve, and it answers on
+@{tt}http://127.0.0.1:9000@{utt} until you stop it. It is not a web server
+for files, and it makes no outgoing requests of its own: every
+@{tt}/call@{utt} runs a tool of the plugin it serves.
+
+Whoever can reach @{tt}/call@{utt} can run every tool of that plugin. Read
+@{" Who can call it " link security} before you serve a plugin that writes
+files or runs commands.
+
+@{code}
+For users
+  @{"  Starting it  " link cli}
+  @{"  The HTTP interface  " link http}
+  @{"  Who can call it  " link security}
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node cli "Starting it"
+@{h1}Starting it
+
+From the repository root, with the virtual environment's Python:
+
+@{code}
+python -m plugins.http_server --server-name datetime
+@{body}
+
+It prints the two URLs and serves until Ctrl+C. The process belongs to
+you, not to a chat session or the API: it runs until it is stopped, and
+stopping the API does not stop it.
+
+@{h2}Options
+
+@{table}
+Option | Default | Meaning
+--server-name | required | the plugin to serve: an instance name from @{tt}config/plugins.yaml@{utt}, or a plugin type
+--host | 127.0.0.1 | the address to bind; anything but a loopback address needs an API key
+--port | 9000 | the port to listen on
+--config | AGENT_CONFIG_PATH, else config/config.yaml | the main config file to read the plugin's entry and the system settings from
+--no-ssl-verify | off | sets @{tt}network.ssl_verify@{utt} to false, for plugins that read that setting
+--version | -- | prints the version and exits
+@{body}
+
+@{h2}Which plugin, with which settings
+
+The name is looked up in @{tt}plugins.servers@{utt} of the loaded
+configuration first. When an entry has that name, the plugin is built from
+it -- its type, its settings -- the way the API builds it; whether the entry
+is enabled does not matter. Otherwise the name is taken as a plugin type
+and the plugin gets no settings of its own. An unknown name ends the
+program with the list of plugin types it knows.
+
+The served plugin's @{tt}start_plugin@{utt} hook runs before the server
+takes requests, its @{tt}stop_plugin@{utt} hook after it stops. It is a
+second instance, in a process of its own: it shares nothing held in memory
+with the API's instance of the same plugin -- only what the plugin keeps on
+disk. Plugins that need a running agent (a sub-agent, a session service)
+do not work here.
+
+@{h2}When it does not start
+
+@{bullet}A non-loopback @{tt}--host@{utt} without a key: "Error running
+HTTP server: http_server refuses to bind non-loopback host '0.0.0.0'
+without authentication: ...", exit code 1.
+@{bullet}The port is taken: the bind error is logged ("error while
+attempting to bind on address ..."), exit code 1.
+@{bullet}The plugin cannot be built: "Error creating server '<name>':
+<reason>", exit code 1.
+
+The log goes to the console and to @{tt}logs/http_server.log@{utt},
+relative to the directory you started it in.
+@endnode
+
+@node http "The HTTP interface"
+@{h1}The HTTP interface
+
+@{h2}GET /health
+
+Always open, no key needed. Answers
+@{tt}{"status": "ok", "server": "<name>"}@{utt} with the name the plugin
+was started under.
+
+@{h2}POST /call
+
+Runs one tool of the served plugin. The body is JSON:
+
+@{table}
+Field | Meaning
+tool | the tool's name, e.g. @{tt}datetime_operations@{utt}; required
+params | the tool's arguments as an object; default @{tt}{}@{utt}
+@{body}
+
+@{code}
+curl -s http://127.0.0.1:9000/call -H "Content-Type: application/json" -d '{"tool": "datetime_operations", "params": {"operation": "current"}}'
+@{body}
+
+The answer is the tool's result, as the tool returned it. The tool is
+called as the API calls it: with a status scope, so plugins that report
+progress work, and through @{tt}call()@{utt} for plugins that have no
+status support. Parameters whose name starts with @{tt}_@{utt} are dropped
+before the call (see @{" Who can call it " link security}).
+
+@{h2}Answers that are not the tool's
+
+@{table}
+Status | Body | When
+200 | @{tt}{"error": "Call failed: <message>", "tool": ..., "params": ...}@{utt} | the tool raised; @{tt}params@{utt} is what was sent
+401 | @{tt}{"detail": "Unauthorized: missing or invalid API key"}@{utt} | a key is set and the request has none or a wrong one
+403 | @{tt}{"detail": "Forbidden: host is not loopback"}@{utt} | no key is set and the request's Host header is not a loopback name
+403 | @{tt}{"detail": "Forbidden: origin is not loopback"}@{utt} | no key is set and the request has an Origin header that is not a loopback URL
+415 | @{tt}{"detail": "Content-Type must be application/json"}@{utt} | any other content type, or none -- with or without a key
+422 | FastAPI's validation error | no @{tt}tool@{utt}, or a body that is not a JSON object
+@{body}
+
+An unknown tool is a raised error, so it answers 200 with, for example,
+"Call failed: Tool 'nope' not found in datetime. Available tools:
+['datetime_operations']. Expected method: nope()". A tool that returns an
+error of its own (@{tt}{"error": ...}@{utt}) is answered as it is, with
+status 200. The adapter sets no timeout: a request waits as long as the
+tool runs.
+@endnode
+
+@node security "Who can call it"
+@{h1}Who can call it
+
+@{tt}/call@{utt} runs any tool of the served plugin with that plugin's full
+power -- the served terminal runs commands, a file plugin writes files. No
+agent allowlist, role or approval hook sits in between: those belong to
+agents, and there is no agent here.
+
+@{h2}Without a key
+
+Without a key the server binds only a loopback address (127.0.0.1,
+localhost, ::1); it refuses to start on any other. @{tt}/call@{utt} then
+answers only requests whose Host header names a loopback host, and whose
+Origin header, when there is one, does too; it refuses the others with
+403. That shuts out a web page in your browser that reaches 127.0.0.1
+through DNS rebinding, or that posts to it from another site. And
+@{tt}/call@{utt} takes only @{tt}Content-Type: application/json@{utt}
+(else 415): a web page can send that to another site only after a
+preflight, which the server does not answer.
+
+What it does not keep out: every program and every user on the same
+machine. On a shared host, set a key.
+
+@{h2}With a key
+
+Set the key in the environment variable
+@{tt}HTTP_SERVER_AUTH_KEY@{utt} before you start it. @{tt}/call@{utt} then
+needs @{tt}X-API-Key: <key>@{utt} or
+@{tt}Authorization: Bearer <key>@{utt}, compared in constant time. With a key, any host may be bound and any Host header
+is accepted. The server speaks plain HTTP: on a network, the key and every
+answer travel unencrypted unless a TLS proxy stands in front of it.
+
+@{h2}Users and sessions
+
+The server knows no users: everyone with the key -- or, without one,
+everyone on the machine -- is the same caller. Plugins that keep data per
+user or per session learn who is calling from parameters the agent runtime
+sets (@{tt}_user_id@{utt}, @{tt}_session_id@{utt} and others starting with
+@{tt}_@{utt}). The server drops every parameter starting with
+@{tt}_@{utt} from a call, so a caller cannot claim to be a user or a
+session. Such plugins then act as they do when called outside any session.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+Nothing. The plugin gives agents no tool, adds nothing to the system
+prompt and sends no status line, enabled or not. It is a command-line
+program: inside the API or agent-cli nobody starts its HTTP interface or
+hands it a plugin to serve, so a tool could only fail there -- and one
+that worked would let an agent run another plugin's tools past its own
+allowlist.
+
+The plugin served over HTTP is not touched either: agents see its tools
+as they always do, and a call over @{tt}/call@{utt} never reaches a chat.
+
+@{h2}Known gaps
+
+@{bullet}Without a key, every local program and user can call the served
+plugin.
+@{bullet}Plain HTTP only; no TLS.
+@{bullet}No timeout on @{tt}/call@{utt}.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing needs to be enabled: the command line takes the plugin to serve
+from the configuration and its own settings from its options. The entry in
+@{tt}config/plugins.yaml@{utt} has no effect on it, and enabling it gives
+agents nothing:
+
+@{code yaml}
+plugins:
+  servers:
+    http_server:
+      type: http_server
+      enabled: false
+      host: 127.0.0.1
+      port: 9000
+@{body}
+
+It needs FastAPI and uvicorn, which the core already has. It keeps no data
+of its own.
+
+@{h2}Settings
+
+@{table}
+Setting | Where from | Default | Meaning
+host | --host | 127.0.0.1 | the address to bind
+port | --port | 9000 | the port
+API key | the environment's HTTP_SERVER_AUTH_KEY | none | required on /call when set
+@{body}
+
+The @{tt}config:@{utt} block in the plugin's @{tt}schema.yaml@{utt} only
+documents host and port; the defaults above are what the code applies.
+@endnode

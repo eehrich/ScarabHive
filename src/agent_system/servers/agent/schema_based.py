@@ -113,6 +113,8 @@ class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
 
         # Get tools from schema.yaml
         tools_defs = self.get_tools()
+        # The instance's own texts (sysadmin_agent, coder, ...), as ToolServer.list_tools does.
+        self._apply_custom_tool_descriptions(tools_defs)
 
         # Convert to ToolDef format
         tool_defs = []

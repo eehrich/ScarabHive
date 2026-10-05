@@ -1,0 +1,307 @@
+@database "decision"
+@author "Enrico Ehrich"
+@$VER: decision.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Decision"
+@{h1}Decision
+
+This plugin lets an agent ask a decision model -- TypeSafe's Jev, or a
+local Laya or Ollama model, whichever the decision profile names -- questions about many
+pieces of content at once. A decision model writes no text: for each item
+it answers each question with a number, a probability for a yes/no question
+or a position on an ordered scale for a rating. One tool call takes up to
+250 items and 20 questions; the plugin sends one request per item, ten at
+a time, and gives back a compact table of numbers. That is faster and far
+cheaper than having a chat model judge the same items one by one. It has no
+hooks and no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  Probabilities  " link probabilities}
+  @{"  Scores  " link scores}
+  @{"  Answers and errors  " link answers}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry shipped in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    decision:
+      type: decision
+      enabled: true
+@{body}
+
+No agent has the tools by default. Allow them in an agent's list:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+decision/*"
+@{body}
+
+@{h2}Which model judges
+
+The plugin names no model itself. It asks for a client by decision
+profile: @{tt}decision_profile@{utt} in its entry, or, when that is empty,
+@{tt}llm_system.default_decision_profile@{utt} (shipped: @{tt}jev@{utt},
+Jev through OpenRouter). Profiles and models live under
+@{tt}llm_system.decision_profiles@{utt} and
+@{tt}llm_system.decision_models@{utt}, beside the chat models (see
+@{" LLM models and profiles " link scarabhive/llm}). The shipped
+configuration also has a profile @{tt}laya@{utt} for a local laya-serve.
+Different models give different numbers for the same question: a threshold
+tuned on Jev does not carry over to Laya.
+
+The client is built at the first call and kept until the plugin is
+restarted. A profile that does not exist, or no default at all, makes every
+call answer "Failed to initialize decision client: ..." with the reason.
+
+Timeout and retries belong to the decision model's entry, not to this
+plugin: @{tt}request_timeout@{utt} (60 seconds) and @{tt}max_retries@{utt}
+(2, so three attempts, waiting 2 and 4 seconds, or the host's Retry-After up
+to 60 s -- asked for more, the item fails at once) apply per item; see
+@{"llm_decisions" link "llm_decisions/retries"}.
+
+@{h2}Server settings
+
+They go straight into the entry, beside @{tt}type@{utt} -- not in a
+@{tt}config:@{utt} block, which the plugin does not read. A value that is
+not a number stops the plugin from loading.
+
+@{table}
+Key | Default | Meaning
+decision_profile | (empty) | the decision profile; empty: llm_system.default_decision_profile
+max_batch_size | 250 | items per call at most; at least 1
+max_concurrency | 10 | requests running at the same time at most; a call may ask for fewer, never more; at least 1
+max_questions | 20 | questions (or criteria) per call at most; at least 1
+max_context_length | 50000 | characters per item at most; an object or array counts as its JSON text; at least 1
+default_scale | ["1", "2", "3", "4", "5"] | the scale of a criterion that names none; a list of fewer than two levels is ignored
+@{body}
+
+@{h2}Dependencies and data
+
+None beyond the core; the client comes from the @{tt}llm_decisions@{utt}
+plugin, which must be present. The key is the one of the endpoint's host
+(OpenRouter's key for OpenRouter). The plugin stores nothing.
+@endnode
+
+@node probabilities "Probabilities"
+@{h1}Probabilities
+
+@{tt}decision_evaluate_probabilities@{utt} (the name follows the plugin
+instance) asks yes/no questions about every item and answers with a
+probability from 0 to 1 per item and question: how likely the answer is
+yes.
+
+@{h2}Parameters
+
+The framework does not check the arguments against the schema; what
+follows is what the code does with them.
+
+@{table}
+Parameter | Meaning
+items | required; a list of 1 to max_batch_size items. An item is an object with @{tt}context@{utt} and an optional @{tt}id@{utt}, or plain text
+items[].id | the item's key in the answer; missing or empty: @{tt}item_1@{utt}, @{tt}item_2@{utt}, ... by position. Two items with the same id: an error
+items[].context | required; the content to judge. Leading and trailing spaces are removed; empty is an error. An object or array is also taken and sent as it is
+questions | required; a list of 1 to max_questions questions, each an object or plain text
+questions[].id | the question's key in the answer; missing or empty: @{tt}q1@{utt}, @{tt}q2@{utt}, ... by position. Two questions with the same id: an error
+questions[].question | required; what to decide, e.g. "Is this command safe to run?"
+questions[].criteria_true, criteria_false | what makes the answer yes, and what makes it no; both or neither, one alone is an error
+max_concurrency | how many items are sent at the same time; default and upper bound the server's max_concurrency, below 1 is 1, not a number is ignored
+include_details | true adds @{tt}details@{utt} to the answer (see below); default false
+@{body}
+
+All questions go to the model together, once per item: the price of a call
+grows with the number of questions more than with the length of the item.
+
+@{h2}The details
+
+With @{tt}include_details@{utt}, @{tt}details.<item>.<question>@{utt}
+holds @{tt}value@{utt} (the probability again), @{tt}type@{utt}
+(@{tt}noul@{utt}, the model's name for a yes/no question),
+@{tt}confidence@{utt} and @{tt}probabilities@{utt}. Jev sends the
+probability alone, so the last two are usually null.
+
+@{h2}An example
+
+@{code json}
+{"items": [{"id": "a", "context": "git status"},
+           {"id": "b", "context": "rm -rf /tmp/build"}],
+ "questions": [{"id": "safe", "question": "Is this command safe to run?"}]}
+@{body}
+
+@{code json}
+{"status": "success",
+ "results": {"a": {"safe": 0.98}, "b": {"safe": 0.33}},
+ "summary": {"total_items": 2, "successful_items": 2, "failed_items": 0,
+             "total_cost": 3e-05, "total_input_tokens": 690,
+             "total_output_tokens": 2, "model": "typesafe/jev-1.13-20260917"}}
+@{body}
+@endnode
+
+@node scores "Scores"
+@{h1}Scores
+
+@{tt}decision_evaluate_scores@{utt} rates every item on one or more
+ordered scales. The answer per item and criterion is a POSITION on the
+scale, counted from 0: on @{tt}["none", "low", "high"]@{utt}, 0 is none, 2
+is high, and 0.58 lies between none and low. It is a point, not a rung --
+2.96 on a four-level scale is a real answer. On the default scale
+@{tt}["1", "2", "3", "4", "5"]@{utt} the numbers run from 0 to 4: a score
+of 3 means the label "4".
+
+@{h2}Parameters
+
+@{tt}items@{utt}, @{tt}max_concurrency@{utt} and @{tt}include_details@{utt}
+work as for @{" probabilities " link probabilities}.
+
+@{table}
+Parameter | Meaning
+criteria | required; a list of 1 to max_questions criteria, each an object (plain text is an error here)
+criteria[].id | the criterion's key in the answer; missing or empty: @{tt}c1@{utt}, @{tt}c2@{utt}, ... by position. Two with the same id: an error
+criteria[].question | required; what to rate. @{tt}instruction@{utt} is taken in its place
+criteria[].scale | the levels, lowest first, at least two; numbers are turned into text. Missing: the server's default_scale
+@{body}
+
+@{h2}The details
+
+With @{tt}include_details@{utt}, @{tt}details.<item>.<criterion>@{utt}
+holds @{tt}score@{utt}, @{tt}scale@{utt} (the levels used),
+@{tt}confidence@{utt}, @{tt}probabilities@{utt} -- keyed by position as
+text, @{tt}{"0": 0.01, "2": 0.97}@{utt} -- and @{tt}legend@{utt}, which
+maps the positions back to the labels.
+
+@{h2}An example
+
+@{code json}
+{"items": ["rm -rf /tmp/build"],
+ "criteria": [{"id": "risk", "question": "How risky is this command?",
+               "scale": ["none", "low", "high"]}]}
+@{body}
+
+@{code json}
+{"status": "success",
+ "results": {"item_1": {"risk": 1.1}},
+ "summary": {"total_items": 1, "successful_items": 1, "failed_items": 0,
+             "total_cost": 1.6e-05, "total_input_tokens": 410,
+             "total_output_tokens": 1, "model": "typesafe/jev-1.13-20260917"},
+ "scores": {"risk": 1.1}}
+@{body}
+@endnode
+
+@node answers "Answers and errors"
+@{h1}Answers and errors
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+status | success; partial_success when some items failed; error
+results | per item id, per question or criterion id, the number
+errors | per failed item id, why it failed; only when some did
+details | only with include_details
+summary | total_items, successful_items, failed_items, total_cost, total_input_tokens, total_output_tokens, model
+probabilities / scores | a call with exactly one item that succeeded also gets that item's numbers here, a copy of its entry in results
+@{body}
+
+@{tt}model@{utt} is the model that answered the first successful item, as
+the endpoint names it (an alias such as @{tt}~typesafe/jev-latest@{utt}
+comes back with its dated version). The token and cost totals count every
+call that was answered, including one whose answer was refused (a question
+left unanswered), since it was billed. @{tt}total_cost@{utt} is null when
+any of them came without a price -- a local Laya and TypeSafe's own
+endpoint report none; the sum of the others would read as the whole. An
+Ollama call counts 0.
+
+@{h2}Failed items
+
+Every item is its own request. One that fails -- the endpoint refused it,
+could not be reached after its retries, or left a question unanswered --
+lands in @{tt}errors@{utt}, and the rest go on. Only when every item
+failed is the status @{tt}error@{utt}: @{tt}error@{utt} says "All <n>
+items failed evaluation: <the first reason>", @{tt}errors@{utt} lists
+them all, and @{tt}summary@{utt} carries what the failed calls cost.
+
+@{h2}Refused before anything is sent
+
+These come back as @{tt}{"status": "error", "error": ...}@{utt}, and no
+request is made:
+
+@{table}
+error | When
+Items must be a non-empty list of context items. | items missing, empty or not a list
+Batch size (<n>) exceeds maximum allowed (<max>). | more than max_batch_size items
+Item at index <i> must be a string or object. | an item is a number, a list, ...
+Duplicate item ID '<id>' at index <i>. | two items with one id
+Item '<id>' context validation error: <reason> | the context is missing ("Context is required and must not be null."), empty ("Context must not be empty or whitespace only."), too long ("Context length (<n>) exceeds maximum allowed (<max>).") or a number
+Questions must be a non-empty list. / Criteria must be a non-empty list. | questions or criteria missing or empty
+Question count (<n>) exceeds limit (<max>). / Criteria count ... | more than max_questions
+Question at index <i> must be a string or object. | a question is a number, a list, ...
+Question at index <i> has empty text. | no question text
+Question at index <i> gives only one of criteria_true and criteria_false; give both or neither. | one criteria side alone
+Criterion at index <i> must be an object. | a criterion given as plain text
+Criterion at index <i> has empty question/instruction. | no text to rate by
+Criterion '<id>' scale must be an ordered list of at least 2 levels. | a scale that is not a list, has one level, or holds objects
+Duplicate question ID '<id>' at index <i>. / Duplicate criterion ID ... | two with one id
+Failed to initialize decision client: <reason> | no usable decision profile (see @{" Setting it up " link setup})
+@{body}
+
+@{h2}Cancelling
+
+Stopping the run stops the batch: items not yet sent are not sent, those
+in flight are dropped, and the tool call ends as cancelled with no answer.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Two tools, @{tt}<instance>_evaluate_probabilities@{utt} and
+@{tt}<instance>_evaluate_scores@{utt}. Their descriptions and parameters
+come from the plugin's @{tt}schema.yaml@{utt}; the scores tool tells the
+model that a score is a position counted from 0. The schema lists
+@{tt}items@{utt} and @{tt}questions@{utt} as objects; plain text is taken
+as well.
+
+@{h2}The chat status line
+
+While a call runs: "Evaluating <n> items against <m> questions" (or
+"scores"), then "Evaluated <k>/<n> items" about every fifth of the batch.
+At the end: "<n> items evaluated (<m> questions each)", or "<k>/<n> items
+evaluated (<f> failed)"; a refusal shows the error text, cut to 140
+characters.
+
+@{h2}Tokens and cache
+
+The answer is an ordinary tool result, appended to the conversation;
+nothing earlier is rewritten, so the prompt cache stays intact. It holds
+numbers and ids only, one number per item and question, plus the
+summary. @{tt}include_details@{utt} multiplies that, and a single-item
+call carries its numbers twice (@{tt}results@{utt} and
+@{tt}probabilities@{utt} or @{tt}scores@{utt}). The decision calls
+themselves go to the decision model, not the chat model, and are booked
+under their own provider (@{tt}openrouter_decisions@{utt},
+@{tt}systemone_decisions@{utt}, @{tt}ollama_decisions@{utt}) in the usage tracker and the message
+debugger.
+
+@{h2}Known gaps
+
+@{bullet}Only yes/no and scale questions. The model's third type, a choice
+between named options, has no tool here.
+@{bullet}Jev is not deterministic: the same question on the same item can
+come back a few hundredths apart.
+@{bullet}Without @{tt}include_details@{utt} the answer does not repeat the
+scale, so the agent has to remember which positions mean what.
+@endnode

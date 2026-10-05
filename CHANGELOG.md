@@ -60,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   access or a tool that runs arbitrary code (`blender_execute`, `godot_script`)
   are gated at `admin`; `state_graph_agent`/`state_graph_agent_ui` at `user`.
   **Operator-visible:** after the next restart, accounts below `admin` no
-  longer see or run these 14 agents (`amiga_coder`, `blender_agent`,
+  longer see or run these agents (`blender_agent`,
   `claude_code_agent`, `coder`, `coder_explorer`, `coder_reviewer`,
   `coder_tester`, `file_ops_test_agent`, `gamedev`, `gamedev_tester`,
   `godot_agent`, `skills_agent`, `skills_agent_multimodal`, `sysadmin_agent`).

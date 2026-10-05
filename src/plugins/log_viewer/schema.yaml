@@ -2,7 +2,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_list"
-      description: List all available log files in the configured log directory.
+      description: List the log files.
       parameters:
         type: object
         properties: {}
@@ -11,37 +11,37 @@ tools:
   - type: function
     function:
       name: "{{ name }}_tail"
-      description: Get the most recent lines from a specified log file.
+      description: Get the most recent lines of a log file.
       parameters:
         type: object
         properties:
           log_file:
             type: string
-            description: "Log file path"
+            description: "As named by {{ name }}_list"
           lines:
             type: integer
             default: 500
-            description: "Number of recent lines to retrieve"
+            minimum: 1
         required: ["log_file"]
         additionalProperties: false
 
   - type: function
     function:
       name: "{{ name }}_search"
-      description: Search log files for patterns with regex support.
+      description: Search log files for lines matching a regex (case-insensitive).
       parameters:
         type: object
         properties:
           pattern:
             type: string
-            description: "Search pattern (regex supported)"
+            description: "Python regex"
           log_file:
             type: string
-            description: "Specific log file to search (optional)"
+            description: "As named by {{ name }}_list; omit for all"
           max_results:
             type: integer
             default: 100
-            description: "Maximum number of results (default: 100)"
+            minimum: 1
         required: ["pattern"]
         additionalProperties: false
 
@@ -80,3 +80,5 @@ config:
   log_files:
     - logs/api.log
     - logs/cli.log
+    - logs/profiling.log
+    - logs/security.log

@@ -2,7 +2,7 @@
 tmp_path, its static files. The compaction events are seeded in the shape the hook records them; the real history file
 is neither read nor written.
 
-Seeded: session ``s-1`` with three compactions (``writer`` 50,000 → 30,000 tokens with L1 and 3 tool results stored;
+Seeded: session ``s-1`` with three compactions (``reviewer`` 50,000 → 30,000 tokens with L1 and 3 tool results stored;
 an agent named in markup 40,000 → 36,000 with P, L1 and L2, 2 media in the window, 1 duplicate and 3 MB; ``blender``
 10,000 → 9,000 with no layer and 2 duplicates), two stored tool results, three archived messages (and one tagged
 ``default``) and four core memory facts, one of them markup; ``s-2`` with one Pre-Layer T compaction; ``s-3`` with 101
@@ -61,7 +61,7 @@ def panel_app(storage: Path, monkeypatch):
     hooks.history_callback = None  # and unwritten
     history = plugin.server.stats_history
     base = time.time() - 3600
-    history += [event("s-1", "writer", base, 50000, 30000, [1], stored=3),
+    history += [event("s-1", "reviewer", base, 50000, 30000, [1], stored=3),
                 event("s-1", MARKUP, base + 60, 40000, 36000, ["P", 1, 2], window=2, duplicates=1, megabytes=3),
                 event("s-1", "blender", base + 120, 10000, 9000, [], duplicates=2),
                 event("s-2", "coder", base + 180, 4000, 3000, ["T"])]

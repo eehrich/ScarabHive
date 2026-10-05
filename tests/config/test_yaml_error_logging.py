@@ -137,14 +137,15 @@ plugins:
                    for record in caplog.records)
     
     def test_invalid_yaml_in_included_config_logs_warning(self, tmp_path: Path, caplog):
-        """Test that invalid YAML in included config logs warning but continues."""
+        """Invalid YAML in a file a glob matched logs an error and the rest loads. A file the master names by its
+        path fails the start instead (it may hold the route rules): tests/config/test_config_security_include.py."""
         from agent_system.config.settings import load_settings
         
         # Create main config
         config_file = tmp_path / "config.yaml"
         config_file.write_text("""
 includes:
-  - included.yaml
+  - included*.yaml
 
 plugins:
   servers:

@@ -4,9 +4,10 @@
 // The layout test loads the vendored ELK the way the panel does (a classic script defining the global ELK).
 
 import {
-  applyPositions, clipToBox, compositeTitleWidth, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
+  applyPositions, autoOf, clipToBox, compositeTitleWidth, dropInto, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
-  statesWithin, toggled,
+  groupedSpots, labelSpot, lanes, lineKeys, orthogonalRoute, renamedLines, selectedTransitions, transitionRoute, selectionOf, statesWithin, toggled,
+  NOTE, noteKey, noteLines, notePlaces, foldTrace,
 } from '../../static/graph.js';
 
 const results = [];
@@ -98,6 +99,37 @@ test('ELK lays the graph out: children inside their composite, every edge routed
     assert(layout.edges[id] && layout.edges[id].points.length >= 2, `edge ${id} is routed`);
   }
   assert(layout.nodes['s:write'].x < layout.nodes['s:route'].x, 'left to right');
+  equal(Object.entries(layout.initials).sort(), [['i:', 's:write'], ['i:review', 's:read']], 'each initial dot knows the state it points to');
+});
+
+test('autoOf: a layout without positions is laid out flow, one dragged before flow came classic, its auto wins', () => {
+  equal(autoOf(undefined), 'flow', 'no layout');
+  equal(autoOf({ version: 1, line: 'straight', positions: {} }), 'flow', 'no positions');
+  equal(autoOf({ version: 1, positions: { a: { x: 1, y: 2 } } }), 'classic', 'dragged against the classic layout');
+  equal(autoOf({ version: 1, auto: 'flow', positions: { a: { x: 1, y: 2 } } }), 'flow', 'dragged against flow');
+  equal(autoOf({ version: 1, auto: 'classic' }), 'classic', 'kept classic');
+  equal(elkInput(GRAPH).layoutOptions['elk.direction'], 'RIGHT', 'classic unless asked');
+});
+
+test('flow lays the states out top down in the order of the file: the loops go back up', async () => {
+  const state = (name, type = 'state') => ({ name, parent: null, type, composite: false, kind: null, label: '', icon: null });
+  const go = (source, index, target, trigger = 'done') => ({ id: `${source}#${index}`, source, index, target, trigger, guard: null, effect: null });
+  // fix sends the work back to write twice and once to check: by its edges ELK would take it for a source, at the top
+  const graph = { initial: 'write', states: [state('write'), state('check'), state('fix'), state('done', 'final')],
+    transitions: [go('write', 0, 'check'), go('check', 0, 'done'), go('check', 1, 'write'), go('check', 2, 'fix'),
+      go('fix', 0, 'write'), go('fix', 1, 'write', 'error'), go('fix', 2, 'check')] };
+  const { nodes } = layoutFrom(await new ELK().layout(elkInput(graph, 'flow')));
+  const y = (name) => nodes[stateId(name)].y;
+  assert(y('write') < y('check') && y('check') < y('fix'), `top down as listed: ${JSON.stringify(nodes)}`);
+  // the same loops inside a composite
+  const inside = { initial: 'start',
+    states: [state('start'), { ...state('work'), composite: true, initial: 'write' },
+      ...graph.states.filter((s) => s.name !== 'done').map((s) => ({ ...s, parent: 'work' })), state('done', 'final')],
+    transitions: [go('start', 0, 'work'), ...graph.transitions] };
+  const nested = layoutFrom(await new ELK().layout(elkInput(inside, 'flow'))).nodes;
+  const at = (name) => nested[stateId(name)].y;
+  assert(at('start') < at('work') && at('write') < at('check') && at('check') < at('fix'),
+    `top down from the composite's initial state: ${JSON.stringify(nested)}`);
 });
 
 // ------------------------------------------------------------------ positions
@@ -110,6 +142,28 @@ const AUTO = {
   },
   edges: {},
 };
+
+test('dropInto takes the innermost composite under the point, never the dragged state or one inside it', () => {
+  const nodes = {
+    's:outer': { x: 0, y: 0, w: 400, h: 400, parent: null },
+    's:inner': { x: 50, y: 50, w: 100, h: 100, parent: 's:outer' },
+    's:leaf': { x: 60, y: 60, w: 20, h: 20, parent: 's:inner' },
+    's:a': { x: 500, y: 0, w: 40, h: 40, parent: null },
+  };
+  const composites = ['outer', 'inner'];
+  equal(dropInto(nodes, composites, 'a', 60, 60), 'inner', 'the inner one, not the one around it');
+  equal(dropInto(nodes, composites, 'a', 300, 300), 'outer', 'outside the inner one');
+  equal(dropInto(nodes, composites, 'a', 520, 20), null, 'no composite there');
+  equal(dropInto(nodes, composites, 'inner', 60, 60), null, 'not into itself, nor the one it sits in');
+  equal(dropInto(nodes, composites, 'outer', 60, 60), null, 'not into one inside it');
+  // its composite grew around it while it was dragged, over a bigger one: the bigger one takes it
+  const grown = {
+    's:p': { x: 0, y: 0, w: 260, h: 160, parent: null },
+    's:kid': { x: 200, y: 100, w: 40, h: 40, parent: 's:p' },
+    's:q': { x: 150, y: 50, w: 600, h: 600, parent: null },
+  };
+  equal(dropInto(grown, ['p', 'q'], 'kid', 220, 120), 'q', 'not the grown composite it sits in');
+});
 
 test('applyPositions: a moved composite takes its children along', () => {
   const { nodes, moved } = applyPositions(AUTO, { c: { x: 300, y: 50 } });
@@ -125,6 +179,247 @@ test('applyPositions: a composite grows to hold a child moved to its edge, and a
   equal([clamped['s:c1'].x, clamped['s:c1'].y], [200 + PAD.left, 10 + PAD.top], 'the child stays in the content area');
   const ignored = applyPositions(AUTO, { ghost: { x: 1, y: 1 }, a: { x: 'x', y: 1 } });
   equal(ignored.moved.size, 0, 'unknown names and broken spots are ignored');
+});
+
+test('applyPositions: an initial dot sits left of its state once that one is placed, else where ELK put it', () => {
+  const auto = {
+    nodes: { 'i:': { x: 400, y: 300, w: 14, h: 14, parent: null }, ...AUTO.nodes,
+      'i:c': { x: 380, y: 100, w: 14, h: 14, parent: 's:c' } },
+    edges: {}, initials: { 'i:': 's:a', 'i:c': 's:c1' },
+  };
+  const placed = applyPositions(auto, { a: { x: 500, y: 60 }, c1: { x: 120, y: 50 } }).nodes;
+  equal([placed['i:'].x, placed['i:'].y], [500 - 40 - 14, 60 + (40 - 14) / 2], 'left of a, at its middle');
+  equal([placed['i:c'].x, placed['i:c'].y], [200 + 120 - 40 - 14, 10 + 50 + 13], 'in its composite, left of c1');
+  const unplaced = applyPositions(auto, { c: { x: 300, y: 50 } }).nodes;
+  equal([unplaced['i:'].x, unplaced['i:c'].x], [400, 300 + 180], 'the dots of states ELK placed stay where ELK put them');
+  const edge = applyPositions(auto, { c1: { x: 20, y: 50 } }).nodes;
+  equal(edge['i:c'].x, 200 + PAD.left, 'a state at its composite\'s left edge keeps the dot inside the box');
+  const foreign = applyPositions({ ...auto, initials: { 'i:c': 's:a' } }, { a: { x: 500, y: 60 } }).nodes;
+  equal([foreign['i:c'].x, foreign['i:c'].y, foreign['s:c'].w], [380, 100, 240], 'an initial outside its composite (SG002) moves no dot');
+  const grown = applyPositions({ ...auto, initials: { 'i:': 's:c' } }, { c: { x: 300, y: 50 }, c1: { x: 20, y: 300 } }).nodes;
+  equal(grown['i:'].y, 50 + (300 + 40 + PAD.bottom - 14) / 2, 'centred on the composite as it grew');
+});
+
+test('edgeRoute / labelSpot: a transition back between the same two is drawn beside the other, its label on its side', () => {
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  const b = { x: 300, y: 0, w: 100, h: 40 };
+  const there = edgeRoute(null, a, b, true, { offset: 6 });
+  const back = edgeRoute(null, b, a, true, { offset: 6 });
+  equal([there.points, back.points], [[[100, 26], [300, 26]], [[300, 14], [100, 14]]], 'each 6 to the right of its way');
+  const plain = edgeRoute(null, a, b, true);
+  equal([plain.points, plain.side], [[[100, 20], [300, 20]], undefined], 'alone: through the middle');
+  equal(labelSpot(plain, 80), [160, 14], 'alone: its label above the middle');
+  const [, below] = labelSpot(there, 80);
+  const [, above] = labelSpot(back, 80);
+  assert(below - 11 > 26 && above + 4 < 14, `the labels clear both lines: box ${below - 11}..${below + 4} and ${above - 11}..${above + 4}`);
+  const down = edgeRoute(null, a, { x: 0, y: 200, w: 100, h: 40 }, true, { offset: 6 });
+  const [left] = labelSpot(down, 80);
+  assert(left + 80 + 3 < down.points[0][0], `beside a vertical line, the label ends left of it: ${left + 83} ${down.points[0][0]}`);
+  const other = edgeRoute(null, a, b, true, { offset: -6 });
+  equal([other.points, other.side], [[[100, 14], [300, 14]], [-0, -1]], 'a negative offset: on its left, the label there too');
+});
+
+test('lanes: the transitions between two states, either way, side by side', () => {
+  const t = (id, source, target) => ({ id, source, target });
+  const offsets = (found) => Object.fromEntries(Object.entries(found).map(([id, lane]) => [id, lane.offset]));
+  equal(offsets(lanes([t('a#0', 'a', 'b'), t('b#0', 'b', 'a')])), { 'a#0': 6, 'b#0': 6 }, 'there and back: each on its right');
+  equal(offsets(lanes([t('x#0', 'x', 'y'), t('x#1', 'x', 'y')])), { 'x#0': 6, 'x#1': -6 }, 'twice the same way: one right, one left');
+  const three = lanes([t('y#0', 'y', 'x'), t('y#1', 'y', 'x'), t('x#0', 'x', 'y')]);
+  equal(three, { 'y#0': { offset: -20, at: 0.75, crowd: true, spread: 20 }, 'y#1': { offset: 0, at: 0.5, crowd: true, spread: 20 },
+    'x#0': { offset: -20, at: 0.75, crowd: true, spread: 20 } },
+    'three: 20 apart, each label at its own place along the way (y to x counts from x); the widest offset is their spread');
+  equal(offsets(lanes([t('a#0', 'a', 'b'), t('a#1', 'a', 'a'), t('a#2', 'a', null), t('c#0', 'c', 'a')])), { 'a#0': 0, 'c#0': 0 },
+    'alone: through the middle; a self-transition and an internal one are no pair');
+});
+
+test('orthogonalRoute: out of the facing side, one bend half way, in through the side facing back', () => {
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  equal(orthogonalRoute(a, { x: 300, y: 200, w: 100, h: 40 }).points, [[100, 20], [200, 20], [200, 220], [300, 220]], 'a Z sideways');
+  equal(orthogonalRoute(a, { x: 300, y: 0, w: 100, h: 40 }).points, [[100, 20], [300, 20]], 'level: a straight line');
+  equal(orthogonalRoute(a, { x: 60, y: 300, w: 100, h: 40 }).points, [[50, 40], [50, 170], [110, 170], [110, 300]], 'a Z downwards');
+  // mostly sideways, but the sides overlap: down and in from above instead
+  equal(orthogonalRoute({ x: 0, y: 0, w: 400, h: 40 }, { x: 300, y: 100, w: 300, h: 40 }).points,
+    [[200, 40], [200, 70], [450, 70], [450, 100]], 'no room sideways: along the other axis');
+  equal(orthogonalRoute(a, { x: 50, y: 10, w: 100, h: 40 }), null, 'overlapping boxes: no right angle fits');
+  const near = { x: 140, y: 60, w: 100, h: 40 };  // 40 between the facing sides: two runs of 16 fit, lanes' do not
+  equal(orthogonalRoute(a, near).points.length, 4, 'a Z: a run of 16 out of and into the boxes');
+  const close = orthogonalRoute(a, { x: 120, y: 60, w: 100, h: 40 });  // 20 between the facing sides: no Z
+  equal([close.points, close.span], [[[100, 20], [170, 20], [170, 60]], [[100, 20], [170, 20]]],
+    'an L instead: out of the side, in from above, labelled on its level leg');
+  equal(labelSpot(close, 20), [125, 14], 'above the middle of the level leg');
+  const tall = orthogonalRoute(a, { x: 110, y: 50, w: 40, h: 200 });
+  equal([tall.points, tall.span], [[[50, 40], [50, 150], [110, 150]], [[50, 150], [110, 150]]], 'mostly down: down first, then in from the side');
+  const lane = orthogonalRoute(a, near, { offset: 6 });
+  equal([lane.points, lane.side], [[[100, 26], [184, 26], [184, 60]], [0, 1]], 'a lane needs its offset besides for a Z: an L right of its way');
+  equal(orthogonalRoute(a, { x: 102, y: 60, w: 20, h: 30 }).points, [[50, 40], [50, 75], [102, 75]], 'a first leg shorter than a run: the other L');
+  equal(orthogonalRoute(a, { x: 110, y: 30, w: 40, h: 60 }).points, [[50, 40], [50, 60], [110, 60]], 'a second leg shorter than a run: the other L');
+  const left = orthogonalRoute(a, { x: -50, y: 50, w: 40, h: 200 }, { offset: 6 });
+  equal([left.points, left.side], [[[44, 40], [44, 144], [-10, 144]], [0, -1]], 'down, then left: right of a way west is up');
+  const up = orthogonalRoute(a, { x: 120, y: -60, w: 100, h: 40 }, { offset: 6 });
+  equal([up.points, up.side], [[[100, 26], [176, 26], [176, -20]], [0, 1]], 'right, then up: the label right of the way east');
+  const facing = { x: 20, y: 70, w: 100, h: 40 };  // 30 below, offset: room for neither a bend nor an L's legs
+  equal(orthogonalRoute(a, facing).points, [[60, 40], [60, 70]], 'straight down in the middle of where they face each other');
+  const beside = orthogonalRoute(a, facing, { offset: 6 });
+  equal([beside.points, beside.side], [[[54, 40], [54, 70]], [-1, 0]], 'a lane of it: right of its way');
+  equal(orthogonalRoute(a, { x: 105, y: 45, w: 10, h: 10 }), null, 'all but meeting at a corner: no right angle fits');
+});
+
+test('a straight line between a composite and a state inside it goes to the nearest border, not through the state', () => {
+  const box = { x: 0, y: 0, w: 300, h: 200 };
+  const kid = { x: 150, y: 150, w: 96, h: 34 };  // nearest the bottom; the centre-to-centre line leaves at the right
+  equal(transitionRoute('straight', null, kid, box, true, null).points, [[198, 184], [198, 200]], 'down to the bottom');
+  equal(transitionRoute('straight', null, box, kid, true, null).points, [[198, 200], [198, 184]], 'and back up');
+  const other = { x: 400, y: 0, w: 96, h: 34 };
+  equal(transitionRoute('straight', null, kid, other, true, null).points, edgeRoute(null, kid, other, true).points,
+    'between two states side by side: centre to centre as before');
+  const filling = { x: 2, y: 2, w: 96, h: 36 };
+  equal(transitionRoute('straight', null, filling, { x: 0, y: 0, w: 100, h: 40 }, true, null).points,
+    edgeRoute(null, filling, { x: 0, y: 0, w: 100, h: 40 }, true).points, 'no room for a line to a border: as before');
+});
+
+test('orthogonalRoute: a group of lanes takes one way, squeezed where it must; a composite and a state inside it', () => {
+  const t = (id, source, target) => ({ id, source, target });
+  const a = { x: 0, y: 0, w: 96, h: 34 };
+  const pair = lanes([t('a#0', 'a', 'b'), t('b#0', 'b', 'a')]);
+  const close = { x: 136, y: -26, w: 96, h: 34 };  // 40 apart: a Z fits one line, not two 12 apart
+  const [there, back] = [orthogonalRoute(a, close, pair['a#0']), orthogonalRoute(close, a, pair['b#0'])];
+  equal([there.points, back.points], [[[96, 20.6], [119.6, 20.6], [119.6, -5.4], [136, -5.4]],
+    [[136, -12.6], [112.4, -12.6], [112.4, 13.4], [96, 13.4]]], 'both a Z, 7.2 apart instead of 12: as little closer as it takes');
+  const three = lanes([t('a#0', 'a', 'b'), t('a#1', 'a', 'b'), t('a#2', 'a', 'b')]);
+  const near = { x: 146, y: 10, w: 96, h: 34 };  // 50 apart: the middle one alone would bend, the outer ones not
+  equal(['a#0', 'a#1', 'a#2'].map((id) => orthogonalRoute(a, near, three[id]).points),
+    [[[96, 25], [113, 25], [113, 35], [146, 35]], [[96, 17], [121, 17], [121, 27], [146, 27]], [[96, 9], [129, 9], [129, 19], [146, 19]]],
+    'all three bend, 8 apart: each starts and ends on its box');
+  equal(orthogonalRoute(a, { x: 101, y: 60, w: 40, h: 34 }, three['a#1']).points, [[48, 34], [48, 77], [101, 77]],
+    'the middle one alone would go right first: the outer ones\' legs would be too short that way, so all go down first');
+  const far = orthogonalRoute(a, { x: 400, y: 200, w: 96, h: 34 }, three['a#0']);
+  equal([far.points, labelSpot(far, 40)], [[[28, 34], [28, 137], [428, 137], [428, 200]], [108, 131]],
+    'three 20 apart fit the boxes\' width, not their height: down first, the label above the level middle, a quarter along');
+  const beside = ['a#0', 'a#2'].map((id) => orthogonalRoute(a, { x: 400, y: 40, w: 96, h: 34 }, three[id]));
+  equal(beside.map((drawn) => [drawn.points[0][1], labelSpot(drawn, 60)]), [[33, [100, 27]], [1, [192, -5]]],
+    'sideways, 16 apart: each label above its own first leg, clear of the others');
+  const onSide = ([x, y], b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h
+    && (x === b.x || x === b.x + b.w || y === b.y || y === b.y + b.h);
+  const tall = { x: 0, y: 0, w: 96, h: 80 };
+  for (const [from, to] of [[tall, { x: 400, y: 100, w: 96, h: 34 }], [a, { x: 400, y: 100, w: 96, h: 80 }],  // Zs
+    [tall, { x: 130, y: 120, w: 30, h: 34 }], [{ x: 0, y: 0, w: 96, h: 30 }, { x: 150, y: 60, w: 96, h: 80 }]]) {  // Ls
+    for (const id of ['a#0', 'a#1', 'a#2']) {
+      const drawn = orthogonalRoute(from, to, three[id]);
+      assert(drawn && onSide(drawn.points[0], from) && onSide(drawn.points[drawn.points.length - 1], to),
+        `${JSON.stringify([from, to])} ${id}: a lane starts or ends beside its box: ${JSON.stringify(drawn?.points)}`);
+    }
+  }
+  const box = { x: 0, y: 0, w: 300, h: 200 };
+  equal([orthogonalRoute({ x: 40, y: 60, w: 96, h: 34 }, box).points, orthogonalRoute(box, { x: 40, y: 60, w: 96, h: 34 }).points],
+    [[[40, 77], [0, 77]], [[0, 77], [40, 77]]], 'to and from the composite\'s nearest border: left');
+  equal(orthogonalRoute({ x: 150, y: 150, w: 96, h: 34 }, box).points, [[198, 184], [198, 200]], 'nearest the bottom: down');
+  equal([orthogonalRoute({ x: 0, y: 60, w: 96, h: 34 }, box).points, orthogonalRoute({ x: 4, y: 60, w: 96, h: 34 }, box).points],
+    [[[48, 94], [48, 200]], [[52, 94], [52, 200]]], 'against the left border, or 4 from it: no line there, to the next nearest');
+  equal(orthogonalRoute({ x: 100, y: 34, w: 96, h: 34 }, box).points, [[100, 51], [0, 51]],
+    'nearest the top: not through the composite\'s name, to the next nearest');
+  equal(orthogonalRoute({ x: 14, y: 60, w: 96, h: 34 }, box).points, [[14, 77], [0, 77]], 'the padding ELK leaves (14) is room enough');
+  equal(orthogonalRoute({ x: 2, y: 2, w: 96, h: 36 }, { x: 0, y: 0, w: 100, h: 40 }), null, 'filling its composite: no room for a line');
+  const kid = { x: 40, y: 60, w: 96, h: 34 };
+  const inside = lanes([t('kid#0', 'kid', 'box'), t('box#0', 'box', 'kid')]);
+  equal([orthogonalRoute(kid, box, inside['kid#0']).points, orthogonalRoute(box, kid, inside['box#0']).points],
+    [[[40, 83], [0, 83]], [[0, 71], [40, 71]]], 'there and back: side by side, each left of its way (offset -6)');
+  const crowded = lanes([t('kid#0', 'kid', 'box'), t('kid#1', 'kid', 'box'), t('kid#2', 'kid', 'box')]);
+  equal(['kid#0', 'kid#2'].map((id) => orthogonalRoute(kid, box, crowded[id]).points[0][1]), [93, 61],
+    'three 20 apart would leave the state (34 high): 16 apart');
+});
+
+test('orthogonalRoute: transitions between the same two states on lanes neither cover nor cross each other', () => {
+  const t = (id, source, target) => ({ id, source, target });
+  const segments = (points) => points.slice(1).map((p, i) => [points[i], p]);
+  const touch = ([[x1, y1], [x2, y2]], [[x3, y3], [x4, y4]]) => {  // axis-aligned segments: do they share a point?
+    const [ax, bx, ay, by] = [Math.min(x1, x2), Math.max(x1, x2), Math.min(y1, y2), Math.max(y1, y2)];
+    const [cx, dx, cy, dy] = [Math.min(x3, x4), Math.max(x3, x4), Math.min(y3, y4), Math.max(y3, y4)];
+    return ax <= dx && cx <= bx && ay <= dy && cy <= by;
+  };
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  for (const b of [{ x: 400, y: 200, w: 100, h: 40 }, { x: 400, y: -200, w: 100, h: 40 }, { x: 200, y: 400, w: 100, h: 40 },
+    { x: -300, y: 400, w: 100, h: 40 }, { x: 400, y: 0, w: 100, h: 40 },
+    { x: 130, y: 70, w: 100, h: 40 }, { x: -130, y: -70, w: 100, h: 40 }, { x: 110, y: 50, w: 40, h: 200 },  // Ls
+    { x: 130, y: -70, w: 100, h: 40 }]) {  // an L up
+    for (const group of [[t('a#0', 'a', 'b'), t('b#0', 'b', 'a')], [t('a#0', 'a', 'b'), t('a#1', 'a', 'b')],
+      [t('a#0', 'a', 'b'), t('b#0', 'b', 'a'), t('a#1', 'a', 'b')]]) {
+      const found = lanes(group);
+      const drawn = group.map((one) => (one.source === 'a' ? orthogonalRoute(a, b, found[one.id]) : orthogonalRoute(b, a, found[one.id])));
+      const where = `${JSON.stringify(b)} ${group.map((one) => one.id)}`;
+      const boxes = drawn.map((route) => {  // the label's box, as drawEdge makes it (text of 120)
+        const [x, y] = labelSpot(route, 120);
+        return [[x - 3, y - 11], [x + 123, y + 4]];
+      });
+      drawn.forEach((p, i) => drawn.forEach((q, j) => {
+        if (i >= j) return;
+        const hits = segments(p.points).flatMap((s) => segments(q.points).filter((r) => touch(s, r)));
+        assert(!hits.length, `${where}: ${JSON.stringify(p.points)} meets ${JSON.stringify(q.points)}`);
+        assert(!touch(boxes[i], boxes[j]), `${where}: labels ${i} and ${j} meet`);
+      }));
+      // two: each label clear of the other's line (a crowd's may cross its neighbours', as straight). ponytail: not an
+      // L's -- where no Z fits, a label of 120 is longer than its leg, and one beside the inner L lies on the outer
+      if (group.length === 2 && !drawn.some((route) => route.points.length === 3)) {
+        drawn.forEach((p, i) => segments(drawn[1 - i].points).forEach((s) => assert(!touch(boxes[i], s),
+          `${where}: label ${i} covers the other line at ${JSON.stringify(s)}`)));
+      }
+    }
+  }
+});
+
+test('transitionRoute: moving a state keeps the style -- right-angled is ELK\'s route, then ours; straight stays straight', () => {
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  const b = { x: 300, y: 200, w: 100, h: 40 };
+  const elk = { points: [[100, 20], [150, 20], [150, 220], [300, 220]], label: null };
+  const kinds = (style, moved, to = b, route = elk) => {
+    const drawn = transitionRoute(style, route, a, to, moved, undefined);
+    return drawn.points === elk.points ? 'elk' : drawn.points.length === 2 ? 'straight' : drawn.points.length === 4 && to === a ? 'loop' : 'square';
+  };
+  equal(['orthogonal', 'straight', undefined].map((style) => kinds(style, false)), ['elk', 'straight', 'elk'], 'where ELK put them');
+  equal(['orthogonal', 'straight', undefined].map((style) => kinds(style, true)), ['square', 'straight', 'square'], 'moved');
+  equal(kinds('straight', false, a), 'loop', 'a straight self-transition keeps its loop too');
+  equal(kinds('orthogonal', false, b, null), 'square', 'no route of ELK (its layout failed): right-angled all the same');
+  equal(kinds('orthogonal', true, { x: 50, y: 10, w: 100, h: 40 }), 'straight', 'overlapping: straight');
+  equal(kinds('orthogonal', true, a), 'loop', 'a self-transition keeps its loop');
+});
+
+test('lineKeys / renamedLines: a line style is kept by the way it goes, and follows a renamed state', () => {
+  const t = (id, source, target) => ({ id, source, target });
+  equal(lineKeys([t('a#0', 'a', 'b'), t('a#1', 'a', 'c'), t('a#2', 'a', 'b'), t('a#3', 'a', null)]),
+    { 'a#0': 'a→b', 'a#1': 'a→c', 'a#2': 'a→b' }, 'the same way, the same style; an internal transition has none');
+  equal(renamedLines({ 'a→b': 'straight', 'b→a': 'orthogonal', 'ab→c': 'straight' }, 'a', 'x'),
+    { 'ab→c': 'straight', 'x→b': 'straight', 'b→x': 'orthogonal' }, 'both ends; a longer name untouched');
+  equal(renamedLines({ 'a→b': 'orthogonal', 'z→b': 'straight' }, 'a', 'z'), { 'z→b': 'orthogonal' },
+    'the renamed state\'s own style wins over one left from a removed state of its new name');
+});
+
+test('lanes / edgeRoute / labelSpot: of three or four between two states, no label covers another or another\'s line', () => {
+  const t = (id, source, target) => ({ id, source, target });
+  const width = 180;
+  const boxOf = (drawn) => {  // the label's box: 3 beyond the text, 11 above its baseline, 4 below
+    const [x, y] = labelSpot(drawn, width);
+    return { x: x - 3, y: y - 11, w: width + 6, h: 15 };
+  };
+  const meets = (p, q) => p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h;
+  const crosses = (box, [[x1, y1], [x2, y2]]) => {  // a straight line through a box: sampled finely
+    for (let s = 0; s <= 400; s += 1) {
+      const [x, y] = [x1 + ((x2 - x1) * s) / 400, y1 + ((y2 - y1) * s) / 400];
+      if (x > box.x && x < box.x + box.w && y > box.y && y < box.y + box.h) return true;
+    }
+    return false;
+  };
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  for (const [where, b] of [['beside', { x: 700, y: 0, w: 100, h: 40 }], ['below', { x: 0, y: 500, w: 100, h: 40 }]]) {
+    for (const group of [[t('a#0', 'a', 'b'), t('a#1', 'a', 'b'), t('b#0', 'b', 'a')],
+      [t('a#0', 'a', 'b'), t('b#0', 'b', 'a'), t('a#1', 'a', 'b'), t('b#1', 'b', 'a')]]) {
+      const found = lanes(group);
+      const drawn = group.map((one) => (one.source === 'a' ? edgeRoute(null, a, b, true, found[one.id]) : edgeRoute(null, b, a, true, found[one.id])));
+      const boxes = drawn.map(boxOf);
+      boxes.forEach((box, i) => boxes.forEach((other, j) => {
+        assert(i >= j || !meets(box, other), `${where}, ${group.length}: labels ${i} and ${j} meet`);
+        if (where === 'beside') assert(i === j || !crosses(box, drawn[j].points), `${where}, ${group.length}: label ${i} covers line ${j}`);
+      }));
+    }
+  }
 });
 
 test('clipToBox and edgeRoute: straight lines leave the boxes at their border', () => {
@@ -176,6 +471,44 @@ test('runOverlay reads the root frame, the pause, submachine frames and the last
   assert(overlay.submachines.has('read'), 'the state a submachine runs under');
   equal(overlay.lastEdge, 'write#0', 'the last transition of the root frame');
   equal(runOverlay(null).active.size, 0, 'no run, no overlay');
+});
+
+test('runOverlay of a submachine frame: its own states, pause and edge; a child under its state; an ended one from its trace', () => {
+  const run = {
+    view: { frames: [
+      { prefix: '', path: '', state: 'read', config: ['review', 'read'], visits: { write: 2 } },
+      { prefix: 's3/m/', path: 'read', state: 'judge', config: ['judge'], visits: { judge: 3 } },
+      { prefix: 's3/m/s2/m/', path: 'read/judge', state: 'x', config: ['x'], visits: {} },
+    ] },
+    debug: { paused: { frame: 's3/m/', state: 'judge', hook: 'enter' } },
+    journal: [
+      { kind: 'trace', status: 'transition', data: { frame: 's3/m/', from: 'judge', to: 'judge', index: 2 } },
+      { kind: 'trace', status: 'transition', data: { frame: '', from: 'write', to: 'review', index: 0 } },
+    ],
+  };
+  const sub = runOverlay(run, 's3/m/');
+  equal([[...sub.active], sub.current, sub.visits.judge, sub.paused], [['judge'], 'judge', 3, 'judge'], 'the frame of that prefix');
+  equal([...sub.submachines], ['judge'], 'the child runs under judge (its path past the frame\'s), not under read');
+  equal(sub.lastEdge, 'judge#2', 'its own last transition, not the root\'s');
+  equal(runOverlay(run).paused, null, 'the pause is the submachine\'s');
+
+  const traced = foldTrace(new Map(), { kind: 'trace', status: 'enter', state: 'a', data: { machine: 'crit', frame: 's7/m/', visit: 1 } });
+  for (const row of [
+    { kind: 'trace', status: 'transition', state: 'a', data: { machine: 'crit', frame: 's7/m/', from: 'a', index: 0 } },
+    { kind: 'trace', status: 'enter', state: 'a', data: { machine: 'crit', frame: 's7/m/', visit: 2 } },
+    { kind: 'trace', status: 'enter', state: 'done', data: { machine: 'crit', frame: 's7/m/', visit: 1 } },
+    { kind: 'trace', status: 'final', state: 'done', data: { machine: 'crit', frame: 's7/m/', status: 'succeeded' } },
+    { kind: 'trace', status: 'end', state: 'done', data: { machine: 'crit', frame: 's7/m/', reason: 'finished' } },
+    { kind: 'trace', status: 'enter', state: 'write', data: { machine: 'review', frame: '', visit: 1 } },
+    { kind: 'activity', status: 'done', state: 'a', data: {} },
+  ]) foldTrace(traced, row);
+  const seen = traced.get('s7/m/');
+  equal([seen.machine, seen.visits.a, seen.visits.done, seen.state, seen.lastEdge, seen.ended],
+    ['crit', 2, 1, 'done', 'a#0', 'finished'], 'the trace of one frame, not of the root');
+  const ended = runOverlay(run, 's7/m/', seen);
+  equal([[...ended.active], ended.current, ended.visits.a, ended.lastEdge, ended.submachines.size],
+    [['done'], 'done', 2, 'a#0', 0], 'gone from the view: drawn from its trace');
+  equal(runOverlay(run, 's3/m/', seen).current, 'judge', 'a live frame says itself where it is');
 });
 
 // ------------------------------------------------------------------ fragments
@@ -288,15 +621,61 @@ test('fragmentLock: a state that uses an alias is applied in its place in the fi
     [false, false, false, false], 'set_state reads the text where it stands: an alias there resolves');
 });
 
-test('toggled / statesSelection / sameSelection: Ctrl or Shift+click adds a state or takes it out', () => {
-  const two = toggled({ kind: 'state', id: 'a' }, 'b');
-  equal(two, { kind: 'states', ids: ['a', 'b'] }, 'a second state makes a selection of several');
-  equal(toggled(two, 'a'), { kind: 'state', id: 'b' }, 'taking one out of two leaves one state');
-  equal(toggled({ kind: 'state', id: 'a' }, 'a'), null, 'taking out the only one leaves none');
-  equal(toggled({ kind: 'transition', id: 'a#0' }, 'b'), { kind: 'state', id: 'b' }, 'a transition is no state to keep');
-  assert(!sameSelection(two, { kind: 'states', ids: ['a', 'c'] }), 'two selections of several differ by their states');
-  assert(sameSelection(two, { kind: 'states', ids: ['a', 'b'] }), 'the same states are the same selection');
-  equal(selectedStates(two), ['a', 'b'], 'the names of a selection of several');
+test('toggled / selectionOf / sameSelection: Ctrl or Shift+click adds a state or a transition or takes it out', () => {
+  const state = (id) => ({ kind: 'state', id });
+  const edge = (id) => ({ kind: 'transition', id });
+  const two = toggled(state('a'), state('b'));
+  equal(two, { kind: 'many', states: ['a', 'b'], transitions: [] }, 'a second state makes a selection of several');
+  equal(toggled(two, state('a')), state('b'), 'taking one out of two leaves one state');
+  equal(toggled(state('a'), state('a')), null, 'taking out the only one leaves none');
+  const mixed = toggled(edge('a#0'), state('b'));
+  equal(mixed, { kind: 'many', states: ['b'], transitions: ['a#0'] }, 'a state joins a selected transition');
+  equal(toggled(mixed, state('b')), edge('a#0'), 'the transition left is selected alone');
+  equal(toggled(state('a'), edge('a#0')), { kind: 'many', states: ['a'], transitions: ['a#0'] }, 'a transition joins a state');
+  equal(toggled(toggled(two, edge('a#1')), edge('a#1')), two, 'a transition is taken out as it came in');
+  assert(!sameSelection(two, selectionOf(['a', 'c'])), 'two selections of several differ by their states');
+  assert(!sameSelection(selectionOf(['a'], ['b']), selectionOf(['a', 'b'])), '... and by what is a state, what a transition');
+  assert(sameSelection(two, selectionOf(['a', 'b', 'a'])), 'the same states are the same selection');
+  assert(sameSelection(null, null) && !sameSelection(state('a'), edge('a')), 'none is none; a state is no transition');
+  equal([selectedStates(mixed), selectedTransitions(mixed), selectedTransitions(edge('x#0'))], [['b'], ['a#0'], ['x#0']],
+    'what a selection holds');
+});
+
+test('noteLines: a note keeps its line breaks, wraps its words, cuts a word wider than it and ends in …', () => {
+  equal(noteLines('one\n\ntwo\n'), ['one', '', 'two'], 'its own lines, an empty one included, none after the last');
+  const wrapped = noteLines('word '.repeat(40));
+  assert(wrapped.length > 1 && wrapped.every((line) => line.length * 12 * 0.56 <= NOTE.w - 2 * NOTE.pad), `wrapped: ${JSON.stringify(wrapped)}`);
+  equal(wrapped.join(' '), 'word '.repeat(40).trim(), 'no word lost or split');
+  const long = noteLines('x'.repeat(100))[0];
+  assert(long.length < 100 && long.endsWith('…'), `a word wider than the note: ${long}`);
+  const many = noteLines('line\n'.repeat(40));
+  assert(many.length === NOTE.lines && many[NOTE.lines - 1].endsWith('…'), `at most ${NOTE.lines} lines: ${many.length}`);
+});
+
+test('notePlaces: a note sits where it was dragged, the others stacked right of the states', () => {
+  const nodes = { 's:a': { x: 10, y: 40, w: 100, h: 30 }, 's:b': { x: 200, y: 20, w: 80, h: 30 } };
+  const notes = [{ name: 'one', text: 'a' }, { name: 'two', text: 'b\nc' }, { name: 'three', text: 'd' }];
+  const places = notePlaces(notes, { [noteKey('two')]: { x: -50, y: 300 }, two: { x: 1, y: 1 } }, nodes);
+  equal([places.one.x, places.one.y, places.three.x], [328, 20, 328], 'right of the rightmost state, from the topmost');
+  equal(places.three.y, 20 + places.one.h + places.two.h + 2 * NOTE.gap, 'the next one in its own slot: a dragged one leaves its slot empty');
+  equal([places.two.x, places.two.y, places.two.h], [-50, 300, 2 * NOTE.pad + 2 * NOTE.line], 'dragged: its own place, under its key');
+  equal([notePlaces(notes, {}, {}).one.x, notePlaces(notes, {}, {}).one.y], [24, 24], 'no states: at the corner');
+  assert(sameSelection({ kind: 'note', id: 'one' }, { kind: 'note', id: 'one' })
+    && !sameSelection({ kind: 'note', id: 'one' }, { kind: 'note', id: 'two' }), 'two notes are two selections');
+});
+
+test('groupedSpots: grouped states stay where they are drawn, inside the new composite\'s box', () => {
+  const p = { x: 100, y: 100, w: 400, h: 300, parent: null };
+  const a = { x: 150, y: 180, w: 80, h: 30, parent: 's:p' };
+  const b = { x: 300, y: 200, w: 80, h: 30, parent: 's:p' };
+  const spots = groupedSpots({ 's:p': p, 's:a': a, 's:b': b }, ['a', 'b'], 'g');
+  equal(spots, { g: { x: 50 - PAD.left, y: 80 - PAD.top }, a: { x: PAD.left, y: PAD.top }, b: { x: 150 + PAD.left, y: 20 + PAD.top } },
+    'relative to their parent p, the composite around them');
+  // laid out anew (ELK puts them elsewhere): the positions draw them where they were
+  const auto = { 's:p': p, 's:g': { x: 0, y: 0, w: 10, h: 10, parent: 's:p' },
+    's:a': { ...a, x: 0, y: 0, parent: 's:g' }, 's:b': { ...b, x: 0, y: 0, parent: 's:g' } };
+  const { nodes: drawn } = applyPositions({ nodes: auto }, spots);
+  equal([drawn['s:a'].x, drawn['s:a'].y, drawn['s:b'].x, drawn['s:b'].y], [150, 180, 300, 200], 'drawn where they were');
 });
 
 test('statesWithin: only the states wholly inside the band', () => {

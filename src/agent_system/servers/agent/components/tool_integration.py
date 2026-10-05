@@ -66,6 +66,21 @@ class ToolIntegrationManager:
         except Exception as e:
             logger.debug("Failed to initialize tool integration: %s", e)
 
+    async def connect_on_demand_servers(self) -> None:
+        """Connect the ``connect: on_demand`` external servers this agent's allowlist names.
+
+        Called from the run path only: a diagnostics view of the agent must
+        not start a browser.
+        """
+        # getattr throughout: an optional connect must never be what fails a run.
+        integration = self.tool_integration
+        if not getattr(integration, "initialized", False):
+            return
+        connect = getattr(getattr(integration, "external_provider", None), "connect_for_patterns", None)
+        allowed = self.agent_config.tools.allowed if self.agent_config.tools else None
+        if connect is not None and allowed:
+            await connect(allowed)
+
     async def get_available_tools(self, plugin_tools: List[str]) -> List[str]:
         """Get all available tools including external tools."""
         available_tools = plugin_tools.copy()

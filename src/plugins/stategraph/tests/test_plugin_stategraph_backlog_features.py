@@ -763,7 +763,8 @@ def test_the_panel_sees_the_file_once_and_the_machines_inside_it(tmp_path):
     runs = RunStore(tmp_path / "runs.db")
     service = StateGraphService(SimpleNamespace(name="stategraph", system_config=None, runner_agent="r", inject_params={},
                                                 machines=MachineStore([str(root)], [str(root)], base=tmp_path),
-                                                run_store=runs, run_manager=None, agents_of=lambda machine_id: []))
+                                                run_store=runs, run_manager=None, agents_of=lambda machine_id: [],
+                                                runner_for=lambda machine_id: ("r", None)))
 
     machine = service.get_machine("m")
 

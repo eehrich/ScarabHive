@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.models import ChatMessage
-from agent_system.paths import data_path
+from agent_system.paths import PROJECT_ROOT, data_path
 from agent_system.tools.status import StatusScope, status_bus
 
 from .window import build_excerpt, parse_verdict
@@ -94,7 +94,9 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
         self._config = config
         self._llm_profile = str(config.get("llm_profile") or "turbo")
 
-        root = Path(project_root) if project_root else Path.cwd()
+        # Not the working directory: agent-cli started elsewhere wrote its log
+        # there and read a relative judge_prompt from there.
+        root = Path(project_root) if project_root else PROJECT_ROOT
         self._root = root
         log_path = Path(config.get("log_path") or data_path("agent_watchdog", "verdicts.jsonl"))
         self._log_path = log_path if log_path.is_absolute() else root / log_path
@@ -282,11 +284,22 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
                         tools=[],
                     ), timeout=timeout)
                     response = response if isinstance(response, dict) else {}
-                    raw = ((response.get("assistant") or {}).get("content") or "")
-                    verdict, fail_open = parse_verdict(raw, excerpt)
-                    record.update(verdict)
+                    assistant = response.get("assistant") or {}
+                    raw = assistant.get("content") or ""
                     record["usage"] = response.get("usage")
                     record["finish_reason"] = response.get("finish_reason")
+                    # A provider error inside a 200 body comes back as an answer
+                    # with an "error" key and no content; read as a verdict it
+                    # was logged as "unparseable" and its cause was lost.
+                    error = assistant.get("error")
+                    if error:
+                        message = error.get("message") if isinstance(error, dict) else error
+                        record.update(verdict="continue", fail_open="judge_error",
+                                      error=str(message)[:500])
+                        verdict, fail_open = {}, None
+                    else:
+                        verdict, fail_open = parse_verdict(raw, excerpt)
+                    record.update(verdict)
                     if fail_open:
                         record["fail_open"] = fail_open
                         record["raw"] = raw[:2000]
@@ -329,8 +342,10 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
         pending = [task for task in self._running.values() if not task.done()]
         if not pending:
             return
-        timeout = float(self._config.get("judge_timeout_seconds",
-                                       _INT_SETTINGS["judge_timeout_seconds"]))
+        # Validated like every other setting: float() of a typo raised here,
+        # and the running judges were dropped without a line.
+        timeout = (_positive_int(self._config.get("judge_timeout_seconds"))
+                   or _INT_SETTINGS["judge_timeout_seconds"])
         _done, still_running = await asyncio.wait(pending, timeout=timeout)
         for task in still_running:
             task.cancel()

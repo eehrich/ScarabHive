@@ -62,22 +62,39 @@ async def reload_config_endpoint(
     definition still requires a restart. There is no file watcher — this is the
     explicit trigger (also reachable via ``agent-cli reload``).
     """
-    cfg_service = getattr(request.app.state, "config_service", None)
-    cfg_path = getattr(request.app.state, "config_path", None)
-    if cfg_service is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="config reload unavailable (no config service in app state)",
-        )
+    try:
+        report = reload_app_config(request.app)
+    except ConfigReloadUnavailable as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+    except ConfigReloadFailed as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    logger.info(
+        "Admin '%s' reloaded config: %d server(s) refreshed",
+        getattr(current_user, "username", "?"), len(report.get("refreshed", [])),
+    )
+    return ReloadConfigResponse(status="ok", report=report)
 
+
+class ConfigReloadUnavailable(RuntimeError):
+    """The app keeps no config service to reload from."""
+
+
+class ConfigReloadFailed(ValueError):
+    """The config on disk does not load; the running one stays."""
+
+
+def reload_app_config(app: Any) -> Dict[str, Any]:
+    """Re-read the config on disk into *app* and refresh the live plugin instances; the report of
+    reload_plugin_configs. Shared by this endpoint and the Setup panel (a key written at runtime)."""
+    cfg_service = getattr(app.state, "config_service", None)
+    cfg_path = getattr(app.state, "config_path", None)
+    if cfg_service is None:
+        raise ConfigReloadUnavailable("config reload unavailable (no config service in app state)")
     try:
         fresh = cfg_service.load_config(config_path=cfg_path, force_reload=True)
     except Exception as e:
         # Bad edit on disk: keep the running config untouched, report the error.
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"config failed to parse, nothing reloaded: {e}",
-        )
+        raise ConfigReloadFailed(f"config failed to parse, nothing reloaded: {e}") from e
 
     from agent_system.services.config_reload import reload_plugin_configs
 
@@ -85,19 +102,15 @@ async def reload_config_endpoint(
     # auth section would change only what the app says -- who viewer_role takes for an admin, which panels a role
     # is shown -- while the one it started with is enforced: `auth.enabled: false` on disk made every signed-in
     # user an admin viewer. It stays as running until a restart.
-    running_auth = request.app.state.config.auth
+    running_auth = app.state.config.auth
     auth_changed = fresh.auth != running_auth
     fresh.auth = running_auth
     report = reload_plugin_configs(fresh)
     if auth_changed:
         report["auth"] = "changed on disk: takes effect on a restart"
         logger.warning("Config reload: the auth section changed on disk and takes effect on a restart only")
-    request.app.state.config = fresh  # subsequent reads see the fresh config
-    logger.info(
-        "Admin '%s' reloaded config: %d server(s) refreshed",
-        getattr(current_user, "username", "?"), len(report.get("refreshed", [])),
-    )
-    return ReloadConfigResponse(status="ok", report=report)
+    app.state.config = fresh  # subsequent reads see the fresh config
+    return report
 
 
 @router.get("/users", response_model=UserListResponse)

@@ -597,6 +597,149 @@ async def test_publish_refuses_blocking_findings_and_foreign_workflows():
     assert "publish_workflow" not in server._client.tools_called()
 
 
+def calling(wid, **parameters):
+    return {"name": f"Call {wid}", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.3,
+            "parameters": {"source": "database", "workflowId": {"__rl": True, "value": wid, "mode": "id"},
+                           **parameters}}
+
+
+SHELL = {"name": "Shell", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1, "parameters": {}}
+
+
+@pytest.mark.parametrize("wire", [
+    lambda c: c.workflows["w1"]["nodes"].append(calling("w5")),                          # direct
+    lambda c: (c.workflows["w1"]["nodes"].append(calling("w6")),                          # two levels down
+               c.workflows.update(w6=workflow("w6", tags=(), nodes=[calling("w5")]))),
+    lambda c: c.workflows["w1"]["settings"].update(errorWorkflow="w5"),                   # error workflow
+    lambda c: (c.workflows["w1"]["nodes"].append(calling("w5")),                          # only published
+               c.workflows["w5"].update(nodes=[], activeVersion={"nodes": [SHELL]})),
+])
+async def test_publish_refuses_a_blocked_node_in_a_workflow_it_starts(wire):
+    """A test pins the call and never runs the callee (M-MCP-53): the block
+    list must reach the callee at publish, or it goes live through its caller."""
+    server = make_server(allow_publish=True)
+    add_run(server._client, "1")
+    server._client.workflows["w5"] = workflow("w5", nodes=[SHELL])
+    wire(server._client)
+    refused = await call(server, "publish_workflow", workflow_id="w1")
+    assert "blocking" in refused["error"]
+    assert any("sub-workflow w5" in f["message"] and f["code"] == "BLOCKED_NODE" for f in refused["findings"])
+    assert "publish_workflow" not in server._client.tools_called()
+    server._client.workflows["w5"] = workflow("w5")
+    assert (await call(server, "publish_workflow", workflow_id="w1"))["status"] == "success"
+
+
+async def test_a_sub_workflow_id_is_checked_before_it_becomes_a_path():
+    server = make_server(allow_publish=True)
+    add_run(server._client, "1")
+    server._client.workflows["w1"]["nodes"].append(calling("../../webhook/x"))
+    refused = await call(server, "publish_workflow", workflow_id="w1")
+    assert "SUB_WORKFLOW_UNCHECKED" in {f["code"] for f in refused["findings"]}
+    assert not [p for c, p in server._client.calls if c == "GET" and "webhook" in p]
+
+
+async def test_trigger_refuses_when_a_sub_workflow_turned_blocked_after_the_publish(no_pause):
+    server = make_server()
+    w = published()
+    w["activeVersion"]["nodes"].append(calling("w5"))
+    server._client.workflows["w1"] = w
+    server._client.workflows["w5"] = workflow("w5", nodes=[SHELL])
+    refused = await call(server, "trigger_workflow", workflow_id="w1")
+    assert "blocking" in refused["error"] and refused["findings"][0]["code"] == "BLOCKED_NODE"
+    assert not server._client.webhook_calls
+    server._client.workflows["w5"]["nodes"] = [workflow()["nodes"][1]]
+    assert (await call(server, "trigger_workflow", workflow_id="w1"))["status"] == "success"
+    assert server._client.webhook_calls
+
+
+@pytest.mark.parametrize("tool", ["update_workflow", "test_workflow", "publish_workflow", "unpublish_workflow",
+                                  "archive_workflow", "trigger_workflow"])
+async def test_a_workflow_id_never_becomes_another_path(tool):
+    """httpx resolves dot segments: "../../../webhook/x" was a GET of another
+    workflow's webhook, with the API key in its headers."""
+    server = make_server(allow_publish=True)
+    result = await call(server, tool, workflow_id="../../../webhook/x",
+                        operations=[{"type": "setNodeDisabled", "nodeName": "Set"}])
+    assert "letters and digits" in result["error"]
+    assert not [c for c in server._client.calls if c[0] == "GET"]
+
+
+def test_the_samples_of_a_big_test_stay_bounded():
+    runs = {f"N{i}": {"run": "live", "reason": "local"} for i in range(60)}
+    execution = {"data": {"resultData": {"runData": {
+        name: [{"executionStatus": "success", "data": {"main": [[{"json": {"t": "x" * 5000}}]]}}]
+        for name in runs}}}}
+    nodes, cut = server_module._summarize_execution(execution, runs)
+    assert sum(len(n.get("sample", "")) for n in nodes) <= server_module.CAP_EXECUTION
+    assert nodes[0]["sample"] and all(n["items_out"] == 1 for n in nodes)
+    assert cut is True
+
+
+async def test_a_cut_sample_is_said_once_in_the_test_answer():
+    server = make_server()
+    run_data = server._client.executions["e1"]["data"]["resultData"]["runData"]
+    assert "samples_truncated" not in await call(server, "test_workflow", workflow_id="w1")
+    run_data["Set"][0]["data"]["main"] = [[{"json": {"t": "x" * 2000}}]]
+    assert (await call(server, "test_workflow", workflow_id="w1"))["samples_truncated"] is True
+
+
+async def test_a_sub_workflow_cycle_ends():
+    server = make_server(allow_publish=True)
+    add_run(server._client, "1")
+    server._client.workflows["w1"]["nodes"].append(calling("w5"))
+    server._client.workflows["w5"] = workflow("w5", nodes=[calling("w1")])
+    reads, api_get = [], server._client.api_get
+
+    async def counted(path, params=None):
+        reads.append(path)
+        assert len(reads) < 50, "the sub-workflow walk does not end"
+        return await api_get(path, params)
+
+    server._client.api_get = counted
+    result = await call(server, "publish_workflow", workflow_id="w1")
+    assert result["status"] == "success" and reads.count("/workflows/w5") == 1
+
+
+async def test_too_many_sub_workflows_are_refused_not_half_checked():
+    server = make_server(allow_publish=True)
+    add_run(server._client, "1")
+    for i in range(server_module.MAX_CALLEES):
+        server._client.workflows["w1"]["nodes"].append(calling(f"c{i}"))
+        server._client.workflows[f"c{i}"] = workflow(f"c{i}", nodes=[])
+    result = await call(server, "publish_workflow", workflow_id="w1")
+    assert "too many" in result["error"] and "publish_workflow" not in server._client.tools_called()
+
+
+async def test_a_callee_that_picks_its_sub_workflow_by_expression_blocks_the_publish():
+    server = make_server(allow_publish=True)
+    add_run(server._client, "1")
+    server._client.workflows["w1"]["nodes"].append(calling("w5"))
+    server._client.workflows["w5"] = workflow("w5", nodes=[calling("={{ $json.x }}")])
+    result = await call(server, "publish_workflow", workflow_id="w1")
+    assert "EXECUTE_WORKFLOW_SOURCE" in {f["code"] for f in result["findings"]}
+    assert "publish_workflow" not in server._client.tools_called()
+
+
+async def test_trigger_refuses_a_published_version_that_picks_its_sub_workflow_from_the_payload(no_pause):
+    """A person may have published it; the payload would pick any workflow to run."""
+    server = make_server()
+    w = published()
+    w["activeVersion"]["nodes"].append(calling("={{ $json.wf }}"))
+    server._client.workflows["w1"] = w
+    refused = await call(server, "trigger_workflow", workflow_id="w1", payload={"wf": "w9"})
+    assert refused["findings"][0]["code"] == "EXECUTE_WORKFLOW_SOURCE" and not server._client.webhook_calls
+
+
+async def test_trigger_refuses_a_published_version_with_a_blocked_node():
+    """A person may have published it in the editor; publish never checked it."""
+    server = make_server()
+    w = published()
+    w["activeVersion"]["nodes"].append(dict(SHELL))
+    server._client.workflows["w1"] = w
+    refused = await call(server, "trigger_workflow", workflow_id="w1")
+    assert refused["findings"][0]["code"] == "BLOCKED_NODE" and not server._client.webhook_calls
+
+
 async def test_a_refused_publish_is_an_error_with_n8ns_reason():
     server = make_server(allow_publish=True)
     add_run(server._client, "1")

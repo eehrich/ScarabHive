@@ -196,7 +196,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         # Configuration
         self.max_sub_agents = int(getattr(server_config, 'max_sub_agents_per_session', 10))
         self.max_nesting_depth = int(getattr(server_config, 'max_nesting_depth', 5))
-        self.max_history = int(getattr(server_config, 'max_message_history', 100))
         self.max_sub_agents_per_type = int(getattr(server_config, 'max_sub_agents_per_type', 3))
         
         # Auto-archive oldest sub-agent when limit is reached
@@ -309,7 +308,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         _upd("max_sub_agents", int(getattr(server_config, 'max_sub_agents_per_session', 10)))
         _upd("max_nesting_depth", int(getattr(server_config, 'max_nesting_depth', 5)))
         _upd("max_sub_agents_per_type", int(getattr(server_config, 'max_sub_agents_per_type', 3)))
-        _upd("max_history", int(getattr(server_config, 'max_message_history', 100)))
         _upd("auto_archive_on_limit", bool(getattr(server_config, 'auto_archive_on_limit', False)))
         _upd("default_wait_timeout", int(getattr(server_config, 'default_wait_timeout', 3600)))
         _upd("info_default_limit", int(getattr(server_config, 'info_default_limit', 20)))
@@ -2272,7 +2270,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         A background job lives in the process that started it. That is the API, where the job runs
         on after the turn that asked for it, and `agent-cli chat`, whose prompt waits on the same
         loop. A one-shot `agent-cli run` that ends its turn takes the job with it, and nothing is
-        left to wake anybody. README says so.
+        left to wake anybody. The guide says so.
 
         A throwaway session is not woken: nobody continues it, and a woken run of its parent
         record (agent-cli, on the `Coordinator Session` this manager wrote) would be an agent's
@@ -2405,18 +2403,20 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
             # Update metadata: a finished-but-aborted run is not active any
             # more, the same way the two paths below record it.
+            # What a reader of the stored state gets -- a woken caller in its own process; it
+            # answered "Sub-agent failed" without it -- and the first poll or wait, which reads
+            # the job: it answered error null. Cut, for it goes into the parent's session file:
+            # the whole answer is in the transcript (`info`).
+            failure = ({} if job_status == "completed"
+                       else {"error": (refused or {}).get("error") or result_text[:2000]})
             bell = await self._finish_job(
                 instance_id, params, job_status, manager=manager,
                 stored={"last_used": datetime.now(UTC).isoformat(),
                         "status": "active" if job_status == "completed" else job_status,
-                        # what a reader of the stored state gets -- a woken caller in its own
-                        # process; it answered "Sub-agent failed" without it. Cut, for it goes into
-                        # the parent's session file: the whole answer is in the transcript (`info`).
-                        **({} if job_status == "completed" else {"error": (refused or {}).get("error")
-                                                                  or result_text[:2000]}),
+                        **failure,
                         # a refusal before the run says which there too: a later poll or wait reads it
                         **({"error_type": refused["error_type"]} if refused else {})},
-                outcome=outcome, result=result_text, **(refused or {}),
+                outcome=outcome, result=result_text, **{**(refused or {}), **failure},
             )
 
         except asyncio.CancelledError:
@@ -3207,7 +3207,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             session_service = context.agent._session_service
             manager = self._get_manager(session_service, registry=None)  # No registry needed for hooks
 
-            hook_config = self._injector_config
+            # The server entry's options, the agent's own override on top (hooks.overrides)
+            hook_config = {**self._injector_config, **(context.hook_config or {})}
 
             # Create fresh injector for this call (each agent has different session_service)
             # Pass self.name so injector only shows sub-agents from THIS manager instance

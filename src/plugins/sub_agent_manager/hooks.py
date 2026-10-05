@@ -237,6 +237,12 @@ class SubAgentContextInjector:
                 if phase:
                     logger.debug(f"[SubAgentContext] Current phase from session vars: {phase}")
                     return phase
+            # The agent's configured default, as the create check falls back to it
+            # (server._get_current_phase): without it the block listed every allowed
+            # agent while create refused all but the phase's.
+            template_vars = getattr(getattr(context.agent, 'agent_config', None), 'template_vars', None)
+            if isinstance(template_vars, dict) and template_vars.get(self.phase_variable):
+                return template_vars[self.phase_variable]
         except Exception as e:
             logger.debug(f"[SubAgentContext] Could not get phase from session vars: {e}")
         

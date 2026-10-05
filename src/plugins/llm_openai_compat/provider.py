@@ -10,7 +10,7 @@ import logging
 from typing import Optional, TYPE_CHECKING
 
 from plugins.llm_common.api_keys import resolve_api_key
-from plugins.llm_common.model_dialects import warn_unwired
+from plugins.llm_common.model_dialects import affinity_minutes, warn_unwired
 
 from .httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
 
@@ -23,8 +23,15 @@ logger = logging.getLogger(__name__)
 
 def _timeout_config(cfg: "LLMModelConfig", default_read: float,
                     default_write: float) -> HTTPXTimeoutConfig:
-    ht = cfg.httpx_timeouts.model_dump() if cfg.httpx_timeouts else {}
-    read_default = float(cfg.request_timeout) if cfg.request_timeout else default_read
+    # exclude_unset: a key the entry does not set falls back below. A full
+    # dump carried the pydantic defaults instead, so request_timeout and the
+    # route's own read/write defaults never applied once any key was set.
+    ht = cfg.httpx_timeouts.model_dump(exclude_unset=True) if cfg.httpx_timeouts else {}
+    # Set in the entry, not merely present: the field has a model default
+    # (120), and truthiness left the route's own default unreachable.
+    read_default = (float(cfg.request_timeout)
+                    if "request_timeout" in cfg.model_fields_set and cfg.request_timeout
+                    else default_read)
     return HTTPXTimeoutConfig(
         connect=ht.get("connect", 10.0),
         read=ht.get("read", read_default),
@@ -75,7 +82,7 @@ def build_openai_httpx(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None)
         safety_settings=cfg.safety_settings,
         service_tier=cfg.service_tier,
         provider_routing=cfg.provider_routing,
-        provider_affinity_minutes=cfg.provider_affinity_minutes,
+        provider_affinity_minutes=affinity_minutes(cfg),
         reasoning_details_mode=cfg.reasoning_details_mode,
         tool_schema_dialect=cfg.tool_schema_dialect,
         assistant_reasoning_field=cfg.assistant_reasoning_field,
@@ -139,7 +146,7 @@ def build_openai_responses(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = N
         max_tokens=cfg.max_tokens,
         service_tier=cfg.service_tier,
         provider_routing=cfg.provider_routing,
-        provider_affinity_minutes=cfg.provider_affinity_minutes,
+        provider_affinity_minutes=affinity_minutes(cfg),
         safety_settings=cfg.safety_settings,
         reasoning_details_mode=cfg.reasoning_details_mode,  # the same round trip as on the chat route
         tool_schema_dialect=cfg.tool_schema_dialect,

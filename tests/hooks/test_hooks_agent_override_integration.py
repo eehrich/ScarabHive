@@ -49,9 +49,6 @@ class MockHookPlugin(PluginHook):
     async def on_post_tool_call(self, context: HookContext) -> HookResult:
         return HookResult(success=True, modified=False, context=context)
     
-    async def on_format_output(self, context: HookContext) -> HookResult:
-        return HookResult(success=True, modified=False, context=context)
-    
     async def on_session_start(self, context: HookContext) -> HookResult:
         return HookResult(success=True, modified=False, context=context)
     
@@ -134,19 +131,19 @@ async def test_agent_override_enables_globally_disabled_hook(clean_registry):
 @pytest.mark.asyncio
 async def test_agent_override_disables_globally_enabled_hook(clean_registry):
     """Test that agent can disable a globally enabled hook via override."""
-    plugin = MockHookPlugin("markdown_formatter", {})
+    plugin = MockHookPlugin("summarizer", {})
     metadata = {
         'hooks': [
             {
-                'name': 'format_markdown_output',
-                'type': 'format_output',
+                'name': 'summarize',
+                'type': 'post_llm_call',
                 'enabled': True  # Globally enabled
             }
         ]
     }
     
-    registered = await register_plugin_hooks("markdown_formatter", plugin, metadata, clean_registry)
-    assert 'markdown_formatter.format_markdown_output' in registered
+    registered = await register_plugin_hooks("summarizer", plugin, metadata, clean_registry)
+    assert 'summarizer.summarize' in registered
     
     # Create mock agent with override disabling this hook
     agent = Mock()
@@ -155,14 +152,14 @@ async def test_agent_override_disables_globally_enabled_hook(clean_registry):
     agent.agent_config.hooks = HooksConfig(
         enabled=True,
         overrides={
-            'markdown_formatter.format_markdown_output': {'enabled': False}
+            'summarizer.summarize': {'enabled': False}
         }
     )
     
     manager = HookIntegrationManager(agent)
     
     # Test with new signature
-    result = manager.is_hook_enabled('markdown_formatter.format_markdown_output', default_enabled=True)
+    result = manager.is_hook_enabled('summarizer.summarize', default_enabled=True)
     
     # Should be disabled via override despite global enabled state
     assert result is False

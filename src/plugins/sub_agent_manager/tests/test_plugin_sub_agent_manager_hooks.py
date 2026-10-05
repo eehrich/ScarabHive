@@ -338,3 +338,26 @@ async def test_text_context_format(mock_manager):
     assert "Messages" not in injected_content  # grows on every continue
     assert "Task: Test task" in injected_content
     assert "manage_sub_agent" in injected_content
+
+
+@pytest.mark.asyncio
+async def test_the_block_names_the_phase_the_agent_config_sets_as_create_does(mock_manager):
+    """No phase in the session's vars yet: create judges by the agent's configured default
+    (server._get_current_phase), so the block must list that phase's agents, not every allowed one."""
+    mock_manager.list_sub_sessions.return_value = [
+        {"instance_id": "sub_planner_0001", "agent_type": "planner", "status": "active", "task_summary": "Plan"}]
+    injector = SubAgentContextInjector(
+        mock_manager, "test_sam", {"format": "markdown"}, ["planner", "builder"],
+        {"enabled": True, "phase_variable": "workflow_phase", "phase_agents": {"planning": ["planner"]}},
+        status_of=stored_status)
+    agent = MagicMock()
+    agent._session_tracker.get_session_template_vars.return_value = {}
+    agent.agent_config.template_vars = {"workflow_phase": "planning"}
+    context = HookContext(hook_type=HookType.PRE_LLM_CALL, request_id="r", session_id="s", agent=agent,
+                          agent_name="coordinator", messages=[ChatMessage(role="user", content="Go")], step=1)
+
+    await injector.inject_sub_agent_context(context)
+
+    block = context.messages[-1].content
+    assert "**Phase `planning` - Available agents:** planner" in block
+    assert "builder" not in block

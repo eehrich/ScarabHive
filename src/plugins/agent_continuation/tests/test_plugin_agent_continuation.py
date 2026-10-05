@@ -703,6 +703,50 @@ class TestContinuationBudget:
         assert r2.metadata.get("continue") is not True
         assert "req-X" not in plugin._continuation_counts
 
+    @pytest.mark.parametrize("bad_value", [0, -3, "ten", True, float("inf"), float("nan"), 2.5])
+    def test_plugin_budget_that_is_no_budget_falls_back_to_the_default(self, bad_value):
+        """plugins.yaml's value is guarded like an agent's: 0 used to switch the
+        hook off for every agent, and a non-number stopped the plugin loading."""
+        plugin = _make_plugin(max_continuations=bad_value)
+        assert plugin._max_continuations == 10
+
+    @pytest.mark.asyncio
+    async def test_counters_of_runs_that_never_answered_final_do_not_pile_up(self, monkeypatch):
+        """A run that ends on its step budget, a cancel or an error never shows
+        the hook a final answer; its counter must not stay for the life of the
+        process. The newest requests keep theirs."""
+        from plugins.agent_continuation import hooks as hooks_module
+
+        monkeypatch.setattr(hooks_module, "_MAX_TRACKED", 50)
+        plugin = _make_plugin(agent_rules={"test_agent": {"default": "continue"}})
+        runs = hooks_module._MAX_TRACKED + 5
+        for n in range(runs):
+            await plugin.evaluate_completion(_make_context(request_id=f"req-{n}"))
+        assert len(plugin._continuation_counts) == hooks_module._MAX_TRACKED
+        assert plugin._continuation_counts[f"req-{runs - 1}"] == 1
+        assert "req-0" not in plugin._continuation_counts
+
+    def test_seen_creates_are_capped_per_session_and_keep_adding_up(self, monkeypatch):
+        from plugins.agent_continuation import hooks as hooks_module
+
+        monkeypatch.setattr(hooks_module, "_MAX_TRACKED", 50)
+
+        plugin = _make_plugin()
+        spec = {"required_spawns": {"agents": "['x']", "tool": "sam"}}
+
+        def create(call_id: str) -> list:
+            return [{"id": call_id, "function": {
+                "name": "sam", "arguments": '{"operation": "create", "agent_type": "x"}'}}]
+
+        for n in range(hooks_module._MAX_TRACKED + 5):
+            ctx = _make_context(session_id=f"s-{n}", hook_config=spec)
+            plugin._remember_creates(ctx, create("c1"))
+        assert len(plugin._seen_creates) == hooks_module._MAX_TRACKED
+        ctx = _make_context(session_id="s-last", hook_config=spec)
+        plugin._remember_creates(ctx, create("c1"))
+        plugin._remember_creates(ctx, create("c2"))
+        assert plugin._seen_creates["s-last"] == {"c1": "x", "c2": "x"}
+
 
 # ===========================================================================
 # Test hook activation model

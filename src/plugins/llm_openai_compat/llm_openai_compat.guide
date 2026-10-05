@@ -1,0 +1,616 @@
+@database "llm_openai_compat"
+@author "Enrico Ehrich"
+@$VER: llm_openai_compat.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "OpenAI-compatible LLM providers"
+@{h1}OpenAI-compatible LLM providers
+
+This plugin lets agents talk to every endpoint that speaks the OpenAI wire
+format -- OpenRouter, api.openai.com, DeepSeek, a local LM Studio, vLLM or
+llama.cpp server -- over plain httpx, with no vendor SDK. It is an LLM
+provider plugin: it has no tools, no hooks and no panel. You use it by
+naming one of its providers in a model entry of @{tt}config/llm.yaml@{utt}
+(or @{tt}config/llm_openrouter.yaml@{utt}); agents reach that entry through
+a profile.
+
+@{table}
+Provider name | Kind | Endpoint
+openai_httpx | chat | POST <base_url>/chat/completions
+openai_responses | chat | POST <base_url>/responses
+openai_httpx | batch | the OpenAI Batch API at api.openai.com
+openai_speech | text to speech | POST <base_url>/audio/speech
+@{body}
+
+How models, profiles and fallback chains work in general is in
+@{" LLM models and profiles " link scarabhive/llm}; this manual covers what
+these providers do with an entry.
+
+@{code}
+For users (the operator writing llm.yaml)
+  @{"  Which route to take  " link routes}
+  @{"  Model entry keys  " link keys}
+  @{"  API keys and endpoints  " link apikeys}
+  @{"  Timeouts and streaming  " link timeouts}
+  @{"  Retries and self-healing  " link retries}
+  @{"  Reasoning  " link reasoning}
+  @{"  Prompt caching  " link caching}
+  @{"  OpenRouter routing  " link openrouter}
+  @{"  Usage, cost and the hooks  " link usage}
+  @{"  Errors  " link errors}
+  @{"  Batch and speech  " link batch}
+
+For agents and developers
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node routes "Which route to take"
+@{h1}Which route to take
+
+@{b}openai_responses@{ub} speaks the Responses API. A reasoning model's
+output items (reasoning with its encrypted content, function calls, the
+message) are stored on the assistant message and sent back @{b}verbatim@{ub}
+on the next turn. Take it for OpenAI reasoning models (GPT-5.x, o-series)
+and for Gemini behind OpenRouter: on Chat Completions the gateway has to
+rebuild those items from a flattened message, and that translation is where
+the "encrypted content could not be verified" 400s come from. Its default
+endpoint is OpenRouter.
+
+@{b}openai_httpx@{ub} speaks Chat Completions. Take it for everything that
+is not an OpenAI-style reasoning chain: DeepSeek, local servers, and Claude
+behind OpenRouter -- OpenRouter forwards Claude's @{tt}cache_control@{utt}
+markers only on Chat Completions (see @{" Prompt caching " link caching}).
+Its default endpoint is api.openai.com.
+
+@{table}
+Difference | openai_httpx | openai_responses
+default base_url | https://api.openai.com/v1 | https://openrouter.ai/api/v1
+reasoning_details_mode default | keep_last | keep_all
+thinking_budget | sent as reasoning.max_tokens when no thinking_level is set | ignored, with a warning
+max_tokens is sent as | max_tokens | max_output_tokens
+safety_identifier | not sent | sent
+OpenRouter app name (X-Title, HTTP-Referer per agent) | sent | not sent
+retries (see below) | 1 retry on 5xx and transport errors, 2 backed-off 429 retries | 2 retries on 5xx and transport errors, none on a plain 429
+stored on the assistant message | reasoning_details as the gateway sent them | one block with all output items
+@{body}
+
+Switching an agent between the routes mid-session is safe: each route
+ignores the other's stored reasoning and starts a fresh chain.
+@endnode
+
+@node keys "Model entry keys"
+@{h1}Model entry keys
+
+The keys of a model entry these providers read. Everything else in
+@{tt}LLMModelConfig@{utt} is either handled by the core (@{tt}extends@{utt},
+profiles) or not read here. A key that belongs to another provider's dialect
+(@{tt}thinking_request_shape@{utt}, and @{tt}assistant_reasoning_field@{utt}
+on openai_responses) is logged as "not wired ... will be ignored" when the
+client is built.
+
+@{table}
+Key | Route | Default | What the client does with it
+provider | both | -- | openai_httpx or openai_responses
+model | both | -- | the model id sent to the endpoint
+api_key | both | from the endpoint's variable | see @{" API keys and endpoints " link apikeys}
+base_url | both | route default above | the endpoint; its host decides the key and whether OpenRouter extras are sent
+context_window | both | httpx: the model-config default 32768; Responses: that, or 200000 if 0 | only reported to the core, never sent
+max_tokens | both | none | output cap; 0 or unset sends nothing
+temperature | both | none | sent only when no reasoning field is sent (httpx: neither thinking_level nor thinking_budget; Responses: no thinking_level)
+thinking_level | both | none | reasoning.effort (none, minimal, low, medium, high, xhigh, max)
+thinking_budget | httpx | none | reasoning.max_tokens, only without thinking_level
+include_thoughts | -- | -- | no request field on either route (httpx warns)
+parallel_tool_calls | both | true | sent as given; null leaves the field out
+service_tier | both | none | sent as given (flex, priority, ...); dropped for the retry after a rate limit in the body (openai_httpx) or any 429 (openai_responses)
+capabilities | both | all defaults | streaming decides the path; image_input, audio_input, video_input gate media; structured_output allows response formats; developer_role; default_api_type must be chat_completions on openai_httpx
+safety_settings | both | none | list of {category, threshold}, sent whenever set
+tool_schema_dialect | both | json_schema | gemini_function_declarations strips what Gemini's function declarations reject
+assistant_reasoning_field | httpx | omit | reasoning_content: every assistant message carries its thinking back (DeepSeek thinking mode needs it on tool turns)
+reasoning_details_mode | both | httpx keep_last, Responses keep_all | how many stored reasoning blocks travel back (see @{" Reasoning " link reasoning})
+prompt_cache_key, prompt_cache_mode, prompt_cache_marker_style, prompt_cache_options | both | none | see @{" Prompt caching " link caching}
+provider_routing, provider_affinity_minutes, plugins | both | none; affinity: prompt_cache_ttl_minutes, else 30 min | OpenRouter only, see @{" OpenRouter routing " link openrouter}
+safety_identifier | Responses | none | sent as is
+request_timeout, httpx_timeouts, stream_silence_timeout | both | see @{" Timeouts and streaming " link timeouts} |
+@{body}
+
+An unknown value for tool_schema_dialect, assistant_reasoning_field,
+reasoning_details_mode or prompt_cache_marker_style is refused when the
+client is built -- a typo never quietly buys another dialect's default.
+
+@{code yaml}
+llm_system:
+  models:
+    deepseek-pro:
+      provider: openai_httpx
+      model: deepseek-v4-pro
+      api_key: ${DEEPSEEK_API_KEY}
+      base_url: https://api.deepseek.com/v1
+      assistant_reasoning_field: reasoning_content
+      context_window: 1000000
+    or-gpt:
+      provider: openai_responses
+      model: openai/gpt-5.4
+      api_key: ${OPENROUTER_API_KEY}
+      thinking_level: medium
+      stream_silence_timeout: 900
+      prompt_cache_key: auto
+@{body}
+@endnode
+
+@node apikeys "API keys and endpoints"
+@{h1}API keys and endpoints
+
+An @{tt}api_key@{utt} in the entry always wins. Without one, the key
+follows the @{b}endpoint@{ub} the entry talks to, never the provider name:
+
+@{table}
+Host of base_url | Key taken from
+openrouter.ai (and its subdomains) | OPENROUTER_API_KEY
+api.openai.com | OPENAI_API_KEY
+api.typesafe.ai | TYPESAFE_API_KEY
+a local host (see @{"llm_common" link "llm_common/apikeys"}) | OPENAI_API_KEY
+anything else | nothing: building the client fails
+@{body}
+
+The failure names the host and the variable; set @{tt}api_key:
+${YOUR_VARIABLE}@{utt} on the entry. A missing gateway key therefore never
+sends the OpenAI key to a third party. Note that @{tt}${VAR}@{utt} of an
+unset variable expands to an empty string, which counts as "no key", as
+does a key of only whitespace.
+
+The batch backend is the exception: it always talks to api.openai.com with
+the entry's @{tt}api_key@{utt} or OPENAI_API_KEY, whatever base_url says.
+
+TLS verification follows the app's setting.
+@endnode
+
+@node timeouts "Timeouts and streaming"
+@{h1}Timeouts and streaming
+
+@{h2}Streaming or not
+
+A model streams unless its entry says @{tt}capabilities.streaming:
+false@{utt}. Streaming is what lets the web UI show text and thinking as it
+arrives, and it changes what the read timeout means. With it off, the client
+waits for the whole answer in one response.
+
+@{h2}The four timeouts
+
+Each client gets connect, read, write and pool timeouts. A key set in the
+entry's @{tt}httpx_timeouts@{utt} wins; a key it does not set falls back:
+
+@{table}
+Timeout | openai_httpx | openai_responses
+connect | 10 s | 10 s
+read | request_timeout if the entry sets it, else 180 s | request_timeout if the entry sets it, else 600 s
+write | 10 s | 30 s
+pool | 5 s | 5 s
+@{body}
+
+An entry without its own @{tt}httpx_timeouts@{utt} gets the system default
+@{tt}llm_system.httpx_timeouts@{utt} (the shipped @{tt}config/llm.yaml@{utt}
+sets all four, read 180 s) -- except its @{tt}read@{utt} when the entry sets
+@{tt}request_timeout@{utt}: an explicit per-model @{tt}request_timeout@{utt}
+wins over the system read timeout. A @{tt}read@{utt} in the entry's own
+@{tt}httpx_timeouts@{utt} wins over both.
+
+@{h2}What read means
+
+@{bullet}@{b}openai_httpx, streaming:@{ub} the longest gap between two pieces
+of the stream. A gap longer than that is a stalled stream and is retried
+like a dropped connection. The connection also sends TCP keep-alives (on
+Linux after 15 s idle, every 15 s, 5 probes), so a long thinking pause is not
+cut by a firewall.
+@{bullet}@{b}openai_responses, streaming:@{ub} the socket's read timeout,
+the same thing in practice.
+@{bullet}@{b}Not streaming:@{ub} the longest silence while the endpoint
+generates the whole answer -- a long answer needs a long read timeout.
+
+@{h2}stream_silence_timeout
+
+OpenRouter keeps a stream alive with comment lines about twice a second,
+which reset the read timeout: an upstream that stopped answering would hold
+the call for as long as the gateway keeps it open. With
+@{tt}stream_silence_timeout@{utt} set, a stream that sends nothing but such
+comments for that many seconds is given up and retried. Unset, there is no
+limit of ours. Every real event counts as progress, thinking and usage-only
+chunks included.
+
+@{h2}How a stream ends
+
+@{bullet}An answer whose finish reason has arrived is kept, however the
+stream ends after it (missing @{tt}[DONE]@{utt}, stall, dropped connection).
+@{bullet}openai_httpx: a stream that ends without @{tt}[DONE]@{utt} and
+without a finish reason is handed over as it is, with finish reason
+@{tt}incomplete_stream@{utt}.
+@{bullet}openai_responses: a stream without a terminal event
+(@{tt}response.completed@{utt}, @{tt}.incomplete@{utt} or
+@{tt}.failed@{utt}) is retried; when the retries are spent, the text that
+arrived is handed over with finish reason @{tt}incomplete_stream@{utt}.
+@{bullet}A run cancelled while a piece of the stream is being handed out
+stops before the client waits for the next one; one cancelled while the
+client waits stops when the next bytes arrive (a keep-alive comment is
+enough). The cancellation reaches the agent as a cancellation, never as an
+answer.
+@endnode
+
+@node retries "Retries and self-healing"
+@{h1}Retries and self-healing
+
+Every retry is reported to the post_llm_response hooks as its own row
+(@{tt}[RETRY n/m] ...@{utt}, finish reason @{tt}retry@{utt}) and as a status
+line in the chat. A cancelled run interrupts every wait. A retry starts from
+scratch: when the caller has already received deltas of the failed attempt,
+the stream first sends one @{tt}{"type": "stream_restart"}@{utt} chunk, and
+the caller drops what it has shown of that attempt.
+
+@{h2}openai_httpx
+
+Up to three attempts in all, shared by every kind of retry below.
+
+@{table}
+What happened | What the client does
+HTTP 429 | up to 2 retries; wait: Retry-After seconds, else 60 s x 1.5^attempt, plus 0-50 % jitter; no wait when an OpenRouter pin was released. Then LLMQuotaExhaustedError if the body says "quota" or "exhausted", else LLMRateLimitError
+HTTP 5xx | 1 retry after 1 s (none if a pin was released), then LLMServerError
+any other error chunk, or finish reason @{tt}error@{utt}, in a stream | not an answer: retried like a dropped stream, from scratch, then LLMConnectionError
+429 inside an HTTP 200 body (error code 429 or rate-limit wording) | same schedule as a 429, and the retry drops service_tier (flex to standard). Streaming: then LLMRateLimitError; not streaming: an answer carrying upstream_error_429
+connect/read timeout, dropped or stalled stream, network error | 1 retry after 1 s, then LLMConnectionError
+404 under an OpenRouter pin | pin released, retried at once
+400 "encrypted content ... rs_..." (status or body) | two healing retries: drop the named reasoning item, then all reasoning_details -- in the request AND in the session, so the next turn does not hit it again
+400 "thought signature" (status), or any 400 in a body, with Gemini signatures in the request | one retry with Google's bypass token in place of each signature
+Gemini MALFORMED_FUNCTION_CALL without tool calls, or a function call leaked as text (not streaming) | 1 retry after 1 s
+@{body}
+
+@{h2}openai_responses
+
+Up to three attempts; some retries below cost no attempt, because the
+request changes.
+
+@{table}
+What happened | What the client does
+connect/read timeout, network error | 2 retries after 2 s and 4 s, then the httpx error itself
+HTTP 5xx | 2 retries after 2 s and 4 s (none if a pin was released), then LLMServerError
+HTTP 429 | once: drop service_tier and retry (no attempt used); once: release an OpenRouter pin and retry (no attempt used); then at once LLMQuotaExhaustedError / LLMRateLimitError -- no backed-off 429 retries on this route
+404 under an OpenRouter pin | pin released, retried (no attempt used)
+400 or 404 rejecting replayed reasoning (encrypted content, thought signature, "produced under a different model") | once: all reasoning artifacts stripped from the session, request rebuilt (no attempt used)
+stream without a terminal event | 2 retries after 2 s, then the partial text (see timeouts)
+body that is no JSON | 2 retries after 2 s, then the JSON error
+rate limit inside a 200 body | drop service_tier once (no attempt used), then retries with 2 s, 4 s
+server_error inside a 200 body | 2 retries after 2 s, 4 s
+any other error inside a 200 body | handed to the agent as an answer carrying the error (see errors)
+@{body}
+
+The agent server's own fallback chain (@{tt}llm_profile@{utt} with more than
+one profile) takes over where these retries end; see
+@{" Writing an agent " link scarabhive/agentdev}.
+@endnode
+
+@node reasoning "Reasoning"
+@{h1}Reasoning
+
+@{h2}Asking for it
+
+@{tt}thinking_level@{utt} is sent as @{tt}reasoning: {effort: <level>}@{utt}
+on both routes. On openai_httpx, @{tt}thinking_budget@{utt} is sent as
+@{tt}reasoning: {max_tokens: <n>}@{utt} -- only without a level, because
+OpenRouter takes one or the other. Without either, no reasoning field is sent
+and the model's default applies. @{tt}temperature@{utt} is left out whenever
+a reasoning field is sent, @{tt}none@{utt} included: OpenAI's hybrid models
+refuse it.
+
+@{h2}Watching it
+
+Streamed thinking reaches the chat live: Chat Completions deltas named
+@{tt}reasoning_content@{utt} (DeepSeek) or @{tt}reasoning@{utt} (OpenRouter),
+Responses events @{tt}response.reasoning_text.delta@{utt} and
+@{tt}response.reasoning_summary_text.delta@{utt} (OpenAI models only send the
+summary). The text is stored once: inside the reasoning blocks where the
+provider sent it there, else as @{tt}reasoning_content@{utt} on the message.
+
+@{h2}Sending it back
+
+Reasoning blocks (Gemini thought signatures, OpenAI encrypted items) must
+travel back on later turns, or the provider refuses the turn.
+@{tt}reasoning_details_mode@{utt} decides how many:
+
+@{table}
+Mode | Blocks sent back | For
+keep_last | the latest assistant message's only | Gemini on Chat Completions (a signature is checked for the current turn)
+keep_all | every assistant message's | encrypted chains checked across turns, and every model whose prompt cache matches byte for byte: stripping older blocks rewrites the prefix each turn
+strip | none | endpoints that refuse them
+@{body}
+
+When a compaction or summary rewrote the history, the chain before it is
+gone: openai_responses rebuilds such a message from its text and tool calls
+(a fresh chain), openai_httpx with keep_all drops its blocks -- except while
+that turn's tool calls are still open.
+
+@{tt}assistant_reasoning_field: reasoning_content@{utt} (openai_httpx) puts
+the thinking text on every assistant message, an empty string where there is
+none. DeepSeek's thinking mode answers 400 without it on a tool round trip.
+
+@{h2}Usage
+
+Reasoning tokens are reported as the provider counts them, as
+@{tt}completion_tokens_details.reasoning_tokens@{utt} -- a detail of the
+completion, never computed from it. Some providers report more reasoning
+tokens than completion tokens; that is what they sent, not an error here.
+@endnode
+
+@node caching "Prompt caching"
+@{h1}Prompt caching
+
+How the core splits a prompt into cacheable blocks is described in
+@{" LLM models and profiles " link scarabhive/llm}. What these routes send:
+
+@{table}
+Key | Effect
+prompt_cache_key | sent as @{tt}prompt_cache_key@{utt}; on OpenRouter also as @{tt}session_id@{utt}, the gateway's sticky-routing key (its cache lives on one backend). @{tt}auto@{utt} derives the key from the stable head of the conversation, so parallel runs with different prompts do not share one
+prompt_cache_marker_style | which markers go into the prompt at the core's block boundaries: @{tt}openai@{utt} (prompt_cache_breakpoint parts), @{tt}anthropic@{utt} (cache_control), @{tt}none@{utt} (boundaries removed)
+prompt_cache_mode | which boundaries get markers (auto, multi_turn, task_sequence, one_shot, off)
+prompt_cache_options | passed through verbatim, e.g. {mode: explicit} so only our breakpoints cache
+@{body}
+
+@{h2}Marker style per route
+
+@{bullet}@{b}openai_httpx@{ub}: unset means @{tt}openai@{utt} when a
+prompt_cache_key is set, else @{tt}none@{utt}. OpenAI markers are placed only
+with a key. @{tt}anthropic@{utt} marks the last system message, the last
+tool, and -- when the mode caches the conversation -- the conversation's
+tail, never more than Anthropic's four blocks. This is the route for Claude
+behind OpenRouter.
+@{bullet}@{b}openai_responses@{ub}: unset means @{tt}openai@{utt}; markers
+are placed only with a prompt_cache_key. @{tt}anthropic@{utt} becomes one
+top-level @{tt}cache_control@{utt} (OpenRouter forwards nothing else on this
+route), which caches the whole conversation and only when the mode caches
+the conversation.
+
+@{h2}Keeping the prefix stable
+
+@{bullet}A run note that changes on every call is never given a breakpoint;
+developer notes are lowered to their role only after the markers are placed.
+@{bullet}With @{tt}keep_last@{utt}, older reasoning blocks disappear from
+the history turn by turn, which rewrites the prefix; @{tt}keep_all@{utt}
+keeps it byte-stable.
+@{bullet}On OpenRouter, a call pinned to the backend that answered the run
+before reads that backend's cache (see
+@{" OpenRouter routing " link openrouter}).
+@endnode
+
+@node openrouter "OpenRouter routing"
+@{h1}OpenRouter routing
+
+These extras are sent only when the entry's base_url is on openrouter.ai.
+
+@{bullet}@{tt}X-OpenRouter-Metadata: enabled@{utt} on every request, so the
+answer names the backend that served it. That name is stored on the
+assistant message (@{tt}served_by@{utt}) and reported to the hooks.
+@{bullet}@{tt}provider_routing@{utt} is sent as the request's
+@{tt}provider@{utt} object (order, allow_fallbacks, sort, ...);
+@{tt}llm_system.openrouter_routing@{utt} is merged in by the core, the entry
+winning per key.
+@{bullet}@{b}The pin.@{ub} A request goes to the backend that answered the
+run's latest turn, or -- for a run without one -- the backend that answered
+this agent on this model within @{tt}provider_affinity_minutes@{utt}
+(default: the model's @{tt}prompt_cache_ttl_minutes@{utt}, how long its
+prompt cache lives, else 30; 0 turns this off), as @{tt}order: [that one],
+allow_fallbacks: false@{utt}. That backend holds the prompt cache and is the
+only one that can verify the reasoning the run replays. A configured
+@{tt}order@{utt} that does not list the backend is left alone. When the
+pinned backend refuses (a 429, a 5xx that is retried, a 404, a rate limit
+or server error in the body), the pin is released and the retry goes out as configured. The
+gateway's backend names are translated to routing slugs from its
+@{tt}/providers@{utt} list, reloaded at most every ten minutes; until it
+loads, nothing is pinned.
+@{bullet}@{tt}plugins@{utt} (context-compression, response-healing, ...)
+are passed through verbatim, and only here -- on another endpoint they are
+not sent, with a warning when the client is built.
+@{bullet}openai_httpx also names the agent to OpenRouter (@{tt}X-Title@{utt}
+and an @{tt}HTTP-Referer@{utt} ending in the agent's name), so each agent is
+a row of its own in OpenRouter's activity list.
+@endnode
+
+@node usage "Usage, cost and the hooks"
+@{h1}Usage, cost and the hooks
+
+Each request is reported to the @{tt}pre_llm_request@{utt} hooks before it
+is sent, and to the @{tt}post_llm_response@{utt} hooks when it ends. The
+message debugger, the OpenTelemetry chat span and the cost figures are built
+from these reports (@{" Hooks " link scarabhive/hooks},
+@{" The capture hooks " link message_debugger/hooks},
+@{" What gets exported " link otel/spans},
+@{" What it records " link context_usage_tracker/hooks}).
+
+@{h2}One report per ending
+
+@{table}
+The request ended with | post_llm_response carries
+an answer | usage, finish reason, served_by; response_data when not streamed
+a retry | an error @{tt}[RETRY n/m] ...@{utt}, finish reason retry, no usage
+a refusal after the retries | the error (@{tt}HTTP 400: ...@{utt}, @{tt}Rate limit: ...@{utt}, @{tt}Request timed out: ...@{utt}, @{tt}Network/protocol error: Upstream error in stream: ...@{utt}, ...), no usage
+a cancellation while the request was out | the error @{tt}Request cancelled during streaming@{utt} (or @{tt}cancelled@{utt}); on openai_httpx the usage too, when its chunk had arrived
+a cancellation during a retry wait | the error @{tt}Request cancelled during retry wait@{utt}, after the retry's row
+a cancellation before it was sent | the error @{tt}Request cancelled by user@{utt} (openai_httpx)
+a stream the caller stopped reading | the error @{tt}stream abandoned by the caller@{utt}
+anything unexpected | the exception's text
+@{body}
+
+A cancelled stream is billed for what the provider generated, but its usage
+usually comes last, so the report mostly has none: the tokens of a cancelled
+call are missing from the figures. On openai_responses every attempt is
+reported as a request of its own, so each attempt has a pair of rows.
+
+@{h2}The usage
+
+@{bullet}Chat Completions: the provider's @{tt}usage@{utt} as it came,
+@{tt}prompt_tokens@{utt} including cached tokens,
+@{tt}prompt_tokens_details.cached_tokens@{utt} as the subset. Streams ask
+for it with @{tt}stream_options.include_usage@{utt}.
+@{bullet}Responses: mapped to the same shape -- input_tokens to
+prompt_tokens, output_tokens to completion_tokens, the cached and reasoning
+details as subsets; everything else (OpenRouter's @{tt}cost@{utt},
+@{tt}cost_details@{utt}, @{tt}is_byok@{utt}) passed through.
+@{bullet}Cost: where the provider reports its own @{tt}cost@{utt}
+(OpenRouter) that figure wins; otherwise the core prices the tokens from
+@{tt}config/llm_pricing.yaml@{utt}.
+@endnode
+
+@node errors "Errors"
+@{h1}Errors
+
+What reaches the agent server when a request cannot be answered. The server
+decides from the type whether to fall back to the next profile of the chain
+(@{" Writing an agent " link scarabhive/agentdev}).
+
+@{table}
+Raised | When
+LLMRateLimitError | 429 after the retries (openai_httpx), 429 after at most a tier drop and a pin release (openai_responses), a streamed body-level 429 after the retries
+LLMQuotaExhaustedError | the same, with "quota" or "exhausted" in the body
+LLMServerError | 5xx after the retries
+httpx.HTTPStatusError | any other 4xx, streamed or not; the message is @{tt}HTTP <status>: <body start>@{utt}. Also (status 400) a streamed body-level 400 that no healing applies to: @{tt}Unrecoverable body-400 in stream: ...@{utt}
+LLMConnectionError | openai_httpx: timeout, stall, network error or an upstream error mid-stream, after the retries
+httpx.TimeoutException / TransportError | openai_responses: the same, untyped
+asyncio.CancelledError | the run was cancelled
+ValueError at build time | no key for the endpoint; an unknown dialect value
+NotImplementedError at build time | openai_httpx with capabilities.default_api_type other than chat_completions
+@{body}
+
+@{h2}Errors that come as an answer
+
+Some failures arrive as an answer with an empty text and an
+@{tt}error@{utt} on the assistant message, which the agent server treats as
+an upstream failure of that model:
+
+@{bullet}an error inside an HTTP 200 body that no retry covers (not
+streamed, or on openai_responses): @{tt}upstream_error_<code>@{utt};
+@{bullet}a content filter without tool calls (openai_httpx):
+@{tt}content_filter_<native reason>@{utt};
+@{bullet}a response openai_httpx cannot parse:
+@{tt}response_format_error@{utt}.
+
+An answer cut off by its output cap has finish reason @{tt}length@{utt}
+(Responses: @{tt}max_output_tokens@{utt} and a missing reason both map to
+it), a filtered Responses answer @{tt}content_filter@{utt}.
+@endnode
+
+@node batch "Batch and speech"
+@{h1}Batch and speech
+
+@{h2}Batch
+
+A model entry with @{tt}provider: batch@{utt} and @{tt}batch_provider:
+openai_httpx@{utt} runs its requests through the OpenAI Batch API: a JSONL
+file uploaded to @{tt}/files@{utt}, a batch on
+@{tt}/v1/chat/completions@{utt} with a 24-hour window, results downloaded
+when it is done. The batch always goes to api.openai.com -- a gateway has no
+batch API, and base_url is not used. Each request carries model, messages,
+max_tokens and tools, nothing else: no reasoning level, no temperature.
+Network errors while uploading the input or downloading the results are
+retried three times (1 s doubling, at most 30 s). The queue and its settings (@{tt}llm_system.batch.providers.openai_httpx@{utt})
+belong to the core; see @{" Batch Monitor " link batch_monitor/main}.
+
+@{h2}Speech
+
+@{tt}provider: openai_speech@{utt} in @{tt}tts_models@{utt} synthesises with
+@{tt}POST <base_url>/audio/speech@{utt} -- OpenAI's API, which OpenRouter
+offers for every speech model behind it.
+
+@{table}
+Key | Default | Meaning
+model | -- | the speech model
+base_url | https://openrouter.ai/api/v1 | the endpoint; the key follows it as above
+api_key | from the endpoint's variable |
+voice | none | the voice when the caller names none; a call without either fails
+request_timeout | 300 | seconds per attempt
+max_retries | 3 | retries on 429, 500, 502-504, 520-524, 529 and transport errors, after 2 s, 4 s, 6 s ...
+@{body}
+
+@{bullet}Audio comes back as raw PCM, 16 bit mono; the sample rate is read
+from the Content-Type, else 24000.
+@{bullet}A voice with a reference sample is cloned: the sample (at most
+15 MiB; WAV, FLAC, OGG, AIFF, MP4/M4A or MP3) and its transcript travel in
+every request as @{tt}input_references@{utt}, and no voice name is sent.
+OpenRouter answers 404 for a model that cannot clone.
+@{bullet}A style prompt, language or seed has no field on this API; the
+client warns once and ignores them.
+@{bullet}No usage is reported: the call appears in the message debugger,
+not in the token and cost figures.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}Messages
+
+@{bullet}Only the fields the API knows are sent; internal bookkeeping fields
+are removed. On openai_httpx, tool calls keep id, type and function (and
+Gemini's @{tt}extra_content@{utt}); openai_responses replays its own turns as
+the stored items and rebuilds other turns from text and tool calls.
+@{bullet}Developer notes: openai_httpx sends them as @{tt}system@{utt} unless
+the entry's @{tt}capabilities.developer_role@{utt} allows
+@{tt}developer@{utt} (llama.cpp renders a role it does not know as nothing);
+openai_responses keeps @{tt}developer@{utt} unless the entry lowers it. A
+note that ends the request goes as a user message wrapped in note tags,
+whatever the rung -- a request that ends on something needing no answer gets
+none.
+@{bullet}A role openai_responses does not know is sent as a user turn, with
+a warning.
+
+@{h2}Media
+
+@{bullet}openai_httpx sends audio and video parts only when the entry
+declares @{tt}audio_input@{utt} / @{tt}video_input@{utt}.
+@{bullet}openai_responses replaces an image without @{tt}image_input@{utt},
+audio without @{tt}audio_input@{utt}, and any video (the Responses API has
+no video item) by a visible note such as
+@{tt}[image input omitted: model has no image_input capability]@{utt}, and
+logs a warning.
+@{bullet}Images a tool returns follow the tool result as a user message, on
+both routes.
+
+@{h2}Tools
+
+Tool schemas go out as the agent built them; with
+@{tt}tool_schema_dialect: gemini_function_declarations@{utt} the keywords
+Gemini refuses (additionalProperties, default, format, title, anyOf, oneOf,
+...) are removed first. @{tt}tool_choice@{utt} is @{tt}auto@{utt}. On
+openai_responses every tool carries @{tt}parameters@{utt}, @{tt}{}@{utt} for
+none.
+
+@{h2}Structured output
+
+A response format is sent as @{tt}response_format@{utt} (Chat Completions)
+or @{tt}text.format@{utt} (Responses) when the entry declares
+@{tt}capabilities.structured_output@{utt}; a client asked for a format it
+cannot send refuses the call rather than return free text.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing to enable: the core finds LLM provider plugins by their
+@{tt}plugin.toml@{utt} (@{tt}type = ["llm-provider"]@{utt}) and loads
+@{tt}provider.py@{utt} when a model entry names one of its providers. There
+is no entry in @{tt}config/plugins.yaml@{utt} and no allowlist line. A
+misspelt provider name fails when the configuration loads.
+
+@{table}
+Manifest key | Names
+provides | openai_httpx, openai_responses
+provides_batch | openai_httpx
+provides_tts | openai_speech
+default_base_url | openai_httpx: https://api.openai.com/v1, openai_responses: https://openrouter.ai/api/v1
+@{body}
+
+@{h2}Dependencies
+
+@{tt}httpx@{utt}, which the core requires anyway. No SDK.
+
+@{h2}Where things live
+
+Nothing on disk. Batch input files go where the core's batch queue says.
+Changes to @{tt}llm.yaml@{utt} reach an agent when it builds its client,
+i.e. after a restart.
+@endnode

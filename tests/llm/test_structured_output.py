@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -599,7 +600,7 @@ def test_the_worker_loop_answers_every_line_purges_and_retires_past_its_memory(m
     import regex
 
     alarms: list[int] = []
-    monkeypatch.setattr(signal, "alarm", lambda seconds: alarms.append(seconds))
+    monkeypatch.setattr(signal, "alarm", lambda seconds: alarms.append(seconds), raising=False)  # POSIX only
     monkeypatch.setattr("sys.argv", ["schema_worker.py", "0"])
     purged: list[bool] = []
     monkeypatch.setattr(regex, "purge", lambda: purged.append(True))
@@ -623,7 +624,7 @@ def test_the_worker_loop_answers_every_line_purges_and_retires_past_its_memory(m
 
 
 def test_on_linux_the_worker_limits_its_address_space(monkeypatch):
-    import resource
+    resource = pytest.importorskip("resource")
 
     limits: list = []
     monkeypatch.setattr(resource, "setrlimit", lambda kind, value: limits.append((kind, value)))
@@ -688,6 +689,15 @@ async def test_a_long_answer_s_verdict_stays_small():
     assert len(json.dumps(reply)) < 2_000, "the reply carries more than the verdict"
 
 
+@pytest.fixture
+def the_interpreter_itself(monkeypatch):
+    """Workers that stand for a broken one by closing their pipes, started by the interpreter itself: on
+    Windows a venv's python.exe is a launcher, and under asyncio it keeps its copies of the pipes open --
+    a closed fd in the interpreter then breaks nothing. The stand-ins need the stdlib only."""
+    monkeypatch.setattr(sys, "executable", getattr(sys, "_base_executable", sys.executable))
+
+
+@pytest.mark.usefixtures("the_interpreter_itself")
 @pytest.mark.parametrize("closes", ["0, 1", "1"], ids=["pipe broken", "no answer"])
 async def test_a_worker_whose_pipe_broke_while_idle_is_replaced_once(monkeypatch, tmp_path, closes):
     """Alive but deaf (its pipes closed): the reused worker fails the write (both closed) or answers with EOF
@@ -703,6 +713,15 @@ async def test_a_worker_whose_pipe_broke_while_idle_is_replaced_once(monkeypatch
     assert (await pool.request({"op": "prepare", "schema": {}}, 5.0))["ok"]
     assert (await pool.request({"op": "prepare", "schema": {}}, 5.0))["ok"]
     assert pool.started == 2 and pool.killed == 1
+
+
+async def test_an_idle_worker_ends_itself_while_its_pool_lives(monkeypatch):
+    """On Windows nothing ended it (select takes sockets only there): a pool kept its workers for as
+    long as its loop ran."""
+    monkeypatch.setattr(structured_output, "WORKER_IDLE_SECONDS", 0.5)
+    await prepare_response_format(ResponseFormat(schema=SCHEMA))
+    (worker,) = worker_pool()._idle
+    await asyncio.wait_for(worker.wait(), 10)
 
 
 async def test_the_workers_of_a_loop_that_ended_exit_by_themselves(monkeypatch):
@@ -729,6 +748,7 @@ async def test_the_workers_of_a_loop_that_ended_exit_by_themselves(monkeypatch):
 
 
 
+@pytest.mark.usefixtures("the_interpreter_itself")
 async def test_a_fresh_worker_that_breaks_its_pipe_is_a_checker_error_not_a_crash(monkeypatch, tmp_path):
     """A worker that never reads: the (large) request cannot be written -- deterministically a broken pipe --
     and it comes back as SchemaCheckerError, which every caller turns into a failed check or a 503."""

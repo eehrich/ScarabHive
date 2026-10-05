@@ -12,6 +12,8 @@ from typing import Any, TYPE_CHECKING, Dict, List
 
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.hooks.registry import get_hook_registry
+from agent_system.servers.agent.components.hook_integration import hook_runs_for, is_compaction_system_message
 from agent_system.llm.token_utils import estimate_token_count, estimate_tools_token_count
 
 if TYPE_CHECKING:
@@ -66,7 +68,8 @@ class ContextSummarizerServer(SchemaBasedHookToolServer):
         plugin_dir = Path(__file__).parent
         self._hooks_impl = ContextSummarizerPlugin(
             plugin_dir,
-            summarization_history=self.summarization_history
+            summarization_history=self.summarization_history,
+            instance_name=name
         )
         self._hooks_impl.apply_config(config_dict)
 
@@ -188,17 +191,19 @@ class ContextSummarizerServer(SchemaBasedHookToolServer):
             # Create hook context
             from agent_system.hooks import HookContext, HookType
 
-            # Apply optional overrides
-            old_chunk = None
-            old_preserve = None
-
-            if "chunk_size" in params:
-                old_chunk = self._hooks_impl.chunk_size
-                self._hooks_impl.chunk_size = int(params["chunk_size"])
-
-            if "preserve_recent" in params:
-                old_preserve = self._hooks_impl.preserve_recent
-                self._hooks_impl.preserve_recent = int(params["preserve_recent"])
+            # Optional overrides, for this run only: they travel in its context. Set on the shared hook object they
+            # also reached every other session's run meanwhile, and a bad second value left the first one set for good.
+            metadata = {"manual_trigger": True, "reason": reason}
+            for key, low, high in (("chunk_size", 2, 50), ("preserve_recent", 2, 100)):
+                if params.get(key) is None:
+                    continue
+                value = params[key]
+                if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                    error_msg = f"{key} must be a whole number from {low} to {high}, got {value!r}"
+                    if status:
+                        await status.error(error_msg)
+                    return {"status": "error", "error": error_msg}
+                metadata[key] = value
 
             hook_context = HookContext(
                 hook_type=HookType.PRE_LLM_CALL,
@@ -210,20 +215,15 @@ class ContextSummarizerServer(SchemaBasedHookToolServer):
                 # the trigger is a share of ITS window.
                 llm=(agent.llm_for_session(session_id) if hasattr(agent, 'llm_for_session')
                      else getattr(agent, 'llm', None)),
-                metadata={"manual_trigger": True, "reason": reason}
+                metadata=metadata
             )
 
             # Execute summarization via hook implementation
             result = await self._hooks_impl.summarize_context(hook_context)
 
-            # Restore overrides
-            if old_chunk is not None:
-                self._hooks_impl.chunk_size = old_chunk
-            if old_preserve is not None:
-                self._hooks_impl.preserve_recent = old_preserve
-
             if not result.success:
-                error_msg = f"Summarization failed: {result.metadata.get('error', 'unknown')}"
+                # The hook puts what went wrong in result.error; its metadata has no 'error'.
+                error_msg = f"Summarization failed: {result.error or 'unknown'}"
                 if status:
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
@@ -232,8 +232,13 @@ class ContextSummarizerServer(SchemaBasedHookToolServer):
             # We can't modify the request's local messages list directly, so we store
             # the summarized messages in the session tracker. The agent will use these
             # when persisting the session at end of request.
+            # Conversation only, as the hook path hands it over (hook_integration._auto_sync_session_messages): the
+            # live list opens with the rendered prompts, and staged with them they were stored in the session and
+            # sent again, stale, behind the fresh ones on every later turn.
             if result.modified and result.context and result.context.messages:
-                agent._session_tracker.set_compacted_messages(session_id, result.context.messages)
+                agent._session_tracker.set_compacted_messages(session_id, [
+                    msg for msg in result.context.messages
+                    if msg.role != 'system' or is_compaction_system_message(msg)])
 
             summarized_count = len(result.context.messages) if result.context else original_count
 
@@ -251,13 +256,16 @@ class ContextSummarizerServer(SchemaBasedHookToolServer):
                         summary_preview = str(msg_dict.get("content", ""))[:200]
                         break
 
+            # A run that changed nothing says why, instead of "Summarized 40 → 40 messages".
+            not_applied = None if result.modified else (result.metadata or {}).get('reason', 'unknown')
             if status:
                 await status.end(
+                    f"Not summarized: {not_applied}" if not_applied else
                     f"Summarized {original_count} → {summarized_count} messages "
                     f"(saved ~{tokens_saved} tokens)"
                 )
 
-            return {
+            answer = {
                 "status": "success",
                 "original_count": original_count,
                 "summarized_count": summarized_count,
@@ -266,6 +274,9 @@ class ContextSummarizerServer(SchemaBasedHookToolServer):
                 "reason": reason,
                 "modified": result.modified
             }
+            if not_applied:
+                answer["not_applied"] = not_applied
+            return answer
 
         except Exception as e:
             logger.exception(f"Error in manual summarization: {e}")
@@ -367,7 +378,9 @@ class ContextSummarizerServer(SchemaBasedHookToolServer):
                         # "working" — the AttributeError landed in the except
                         # below and this silently fell back to the estimate.
                         latest = usage_tracker.tracker.get_latest(session_id=session_id)
-                        if latest:
+                        # Stale: measured before a compaction, so it counts messages that are gone. The hook
+                        # ignores it; counted here, it recommended summarizing again right after a summary.
+                        if latest and not latest.get('is_stale'):
                             actual_tokens = latest.get('prompt_tokens', 0) or 0
                             logger.debug(
                                 f"[check_stats] Got actual tokens from usage_tracker: {actual_tokens} "
@@ -389,9 +402,24 @@ class ContextSummarizerServer(SchemaBasedHookToolServer):
             # Calculate utilization
             utilization = (total_tokens / context_window * 100) if context_window > 0 else 0
 
-            # Recommendation based on trigger threshold
+            # Recommendation: either trigger of the hook -- the share of the window, or the message count (the
+            # agent's own max_messages override first, as the hook reads it). The count only while the hook runs
+            # for this agent: switched off, no count ever fires it.
             trigger_threshold = self.trigger_percentage * 100
-            recommendation = "summarize" if utilization >= trigger_threshold else "ok"
+            hook_name = f"{self.name}.summarize_context"
+            hooks_config = getattr(getattr(agent, 'agent_config', None), 'hooks', None)
+            info = get_hook_registry().get_hook_info(hook_name)
+            max_messages = 0
+            if info is not None and hook_runs_for(hooks_config, hook_name, bool(info.get('enabled', False))):
+                max_messages = self._hooks_impl.max_messages
+                try:
+                    override = hooks_config.overrides.get(hook_name)
+                    if isinstance(override, dict) and 'max_messages' in override:
+                        max_messages = int(override['max_messages'])
+                except (AttributeError, TypeError, ValueError):
+                    pass
+            too_many = max_messages > 0 and message_count > max_messages
+            recommendation = "summarize" if utilization >= trigger_threshold or too_many else "ok"
 
             if status:
                 status_msg = f"Context: {message_count} messages, ~{total_tokens} tokens "
@@ -412,6 +440,7 @@ class ContextSummarizerServer(SchemaBasedHookToolServer):
                 "context_window": context_window,
                 "utilization_percentage": round(utilization, 1),
                 "trigger_threshold": round(trigger_threshold, 1),
+                "max_messages": max_messages,
                 "recommendation": recommendation
             }
 

@@ -183,14 +183,14 @@ class TestBasicOperationsServer:
         mock_status.progress = AsyncMock()
         result = await server.call("basic_ops_wait", {"seconds": -1, "_status": mock_status})
         assert result["status"] == "error"
-        assert "must be positive" in result["error"]
+        assert "must be a number above 0" in result["error"]
 
         # Test zero seconds
         mock_status = AsyncMock()
         mock_status.progress = AsyncMock()
         result = await server.call("basic_ops_wait", {"seconds": 0, "_status": mock_status})
         assert result["status"] == "error"
-        assert "must be positive" in result["error"]
+        assert "must be a number above 0" in result["error"]
 
         # Test exceeds maximum
         mock_status = AsyncMock()
@@ -499,3 +499,64 @@ class TestWaitWithWake:
 
         await asyncio.sleep(1.2)
         assert rings == [] and not server._wakes
+
+
+class TestArgumentsAsModelsSendThem:
+    """Nothing validates tool arguments against the schema before the call."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("seconds", [float("nan"), "nan"])
+    async def test_nan_seconds_is_refused_instead_of_waiting_forever(
+            self, mock_system_config, mock_server_config, seconds):
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+        result = await asyncio.wait_for(
+            server.call("basic_ops_wait", {"seconds": seconds, "_status": AsyncMock()}), timeout=3)
+        assert result["status"] == "error" and "must be a number above 0" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_wake_false_as_text_does_not_ask_for_a_wake(
+            self, mock_system_config, mock_server_config):
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+        result = await server.call("basic_ops_wait", {
+            "seconds": 0.05, "wake": "false", "_status": AsyncMock()})
+        assert result["status"] == "success" and "wake_note" not in result
+
+    @pytest.mark.asyncio
+    async def test_include_details_false_as_text_gives_no_details(
+            self, mock_system_config, mock_server_config):
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+        result = await server.call("basic_ops_ping", {"include_details": "false"})
+        assert "details" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_long_message_is_cut_to_the_schema_limit(
+            self, mock_system_config, mock_server_config):
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+        status = AsyncMock()
+        result = await server.call("basic_ops_wait", {
+            "seconds": 0.05, "message": "x" * 10000, "_status": status})
+        assert result["user_message"] == "x" * 100
+        assert all(len(call.args[0]) < 200 for call in status.progress.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_null_message_is_the_default(self, mock_system_config, mock_server_config):
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+        status = AsyncMock()
+        result = await server.call("basic_ops_wait", {
+            "seconds": 0.05, "message": None, "_status": status})
+        assert result["user_message"] == "Waiting"
+        assert status.progress.await_args_list[0].args[0].startswith("Waiting:")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [{}, {"seconds": None}, {"seconds": "abc"}, {"seconds": [1]}])
+    async def test_seconds_that_is_no_number_says_so(self, mock_system_config, mock_server_config, args):
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+        result = await server.call("basic_ops_wait", {**args, "_status": AsyncMock()})
+        assert result == {"status": "error", "error": "seconds must be a number above 0"}
+
+    @pytest.mark.asyncio
+    async def test_ping_timestamp_carries_its_offset(self, mock_system_config, mock_server_config):
+        from datetime import datetime
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+        result = await server.call("basic_ops_ping", {})
+        assert datetime.fromisoformat(result["timestamp"]).utcoffset() is not None

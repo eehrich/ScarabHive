@@ -26,10 +26,14 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent_system.paths import data_path
+from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
-from agent_system.utils.multimodal_tool_content import extract_inline_media
-from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
+from agent_system.utils.multimodal_tool_content import (
+    DEFAULT_MAX_AUDIO_SIZE_MB,
+    DEFAULT_MAX_IMAGE_SIZE_MB,
+    extract_inline_media,
+)
+from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied, remote_outside
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -90,8 +94,11 @@ class MediaOpsServer(SchemaBasedToolServer):
         # the same resolution file_ops uses, instead of two readings of one
         # idea. read_only belongs to that vocabulary: when set, this server
         # still loads but no longer writes anything back.
+        # Only a missing key gets the default: an empty list allows nothing
+        # (fail closed), it must not quietly become the data directory.
+        roots = cfg.get("allowed_directories")
         self.sandbox = PathSandbox.from_config(
-            cfg.get("allowed_directories") or [str(data_path())],
+            [str(data_path())] if roots is None else roots,
             base=project_root,
             read_only=bool(cfg.get("read_only", False)),
         )
@@ -149,11 +156,17 @@ class MediaOpsServer(SchemaBasedToolServer):
 
         size_bytes = full.stat().st_size
         size_mb = size_bytes / (1024 * 1024)
-        if size_mb > self.max_file_size_mb:
+        # The attachment is encoded per request by multimodal_tool_content,
+        # which silently drops a file above ITS limit: a larger configured
+        # limit would answer "success" for a file the model never sees.
+        limit_mb = min(self.max_file_size_mb,
+                       DEFAULT_MAX_AUDIO_SIZE_MB if content_type == "audio"
+                       else DEFAULT_MAX_IMAGE_SIZE_MB)
+        if size_mb > limit_mb:
             return await _fail(
                 status,
                 f"File is too large for the context: {size_mb:.1f} MB "
-                f"(limit {self.max_file_size_mb:g} MB): {full}",
+                f"(limit {limit_mb:g} MB): {full}",
                 "FileTooLarge",
             )
 
@@ -346,10 +359,16 @@ def _entry(item: Any, msg_index: int, origin: str) -> Optional[Dict[str, Any]]:
     path = _field(item, "path")
     if path:
         p = Path(str(path))
+        # Stat where the request reads it from (a stored data/... path lands in
+        # the data directory) -- and never a host or device path: stat-ing
+        # \\host\share signs in to that host with the user's credentials.
+        on_disk = resolve_data_path(p)
+        size = None
+        if not remote_outside(str(on_disk), Path.cwd(), ()) and on_disk.is_file():
+            size = on_disk.stat().st_size
         entry.update(
             id=_media_id(str(p)), path=str(p), inline=False,
-            mime_type=_field(item, "mime_type"),
-            size_bytes=p.stat().st_size if p.is_file() else None,
+            mime_type=_field(item, "mime_type"), size_bytes=size,
         )
         return entry
 

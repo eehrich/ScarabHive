@@ -136,19 +136,19 @@ tools:
   - type: function
     function:
       name: "{{ name }}_check_connection"
-      description: "Check SSH connection health for one machine."
+      description: "Check SSH connection health."
       parameters:
         type: object
         properties:
           machine:
             type: string
-            description: "Single machine name."
+            description: "Machine name; omit for all"
         required: []
 
   - type: function
     function:
       name: "{{ name }}_add_machine"
-      description: "Dynamically add a new SSH machine to the connection manager at runtime. Optionally persist to config file. Connection is tested before adding."
+      description: "Add an SSH machine at runtime; the connection is tested first."
       parameters:
         type: object
         properties:
@@ -291,9 +291,8 @@ config:
     # Prevents MITM attacks by verifying host keys against known_hosts file
     strict_host_key_checking: true
     known_hosts_file: ~/.ssh/known_hosts
-    # Security compliance: logs all SSH commands with timestamps and machine info
-    # Useful for audit trails and debugging
+    # AUDIT lines in the server log for every command, background command and
+    # file transfer (there is no separate audit file)
     audit_log: true
-    audit_log_file: logs/ssh_control_audit.log
   plugins: null
   servers: null

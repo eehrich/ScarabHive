@@ -37,6 +37,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _positive_int(value: Any, default: int) -> int:
+    """*value* as a positive int; anything else is *default*."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return number if number > 0 and not isinstance(value, bool) else default
+
+
 class MCPClientServer(SchemaBasedToolServer):
     """Connects to external MCP servers and federates their tools."""
 
@@ -52,6 +61,8 @@ class MCPClientServer(SchemaBasedToolServer):
             ssl_verify=getattr(network, "ssl_verify", True) if network else True,
             timeout=getattr(connection_cfg, "timeout", 30.0) if connection_cfg else 30.0,
             cache_ttl=getattr(cache_cfg, "tool_list_ttl", 300.0) if cache_cfg else 300.0,
+            max_result_chars=_positive_int(getattr(server_config, "max_result_chars", None), 50000),
+            max_description_chars=_positive_int(getattr(server_config, "max_description_chars", None), 1024),
         )
         if external is not None:
             self.pool.configure(getattr(external, "remote_servers", None) or {})
@@ -74,8 +85,8 @@ class MCPClientServer(SchemaBasedToolServer):
         results = await self.pool.connect_all()
         failed = {name: error for name, error in results.items() if error}
         logger.info(
-            "External MCP servers: %d connected, %d failed",
-            len(results) - len(failed), len(failed),
+            "External MCP servers: %d connected, %d failed, %d on demand",
+            len(results) - len(failed), len(failed), len(self.pool.on_demand_servers()),
         )
         # Await the invalidation: the caller's next tool listing must see
         # the new catalog, not a cache that a scheduled task has not
@@ -94,12 +105,29 @@ class MCPClientServer(SchemaBasedToolServer):
     # ------------------------------------------------- ExternalToolProvider role
 
     async def list_external_tools(self, *, force_refresh: bool = False) -> Dict[str, List[Dict[str, Any]]]:
-        """``{server: [{name, description, input_schema, blocked}]}`` for the core."""
-        return await self.pool.list_tools_by_server(force_refresh=force_refresh)
+        """``{server: [{name, description, input_schema, blocked}]}`` for the core.
+
+        Blocked tools are left out: the core offers the model whatever it gets
+        here and ignores the flag. The management tool still shows them.
+        """
+        by_server = await self.pool.list_tools_by_server(force_refresh=force_refresh)
+        return {server: [t for t in tools if not t["blocked"]] for server, tools in by_server.items()}
 
     async def call_external_tool(self, server: str, tool: str, arguments: Dict[str, Any]) -> Any:
         """Route one call to one external server."""
         return await self.pool.call_tool(server, tool, arguments)
+
+    async def connect_for_patterns(self, patterns: List[str]) -> None:
+        """Connect the on_demand servers an agent's ``tools.allowed`` names.
+
+        Named means ``<server>.*`` or ``<server>.<tool>`` -- the dot form that
+        selects external tools, with the server spelled out. ``*`` or a glob
+        over the server part does not count: an allow-all agent would
+        otherwise start every on_demand server there is.
+        """
+        names = {pattern.split(".", 1)[0] for pattern in patterns if "." in pattern}
+        if names and await self.pool.connect_on_demand(sorted(names)):
+            await capabilities.anotify_tool_catalog_changed()
 
     # -------------------------------------------------------- management tools
 

@@ -121,9 +121,37 @@ def test_both_sandboxes_cover_the_same_tree(config):
     )
 
 
-#: Hooks that insert a system message behind the first one -- inside the
-#: cached prompt prefix -- and whose content changes MID-TURN. Enabling one
-#: costs the cache from that call on, and nothing about the run looks wrong.
+@pytest.mark.parametrize("instance", ["coder_fs", "coder_fs_ro"])
+def test_the_search_excludes_keep_file_ops_defaults(config, instance):
+    """A configured exclude list REPLACES file_ops' default one. Written
+    without the minified-file entries, grep and the index walked
+    static/vendor/*.min.js -- single lines of hundreds of kilobytes."""
+    from plugins.file_ops.textsearch import DEFAULT_EXCLUDES, _is_excluded
+
+    patterns = get_tool_server_config(instance, config).search["exclude_patterns"]
+    assert not set(DEFAULT_EXCLUDES) - set(patterns)
+    for rel in ("static/vendor/mermaid/mermaid.min.js", "static/app.min.css", "dist/app.js.map"):
+        assert _is_excluded(rel, rel.rsplit("/", 1)[-1], patterns), rel
+
+
+def test_an_agent_without_a_shell_is_not_told_to_run_tests(config):
+    """The reviewer holds no shell, yet its always-skill told it to run tests:
+    an order it can only answer with a call that cannot exist."""
+    from agent_system.skills.registry import SkillRegistry
+
+    agent_config = _agent_config(config, "coder_reviewer")
+    assert not any(p.lstrip("+!").split("/")[0] == "coder_shell" for p in agent_config.tools.allowed)
+    registry = SkillRegistry()
+    registry.discover(list(config.skills.skill_dirs or []))
+    texts = [Path(agent_config.system_template).read_text(encoding="utf-8")]
+    texts += [(Path(registry.get(name).path) / "SKILL.md").read_text(encoding="utf-8")
+              for name in agent_config.skills.always]
+    assert not [t for t in texts if re.search(r"\brun (the )?tests\b", t, re.IGNORECASE)]
+
+
+#: Hooks that append a turn whenever their content changes -- and it changes
+#: MID-TURN. Enabling one adds a duplicate of the transcript to every later
+#: call, and nothing about the run looks wrong.
 _PREFIX_CHURNING_HOOKS = [
     "todo.inject_todo_tasks",
     "sequential_thinking.inject_active_sessions",
@@ -136,7 +164,7 @@ _PREFIX_CHURNING_HOOKS = [
 def test_no_hook_rewrites_the_cached_prefix_mid_turn(config, agent, hook):
     """Every one of these injects what the agent already has: its own tool
     calls, still in the transcript, with the tool in its allowlist to re-read
-    on demand. The trade is a broken prefix for a duplicate, so they stay off.
+    on demand. The trade is paid tokens for a duplicate, so they stay off.
 
     The OKF injection is deliberately NOT in this list -- it keys on the last
     user message, so it is byte-identical across the calls within a turn."""

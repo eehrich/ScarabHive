@@ -1,0 +1,298 @@
+@database "stategraph_machine"
+@author "Enrico Ehrich"
+@$VER: stategraph_machine.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "A machine as an agent"
+@{h1}A machine as an agent
+
+A @{" State Graph " link stategraph/main} machine is a workflow written
+down as states and transitions. This plugin lets everything that talks to
+agents talk to a machine instead: a sub-agent manager (SAM) spawns it, the
+chat lists it, another agent calls it by name, @{tt}agent-cli --agent@{utt}
+sends it a message. The agent takes one message, starts one run of its
+machine through a @{tt}stategraph@{utt} instance -- so the State Graph
+panel shows, pauses and terminates that run like any other -- and answers
+with the run's output as a JSON object. It runs no LLM of its own.
+
+A machine becomes an agent in one of two ways: an @{tt}agent:@{utt} block
+in the machine's own file, or an entry of @{tt}type: stategraph_machine@{utt}
+in the config. The plugin has no tools, no hooks and no panel of its own;
+the State Graph panel's inspector shows, under "As an agent", which agents
+run a machine and the block that would offer it.
+
+@{code}
+For users
+  @{"  Offering a machine as an agent  " link setup}
+  @{"  What a request does  " link requests}
+  @{"  When the run waits for an event  " link waits}
+
+For agents and developers
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Offering a machine as an agent"
+@{h1}Offering a machine as an agent
+
+@{h2}An agent: block in the machine's file
+
+No config entry needed. Every process that starts (the API, agent-cli)
+reads the machine folders of each enabled @{tt}stategraph@{utt} instance
+and declares an agent for every machine file with a top-level
+@{tt}agent:@{utt} block. The machine format itself is described in
+@{" Machines " link stategraph/machines}.
+
+@{code yaml}
+stategraph: 1
+id: build_review
+title: Build and review
+params:
+  task: {type: string, required: true, description: What to build}
+agent:                 # {} takes every default
+  visibility: tool     # a SAM may offer it to its model
+...
+@{body}
+
+@{table}
+Key | Default | Meaning
+name | <machine id>_agent | the agent's name
+description | the machine's title, else its description, else "Runs the state machine <id>" | what callers read about it
+input | text when the machine has exactly one param and it is of type string or any, else json | text: the message is one param; json: the message is a JSON object of params
+task_param | that one param, else task | the param a text message fills
+on_wait | ask | ask or block, see @{" When the run waits " link waits}
+params | {} | params every run gets; the message's win over them
+promote | [] | output keys copied onto the top level of the final event
+visibility | private | private: only callers that name it; tool: a SAM offers it to its model; ui: the chat lists it; both
+@{body}
+
+The block is read when a process starts: a new or changed block takes
+effect with the next start, and a config reload keeps what the start
+declared. A file that does not parse, whose @{tt}id@{utt} is not its file
+name, or that is too large offers nothing. Where several stategraph
+instances share a machine folder, the first by name offers it.
+
+Validation warns (@{tt}SG111@{utt}, the machine itself still runs) when
+the block's @{tt}task_param@{utt} is no param of the machine, when a
+required param is neither in @{tt}params@{utt} nor the task param, and when
+the name is taken: by another server, or by a config entry for this same
+machine -- then the entry's settings run, not the block's.
+
+@{h2}A config entry
+
+The same agent as an entry in @{tt}config/plugins.yaml@{utt} or an agent
+file. No entry ships with the repository; this one is an example. The keys
+sit next to @{tt}type@{utt}, not under @{tt}agent_config@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    build_review_agent:
+      type: stategraph_machine
+      enabled: true
+      description: "Builds a change and has it reviewed; answers {change} as JSON"
+      machine: build_review      # never taken from the message
+      stategraph: stategraph     # the stategraph instance that runs it
+      input: text
+      task_param: task
+      params: {}
+      promote: []
+      on_wait: block
+      metadata:
+        visibility: tool
+@{body}
+
+@{table}
+Key | Default in code | Meaning
+machine | none: every request is refused | the machine id
+stategraph | stategraph | the stategraph instance whose runs these are
+input | text | text or json, as above
+task_param | task | the param a text message fills
+on_wait | block | ask or block -- note: the block's default is ask
+params | {} | params every run gets
+promote | [] | output keys copied onto the final event
+metadata.visibility | private | as above
+@{body}
+
+A wrong value (no @{tt}machine@{utt}, an @{tt}input@{utt} or
+@{tt}on_wait@{utt} outside its two words, @{tt}params@{utt} not a mapping,
+@{tt}promote@{utt} not a list) does not stop the start: it is logged, and
+it is the answer to every request. Shortly after a stategraph instance
+starts, it checks every machine agent over it and logs an error for each
+one that cannot run: a missing machine, a machine with errors, a
+@{tt}task_param@{utt} the machine does not declare, a required param
+nothing passes.
+
+@{h2}Who can reach it
+
+With the default @{tt}private@{utt}, a SAM leaves it out of the agents its
+model may start, even when @{tt}allowed_agents@{utt} names it, and the chat
+does not list it; callers that name it directly still reach it. With
+@{tt}tool@{utt} or @{tt}both@{utt}, a SAM offers it like any agent -- the
+rest is in @{" Sub-agents and the SAM " link scarabhive/subagents}. A
+machine agent can never be run by a machine (see
+@{" Security " link stategraph/security}).
+@endnode
+
+@node requests "What a request does"
+@{h1}What a request does
+
+@{h2}One run per request
+
+A message starts one run of the machine. Its run key is
+@{tt}<agent>:<request id>@{utt}, its run id @{tt}<request id>_sg<6
+characters>@{utt}: cancel, status lines and cost stay under the request
+that sent the message. The run belongs to the request's user; a session
+holding another user's run is refused. The run gets its own session,
+@{tt}sg_<run id>@{utt} (see @{" Runs " link stategraph/runs}); when the
+agent was spawned in a session (a SAM, the chat), that session sits below
+the agent's, and the run's agents count one sub-agent level below it, so a
+SAM's @{tt}max_nesting_depth@{utt} bounds them.
+
+@{table}
+Situation | What happens
+the message fits the params | the run starts; the request waits for its end (or, with on_wait ask, for a wait)
+the message does not fit | refused; the error lists what the machine takes
+the same request again (a retry, a crash) | attaches to its live run, resumes it when it was interrupted, or answers its outcome again -- output, failure or cancel. Only a transient failure (interrupted, timeout, agent_failed, decision_failed, internal, diverged) starts a new run
+the run is held by another process | waits up to 90 seconds for it, then refuses
+a new message in the same session | never a second run: a succeeded run answers its output again, an interrupted one is resumed, a failed or cancelled one is refused ("a continue does not start a new run"). The session's run is kept in runs.db, so this works in any process
+a cancel before the run started | answers cancelled, starts nothing
+a cancel of the request, or of a request above it | the run is terminated and its finally activities run; the platform force-cancels the request after its cleanup timeout (10 s by default); the answer is cancelled
+the process stops, or the client goes away | the run is left alone and ends interrupted; the same request again resumes it
+the machine fails | an error, never a final answer
+@{body}
+
+@{h2}Called as another agent's tool
+
+Every call is a request of its own: the request id gets a suffix, the
+session is a new one (else a second call would get the first call's
+answer), and a run that waits for an event blocks the call whatever
+@{tt}on_wait@{utt} says -- a tool call has no conversation to ask in.
+
+@{h2}Input
+
+@{bullet}@{tt}input: text@{utt} -- the whole message is
+@{tt}params[task_param]@{utt}, over the fixed @{tt}params@{utt}.
+@{bullet}@{tt}input: json@{utt} -- the message is a JSON object of params,
+laid over the fixed @{tt}params@{utt}. Anything else is refused.
+
+The params are checked as for any run: a param the machine does not
+declare, a required one missing, a value of the wrong type or outside its
+enum refuses the start.
+@endnode
+
+@node waits "When the run waits for an event"
+@{h1}When the run waits for an event
+
+A machine can wait in a state until an event comes: an approval, a
+rejection with notes. @{tt}on_wait@{utt} decides what the agent does then.
+
+@{h2}on_wait: block
+
+The request waits until the run ends. The event comes from elsewhere: the
+State Graph panel, @{tt}stategraph_send_event@{utt}
+(@{" Tools: debugging a run " link stategraph/tools_debug}), a
+@{" callback URL " link stategraph/callbacks}. This is the config entry's
+default; a caller that takes every answer for the result needs it.
+
+@{h2}on_wait: ask
+
+The turn ends with a question: which state waits (and its description),
+the events it takes with their descriptions and data schema, and how to
+reply. The final event carries @{tt}waiting: {states, events}@{utt}.
+
+@{code}
+build_review waits for an answer in 'approval'.
+It takes:
+- approve: A person accepts the change
+- reject: A person sends it back with notes (data: {"type": "string"})
+Reply with the event's name, or with JSON {"event": "<name>", "data": ...} to send data along.
+@{body}
+
+The next message in the session is the answer:
+
+@{bullet}the event's name (case does not matter), its data after a space,
+a colon or a line break: @{tt}reject: needs a test@{utt} -- data that
+parses as JSON is sent as JSON, anything else as text;
+@{bullet}or @{tt}{"event": "reject", "data": "needs a test"}@{utt};
+@{bullet}where several frames (parallel submachines) take the event, the
+question names them and the answer adds @{tt}"frame": "<frame>"@{utt}.
+
+A name the run does not take, or an event it refuses, brings the question
+again, headed @{tt}Not sent: <reason>.@{utt}; an event no transition took
+(its guards said no) brings it headed @{tt}Not taken: ...@{utt} with the
+guards and their results. A taken event runs the machine on to its end or
+its next wait. After a restart -- or from agent-cli, which is a process per
+message -- the answer resumes the run into its wait and answers it there.
+A timer state that takes no event is waited out, not asked about.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The agent
+
+A caller sees an ordinary agent: its name and the @{tt}description@{utt}
+of the block or entry, in a SAM's list when it is visible there. The
+machine's params are not shown -- write them into the description, or let
+the first wrong message's error tell them. A follow-up in the same session
+reaches no LLM: it gets the same answer again, except while an
+@{tt}on_wait: ask@{utt} run waits.
+
+@{h2}Answers
+
+A succeeded run answers its output as one JSON object, e.g.
+@{tt}{"change": "..."}@{utt}; an output that is not an object comes as
+@{tt}{"output": ...}@{utt}. The final event also carries
+@{tt}run_id@{utt} and the @{tt}promote@{utt} keys. It is not cut: a
+machine with a large output hands all of it to its caller.
+
+Errors, verbatim (a SAM shows them as @{tt}Error: ...@{utt}):
+
+@{bullet}"build_review_agent: the machine build_review did not start:
+build_review has no parameter(s) topic; it takes: task (string, required)
+-- What to build" (with @{tt}input: json@{utt}; a param the agent fills
+itself is marked "set by the agent")
+@{bullet}"build_review_agent: the message must be a JSON object of params,
+not list; it takes: ..."
+@{bullet}"build_review_agent: run r1_sgab12cd failed in failed: agent_failed:
+... -- {"reason": ...}" (a failed final's own output follows the dash)
+@{bullet}"build_review_agent: run r1_sgab12cd was interrupted in build; send
+the same request again to resume it"
+@{bullet}"build_review_agent: run r1_sgab12cd is cancelled; a continue does
+not start a new run"
+@{bullet}"build_review_agent: run r1_sgab12cd of this request runs in
+<owner>; send the request there or again later"
+@{bullet}"build_review_agent: no stategraph instance 'stategraph' is
+running"
+@{bullet}"build_review_agent: no machine configured (machine: <machine
+id>)"
+@{bullet}"session s1 is busy with another request; send again when it is
+done"
+@{bullet}cancelled: "run r1_sgab12cd was cancelled in build"
+
+Every error carries the run id where there is one: the State Graph panel
+opens the run.
+
+@{h2}The status line
+
+While the run works: @{tt}build_review r1_sgab12cd: review@{utt} at each
+new state. At the end: "build_review r1_sgab12cd: succeeded in done, 42
+chars", "...: waits for approve, reject", "...: failed in failed: ...",
+"...: cancelled in build", "...: interrupted in build" -- and the lines of
+the run's own agents in between.
+
+@{h2}Tokens and cache
+
+The agent calls no model. Its answer reaches the caller as any agent's
+answer does, appended; nothing earlier changes. Each exchange is kept in
+the agent's session as a user and an assistant message.
+
+@{h2}Known gaps
+
+@{bullet}Called as a tool, the agent runs in a fresh session: its run's
+session does not sit below the caller's, and the SAM's nesting limit does
+not reach the run's agents.
+@{bullet}A @{tt}promote@{utt} key named @{tt}type@{utt}, @{tt}summary@{utt}
+or @{tt}run_id@{utt} overwrites that field of the final event.
+@endnode

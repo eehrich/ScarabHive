@@ -543,7 +543,6 @@ async def test_server_phase_filtering_blocks_wrong_phase_agent():
     server_config = MagicMock(spec=ToolServerConfig)
     server_config.max_sub_agents_per_session = 10
     server_config.max_nesting_depth = 3
-    server_config.max_message_history = 100
     server_config.max_sub_agents_per_type = 3
     server_config.default_wait_timeout = 3600
     server_config.allowed_agents = ["story_designer", "character_designer", "scene_writer"]
@@ -748,7 +747,6 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
     server_config = MagicMock(spec=ToolServerConfig)
     server_config.max_sub_agents_per_session = 10
     server_config.max_nesting_depth = 3
-    server_config.max_message_history = 100
     server_config.max_sub_agents_per_type = 3
     server_config.default_wait_timeout = 3600
     server_config.allowed_agents = ["story_designer", "character_designer", "scene_writer"]

@@ -37,7 +37,8 @@ no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
 | `stategraph` | `1` | yes | Format version: the integer `1`. Other values are refused, `true` and `1.0` too. |
 | `id` | name | yes | Machine id, unique across all roots; the file is `<id>.yaml`. |
 | `title`, `description` | string | | Shown in the panel and the catalog. |
-| `group` | string | | Its folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of where it comes from ("My machines" for the writable root, else the plugin that ships it). |
+| `notes` | name → text | | Free text for the reader: each note is drawn on the panel's canvas, where its place is kept in the layout. The engine never reads it. |
+| `group` | string | | Its folder in the panel's machine list, nested by `/` (`Reviews/nightly`). Empty: the folder of where it comes from ("My machines" for the first writable root, where new machines go, else the plugin that ships it). |
 | `python` | path | | Companion module, relative to this file (`\` reads as `/`; not an absolute path). |
 | `imports` | alias → ref | | Submachines: `./file.yaml` (relative; `\` reads as `/`, not an absolute path) or a machine id. |
 | `machines` | name → machine | | Machines inside this file (keys of a machine without `stategraph`, `id`, `python`, `imports`, `group`, `machines`, `agent`): `do: {machine: <name>}` runs one; they share the companion module and the imports, and run no other machine of the file. |
@@ -346,6 +347,8 @@ instance session of its own; there is no list of spawnable agents to add it to.
 | `parse_retries` | Feedback rounds for `schema`/`parse`/`check` failures (default 1, at most 5). |
 | `check` | A companion function (or `module:func`), `fn(out)` or `fn(sg, out)`, sync or async, run on the usable answer: raising `ValueError` sends its message back to the same instance as feedback (`parse_retries` rounds), then raises `check_failed`. Without `schema`/`parse` it sees the answer text. Its `sg.tool()` calls are keyed by the answer they check: a resume whose agent answers anew calls them anew. |
 | `vars` | Template vars for this call (templates), over the machine's (§11). |
+| `llm_profile` | The LLM profile this call runs on instead of the agent's own, as `--llm` does; the agent's chain stays its fallback. A literal, or `"{{ params.x }}"` with an `enum` -- every value must be a configured profile (SG007). Not together with `advanced`. |
+| `llm_params` | LLM params for this call -- `service_tier`, `thinking_level`, `max_tokens` ... -- over the agent's own for the model it runs on (`llm_profile`, or its advanced one with `advanced`), in the feedback rounds too; a fallback model the agent switches to after an error, and its advanced model when it escalates a stuck run, run with the agent's own params. A map of templates, or one template that renders to an object. Only `service_tier`, `thinking_level`, `thinking_budget`, `include_thoughts`, `max_tokens`, `temperature`, `provider_affinity_minutes`: which model and where the request goes stay the agent's (SG005, or `config` for one template). Example: `llm_params: {service_tier: "{{ params.service_tier }}"}`. |
 | `advanced` | `true` uses the agent's advanced model profile. |
 | `continue` | Template: an instance id (of this run, and of the agent `agent` names) to follow up instead of starting a new instance. The instance keeps its conversation, also across a resume. One call per instance at a time: a second concurrent `continue` of it fails with `config`. |
 
@@ -412,8 +415,9 @@ Following up the same instance:
 
 ### tool
 
-Calls a tool directly, without an LLM, through the plugin's runner agent. Only tools
-in the runner's allowlist can be called, and never stategraph's own tools.
+Calls a tool directly, without an LLM, through the runner agent of the machine's folder
+(`stategraph_catalog` with `machine_id` names it and its tools). Only tools in that
+runner's allowlist can be called, and never stategraph's own tools.
 
 | Key | Meaning |
 |---|---|
@@ -565,7 +569,9 @@ raises `call_failed`.
 A sync function runs in a worker thread (the plugin's own pool of 8), so terminate and
 `timeout` take effect while it works. A hung call holds its thread; once all 8 are held, the
 next sync call waits, and the wait counts against its `timeout`. A thread cannot be killed: on a timeout or terminate the activity ends at once and the
-thread's late result is dropped, but the thread runs on to its end. `sg.tool()` works only on
+thread's late result is dropped, but the thread runs on to its end -- unless the function checks `sg.cancelled`, a
+`threading.Event` set once nobody waits for its answer (`if sg.cancelled.wait(1.0): return` instead of
+`time.sleep(1.0)`). `sg.tool()` works only on
 the run's event loop: make a function that calls tools `async` (a sync one may only
 `return sg.tool(...)`, which is then awaited).
 
@@ -1026,7 +1032,7 @@ any state inside waits.
 | SG004 | error | Python does not compile, or is nested too deeply for Python's parser; unknown name; a name not bound at that place; `{{ }}` in a code field; `params.<name>` not declared; `out.value` (write `out["value"]`), `ctx.a.b` (write `ctx.a["b"]`), `ctx.get(...)` (namespaces have no dict methods); assigning or deleting a field of `params`, `run`, `resources`, `error`, `event`, `activity` or `ending`; a companion function that does not exist; `python:`/`imports:` outside the machine roots |
 | SG005 | error | Activity: unknown kind, several kind keys, invalid fields (including decide criteria shapes, per-question keys, a map `as` that shadows a scope name, `by` together with `profile`), a `schema` that is not a valid JSON schema, a computed `agent:`/`tool:`/`by:` other than `{{ params.<name> }}` with an enum |
 | SG006 | error | Submachine: unknown alias, import cycle, an absolute import path, missing required or unknown parameter |
-| SG007 | error | Configuration: an agent (`agent:`, `decide`'s `by:`) that is not configured, not enabled or not an agent, or one that reaches machines (the runner, a machine facade -- use it as a submachine --, an agent that may save, run or control machines, or start such an agent through a SAM), the runner may not call the tool, the tool is a SAM's (use an agent activity), the tool is stategraph's own, an unknown decision profile, a `vars_from` agent that is not configured |
+| SG007 | error | Configuration: an agent (`agent:`, `decide`'s `by:`) that is not configured, not enabled or not an agent, or one that reaches machines (the runner, a machine facade -- use it as a submachine --, an agent that may save, run or control machines, or start such an agent through a SAM), the runner may not call the tool, the tool is a SAM's (use an agent activity), the tool is stategraph's own, an unknown decision profile, a `vars_from` agent that is not configured; two runners claim the machine's folder; a file of the tree lies in a writable folder while the machine runs with another folder's runner (import it from the machine's own folder) |
 | SG101 | warning | A state is unreachable from `initial` |
 | SG102 | warning | No path leads from a state to a root final |
 | SG103 | warning | A loop without `max_visits` on any of its states |

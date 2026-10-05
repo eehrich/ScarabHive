@@ -1,0 +1,401 @@
+@database "sequential_thinking"
+@author "Enrico Ehrich"
+@$VER: sequential_thinking.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Sequential Thinking"
+@{h1}Sequential Thinking
+
+A scratchpad for step-by-step reasoning. Instead of thinking a hard problem
+through in one answer, an agent writes it down one thought per tool call:
+it numbers the steps, estimates how many it will need, goes back to correct
+an earlier thought, and tries an alternative on a branch of its own. The
+plugin keeps the chain and hands it back with every call; an optional hook
+puts the latest thoughts in front of the model before each LLM call. The
+chain lives in memory only -- it is working notes for a run, not a record.
+It has no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  The thinking tool  " link tool}
+  @{"  Revisions and branches  " link branches}
+  @{"  Summary and clearing  " link summary}
+  @{"  The session hook  " link hook}
+  @{"  Where the state lives  " link state}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration (@{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    sequential_thinking:
+      type: sequential_thinking
+      enabled: true
+      max_history_size: 100
+      session_ttl_seconds: 3600
+      enable_branching: true
+      enable_revisions: true
+      max_summary_thoughts: 10
+
+      # Hook config for inject_active_sessions
+      max_thoughts_in_prompt: 5
+      show_branch_info: true
+      format: markdown
+@{body}
+
+An agent sees the three tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+sequential_thinking/*"
+@{body}
+
+The hook is off until an agent switches it on; see
+@{" The session hook " link hook}. No extra packages.
+
+@{h2}Server settings
+
+The settings stand directly in the server entry, as above -- not under a
+@{tt}config:@{utt} block, where the plugin does not look. What is not set
+takes the default below. They are read once, when the plugin starts.
+
+@{table}
+Key | Default | Meaning
+max_history_size | 100 | thoughts kept per session; older ones are dropped
+session_ttl_seconds | 3600 | a session no thought was added to for this long is removed
+enable_branching | true | false: every call with a branch_id is refused
+enable_revisions | true | false: every revision is refused
+max_summary_thoughts | 10 | thoughts in each answer's history, and the summary's default
+max_thoughts_in_prompt | 5 | the hook: thoughts shown per session
+max_sessions_in_prompt | 1 | the hook: sessions shown
+show_branch_info | true | the hook: branch tags and the branch list
+show_quick_actions | true | the hook: the parameter hints and examples
+format | markdown | the hook: markdown, anything else is plain text
+@{body}
+
+The plugin stores nothing on disk; see
+@{" Where the state lives " link state}.
+@endnode
+
+@node tool "The thinking tool"
+@{h1}The thinking tool
+
+The main tool is named like the plugin instance (@{tt}sequential_thinking@{utt}
+in the default setup). Each call adds one thought to a session and returns
+the session's latest thoughts.
+
+@{h2}Which session a call writes to
+
+@{bullet}With @{tt}session_id@{utt}: that session. An ID the plugin does
+not know starts a new, empty session under that ID -- a typo starts a
+second chain instead of failing.
+@{bullet}Without it: the session this conversation used last. A
+conversation with none gets a new session with a random 10-character ID,
+returned in the answer.
+@{bullet}A sub-agent runs in a conversation of its own, so it starts its
+own session unless it is given an ID.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Default in code | Meaning
+thought | -- | the thought; empty or only blanks is refused
+thought_number | 1 | the caller's step number; must be 1 or more, otherwise only echoed back
+total_thoughts | 5 | the estimate of how many thoughts the problem needs; must be 1 or more
+next_thought_needed | true | echoed back and shown in the status line; changes nothing
+session_id | the conversation's last | see above
+is_revision, revises_thought | false, -- | correct an earlier thought; see @{" Revisions and branches " link branches}
+branch_from_thought, branch_id | -- | start or switch a branch; see @{" Revisions and branches " link branches}
+needs_more_thoughts | false | true with a total_thoughts that did not grow adds a warning
+idempotency_key | -- | a retry with the same key returns the first thought instead of adding one
+@{body}
+
+The camelCase spellings (@{tt}thoughtNumber@{utt}, @{tt}sessionId@{utt},
+...) are accepted too. A number must be whole: 3, 3.0 and "3" are taken,
+2.5 and true are refused. A flag takes true or false, also as text.
+The length limits in the schema (10000 characters for a thought, 100 for a
+branch name, 200 for a key) are not checked by the plugin.
+
+@{h2}Numbering and the estimate
+
+The plugin numbers the thoughts itself: a new thought gets the next number
+of the session, whatever @{tt}thought_number@{utt} says; a revision keeps
+the number of the thought it revises. The answer carries both,
+@{tt}current_thought_number@{utt} (the plugin's) and
+@{tt}client_thought_number@{utt} (the caller's).
+
+Every call sets the estimate to @{tt}total_thoughts@{utt}. An estimate
+below the number of thoughts so far is raised to that number, with a
+warning. Revisions do not count: they repeat a step, they do not add one.
+
+@{h2}Answers
+
+@{table}
+Field | Meaning
+status | success or error
+session_id | the session written to
+event_id | the new entry's unique ID
+current_thought_number, client_thought_number | see above
+recorded_thoughts_count | thoughts the session holds now (at most max_history_size)
+total_thoughts_estimate | the estimate after this call
+next_thought_needed | as sent
+progress | "Thought 7/12": the thoughts so far, revisions not counted, and the estimate
+branch | the session's current branch
+thought_history | the last max_summary_thoughts thoughts: event_id, number, content cut at 200 characters, branch, is_revision, revises_thought, timestamp
+branch_summary | per branch: branched_from, thoughts_count, active, created_at, parent; left out when branching is off
+warnings | only when there is one: the raised estimate, needs_more_thoughts without a larger estimate, memory use over 80 % of max_history_size
+@{body}
+
+A refused call answers @{tt}{"status": "error", "error": "..."}@{utt} and
+changes nothing: it creates no session and does not keep one alive. The
+texts:
+
+@{table}
+error | When
+thought_number must be >= 1 | thought_number below 1
+total_thoughts must be >= 1 | total_thoughts below 1
+thought content cannot be empty | no text in thought
+revises_thought is required when is_revision=true | a revision without a target
+revises_thought must be >= 1 | a target below 1
+Thought #N not found in session | a revision of a number the session does not hold
+Revisions are disabled | enable_revisions is false
+Branching is disabled | enable_branching is false and branch_id is set
+Branch 'x' not found | a switch to a branch that does not exist
+Thought #N not found | a new branch from a number the session does not hold
+x must be a whole number, got ... | a number parameter that is not whole
+x must be true or false, got ... | a flag that is neither
+@{body}
+
+Anything else that goes wrong answers the same way with the exception
+text.
+
+@{h2}Retries
+
+A call with an @{tt}idempotency_key@{utt} the plugin has seen, whose
+thought still exists, adds nothing. It answers with that thought's session,
+number and event_id, an empty @{tt}thought_history@{utt} and the warning
+"Idempotent request - returned cached result". The key is looked up in all
+sessions of the process, not only this conversation's.
+
+@{h2}An example
+
+@{code json}
+{"thought": "The failing test only fails on Windows. Paths?", "thought_number": 1, "total_thoughts": 4, "next_thought_needed": true}
+{"session_id": "k3x9q2m7ab", "thought": "The fixture joins with '/'.", "thought_number": 2, "total_thoughts": 4, "next_thought_needed": true}
+{"session_id": "k3x9q2m7ab", "thought": "Not the fixture: pathlib is used there.", "thought_number": 2, "total_thoughts": 4, "next_thought_needed": true, "is_revision": true, "revises_thought": 2}
+@{body}
+@endnode
+
+@node branches "Revisions and branches"
+@{h1}Revisions and branches
+
+@{h2}Revisions
+
+@{tt}is_revision: true@{utt} with @{tt}revises_thought: N@{utt} writes a
+new entry with number N; the old one stays. The target must be a number
+the session still holds (after @{tt}max_history_size@{utt} dropped the
+oldest, an old number is gone). The revision goes to the branch of the
+latest version of thought N, not to the current branch, and carries the
+earlier versions along: the summary shows their count as
+@{tt}revision_count@{utt}.
+
+@{h2}Branches
+
+Every session starts on the branch @{tt}main@{utt}. The current branch is
+kept between calls: new thoughts go there until the agent switches.
+
+@{table}
+Sent | Does
+branch_from_thought and a new branch_id | creates the branch from thought N and makes it current; its parent is the branch thought N is on
+branch_from_thought and an existing branch_id | switches to that branch, without a word
+branch_id alone | switches; an unknown name is refused
+branch_from_thought alone | ignored
+@{body}
+
+To go back, send @{tt}branch_id: "main"@{utt}. The numbering is shared by
+all branches of a session: the thought after #4 on main is #5, on
+whichever branch it lands. A branch is never closed; @{tt}active@{utt} is
+always true.
+@endnode
+
+@node summary "Summary and clearing"
+@{h1}Summary and clearing
+
+@{h2}sequential_thinking_get_summary
+
+The whole chain of one session, with the thoughts in full.
+
+@{table}
+Parameter | Default in code | Meaning
+session_id | -- | required; missing: "session_id is required"
+max_thoughts | max_summary_thoughts (10) | the latest thoughts to return; 0 or less returns all
+include_branches | true | add the branch tree
+@{body}
+
+The answer: @{tt}status@{utt}, @{tt}session_id@{utt},
+@{tt}total_thoughts@{utt} (thoughts held), @{tt}current_branch@{utt},
+@{tt}thoughts@{utt} (event_id, number, content, timestamp, branch,
+is_revision, revises_thought, revision_count), @{tt}created_at@{utt},
+@{tt}last_accessed@{utt} and @{tt}branches@{utt}. An unknown ID answers
+"Session X not found". Reading a summary does not keep a session alive;
+only a call that adds a thought does.
+
+@{h2}sequential_thinking_clear_history
+
+@{table}
+Parameter | Meaning
+session_id | the session to remove; unknown: "Session X not found"
+@{body}
+
+Without @{tt}session_id@{utt} it removes every session of the calling
+conversation; called outside a conversation (directly, or from the
+command line), only the sessions no conversation uses. The answer: @{tt}status@{utt}, @{tt}cleared_sessions@{utt}
+and a @{tt}message@{utt} ("Cleared session k3x9q2m7ab (6 thoughts)").
+@endnode
+
+@node hook "The session hook"
+@{h1}The session hook
+
+@{tt}inject_active_sessions@{utt} runs before each LLM call and shows the
+model where its reasoning stands, so it can go on without asking for a
+summary. It is off until an agent switches it on.
+
+@{h2}What it appends
+
+A message at the end of the history, from the run (role
+@{tt}developer@{utt}, marked with the instance name in @{tt}injected_by@{utt}, so two
+instances do not replace each other's block):
+
+@{bullet}While the conversation has no session: a short reminder that the
+tool exists, with an example call and the parameter groups.
+@{bullet}With one session: its ID, the progress (thoughts so far / estimate),
+the last @{tt}max_thoughts_in_prompt@{utt} thoughts cut at 150 characters,
+the branches, and the hints and examples.
+@{bullet}With more (@{tt}max_sessions_in_prompt@{utt} above 1): the most
+recently used first, the last 3 thoughts each (fewer when
+max_thoughts_in_prompt is lower) cut at 100 characters.
+
+@{code markdown}
+## Active Sequential Thinking Session
+
+**Session ID**: `k3x9q2m7ab`
+**Progress**: 2/4 thoughts
+
+**Recent thoughts:**
+- **Thought #1**: The failing test only fails on Windows. Paths?
+- **Thought #2**: The fixture joins with '/'.
+- **Thought #2** (revises #2): Not the fixture: pathlib is used there.
+@{body}
+
+The message is added only when it differs from the last one the hook
+added: a step that did not touch the tool adds nothing. When compaction
+removed the last one, it comes back. Without messages or without a session
+the hook does nothing; if it fails, the error is logged and the call goes
+on without it. It has 5 seconds.
+
+@{h2}Switching it on
+
+In the agent's YAML; its settings go in the same entry:
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      sequential_thinking.inject_active_sessions:
+        enabled: true
+        max_thoughts_in_prompt: 3
+        show_quick_actions: false
+@{body}
+
+@{h2}Settings
+
+@{table}
+Key | Default | Meaning
+max_thoughts_in_prompt | 5 | thoughts per session; 0 or less: all, with several sessions 3
+max_sessions_in_prompt | 1 | sessions shown, most recently used first
+show_branch_info | true | the [branch] tags and the list of branches
+show_quick_actions | true | the parameter hints and three example calls
+format | markdown | anything else: plain lines with shorter thoughts and no hints
+@{body}
+
+A key in the agent's override wins; otherwise the key in the plugin's
+server entry; otherwise the default above. The range in the schema (1 to
+20, 1 to 5) is not enforced.
+@endnode
+
+@node state "Where the state lives"
+@{h1}Where the state lives
+
+Everything is held in the memory of the server process that runs the
+plugin, and nothing else.
+
+@{bullet}@{b}Per session@{ub}: a thinking session belongs to the
+conversation (the chat session) that created or used it; the hook and a
+call without @{tt}session_id@{utt} find it that way. A conversation can
+have several.
+@{bullet}@{b}Per process@{ub}: the store is shared by every agent and user
+the process serves. The API and a command-line run are different processes
+with different stores; a woken session runs in a new process and finds
+nothing of the old one.
+@{bullet}@{b}Restart@{ub}: nothing survives. A restart, a reload of the
+plugin or a new process starts empty.
+
+@{h2}How big it can grow
+
+@{bullet}A session holds at most @{tt}max_history_size@{utt} (100)
+thoughts; beyond it the oldest are dropped, and with them the numbers a
+revision or a new branch could name.
+@{bullet}Each thought keeps its text in full, and a revision the texts of
+the versions before it.
+@{bullet}There is no limit on the number of sessions. A session is removed
+when no thought was added for @{tt}session_ttl_seconds@{utt} (one hour).
+The check runs at the start of each call of the thinking tool -- with no
+calls, an expired session stays in memory until the next one.
+@{bullet}Idempotency keys and the conversation lookup are dropped with the
+sessions and thoughts they point to.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The tool descriptions come from the plugin's @{tt}schema.yaml@{utt}. The
+main tool tells the model that @{tt}total_thoughts@{utt} is a fixed upfront
+estimate, not the current step. Refused calls answer with the error texts
+in @{" The thinking tool " link tool}; the chat's status line shows
+"Thought #3 added (3/4). Continue reasoning..." or "... ✓ Complete" when
+@{tt}next_thought_needed@{utt} is false, and "Revising thought 2 with new
+insights" or "Creating branch 'alt' from thought 2" while it works.
+
+@{h2}Tokens and cache
+
+Every answer carries the last @{tt}max_summary_thoughts@{utt} thoughts
+(200 characters each) and, with branching on, the branch tree -- so each
+call repeats part of the chain. Tool answers are appended like any other;
+nothing earlier changes. The hook appends its block at the end of the
+history and only when it changed; it never rewrites the system prompt or
+an earlier message, so the cached prompt in front of it stays intact.
+Every changed block stays in the history, though: a long chain with the
+hook on grows the conversation by one block per thought.
+
+@{h2}Known gaps
+
+@{bullet}A session ID is all it takes: any conversation that has one can
+write to, read or clear that session, and an idempotency key matches a
+thought of any conversation.
+@{bullet}The server settings are read once; a change takes effect after a
+restart.
+@endnode

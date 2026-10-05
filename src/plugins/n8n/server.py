@@ -34,9 +34,10 @@ from agent_system.plugins.cache import PluginCache
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from .client import N8nClient, N8nError, N8nNoAnswer, N8nNotFound, mcp_error
-from .validate import (DEFAULT_BLOCKED_NODE_TYPES, DEFAULT_REVIEW_NODE_TYPES, blocking_save_settings, check_workflow, classify_node_validation,
-                       classify_workflow_validation, code_precheck, format_version, normalize_type,
-                       normalized, node_type_errors, pin_plan, webhook_path_problem)
+from .validate import (DEFAULT_BLOCKED_NODE_TYPES, DEFAULT_REVIEW_NODE_TYPES, blocking_save_settings, callee_ids,
+                       check_workflow, classify_node_validation, classify_workflow_validation, code_precheck,
+                       finding, format_version, normalize_type, normalized, node_type_errors, pin_plan,
+                       webhook_path_problem)
 from .watch import END_STATES, wait_for_end
 
 if TYPE_CHECKING:
@@ -69,6 +70,8 @@ _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,80}")
 # successful runs; only the test runs among them are read one by one.
 TESTED_SCAN = 250
 TESTED_LOOKBACK = 20
+# The workflows a published run can start (sub-workflows, error workflow) are checked up to this many.
+MAX_CALLEES = 20
 # Pause between looks for the execution a webhook call started.
 LOOKUP_PAUSE_S = 1.0
 SDK_SECTIONS = ("patterns", "patterns_detailed", "expressions", "functions", "rules",
@@ -223,6 +226,10 @@ class N8nServer(SchemaBasedToolServer):
         so the checks after it need no second GET."""
         if not isinstance(workflow_id, str) or not workflow_id.strip():
             raise N8nError("workflow_id is required")
+        if not _WORKFLOW_ID.fullmatch(workflow_id):
+            # The id becomes a path the API key is sent to: "../../webhook/x"
+            # would call another workflow's webhook with the key in its headers.
+            raise N8nError(f"workflow_id {_short(workflow_id)!r}: letters and digits only, as n8n gives them")
         try:
             workflow = await self._n8n().api_get(f"/workflows/{workflow_id}")
         except N8nNotFound:
@@ -237,6 +244,45 @@ class N8nServer(SchemaBasedToolServer):
             raise N8nError(f"workflow {workflow_id} is not exposed to the n8n MCP; "
                            f"exposing it is a decision for a human in the editor")
         return workflow
+
+    async def _callee_findings(self, workflow_id: str, nodes: Any, settings: Any) -> list[dict]:
+        """Block-list findings in the workflows a run can start, transitively.
+        A test pins the call and never runs the callee (M-MCP-53), so without
+        this a blocked node in a sub-workflow went live with its caller. The
+        caller's own nodes are checked by the same policy: a version a person
+        published in the editor never passed publish."""
+        policy = ("BLOCKED_NODE", "EXECUTE_WORKFLOW_SOURCE")
+        found = [f for f in check_workflow({"nodes": nodes if isinstance(nodes, list) else []},
+                                           blocked=self.blocked, review=frozenset())
+                 if f["code"] in policy]
+        todo, seen = callee_ids(nodes, settings), {str(workflow_id)}
+        while todo:
+            callee_id = todo.pop()
+            if callee_id in seen:
+                continue
+            seen.add(callee_id)
+            if len(seen) > MAX_CALLEES:
+                raise N8nError(f"workflow {workflow_id} starts more than {MAX_CALLEES - 1} other workflows; "
+                               f"too many to check")
+            if not _WORKFLOW_ID.fullmatch(callee_id):
+                found.append(finding("SUB_WORKFLOW_UNCHECKED", "error",
+                                     f"sub-workflow id {_short(callee_id)!r} is no n8n workflow id",
+                                     fix_hint="reference a stored workflow by its id"))
+                continue
+            try:
+                callee = await self._n8n().api_get(f"/workflows/{callee_id}")
+            except N8nNotFound:
+                found.append(finding("SUB_WORKFLOW_UNCHECKED", "error", f"sub-workflow {callee_id} does not exist",
+                                     fix_hint="reference a stored workflow by its id"))
+                continue
+            active = callee.get("activeVersion") if isinstance(callee.get("activeVersion"), dict) else {}
+            callee_nodes = [n for n in (callee.get("nodes") or []) + (active.get("nodes") or [])
+                            if isinstance(n, dict)]
+            for item in check_workflow({"nodes": callee_nodes}, blocked=self.blocked, review=frozenset()):
+                if item["code"] in policy:
+                    found.append({**item, "message": f"in sub-workflow {callee_id}: {item['message']}"})
+            todo.extend(callee_ids(callee_nodes, callee.get("settings")))
+        return found
 
     async def _credential_types(self) -> dict[str, str]:
         result = await self._mcp("list_credentials", {"limit": 200})
@@ -617,7 +663,7 @@ class N8nServer(SchemaBasedToolServer):
             await status.error(f"{workflow_id}: execution {execution_id} was not stored -- not proven")
             return {"status": "error", "error": f"execution {execution_id} was not stored, so the test "
                                                 f"proves nothing", "execution_id": execution_id}
-        nodes = _summarize_execution(execution, plan.runs)
+        nodes, samples_cut = _summarize_execution(execution, plan.runs)
         tested = run_status == "success"
         await status.end(f"{workflow_id}: execution {execution_id} {run_status}, "
                          f"{sum(n['run'] == 'live' for n in nodes)} live / "
@@ -626,7 +672,8 @@ class N8nServer(SchemaBasedToolServer):
                 "execution_status": run_status,
                 "error": _untrusted(answer.get("error")) if answer.get("error") else None,
                 "nodes": _untrusted(nodes), "warnings": plan.warnings,
-                "editor_url": self._editor_url(str(workflow_id))}
+                "editor_url": self._editor_url(str(workflow_id)),
+                **({"samples_truncated": True} if samples_cut else {})}
 
     async def get_execution(self, params: dict[str, Any]) -> dict[str, Any]:
         status = params.get("_status") or _NoStatus()
@@ -688,6 +735,8 @@ class N8nServer(SchemaBasedToolServer):
         try:
             workflow = await self._require_managed(workflow_id)
             findings = await self._check_stored(workflow)
+            findings += [f for f in await self._callee_findings(workflow_id, workflow.get("nodes"),
+                                                                workflow.get("settings")) if f not in findings]
             blocking = [f for f in findings if f["level"] == "error"]
             if blocking:
                 await status.error(f"{workflow_id}: not published, {len(blocking)} blocking finding(s)")
@@ -792,6 +841,13 @@ class N8nServer(SchemaBasedToolServer):
         try:
             workflow = await self._require_managed(workflow_id)
             hook, method = _trigger_target(workflow, params.get("webhook_node"), params.get("method"))
+            # A sub-workflow may have changed since the publish checked it.
+            callees = await self._callee_findings(workflow_id, workflow["activeVersion"].get("nodes"),
+                                                  workflow.get("settings"))
+            if callees:
+                await status.error(f"{workflow_id}: not triggered, {len(callees)} blocking finding(s)")
+                return {"status": "error", "error": "the published workflow or one it starts has blocking findings",
+                        "findings": callees}
             if method in ("GET", "HEAD"):
                 if not all(isinstance(v, (str, int, float, bool)) for v in payload.values()):
                     return await self._fail(status, f"a {method} webhook takes the payload as query parameters: "
@@ -1146,11 +1202,14 @@ def _credential_list(payload: Any) -> list[dict]:
     return [c for c in items if isinstance(c, dict) and c.get("id")] if isinstance(items, list) else []
 
 
-def _summarize_execution(execution: dict, runs: dict) -> list[dict]:
-    """Per node: pinned by us / ran live / not reached, from the stored runData.
-    A subnode counts as live when it ran inside its root, else as not reached."""
+def _summarize_execution(execution: dict, runs: dict) -> tuple[list[dict], bool]:
+    """Per node: pinned by us / ran live / not reached, from the stored runData,
+    and whether a sample was cut or left out. A subnode counts as live when it
+    ran inside its root, else as not reached."""
     run_data = ((execution.get("data") or {}).get("resultData") or {}).get("runData") or {}
     summary = []
+    budget = CAP_EXECUTION      # samples in all: a workflow of many nodes must not flood the context
+    cut = False
     for name, plan in runs.items():
         entry: dict = {"name": name, "run": plan["run"], "reason": plan["reason"]}
         runs_of_node = run_data.get(name) or []
@@ -1169,9 +1228,13 @@ def _summarize_execution(execution: dict, runs: dict) -> list[dict]:
             entry["items_per_output"] = [len(o or []) for o in outputs]
         items = next((o for o in outputs if o), [])
         if items:
-            entry["sample"] = json.dumps(items[0].get("json", items[0]), ensure_ascii=False,
-                                         default=str)[:SAMPLE_CHARS]
+            sample = json.dumps(items[0].get("json", items[0]), ensure_ascii=False, default=str)
+            limit = max(0, min(SAMPLE_CHARS, budget))
+            cut = cut or len(sample) > limit
+            if limit:
+                entry["sample"] = sample[:limit]
+                budget -= len(entry["sample"])
         if first.get("error"):
             entry["error"] = str((first["error"] or {}).get("message", first["error"]))[:500]
         summary.append(entry)
-    return summary
+    return summary, cut

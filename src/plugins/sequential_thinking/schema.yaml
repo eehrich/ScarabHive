@@ -63,14 +63,14 @@ tools:
           thought_number:
             type: integer
             minimum: 1
-            description: "Current step (1, 2, 3, ...) - increment each call"
+            description: "Step number (1, 2, 3, ...)"
           total_thoughts:
             type: integer
             minimum: 1
             description: "FIXED upfront estimate (e.g., 15). NOT the current step! Keep constant unless needs_more_thoughts=true."
           session_id:
             type: string
-            description: "Session ID (auto-generated if omitted)"
+            description: "Session ID (omit: latest or new)"
           is_revision:
             type: boolean
             default: false
@@ -101,13 +101,13 @@ tools:
   - type: function
     function:
       name: "{{ name }}_clear_history"
-      description: "Clear session(s). Omit session_id for all."
+      description: "Clear a session; omit session_id: this conversation's."
       parameters:
         type: object
         properties:
           session_id:
             type: string
-            description: "Session to clear (omit for all)"
+            description: "Session to clear"
         additionalProperties: false
 
   - type: function
@@ -124,7 +124,7 @@ tools:
             type: integer
             minimum: 1
             maximum: {{ max_history_size }}
-            default: 10
+            default: {{ max_summary_thoughts }}
             description: "Thoughts in summary"
           include_branches:
             type: boolean

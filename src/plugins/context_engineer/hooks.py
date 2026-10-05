@@ -248,7 +248,9 @@ MAX_LIST_LIMIT = 50
 #: Reference shapes, in the order they are tested. Each store owns a distinct
 #: prefix, so dispatch is a lookup rather than the heuristic `recall` used.
 _REF_PATTERNS = (
-    ("tool_result", re.compile(r"\A\$?(TR_[A-Za-z0-9_]+|call_[A-Za-z0-9_]+)\Z")),
+    # A raw tool_call id works too: call_… (OpenAI, Gemini) and toolu_…
+    # (Anthropic), whose runs were told their id was "not a known reference".
+    ("tool_result", re.compile(r"\A\$?(TR_[A-Za-z0-9_]+|(?:call|toolu)_[A-Za-z0-9_]+)\Z")),
     ("message", re.compile(r"\Aarch_[A-Za-z0-9]+\Z")),
     # The `content_hash` the tool_result_ref placeholder carries. Without this
     # the field was advertised in every placeholder — and resent on every turn
@@ -814,15 +816,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     vector_store=shared_store,
                 )
             
-                # Initialize media store for inline media preservation
-                media_store = None
-                if self.store_media_before_compaction:
-                    media_store = MediaStore(
-                        storage_path=session_path / "media",
-                        ttl_seconds=self.media_store_ttl_seconds,
-                        max_files=self.media_store_max_files
-                    )
-            
                 # Per-agent hook overrides relax fields like `tool_result_keep_last`
                 # for media-heavy agents (cover_artist, repeated comfyui image
                 # loads) without touching the plugin-wide default for everyone else.
@@ -832,6 +825,17 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 # them (store_media_before_compaction, media_store_ttl_seconds,
                 # media_store_max_files) were not even wired to `_o`.
                 compaction_config = self._compaction_config(ov)
+
+                # Initialize media store for inline media preservation. From the
+                # session's config, not the plugin's: built from the plugin
+                # attributes, an agent's media_store_* overrides reached nothing.
+                media_store = None
+                if compaction_config.store_media_before_compaction:
+                    media_store = MediaStore(
+                        storage_path=session_path / "media",
+                        ttl_seconds=compaction_config.media_store_ttl_seconds,
+                        max_files=compaction_config.media_store_max_files
+                    )
             
                 logger.info(
                     f"[ContextEngineer] Created CompactionConfig for session {session_id}: "
@@ -997,10 +1001,17 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Check if always-compact-media is enabled (must run even below threshold)
             always_compact_media_enabled = cfg.always_compact_media_keep_last > 0
 
+            # Over the message limit Pre-Layer P is due whatever the tokens. Not
+            # asked here, the limit held only on calls another reason let in --
+            # every call with always_compact_media on, none without it.
+            over_message_limit = 0 < cfg.max_messages < len(messages_as_dicts)
+
             # Skip only if: not manual, below token threshold, below byte limit,
-            # AND no event-based media compaction, AND always_compact_media disabled
+            # AND no event-based media compaction, AND always_compact_media disabled,
+            # AND within the message limit
             below_gate = (not is_manual and gate_tokens < cfg.layer1_threshold and not bytes_exceeded
-                          and not event_media_compaction_needed and not always_compact_media_enabled)
+                          and not event_media_compaction_needed and not always_compact_media_enabled
+                          and not over_message_limit)
             if below_gate and not arrivals:
                 logger.debug(
                     f"[ContextEngineer] Session {session_id}: "
@@ -1051,6 +1062,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     context=context,
                     metadata={
                         "reason": "hysteresis",
+                        "current_tokens": current_tokens,
                         "tokens_since_last": growth,
                         "min_tokens_between_compactions": cfg.min_tokens_between_compactions,
                     }
@@ -1131,7 +1143,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     status_bus,
                     "context_engineer",
                     status_id,
-                    start_msg=f"Engineering context: {current_tokens} tokens (target: {self.target_tokens}){' [MANUAL]' if is_manual else ''}",
+                    start_msg=f"Engineering context: {current_tokens} tokens (target: {cfg.target_tokens}){' [MANUAL]' if is_manual else ''}",
                 ) as scope:
                     await asyncio.sleep(0.01)  # Allow START message to be delivered
                     # The end line is what survives in the WebUI (it replaces
@@ -1309,7 +1321,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 llm_response=context.llm_response,
                 tool_call=context.tool_call,
                 tool_result=context.tool_result,
-                output=context.output,
                 metadata=context.metadata,
                 step=context.step,
                 llm=context.llm,
@@ -1555,13 +1566,14 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             session_id: Session ID
             
         Returns:
-            Result with fact ID
+            success with the category and importance the fact is kept under,
+            or success False with the error
         """
         components = self._get_session_components(session_id)
         core_memory: CoreMemory = components["core_memory"]
         
-        fact_id = await core_memory.add_fact(fact, category=category, importance=importance)
-        if not fact_id:
+        stored = await core_memory.add_fact(fact, category=category, importance=importance)
+        if not stored:
             # add_fact refuses rather than push out more important facts. Said
             # as success, the agent believed a fact was kept that is nowhere.
             too_large = not core_memory.fits_alone(fact, category)
@@ -1575,11 +1587,28 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "total_facts": len(core_memory.facts),
             }
 
+        # The fact as core memory keeps it, not as it was asked for: an unknown
+        # category is filed under "facts", the importance is clamped to 0..1,
+        # and a fact stored before keeps its category and the higher importance.
+        # Echoing the request told the agent a category nothing holds. (A
+        # "fact_id" used to be here: add_fact's True -- facts have no ids.)
+        needle = fact.strip().lower()
+        kept = next((f for f in core_memory.facts if f.content.strip().lower() == needle), None)
+        if kept is None:
+            # A concurrent store_fact of the session pushed it out again while
+            # this one saved (add_fact awaits the save on a thread).
+            return {
+                "success": False,
+                "error": ("The fact was stored and pushed out again at once by a more "
+                          "important one; it is not kept. Use a higher importance if it "
+                          "matters more."),
+                "importance": importance,
+                "total_facts": len(core_memory.facts),
+            }
         return {
             "success": True,
-            "fact_id": fact_id,
-            "category": category,
-            "importance": importance,
+            "category": kept.category,
+            "importance": kept.importance,
             "total_facts": len(core_memory.facts)
         }
     

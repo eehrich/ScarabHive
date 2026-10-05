@@ -362,7 +362,7 @@ def signed_in(app, monkeypatch):
 
 
 def test_with_authentication_a_panel_is_listed_for_the_roles_its_route_admits(app, registered, signed_in):
-    """The plugin route security in config.yaml decides, not the schema: admin-only routes, admin-only panel."""
+    """The plugin route security in config/security.yaml decides, not the schema: admin-only routes, admin-only panel."""
     app.state.config = auth(True, default_min_role="user", plugin_overrides={"users": {"min_role": "admin"}})
     web_adapter.init_plugin_security(app.state.config.auth)
     registered("users", {"panel": spec(endpoint="/plugins/users/", contexts={})})

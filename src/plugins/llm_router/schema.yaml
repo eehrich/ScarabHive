@@ -2,7 +2,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_chat"
-      description: "Consultant-style chat agent: routes requests to LLM profiles/providers. Acts like an expert consultant—asks clarifying questions, frames tasks, provides advice, and selects specialized profiles as needed."
+      description: "Send messages to another LLM profile and return its answer (one call, no tools)."
       parameters:
         type: object
         properties:
@@ -28,14 +28,8 @@ tools:
   - type: function
     function:
       name: "{{ name }}_list_profiles"
-      description: List all available LLM profiles with their detailed configurations.
+      description: List the LLM profiles with their model and description.
       parameters:
         type: object
         properties: {}
         additionalProperties: false
-
-config:
-  model_ref: unknown
-  description: No description available
-  max_steps: unlimited
-  provider: null

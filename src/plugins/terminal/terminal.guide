@@ -1,0 +1,557 @@
+@database "terminal"
+@author "Enrico Ehrich"
+@$VER: terminal.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Terminal"
+@{h1}Terminal
+
+The terminal gives an agent a shell: it runs a command and reads what came
+out, waits for it or lets it run in the background, reads the output of
+what runs there later and ends it. Every command runs in a fresh
+@{tt}bash -c@{utt} -- Git Bash on Windows. A plain terminal runs whatever
+the agent asks for, with the rights and the environment of the server;
+a whitelist narrows it to named commands, and confinement keeps its
+writes inside one directory on Linux and macOS. Read
+@{" What an agent can run " link security} before you give an agent one.
+
+@{code}
+For users
+  @{"  What an agent can run  " link security}
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  Running a command  " link execute}
+  @{"  Background processes  " link background}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node execute "Running a command"
+@{h1}Running a command
+
+The plugin gives an agent three tools, named after the instance:
+@{tt}terminal_execute@{utt}, @{tt}terminal_get_output@{utt} and
+@{tt}terminal_kill_process@{utt} in the default setup. @{tt}execute@{utt}
+runs a command; with @{tt}background: true@{utt} it starts it and answers at
+once (see @{" Background processes " link background}).
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+command | always | the shell line, run as @{tt}bash -c <command>@{utt}; required
+background | always | true: start the command and answer at once; default false
+timeout | foreground | seconds, from 1 to max_timeout_seconds (3600); left out or null: default_timeout_seconds (300)
+cwd | both | the directory to run in; a relative path is taken from the start directory. Not offered on a whitelisted terminal
+env_vars | both | variables laid over the server's environment. Not offered on a whitelisted terminal
+process_id | background | a name of your own for the process, instead of @{tt}bg_proc_<8 hex digits>@{utt}
+wake | background | wake this session when the process ends
+@{body}
+
+Each call is a new shell: a @{tt}cd@{utt} or an @{tt}export@{utt} does not
+carry over to the next command. The start directory is
+@{tt}platform.initial_cwd@{utt}, or the directory the server was started
+from (see @{" Setting it up " link setup}). A directory that does not
+exist fails the call with the system's error.
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+status | success when the command ran -- also with a non-zero exit code; error when it did not run or timed out; cancelled when the run was stopped
+exit_code | the shell's exit code
+stdout | what the command wrote, stdout and stderr merged in the order they came
+stderr | always empty in the foreground (merged into stdout)
+truncated | true when the output was longer than max_output_size_kb
+execution_time | seconds
+cwd, command | where and what ran
+@{body}
+
+Output is capped at @{tt}max_output_size_kb@{utt} (60 KB): the first 60 KB
+are kept, the rest is read and dropped, and the text ends with
+"... [OUTPUT TRUNCATED - exceeded size limit. Use filters like 'head',
+'tail', 'grep' to limit output]".
+
+A timeout kills the command and everything it started, and answers
+@{tt}error_type: TimeoutError@{utt} ("Command timeout after 30s"), with
+the output the command had written until then in @{tt}stdout@{utt} (and
+@{tt}truncated@{utt} as above). A Stop or Ctrl+C that cancels the agent's
+run ends the command the same way, at once, and the call answers
+@{tt}status: cancelled@{utt} (@{tt}error_type: Cancelled@{utt}), with the
+output so far as well. Should the framework force-cancel the call instead
+(after the agent's @{tt}timeouts.tool_cleanup_timeout@{utt}, 30 s by
+default), the command is killed with it, and there is no answer to carry
+the output.
+
+"Everything it started" has two exceptions: on Linux and macOS a process
+that leaves the command's process group (@{tt}setsid@{utt}, a daemon that
+detaches itself), and on Windows a child the shell starts in the instant
+before it is put into its job object.
+
+@{h2}Errors
+
+@{table}
+error_type | When
+SecurityError | the command is refused: a built-in or configured pattern, the whitelist, or a second command where chains are off
+ConfiguredOnly | cwd or env_vars sent to a whitelisted terminal; nothing is started
+InvalidTimeout | timeout is no number, or less than 1
+TimeoutExceeded | timeout above max_timeout_seconds
+TimeoutError | the command ran longer than its timeout
+Cancelled | the agent's run was stopped while the command ran (status: cancelled)
+SandboxUnavailable | a confinement mode is set and this host cannot enforce it
+@{body}
+
+A refused call starts nothing. Any other failure to start (a missing
+directory, a bad environment value) answers @{tt}status: error@{utt} with
+the exception's name as @{tt}error_type@{utt}.
+
+@{h2}An example
+
+@{code json}
+{"command": "git status --short", "timeout": 30}
+{"command": "pytest -q tests/unit", "cwd": "backend", "timeout": 600}
+{"command": "npm run dev", "background": true, "process_id": "dev"}
+@{body}
+@endnode
+
+@node background "Background processes"
+@{h1}Background processes
+
+@{tt}execute@{utt} with @{tt}background: true@{utt} starts the command and
+answers at once with @{tt}process_id@{utt}, @{tt}pid@{utt},
+@{tt}command@{utt}, @{tt}cwd@{utt} and @{tt}started_at@{utt}. No timeout
+applies: the process runs until it ends, is killed, or the server stops.
+Stopping the plugin kills every background process whose shell still runs,
+with what it started. A process whose shell has already ended is skipped,
+so what it left running (@{tt}nohup ... &@{utt}, a detached daemon)
+survives the server.
+
+@{h2}Limits
+
+@{bullet}At most @{tt}max_concurrent_background@{utt} run at once per
+session (10 unless the server entry says otherwise; the coder's
+@{tt}coder_shell@{utt} has 5). Another session's processes do not count:
+they are invisible to this one and it could not end them. One more is
+refused with @{tt}TooManyProcesses@{utt}, naming how many are this
+session's, which @{tt}kill_process@{utt} can end.
+@{bullet}Over all sessions together, one terminal instance runs at most four
+times that limit; past it every session is refused, with a message that
+says how many of the running ones are its own.
+@{bullet}Each stream keeps its last 1000 lines. A line longer than 64 KiB
+is kept in pieces.
+@{bullet}A finished process stays in memory, with its output, until the
+server stops or its id is used again.
+
+@{h2}Reading the output: get_output
+
+@{table}
+Parameter | Meaning
+process_id | the id execute returned
+stream | stdout, stderr or both (default); anything else answers InvalidStream
+clear_buffer | true: empty the returned streams' buffers, so the next call returns only newer output
+@{body}
+
+The answer has @{tt}stdout@{utt} and @{tt}stderr@{utt} apart (unlike the
+foreground), @{tt}is_running@{utt}, @{tt}exit_code@{utt} (null while it
+runs), @{tt}started_at@{utt} and @{tt}finished_at@{utt}. Each stream
+returns at most its last @{tt}max_output_size_kb@{utt} (60 K characters);
+@{tt}truncated: true@{utt} says the start was cut. With
+@{tt}clear_buffer@{utt} the cut part is cleared too.
+
+@{h2}Ending it: kill_process
+
+@{tt}process_id@{utt}, and @{tt}force@{utt} (default false). On Linux and
+macOS the process group -- the shell and everything it started -- gets
+SIGTERM; if the shell and its output pipes are not done 5 seconds later,
+the group gets SIGKILL (the answer then says "SIGKILL (forced)"). The wait
+is on the shell: a child that ignores SIGTERM and writes elsewhere than
+the pipes (@{tt}> file@{utt}) lets the shell end in time and gets no
+SIGKILL. @{tt}force: true@{utt} sends SIGKILL to the group at once. On
+Windows both end the process and everything it started at once. The answer:
+@{tt}killed: true@{utt}, @{tt}signal@{utt}, @{tt}exit_code@{utt}. A process
+that has already ended answers @{tt}ProcessAlreadyTerminated@{utt}.
+
+@{h2}Whose process it is
+
+A process belongs to the session that started it. For any other session it
+does not exist: get_output and kill_process answer @{tt}ProcessNotFound@{utt}
+("Process dev not found"), exactly as for an id nobody used.
+
+@{h2}Choosing the id
+
+An id of your own (@{tt}"dev"@{utt}, @{tt}"build"@{utt}) is refused with
+@{tt}ProcessIdInUse@{utt} while a process under it runs, while another call
+is starting one under it, or when it belongs to another session. Once the
+process under it has ended, the next start takes the name over, and the
+old output and any recorded result go with it.
+
+@{h2}Waking instead of polling
+
+With @{tt}wake: true@{utt} the session is woken when the process ends --
+finished or failed -- so the agent can end its turn instead of polling. The
+answer says whether that is armed: @{tt}"wake": true@{utt}, or
+@{tt}"wake": false@{utt} with a @{tt}wake_note@{utt} naming why:
+
+@{table}
+wake_note | Meaning
+session presence is off (config: session_presence.enabled) | nobody can be woken
+this call belongs to no session, so there is nobody to wake | an internal call
+waking is switched off (config: session_presence.max_wake_depth is 0) | switched off
+this run was itself woken, N deep, and the wake chain stops at max_wake_depth=M | a chain of runs woken by woken runs stops there
+wake applies to background=true only; ... | a foreground call: its result is in the answer
+@{body}
+
+A call without @{tt}wake@{utt} gets neither field. An armed wake is best
+effort: a one-shot @{tt}agent-cli run@{utt} ends its turn and takes its
+background processes with it, although the answer said the wake is armed. When the process ends the core is told that
+input is waiting; a session busy in a turn is rung again every 10 seconds,
+for up to five minutes, until it reads the result with get_output or kills
+the process.
+
+A woken session may be continued by a new process that never had the
+background process in memory. So an armed wake also writes the outcome --
+exit code and the last 30 000 characters of each stream -- to the plugin's
+cache, for one hour. get_output answers from there when the process is not
+in memory, marks the answer @{tt}"source": "recorded"@{utt}, and deletes
+the record: it is read once.
+@endnode
+
+@node security "What an agent can run"
+@{h1}What an agent can run
+
+@{h2}Everything the server can
+
+A plain terminal -- no whitelist, no confinement, the default -- runs any
+command as the user the server runs as, in any directory, with any
+environment. Its pattern lists are a hand-brake against slips, not a
+boundary. What keeps an agent from the shell is whether it gets the tool
+at all: its allowlist (@{tt}+terminal/*@{utt}), its role gate
+(@{tt}metadata.min_role@{utt}; the shipped agents with a full terminal are
+admin-only), and, if you want every command asked for, the
+@{tt}tool_approval@{utt} hook.
+
+@{h2}The shell
+
+Every call is a new @{tt}bash -c@{utt}; a command may chain, pipe and
+substitute as bash allows unless chains are off. The bash is found once,
+at start:
+
+@{table}
+Platform | Order
+Windows | C:\\Program Files\\Git\\bin\\bash.exe if it exists, else the first bash on PATH; none: the terminal does not load
+Linux, macOS | the first bash on PATH, else /bin/bash
+@{body}
+
+@{tt}platform.bash_path@{utt} names one instead. On Windows the first bash
+on PATH may be WSL's (@{tt}System32\\bash.exe@{utt}), which runs the
+command in Linux; set @{tt}bash_path@{utt} to Git Bash if Git is installed
+elsewhere. From Git Bash, @{tt}cmd //c ...@{utt} and
+@{tt}powershell -c ...@{utt} are programs like any other: no list stops
+them unless it names them.
+
+@{h2}The environment and secrets
+
+A command gets the server's environment, @{tt}env_vars@{utt} laid over it
+-- without the variables the server took from its secrets files
+(@{tt}config/secrets.env@{utt} and the local one). A variable set by the
+real environment (systemd, the shell that started the server) is passed
+on, key or not. The list the server keeps of the file's variables
+(@{tt}HIVE_SECRETS_FROM_FILE@{utt}: each name with a short fingerprint of
+its value, enough to confirm a guessed short secret) is left out too.
+@{tt}security.pass_secrets_env: true@{utt} passes all of them, as before.
+
+This keeps keys out of @{tt}env@{utt} output, out of a build log that
+prints its environment and out of the model's context by accident. It is
+not a boundary: reads are not confined, so @{tt}cat config/secrets.env@{utt}
+still shows them, confined or not. Only a whitelist that names no program
+able to read that file keeps an agent from it. Commands get no input of their own: they inherit the server's
+standard input, so give them what they need as arguments or files, and use
+non-interactive flags.
+
+@{h2}The pattern lists
+
+Asked in this order; the first that refuses answers
+@{tt}SecurityError@{utt} with the pattern:
+
+@{bullet}@{b}The built-in list@{ub}, searched anywhere in the command,
+ignoring case: @{tt}rm -rf /@{utt}, @{tt}dd if=... of=/dev/@{utt}, a fork
+bomb, @{tt}mkfs.@{utt}, @{tt}chmod -R 777@{utt}, @{tt}chown -R root@{utt},
+@{tt}wget ... | sh@{utt}, @{tt}curl ... | bash@{utt}.
+@{tt}security.dangerous_patterns@{utt} adds to it.
+@{bullet}@{b}The whitelist@{ub}, when set: see below.
+@{bullet}@{b}security.blacklist@{ub}: regexes, searched anywhere, ignoring
+case.
+@{bullet}@{b}One command per call@{ub}, when
+@{tt}allow_command_chains@{utt} is false or a whitelist is set.
+
+A list matches spellings, not intentions. Measured against the built-in
+list and the blacklist of the shipped configuration: @{tt}rm -fr /@{utt},
+@{tt}rm -r -f /@{utt}, @{tt}rm -rf C:/@{utt}, @{tt}r''m -rf /@{utt}, a
+variable holding the path, @{tt}chmod 0777@{utt}, a download written to a
+file and run next, and @{tt}cmd //c rd /s /q ...@{utt} all pass. The other
+way round, the text is searched without regard to quoting:
+@{tt}echo 'rm -rf /'@{utt} and @{tt}grep mkfs notes.txt@{utt} are refused.
+
+The coder's @{tt}coder_shell@{utt} blacklists the git verbs that rewrite
+history or throw work away (@{tt}git push@{utt}, @{tt}git reset --hard@{utt},
+@{tt}git checkout --@{utt}, @{tt}git clean -@{utt}). Measured, these pass
+it: @{tt}git  push@{utt} with two spaces, @{tt}git -C . push@{utt},
+@{tt}git reset  --hard@{utt}, @{tt}git restore .@{utt},
+@{tt}git switch -f@{utt} and @{tt}git stash drop@{utt}. It stops a model
+that types the usual spelling by habit, nothing more.
+
+@{h2}One command per call
+
+With chains off, a command is refused when it contains a line break,
+@{tt};@{utt}, @{tt}&@{utt}, a pipe character, a backtick, @{tt}$(@{utt},
+@{tt}<(@{utt} or @{tt}>(@{utt} anywhere -- inside quotes as well, since
+telling a quoted one from a live one takes a shell parser. That keeps the
+shell line to one command. It does not stop a command that runs another
+from its own arguments: @{tt}eval@{utt}, @{tt}bash -c@{utt} or
+@{tt}python -c@{utt} with a quoted argument that holds none of those
+characters. Redirections (@{tt}> file@{utt}) stay allowed.
+
+@{h2}A whitelist
+
+With @{tt}security.whitelist@{utt} set, a command runs only when one of
+its regexes matches from the first character. Such a terminal is a
+boundary, as far as its patterns are:
+
+@{bullet}every command runs in the configured start directory and
+environment: the tool does not offer @{tt}cwd@{utt} and
+@{tt}env_vars@{utt}, and refuses them (@{tt}ConfiguredOnly@{utt}) in the
+foreground and the background alike;
+@{bullet}one command per call, whatever @{tt}allow_command_chains@{utt}
+says;
+@{bullet}no control character reaches a pattern: anything below 0x20 but
+tab, and DEL, is refused first.
+
+Writing the patterns:
+
+@{bullet}Anchor them at both ends: @{tt}^...\\Z@{utt}. @{tt}$@{utt} also
+matches before a final line break, and a pattern without an end lets
+anything follow.
+@{bullet}Name the program exactly: @{tt}^python ...@{utt}, not
+@{tt}^.*python ...@{utt}. A path to it in full, relative to
+@{tt}initial_cwd@{utt}, with forward slashes: bash drops unquoted
+backslashes.
+@{bullet}Separate words with literal spaces, not @{tt}\\s@{utt}, which also
+matches a line break.
+@{bullet}Name a program that does not run other commands from its
+arguments, and arguments that cannot carry a path or an option you did
+not mean: the whitelist checks the text, what the program does with it is
+up to the program. @{tt}^git .*@{utt} allows every git alias and hook.
+@{bullet}Set @{tt}platform.initial_cwd@{utt} when the commands name
+relative paths.
+
+@{code yaml}
+security:
+  whitelist:
+    - '^python tools/report\\.py (daily|weekly)\\Z'
+  allow_command_chains: false
+platform:
+  initial_cwd: /srv/reports
+@{body}
+
+@{h2}Confinement
+
+@{tt}sandbox.mode@{utt} hands the command to the kernel already unable to
+write outside a workspace, whatever it runs:
+
+@{table}
+Mode | The command may write
+danger-full-access | anywhere the server may; the default
+workspace-write | under @{tt}sandbox.workspace_root@{utt} (default: the start directory) and a temp directory
+read-only | only a temp directory
+@{body}
+
+@{table}
+Platform | Backend | Temp directory
+Linux | bubblewrap (install it: @{tt}apt install bubblewrap@{utt}) | a private /tmp that vanishes with the command
+macOS | Seatbelt (@{tt}/usr/bin/sandbox-exec@{utt}) | the user's $TMPDIR, shared with the user's other programs (partial confinement)
+Windows | none | --
+@{body}
+
+A mode that cannot be enforced refuses every command
+(@{tt}SandboxUnavailable@{utt}) instead of running it unconfined -- on
+Windows always, on Linux without bubblewrap. Confinement covers file
+writes only: reads, the network and the environment stay as they are. In @{tt}workspace-write@{utt} the
+git hooks and config of the workspace's repository are read-only too. The
+backends' details and gaps are in
+@{tt}src/agent_system/utils/process_sandbox.py@{utt} -- among them: a
+confined command can still ask an unconfined process over its socket (a
+tmux server, an ssh agent) to act for it, and an unconfined tool that
+writes into the workspace follows the symlinks a confined command left
+there.
+
+@{h2}Time, output and processes
+
+@{bullet}A foreground command is killed at its timeout (300 s by default,
+at most 3600 s), with everything it started.
+@{bullet}Output is capped at 60 KB per answer; the rest is read and
+dropped, not held in memory.
+@{bullet}Background processes have no timeout; at most
+@{tt}max_concurrent_background@{utt} (10 by default) run at once per
+session, four times that over all sessions. Stopping the server ends those
+still running.
+@{bullet}Each command runs in a process group of its own on Linux and
+macOS, and in a job object on Windows, so a timeout, a cancel or
+kill_process ends what it started. On Linux and macOS this also takes it
+off the server's terminal: a Ctrl+C there no longer reaches it directly,
+and it has no controlling terminal to read from. There, a process that leaves its
+group (@{tt}setsid@{utt}, a daemon) is not reached.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The three tool descriptions and their parameters come from the plugin's
+@{tt}schema.yaml@{utt}, rendered once per instance: the timeout's default
+and maximum are the configured ones. A whitelisted
+terminal's @{tt}execute@{utt} has no @{tt}cwd@{utt} and no
+@{tt}env_vars@{utt}, and its description adds "This terminal runs only
+the commands its configuration allows, in its configured working directory
+and environment." A confinement mode adds one sentence, for example on
+Linux: "Commands run sandboxed (workspace-write): they can modify files
+only under /srv/work and in a private /tmp; other writes fail with a
+permission error, and so do writes to the git hooks and config of the
+workspace's repository." Where no backend exists: "Commands are refused
+here: sandbox mode workspace-write is set, and this host has no sandbox
+backend."
+
+@{h2}Refusals, word for word
+
+@{bullet}"Command blocked: matches dangerous pattern 'rm\\s+-rf\\s+/'"
+@{bullet}"Command blocked by blacklist pattern 'mkfs'"
+@{bullet}"Command not in whitelist"
+@{bullet}"Command blocked: this terminal runs one command per call, and ';'
+starts or joins another one (command chains are off)" -- on a whitelisted
+terminal "(its whitelist names single commands)"
+@{bullet}"This terminal runs only the commands its configuration allows, in
+its configured working directory and environment -- cwd cannot be set
+here. Send the command again without cwd."
+@{bullet}"timeout must be a number of seconds from 1 to 3600, got '30s'"
+@{bullet}"Timeout 4000s exceeds maximum of 3600s"
+@{bullet}"process_id dev is in use by a running process; choose another one
+or leave it out"
+@{bullet}"5 background processes of this session are running, the limit is 5
+per session; kill_process one of them or wait for one to end"
+@{bullet}"20 background processes are running on this terminal, the cap for all
+sessions together is 20; none of them is this session's, or wait for one to
+end"
+
+A denied write under confinement is no plugin error: the command fails on
+its own, with a non-zero exit code and the system's message in its output.
+
+@{h2}The status line
+
+@{bullet}Foreground: "Executing: <command>", then "<command> -- exit 0,
+0.42s, 12 lines" ("12+ lines (truncated)", "no output"), or
+"<command> failed: <error>".
+@{bullet}Background: "Background process dev started (PID 4242) (wakes this
+session): npm run dev".
+@{bullet}get_output: "Output retrieved from process 'dev' (running): 5120
+bytes stdout, 0 bytes stderr" -- the figures count characters.
+@{bullet}kill_process: "Process 'dev' terminated with SIGTERM".
+
+The command is folded to one line and shortened to 70 characters there;
+in the background line the id gets 30 and the command what is left of 138.
+
+@{h2}Tokens and cache
+
+The tool definitions are the same on every request, so the prompt cache
+holds; the plugin adds nothing to the system prompt. Answers are ordinary
+tool results, appended. A foreground answer carries up to 60 KB of output,
+a get_output answer up to 60 K characters per stream -- a long build log
+read with @{tt}stream: both@{utt} is two of them. Filter in the command
+(@{tt}| tail -50@{utt}, @{tt}grep@{utt}) where chains are allowed, and
+read one stream at a time.
+
+@{h2}Known gaps
+
+@{bullet}A call the framework force-cancels ends without an answer, so the
+output of its command is lost. Run a long command in the background to
+keep what it wrote whatever happens to the call.
+@{bullet}A foreground answer keeps the start of a long output, get_output
+the end.
+@{bullet}Finished background processes stay in memory until the server
+stops or their id is reused.
+@{bullet}The pattern lists are not a boundary, and a whitelist is only as
+narrow as its patterns.
+@{bullet}Credentials set by the real environment reach every command, and
+the secrets file stays readable to it.
+@{bullet}Windows has no confinement backend.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The default configuration has one terminal:
+
+@{code yaml}
+plugins:
+  servers:
+    terminal:
+      type: terminal
+      enabled: true
+      security:
+        blacklist:
+          - "rm -rf /"
+          - "dd if="
+          - "mkfs"
+          - "chmod 777"
+        allow_command_chains: true
+      limits:
+        max_output_size_kb: 60
+        default_timeout_seconds: 300
+        max_timeout_seconds: 3600
+        max_concurrent_background: 10
+      platform:
+        bash_path: "auto"
+        initial_cwd: null
+@{body}
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+terminal/*"
+@{body}
+
+It needs bash: Git Bash on Windows, bubblewrap on Linux for
+confinement. No Python packages beyond the core.
+
+@{h2}Server settings
+
+@{table}
+Key | Default in code | Meaning
+security.whitelist | none | regexes; when set, only matching commands run (see @{" A whitelist " link security})
+security.blacklist | none | regexes refused on top of the built-in list
+security.dangerous_patterns | none | regexes added to the built-in list
+security.allow_command_chains | true | false: one command per call
+security.pass_secrets_env | false | true: commands also get the variables taken from the secrets files
+limits.max_output_size_kb | 60 | output cap per answer, and per stream in get_output
+limits.default_timeout_seconds | 300 | a foreground command's timeout when the call gives none
+limits.max_timeout_seconds | 3600 | the largest timeout a call may ask for
+limits.max_concurrent_background | 10 | background processes running at once per session; four times it over all sessions
+platform.bash_path | auto | the bash to run; auto finds one (see @{" The shell " link security})
+platform.initial_cwd | the directory the server was started from | where commands run; relative to the server's working directory
+sandbox.mode | danger-full-access | read-only, workspace-write or danger-full-access; an unknown mode keeps the instance from loading
+sandbox.workspace_root | the start directory | what workspace-write may write to
+@{body}
+
+The @{tt}config:@{utt} block in the plugin's @{tt}schema.yaml@{utt} only
+documents these; the defaults above are what the code applies when the
+server entry leaves a key out. Without an @{tt}initial_cwd@{utt},
+agent-cli and agent-run take the directory you started them in; the API,
+the directory it was started from.
+
+The terminal keeps nothing on disk but the results an armed wake records:
+one file per process in the plugin cache (@{tt}data/cache/<instance>/@{utt}),
+for one hour or until it is read.
+@endnode

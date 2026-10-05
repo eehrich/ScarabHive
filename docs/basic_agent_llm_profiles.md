@@ -97,7 +97,7 @@ separate `llm_system.models` entry for every combination:
 my_agent:
   agent_config:
     llm_profile: [deepseek-chat]
-    llm_profile_advanced: [or-gpt-terra-unlimited]
+    llm_profile_advanced: [or-gpt-full-unlimited]
     # Flat form: applies to BOTH chain primaries (same as "*")
     llm_params:
       max_tokens: 8000
@@ -111,7 +111,7 @@ stick to the *model*, not the slot:
     llm_params:
       "*":                          # optional: both chain primaries
         max_tokens: 8000
-      or-gpt-terra-unlimited:       # only when exactly this profile runs
+      or-gpt-full-unlimited:        # only when exactly this profile runs
         thinking_level: high
       deepseek-chat:
         include_thoughts: true

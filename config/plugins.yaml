@@ -25,11 +25,6 @@ plugins:
 
       hooks:
         enabled: true
-        overrides:  # by default disable html formatting of markdown
-          markdown_formatter.format_markdown_output:
-             enabled: false
-          markdown_formatter.inject_markdown_system_prompt:
-             enabled: false
              
       timeouts:
         # Queue handler timeouts (prevent cross-session blocking)
@@ -99,6 +94,14 @@ plugins:
       # Sandbox: tools may only touch bundles under these directories.
       allowed_directories:
         - data/okf
+      # Bundles with an instance of their own (sysadmin_okf, coder_okf,
+      # godot's and n8n's). Without this carve-out every agent holding okf/*
+      # could rewrite what those agents get injected into their prompts.
+      excluded_directories:
+        - data/okf/infra
+        - data/okf/coder
+        - data/okf/gamedev
+        - data/okf/n8n
       # Consumer hook (context injection) is opt-in per agent via
       # hooks.overrides; set hook_bundle on the agent that should use it.
       # hook_bundle: data/okf/<bundle>
@@ -744,7 +747,7 @@ plugins:
       user_agent: ""
       # Where `download` may write. Without a directory the tool is not
       # offered. The workspace is where the harnesses build, so a downloaded
-      # spec or asset lands where the coder, gamedev and amiga agents can
+      # spec or asset lands where the coder and gamedev agents can
       # read it.
       allowed_directories:
         - data/workspace
@@ -796,7 +799,6 @@ plugins:
       enabled: true
       allowed_directories:
         - data/workspace
-      max_file_size_mb: 10
       max_unpaginated_file_size_kb: 100  # Auto-paginate files larger than 100KB
       default_line_limit: 500  # Default lines when paginating large files
       search:
@@ -821,7 +823,6 @@ plugins:
       enabled: false
       allowed_directories:
         - .
-      max_file_size_mb: 200
       max_unpaginated_file_size_kb: 100  # Auto-paginate files larger than 100KB
       default_line_limit: 500  # Default lines when paginating large files
       search:
@@ -995,12 +996,13 @@ plugins:
         
         # Always compact media - runs regardless of token count
         # Removes ALL media items except those in the last N messages that contain media
+        # and what arrived since the model's last answer (parallel previews: each seen once).
         # Set to 0 to disable, >0 to enable. Agents that need more (cover_artist,
         # cover_feedback_judge) set their own value in their agent YAML.
-        always_compact_media_keep_last: 2
+        always_compact_media_keep_last: 12
         # Past keep_last, evict down to keep_last - headroom (at least 1): one
         # cache break per headroom+1 new media messages instead of one per message.
-        always_compact_media_headroom: 1
+        always_compact_media_headroom: 10
 
     context_usage_tracker:
       type: context_usage_tracker
@@ -1028,28 +1030,27 @@ plugins:
       type: message_validator
       enabled: true
       config:
-        log_level: warning
-        strict_mode: false
-        # disable it
-        max_tool_response_size_kb: 9999  # Hard limit: 50 KB (≈12.5k tokens)
-        warn_tool_response_size_kb: 9998  # Warn at 30 KB (≈7.5k tokens)
+        # size checks effectively off (the plugin's defaults: 50 / 20 KB)
+        max_tool_response_size_kb: 9999
+        warn_tool_response_size_kb: 9998
 
-    markdown_formatter:
-      type: markdown_formatter
-      enabled: true
 
     # GitLab/GitHub for the coder (src/plugins/forge/README.md). For now the
     # GitLab test instance on the Docker host (src/plugins/forge/tests/live/gitlab/),
     # bot account scarabhive-bot (Developer); its token is in secrets.env.
     forge:
       type: forge
+      # Every forge tool acts with the bot's token: only these ScarabHive users
+      # may call them (reads included). Empty or unset: nobody. webhook.user
+      # below must be listed, or the sessions the webhook starts get no tool.
+      allowed_users: [admin, cli_user]
       hosts:
         gitlab-test:
           provider: gitlab
           api_url: http://192.0.2.27:8929/api/v4
           token_env: FORGE_GITLAB_TOKEN
           webhook_secret_env: FORGE_GITLAB_WEBHOOK_SECRET
-      # GitLab's project webhook starts and wakes the coder (forge README, "Webhook").
+      # GitLab's project webhook starts and wakes the coder (forge.guide, node "webhook").
       webhook:
         user: admin                     # whose session list the webhook's sessions join
         llm: or-deepseek-flash          # cheap while this is the test instance
@@ -1117,11 +1118,11 @@ plugins:
         max_checkpoints: 50
         retention_days: 0
 
-    # Fuehrt die vorhersagbaren Eroeffnungs-Tool-Calls (Dokument laden,
-    # Context-Var setzen) direkt nach dem User-Turn aus, VOR dem ersten
-    # LLM-Call — spart pro Call einen vollen LLM-Roundtrip. Die Regeln stehen
-    # per Agent in dessen hooks.overrides."tool_preload.preload"; ohne Regeln
-    # tut der Hook nichts.
+    # Runs the predictable opening tool calls (load a document, set a context
+    # var) right after the user's turn, BEFORE the first LLM call -- saves a full
+    # LLM round trip. The rules live per agent in its
+    # hooks.overrides."tool_preload.preload"; without rules the hook does nothing.
+    # Manual: src/plugins/tool_preload/tool_preload.guide.
     tool_preload:
       type: tool_preload
       enabled: true
@@ -1187,7 +1188,7 @@ plugins:
     # The model asks the person watching the run (F12): a question with 2-4
     # options or free text, answered in the web chat. A run nobody watches
     # gets an error at once ("decide yourself"). Agents get it through their
-    # allowlist ("ask_user/*"). See src/plugins/ask_user/README.md.
+    # allowlist ("ask_user/*"). Manual: src/plugins/ask_user/ask_user.guide.
     ask_user:
       type: ask_user
       enabled: true
@@ -1204,7 +1205,7 @@ plugins:
       # Security settings
       security:
         # Whitelist: only these patterns, one command per call, no cwd/env_vars.
-        # This example is a convenience filter, not a boundary (patterns: terminal README).
+        # This example is a convenience filter, not a boundary (patterns: terminal.guide, "A whitelist").
         # whitelist:
         #   - "^git .*"
         #   - "^python .*"

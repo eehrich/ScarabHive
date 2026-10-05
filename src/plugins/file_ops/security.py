@@ -113,6 +113,30 @@ class PathValidator:
         logger.debug("Path validated: %s -> %s", path, resolved)
         return resolved
 
+    def validate_entry(self, path: str) -> Path:
+        """The entry ``path`` names -- the link itself when it is a link.
+
+        For delete, move and rename. ``validate_path`` resolves, so a link
+        stood for its target: deleting ``link.txt`` deleted the file it points
+        to, a recursive delete of a directory link emptied the directory it
+        points to, and a move or rename moved the target and left the link
+        dangling. A link is judged by the folder it lies in, which must be
+        inside; what it points to is not touched. Anything else is
+        ``validate_path(path, must_exist=True)``, as before.
+        """
+        path = from_git_bash(path)
+        named = Path(path)
+        if named.name not in ("", ".", ".."):
+            try:
+                folder = self.validate_path(str(named.parent))
+            except SecurityError:
+                folder = None  # judged below, like any other path
+            if folder is not None:
+                entry = folder / named.name
+                if entry.is_symlink() or entry.is_junction():
+                    return entry
+        return self.validate_path(path, must_exist=True)
+
     def is_allowed_directory(self, path: Path) -> bool:
         """Check if a path is one of the allowed directories itself."""
         return path.resolve() in self._sandbox.roots

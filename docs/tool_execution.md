@@ -550,6 +550,13 @@ if not tool_name or tool_name not in available_tools:
 
 Ungültige Argumente (kein valides JSON) liefern analog `{"error": "Invalid tool arguments for '...': ...", "type": "JSONParseError"}`; der Call wird nicht ausgeführt.
 
+Vor dieser Prüfung fragt `execute_tools_streaming` den optionalen `intercept`
+(zurückgestellte Tools, `docs/deferred_tools.md`). Er beantwortet `tool_search`
+selbst, und er beantwortet ein zurückgestelltes Tool, das vor dem Laden gerufen
+wurde, mit `{"type": "ToolNotLoaded", "error": ...}`, ohne es auszuführen. Keiner
+dieser Calls erreicht einen Hook, und `ToolNotLoaded` zählt wie ein blockierter
+Call nicht zur Fehlerserie der Auto-Eskalation.
+
 2. **Tool-Ausführungsfehler**
 ```python
 try:

@@ -23,6 +23,7 @@ funktionierenden nicht zu unterscheiden.
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -105,33 +106,90 @@ def test_no_yaml_file_has_a_duplicate_key():
         "wortlos weg:\n  " + "\n  ".join(duplicates))
 
 
-def _profile_references(node, where: str, out: list[tuple[str, str]]) -> None:
+#: A stategraph template that is one machine param and nothing else: ``{{ params.model }}``.
+_PARAM_TEMPLATE = re.compile(r"\{\{\s*params\.(\w+)\s*\}\}")
+
+
+def _profile_names(value: str, machine_params: dict | None) -> list[str]:
+    """The profile names a string stands for. In a stategraph machine a template naming one param
+    stands for that param's ``enum`` (the values a run may pass); any other template is skipped --
+    stategraph checks those itself when the machine loads (SG007)."""
+    if machine_params is None or "{{" not in value:
+        return [value]
+    param = _PARAM_TEMPLATE.fullmatch(value.strip())
+    spec = machine_params.get(param.group(1)) if param else None
+    enum = spec.get("enum") if isinstance(spec, dict) else None
+    return [v for v in enum if isinstance(v, str)] if isinstance(enum, list) else []
+
+
+def _profile_references(node, where: str, out: list[tuple[str, str]],
+                        machine_params: dict | None = None) -> None:
     """Jede Stelle einsammeln, die einen llm_profile-NAMEN nennt.
 
     Nur Strings und String-Listen zaehlen. In den ``schema.yaml`` der Plugins
     ist ``llm_profile`` ein deklariertes Config-FELD — sein Wert ist dort ein
     Mapping (``type``/``default``/``enum``), kein Profilname.
+
+    ``machine_params``: the ``params`` of a stategraph machine (``{}`` without
+    any), None for any other file. In a machine ``llm_params`` is a flat param
+    map wherever an activity sits (``do``, ``finally``, ``resources``;
+    stategraph format.md), never keyed by profile; a machine under
+    ``machines:`` has params of its own.
     """
     if isinstance(node, dict):
         for key, value in node.items():
             if key in ("llm_profile", "llm_profile_advanced",
                        "llm_profile_escalation"):
                 if isinstance(value, str):
-                    out.append((value, f"{where}.{key}"))
+                    out.extend((v, f"{where}.{key}") for v in _profile_names(value, machine_params))
                 elif isinstance(value, list):
-                    out.extend((v, f"{where}.{key}")
-                               for v in value if isinstance(v, str))
+                    out.extend((name, f"{where}.{key}") for v in value if isinstance(v, str)
+                               for name in _profile_names(v, machine_params))
                 else:
-                    _profile_references(value, f"{where}.{key}", out)
-            elif key == "llm_params" and isinstance(value, dict):
+                    _profile_references(value, f"{where}.{key}", out, machine_params)
+            elif key == "llm_params" and isinstance(value, dict) and machine_params is None:
                 # Profil-gekeyte Overrides: der SCHLUESSEL ist der Profilname.
                 out.extend((k, f"{where}.llm_params[{k!r}]")
                            for k in value if k != "*")
+            elif key == "machines" and machine_params is not None and isinstance(value, dict):
+                for name, child in value.items():
+                    params = child.get("params") if isinstance(child, dict) else None
+                    _profile_references(child, f"{where}.machines.{name}", out,
+                                        params if isinstance(params, dict) else {})
             else:
-                _profile_references(value, f"{where}.{key}", out)
+                _profile_references(value, f"{where}.{key}", out, machine_params)
     elif isinstance(node, list):
         for i, value in enumerate(node):
-            _profile_references(value, f"{where}[{i}]", out)
+            _profile_references(value, f"{where}[{i}]", out, machine_params)
+
+
+def _machine_params(data) -> dict | None:
+    """A stategraph machine's ``params`` (``{}`` without any), or None when the file is no machine."""
+    if not isinstance(data, dict) or "stategraph" not in data:
+        return None
+    params = data.get("params")
+    return params if isinstance(params, dict) else {}
+
+
+def test_the_profile_collector_reads_stategraph_do_blocks():
+    """A machine's templated profile is checked by its param's enum -- a nested machine's by its
+    own -- its llm_params (do, finally) are no profile names; elsewhere both stay as strict as before."""
+    machine = {"stategraph": 1, "params": {"model": {"type": "string", "enum": ["or-real", "or-typo"]}},
+               "finally": {"agent": "x", "llm_params": {"service_tier": "flex"}},
+               "states": {"a": {"do": {"agent": "x", "llm_profile": "{{ params.model }}",
+                                       "llm_params": {"service_tier": "flex"}}},
+                          "b": {"do": {"agent": "x", "llm_profile": "{{ ctx.chosen }}"}}},
+               "machines": {"inner": {"params": {"model": {"enum": ["or-inner"]}},
+                                      "states": {"c": {"do": {"agent": "x", "llm_profile": "{{ params.model }}"}}}}}}
+    found: list[tuple[str, str]] = []
+    _profile_references(machine, "m", found, _machine_params(machine))
+    assert sorted(name for name, _ in found) == ["or-inner", "or-real", "or-typo"], found
+    agent = {"plugins": {"servers": {"a": {"agent_config": {
+        "llm_profile": "{{ params.model }}", "llm_params": {"or-keyed": {}, "*": {}},
+        "do": {"llm_params": {"or-under-do": {}}}}}}}}
+    found = []
+    _profile_references(agent, "c", found, _machine_params(agent))
+    assert sorted(name for name, _ in found) == ["or-keyed", "or-under-do", "{{ params.model }}"], found
 
 
 def test_every_profile_reference_resolves():
@@ -148,7 +206,7 @@ def test_every_profile_reference_resolves():
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError:
             continue
-        _profile_references(data, str(path.relative_to(REPO_ROOT)), references)
+        _profile_references(data, str(path.relative_to(REPO_ROOT)), references, _machine_params(data))
 
     # Far over 200 with further plugin roots, ~91 with src/plugins alone.
     assert len(references) >= (200 if PRIVATE_ROOTS else 50), (

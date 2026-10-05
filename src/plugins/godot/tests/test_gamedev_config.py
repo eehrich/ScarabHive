@@ -90,10 +90,11 @@ def test_the_gamedev_bundle_is_injected_and_the_coders_is_not(config):
     "coder_sam.inject_sub_agent_context",
     "gamedev_sam.inject_sub_agent_context",
 ])
-def test_no_hook_rewrites_the_cached_prefix_mid_turn(config, hook):
+def test_the_state_injection_hooks_stay_off(config, hook):
+    """gamedev asks for its todos, thinking sessions and sub-agents with a tool call."""
     overrides = resolved(config, "gamedev").agent_config.hooks.overrides
     assert hook in overrides and hook_field(overrides, hook, "enabled") is False, \
-        f"{hook} churns the prompt prefix"
+        f"{hook} is on: it would append a turn whenever its state changes"
 
 
 def test_gamedev_has_its_own_loop_and_the_coders_on_demand_skills(config):

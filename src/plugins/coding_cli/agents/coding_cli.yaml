@@ -16,13 +16,18 @@ plugins:
       # Repositories by name; each run gets a fresh worktree of the repo's HEAD
       # on its own branch. exclude: tracked files the run never sees, here the
       # ones that hold secrets -- secrets.env the keys, config.yaml the JWT
-      # signing key and the default admin password. Every other file holding
+      # signing key. Every other file holding
       # one of their values (a .env value, a YAML value under a key named like
       # a secret) is kept out as well; the answer lists them under `hidden`.
       workdirs:
         scarabhive:
           path: "."
-          exclude: [config/secrets.env, config/config.yaml]
+          exclude: [config/secrets.env, config/local.env, config/local.yaml, config/config.yaml]
+          # MCP servers from external_servers.remote_servers this workdir's
+          # edit runs load (enabled, with a url, HTTP or SSE); their auth reaches
+          # Claude Code only through its environment. Any other name skips
+          # the workdir. The user's own connectors never load.
+          # mcp_servers: [scarab4]
       # Shell commands Claude Code may run, as Claude Code permission patterns
       # (e.g. "pytest:*"). Empty: no shell at all. Every allowed command runs
       # code the run may have written, with the operator's rights: it can read
@@ -41,6 +46,8 @@ plugins:
       max_run_minutes: 60
       # Runs going at the same time; every one spends the subscription.
       max_parallel: 1
+      # The longest task run_task takes, in characters (1000 to 100000).
+      max_task_chars: 20000
       # Claude Code's model; empty: the subscription's default.
       model: ""
       # Environment variables the child gets beyond what Claude Code needs to

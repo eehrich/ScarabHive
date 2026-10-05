@@ -1,0 +1,509 @@
+@database "image_compose"
+@author "Enrico Ehrich"
+@$VER: image_compose.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Image composition"
+@{h1}Image composition
+
+Lets an agent build a picture from layers it describes in JSON: a
+background colour, images, text, rectangles, gradients, SVG graphics and a
+vignette, stacked bottom-up and written as PNG, WEBP or JPEG. Every pixel
+lands where the description says, so typography on a cover or an icon of
+an exact size comes out the same every time. Two measuring tools go with
+it: one tells how bright and how busy a part of an image is, the other
+finds the calmest place for a block of text.
+
+The plugin also brings @{tt}image_agent@{utt}, a sub-agent that makes
+game assets: it generates with ComfyUI, composes with these tools and
+looks at the result.
+
+The plugin has no panel and no hooks.
+
+@{code}
+For agents and developers
+  @{"  Rendering: render  " link render}
+  @{"  The layers  " link layers}
+  @{"  Measuring: analyze, find_region  " link measure}
+  @{"  Paths and limits  " link limits}
+  @{"  The image agent  " link agent}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node render "Rendering: render"
+@{h1}Rendering
+
+The tool is the instance name followed by @{tt}_render@{utt}
+(@{tt}image_compose_render@{utt}, @{tt}images_render@{utt} for the image
+agent's instance). It renders one spec to one file.
+
+@{table}
+Parameter | Meaning
+spec | the composition: an object, or the same as a JSON string (required)
+output_path | the file to write; project-relative or absolute (required)
+include_content | attach the rendered image to the answer, for the model to look at; default true
+layers_dir | where each layer is also saved as its own PNG; omitted: <output name>_layers next to the file; "" or false: no export
+spec_path | also save the spec as JSON (UTF-8, umlauts kept as they are) to this path
+@{body}
+
+@{h2}The spec
+
+@{table}
+Key | Meaning
+size | [width, height] in pixels, whole numbers 1-8192; default [1024, 1536]
+background | a colour, or "transparent" (default)
+format | png, webp or jpeg (jpg is taken); default: from the file extension, else png
+quality | for webp and jpeg, default 95
+layers | the layers, drawn first to last (@{" The layers " link layers})
+@{body}
+
+JPEG has no transparency: the picture is laid onto white first. WEBP is
+written with the slowest, best compression; PNG optimized. An existing
+file is overwritten. Missing folders on the way to the file are created.
+
+@{h2}The layer export
+
+Unless switched off, every layer is also saved as a transparent PNG the
+size of the canvas, @{tt}layer_00_gradient.png@{utt},
+@{tt}layer_01_text.png@{utt} and so on, with the layer where it sits in
+the composite -- for editing one layer later or reusing it. Before that,
+every @{tt}layer_*.png@{utt} already in the folder is deleted, so the
+folder shows this composition and no layer from an earlier one. For that
+reason @{tt}layers_dir@{utt} may not be the folder the picture itself goes
+to; that is refused before anything is written.
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+status | success, or warning when there are warnings -- the file is written either way
+output_path | the absolute path written
+size, format, bytes | of the file
+layers_rendered | how many layers were drawn
+warnings | what looks wrong (below); at most 20, then "... and N more warnings"
+layer_files | the exported layer PNGs
+spec_path | when the spec was saved
+action_required | with warnings: an instruction to fix them and render again
+@{body}
+
+A failed render answers @{tt}status: error@{utt} with @{tt}error@{utt}
+and @{tt}error_type@{utt} (@{tt}ValidationError@{utt} for a missing spec
+or output path, @{tt}CompositionError@{utt} for the rest). A layer's
+error names it: "layer 2 (text): text align must be left|center|right,
+got 'middle'". Nothing is written then, except folders created on the way.
+
+@{h2}Warnings
+
+@{bullet}A layer that reaches past the canvas edge, with the overhang per
+side. The vignette is never checked; everything else is, also a picture
+meant to bleed off the edge.
+@{bullet}Two text or SVG layers that overlap, or sit closer than
+@{tt}overlap_min_gap_px@{utt} (default 30) side by side or one above the
+other. Layers that are apart on both axes -- diagonal neighbours -- are
+fine. Other layer types are not compared: text over a picture is the
+normal case. Switched off with @{tt}overlap_check_enabled: false@{utt}.
+@{bullet}A font that was not found (the text is drawn with a fallback).
+@{bullet}A value that was repaired: a layer type with trailing words
+("text, bold" becomes text), a text size that is not a number, a stroke
+or shadow that is not an object.
+
+@{h2}Example
+
+@{code json}
+{"output_path": "data/workspace/images/title.png",
+ "spec": {"size": [1024, 512], "background": "#101820",
+   "layers": [
+     {"type": "gradient", "colors": ["#10182000", "#f2aa4c"], "direction": "bottom"},
+     {"type": "text", "text": "Northern Lights", "font": "serif_bold", "size": 96,
+      "color": "#ffffff", "align": "center",
+      "position": {"anchor": "center", "offset": [0, -20]},
+      "shadow": {"offset": [3, 3], "blur": 6, "color": "#00000099"}}]}}
+@{body}
+@endnode
+
+@node layers "The layers"
+@{h1}The layers
+
+Every layer is an object with a @{tt}type@{utt}: image, text, rect,
+gradient, svg or vignette.
+
+@{h2}What every layer takes
+
+@{table}
+Key | Meaning
+position | where its top-left corner goes: [x, y] in pixels; or {"anchor": a, "offset": [dx, dy]}; or {"anchor": a, "offset_pct": [dx %, dy %]} of the canvas; or just the anchor name. Default [0, 0]
+opacity | 0 to 1, default 1; outside that range is an error
+rotation | degrees, clockwise, around the layer's centre; the layer grows to hold the turned picture
+blend_mode | normal (default), multiply, screen or overlay
+@{body}
+
+The nine anchors: top_left, top_center, top_right, center_left, center,
+center_right, bottom_left, bottom_center, bottom_right. An anchor puts the
+matching point of the layer on the matching point of the canvas --
+bottom_right puts the layer's lower right corner in the canvas's -- and
+the offset moves it from there.
+
+Colours are @{tt}#rgb@{utt}, @{tt}#rgba@{utt}, @{tt}#rrggbb@{utt},
+@{tt}#rrggbbaa@{utt} or [r, g, b] / [r, g, b, a].
+
+@{h2}image
+
+@{table}
+Key | Meaning
+src | a file (project-relative or absolute) or a data: URI with base64 (required)
+size | [w, h], or {"width": w, "height": h}, or {"width_pct": %, "height_pct": %} of the canvas; without it the picture keeps its own size
+fit | with a size: cover (default; fills and crops the middle), contain (fits whole, transparent margins) or stretch; any other word acts as cover
+cutout | true: removes the background with rembg's isnet-general-use model before the fit; or a model name, e.g. birefnet-general-lite (keeps thin parts, about five times slower), isnet-anime, u2net
+trim | true: crops to the visible part before the fit, so an object fills its size instead of the empty frame around it
+alpha_threshold | 1-255: after the fit, every pixel becomes fully opaque (alpha at or above it) or fully clear -- for pixel art
+@{body}
+
+A size needs both sides; one alone is an error. "true"/"false" as
+strings work for cutout and trim. An alpha_threshold of 0 or true is
+refused -- leave the key out instead. The rembg model is downloaded once
+per computer into @{tt}~/.rembg@{utt} on first use (isnet about 170 MB).
+
+@{h2}text
+
+@{table}
+Key | Meaning
+text | the text (required); line breaks as \n
+font | an alias (sans, sans_bold, serif, serif_bold, mono, display, display_grotesk, script, stencil, display_block), a file in the fonts folder, an absolute path, or a system font name; default sans
+size | font size in pixels, default 48, at least 4
+color | default white
+align | left (default), center or right, within the block
+max_width | wrapping width in pixels or {"width_pct": %}; default the canvas width less 160
+line_height | factor, default 1.1
+tracking | extra pixels between letters, default 0
+uppercase | true: capitals
+stroke | {"width": px, "color": default black}
+shadow | {"offset": [dx, dy], "blur": px, "color": default #00000088}
+@{body}
+
+Words wrap at spaces; a word too long for a line is broken between
+letters. The layer is the text block plus a margin on each side for
+stroke and shadow (the larger of the stroke width and blur plus offset,
+plus 4 pixels), and position places that box.
+
+Where a font comes from, in order: an absolute path; a file of that name
+in the fonts folder; @{tt}font_aliases@{utt}; a list of common system
+fonts for each alias (Georgia, Arial, Consolas, Impact, DejaVu ...); the
+name as a system font; Pillow's small built-in font, with a warning.
+
+@{h2}rect
+
+@{table}
+Key | Meaning
+rect | [x, y, w, h]; or position with size as for image; neither: the whole canvas
+fill | colour; none: only the border
+radius | rounded corners, pixels
+border | {"width": px, "color": default black}
+@{body}
+
+@{h2}gradient
+
+@{table}
+Key | Meaning
+rect | or position with size, as for rect
+colors | two or more colours ("from" and "to" work too)
+stops | where each colour sits, 0 to 1; default evenly spaced
+direction | where the gradient ends: right, bottom_right, bottom (default), bottom_left, left, top_left, top, top_right, or an angle in degrees (0 right, 90 down)
+@{body}
+
+The first colour is on the side opposite the direction, the last on the
+direction's side. A colour with alpha fades a picture beneath.
+
+@{h2}svg
+
+@{table}
+Key | Meaning
+svg | the SVG as text (required)
+size | [w, h]: scaled to fit inside, keeping its proportions; without it, the SVG's own size
+@{body}
+
+Rendered with svglib and reportlab, twice -- on black and on white -- to
+recover real transparency, so white parts stay white. The SVG cannot load
+files; PNG and JPEG images embedded as data: URIs work. A font-family is
+looked up by name among the installed fonts; a family that looks like a
+path (with /, \\ or :) is drawn in Helvetica instead of being opened.
+
+@{h2}vignette
+
+Darkens towards the corners over the whole canvas; position is ignored.
+@{tt}strength@{utt} 0 to 1 (default 0.3), @{tt}color@{utt} (default
+black). The centre area, up to 40 % of the way to the corners, stays
+clear.
+@endnode
+
+@node measure "Measuring: analyze, find_region"
+@{h1}Measuring
+
+So an agent can choose a text colour and a place for the text from the
+pixels rather than from a guess.
+
+@{h2}analyze
+
+@{table}
+Parameter | Meaning
+path | the image, project-relative or absolute (required)
+region | [x, y, w, h] in pixels; clipped to the image; default the whole image
+@{body}
+
+@{table}
+Field | Meaning
+region, size | the area measured, after clipping
+brightness | mean luminance (Rec. 709), 0 dark to 1 light
+brightness_std | its spread; above about 0.2 the area is uneven
+brightness_min, brightness_max, brightness_range | darkest and lightest of 4x4 cells of the area
+edge_density | how much fine detail; above about 0.1 is busy
+homogeneity | 1 perfectly calm, 0 busy -- the worse of spread and detail
+dominant_color, palette | the most common colours, rounded to steps of 32, with their share (top five)
+recommendation | light_text (brightness under 0.4), dark_text (over 0.6), midtone_uncertain_use_backdrop, or mixed_use_stroke_or_pill when some cells are under 0.4 and others over 0.6 and they differ by more than 0.3
+@{body}
+
+@{h2}find_region
+
+Slides a window of the given size over the image and ranks the places by
+homogeneity.
+
+@{table}
+Parameter | Meaning
+path | the image (required)
+region_size | [w, h] of the text block (required); must fit in the image
+prefer | any (default), top_third, bottom_third, top_half or bottom_half: the band the window starts in
+max_candidates | how many places to return; default 3, held to 1-10
+@{body}
+
+The window moves in steps of a sixteenth of the free room, so at most
+17 x 17 places are tried. With top_third or top_half the window starts in
+that band but may reach below it when it is taller than the band.
+
+The answer: @{tt}image_size@{utt}, @{tt}search_size@{utt},
+@{tt}prefer@{utt}, @{tt}scanned@{utt} (places tried), @{tt}best@{utt} and
+@{tt}candidates@{utt}. Each place has @{tt}region@{utt} and the same
+figures as analyze (without palette) and a recommendation.
+
+@{code json}
+{"path": "data/workspace/images/background.png", "region_size": [800, 200], "prefer": "bottom_third"}
+@{body}
+
+Both answer errors as @{tt}status: error@{utt}: a missing file is a
+@{tt}FileNotFoundError@{utt}, a malformed region, region_size or max_candidates
+a @{tt}ValidationError@{utt}.
+@endnode
+
+@node limits "Paths and limits"
+@{h1}Paths and limits
+
+@{h2}Paths
+
+@{bullet}A relative path counts from the folder the server started in (the
+project). A @{tt}data/...@{utt} path lands in the data directory, also
+when that has been moved elsewhere.
+@{bullet}A network or device path (@{tt}\\\\host\\share\\x.png@{utt},
+@{tt}//host/share/x.png@{utt}) is refused on its text, before anything is
+opened -- touching it would make Windows sign in to that host with your
+credentials. This holds for every path from the model: output_path,
+layers_dir, spec_path, an image layer's src, a text layer's font, and the
+images the measuring tools read. A font-family inside an SVG that looks like
+a path is not opened at all. A share that is one of the
+@{tt}output_directories@{utt} may be written.
+@{bullet}Reading is not confined: any file on the computer the server can
+read can be used as an image layer or measured.
+
+@{h2}The write sandbox
+
+With @{tt}output_directories@{utt} empty (the default) an instance writes
+wherever it is told. With a list, the picture, its layer folder and the
+spec file must all lie inside one of those folders; anything else is
+refused before anything is created: "output_path <path> lies outside the
+allowed output directories (<folders>)". Give every instance a sub-agent
+drives a folder of its own this way, as the image agent's
+@{tt}images@{utt} instance does.
+
+@{h2}Size limits
+
+@{bullet}The canvas is at most 8192 x 8192.
+@{bullet}No picture any step holds may have more pixels than that: an image
+file or data URI (checked from its header, before it is decoded), a
+layer's size, a text block, an SVG's drawing size, a PNG or JPEG embedded in
+an SVG (checked from its header too), and the intermediate
+picture a cover fit scales to. Anything larger is refused: "layer 0
+(rect): layer 100000x100000 is too large (max 67108864 pixels)".
+@{bullet}There is no limit on the number of layers. Memory grows with them:
+every layer is held until the file is written, and with the layer export
+on, each is saved as a PNG the size of the canvas.
+@{bullet}Gradients and vignettes are computed pixel by pixel in Python: a
+full 1024 x 1536 canvas takes a second or two, a full 8192 x 8192 one
+close to a minute (measured: 4096 x 4096 in 8-12 seconds).
+@{bullet}There is no timeout; a cancelled call returns, the render in its
+thread runs to the end.
+
+@{h2}What is left behind
+
+Nothing is cleaned up: the pictures, the layer folders and saved specs
+stay. The render is not recorded by
+@{" file checkpoints " link file_checkpoints/recorded}: a rewind counts it
+but cannot restore a file it overwrote.
+@endnode
+
+@node agent "The image agent"
+@{h1}The image agent
+
+@{tt}image_agent@{utt} produces one texture, sprite, icon or UI element
+as a PNG of an exact size. It is called as a tool
+(@{tt}image_agent_execute_task@{utt}) or started as a sub-agent -- the
+@{tt}gamedev@{utt} agent of the godot plugin lists it in its sub-agent
+manager. It runs in a session of its own, so the pictures it looks at
+stay out of its caller's context.
+
+Its loop, from its prompt and the always-loaded skill
+@{tt}image-assets@{utt}:
+
+@{bullet}Read the brief for five facts: what, exact size, tileable or not,
+background, style; fill a missing one with a plain default and say so.
+@{bullet}Geometric or typographic assets (icons, buttons, frames) are only
+composed; anything painterly is generated with ComfyUI first.
+@{bullet}Look at every generated picture and regenerate on a miss, at most
+three times.
+@{bullet}Compose onto a canvas of the exact size; sprites get their
+transparency from @{tt}cutout@{utt}, @{tt}trim@{utt} and, for pixel art,
+@{tt}alpha_threshold@{utt}.
+@{bullet}A tileable texture is rendered 2 x 2 and the seams looked at.
+@{bullet}It reports a five-line block: Path (as the render returned it),
+Size, Tileable, Background, Verified.
+
+Its tools: @{tt}comfyui/*@{utt}, @{tt}images/*@{utt} (its own
+@{tt}image_compose@{utt} instance, confined to
+@{tt}data/workspace/images@{utt}), @{tt}media_ops/*@{utt} (to look at a
+file), @{tt}skills/*@{utt}, @{tt}context_engineer/*@{utt} and
+@{tt}datetime/*@{utt}. The context engineer hook is on for it, since every
+picture it looks at stays in its context. Models: Gemini Flash, Claude
+Sonnet as fallback (profiles @{tt}or-gemini-flash@{utt},
+@{tt}or-claude-sonnet@{utt}); at most 60 steps.
+
+Both the agent and the @{tt}images@{utt} instance are defined in
+@{tt}agents/image_agent.yaml@{utt} in the plugin folder and are loaded
+with the plugin; it needs a running ComfyUI (see
+@{" ComfyUI " link comfyui/main}) for anything it generates.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Three tools, described in the plugin's @{tt}schema.yaml@{utt}. The
+render tool's spec parameter carries a compact reference of all layer
+fields, so it is the longest description and is sent with every request
+that offers the tool. Limits and defaults are not all in it; the model
+learns them from refusals. Texts the model gets include:
+
+@{code}
+spec is not valid JSON: <parser message>
+layer 2 (text): text align must be left|center|right, got 'middle'
+layer 0 (image): image src not found: <path>
+layer 1 (gradient): unknown gradient direction: 'down'
+output_path <path> lies outside the allowed output directories (<folders>)
+output_path \\\\host\\share\\x.png is a network or device path
+layers_dir <path> is the directory the composite is written to; the per-layer export needs one of its own (omit layers_dir for <name>_layers, or pass "" to skip it)
+region_size (900, 200) must fit inside image 800x600
+max_candidates must be an integer 1-10
+@{body}
+
+A render with warnings answers @{tt}status: warning@{utt} and adds
+@{tt}action_required@{utt}: "Re-compose: address each item in `warnings`
+(e.g. reduce layer size, change position/anchor, shorten title) and call
+image_compose_render again. Don't accept the cover as-is when warnings are
+present." -- with the plugin's own tool name, not the instance's.
+
+The chat's status line ends with "Rendered title.png: 1024x512 (48213
+bytes) -- 1 warning(s)", "brightness=0.23 std=0.08 -> light_text" or
+"best region x=112,y=1180,w=800,h=200 homogeneity=0.91 -> light_text".
+
+@{h2}The attached picture
+
+With @{tt}include_content@{utt} (the default) the rendered file is
+attached to the answer. The conversation keeps its path; each request
+reads the file again and sends it along, so it must stay where it is and
+a file rendered again under the same name is seen as it is now. A model
+without image input gets a note instead, as for
+@{" media_ops " link media_ops/model}.
+
+@{h2}Tokens and cache
+
+Answers are appended; nothing earlier changes. An answer is a few hundred
+tokens, more with warnings. An attached picture costs what the provider
+charges -- the core's context estimate counts 1,120 tokens per image -- on
+every later request of the run. A model that renders, looks and renders
+again carries every version: pass @{tt}include_content: false@{utt} for
+intermediate renders, or let the context engineer evict old pictures. The
+attachment is built the same way each time and does not break the prompt
+cache.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    image_compose:
+      type: image_compose
+      enabled: true
+      description: "Compose layered images (background + text + shapes + gradients + SVG)"
+      fonts_dir: "src/plugins/image_compose/fonts"   # plugin-bundled assets
+      overlap_check_enabled: true   # warn on text/svg BBox overlap pairs after render
+      overlap_min_gap_px: 30        # required clearance between text/svg layers (px)
+@{body}
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+image_compose/*"
+@{body}
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+fonts_dir | the data directory's fonts folder | where font files and aliases are looked up; created at start
+font_aliases | none | alias name to a file in fonts_dir, or an absolute path
+output_directories | [] (write anywhere) | the write sandbox (@{" Paths and limits " link limits})
+overlap_check_enabled | true | the overlap warnings
+overlap_min_gap_px | 30 | the gap two text or SVG layers must keep
+@{body}
+
+The keys are read from the entry itself when the server starts. A
+relative folder counts from the folder the server started in.
+
+@{h2}Fonts
+
+The plugin's @{tt}fonts/@{utt} folder holds a README with the intended
+set -- Inter, Crimson Pro, JetBrains Mono, Bebas Neue, Oswald, Caveat,
+Stardos Stencil, Bungee Inline, all from Google Fonts -- but no font
+files. Until you add them and map them, every alias falls back to the
+system fonts:
+
+@{code yaml}
+      font_aliases:
+        display_grotesk: "Oswald-Bold.ttf"
+        script: "Caveat-Regular.ttf"
+@{body}
+
+@{h2}Dependencies
+
+Pillow, and with the plugin: numpy (measuring and SVG), svglib with
+@{tt}reportlab[pycairo]@{utt} (SVG layers; on a host without a pycairo
+wheel it needs @{tt}libcairo2-dev@{utt} and @{tt}pkg-config@{utt} to
+build), and @{tt}rembg[cpu]@{utt} (cutout). Each is imported only when
+a layer needs it; without it, that layer fails with a message naming the
+package.
+@endnode

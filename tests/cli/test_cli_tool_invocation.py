@@ -22,9 +22,13 @@ a real model does not reliably call the tool.
 """
 from __future__ import annotations
 
+import io
 import json
+import logging
 import socket
 import sys
+import threading
+from asyncio import proactor_events, selector_events  # both, on every platform: only Windows imports the first
 from pathlib import Path
 
 import pytest
@@ -149,21 +153,44 @@ def cli_run(tmp_path, monkeypatch):
                 "current": {"temperature": 17.5, "weather_desc": SKY},
                 "forecast": [{"date": "2026-09-29", "min_temp": 9, "max_temp": 18}]}
 
-    for name in ("fetch_wttr", "fetch_weather_gov", "fetch_met_no", "fetch_marine_weather_gov"):
+    # Every source the plugin has: one it drops breaks nothing here, one it adds does not reach the network.
+    names = [name for name in vars(sources) if name.startswith("fetch_")]
+    assert names, "the weather plugin has no fetch_* source any more; this test replaces nothing"
+    for name in names:
         monkeypatch.setattr(sources, name, forecast)
 
     # No network connection in this run, loopback included. Recorded as well
     # as refused: a plugin that catches the error would hide it.
+    # Windows has no socketpair: Python builds one by connecting a socket to its own loopback listener, and
+    # asyncio's event loop needs one. That connection goes nowhere, so it passes.
     outbound: list = []
     real_connect = socket.socket.connect
+    real_socketpair = socket.socketpair
+    pairing = threading.local()
+
+    def socketpair(*args, **kwargs):
+        pairing.active = True
+        try:
+            return real_socketpair(*args, **kwargs)
+        finally:
+            pairing.active = False
 
     def guarded_connect(sock, address):
-        if sock.family != getattr(socket, "AF_UNIX", None):
+        if sock.family != getattr(socket, "AF_UNIX", None) and not getattr(pairing, "active", False):
             outbound.append(address)
             raise OSError(f"test: outbound connection to {address!r} refused")
         return real_connect(sock, address)
 
+    # An event loop connects without socket.connect: Windows' proactor through ConnectEx, and httpx's
+    # AsyncClient -- the weather sources' -- goes that way.
+    async def guarded_sock_connect(loop, sock, address):
+        outbound.append(address)
+        raise OSError(f"test: outbound connection to {address!r} refused")
+
+    monkeypatch.setattr(socket, "socketpair", socketpair)
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    for loop_class in (proactor_events.BaseProactorEventLoop, selector_events.BaseSelectorEventLoop):
+        monkeypatch.setattr(loop_class, "sock_connect", guarded_sock_connect)
 
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "--color", "never",
                                       "--show-tools", TASK])
@@ -171,9 +198,18 @@ def cli_run(tmp_path, monkeypatch):
     agent_cli.close_cli_loop()
 
 
-def test_cli_run_calls_the_tool_the_model_asks_for_and_shows_it(cli_run, capsys):
+def test_cli_run_calls_the_tool_the_model_asks_for_and_shows_it(cli_run, capsys, monkeypatch):
+    # What setup_logging leaves on a terminal: a colouring console handler -- which --color never must silence.
+    # (The run's own logging is off: it would swap the pytest process's handlers.)
+    from agent_system.utils.logging import ColorizedFormatter
+    console = logging.StreamHandler(io.StringIO())
+    console.setFormatter(ColorizedFormatter("%(message)s", use_colors=True))
+    monkeypatch.setattr(logging.getLogger(), "handlers", [*logging.getLogger().handlers])
+    monkeypatch.setattr(agent_cli, "setup_role_logging",
+                        lambda logging_config, role: logging.getLogger().addHandler(console))
     agent_cli.main()
     out = capsys.readouterr().out
+    assert cli_run["outbound"] == [], f"the run tried to reach the network: {cli_run['outbound']}"
 
     llm, fetched = cli_run["llm"], cli_run["fetched"]
     assert llm, "the model was never asked"
@@ -199,4 +235,4 @@ def test_cli_run_calls_the_tool_the_model_asks_for_and_shows_it(cli_run, capsys)
     assert SKY in out[result_at:], out
     assert ANSWER in out[result_at:], out
 
-    assert cli_run["outbound"] == [], f"the run tried to reach the network: {cli_run['outbound']}"
+    assert console.formatter.use_colors is False, "--color never, yet the log lines are coloured"

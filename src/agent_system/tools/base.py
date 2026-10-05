@@ -292,6 +292,12 @@ class ToolServer(ABC):
         applied_count = 0
         for tool_name, new_desc in self_tool_descriptions.items():
             if tool_name not in available_tool_names:
+                # A key named after another instance came with inheritance
+                # (gamedev: {type: coder} carries coder_execute_task).
+                if not tool_name.startswith(f"{self.name}_"):
+                    logger.debug("Tool server '%s': inherited self_tool_descriptions key '%s' skipped",
+                                 self.name, tool_name)
+                    continue
                 logger.warning(
                     f"Tool server '{self.name}': self_tool_descriptions contains non-existent tool '{tool_name}'. "
                     f"Available tools: {sorted(available_tool_names)}"

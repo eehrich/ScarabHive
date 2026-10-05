@@ -1,11 +1,12 @@
 """The Context & Cost Usage panel in a real browser, against the real plugin: its router, its tracker database, its
 static files.
 
-Seeded: session ``s-1`` with two billed calls of ``writer`` (model ``m-fast``, request ``r-1``) and an estimated call
+Seeded: session ``s-1`` with two billed calls of ``reviewer`` (model ``m-fast``, request ``r-1``) and an estimated call
 of the sub-agent ``helper`` in ``s-1-sub`` (model ``m-cheap``, request ``r-1_sub_ab``); session ``s-2`` with a call of
 ``coder`` (``m-fast``, no cost, no latency); session ``s-3`` with 120 calls of ``bulk`` (more than the history's former default of 100); from a pre-SQLite usage file,
-the all-time totals of ``archivist``, whose calls predate the cache-rate pair. POST /__stub/call records one more call
-of ``writer`` in ``s-1``. With the cookie ``cu_usage=fails`` the usage answer fails, with ``cu_usage=slow`` both
+the all-time totals of ``archivist``, whose calls predate the cache-rate pair. POST /__stub/latencies records 20 calls
+of ``timer`` (``m-p95``, 100 ms to 2 s) in ``s-4``. POST /__stub/call records one more call
+of ``reviewer`` in ``s-1``. With the cookie ``cu_usage=fails`` the usage answer fails, with ``cu_usage=slow`` both
 answers take 1.5 s.
 """
 from __future__ import annotations
@@ -34,13 +35,13 @@ TESTS = Path(__file__).resolve().parent
 
 
 def seed(tracker) -> None:
-    tracker.record_usage("writer-1", "writer", "s-1", total_tokens=1200, prompt_tokens=1000, completion_tokens=200,
+    tracker.record_usage("reviewer-1", "reviewer", "s-1", total_tokens=1200, prompt_tokens=1000, completion_tokens=200,
                          context_window=10000, cached_tokens=800, cost=0.002, model="m-fast", request_id="r-1",
                          latency_ms=800)
     tracker.record_usage("helper-1", "helper", "s-1-sub", total_tokens=500, prompt_tokens=400, completion_tokens=100,
                          context_window=10000, cost=0.0005, cost_is_estimate=True, model="m-cheap",
                          request_id="r-1_sub_ab", latency_ms=300)
-    tracker.record_usage("writer-1", "writer", "s-1", total_tokens=1800, prompt_tokens=1500, completion_tokens=300,
+    tracker.record_usage("reviewer-1", "reviewer", "s-1", total_tokens=1800, prompt_tokens=1500, completion_tokens=300,
                          context_window=10000, cost=0.003, model="m-fast", request_id="r-1", latency_ms=1200)
     tracker.record_usage("coder-1", "coder", "s-2", total_tokens=150, prompt_tokens=100, completion_tokens=50,
                          context_window=10000, model="m-fast", request_id="r-2")
@@ -71,9 +72,17 @@ def panel_app(tmp_path: Path):
 
     @app.post("/__stub/call")
     async def add_call():
-        plugin.tracker.record_usage("writer-1", "writer", "s-1", total_tokens=2000, prompt_tokens=1600,
+        plugin.tracker.record_usage("reviewer-1", "reviewer", "s-1", total_tokens=2000, prompt_tokens=1600,
                                     completion_tokens=400, context_window=10000, cost=0.004, model="m-fast",
                                     request_id="r-1b", latency_ms=900)
+        return {}
+
+    @app.post("/__stub/latencies")
+    async def add_latencies():
+        for i in range(1, 21):  # 100 ms .. 2 s: the nearest-rank p95 is the 19th, 1.90 s
+            plugin.tracker.record_usage("timer-1", "timer", "s-4", total_tokens=10, prompt_tokens=8,
+                                        completion_tokens=2, context_window=10000, model="m-p95",
+                                        request_id=f"r-4-{i}", latency_ms=100 * i)
         return {}
 
     registry = PluginWebRegistry()  # the plugin's router and static files, mounted as the app mounts them
@@ -103,6 +112,7 @@ EXPECTED = [
     'a failed load shows the error and nothing of what was shown before, and keeps the agent chosen',
     'a tick of the auto refresh leaves a load still on its way alone',
     'the LLMs tab adds up each model with its average and p95 latency',
+    'p95 is the nearest rank: of 20 latencies the 19th, not the slowest',
     "calls filter by agent, mark a sub-agent's call and open in the drawer",
     'the calls sort by a column, by value and not by the text shown, and keep that order when the table draws anew',
     'the auto refresh runs from the start and brings a new call',

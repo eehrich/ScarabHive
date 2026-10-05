@@ -1,0 +1,672 @@
+@database "godot"
+@author "Enrico Ehrich"
+@$VER: godot.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Godot"
+@{h1}Godot
+
+This plugin lets agents build and test games in @{b}Godot 4@{ub} on this
+machine, over two channels. The @{i}headless@{ui} channel starts the Godot
+binary as a process: it creates projects, checks scripts for parse errors,
+plays a scene for a number of frames, runs a GDScript against the project
+and exports builds -- all with the editor closed. The @{i}editor@{ui}
+channel talks to a Godot editor you have open, through the
+@{tt}godot_mcp@{utt} addon the plugin installs into the project: the scene
+tree, node properties, playing the game with a frozen clock, injected
+input, screenshots and the error log.
+
+It ships three agents -- @{tt}gamedev@{utt}, a coding harness for games
+with a tester and Blender and image sub-agents, @{tt}godot_agent@{utt} for
+direct work in an open project, and @{tt}gamedev_tester@{utt} -- plus three
+skills. It has twelve tools, no hooks and no panel.
+
+@{code}
+For users
+  @{"  Getting a project ready  " link ready}
+  @{"  The agents  " link agents}
+  @{"  What to expect  " link expect}
+  @{"  When something does not work  " link trouble}
+
+For agents and developers
+  Headless:  @{" status " link status}  @{" setup " link setup_tool}  @{" import_assets " link import_assets}  @{" check " link check}
+             @{" run " link run}  @{" script " link script}  @{" export " link export}
+  Editor:    @{" scene " link scene}  @{" node " link node}  @{" play " link play}  @{" observe " link observe}  @{" command " link command}
+  @{"  Paths, processes and the socket  " link safety}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+  @{"  Known gaps  " link gaps}
+@{body}
+@endnode
+
+@node ready "Getting a project ready"
+@{h1}Getting a project ready
+
+@{h2}1. Tell the plugin which Godot
+
+Set @{tt}godot_binary@{utt} in the @{tt}godot@{utt} server entry (see
+@{" Setting it up " link setup}) to the full path of the executable. On
+Windows that is the @{tt}..._console.exe@{utt}: the plain exe detaches and
+hands back no output, so every headless tool would see silence. The plugin
+does not search the PATH.
+
+@{h2}2. Prepare the project, editor closed
+
+Ask the agent, or call the tool yourself:
+
+@{code}
+godot_setup(project="my_game")
+@{body}
+
+This creates @{tt}data/workspace/my_game@{utt} with a minimal
+@{tt}project.godot@{utt} if there is none, copies the addon into
+@{tt}addons/godot_mcp@{utt}, enables it, and runs a headless import -- which
+loads the addon, and the addon registers its runtime autoload
+@{tt}MCPGameBridge@{utt}. Running it again is harmless. A project of your
+own works the same way: put it below @{tt}data/workspace/@{utt} and run
+setup on it.
+
+@{h2}3. Open the project in Godot
+
+Only for the editor tools. The addon starts listening on
+@{tt}127.0.0.1:6550@{utt} when the editor loads it. @{tt}godot_status@{utt}
+tells you whether the binary works and which project the editor has open.
+@endnode
+
+@node agents "The agents"
+@{h1}The agents
+
+All three are defined in the plugin's @{tt}agents/@{utt} folder and are
+loaded with it; all are for users with the admin role only
+(@{tt}min_role: admin@{utt}), because they can run code on this machine.
+
+@{h2}gamedev
+
+@{tt}type: coder@{utt}: it @{i}is@{ui} the coder harness -- same model
+chain, same 300 steps, same file sandbox @{tt}coder_fs@{utt} and shell
+@{tt}coder_shell@{utt} -- with a few swaps:
+
+@{table}
+What | Change
+tools | adds @{tt}godot/*@{utt} and @{tt}media_ops/*@{utt}; @{tt}gamedev_sam@{utt} replaces @{tt}coder_sam@{utt}, @{tt}gamedev_okf@{utt} replaces @{tt}coder_okf@{utt}
+sub-agents | via @{tt}gamedev_sam@{utt}: @{tt}coder_explorer@{utt}, @{tt}coder_reviewer@{utt}, @{tt}gamedev_tester@{utt}, @{tt}blender_agent@{utt}, @{tt}image_agent@{utt}
+skills | always @{tt}gamedev-loop@{utt}; on demand @{tt}godot-conventions@{utt}, @{tt}asset-pipeline@{utt}, @{tt}adversarial-review@{utt}, @{tt}diagnosing-bugs@{utt}, @{tt}tdd@{utt}
+knowledge | its own OKF bundle @{tt}data/okf/gamedev@{utt}, injected by the @{tt}gamedev_okf@{utt} hook; the coder's bundle hook is off
+hooks off | @{tt}gamedev_sam.inject_sub_agent_context@{utt} (the agent asks for its sub-agents with a tool call instead of getting a list appended each time it changes)
+prompt | @{tt}agents/prompts/gamedev.md@{utt}
+@{body}
+
+Its loop (the @{tt}gamedev-loop@{utt} skill): read the project, plan, edit
+files, parse-check after every script edit, run headless, playtest in the
+editor with a frozen clock, land assets, have the change reviewed. Its
+prompt makes it report @{tt}Ran:@{utt}, @{tt}Played:@{utt},
+@{tt}Check:@{utt} and @{tt}Reviewed:@{utt} lines. The Blender and image
+agents work in sessions of their own, so their screenshots stay out of its
+context; they hand back a file path, and landing that file in the project
+is the @{tt}asset-pipeline@{utt} skill. See
+@{" The Blender agent " link blender/agent} and
+@{" The image agent " link image_compose/agent}.
+
+@{h2}godot_agent
+
+A @{tt}multi_turn_agent@{utt} without the harness, for "look at this scene
+and tell me why the player falls through the floor". Tools:
+@{tt}godot/*@{utt}, @{tt}media_ops/*@{utt}, @{tt}coder_fs/*@{utt} (to edit
+@{tt}.tscn@{utt} and @{tt}.gd@{utt} files -- the addon cannot create
+nodes), @{tt}skills/*@{utt}, @{tt}datetime/*@{utt}, and
+@{tt}context_engineer/*@{utt} with its compaction hook on (scene trees and
+logs are large). Skill on demand: @{tt}godot-conventions@{utt}. Models:
+@{tt}or-claude-sonnet@{utt}, then @{tt}or-gemini-pro@{utt}, then
+@{tt}or-gpt-full@{utt}; at most 80 steps.
+
+@{tt}coder_fs@{utt} is the coder's instance: it reaches
+@{tt}data/workspace/@{utt} and, as shipped, the whole checkout.
+
+@{h2}gamedev_tester
+
+@{tt}type: coder_tester@{utt} -- shell, read-only files, the tester's
+cheap model chain -- plus the headless tools @{tt}godot_status@{utt},
+@{tt}godot_check@{utt}, @{tt}godot_run@{utt} and @{tt}godot_script@{utt}.
+No editor tools on purpose: it would be a second driver on the editor the
+orchestrator plays in. Visibility @{tt}tool@{utt}: it is started as a
+sub-agent, not picked in the chat. It runs checks and reports only the lines
+that carry a failure.
+@endnode
+
+@node expect "What to expect"
+@{h1}What to expect
+
+@{bullet}@{b}"It ran" comes from the errors, not the exit code.@{ub} A
+@{tt}push_error@{utt} at runtime leaves Godot's exit code at 0, so
+@{tt}godot_run@{utt} reads the error blocks on stderr. A parse error under
+@{tt}godot_check@{utt} does exit 1 and comes with @{tt}file:line@{utt}.
+@{bullet}@{b}The addon cannot create nodes.@{ub} It reads, changes and
+reparents what exists. New nodes come from editing the @{tt}.tscn@{utt} or
+from @{tt}godot_script@{utt}; then @{tt}godot_scene reload@{utt}.
+@{bullet}@{b}Editor edits live in memory@{ub} until @{tt}godot_scene
+save@{utt}; a file changed on disk is not seen until @{tt}reload@{utt}.
+@{bullet}@{b}godot_play starts frozen.@{ub} Nothing moves until the agent
+steps frames or milliseconds, which makes a playtest reproducible.
+@{bullet}@{b}A freshly opened project sits on the 3D tab.@{ub} An editor
+screenshot of a 2D game then shows an empty grid; pass @{tt}viewport:
+"2d"@{utt}.
+@{bullet}@{b}One client per editor.@{ub} A second agent on the same editor
+gets @{tt}BUSY@{utt}.
+@{bullet}@{b}Screenshots are files.@{ub} The tools answer with a path;
+the agent looks at it with @{tt}media_ops_load@{utt}
+(@{" media_ops " link media_ops/load}).
+@endnode
+
+@node trouble "When something does not work"
+@{h1}When something does not work
+
+@{table}
+The message | What it means
+cannot start the Godot binary ... | @{tt}godot_binary@{utt} is wrong or not executable
+no Godot editor is listening on 127.0.0.1:6550 | the project is not open in the editor, or has no addon yet: open it, or run setup first with the editor closed
+BUSY: the addon refused ... another client is already connected | something else holds the editor (a second agent); close it or restart the editor
+STALE: the addon closed the connection ... as idle | the command ran past the addon's 45 s activity window; the next call reconnects
+TIMEOUT: <command> gave no answer within <n>s | the editor is busy or a step is too long; raise @{tt}long_timeout@{utt} or step in smaller pieces
+PROTOCOL: <command>: the reply is not JSON | something other than the godot_mcp addon listens on that port
+DISCONNECTED: the editor closed the connection ... | the editor or its game session ended during the command
+NOT_RUNNING: No game is currently running ... | a game screenshot before @{tt}godot_play run@{utt}
+CAPTURE_FAILED on a screenshot | the game could not capture its viewport, e.g. an editor running headless draws nothing
+every headless tool reports empty output (Windows) | the plain @{tt}Godot.exe@{utt} instead of the @{tt}_console.exe@{utt}
+@{body}
+@endnode
+
+@node status "status"
+@{h1}status
+
+Whether the binary answers @{tt}--version@{utt} (30 s limit) and whether an
+editor with the addon answers a handshake (10 s). No parameters.
+
+Answer: @{tt}binary@{utt} (@{tt}command@{utt}, @{tt}version@{utt},
+@{tt}ok@{utt}, or @{tt}error@{utt}), @{tt}editor@{utt} (@{tt}host@{utt},
+@{tt}port@{utt}, @{tt}reachable@{utt}; when reachable
+@{tt}addon_version@{utt}, @{tt}godot_version@{utt},
+@{tt}project_name@{utt}, @{tt}project_path@{utt}; otherwise
+@{tt}hint@{utt} with the connection error), @{tt}projects_root@{utt},
+@{tt}output_directory@{utt}. Always @{tt}status: success@{utt}; the status
+line is an error line only when the binary is not usable. No editor is
+information, not a failure.
+@endnode
+
+@node setup_tool "setup"
+@{h1}setup
+
+Prepares a project, editor closed. In this order: resolve the project below
+the projects root (it may not exist yet); if there is no
+@{tt}project.godot@{utt}, ask the binary for its version and write one
+(@{tt}config_version=5@{utt}, the name, the main scene, the feature tag
+from the version and "Forward Plus"); copy the addon into
+@{tt}addons/godot_mcp@{utt} unless the same version is there; add it to
+@{tt}[editor_plugins] enabled@{utt} (appended to an existing list, never
+replacing it); run @{tt}--headless --import@{utt}; check that
+@{tt}project.godot@{utt} now has the @{tt}MCPGameBridge@{utt} autoload.
+
+@{table}
+Parameter | Meaning
+project | required; a name below the projects root, or a path inside it
+name | project name for a @{i}new@{ui} project.godot; default the folder name
+main_scene | main scene for a new project; @{tt}res://@{utt} is added to a project-relative path
+force | copy the addon even when the same version is present
+@{body}
+
+@{tt}name@{utt} and @{tt}main_scene@{utt} may not hold a quote, a backslash
+or a control character: they are written between quotes into
+@{tt}project.godot@{utt}.
+
+Answer: @{tt}project@{utt}, @{tt}created@{utt}, @{tt}addon@{utt}
+("4.1.11 installed", "4.1.11 present", "4.1.11 reinstalled", "updated
+<old> -> 4.1.11"), @{tt}plugin_enabled@{utt},
+@{tt}autoload_registered@{utt}, @{tt}import@{utt} (@{tt}exit@{utt},
+@{tt}timed_out@{utt}, @{tt}errors@{utt}, @{tt}stderr@{utt}).
+@{tt}status@{utt} is @{tt}error@{utt} when the autoload did not land or the
+import timed out. A binary that does not answer @{tt}--version@{utt} stops
+setup before any @{tt}project.godot@{utt} is written.
+@endnode
+
+@node import_assets "import_assets"
+@{h1}import_assets
+
+Runs @{tt}--headless --import@{utt} on the project, so a file copied into
+it (a @{tt}.glb@{utt}, @{tt}.png@{utt}, @{tt}.wav@{utt}) becomes usable.
+Then, if an editor answers and has @{i}this@{ui} project open, it asks it to
+@{tt}rescan_filesystem@{utt} so it sees the result. The rescan never
+decides the verdict: it knows neither the project nor which file failed.
+
+Parameter: @{tt}project@{utt} (required).
+
+Answer: @{tt}ok@{utt} (exit 0, no timeout, no error blocks),
+@{tt}exit@{utt}, @{tt}timed_out@{utt}, @{tt}editor_refreshed@{utt},
+@{tt}editor_note@{utt} (why not: another project open, the rescan's
+error; null when there is no editor), @{tt}errors@{utt},
+@{tt}warnings@{utt}, @{tt}stderr@{utt}. The addon's own complaint that its
+port is taken (an editor is open) is filed under warnings, not errors.
+@endnode
+
+@node check "check"
+@{h1}check
+
+Parse errors without running anything.
+
+@{table}
+Parameter | Meaning
+project | required
+script | one script (@{tt}res://...@{utt} or project-relative): @{tt}--check-only -s <script>@{utt}. Left out: every @{tt}.gd@{utt} in the project, skipping @{tt}addons/@{utt}, @{tt}.godot/@{utt} and hidden folders
+@{body}
+
+The whole-project check loads each script with a small SceneTree script
+(@{tt}scripts/check_scripts.gd@{utt}) and counts those that cannot be
+instantiated. A script that failed without printing a parse error (an
+abstract class, a dependency that did not load) is still named, as an error
+of kind @{tt}CHECK@{utt}.
+
+Answer: @{tt}ok@{utt}, @{tt}scripts_checked@{utt}, @{tt}errors@{utt},
+@{tt}warnings@{utt}, @{tt}exit@{utt}, @{tt}timed_out@{utt},
+@{tt}output@{utt}, @{tt}stderr@{utt}. An error is @{tt}{kind, message,
+file, line, at}@{utt}; one parse error counts once, though Godot prints two
+blocks for it.
+@endnode
+
+@node run "run"
+@{h1}run
+
+Plays the project or one scene and reads what it printed.
+
+@{table}
+Parameter | Meaning
+project | required
+scene | scene to run (@{tt}res://@{utt} or project-relative); default the main scene
+frames | quit after this many frames, default 60; 0 = until the game quits or the timeout
+timeout | seconds before the process tree is killed; default @{tt}long_timeout@{utt}
+windowed | open a real window instead of @{tt}--headless@{utt}
+args | strings passed after @{tt}--@{utt} (the game reads them with @{tt}OS.get_cmdline_user_args()@{utt})
+@{body}
+
+The verdict: @{tt}timeout@{utt}, else @{tt}errors@{utt} if any error block
+was printed, else @{tt}exit <n>@{utt} for a non-zero exit, else
+@{tt}ok@{utt}. Answer: @{tt}verdict@{utt}, @{tt}exit@{utt},
+@{tt}timed_out@{utt}, @{tt}errors@{utt}, @{tt}warnings@{utt},
+@{tt}output@{utt} (stdout without the banner, at most 60,000 characters,
+@{tt}truncated@{utt}), @{tt}stderr@{utt} (what no error block took: a
+crash dump, @{tt}printerr()@{utt}). An error's location is the first
+script frame of its backtrace, not the engine's C++ line.
+
+@{code json}
+{"project": "shmup", "scene": "levels/one.tscn", "frames": 120}
+@{body}
+@endnode
+
+@node script "script"
+@{h1}script
+
+Runs GDScript against the project with the engine API and no editor: build
+or rewrite scenes (@{tt}PackedScene.pack@{utt} +
+@{tt}ResourceSaver.save@{utt}), batch changes, inspect resources.
+
+@{table}
+Parameter | Meaning
+project | required
+code | required; @{tt}extends SceneTree@{utt} is put in front when no line starts with @{tt}extends@{utt}. Put the work in @{tt}func _init():@{utt} and @{tt}print@{utt} what you want back
+frames | iterations before Godot quits, default 1; raise it for code that awaits
+timeout | seconds, default @{tt}long_timeout@{utt}
+@{body}
+
+The code goes into a temporary file that is deleted afterwards. It runs
+unguarded: full GDScript, @{tt}OS.execute@{utt} included (see
+@{" Paths, processes and the socket " link safety}).
+
+Answer: @{tt}exit@{utt}, @{tt}timed_out@{utt}, @{tt}errors@{utt},
+@{tt}warnings@{utt}, @{tt}exit_leaks@{utt} (Godot's "resources still in use
+at exit" report -- normal for a one-shot script, kept apart so it neither
+hides nor counts), @{tt}output@{utt}, @{tt}truncated@{utt},
+@{tt}stderr@{utt}.
+@endnode
+
+@node export "export"
+@{h1}export
+
+Exports with a preset from the project's @{tt}export_presets.cfg@{utt}.
+Needs the export templates for that Godot version.
+
+@{table}
+Parameter | Meaning
+project | required
+preset | required; the preset name exactly; may not start with @{tt}-@{utt}
+filename | file below the output directory; default @{tt}<project>_<preset>.export@{utt}
+debug | @{tt}--export-debug@{utt} instead of @{tt}--export-release@{utt}
+@{body}
+
+Success needs all three: the file changed, exit 0, no error block (Godot
+writes the pack as it goes, so a killed or failed export leaves a file that
+is bigger than before and still broken). Answer on success:
+@{tt}path@{utt}, @{tt}bytes@{utt}, @{tt}errors@{utt}, @{tt}warnings@{utt}.
+Otherwise @{tt}status: error@{utt} with @{tt}error_type@{utt}
+@{tt}MissingOutput@{utt} (nothing written) or @{tt}ExportFailed@{utt}
+(written but not finished), plus @{tt}exit@{utt}, @{tt}errors@{utt},
+@{tt}output@{utt}, @{tt}stderr@{utt}.
+@endnode
+
+@node scene "scene"
+@{h1}scene
+
+The scene open in the editor.
+
+@{table}
+Action | Addon command | Parameters
+tree (default) | get_scene_tree | max_depth, max_children; 0 = no limit (default)
+open | open_scene | scene_path, required
+save | save_scene | scene_path only as "save as" for a scene without a file; another scene's path is refused (SCENE_MISMATCH)
+reload | reload_scene | scene_path; default the current scene
+@{body}
+
+Paths get @{tt}res://@{utt} in front when they are project-relative.
+Answer: @{tt}action@{utt} and the addon's @{tt}result@{utt} (at most
+60,000 characters; a larger tree is cut and @{tt}truncated@{utt} says
+where). Reload after any tool changed a file the editor has open, or the
+editor saves its old copy back over it.
+@endnode
+
+@node node "node"
+@{h1}node
+
+Existing nodes of the open scene.
+
+@{table}
+Action | Addon command | Parameters
+get | get_node_properties | node_path
+find | find_nodes | name_pattern (glob) and/or type, root_path; searches the running game instead when one is playing
+update | update_node | node_path, properties (a non-empty object)
+reparent | reparent_node | node_path, new_parent_path
+@{body}
+
+Missing required values are refused before the editor is asked. Changes
+are in memory until @{tt}godot_scene save@{utt}. Answer: @{tt}action@{utt},
+@{tt}result@{utt}.
+
+@{code json}
+{"action": "update", "node_path": "Player", "properties": {"position": [100, 200], "visible": true}}
+@{body}
+@endnode
+
+@node play "play"
+@{h1}play
+
+Runs the game from the editor and drives it.
+
+@{table}
+Action | Addon command | Parameters
+run | run_project | scene_path, frozen (default true)
+stop | stop_project |
+freeze, thaw, status | game_time_freeze, _thaw, _status |
+step | game_time_step | duration_ms or frames (one is required), inputs, report
+step_until | game_time_step_until | until (required), max_ms, inputs, report
+input | execute_input_sequence | inputs (required), report, screenshot_at_ms, screenshot_max_width
+type_text | type_text | text (required), submit, delay_ms
+exec | exec_run | source (required)
+@{body}
+
+@{bullet}@{b}step@{ub}: the addon caps @{tt}frames@{utt} at 1200 and
+@{tt}duration_ms@{utt} at 300,000, but it also ends a step after 25 s of
+real time and says so with @{tt}wall_budget_exceeded@{utt} -- step long
+stretches in pieces.
+@{bullet}@{b}step_until@{ub}: @{tt}until@{utt} is a GDScript expression
+checked every frame; @{tt}max_ms@{utt} defaults to 20,000 (addon).
+@{bullet}@{b}inputs@{ub}: objects on one timeline, e.g.
+@{tt}{"action_name": "jump"}@{utt}, @{tt}{"action_name": "left",
+"duration_ms": 800}@{utt}, @{tt}{"key": "ctrl+s"}@{utt},
+@{tt}{"joy_button": "a"}@{utt}, @{tt}{"axis": "left_x", "value": -1.0,
+"duration_ms": 500}@{utt}, @{tt}{"look": [dx, dy]}@{utt}; @{tt}start_ms@{utt}
+places one on the timeline.
+@{bullet}@{b}report@{ub}: expressions evaluated after the step, returned
+with the result.
+@{bullet}@{b}screenshot_at_ms@{ub}: captures inside an input sequence,
+each written to @{tt}play_input_<n>.png@{utt} in the output directory; the
+entry gets @{tt}path@{utt} instead of the image data.
+@{tt}screenshot_max_width@{utt} is held to 128-4096 (addon default 640).
+@{bullet}@{b}exec@{ub}: GDScript inside the running game. The addon scans
+it for a list of calls that reach outside the game (@{tt}OS.execute@{utt},
+@{tt}DirAccess@{utt}, file writes, ...) -- an accident guard, not a
+boundary.
+
+Answer: @{tt}action@{utt}, @{tt}result@{utt} (clipped as in scene).
+@endnode
+
+@node observe "observe"
+@{h1}observe
+
+Looks at the running game or the editor.
+
+@{table}
+Action | Parameters | What comes back
+screenshot | source (game, default; editor), viewport (2d, 3d; editor only), filename, max_width | @{tt}path@{utt}, @{tt}bytes@{utt}, @{tt}width@{utt}, @{tt}height@{utt}, @{tt}mesh_warnings@{utt}
+logs | since, limit (50), severity (all, error, warning, info), clear | @{tt}messages@{utt}, @{tt}cursor@{utt}, @{tt}match_count@{utt}
+state | paths, include, type, group (mcp_watch), max_nodes (40, at most 200) | live values of the selected nodes
+stack | | the last error's stack trace
+editor | | selection, open scene, play state
+@{body}
+
+@{bullet}@{b}screenshot@{ub}: written as a PNG below the output directory,
+default @{tt}game.png@{utt} or @{tt}editor.png@{utt} (overwritten each
+time); another extension becomes @{tt}.png@{utt}. @{tt}max_width@{utt} is
+held to 128-4096, default 900. The data is checked to be a PNG
+@{i}before@{ui} the file is touched, so a broken capture never destroys the
+previous one.
+@{bullet}@{b}logs@{ub}: pass the returned @{tt}cursor@{utt} as
+@{tt}since@{utt} next time to get only what is new.
+
+Defaults in brackets are the addon's. Answer (other than screenshot):
+@{tt}action@{utt}, @{tt}result@{utt}.
+@endnode
+
+@node command "command"
+@{h1}command
+
+Any of the addon's 88 commands by name -- animation tracks and keyframes,
+tilemap and gridmap cells, the profiler, selection, spatial info, resource
+info, project settings, @{tt}rescan_filesystem@{utt},
+@{tt}restart_editor@{utt} and the rest.
+
+@{table}
+Parameter | Meaning
+command | required; e.g. @{tt}get_input_map@{utt}, @{tt}set_cell@{utt}, @{tt}get_spatial_info@{utt}
+params | an object, passed as it is
+long | use @{tt}long_timeout@{utt} instead of the command's usual timeout
+@{body}
+
+The reply is passed through, except that an image in it (a top-level
+@{tt}image_base64@{utt}, or a @{tt}screenshots@{utt} list) is written to
+@{tt}command_<name>_<n>.png@{utt} and replaced by its path. Nothing here
+checks the parameters: @{tt}max_width@{utt} of a screenshot command, for
+instance, is sent as given. Answer: @{tt}command@{utt}, @{tt}result@{utt}.
+@endnode
+
+@node safety "Paths, processes and the socket"
+@{h1}Paths, processes and the socket
+
+@{h2}Paths
+
+A @{tt}project@{utt} must lie below @{tt}projects_root@{utt}; a file the
+tools write (screenshot, export) below @{tt}output_directory@{utt}.
+@{tt}..@{utt} that leads out, an absolute path elsewhere and a drive letter
+are refused before Godot starts. Network and device paths
+(@{tt}//host/share/...@{utt}, @{tt}//?/UNC/...@{utt}) are refused on their
+text alone -- for projects, output files and the scene and script paths
+handed to Godot -- because merely resolving such a path makes Windows sign
+in to that host with your credentials, and Godot would load a scene from
+it.
+
+A scene or script path is taken as @{tt}res://@{utt}: a leading @{tt}/@{utt}
+is the project's root. Only a path with a drive letter, or an absolute path
+whose folder exists, goes to Godot as a file system path.
+
+@{h2}Processes
+
+Each headless tool starts one Godot process and waits for it. On a timeout
+the plugin kills the process @{i}and everything it started@{ui} -- on
+Windows the @{tt}_console.exe@{utt} is a wrapper around the real exe, and a
+game may start processes of its own -- and answers with what was printed
+so far. A stopped tool call kills its process the same way.
+
+@{h2}Code that runs
+
+@{tt}godot_script@{utt} runs any GDScript with the rights of this user:
+files anywhere, @{tt}OS.execute@{utt}, the network. So does a game played
+with @{tt}godot_run@{utt}. @{tt}play exec@{utt} has the addon's accident
+guard and nothing more. Give @{tt}godot/*@{utt} only to an agent you would
+let run code on this machine.
+
+@{h2}The socket
+
+Every editor call opens one WebSocket to @{tt}host:port@{utt}, sends one
+@{tt}{"id", "command", "params"}@{utt}, reads one answer and closes. The
+addon listens on @{tt}127.0.0.1@{utt} by default (its project settings
+@{tt}godot_mcp/bind_mode@{utt} can change that) and asks for no password.
+The addon accepts one client at a time and drops a connection 45 s after
+the last message it received.
+
+@{table}
+Calls | Timeout
+editor queries | @{tt}timeout@{utt} (60 s)
+run_project, game_time_step, game_time_step_until, exec_run, execute_input_sequence, type_text, both screenshots, rescan_filesystem | @{tt}long_timeout@{utt} (600 s)
+headless runs | @{tt}timeout@{utt} of run and script, else @{tt}long_timeout@{utt}; @{tt}--version@{utt} 30 s
+connecting | 5 s
+@{body}
+
+An answer larger than 32 MB closes the connection (@{tt}DISCONNECTED@{utt}).
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Twelve tools from the plugin's @{tt}schema.yaml@{utt}, named after the
+instance: @{tt}godot_status@{utt} ... @{tt}godot_command@{utt}. The
+descriptions carry what a model gets wrong otherwise: that
+@{tt}exit@{utt} is not the verdict, that @{tt}play@{utt} starts frozen,
+that a screenshot is a path to load with media_ops, that a 2D game needs
+@{tt}viewport: "2d"@{utt}, and to reload or save after edits.
+@{tt}gamedev_tester@{utt} sees only four of them.
+
+The agents' own tools (@{tt}gamedev_execute_task@{utt},
+@{tt}godot_agent_execute_task@{utt}, @{tt}gamedev_tester_execute_task@{utt}
+and their @{tt}list_available_tools@{utt}) are described by the
+@{tt}self_tool_descriptions@{utt} in their YAML files.
+
+@{h2}Errors
+
+A failure answers @{tt}{"status": "error", "error": "...", "error_type":
+"..."}@{utt} and, for an addon error, @{tt}code@{utt} (the addon's own, or
+@{tt}BUSY@{utt}, @{tt}STALE@{utt}, @{tt}TIMEOUT@{utt},
+@{tt}DISCONNECTED@{utt}, @{tt}PROTOCOL@{utt}). Verbatim examples:
+
+@{code}
+'../x' resolves outside the projects root (<root>)
+no project.godot in <path>; run the setup tool to create a project there
+'//host/share/level.tscn' is on a network share; give a res:// path
+'preset' must not start with '-' ('--path')
+step needs 'duration_ms' or 'frames'
+unknown action 'jump' (run, stop, freeze, thaw, status, step, step_until, input, type_text, exec)
+@{body}
+
+@{h2}The chat status line
+
+One line per call, at most 140 characters (the middle is cut so the reason
+at the end survives), for example:
+
+@{code}
+binary 4.7.2.stable.official, editor: 'Shmup' addon 4.1.11
+shmup: 12 scripts parse clean
+shmup levels/one.tscn: errors, 1 errors, 0 warnings, 3 lines out: res://main.gd:4: boom
+shmup 'Windows' -> shmup.exe, 81234 KB
+play step: stepped_ms=500, frames=30
+game -> game.png, 900x506, 212 KB
+@{body}
+
+It is an error line when the call failed or its verdict is not clean.
+
+@{h2}Tokens and cache
+
+Append-only: each call adds one tool result, nothing earlier is rewritten.
+Results are bounded: stdout, trees and replies at 60,000 characters (lists
+halved, long strings cut, @{tt}truncated@{utt} and @{tt}truncation@{utt}
+say what went), pictures never inline -- they are files the model loads
+when it wants to look.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Needs Godot 4.5 or later (the vendored addon 4.1.11 requires it) and
+@{tt}websockets@{utt}, a core dependency. The instances ship in the
+plugin's @{tt}agents/tools.yaml@{utt}, which @{tt}config/config.yaml@{utt}
+includes with every plugin's @{tt}agents/*.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    godot:
+      type: godot
+      enabled: true
+      description: "Godot 4: headless checks and runs of a project, and a running editor via the godot_mcp addon"
+      godot_binary: "C:/prog/Godot/Godot_v4.7.2-stable_win64_console.exe"
+      projects_root: "data/workspace"
+      output_directory: "data/workspace/godot"
+      timeout: 60
+      long_timeout: 600
+@{body}
+
+The same file defines @{tt}gamedev_sam@{utt} (a sub-agent manager allowing
+@{tt}coder_explorer@{utt}, @{tt}coder_reviewer@{utt},
+@{tt}gamedev_tester@{utt}, @{tt}blender_agent@{utt},
+@{tt}image_agent@{utt}; at most 4 per type and 20 per session, 3600 s
+default wait) and @{tt}gamedev_okf@{utt} (the knowledge bundle in
+@{tt}data/okf/gamedev@{utt}). An agent gets the tools with
+@{tt}+godot/*@{utt}, or single tools with e.g.
+@{tt}+godot/godot_check@{utt}.
+
+@{table}
+Key | Default in code | Meaning
+godot_binary | godot | the executable; on Windows the console one
+projects_root | data/workspace | every project must lie below it
+output_directory | data/workspace/godot | screenshots and exports; created as needed
+host | 127.0.0.1 | where the editor addon listens
+port | 6550 | its port
+timeout | 60 | seconds for editor queries
+long_timeout | 600 | seconds for headless runs and long editor commands
+@{body}
+
+Relative directories count from the folder ScarabHive was started in, as
+the file tools' do. The addon itself lives in the plugin's
+@{tt}addon/godot_mcp@{utt} (upstream: satelliteoflove/godot-mcp, MIT;
+version and commit in @{tt}addon/VENDORED.md@{utt}); @{tt}setup@{utt}
+copies it into each project.
+@endnode
+
+@node gaps "Known gaps"
+@{h1}Known gaps
+
+@{bullet}@{b}The editor socket has no password.@{ub} Any program on this
+machine that reaches the port can drive the editor and run GDScript in the
+game with @{tt}exec_run@{utt} -- and so can a web page, if the browser lets
+it open a WebSocket to localhost; the addon checks neither a token nor
+the origin. Keep the editor closed, or the addon disabled, when you do not
+use it.
+@{bullet}@{b}The editor may have another project open.@{ub} The editor
+tools act on whatever the editor shows; only @{tt}import_assets@{utt}
+compares the project. @{tt}godot_status@{utt} names it.
+@{bullet}@{b}A long step is cut at 25 s of real time.@{ub} The plugin does
+not send the addon a longer wall budget; the result says
+@{tt}wall_budget_exceeded@{utt}.
+@{bullet}@{b}rescan_filesystem on a big project@{ub} can run past the
+addon's 45 s idle window and end as @{tt}STALE@{utt}; the scan finishes
+regardless.
+@{bullet}@{b}An orphan is not killed.@{ub} The kill takes the process
+tree as it stands; a process whose parent had already ended is no longer
+part of it.
+@{bullet}@{b}Screenshots overwrite each other@{ub} under their default
+names; pass @{tt}filename@{utt} to keep one.
+@endnode

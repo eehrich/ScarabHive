@@ -10,8 +10,10 @@
 # Vor einer Veroeffentlichung: Keys rotieren, History bereinigen, DANN hier
 # `secrets.env` eintragen (die .example bleibt in jedem Fall getrackt).
 # Was nur auf EINER Maschine gilt (Netz, Log-Aufbewahrung):
-# letztes Include in config/config.yaml, gewinnt also ueber alles.
+# nach allen Includes gelesen, gewinnt also ueber alles (auch auth, paths).
 config/local.yaml
+# Die Schluessel dieser Maschine (Setup-Panel, install-Skripte), vor secrets.env gelesen.
+config/local.env
 # Sicherheitsnetz fuer Zugangsdaten, die nie ins Repo gehoeren -- bewusst
 # konkrete Namen: ein Muster wie `credentials.*` versteckte auch ein Modul
 # credentials.py still. Die .example-Vorlagen bleiben getrackt.

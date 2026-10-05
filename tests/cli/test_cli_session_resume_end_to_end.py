@@ -27,6 +27,7 @@ from agent_system.config.models import (
 )
 from agent_system.services.session_manager import SessionManager, SessionPermissionError
 from agent_system.services.session_service import SessionService
+from agent_stand_in import stand_in_for_agent
 
 STORED_AGENT = "stored_agent"
 STORED_PROFILE = "profile_stored"
@@ -88,8 +89,7 @@ def cli_env(tmp_path, monkeypatch):
         return ToolServerRegistry(), service
 
     monkeypatch.setattr(InitializationService, "initialize_for_cli", fake_init)
-    monkeypatch.setattr("agent_system.servers.agent.server.Agent", _DummyAgent)
-    monkeypatch.setattr("agent_system.servers.agent.entry.Agent", _DummyAgent)
+    stand_in_for_agent(monkeypatch, _DummyAgent)
 
     saved = {}
 
@@ -364,14 +364,16 @@ class TestSessionPresence:
     def _records_the_task(monkeypatch):
         """What actually reaches the agent -- the one thing main() decides here
         and nothing downstream can put back."""
+        from agent_system.servers.agent.server import Agent
+
         seen = []
-        original = _DummyAgent.run_events
+        original = Agent.run_events  # the stand-in's, which cli_env gave the real class
 
         def recording(self, task, **kwargs):
             seen.append(task)
             return original(self, task, **kwargs)
 
-        monkeypatch.setattr(_DummyAgent, "run_events", recording)
+        monkeypatch.setattr(Agent, "run_events", recording)
         return seen
 
     def test_a_woken_run_speaks_as_the_run_not_as_a_person(

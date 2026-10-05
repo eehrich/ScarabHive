@@ -9,8 +9,10 @@ This module provides:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 import sys
 from functools import lru_cache
 
@@ -142,6 +144,11 @@ def ansi_capable_stdout() -> bool:
     return _enable_windows_vt()
 
 
+def dumb_terminal() -> bool:
+    """Whether TERM says the terminal shows no escape codes (as Rich reads it)."""
+    return os.environ.get("TERM", "").lower() in ("dumb", "unknown")
+
+
 # Global color mode (can be set by CLI tools)
 # Supports: 'auto', 'always', 'never', 'ansi', 'html', 'text'
 color_mode: str = "auto"
@@ -183,9 +190,10 @@ def get_output_format() -> str:
         return mode
     
     # Auto mode: ANSI only where it will actually render as colour, and not
-    # when NO_COLOR is set (no-color.org; an explicit --color still wins).
+    # when NO_COLOR is set (no-color.org) or the terminal says it is dumb
+    # (an explicit --color still wins).
     if mode == "auto":
-        if os.environ.get("NO_COLOR"):
+        if os.environ.get("NO_COLOR") or dumb_terminal():
             return "text"
         return "ansi" if ansi_capable_stdout() else "text"
     
@@ -331,14 +339,54 @@ def format_error(error_msg: str, use_color: bool = True) -> str:
     return error_msg
 
 
+_LINE_BREAK_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_URL_SCHEME = re.compile(r"([a-z][a-z0-9+.-]*):", re.IGNORECASE)
+
+
 def render_with_rich(markdown_content: str, code_theme: str = "monokai") -> None:
     """Render markdown content with Rich Console (for ANSI terminal display)."""
     try:
+        from markdown_it import MarkdownIt
         from rich.console import Console
         from rich.markdown import Markdown as RichMarkdown
-        
-        console = Console()
-        md = RichMarkdown(markdown_content, code_theme=code_theme)
+
+        # Only show_answer calls this, when --color asks for colours (auto: on a terminal, VT switched on):
+        # ANSI codes then, into a pipe on Windows too (Rich would take the console API there, which a pipe
+        # ignores) and under NO_COLOR or TERM=dumb, which only the automatic choice honours (get_output_format).
+        # Under TERM=dumb Rich would detect no colours at all.
+        console = Console(force_terminal=True, legacy_windows=False, no_color=False,
+                          color_system="standard" if dumb_terminal() else "auto")
+        # A dumb terminal shows a link's OSC 8 escape as junk: "text (url)" there.
+        dumb = dumb_terminal()
+        md = RichMarkdown(markdown_content, code_theme=code_theme, hyperlinks=not dumb)
+        # As the chat shows it: a single line break stays one, the model meant it (Rich joins the lines);
+        # <br> is one too (a table cell's only line break); other HTML is text -- Rich drops it, and with it
+        # "--agent <name>" or "List<T>". Rich's own parser without block HTML and images, which the chat has
+        # none of: a line that starts with a tag stays a paragraph, its tags reach the loop below, and an
+        # image is "!" and its link. Links as the chat allows them (a terminal's are clickable too): http(s),
+        # mailto or relative; any other stays text.
+        parser = MarkdownIt().enable("strikethrough").enable("table").disable(["html_block", "image"])
+        parser.validateLink = lambda url: (not (scheme := _URL_SCHEME.match(url))
+                                           or scheme[1].lower() in ("http", "https", "mailto"))
+        md.parsed = parser.parse(markdown_content)
+        for token in md.parsed:
+            children = token.children or []
+            for i, child in enumerate(children):
+                if child.type == "softbreak":
+                    child.type = "hardbreak"
+                elif child.type == "html_inline":
+                    child.type = "hardbreak" if _LINE_BREAK_TAG.fullmatch(child.content) else "text"
+                elif (dumb and child.type == "link_open" and child.markup == "autolink"
+                      and children[i + 1].content == child.attrs["href"]):  # its text is its url: once
+                    for mark in (child, children[i + 2]):
+                        mark.type, mark.content = "text", ""
+            # A <br> that ends a paragraph or a cell, behind closing marks too, draws no line in the chat.
+            end = len(children)
+            while end and (children[end - 1].type.endswith("_close")
+                           or children[end - 1].type == "text" and not children[end - 1].content):
+                end -= 1
+            if end and children[end - 1].type == "hardbreak":
+                del children[end - 1]
         console.print(md)
     except ImportError:
         print(markdown_content)
@@ -347,77 +395,41 @@ def render_with_rich(markdown_content: str, code_theme: str = "monokai") -> None
         print(markdown_content)
 
 
-def print_agent_response(formatted_content: str, content_format: str) -> None:
-    """Print agent response with appropriate formatting and headers.
-    
-    Args:
-        formatted_content: The formatted content to display
-        content_format: Format type ('ansi', 'html', 'text', 'markdown')
-    """
+def _is_json(text: str) -> bool:
+    """A structured answer, or one a prompt asked to be JSON: Markdown drawing would join its lines."""
+    stripped = text.strip()
+    if stripped[:1] not in ("{", "["):
+        return False
+    try:
+        json.loads(stripped)
+    except ValueError:
+        return False
+    return True
+
+
+def show_answer(text: str) -> None:
+    """An agent's answer on stdout, as --color asks: its Markdown drawn with colours where they show
+    (a terminal), HTML for ``--color html``, and the text as the model wrote it otherwise -- into a pipe,
+    a file, under NO_COLOR or TERM=dumb. JSON is always printed as it is."""
+    output_format = get_output_format()
+    if _is_json(text) or output_format not in ("ansi", "html"):
+        print(text, flush=True)
+        return
+    from agent_system.utils.markdown_render import extract_markdown_content, markdown_to_html
+    try:
+        if output_format == "html":
+            print(markdown_to_html(text) or text, flush=True)
+        else:
+            render_with_rich(extract_markdown_content(text))
+    except Exception:
+        logger.debug("Drawing the answer failed, printing it as it is", exc_info=True)
+        print(text, flush=True)
+
+
+def print_agent_response(text: str) -> None:
+    """An agent's answer between rules, for agent-run (see show_answer)."""
     print("\n" + "="*50)
     print("AGENT RESPONSE:")
     print("="*50)
-    
-    if content_format == 'ansi':
-        render_with_rich(formatted_content)
-    else:
-        print(formatted_content)
-    
+    show_answer(text)
     print("="*50)
-
-
-async def format_output_with_hooks(
-    output: str,
-    agent_instance,
-    session_id: str = "unknown",
-    request_id: str = "cli_display",
-    output_format: str | None = None
-) -> tuple[str, str]:
-    """Format output using FORMAT_OUTPUT hooks based on --color setting.
-    
-    This is a central function used by both agent-cli and agent-run to convert
-    agent output (markdown or HTML) to the desired format using FORMAT_OUTPUT hooks.
-    
-    Args:
-        output: The output string to format (can be markdown or HTML)
-        agent_instance: Agent instance with hook manager
-        session_id: Session ID for context
-        request_id: Request ID for context
-        output_format: Override format ('ansi', 'html', 'text'). If None, uses get_output_format()
-        
-    Returns:
-        Tuple of (formatted_output, content_format)
-        - formatted_output: Formatted string in requested format
-        - content_format: Actual format type ('ansi', 'html', 'text', 'markdown')
-        
-    Note:
-        - Honors --color flag via get_output_format()
-        - Falls back to original output if hooks not available
-        - Handles both markdown and HTML input (auto-detects and converts)
-    """
-    # Determine desired output format
-    if output_format is None:
-        output_format = get_output_format()
-    
-    # Check if agent has hook manager
-    if not agent_instance or not hasattr(agent_instance, '_hook_manager') or not agent_instance._hook_manager:
-        logger.debug("No hook manager available, returning original output")
-        return output, 'text'
-    
-    try:
-        logger.debug(f"Formatting output with format='{output_format}' (length: {len(output)})")
-        
-        # Execute format hooks with requested output format
-        formatted_output, content_format = await agent_instance._hook_manager.execute_format_output_hooks(
-            output=output,
-            request_id=request_id,
-            session_id=session_id,
-            output_format=output_format
-        )
-        
-        logger.debug(f"Formatting complete: format={content_format}, length={len(formatted_output)}")
-        return formatted_output, content_format
-        
-    except Exception as e:
-        logger.warning(f"Failed to format output: {e}", exc_info=True)
-        return output, 'text'

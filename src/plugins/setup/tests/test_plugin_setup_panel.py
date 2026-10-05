@@ -28,7 +28,7 @@ pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based brow
               pytest.mark.timeout(PAGE_TIMEOUT + 60)]
 
 
-def panel_app(monkeypatch, users_folder: Path) -> FastAPI:
+def panel_app(users_folder: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     from plugins.setup import server as module
 
     loaded = load_settings()
@@ -50,14 +50,37 @@ def panel_app(monkeypatch, users_folder: Path) -> FastAPI:
             stub["calls"]["late"] += 1
         return answer
 
-    async def probe(config):
+    async def probe(config, llm_config=None):
         await asyncio.sleep(stub["probe_delay"])
         if stub["probe_fails"]:
             raise RuntimeError("the probe itself broke")
         return copy.deepcopy(stub["probe"])
 
+    def write_key(cfg_path, name, value):
+        # the real one writes beside the config the server was built with: this machine's config/local.env
+        stub["written"].append({"name": name, "value": value})
+        if stub["key_refuse"]:
+            raise HTTPException(status_code=400, detail=f"{name} not written: the value holds a line break")
+        for key in stub["state"]["keys"]:  # the row's state changes: the table is drawn anew
+            if key["name"] == name:
+                key["state"] = "set"
+
+    def reload_app_config(app):
+        if stub["reload_error"]:
+            raise module.ConfigReloadFailed(stub["reload_error"])
+        return {}
+
+    def ensure_signing_key(cfg_path, known=()):
+        stub["signing_keys_made"] += 1
+        stub["state"]["auth"]["configured_signing_key_known"] = False
+        return "a new signing key is in local.env"
+
+    stub.update(written=[], key_refuse=False, signing_keys_made=0, reload_error=None)
     monkeypatch.setattr(module, "installation_state", state)
     monkeypatch.setattr(module, "probe_chat", probe)
+    monkeypatch.setattr(module, "write_key", write_key)
+    monkeypatch.setattr(module, "ensure_signing_key", ensure_signing_key)
+    monkeypatch.setattr(module, "reload_app_config", reload_app_config)
 
     app = FastAPI()
     registry = PluginWebRegistry()  # the plugin's router and static files, mounted as the app mounts them
@@ -100,7 +123,8 @@ def panel_app(monkeypatch, users_folder: Path) -> FastAPI:
         for name, value in data.get("auth", {}).items():
             assert name in real["auth"], f"the server's auth has no field {name!r}"
             stub["state"]["auth"][name] = value
-        for name in ("me", "me_fails", "me_delays", "probe", "probe_delay", "probe_fails", "state_fails", "state_delays"):
+        for name in ("me", "me_fails", "me_delays", "probe", "probe_delay", "probe_fails", "state_fails", "state_delays",
+                     "key_refuse", "reload_error"):
             if name in data:
                 stub[name] = data[name]
         return {}
@@ -108,6 +132,10 @@ def panel_app(monkeypatch, users_folder: Path) -> FastAPI:
     @app.get("/__stub/patched")
     async def patched():
         return stub["patched"]
+
+    @app.get("/__stub/written")
+    async def written():
+        return {"keys": stub["written"], "signing_keys_made": stub["signing_keys_made"]}
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/setup", StaticFiles(directory=TESTS), name="panel-tests")
@@ -117,7 +145,7 @@ def panel_app(monkeypatch, users_folder: Path) -> FastAPI:
 @pytest.fixture(scope="module")
 def results(tmp_path_factory):
     with pytest.MonkeyPatch.context() as monkeypatch:
-        app = panel_app(monkeypatch, tmp_path_factory.mktemp("setup_panel"))
+        app = panel_app(tmp_path_factory.mktemp("setup_panel"), monkeypatch)
         yield run_app_test_page(BROWSER, app, "tests/setup/panel_tests.html", timeout=PAGE_TIMEOUT)
 
 
@@ -131,6 +159,9 @@ EXPECTED = [
     'a refresh during a chat test keeps it running, and a failed test replaces the answer before it',
     'a state that cannot be read says so, a chat test still shows its outcome, and the next read clears it',
     'a load overtaken by a newer one is never drawn, nor clears the newer one’s notice',
+    'a key is sent and its field cleared, a refused one keeps what was typed, one the environment sets has no field',
+    'an own signing key is offered only while a known one is configured, asked for first, then made',
+    'what is typed in one row survives a save in another, and a failed reload says to restart',
 ]
 
 

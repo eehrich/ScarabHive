@@ -41,7 +41,7 @@ class EndpointSecurityMiddleware:
     """
     Endpoint security enforcement middleware (Pure ASGI implementation).
     
-    Enforces endpoint_security rules from config.yaml by checking
+    Enforces endpoint_security rules from config/security.yaml (included by config.yaml) by checking
     JWT tokens and validating user roles for admin-only endpoints.
     """
     

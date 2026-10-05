@@ -175,3 +175,35 @@ async def test_a_missing_package_is_an_error_not_zero_hits(server, monkeypatch):
     monkeypatch.setitem(sys.modules, "ddgs", None)  # `from ddgs import ...` raises
     with pytest.raises(RuntimeError, match="pip install ddgs"):
         await server.call("web_search", {"query": "test", "_status": AsyncMock()})
+
+
+@needs_ddgs
+@pytest.mark.parametrize("asked, sent", [(0, 1), (-3, 1), (500, 20), (None, 10), ("5", 5)])
+async def test_max_results_is_clamped_so_the_answer_stays_bounded(server, asked, sent):
+    """The framework does not enforce the schema's 1..20, and ddgs reads 0 as
+    'no limit' -- every engine's hits would reach the model."""
+    seen = []
+
+    def text(query, max_results):
+        seen.append(max_results)
+        return HITS
+
+    with _ddgs(text):
+        await server.call("web_search", {"query": "bounded", "max_results": asked, "_status": AsyncMock()})
+    assert seen == [sent]
+
+
+@needs_ddgs
+async def test_a_non_numeric_max_results_is_an_error_without_a_request(server):
+    with _ddgs(AsyncMock()) as client:
+        result = await server.call("web_search", {"query": "x", "max_results": "many", "_status": AsyncMock()})
+    assert "max_results must be a whole number" in result["error"] and result["results"] == []
+    client.assert_not_called()
+
+
+@needs_ddgs
+async def test_a_bad_cache_ttl_does_not_throw_away_a_successful_search(server):
+    with _ddgs(lambda query, max_results: HITS):
+        result = await server.call("web_search", {"query": "ttl", "cache_ttl": "soon", "_status": AsyncMock()})
+    assert result["results"] == HITS
+    assert await server.cache.get(server._cache_key("ttl", 10)) == result

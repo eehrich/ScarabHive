@@ -93,5 +93,5 @@ config:
 
   log_path:
     type: string
-    default: "data/agent_watchdog/verdicts.jsonl"
-    description: "JSONL log of every check, with the judge's usage; relative to the project root"
+    default: ""
+    description: "JSONL log of every check, relative to the project root; empty = agent_watchdog/verdicts.jsonl in the data directory"

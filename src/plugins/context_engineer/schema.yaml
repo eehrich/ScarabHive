@@ -117,35 +117,24 @@ tools:
     function:
       name: "{{ name }}_store_fact"
       description: |
-        Store an important fact or decision in core memory for persistent context.
-        
-        Core memory facts are always part of the conversation, ensuring
-        important information is never lost during context compaction.
-        
-        Use this for:
-        - Key decisions made during conversation
-        - Important user preferences discovered
-        - Critical project facts to remember
-        
-        Facts are organized by category and limited to ~2000 tokens total.
-        Lower importance facts are evicted when limit is reached.
+        Store a key decision, user preference or project fact in core memory; it stays in view after compaction.
+        Facts share a token budget: less important ones are evicted, and a fact that does not fit is refused.
       parameters:
         type: object
         properties:
           fact:
             type: string
-            description: "The fact or decision to store (keep concise)"
+            description: "Concise fact or decision"
           category:
             type: string
             enum: ["decisions", "preferences", "facts", "context", "tasks"]
             default: "facts"
-            description: "Category to organize the fact under"
           importance:
             type: number
             minimum: 0.0
             maximum: 1.0
             default: 0.5
-            description: "Importance score (0.0-1.0). Higher = less likely to be evicted"
+            description: "Higher = less likely evicted"
         required:
           - fact
         additionalProperties: false
@@ -154,12 +143,10 @@ tools:
     function:
       name: "{{ name }}_compact"
       description: |
-        Compact the conversation if it has outgrown the automatic limits.
-        The same rules as the automatic compaction before every step apply, so
-        below those limits this changes nothing; there is no need to call it
-        ahead of time. Above them it stores large tool results and attached
-        files externally with references (the newest stay) and evicts inline
-        media (saved to disk first, restorable with read).
+        Compact the conversation if it has outgrown the automatic limits; below them it
+        changes nothing, so don't call it ahead of time. Above them large tool results and
+        files are stored externally with references and inline media is evicted
+        (restorable with read).
       parameters:
         type: object
         properties: {}
@@ -305,26 +292,26 @@ config:
   compact_media_after_final_response:
     type: boolean
     default: false
-    description: "Compact all media when the agent sends a final response (no tool calls). Useful for long-running sessions with lots of media."
+    description: "Has no effect: the hook runs before LLM calls only, and nothing hands it a final response. compact_media_after_user_message covers the next turn."
 
   always_compact_media_keep_last:
     type: integer
     default: 0
     minimum: 0
-    description: "Always compact media regardless of token count. Keeps only the last N messages that contain media. Set to 0 to disable, 5 to keep last 5 messages with media."
+    description: "Always compact media regardless of token count. Keeps only the last N messages that contain media, plus what arrived since the model's last answer (a round of parallel tool calls may bring several images; the model sees each of them once). Set to 0 to disable, 5 to keep last 5 messages with media."
 
   always_compact_media_headroom:
     type: integer
     default: 0
     minimum: 0
-    description: "How far below always_compact_media_keep_last an eviction goes. Nothing is evicted while at most keep_last messages carry media; once more do, only the newest max(1, keep_last - headroom) keep theirs. Each eviction rewrites an old message and breaks the provider prompt cache from there; with headroom that many new media messages arrive without a break after each one (one break per headroom+1 while keep_last - headroom >= 1), at the cost of fewer visible media right after it. keep_last stays the most the context carries. 0 = evict down to keep_last on every new media message."
+    description: "How far below always_compact_media_keep_last an eviction goes. Nothing is evicted while at most keep_last messages carry media; once more do, only the newest max(1, keep_last - headroom) keep theirs. Each eviction rewrites an old message and breaks the provider prompt cache from there; with headroom that many new media messages arrive without a break after each one (one break per headroom+1 while keep_last - headroom >= 1), at the cost of fewer visible media right after it. keep_last stays the most the context carries, except for media the model has not seen yet. 0 = evict down to keep_last on every new media message."
 
   # Pre-Layer P: message limit
   max_messages:
     type: integer
     default: 0
     minimum: 0
-    description: "Maximum message count before pruning oldest messages. Set to 0 to disable. Runs BEFORE token-based layers. Preserves tool call/result pairs."
+    description: "Maximum message count before pruning oldest messages. Set to 0 to disable. Runs BEFORE token-based layers and whatever the token count: over the limit the hook runs on its own. Preserves tool call/result pairs."
 
   max_messages_prune_to:
     type: integer

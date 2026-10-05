@@ -26,7 +26,6 @@ class HookType(str, Enum):
     POST_LLM_CALL = "post_llm_call"
     PRE_TOOL_CALL = "pre_tool_call"
     POST_TOOL_CALL = "post_tool_call"
-    FORMAT_OUTPUT = "format_output"
     SESSION_START = "session_start"
     SESSION_END = "session_end"
     # LLM-client-level hooks: capture exact API payloads/responses
@@ -59,8 +58,6 @@ class HookContext:
         tool_result: The result (post_tool_call): {"result", "is_error",
             "started_at", "finished_at"} -- the last two when the call itself
             ran (time.time()); hooks write back "result" only
-        output: Final output to format (for format_output hooks)
-        output_format: Target format for output ('html', 'ansi', 'text', 'markdown')
         metadata: Additional hook-specific metadata
         hook_config: Per-agent custom config from hooks.overrides (auto-populated by registry)
         target_hook_name: Short hook name the registry intends to dispatch (set by registry)
@@ -90,8 +87,6 @@ class HookContext:
     llm_response: Optional[Dict[str, Any]] = None
     tool_call: Optional[Dict[str, Any]] = None
     tool_result: Optional[Dict[str, Any]] = None
-    output: Optional[str] = None
-    output_format: str = "text"  # Target format: 'html', 'ansi', 'text', 'markdown'
     metadata: Dict[str, Any] = field(default_factory=dict)
     hook_config: Dict[str, Any] = field(default_factory=dict)
     target_hook_name: Optional[str] = None
@@ -132,7 +127,6 @@ class HookContext:
             "has_llm_response": self.llm_response is not None,
             "has_tool_call": self.tool_call is not None,
             "has_tool_result": self.tool_result is not None,
-            "has_output": self.output is not None,
             "metadata": self.metadata,
         }
 
@@ -281,24 +275,6 @@ class PluginHook(ABC):
                      "started_at", "finished_at"}), tool_call (as it ran),
                      agent, session_id, step
 
-        Returns:
-            HookResult with success status and modified context
-        """
-        return HookResult(success=True, modified=False, context=context)
-    
-    async def on_format_output(self, context: HookContext) -> HookResult:
-        """
-        Called to format final output.
-        
-        Use cases:
-        - Convert to markdown
-        - Convert to HTML
-        - Apply styling
-        - Add metadata
-        
-        Args:
-            context: Hook context with output, agent
-            
         Returns:
             HookResult with success status and modified context
         """
