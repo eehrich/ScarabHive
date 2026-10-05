@@ -110,7 +110,7 @@ control.
 The shipped configuration gates every agent with a shell (`terminal`,
 `coder_shell`), `coding_cli`, `ssh_control`, a tool that runs arbitrary code
 (`blender_execute`, `godot_script`) or file access to the whole checkout at
-`admin`: `amiga_coder`, `blender_agent`, `claude_code_agent`, `coder`,
+`admin`: `blender_agent`, `claude_code_agent`, `coder`,
 `coder_explorer`, `coder_reviewer`, `coder_tester`, `file_ops_test_agent`,
 `gamedev`, `gamedev_tester`, `godot_agent`, `skills_agent`,
 `skills_agent_multimodal`, `sysadmin_agent`. `state_graph_agent` and

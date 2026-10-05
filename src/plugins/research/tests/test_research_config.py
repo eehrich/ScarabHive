@@ -51,7 +51,7 @@ def allows(agent_cfg, tool: str) -> bool:
 
 def test_the_prompt_that_actually_renders_is_this_agents_own(agent, config):
     """Rendered for real: a raw system_prompt inherited from anywhere would
-    beat the template file without an error (see the amiga plugin's history),
+    beat the template file without an error,
     and a skill that is not discovered is simply absent."""
     ctx = PromptContext(agent_name="research_agent", agent_config=agent.agent_config,
                         system_config=config, available_tools=[], max_steps=40,

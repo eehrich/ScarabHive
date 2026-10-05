@@ -748,7 +748,7 @@ plugins:
       user_agent: ""
       # Where `download` may write. Without a directory the tool is not
       # offered. The workspace is where the harnesses build, so a downloaded
-      # spec or asset lands where the coder, gamedev and amiga agents can
+      # spec or asset lands where the coder and gamedev agents can
       # read it.
       allowed_directories:
         - data/workspace

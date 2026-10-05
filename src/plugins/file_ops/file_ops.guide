@@ -36,7 +36,7 @@ The plugin runs as instances: each server entry with @{tt}type: file_ops@{utt}
 in the configuration is one, with its own name, its own folders and its own
 tools. The tools are named after the instance --
 @{tt}file_ops_read_file@{utt}, @{tt}coder_fs_read_file@{utt},
-@{tt}amiga_fs_read_file@{utt} -- and an agent gets them through its
+@{tt}coder_fs_ro_read_file@{utt} -- and an agent gets them through its
 allowlist, @{tt}+coder_fs/*@{utt} for all tools of @{tt}coder_fs@{utt}. What
 an agent can reach is therefore decided in two places: its allowlist says
 which instances it has, and each instance's @{tt}allowed_directories@{utt}
@@ -47,7 +47,6 @@ Instance | Folders | Used by
 file_ops | data/workspace | the default instance, e.g. the sysadmin agent
 coder_fs | data/workspace/, src/plugins/coder/skills/, src/, . | the coder, read and write
 coder_fs_ro | the same, read-only | the coder's explorer, reviewer and tester
-amiga_fs | data/workspace/ and two of the plugin's skill folders | the Amiga coder
 workspace_file_ops | . (off) | nobody; see "Setting it up"
 @{body}
 

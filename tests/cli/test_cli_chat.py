@@ -2076,7 +2076,7 @@ class _ToolAgent:
 def _tool_ctx(agent):
     from agent_system.cli_utils.chat import _ChatContext
     return _ChatContext(
-        agent=agent, entry_name="amiga_coder", session_service=None,
+        agent=agent, entry_name="coder", session_service=None,
         session_user="u", session_id="s", was_new_session=False,
         llm_profile="p", llm_override=None, llm_profile_info=None,
         show_status=True,
@@ -2159,12 +2159,12 @@ class TestToolsCommand:
 
 class TestSkillsCommand:
     def test_separates_always_from_on_demand(self):
-        agent = _ToolAgent([], [], skills=_Skills(always=["amiga-coding"],
-                                                  on_demand=["m68k-assembly"]))
+        agent = _ToolAgent([], [], skills=_Skills(always=["adversarial-review"],
+                                                  on_demand=["codebase-design"]))
         r, out = _renderer(width=200)
         _show_skills(_tool_ctx(agent), r)
         text = out.getvalue()
-        assert "amiga-coding" in text and "m68k-assembly" in text
+        assert "adversarial-review" in text and "codebase-design" in text
         assert "always" in text and "on demand" in text
 
     def test_dict_shaped_skills_config_also_works(self):

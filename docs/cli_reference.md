@@ -146,13 +146,13 @@ The session is saved after every turn and can be resumed later (`--session`).
 agent-cli chat
 
 # Chat with a specific agent and LLM profile
-agent-cli chat --agent amiga_coder --llm deepseek-chat
+agent-cli chat --agent coder --llm deepseek-chat
 
 # Send a first message immediately
 agent-cli chat "Wie ist der Stand?" --agent sysadmin_agent
 
 # Resume an earlier session (/sessions and /session print this line for you)
-agent-cli chat --session a1b2c3d4 --agent amiga_coder
+agent-cli chat --session a1b2c3d4 --agent coder
 
 # List sessions without entering the chat
 agent-cli chat --list-sessions

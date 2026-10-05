@@ -180,7 +180,7 @@ src/plugins/my_harness/
 Found via the include glob in `config.yaml`, the `./` template resolution and
 `skills.skill_dirs: src/plugins*/*/skills`. Missing skill → ERROR once per agent,
 left out of the prompt. Example `coder`; guard test
-`src/plugins/amiga/tests/test_amiga_config.py` (loads settings, checks allowlist
+`src/plugins/research/tests/test_research_config.py` (loads settings, checks allowlist
 patterns and skills, actually renders the prompt).
 
 ## LLM providers (`src/plugins/`)

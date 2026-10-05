@@ -197,7 +197,7 @@ class FileOpsServer(SchemaBasedToolServer):
         # the instance that owns an index is not always the one that searches
         # it -- but measured on this machine it started four background builds
         # at once, one per instance that has semantic search configured
-        # (file_ops, amiga_fs, agent_file_ops, coder_fs), for trees nobody had
+        # (file_ops, agent_file_ops, coder_fs), for trees nobody had
         # asked a question about yet. The first semantic_search starts it.
 
         logger.info(f"FileOperationsServer initialized with {len(allowed_dirs)} allowed directories")

@@ -495,8 +495,8 @@ agent_config:
 
 A harness usually brings its own instance next to its agents, with its
 own list and limits: @{tt}skills_sam@{utt}, @{tt}coder_sam@{utt},
-@{tt}gamedev_sam@{utt}, @{tt}research_sam@{utt}, @{tt}debate_sam@{utt},
-@{tt}panel_sam@{utt} and @{tt}amiga_coder_sam@{utt} are such instances.
+@{tt}gamedev_sam@{utt}, @{tt}research_sam@{utt}, @{tt}debate_sam@{utt}
+and @{tt}panel_sam@{utt} are such instances.
 
 @{h2}Server settings
 

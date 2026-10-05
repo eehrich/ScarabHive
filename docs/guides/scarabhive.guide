@@ -1161,7 +1161,7 @@ They check the manifest, the schema sections and that every tool routes to a
 method -- but not the silent links of the activation chain (a dead allowlist
 pattern, a sub-agent missing from the SAM). Check those in a test with
 @{tt}load_settings()@{utt} and @{tt}get_tool_server_config()@{utt}, as
-@{tt}src/plugins/amiga/tests/test_amiga_config.py@{utt} does.
+@{tt}src/plugins/research/tests/test_research_config.py@{utt} does.
 @{tt}agent-cli plugins list@{utt} shows what was discovered and whether it
 is enabled.
 

@@ -119,7 +119,7 @@ class FileSearchEngine:
         Called from the first semantic_search of an instance, and only there.
         Starting it when the server is BUILT was tried and taken back: measured
         on 18.09.2026 it kicked off four full builds at once, one per instance
-        that has semantic search configured (file_ops, amiga_fs,
+        that has semantic search configured (file_ops,
         agent_file_ops, coder_fs), for trees nobody had asked about yet.
 
         The consequence is worth knowing: an instance that only READS a shared

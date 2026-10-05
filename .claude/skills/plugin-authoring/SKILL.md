@@ -163,7 +163,7 @@ chain — a dead allowlist pattern (`coder_fs/semantic_search`), a sub-agent mis
 from `allowed_agents`. (A `hooks.overrides` key matching no hook is logged as a
 warning at startup, not by the validators.) Check those with
 `load_settings()` + `get_tool_server_config` in a config test
-(`src/plugins/amiga/tests/test_amiga_config.py`).
+(`src/plugins/research/tests/test_research_config.py`).
 
 ## README and guide
 
@@ -205,7 +205,7 @@ the repo (dead links, unknown commands).
   `conftest.py` replaces `build_client` with a fake — no real LLM calls.
 - Test through the real path: tools via `call_with_status` (otherwise `_status` is
   `None`), config via `load_settings()` + `get_tool_server_config`.
-  Config-only example: `src/plugins/amiga/tests/test_amiga_config.py`.
+  Config-only example: `src/plugins/research/tests/test_research_config.py`.
 - Caches/storage on `tmp_path` (`PluginCache` writes to `data/cache` otherwise).
 - **Mutation-check every new test:** break the production line, the test must go
   red. Craft: skill `unit-testing`.

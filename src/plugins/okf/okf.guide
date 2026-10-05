@@ -108,7 +108,6 @@ bundle root is the plugin's write lock (see @{" Writing a concept " link write})
 Agent | How
 okf_agent | curates and answers from bundles with the @{tt}okf@{utt} tools; asks which bundle when you name none
 sysadmin | its own instance @{tt}sysadmin_okf@{utt}, sandboxed to @{tt}data/okf/infra@{utt}, with the hook
-amiga_coder | searches and writes @{tt}data/okf/amiga@{utt} with the @{tt}okf@{utt} tools
 coder | its own instance @{tt}coder_okf@{utt}, sandboxed to @{tt}data/okf/coder@{utt}, with the hook
 @{body}
 

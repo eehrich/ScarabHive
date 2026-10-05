@@ -4,7 +4,7 @@ The tools an agent works on files with: read, list, find by name, search text, f
 the instance is read-only -- create, replace, edit, delete, move and rename. Every path must resolve inside the
 instance's `allowed_directories`; network and device paths (`\\host\share`, `//host/share`, `\\?\`, `\\.\`,
 `\??\`) are refused on their text, so the host is never contacted. The plugin runs as
-several instances (`file_ops`, `coder_fs`, `coder_fs_ro`, `amiga_fs`, ...), each with folders and tool names of its
+several instances (`file_ops`, `coder_fs`, `coder_fs_ro`, ...), each with folders and tool names of its
 own.
 
 - **Tools** `<instance>_read_file`, `_list_directory`, `_search_files`, `_grep_search`, `_semantic_search` (off
