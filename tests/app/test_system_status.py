@@ -6,7 +6,11 @@ checked-out commit the process does not run yet.
 """
 from __future__ import annotations
 
+import subprocess
+import zipfile
 from pathlib import Path
+
+import pytest
 
 from agent_system import runtime as runtime_module
 from agent_system.config.models import ToolServerConfig
@@ -61,10 +65,51 @@ def test_the_worst_check_decides():
 
 
 def test_the_commit_is_read_from_git():
-    commit = system_status.git_commit(Path(__file__).resolve().parents[2])
+    root = Path(__file__).resolve().parents[2]
+    if not (root / ".git").exists():
+        pytest.skip("not a git checkout (an unpacked download)")
+    commit = system_status.git_commit(root)
 
     assert commit is not None, "fixture: the test tree is not a git checkout"
     assert len(commit["hash"]) == 40 and commit["subject"]
+
+
+def _git(cwd, *args):
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+
+def test_a_download_without_git_names_the_commit_it_was_made_from(tmp_path):
+    """What GitHub/GitLab do for "Download ZIP": git archive, which fills in
+    the repo's own _commit.json through its own .gitattributes."""
+    repo_root = Path(__file__).resolve().parents[2]
+    repo = tmp_path / "repo"
+    (repo / "src/agent_system").mkdir(parents=True)
+    (repo / ".gitattributes").write_bytes((repo_root / ".gitattributes").read_bytes())
+    (repo / "src/agent_system/_commit.json").write_bytes(
+        (repo_root / "src/agent_system/_commit.json").read_bytes())
+    _git(repo, "init", "-q")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "c")
+    head = _git(repo, "rev-parse", "HEAD").strip()
+    archive = tmp_path / "download.zip"
+    _git(repo, "archive", "--format=zip", "-o", str(archive), "HEAD")
+    unpacked = tmp_path / "unpacked"
+    zipfile.ZipFile(archive).extractall(unpacked)
+
+    # A clone keeps the placeholders: nothing is claimed from them.
+    assert system_status.archived_commit(repo / "src/agent_system/_commit.json") is None
+    commit = system_status.git_commit(unpacked, unpacked / "src/agent_system/_commit.json")
+    assert commit is not None and commit["hash"] == head and commit["date"]
+
+
+def test_an_unpacked_download_inside_another_repository_does_not_take_its_commit(tmp_path):
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    _git(outer, "init", "-q")
+    _git(outer, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "outer")
+    inside = outer / "unpacked"
+    inside.mkdir()
+    assert system_status.git_commit(inside, inside / "_commit.json") is None
 
 
 def test_blocked_names_paused_models_without_the_credential():

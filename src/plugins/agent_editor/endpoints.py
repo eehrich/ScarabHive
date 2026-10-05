@@ -102,7 +102,7 @@ class AgentEditorWebEndpoints:
     def __init__(self, plugin):
         self.plugin = plugin
         self.templates = ui_templates(Path(__file__).parent / "templates")
-        self._stores: dict[tuple[str, str], Store] = {}
+        self._stores: dict[tuple[str, str, tuple[str, ...]], Store] = {}
 
     def get_web_router(self) -> APIRouter:
         return create_schema_router(plugin_name=self.plugin.name, schema=self.plugin.get_schema_data(), handler_class=self)
@@ -138,9 +138,11 @@ class AgentEditorWebEndpoints:
         config_path = (getattr(config, "config_path", None) or getattr(request.app.state, "config_path", None)
                        or "config/config.yaml")
         root = getattr(config, "root", None) or Path.cwd()
-        key = (str(config_path), str(root))
+        writable = getattr(config, "writable_dirs", None) or ()  # relative to the root; none: the config's folder
+        writable = (writable,) if isinstance(writable, str) else tuple(writable)  # one folder written as a string
+        key = (str(config_path), str(root), writable)
         if key not in self._stores:
-            self._stores[key] = Store(Path(config_path), Path(root))
+            self._stores[key] = Store(Path(config_path), Path(root), writable)
         return self._stores[key]
 
     @staticmethod

@@ -6,7 +6,7 @@ tools:
       name: "{{ name }}_execute_sql"
       description: |
         Execute raw SQL statements on configured SQLite database. 
-        Be careful as this allows full access to the database. No safety checks are performed. No backups are made.
+        Be careful as this allows full access to the database. No backups are made.
         
       parameters:
         type: object
@@ -14,14 +14,17 @@ tools:
           sql:
             type: string
             description: |
-              SQL statement to execute (any valid SQLite statement).
+              One SQL statement to execute.
               Examples:
-              - "SELECT * FROM books WHERE status = 'draft'"
-              - "UPDATE books SET status = 'completed' WHERE id = 1"
-              - "PRAGMA table_info(books)"
+              - "SELECT * FROM items WHERE status = 'draft'"
+              - "UPDATE items SET status = 'completed' WHERE id = 1"
+              - "PRAGMA table_info(items)"
         required: ["sql"]
         additionalProperties: false
 
 config:
   database: default.db
   query_timeout: 30
+  max_rows: 500
+  max_value_bytes: 67108864
+  max_value_chars: 10000

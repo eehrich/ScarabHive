@@ -9,9 +9,36 @@ import sys
 from pathlib import Path
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
-from .executor import ScriptExecutor
-from .safe_executor import SEEDED_TYPE_NAMES
+from .executor import ScriptExecutor
+
+from .safe_executor import SEEDED_TYPE_NAMES, estimate_text_size
 from .config import ScriptInterpreterConfig
+
+#: Characters of one variable's value in the tool's answer.
+_VARIABLE_TEXT_LIMIT = 200
+
+
+def _variable_text(value: Any) -> str:
+    """A variable's value for the answer: as text when short, else only its
+    type. str() of every variable ran whole on the event loop -- a 6 MB text
+    went back in full, and ``10 ** 5000`` failed the whole call with the
+    4300-digit error."""
+    if callable(value) and not isinstance(value, type):
+        # A lambda's str() is the interpreter's own class path and a memory
+        # address ("<plugins.script_interpreter.safe_executor...LambdaFunction
+        # object at 0x...>") -- nothing the model can use.
+        return "<function>"
+    # The estimate only rules out what is far too long; the text's own
+    # length decides the rest (it counted eight floats as over 200 chars).
+    if estimate_text_size(value, 4 * _VARIABLE_TEXT_LIMIT) > 4 * _VARIABLE_TEXT_LIMIT:
+        return f"<{type(value).__name__}, over {_VARIABLE_TEXT_LIMIT} chars — omitted>"
+    try:
+        text = str(value)
+    except ValueError:
+        return f"<{type(value).__name__} — not shown>"
+    if len(text) > _VARIABLE_TEXT_LIMIT:
+        return f"<{type(value).__name__}, {len(text)} chars — omitted>"
+    return text
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -130,7 +157,10 @@ class ScriptInterpreterServer(SchemaBasedToolServer):
                 error_info = result.get("error")
                 
                 if isinstance(error_info, dict):
-                    # Structured error from SafeExecutor
+                    # Structured error from SafeExecutor (format_error_for_llm).
+                    # Given once: the same dict also went back as
+                    # `error_details`, with the interpreter's Python traceback
+                    # -- about 600 KB for an unbounded recursion.
                     if 'line_number' in error_info:
                         if error_info.get('category') == 'syntax':
                             error_msg = f"Syntax error on line {error_info['line_number']}: {error_info['message']}"
@@ -142,17 +172,19 @@ class ScriptInterpreterServer(SchemaBasedToolServer):
                     if 'code_context' in error_info:
                         error_msg += f"\n\nCode context:\n{error_info['code_context']}"
                     
-                    if 'stack_trace' in error_info:
-                        error_msg += f"\n\nStack trace:\n{error_info['stack_trace']}"
-                        
-                    # Headline only. `error_msg` accumulates code context
-                    # and a stack trace, and the status message is one row --
+                    # Headline only. `error_msg` accumulates the code
+                    # context, and the status message is one row --
                     # the full text goes back in `error_message`, where the
                     # caller already reads it. Unbounded it also landed in the
                     # SSE payload and in the persisted sub-agent activity.
                     await status.error(
                         f"Execution failed: {error_msg.splitlines()[0][:120]}")
-                    return {"error": error_info, "error_message": error_msg, "error_details": error_info}
+                    answer = {"error": error_info, "error_message": error_msg}
+                    # What the script printed before it failed -- the model's
+                    # only way to debug a run; the answer dropped it.
+                    if result.get("output"):
+                        answer["output"] = result["output"]
+                    return answer
                 else:
                     # Simple string error (legacy format)
                     await status.error(f"Execution failed: {str(error_info)[:120]}")
@@ -187,7 +219,7 @@ class ScriptInterpreterServer(SchemaBasedToolServer):
                 if result.get("output"):
                     output_parts.append(f"Output: {result['output']}")
                 if user_vars:
-                    var_str = ", ".join(f"{k}={v}" for k, v in user_vars.items())
+                    var_str = ", ".join(f"{k}={_variable_text(v)}" for k, v in user_vars.items())
                     output_parts.append(f"Variables: {var_str}")
                 if result.get("execution_time") is not None:
                     output_parts.append(f"Execution time: {result['execution_time']:.3f}s")

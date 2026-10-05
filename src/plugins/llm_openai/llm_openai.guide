@@ -1,0 +1,410 @@
+@database "llm_openai"
+@author "Enrico Ehrich"
+@$VER: llm_openai.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "OpenAI SDK provider"
+@{h1}OpenAI SDK provider
+
+This plugin lets agents talk to OpenAI through the official @{tt}openai@{utt}
+Python SDK: Chat Completions for ordinary models, and the Realtime API for
+the realtime models, which do not answer on Chat Completions. It is an LLM
+provider plugin: it has no tools, no hooks and no panel. You use it by
+writing @{tt}provider: openai@{utt} in a model entry of
+@{tt}config/llm.yaml@{utt}; agents reach that entry through a profile.
+
+@{table}
+Provider name | Kind | Endpoint
+openai | chat | POST <base_url>/chat/completions through the SDK
+openai | chat, realtime models | one WebSocket to <base_url>/realtime per call
+openai | batch | delegated to llm_openai_compat's Batch API backend
+@{body}
+
+How models, profiles and fallback chains work in general is in
+@{" LLM models and profiles " link scarabhive/llm}; this manual covers what
+this provider does with an entry. For OpenRouter, DeepSeek, local servers,
+reasoning replay or prompt-cache keys, the httpx routes of
+@{" llm_openai_compat " link llm_openai_compat/main} are the better home:
+this one has none of those.
+
+@{code}
+For users (the operator writing llm.yaml)
+  @{"  Model entry keys  " link keys}
+  @{"  API keys and endpoints  " link apikeys}
+  @{"  Timeouts and streaming  " link timeouts}
+  @{"  Retries  " link retries}
+  @{"  The Realtime API  " link realtime}
+  @{"  Usage, cost and the hooks  " link usage}
+  @{"  Errors  " link errors}
+  @{"  Batch  " link batch}
+
+For agents and developers
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node keys "Model entry keys"
+@{h1}Model entry keys
+
+The keys of a model entry this provider reads. Everything else in
+@{tt}LLMModelConfig@{utt} is either handled by the core (@{tt}extends@{utt},
+profiles) or not read here.
+
+@{table}
+Key | Default | What the client does with it
+provider | -- | openai
+model | -- | the model id sent to the endpoint
+api_key | from the endpoint's variable | see @{" API keys and endpoints " link apikeys}
+base_url | https://api.openai.com/v1 | the endpoint of the SDK and of the Realtime socket
+max_tokens | none | sent as @{tt}max_tokens@{utt} (Realtime: @{tt}max_output_tokens@{utt}); 0 or unset sends nothing
+temperature | none | sent as given on Chat Completions; not sent on Realtime
+modalities | none | sent as given on Chat Completions; not sent on Realtime
+request_timeout | 120 | seconds, see @{" Timeouts and streaming " link timeouts}
+context_window | the model-config default | only reported to the core, never sent
+capabilities | all defaults | streaming decides the path; default_api_type picks Realtime; image_input and audio_input shape tool attachments; structured_output allows response formats; developer_role
+@{body}
+
+Keys that belong to other routes are logged at build time as "not wired ...
+will be ignored" and then have no effect: @{tt}thinking_level@{utt},
+@{tt}thinking_budget@{utt}, @{tt}include_thoughts@{utt},
+@{tt}prompt_cache_key@{utt}, @{tt}prompt_cache_mode@{utt},
+@{tt}tool_schema_dialect@{utt}, @{tt}assistant_reasoning_field@{utt},
+@{tt}reasoning_details_mode@{utt}, @{tt}thinking_request_shape@{utt},
+@{tt}stream_silence_timeout@{utt}, @{tt}provider_affinity_minutes@{utt}.
+Not read at all, and not logged: @{tt}parallel_tool_calls@{utt},
+@{tt}service_tier@{utt}, @{tt}safety_settings@{utt},
+@{tt}safety_identifier@{utt}, @{tt}httpx_timeouts@{utt},
+@{tt}provider_routing@{utt}, @{tt}plugins@{utt} and the other prompt-cache
+keys.
+
+@{code yaml}
+llm_system:
+  models:
+    gpt-realtime-2.1:
+      provider: openai
+      model: gpt-realtime-2.1
+      api_key: ${OPENAI_API_KEY}
+      context_window: 128000
+      request_timeout: 240
+      capabilities:
+        tools: true
+        audio_input: false
+        image_input: true
+        streaming: true
+        supported_api_types: [realtime]
+        default_api_type: realtime
+@{body}
+@endnode
+
+@node apikeys "API keys and endpoints"
+@{h1}API keys and endpoints
+
+An @{tt}api_key@{utt} in the entry always wins. Without one, the key follows
+the @{b}endpoint@{ub} the entry talks to, as on the httpx routes
+(@{" API keys and endpoints " link llm_openai_compat/apikeys}): OPENAI_API_KEY
+for api.openai.com and for a local host, OPENROUTER_API_KEY for
+openrouter.ai, TYPESAFE_API_KEY for api.typesafe.ai, and for any other host
+nothing -- building the client fails with a message naming the host. A
+missing gateway key therefore never sends the OpenAI key to a third party.
+
+The Realtime socket follows @{tt}base_url@{utt} too:
+@{tt}https://host/v1@{utt} becomes @{tt}wss://host/v1/realtime@{utt}.
+
+TLS verification follows the app's setting (@{tt}network.ssl_verify@{utt}),
+for the SDK's HTTP client and for the Realtime socket alike.
+@endnode
+
+@node timeouts "Timeouts and streaming"
+@{h1}Timeouts and streaming
+
+@{h2}Streaming or not
+
+A model streams unless its entry says @{tt}capabilities.streaming:
+false@{utt}. Streaming is what lets the web UI show text as it arrives.
+Thinking deltas (a @{tt}reasoning_content@{utt} or @{tt}reasoning@{utt} field
+some compatible servers send) are streamed as well and kept on the answer;
+api.openai.com sends none on Chat Completions.
+
+@{h2}request_timeout
+
+One number, 120 s unless the entry sets it, used three ways:
+
+@{bullet}The SDK's timeout for each phase of an HTTP request (connect,
+read, write, pool).
+@{bullet}Streaming: the longest gap between two pieces of the stream. A
+longer gap is a stalled stream and is retried like a dropped connection.
+@{bullet}Realtime: the longest wait for the next event on the socket.
+
+@{tt}llm_system.httpx_timeouts@{utt} and an entry's own
+@{tt}httpx_timeouts@{utt} are not read by this provider.
+
+@{h2}How a stream ends
+
+@{bullet}The stream's end is the answer, with the finish reason of its last
+choice (@{tt}stop@{utt}, @{tt}length@{utt}, @{tt}tool_calls@{utt}, ...).
+@{bullet}A stream that stalls or drops is retried from scratch (see
+@{" Retries " link retries}); the caller is told to drop what it has shown.
+@{bullet}A cancelled run stops before the client reads the next piece; the
+cancel reaches the agent as a cancel, never as an answer.
+@{bullet}A caller that stops reading closes the request at once: the HTTP
+response is closed and the end is reported to the hooks.
+@endnode
+
+@node retries "Retries"
+@{h1}Retries
+
+The client retries on its own; the SDK's built-in retries are switched off,
+so every request that goes out is one the hooks see. Up to five attempts in
+all, streaming or not, shared by every kind of retry below. The number and
+the waits are fixed in the code; a model entry cannot change them.
+
+@{table}
+What happened | What the client does
+HTTP 429 | retry; wait: the Retry-After header, else the larger of x-ratelimit-reset-requests and x-ratelimit-reset-tokens (seconds, or units like @{tt}6m0s@{utt}, @{tt}200ms@{utt}) -- never less than the backoff; without any header the backoff plus 0-0.5 s. Then LLMRateLimitError
+429 naming a wait longer than 300 s | no retry: LLMRateLimitError at once, with that wait as retry_after, so the agent server blocks the model for it and falls back
+429 with "quota" or "exhausted" in the text (insufficient_quota) | no retry: LLMQuotaExhaustedError at once
+HTTP 5xx | retry after the backoff, then LLMServerError
+connect or read timeout, network error, stalled or dropped stream | retry after the backoff, then LLMConnectionError
+any other status (400, 401, 403, 404, ...) | no retry: httpx.HTTPStatusError
+@{body}
+
+The backoff doubles from 2 s: 2, 4, 8, 16 s. Every retry is reported to the
+post_llm_response hooks as its own row (@{tt}[RETRY n/5] Rate limit
+(429)@{utt}, @{tt}Server error (503)@{utt}, @{tt}Network error: ...@{utt};
+finish reason @{tt}retry@{utt}) and as a status line in the chat. A
+cancelled run interrupts every wait.
+
+A retry starts from scratch: when the caller has already received deltas of
+the failed attempt, the stream first sends one
+@{tt}{"type": "stream_restart"}@{utt} chunk, and the caller drops what it has
+shown of that attempt.
+
+The Realtime path does not retry (see @{" The Realtime API " link realtime}).
+The agent server's own fallback chain (@{tt}llm_profile@{utt} with more than
+one profile) takes over where these retries end; see
+@{" Writing an agent " link scarabhive/agentdev}.
+@endnode
+
+@node realtime "The Realtime API"
+@{h1}The Realtime API
+
+A model whose entry says @{tt}capabilities.default_api_type: realtime@{utt}
+is served over the Realtime API instead of Chat Completions -- for
+@{tt}chat@{utt}, @{tt}chat_tools@{utt} and streaming alike. The value
+@{tt}assistants@{utt} is refused with NotImplementedError; anything else
+means Chat Completions.
+
+@{h2}One call, one socket
+
+@{bullet}Each call opens one WebSocket and sends one @{tt}response.create@{utt}
+with @{tt}conversation: "none"@{utt}: the whole history travels as
+@{tt}input@{utt} items, nothing lingers on the server between calls.
+@{bullet}A leading system message becomes @{tt}instructions@{utt}; a later
+system or developer message stays a system item at its place.
+@{bullet}Output is text only. The client first sends a
+@{tt}session.update@{utt} with @{tt}output_modalities: ["text"]@{utt}: set on
+the session, not on the response -- on the response, gpt-realtime-2.1
+reported @{tt}input_tokens: 0@{utt} (measured 17.09.2026), and the call would
+look free.
+@{bullet}@{tt}max_tokens@{utt} goes as @{tt}max_output_tokens@{utt}; the
+ceiling is the model's. @{tt}temperature@{utt} and @{tt}modalities@{utt} are
+not part of the Realtime API and are not sent (logged once per client).
+@{bullet}Tools go in the Realtime API's flat form; @{tt}additionalProperties@{utt}
+is removed from their parameters.
+
+@{h2}Waiting
+
+Connecting waits up to 10 s for the handshake and 10 s for
+@{tt}session.created@{utt}; after that every event waits at most
+@{tt}request_timeout@{utt}. A closed or silent socket ends the call with an
+error answer. A handshake the server refuses with a status (401, 403,
+404: a dead key or model) raises that status like the HTTP path does (see
+@{" Errors " link errors}). A cancel ends the call at once, while waiting
+for an event too; a request cancelled before it is sent is not sent.
+
+@{h2}The answer
+
+@{bullet}Text streams as @{tt}response.output_text.delta@{utt}; a tool
+call's name arrives in @{tt}response.output_item.added@{utt}, its arguments
+as deltas. The result -- text, tool calls, usage -- is read from
+@{tt}response.done@{utt}.
+@{bullet}A response cut at @{tt}max_output_tokens@{utt} or by the content
+filter keeps its text, with finish reason @{tt}length@{utt} or
+@{tt}content_filter@{utt}. Any other status than @{tt}completed@{utt}, and
+an @{tt}error@{utt} event, is an error answer (see
+@{" Errors " link errors}).
+
+@{h2}Media
+
+Images go as @{tt}input_image@{utt} -- from user messages and, as on the chat
+path, a tool result's attachments as a user message right after its output.
+Audio input is never sent, whatever @{tt}audio_input@{utt} says: an audio
+part becomes a note that audio input is not supported.
+
+@{h2}Known gap
+
+No retry and no LLMRateLimitError: how the Realtime API reports a rate limit
+has not been observed yet. Until then a limit is an ordinary error answer,
+and the agent falls back to the next profile.
+@endnode
+
+@node usage "Usage, cost and the hooks"
+@{h1}Usage, cost and the hooks
+
+Each request is reported to the @{tt}pre_llm_request@{utt} hooks before it
+is sent, and to the @{tt}post_llm_response@{utt} hooks when it ends -- exactly
+once, however it ends. The message debugger, the OpenTelemetry chat span and
+the cost figures are built from these reports
+(@{" Hooks " link scarabhive/hooks},
+@{" The capture hooks " link message_debugger/hooks},
+@{" What gets exported " link otel/spans},
+@{" What it records " link context_usage_tracker/hooks}).
+
+@{h2}One report per ending
+
+@{table}
+The request ended with | post_llm_response carries
+an answer | usage and finish reason
+a retry | an error @{tt}[RETRY n/5] ...@{utt}, finish reason retry
+a refusal after the retries | the error of the exception raised: @{tt}Rate limit exceeded: ...@{utt}, @{tt}Quota exhausted: ...@{utt}, @{tt}HTTP 500: ...@{utt}, @{tt}HTTP 404: ...@{utt}, @{tt}Network/protocol error: ...@{utt}
+a cancel before it was sent, or while it was out | the error @{tt}Request cancelled by user@{utt} (@{tt}cancelled@{utt} when the run's task was cancelled); for a stream the usage too, when its chunk had arrived
+a cancel during a retry wait | the error @{tt}Request cancelled during retry wait@{utt}, after the retry's row
+a stream the caller stopped reading | the error @{tt}stream abandoned by the caller@{utt}
+anything unexpected | the exception's text
+@{body}
+
+On the Realtime path the same holds, except that a call whose token is
+already cancelled when it starts reports nothing, not even the
+pre_llm_request; a cancel later on -- while attachments are encoded or the
+socket connects -- is reported like any other. An @{tt}error@{utt} event or a
+failed response reports its message.
+
+@{h2}The usage
+
+@{bullet}Chat Completions: @{tt}prompt_tokens@{utt} including cached tokens,
+@{tt}prompt_tokens_details.cached_tokens@{utt} as the subset,
+@{tt}completion_tokens_details.reasoning_tokens@{utt} as the provider
+counts them -- a detail of the completion, never computed from it; a count
+above completion_tokens is what the provider sent. Streams ask for usage
+with @{tt}stream_options.include_usage@{utt}.
+@{bullet}Realtime: mapped to the same shape -- input_tokens to prompt_tokens,
+output_tokens to completion_tokens, the cached input tokens and (where the
+model reports them) the reasoning tokens as details. Audio tokens are not
+reported apart.
+@{bullet}Cost: the core prices the tokens from
+@{tt}config/llm_pricing.yaml@{utt}.
+
+A cancelled stream is billed for what the model generated, but its usage
+comes last, so the report mostly has none.
+@endnode
+
+@node errors "Errors"
+@{h1}Errors
+
+What reaches the agent server when a request cannot be answered. The server
+decides from the type whether to fall back to the next profile of the chain,
+and whether to block the model for a while
+(@{" Writing an agent " link scarabhive/agentdev}).
+
+@{table}
+Raised | When
+LLMRateLimitError | 429 after the retries, or at once when it names a wait longer than 300 s
+LLMQuotaExhaustedError | a 429 with "quota" or "exhausted" in the text, at once
+LLMServerError | 5xx after the retries
+httpx.HTTPStatusError | any other status, at once; the message is @{tt}HTTP <status>: Error code: <status> - <body>@{utt}. A context that is too long is a 400 like any other. Also a Realtime handshake refused with 4xx (@{tt}HTTP <status>: <body>@{utt}); refused with 429 or 5xx it is LLMRateLimitError or LLMServerError
+LLMConnectionError | timeout, stall, dropped stream or network error after the retries
+asyncio.CancelledError | the run was cancelled
+NotImplementedError | capabilities.default_api_type is assistants
+ValueError at build time | no key for the endpoint
+RuntimeError at build time | the openai package is not installed
+@{body}
+
+@{h2}Errors that come as an answer
+
+An unexpected failure (anything above does not cover) arrives as an answer
+with empty content and an @{tt}error@{utt} of type @{tt}openai_api_error@{utt}
+on the assistant message; the agent server asks the model once more, then
+falls back. On the Realtime path every other failure is such an answer: type
+@{tt}upstream_error_<type>@{utt} for an error the API sent,
+@{tt}realtime_api_error@{utt} for a socket that closed or went silent.
+
+@{h2}chat()
+
+The plain text call returns the answer's text. An error answer comes back as
+the JSON text @{tt}{"_llm_error": {"error": true, "message": ...}}@{utt};
+the exceptions above are raised as they are.
+@endnode
+
+@node batch "Batch"
+@{h1}Batch
+
+A model entry with @{tt}provider: batch@{utt} and @{tt}batch_provider:
+openai@{utt} runs its requests through the OpenAI Batch API. The
+implementation is not in this plugin: the Batch API is plain HTTP, so it
+lives with the httpx clients, and this provider hands the entry to
+llm_openai_compat's backend through the registry. What it sends, where, and
+how it retries is described there:
+@{" Batch and speech " link llm_openai_compat/batch}. Without
+llm_openai_compat installed, @{tt}batch_provider: openai@{utt} fails with an
+ImportError naming it.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}Messages
+
+@{bullet}Only fields the API knows are sent: internal bookkeeping fields
+and a stored @{tt}reasoning_content@{utt} are removed.
+@{bullet}Developer notes keep the @{tt}developer@{utt} role unless the
+entry's @{tt}capabilities.developer_role@{utt} lowers it. A note that ends
+the request goes as a user message wrapped in note tags, whatever the rung
+-- a request that ends on something needing no answer gets none.
+@{bullet}Audio and video parts of a user message are not sent on Chat
+Completions.
+@{bullet}Images and other attachments a tool returns follow the tool result
+as a user message; a model without @{tt}image_input@{utt} gets a text note
+in their place.
+
+@{h2}Tools
+
+Tool schemas go out as the agent built them; a flat schema
+(@{tt}name@{utt}, @{tt}description@{utt}, @{tt}parameters@{utt} without a
+@{tt}function@{utt} wrapper) is wrapped, a schema without a name is skipped
+with a warning. @{tt}tool_choice@{utt} is @{tt}auto@{utt}; a request without
+tools carries neither field.
+
+@{h2}Structured output
+
+A response format is sent as @{tt}response_format@{utt} (JSON schema or JSON
+mode) when the entry declares @{tt}capabilities.structured_output@{utt}; a
+call asking for a format the entry does not declare is refused rather than
+answered with free text. The Realtime API has no such field.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing to enable: the core finds LLM provider plugins by their
+@{tt}plugin.toml@{utt} (@{tt}type = ["llm-provider"]@{utt}) and loads
+@{tt}provider.py@{utt} when a model entry names one of its providers. There
+is no entry in @{tt}config/plugins.yaml@{utt} and no allowlist line.
+
+@{table}
+Manifest key | Names
+provides | openai
+provides_batch | openai (delegated, see @{" Batch " link batch})
+default_base_url | openai: https://api.openai.com/v1
+@{body}
+
+@{h2}Dependencies
+
+@{tt}openai>=1.37.0@{utt}, imported when a client is built. The Realtime
+path needs @{tt}websockets@{utt}, imported when a call connects.
+
+@{h2}Where things live
+
+Nothing on disk. Changes to @{tt}llm.yaml@{utt} reach an agent when it
+builds its client, i.e. after a restart.
+@endnode

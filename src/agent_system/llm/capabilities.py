@@ -78,7 +78,7 @@ def load_capabilities_from_config(config_path: Optional[str | Path] = None) -> d
 
     # A model is also reachable by its provider string — callers know either.
     # Second pass, because an entry name always outranks somebody else's alias:
-    # 'claude-sonnet-5' is an entry AND the model string of two others.
+    # 'claude-sonnet-5' was an entry AND the model string of two others.
     alias_owner: dict[str, str] = {}
     ambiguous: set[str] = set()
     for actual, name, caps in aliases:

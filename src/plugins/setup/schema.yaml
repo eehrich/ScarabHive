@@ -1,5 +1,5 @@
 # Setup: what an installation still lacks, and one real request to see whether the chat answers.
-# Keys are never passed through a tool: they go into config/secrets.env (docs/einrichtung_konzept.md).
+# Keys are never passed through a tool: the Setup panel writes them into config/local.env (docs/einrichtung_konzept.md).
 
 tools:
   - type: function
@@ -14,8 +14,8 @@ tools:
         known password, whether logins are signed with a publicly known key, and whether the config file
         names one (a restart applies it). In auth, null means it cannot be told from here, never "no".
         Never returns a key's value.
-        Administrators only. Never ask for a key in the chat: the user puts it into
-        config/secrets.env and restarts the API; the Setup panel shows its state.
+        Administrators only. Never ask for a key in the chat: the user enters it in the Setup
+        panel (API keys); the chat's next message uses it, sub-agents and plugins after a restart.
       parameters:
         type: object
         properties: {}
@@ -27,7 +27,7 @@ tools:
       description: >-
         Sends one short request through an LLM profile the way an agent would (default: the
         default chat agent's first profile) and says whether an answer came, or the error the
-        provider gave -- a refused key shows as such. Uses the configuration the chat started with.
+        provider gave -- a refused key shows as such.
         Costs one small request; batch profiles are refused. Administrators only.
       parameters:
         type: object
@@ -47,7 +47,7 @@ web_ui:
     keywords: [setup, install, keys, api key, openrouter, admin, password, first start, onboarding]
     window: {width: 900, height: 720}
 
-  # /plugins/setup/* is admin only by its rule in config.yaml (plugin_security); the data endpoints check
+  # /plugins/setup/* is admin only by its rule in config/security.yaml (plugin_security); the data endpoints check
   # for an admin themselves as well (require_admin_viewer). The page carries no data.
   endpoints:
     - path: "/"
@@ -67,3 +67,15 @@ web_ui:
       handler: "post_probe"
       response_type: "json"
       description: "One short request through the default chat profile: did it answer, and else the provider's error"
+
+    - path: "/key"
+      method: "POST"
+      handler: "post_key"
+      response_type: "json"
+      description: "Write one key the configuration names into config/local.env and reload the config; never returns the value"
+
+    - path: "/signing-key"
+      method: "POST"
+      handler: "post_signing_key"
+      response_type: "json"
+      description: "Give the installation its own signing key in config/local.env, named in config/local.yaml; a restart applies it"

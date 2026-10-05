@@ -2,9 +2,22 @@
 
 from unittest.mock import AsyncMock, patch, MagicMock
 
+import httpx
 import pytest
+from tavily.errors import BadRequestError, ForbiddenError, InvalidAPIKeyError, UsageLimitExceededError
 
+import plugins.tavily_search.server as tavily_server
+from agent_system.plugins.cache import PluginCache
 from plugins.tavily_search.server import TavilySearchServer
+
+
+@pytest.fixture(autouse=True)
+def _cache_in_tmp(tmp_path, monkeypatch):
+    """Every server here caches under tmp_path: the default is the real
+    data/cache/tavily_search, where an entry from a real run would answer
+    in place of the stubbed client."""
+    monkeypatch.setattr(tavily_server, "PluginCache",
+                        lambda **kw: PluginCache(cache_dir=tmp_path, **kw))
 
 
 class TestTavilySearchServerInit:
@@ -156,6 +169,9 @@ class TestTavilyWebSearch:
                 assert len(result["results"]) == 2
                 assert result["results"][0]["title"] == "Result 1"
                 assert result["answer"] == "Test answer"
+                # The end line replaces the progress line: it names the query,
+                # as the cached path does.
+                assert mock_status.end.call_args[0][0] == "2 results -- test query"
 
     @pytest.mark.asyncio
     async def test_web_search_with_filters(self, mock_system_config, mock_server_config):
@@ -322,6 +338,19 @@ class TestTavilyExtract:
                 assert result["failed_results"][0]["error"] == "Access denied"
 
     @pytest.mark.asyncio
+    async def test_extract_single_url_as_string(self, mock_system_config, mock_server_config):
+        """A model that sends one URL as a string instead of a list: its
+        characters were counted as URLs ("Too many URLs (34)")."""
+        with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
+            server._client = AsyncMock()
+            server._client.extract = AsyncMock(return_value={
+                "results": [{"url": "https://example.com/a/long/path", "raw_content": "text"}], "failed_results": []})
+            result = await server.call("extract", {"urls": "https://example.com/a/long/path", "_status": AsyncMock()})
+            assert "error" not in result, result
+            assert server._client.extract.call_args.kwargs["urls"] == ["https://example.com/a/long/path"]
+
+    @pytest.mark.asyncio
     async def test_extract_cancellation(self, mock_system_config, mock_server_config):
         """Test extract respects cancellation token."""
         with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
@@ -341,7 +370,9 @@ class TestTavilyExtract:
 
 
 class TestTavilyErrorHandling:
-    """Test error handling in TavilySearchServer."""
+    """tavily-python raises one class per HTTP status and carries only the
+    API's detail text, never the status code: the class is what tells them
+    apart. The real classes are raised here, not look-alike strings."""
 
     @pytest.mark.asyncio
     async def test_invalid_api_key_error(self, mock_system_config, mock_server_config):
@@ -351,7 +382,7 @@ class TestTavilyErrorHandling:
             server.cache_enabled = False
             
             mock_client = AsyncMock()
-            mock_client.search = AsyncMock(side_effect=Exception("401 Unauthorized"))
+            mock_client.search = AsyncMock(side_effect=InvalidAPIKeyError("Unauthorized: missing or invalid API key."))
             
             async def mock_get_client():
                 return mock_client
@@ -360,8 +391,7 @@ class TestTavilyErrorHandling:
                 mock_status = AsyncMock()
                 result = await server.call("web_search", {"query": "test", "_status": mock_status})
                 
-                assert "error" in result
-                assert "Invalid" in result["error"] or "API key" in result["error"]
+                assert result["error"] == "Invalid Tavily API key. Please check your configuration."
 
     @pytest.mark.asyncio
     async def test_rate_limit_error(self, mock_system_config, mock_server_config):
@@ -371,7 +401,7 @@ class TestTavilyErrorHandling:
             server.cache_enabled = False
             
             mock_client = AsyncMock()
-            mock_client.search = AsyncMock(side_effect=Exception("429 Rate limit exceeded"))
+            mock_client.search = AsyncMock(side_effect=UsageLimitExceededError("Too many requests"))
             
             async def mock_get_client():
                 return mock_client
@@ -380,8 +410,48 @@ class TestTavilyErrorHandling:
                 mock_status = AsyncMock()
                 result = await server.call("web_search", {"query": "test", "_status": mock_status})
                 
-                assert "error" in result
-                assert "rate limit" in result["error"].lower()
+                assert result["error"] == "Tavily API rate limit exceeded. Please try again later."
+
+    @pytest.mark.asyncio
+    async def test_plan_limit_is_not_reported_as_rate_limit(self, mock_system_config, mock_server_config):
+        """432 (plan credits used up) arrives as ForbiddenError whose detail
+        says "limit". Calling it a rate limit to retry later sent the model
+        into retries that cannot succeed; the API's own words must reach it."""
+        with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
+            server._client = AsyncMock()
+            detail = "This request exceeds your plan's set usage limit."
+            server._client.search = AsyncMock(side_effect=ForbiddenError(detail))
+            server._client.extract = AsyncMock(side_effect=ForbiddenError(detail))
+            result = await server.call("web_search", {"query": "test", "_status": AsyncMock()})
+            assert result["error"] == f"ForbiddenError: {detail}"
+            result = await server.call("extract", {"urls": ["https://example.com"], "_status": AsyncMock()})
+            assert result["error"] == f"ForbiddenError: {detail}"
+            assert result["failed_results"] == [{"url": "https://example.com", "error": f"ForbiddenError: {detail}"}]
+
+    @pytest.mark.asyncio
+    async def test_error_without_detail_still_says_what_failed(self, mock_system_config, mock_server_config):
+        """A body without a detail gives the exception None or "": the model
+        was told "None" or an empty error."""
+        with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
+            server._client = AsyncMock()
+            for exc, expected in ((ForbiddenError(None), "ForbiddenError"), (BadRequestError(""), "BadRequestError")):
+                server._client.search = AsyncMock(side_effect=exc)
+                result = await server.call("web_search", {"query": "test", "_status": AsyncMock()})
+                assert result["error"] == expected
+
+    async def test_a_server_error_is_one_bounded_line(self, mock_system_config, mock_server_config):
+        """httpx's 5xx message spans two lines with a docs link."""
+        request = httpx.Request("POST", "https://api.tavily.com/search")
+        exc = httpx.HTTPStatusError("Server error '500' for url\nFor more information check: " + "x" * 500,
+                                    request=request, response=httpx.Response(500, request=request))
+        with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
+            server._client = AsyncMock()
+            server._client.search = AsyncMock(side_effect=exc)
+            result = await server.call("web_search", {"query": "test", "_status": AsyncMock()})
+        assert "\n" not in result["error"] and "more information" not in result["error"], result
 
 
 class TestTavilyPluginFactory:
@@ -421,3 +491,70 @@ class TestToolsHiddenWithoutKey:
             server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
             names = {t["function"]["name"] for t in server.get_tools()}
         assert names == {"tavily_web_search", "tavily_extract"}
+
+
+class TestContentCap:
+    """Whole pages went to the model uncut: 20 search results with
+    include_raw_content, or 20 extracted pages, made one tool result of
+    millions of characters. Each page is cut to max_content_chars."""
+
+    @staticmethod
+    def _server(mock_system_config, cap=None):
+        from agent_system.config.models import ToolServerConfig, AgentConfig
+        config = ToolServerConfig(type="tavily_search", enabled=True, agent_config=AgentConfig())
+        if cap is not None:
+            config.max_content_chars = cap
+        with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
+            server = TavilySearchServer("tavily", mock_system_config, config)
+        server._client = AsyncMock()
+        return server
+
+    @pytest.mark.parametrize("cap", [None, 0, -5, "300", 2.5, True])
+    def test_invalid_cap_is_the_default(self, mock_system_config, cap):
+        assert self._server(mock_system_config, cap).max_content_chars == 20000
+
+    @pytest.mark.asyncio
+    async def test_search_pages_are_cut_and_marked(self, mock_system_config):
+        server = self._server(mock_system_config, 100)
+        server._client.search = AsyncMock(return_value={"results": [
+            {"title": "long", "url": "https://e/1", "content": "c", "score": 1, "raw_content": "x" * 250},
+            {"title": "short", "url": "https://e/2", "content": "c", "score": 1, "raw_content": "y" * 100},
+        ]})
+        result = await server.call("web_search", {"query": "q", "include_raw_content": True, "_status": AsyncMock()})
+        long, short = result["results"]
+        assert long["raw_content"] == "x" * 100 and long["truncated"] == 250
+        assert short["raw_content"] == "y" * 100 and "truncated" not in short
+
+    @pytest.mark.asyncio
+    async def test_extract_pages_are_cut_and_marked(self, mock_system_config):
+        server = self._server(mock_system_config, 100)
+        server._client.extract = AsyncMock(return_value={
+            "results": [{"url": "https://e/1", "raw_content": "x" * 250}], "failed_results": []})
+        result = await server.call("extract", {"urls": ["https://e/1"], "_status": AsyncMock()})
+        assert result["results"][0]["raw_content"] == "x" * 100
+        assert result["results"][0]["truncated"] == 250
+
+    @pytest.mark.asyncio
+    async def test_cache_keeps_the_whole_page_so_a_new_cap_applies(self, mock_system_config):
+        server = self._server(mock_system_config, 100)
+        server._client.extract = AsyncMock(return_value={
+            "results": [{"url": "https://e/1", "raw_content": "x" * 250}], "failed_results": []})
+        await server.call("extract", {"urls": ["https://e/1"], "_status": AsyncMock()})
+        server.max_content_chars = 200  # a raised cap, the next call served from the cache
+        result = await server.call("extract", {"urls": ["https://e/1"], "_status": AsyncMock()})
+        assert server._client.extract.await_count == 1
+        assert result["results"][0]["raw_content"] == "x" * 200
+        assert result["results"][0]["truncated"] == 250
+
+    @pytest.mark.asyncio
+    async def test_cached_search_is_cut_by_the_current_cap(self, mock_system_config):
+        server = self._server(mock_system_config, 100)
+        server._client.search = AsyncMock(return_value={"results": [
+            {"title": "t", "url": "https://e/1", "content": "c", "score": 1, "raw_content": "x" * 250}]})
+        params = {"query": "q", "include_raw_content": True}
+        await server.call("web_search", {**params, "_status": AsyncMock()})
+        server.max_content_chars = 200
+        result = await server.call("web_search", {**params, "_status": AsyncMock()})
+        assert server._client.search.await_count == 1
+        assert result["results"][0]["raw_content"] == "x" * 200
+        assert result["results"][0]["truncated"] == 250

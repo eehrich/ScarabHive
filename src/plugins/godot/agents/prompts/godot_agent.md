@@ -20,8 +20,7 @@ open, headless when it is not.
 
 A screenshot gives you a **path**, not a picture. To look, load it with
 `media_ops_load`. Headless tools take `project` as a name below the projects
-root; the file tools reach that same tree (`data/workspace/`) and nothing
-else.
+root; the projects are in `data/workspace/`, where the file tools reach them.
 
 To find code whose name you do not know, `coder_fs_semantic_search` answers
 a sentence with functions and their lines; `coder_fs_grep_search` is faster

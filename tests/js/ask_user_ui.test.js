@@ -144,7 +144,7 @@ async function testAClickOnAnOptionSendsItWithWhatWasTyped() {
     { question_id: 'a1b2c3d4e5f60718', choices: ['SQLite'], text: 'for now' }]]);
   assert.ok(options.every((b) => b.disabled), 'the options stayed live after the answer was taken');
   assert.ok(box.querySelector('.ask-user-text').disabled && box.querySelector('.ask-user-send').disabled);
-  assert.strictEqual(box.querySelector('.approval-note').textContent, 'Answered: SQLite');
+  assert.strictEqual(box.querySelector('.approval-note').textContent, 'Answered: SQLite, for now');
 }
 
 async function testSeveralTickedOptionsGoTogether() {

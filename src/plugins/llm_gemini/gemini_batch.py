@@ -42,6 +42,7 @@ from plugins.llm_common.schema_sanitize import sanitize_schema_for_gemini
 from .gemini_utils import (
     build_thinking_config,
     extract_available_tool_names,
+    extract_usage_from_metadata,
     filter_unavailable_tool_calls_dict,
 )
 from typing import Callable, TypeVar
@@ -684,7 +685,7 @@ class GeminiBatchClient(BatchProviderClient):
             List of result dicts with custom_id, response/error, and usage per request.
             Usage fields are normalized to OpenAI format:
             - prompt_tokens (Gemini: prompt_token_count)
-            - completion_tokens (Gemini: candidates_token_count)
+            - completion_tokens (Gemini: candidates_token_count + thoughts_token_count)
             - total_tokens (Gemini: total_token_count)
         """
         try:
@@ -733,6 +734,7 @@ class GeminiBatchClient(BatchProviderClient):
                             # warning when function_call parts are present
                             response_obj = inline_response.response
                             content = ""
+                            thoughts = ""
                             tool_calls = []
                             
                             if hasattr(response_obj, "candidates") and response_obj.candidates:
@@ -750,6 +752,9 @@ class GeminiBatchClient(BatchProviderClient):
                                                     "arguments": json.dumps(dict(fc.args)) if fc.args else "{}",
                                                 }
                                             })
+                                        elif getattr(part, "thought", None) is True and part.text:
+                                            # Thinking is no part of the answer.
+                                            thoughts += part.text
                                         elif hasattr(part, "text") and part.text:
                                             content += part.text
                             
@@ -758,40 +763,15 @@ class GeminiBatchClient(BatchProviderClient):
                                 "role": "assistant",
                                 "content": content if content else None,
                             }
+                            if thoughts:
+                                message["reasoning_content"] = thoughts
                             if tool_calls:
                                 message["tool_calls"] = tool_calls
                             
-                            # Extract usage metadata in OpenAI-compatible format
-                            usage = {}
-                            if hasattr(response_obj, "usage_metadata"):
-                                um = response_obj.usage_metadata
-                                
-                                # Debug: Log the full usage_metadata structure
-                                logger.debug(f"SDK usage_metadata: {um}")
-                                
-                                prompt_tokens = getattr(um, "prompt_token_count", 0) or 0
-                                
-                                # SDK has both response_token_count and candidates_token_count
-                                # Try response_token_count first (newer API), fallback to candidates_token_count
-                                completion_tokens = getattr(um, "response_token_count", None) or getattr(um, "candidates_token_count", 0) or 0
-                                
-                                # cached_content_token_count can be None when no caching is used
-                                cached_tokens = getattr(um, "cached_content_token_count", None)
-                                cached_tokens = cached_tokens if cached_tokens is not None else 0
-                                
-                                logger.debug(f"Extracted tokens - prompt: {prompt_tokens}, completion: {completion_tokens}, cached: {cached_tokens}")
-                                
-                                usage = {
-                                    "prompt_tokens": prompt_tokens,
-                                    "completion_tokens": completion_tokens,
-                                    "total_tokens": getattr(um, "total_token_count", 0) or 0,
-                                }
-                                
-                                # Add cached tokens if present
-                                if cached_tokens and cached_tokens > 0:
-                                    usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
-                                    logger.debug(f"Added cached tokens to usage: {cached_tokens}")
-                            
+                            # The same shape as the chat clients: thinking
+                            # counts as output (extract_usage_from_metadata).
+                            usage = extract_usage_from_metadata(getattr(response_obj, "usage_metadata", None))
+
                             results.append({
                                 "custom_id": custom_id,
                                 "response": {

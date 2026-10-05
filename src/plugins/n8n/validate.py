@@ -250,6 +250,24 @@ def _static_workflow_id(parameters: dict) -> Optional[str]:
     return ref
 
 
+def callee_ids(nodes: Any, settings: Any) -> list[str]:
+    """The workflows a run of these nodes can start by a fixed id: enabled
+    sub-workflow nodes reading from the database, and the error workflow."""
+    ids = []
+    for node in nodes if isinstance(nodes, list) else []:
+        if not isinstance(node, dict) or node.get("disabled") \
+                or normalize_type(node.get("type", "")) not in SUB_WORKFLOW_TYPES:
+            continue
+        params = node.get("parameters") if isinstance(node.get("parameters"), dict) else {}
+        callee = _static_workflow_id(params) if params.get("source", "database") == "database" else None
+        if callee:
+            ids.append(callee)
+    error_workflow = settings.get("errorWorkflow") if isinstance(settings, dict) else None
+    if isinstance(error_workflow, str) and error_workflow:
+        ids.append(error_workflow)
+    return ids
+
+
 def check_workflow(workflow: dict, *, blocked: frozenset, review: frozenset,
                    credentials: Optional[dict[str, str]] = None,
                    type_errors: Optional[dict[tuple[str, str], str]] = None) -> list[dict]:

@@ -57,8 +57,8 @@ word, so a server configured with `transport_type` silently gets the default.
 
 | `transport` | SDK client | When |
 |---|---|---|
-| `streaming`, `streamable_http`, `streamable-http`, `smithery` | `streamablehttp_client` | The usual case; what all shipped entries use |
-| `http` | `streamablehttp_client` | Historically bare JSON-RPC POSTs. No current server answers those (measured: HTTP 406), and those endpoints speak streamable HTTP today |
+| `streaming`, `streamable_http`, `streamable-http`, `smithery` | `streamable_http_client` | The usual case for a remote server (the shipped entries are all stdio) |
+| `http` | `streamable_http_client` | Historically bare JSON-RPC POSTs. No current server answers those (measured: HTTP 406), and those endpoints speak streamable HTTP today |
 | `sse`, `http_sse`, `http+sse` | `sse_client` | The older HTTP+SSE transport |
 | `stdio`, `local` | `stdio_client` | A locally launched server: needs `command` (plus optional `args`, `env`) instead of `url` |
 

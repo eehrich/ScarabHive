@@ -1,6 +1,6 @@
 """CLI: run one SQL statement through the plugin.
 
-    mcp-sqlite-query --database data/writer/books.db --sql "PRAGMA table_info(books)"
+    tool-sqlite-query --database data/app.db --sql "PRAGMA table_info(items)"
     python -m plugins.sqlite_query --database <db> --sql "<sql>" --json
 """
 from __future__ import annotations
@@ -18,16 +18,16 @@ from .server import SqliteQueryServer
 EPILOG = """
 Examples:
   # Query database
-  mcp-sqlite-query --database data/writer/books.db \\
-      --sql "SELECT * FROM books WHERE status = 'draft'"
+  tool-sqlite-query --database data/app.db \\
+      --sql "SELECT * FROM items WHERE status = 'draft'"
 
   # Update data
-  mcp-sqlite-query --database data/writer/books.db \\
-      --sql "UPDATE books SET status = 'completed' WHERE id = 1"
+  tool-sqlite-query --database data/app.db \\
+      --sql "UPDATE items SET status = 'done' WHERE id = 1"
 
   # Schema inspection
-  mcp-sqlite-query --database data/writer/books.db \\
-      --sql "PRAGMA table_info(books)"
+  tool-sqlite-query --database data/app.db \\
+      --sql "PRAGMA table_info(items)"
 """
 
 
@@ -65,9 +65,8 @@ def print_result(result: dict[str, Any]) -> int:
             print("-" * len(header))
             for cell in cells:
                 print(" | ".join(cell[c].ljust(widths[c]) for c in columns))
-    elif result.get("rows_affected", -1) < 0:
-        # sqlite3 reports -1 for statements that change no rows (DDL).
-        print("Success")
+        if result.get("truncated"):
+            print(result["hint"])
     else:
         print(f"Success: {result['rows_affected']} rows affected")
         if result.get("last_row_id"):
@@ -77,7 +76,7 @@ def print_result(result: dict[str, Any]) -> int:
 
 def cli_main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="mcp-sqlite-query",
+        prog="tool-sqlite-query",
         description="Execute SQL queries on SQLite databases",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=EPILOG)

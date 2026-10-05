@@ -168,7 +168,7 @@ stderr.
 
 | Modul | Inhalt |
 |-------|--------|
-| `common.py` | Farbmodus (`set_color_mode`, `supports_color`), Windows-VT-Modus, Statuszeilen, `format_output_with_hooks`, `render_with_rich` |
+| `common.py` | Farbmodus (`set_color_mode`, `supports_color`), Windows-VT-Modus, Statuszeilen, `show_answer` (Antwort als Markdown mit Farben, roh in eine Pipe), `render_with_rich` |
 | `chat.py` | die REPL: Renderer, Eingabe/Tastatur, Slash-Befehle, Usage-Summen |
 | `session_defaults.py` | Agent/LLM einer fortgesetzten Session |
 | `session_listing.py` | `--list-sessions` |

@@ -46,9 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--next-thought-needed",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,  # store_true with default True could never say false
         default=True,
-        help="Whether another thought step is needed"
+        help="Whether another thought step is needed (--no-next-thought-needed: done)"
     )
     parser.add_argument(
         "--session-id",
@@ -85,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--include-branches",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
         help="Include branch info in summary"
     )
@@ -134,7 +134,7 @@ async def async_main():
                     return
                 
                 print(f"Adding thought {args.thought_number}/{args.total_thoughts}...")
-                result = await server.call("sequentialthinking", {
+                result = await server.call("sequential_thinking", {
                     "thought": args.thought,
                     "thought_number": args.thought_number,
                     "total_thoughts": args.total_thoughts,
@@ -148,7 +148,7 @@ async def async_main():
                 })
             elif args.operation == "clear":
                 print(f"Clearing {'session ' + args.session_id if args.session_id else 'all sessions'}...")
-                result = await server.call("clear_history", {
+                result = await server.call("sequential_thinking_clear_history", {
                     "session_id": args.session_id,
                     "_status": mock_status
                 })
@@ -158,7 +158,7 @@ async def async_main():
                     return
                 
                 print(f"Generating summary for session {args.session_id}...")
-                result = await server.call("get_thought_summary", {
+                result = await server.call("sequential_thinking_get_summary", {
                     "session_id": args.session_id,
                     "max_thoughts": args.max_thoughts,
                     "include_branches": args.include_branches,

@@ -1,7 +1,7 @@
 """The Debate Forum panel in a real browser, against the real plugin: its router, its database (under tmp_path), its
 static files. Nothing is stubbed; what agents do happens behind the panel's back through the plugin's database.
 
-Seeded: group ``Story design`` (id 1) with ``synopsis`` (active; Mira the critic, Sven the author and a moderator over
+Seeded: group ``Schema review`` (id 1) with ``schema`` (active; Mira the critic, Sven the author and a moderator over
 rounds 1 and 2 -- a moderator post in round 1 after round 2 began, a pinned post, a JSON block with a raw line break in
 a string, a Python block, a block holding the JSON number 42, Markdown) and
 ``titles`` (concluded: a Markdown summary, a verdict with winner, score, summary and remaining_differences); group
@@ -41,19 +41,19 @@ pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based brow
 TESTS = Path(__file__).resolve().parent
 PREFIX = "/plugins/debate_forum/api/"
 
-VERDICT = {"winner": "Synopsis B", "score": 8, "summary": "ignored", "remaining_differences": ["pace"]}
+VERDICT = {"winner": "Schema B", "score": 8, "summary": "ignored", "remaining_differences": ["pace"]}
 JSON_POST = 'Scores:\n\n```json\n{"winner": "B", "note": "a line\nbroken raw", "reasons": ["tension", "voice"]}\n```'
 
 
 def seed(db) -> None:
-    story = db.create_group("Story design")["group_id"]
+    story = db.create_group("Schema review")["group_id"]
     markup = db.create_group("<b>Markup group</b>")["group_id"]
-    synopsis = db.create_channel("synopsis", "Which synopsis is best?", group_id=story)["channel_id"]
-    db.post_message(synopsis, "Mira", "critic", 1, "Synopsis A drags in the **middle**.")
-    pinned = db.post_message(synopsis, "Sven", "author", 1, "The task: pick one of three.")["message_id"]
+    schema = db.create_channel("schema", "Which schema is best?", group_id=story)["channel_id"]
+    db.post_message(schema, "Mira", "critic", 1, "Schema A nests too **deep**.")
+    pinned = db.post_message(schema, "Sven", "author", 1, "The task: pick one of three.")["message_id"]
     db.pin_message(pinned)
-    db.post_message(synopsis, "Mira", "critic", 2, JSON_POST)
-    db.post_message(synopsis, "Moderator", "moderator", 1, "A late note on round 1:\n\n```python\nprint('x')\n```\n\n```\n42\n```")
+    db.post_message(schema, "Mira", "critic", 2, JSON_POST)
+    db.post_message(schema, "Moderator", "moderator", 1, "A late note on round 1:\n\n```python\nprint('x')\n```\n\n```\n42\n```")
     titles = db.create_channel("titles", "Which title?", group_id=story)["channel_id"]
     db.post_message(titles, "Sven", "author", 1, "Title one.")
     db.conclude_channel(titles, VERDICT, "**B** wins")

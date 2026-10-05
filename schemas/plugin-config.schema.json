@@ -188,7 +188,6 @@
               "post_llm_call",
               "pre_tool_call",
               "post_tool_call",
-              "format_output",
               "session_start",
               "session_end"
             ]

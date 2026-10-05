@@ -4,9 +4,9 @@ This is the part that used to live in ``ToolServerIntegration`` as ``client_mana
 plus ``configured_external_servers``. It keeps the same observable behaviour --
 including the two details that are easy to get wrong:
 
-* Blocked tools are **not** dropped. They are handed on with ``blocked: True``
-  and the consumer decides. Filtering them out here would silently change what
-  the tool-permission layer above sees.
+* Blocked tools are marked ``blocked: True`` here, not dropped: the
+  management tool shows them. The plugin leaves them out of the model's list
+  (``MCPClientServer.list_external_tools``), and a call is refused here.
 * A tool list is cached with a TTL, keyed by a hash over the servers' urls and
   their blocked lists, so a config change invalidates it by itself.
 """
@@ -19,23 +19,45 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from .connection import MCPConnectionError, ServerConnection
+from .connection import MCPConnectionError, MCPServerGone, ServerConnection
 
 logger = logging.getLogger(__name__)
+
+#: Seconds an on_demand server that failed to connect is left alone.
+ON_DEMAND_RETRY_S = 300
+
+
+def cap_text(text: str, limit: int) -> str:
+    """*text* cut to *limit* characters, marked with its full length."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…[{len(text)} chars]"
 
 
 class ExternalServerPool:
     """Owns every live connection to an external MCP server."""
 
-    def __init__(self, *, ssl_verify: bool = True, timeout: float = 30.0, cache_ttl: float = 300.0) -> None:
+    def __init__(self, *, ssl_verify: bool = True, timeout: float = 30.0, cache_ttl: float = 300.0,
+                 max_result_chars: int = 50000, max_description_chars: int = 1024) -> None:
         self.ssl_verify = ssl_verify
         self.timeout = timeout
         self.cache_ttl = cache_ttl
+        #: Foreign text reaches the model unbounded otherwise: a result lands
+        #: in the conversation whole, a description in every request.
+        self.max_result_chars = max_result_chars
+        self.max_description_chars = max_description_chars
 
         #: name -> RemoteMCPConfig, only the ENABLED ones (same as before).
         self.configured_servers: Dict[str, Any] = {}
         self._connections: Dict[str, ServerConnection] = {}
         self._lock = asyncio.Lock()
+        self._connect_locks: Dict[str, asyncio.Lock] = {}
+        #: Bumped by close_all / disconnect(name); a handshake that started
+        #: under an older value is thrown away when it completes.
+        self._epoch = 0
+        self._name_epochs: Dict[str, int] = {}
+        self._on_demand_failed_at: Dict[str, float] = {}
+        self._restart_locks: Dict[str, asyncio.Lock] = {}
 
         self._tools_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._tools_cache_at: float = 0.0
@@ -61,20 +83,32 @@ class ExternalServerPool:
 
     # -------------------------------------------------------------- connecting
 
+    def on_demand_servers(self) -> List[str]:
+        """Enabled servers that wait for an agent to name them (``connect: on_demand``)."""
+        return [name for name, cfg in self.configured_servers.items()
+                if getattr(cfg, "connect", "startup") == "on_demand"]
+
     async def connect_all(self) -> Dict[str, Optional[str]]:
-        """Connect every enabled server. Returns name -> error (None if fine).
+        """Connect every enabled startup server. Returns name -> error (None if fine).
 
         One unreachable server must not stop the others, and it must not stop
-        startup either -- the result is reported, not raised.
+        startup either -- the result is reported, not raised. ``on_demand``
+        servers are left to :meth:`connect_on_demand`.
         """
+        # All at once: one after another, N silent servers held the start up
+        # for N handshake deadlines.
+        lazy = set(self.on_demand_servers())
+        names = [name for name in self.configured_servers if name not in lazy]
+        outcomes = await asyncio.gather(*(self.connect(name) for name in names), return_exceptions=True)
         results: Dict[str, Optional[str]] = {}
-        for name in list(self.configured_servers):
-            try:
-                await self.connect(name)
+        for name, outcome in zip(names, outcomes):
+            if isinstance(outcome, Exception):
+                results[name] = str(outcome)
+                logger.warning("Could not connect external MCP server '%s': %s", name, outcome)
+            elif isinstance(outcome, BaseException):
+                raise outcome
+            else:
                 results[name] = None
-            except Exception as e:
-                results[name] = str(e)
-                logger.warning("Could not connect external MCP server '%s': %s", name, e)
         return results
 
     async def connect(self, name: str) -> ServerConnection:
@@ -83,7 +117,10 @@ class ExternalServerPool:
         if config is None:
             raise MCPConnectionError(f"External MCP server '{name}' is not configured or not enabled")
 
-        async with self._lock:
+        ticket = (self._epoch, self._name_epochs.get(name, 0))
+        # One lock per server: the handshake may take a minute, and the pool
+        # lock held that long serialised every other server behind it.
+        async with self._connect_locks.setdefault(name, asyncio.Lock()):
             existing = self._connections.get(name)
             if existing is not None and existing.connected:
                 return existing
@@ -97,13 +134,73 @@ class ExternalServerPool:
                 timeout=getattr(config, "timeout", None) or self.timeout,
             )
             await connection.start()
+            # A disconnect or close_all that came while we shook hands wins:
+            # the connection must not outlive it.
+            if (self._epoch, self._name_epochs.get(name, 0)) != ticket:
+                await connection.stop()
+                raise MCPConnectionError(f"External MCP server '{name}' was disconnected while connecting")
             self._connections[name] = connection
+            self._on_demand_failed_at.pop(name, None)   # up: an old failure no longer delays a restart
 
         self.invalidate_cache()
         return connection
 
+    async def _restart(self, name: str, dead: ServerConnection) -> ServerConnection:
+        """Start a server again whose connection died. One restart for every caller: a hanging one
+        cost each parallel call a handshake deadline, one after the other behind the connect lock.
+        A failed one is not tried again for ON_DEMAND_RETRY_S -- each call waited it out again."""
+        async with self._restart_locks.setdefault(name, asyncio.Lock()):
+            current = self._connections.get(name)
+            # A caller before us restarted it -- or a disconnect/close_all took it out of the pool
+            # meanwhile, and a restart would bring back what the operator closed.
+            if current is not dead:
+                if current is None or not current.connected:
+                    raise MCPConnectionError(f"External MCP server '{name}' is not connected")
+                return current
+            wait = ON_DEMAND_RETRY_S - (time.monotonic() - self._on_demand_failed_at.get(name, -ON_DEMAND_RETRY_S))
+            if wait > 0:
+                raise MCPConnectionError(f"External MCP server '{name}' died and did not start again; "
+                                         f"next try in {wait:.0f}s")
+            try:
+                return await self.connect(name)
+            except Exception:
+                if self._connections.get(name) is dead:  # not when a disconnect cut the restart short
+                    self._on_demand_failed_at[name] = time.monotonic()
+                raise
+
+    async def connect_on_demand(self, names: List[str]) -> bool:
+        """Connect those of *names* that are on_demand and not connected yet.
+
+        True if a connection was made (the tool catalogue changed). A failure
+        is logged, not raised: the agent runs on without that server, as it
+        would after a failed startup connect.
+        """
+        now = time.monotonic()
+        lazy = set(self.on_demand_servers())
+        pending = [name for name in names if name in lazy
+                   and not (self._connections.get(name) and self._connections[name].connected)
+                   # A server that failed waits: this runs before every run,
+                   # and a missing npx cost a handshake timeout each time.
+                   and now - self._on_demand_failed_at.get(name, -ON_DEMAND_RETRY_S) >= ON_DEMAND_RETRY_S]
+        if not pending:
+            return False
+        outcomes = await asyncio.gather(*(self.connect(name) for name in pending), return_exceptions=True)
+        made = False
+        for name, outcome in zip(pending, outcomes):
+            if isinstance(outcome, Exception):
+                self._on_demand_failed_at[name] = time.monotonic()
+                logger.warning("Could not connect external MCP server '%s' on demand (next try in %ds): %s",
+                               name, ON_DEMAND_RETRY_S, outcome)
+            elif isinstance(outcome, BaseException):
+                raise outcome
+            else:
+                logger.info("External MCP server '%s' connected on demand", name)
+                made = True
+        return made
+
     async def disconnect(self, name: str) -> bool:
         """Close one server's connection. False if there was nothing to close."""
+        self._name_epochs[name] = self._name_epochs.get(name, 0) + 1
         async with self._lock:
             connection = self._connections.pop(name, None)
         if connection is None:
@@ -115,6 +212,7 @@ class ExternalServerPool:
 
     async def close_all(self) -> None:
         """Close everything. Never raises -- this runs during shutdown."""
+        self._epoch += 1
         async with self._lock:
             connections = list(self._connections.values())
             self._connections.clear()
@@ -154,7 +252,7 @@ class ExternalServerPool:
         self._tools_cache_key = ""
 
     async def list_tools_by_server(self, *, force_refresh: bool = False) -> Dict[str, List[Dict[str, Any]]]:
-        """Tool lists per server, with ``blocked`` marked (never removed)."""
+        """Tool lists per server, with ``blocked`` marked; the model's list drops them."""
         key = self._cache_key()
         fresh = (
             not force_refresh
@@ -169,6 +267,11 @@ class ExternalServerPool:
         complete = True
         for name, connection in list(self._connections.items()):
             if not connection.connected:
+                # It died (a crash): the next call starts it again, so its tools stay listed --
+                # dropped, a startup server was gone from every later run. The cache key holds the
+                # connected set: its restart asks every server again.
+                if name in self._last_seen:
+                    result[name] = self._last_seen[name]
                 continue
             try:
                 tools = await connection.list_tools()
@@ -190,9 +293,10 @@ class ExternalServerPool:
             result[name] = [
                 {
                     "name": tool.name,
-                    "description": tool.description,
+                    "description": cap_text(tool.description, self.max_description_chars),
                     "input_schema": tool.input_schema,
-                    # Marked, NOT filtered: the permission layer above decides.
+                    # Marked here for the management tool; left out of the
+                    # model's list in MCPClientServer.list_external_tools.
                     "blocked": tool.name in blocked,
                 }
                 for tool in tools
@@ -216,9 +320,42 @@ class ExternalServerPool:
             raise PermissionError(f"Tool '{tool_name}' is blocked on MCP server '{server_name}'")
 
         connection = self._connections.get(server_name)
+        if connection is not None and not connection.connected:
+            # It was connected and died (a crashed stdio process): start it again. A server that
+            # was never connected stays the caller's decision (startup, on_demand).
+            connection = await self._restart(server_name, connection)
         if connection is None or not connection.connected:
             raise MCPConnectionError(f"External MCP server '{server_name}' is not connected")
-        return await connection.call_tool(tool_name, arguments)
+        try:
+            try:
+                result = await connection.call_tool(tool_name, arguments)
+            except MCPServerGone as gone:
+                if not gone.unsent:
+                    raise                     # it reached the server: repeating could do it twice
+                connection = await self._restart(server_name, connection)
+                result = await connection.call_tool(tool_name, arguments)
+        except Exception as e:
+            # A server's error text reaches the model as str(e): same cap.
+            # The type is kept where it can be built from the text alone
+            # (MCPError needs a code and a message, others more arguments).
+            text = str(e)
+            if len(text) <= self.max_result_chars:
+                raise
+            capped = cap_text(text, self.max_result_chars)
+            try:
+                replacement = type(e)(capped)
+            except Exception:
+                replacement = RuntimeError(capped)
+            raise replacement from e
+        if isinstance(result, str):
+            return cap_text(result, self.max_result_chars)
+        if isinstance(result, dict) and "_multimodal_content" in result:
+            result["message"] = cap_text(result.get("message") or "", self.max_result_chars)
+            return result
+        # Structured: measured as the JSON the model will read; cut, it can
+        # only go on as text.
+        text = json.dumps(result, ensure_ascii=False, default=str)
+        return cap_text(text, self.max_result_chars) if len(text) > self.max_result_chars else result
 
     # ------------------------------------------------------------------ status
 

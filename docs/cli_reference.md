@@ -146,13 +146,13 @@ The session is saved after every turn and can be resumed later (`--session`).
 agent-cli chat
 
 # Chat with a specific agent and LLM profile
-agent-cli chat --agent amiga_coder --llm deepseek-chat
+agent-cli chat --agent coder --llm deepseek-chat
 
 # Send a first message immediately
 agent-cli chat "Wie ist der Stand?" --agent sysadmin_agent
 
 # Resume an earlier session (/sessions and /session print this line for you)
-agent-cli chat --session a1b2c3d4 --agent amiga_coder
+agent-cli chat --session a1b2c3d4 --agent coder
 
 # List sessions without entering the chat
 agent-cli chat --list-sessions
@@ -185,7 +185,7 @@ Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
 | `/agent [name]` | Agent dieses Chats — ohne Argument listet es die Agenten der Konfiguration, mit Argument wird gewechselt. Der Wechsel startet **immer eine neue Session**: eine Session trägt den Agenten, mit dem sie lief, und unter einem anderen liefe sie mit fremden Tools und fremdem Prompt. Der neue Agent läuft auf seinem eigenen LLM, ein `/model` davor gilt für ihn nicht |
 | `/vars [KEY=VALUE ...]` | Template variables of this session — bare lists them, `unset KEY` removes one, `clear` empties. The same variables `--vars` fills. A change reaches the agent on its next step and is written to the session file at once, so a removal survives `/resume` |
 | `/model [profile]`, `/llm` | LLM dieser Session — ohne Argument listet es die Profile und markiert das laufende, mit Argument wird gewechselt. Gilt ab der nächsten Nachricht und wird sofort in die Session geschrieben, ein späteres `--session <id>` startet also darauf — auch wenn der Chat gleich danach endet. Eine Session ohne erste Nachricht hat noch keinen Datensatz; dort landet die Wahl mit dem ersten Speichern. `--llm-params` gehen mit |
-| `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered) |
+| `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered); deferred ones (`tools.deferred`) are listed too, a run sends their schema once loaded |
 | `/skills` | Skill bundles it loads, `always` vs `on_demand` |
 | `/costs` | Session cost so far **including sub-agents** (needs `context_usage_tracker`) |
 | `/context`, `/ctx` | Was das Kontextfenster füllt. Zwei Blöcke, die nie vermischt werden: was der Anbieter beim **letzten Call gezählt** hat (aus `context_usage_tracker`, mit dem Fenster, gegen das er gezählt wurde — und dem Hinweis „stale", wenn seither kompaktiert wurde), und was das Gespräch **jetzt** enthält, geschätzt und nach Art aufgeschlüsselt: Tool-Ergebnisse, Antworten, deine Nachrichten, System-Prompt, Tool-Schemas. Größtes zuerst, denn das ist die Antwort auf „warum ist mein Fenster voll" — in einer langen Session sind es fast immer die Tool-Ergebnisse. Keine Kategorie wird als „Messung minus Schätzung" gerechnet: das sähe exakt aus und trüge den Fehler von beidem |
@@ -510,11 +510,11 @@ dem er gestartet ist, und meldet eine Änderung auf der Platte im Bericht
 | `AGENT_CONFIG_PATH` | Config-Datei, wenn `--config` fehlt (sonst `config/config.yaml`) |
 | `AGENT_SERVER_URL` | Server für `reload` |
 | `AGENT_ADMIN_API_KEY`, `AGENT_API_KEY` | Schlüssel für `reload` |
-| `NO_COLOR` | keine Farben |
+| `NO_COLOR`, `TERM=dumb` | keine Farben, solange `--color` auf `auto` steht (auch in Log-Zeilen) |
 
-API-Schlüssel der LLM-Anbieter stehen in `config/secrets.env` neben der Config.
+API-Schlüssel der LLM-Anbieter stehen in `config/local.env` (dieser Rechner) oder `config/secrets.env` neben der Config.
 
-Was nur auf einer Maschine gilt (Netz, Log-Aufbewahrung), steht in `config/local.yaml` daneben: nie im Repo, das letzte Include der `config.yaml` — es gewinnt über alle anderen Dateien. Nur `paths` liest der Loader allein aus der `config.yaml`.
+Was nur auf einer Maschine gilt (Netz, Log-Aufbewahrung, der eigene Signierschlüssel), steht in `config/local.yaml` daneben: nie im Repo, vom Loader nach allen Includes gelesen — es gewinnt über alle anderen Dateien und darf als einzige neben der `config.yaml` auch `auth` und `paths` setzen. Die Schlüssel dieser Maschine stehen in `config/local.env` (ebenfalls nie im Repo); der Loader liest sie vor `config/secrets.env`, dort gewinnt also ihr Wert. Das Setup-Panel und die Installationsskripte schreiben nur in diese beiden Dateien.
 
 ---
 

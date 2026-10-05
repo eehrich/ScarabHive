@@ -14,6 +14,7 @@ call to it, and the call raises instead of starting anything.
 """
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -169,18 +170,21 @@ async def test_a_whitelisted_terminal_runs_the_command_as_configured(server, spa
     await terminal.execute({"command": "echo hi", "_status": _Status()})
 
     assert [call["cwd"] for call in spawned] == [terminal.executor.initial_cwd]
-    assert spawned[0]["env"] == dict(os.environ)
+    # The server's environment, less what came from the secrets files.
+    assert spawned[0]["env"] == terminal.executor._environment(None)
+    assert set(spawned[0]["env"]) <= set(os.environ)
 
 
 @pytest.mark.parametrize("background", [False, True])
 async def test_a_terminal_without_a_whitelist_keeps_both(server, spawned, background):
     terminal = server(None)
 
-    await terminal.execute({"command": "echo hi", "background": background, "cwd": "/tmp",
+    elsewhere = os.path.abspath(os.sep + "tmp")  # absolute on every platform
+    await terminal.execute({"command": "echo hi", "background": background, "cwd": elsewhere,
                             "env_vars": {"A": "1"}, "_status": _Status()})
 
     [call] = spawned
-    assert (call["cwd"], call["env"].get("A")) == ("/tmp", "1"), call
+    assert (call["cwd"], call["env"].get("A")) == (elsewhere, "1"), call
 
 
 @pytest.mark.parametrize("whitelist, offered", [(WHITELIST, False), (None, True)])

@@ -284,3 +284,28 @@ class TestBothPluginsShareOneResolution:
         with pytest.raises(PathSandboxDenied):
             PathValidator([str(allowed)], base=tmp_path).validate_path(
                 str(tmp_path / "elsewhere.txt"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a UNC path is a host only on Windows")
+@pytest.mark.parametrize("hostile", [r"\\evil.example\share\x.txt", "//evil.example/share/x.txt",
+                                     r"\\?\UNC\evil.example\share\x.txt", r"\??\UNC\evil.example\share\x.txt",
+                                     "/??/UNC/evil.example/share/x.txt"])
+def test_a_host_path_is_refused_before_anything_opens_it(tmp_path, monkeypatch, hostile):
+    """Resolving a share path makes Windows connect and sign in (NTLM) -- before containment could refuse it."""
+    touched = []
+    real_resolve, real_stat = Path.resolve, Path.stat
+
+    def spy_resolve(self, *args, **kwargs):
+        touched.append(str(self))
+        return real_resolve(self, *args, **kwargs)
+
+    def spy_stat(self, *args, **kwargs):
+        touched.append(str(self))
+        return real_stat(self, *args, **kwargs)
+
+    sandbox = PathSandbox.from_config([str(tmp_path)], base=tmp_path)
+    monkeypatch.setattr(Path, "resolve", spy_resolve)
+    monkeypatch.setattr(Path, "stat", spy_stat)
+    with pytest.raises(PathSandboxDenied):
+        sandbox.resolve(hostile)
+    assert not [path for path in touched if "evil" in path]

@@ -13,6 +13,16 @@ export const PAD = { top: 34, left: 14, bottom: 14, right: 14 };
 /** Pseudostates are small shapes of a fixed size. */
 const SHAPES = { choice: [30, 30], junction: [14, 14], final: [26, 26] };
 const INITIAL_SIZE = 14;
+/** Between an initial dot and the state placed by hand it points to. */
+const INITIAL_GAP = 40;
+/** Between the straight lines of two transitions that join the same two states; of three or more, wider than a label
+ * above its line reaches (17): it stays clear of the next line. */
+const LANE_GAP = 12;
+const CROWD_GAP = 20;
+/** The least run of a right-angled line out of a box and into one before it bends. */
+const RUN = 16;
+/** A transition's line: right-angled (the default) or straight. Moving a state never changes it. */
+export const LINE_STYLES = ['orthogonal', 'straight'];
 
 export const ROOT_OPTIONS = {
   'elk.algorithm': 'layered',
@@ -26,6 +36,25 @@ export const ROOT_OPTIONS = {
   'elk.spacing.edgeLabel': '4',
   'elk.padding': '[top=24,left=24,bottom=24,right=24]',
 };
+
+/** The automatic layout 'flow': top down, in the file's order -- the YAML decides which state comes first and which
+ * transition goes back (a loop), not ELK's guess --, long transitions straight and the graph narrow (LINEAR_SEGMENTS;
+ * NETWORK_SIMPLEX is wider and takes 0.5 s for 30 states, on the page's thread). 'classic' (ROOT_OPTIONS) is left to
+ * right in ELK's own order: the layouts dragged before 'flow' came keep it, their positions were made against it. */
+export const FLOW_OPTIONS = {
+  ...ROOT_OPTIONS,
+  'elk.direction': 'DOWN',
+  'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER',
+  'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+  'elk.layered.nodePlacement.strategy': 'LINEAR_SEGMENTS',
+};
+
+/** A layout's automatic layout: its `auto`; without one 'flow', but 'classic' where it holds positions (dragged
+ * before `auto` was written). */
+export function autoOf(layout) {
+  if (layout?.auto === 'flow' || layout?.auto === 'classic') return layout.auto;
+  return Object.keys(layout?.positions || {}).length ? 'classic' : 'flow';
+}
 
 export const stateId = (name) => `s:${name}`;
 export const initialId = (region) => `i:${region || ''}`;
@@ -84,8 +113,9 @@ function childrenOf(graph) {
   return byParent;
 }
 
-/** The ELK graph: composites as compound nodes, an initial dot per region, transitions with their labels. */
-export function elkInput(graph) {
+/** The ELK graph: composites as compound nodes, an initial dot per region, transitions with their labels; laid out
+ * 'classic' or 'flow' (autoOf). */
+export function elkInput(graph, auto = 'classic') {
   const byParent = childrenOf(graph);
   const known = new Set((graph.states || []).map((state) => state.name));
   const edges = [];
@@ -106,6 +136,9 @@ export function elkInput(graph) {
           // ELK sizes a composite from its children: the title band needs room of its own
           'elk.nodeSize.constraints': 'MINIMUM_SIZE',
           'elk.nodeSize.minimum': `(${compositeTitleWidth(state)}, ${PAD.top + PAD.bottom})`,
+          // the file's order does not reach into a composite (and ELK fails where a composite asks for it): a
+          // depth-first search finds the transitions that go back
+          ...(auto === 'flow' && { 'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST' }),
         },
         children: region(state.name, state.initial),
       };
@@ -124,13 +157,14 @@ export function elkInput(graph) {
       labels: text ? [{ text, width: textWidth(text, 11, true) + 8, height: 16 }] : [],
     });
   }
-  return { id: 'root', layoutOptions: { ...ROOT_OPTIONS }, children, edges };
+  return { id: 'root', layoutOptions: { ...(auto === 'flow' ? FLOW_OPTIONS : ROOT_OPTIONS) }, children, edges };
 }
 
-/** ELK's answer as flat boxes (absolute, with their parent) and edge routes. */
+/** ELK's answer as flat boxes (absolute, with their parent), edge routes, and the state each initial dot points to. */
 export function layoutFrom(out) {
   const nodes = {};
   const edges = {};
+  const initials = {};
   const walk = (parent, owner) => {
     for (const child of parent.children || []) {
       nodes[child.id] = { x: child.x, y: child.y, w: child.width, h: child.height, parent: owner };
@@ -147,14 +181,16 @@ export function layoutFrom(out) {
       points,
       label: label && Number.isFinite(label.x) ? { x: label.x, y: label.y, w: label.width, h: label.height } : null,
     };
+    if (edge.id.startsWith('ie:') && edge.sources?.[0] && edge.targets?.[0]) initials[edge.sources[0]] = edge.targets[0];
   }
-  return { nodes, edges };
+  return { nodes, edges, initials };
 }
 
 /**
  * Stored positions over the automatic layout. positions: {state name: {x, y}}, relative to the parent's box (top
- * level: absolute). A composite grows to hold its children; a child stays inside its parent's content area.
- * Returns the boxes and the ids of those that differ from ELK's.
+ * level: absolute). A composite grows to hold its children; a child stays inside its parent's content area; a
+ * region's initial dot sits left of its initial state once that one is placed. Returns the boxes and the ids of
+ * those that differ from ELK's.
  */
 export function applyPositions(layout, positions) {
   const auto = layout.nodes;
@@ -164,11 +200,13 @@ export function applyPositions(layout, positions) {
     const parent = auto[id].parent ? auto[auto[id].parent] : null;
     relative[id] = { x: auto[id].x - (parent ? parent.x : 0), y: auto[id].y - (parent ? parent.y : 0) };
   }
+  const placed = new Set();
   for (const [name, spot] of Object.entries(positions || {})) {
     const id = stateId(name);
     if (!relative[id] || !Number.isFinite(spot?.x) || !Number.isFinite(spot?.y)) continue;
     const nested = Boolean(auto[id].parent);
     relative[id] = { x: nested ? Math.max(spot.x, PAD.left) : spot.x, y: nested ? Math.max(spot.y, PAD.top) : spot.y };
+    placed.add(id);
   }
   const nodes = {};
   for (const id of ids) {
@@ -182,33 +220,53 @@ export function applyPositions(layout, positions) {
     box.w = Math.max(box.w, Math.max(...kids.map((k) => nodes[k].x + nodes[k].w)) + PAD.right - box.x);
     box.h = Math.max(box.h, Math.max(...kids.map((k) => nodes[k].y + nodes[k].h)) + PAD.bottom - box.y);
   }
+  // an initial state placed by hand takes its dot along: where ELK put it would be anywhere in the region now. Set
+  // after the growth, the dot is centred on the box as drawn and lies inside its parent without growing it (left of
+  // a state the parent holds, clear of its padding). An initial outside its composite (SG002) moves no dot.
+  for (const [dot, target] of Object.entries(layout.initials || {})) {
+    if (!nodes[dot] || !placed.has(target) || auto[dot].parent !== auto[target].parent) continue;
+    const parent = auto[dot].parent ? nodes[auto[dot].parent] : null;
+    const box = nodes[target];
+    nodes[dot].x = Math.max(parent ? parent.x + PAD.left : -Infinity, box.x - INITIAL_GAP - nodes[dot].w);
+    nodes[dot].y = box.y + (box.h - nodes[dot].h) / 2;
+  }
   const moved = new Set(ids.filter((id) => ['x', 'y', 'w', 'h'].some((k) => Math.abs(nodes[id][k] - auto[id][k]) > 0.5)));
   return { nodes, moved };
 }
 
-/** The state names a selection holds: one state ({kind: 'state'}), several ({kind: 'states'}), or none. */
-export function selectedStates(selection) {
-  if (selection?.kind === 'state') return [selection.id];
-  if (selection?.kind === 'states') return [...selection.ids];
-  return [];
+/** The selection of these state names and transition ids: null, one state {kind: 'state', id}, one transition
+ * {kind: 'transition', id}, or several of either {kind: 'many', states, transitions}. (A note is chosen alone:
+ * {kind: 'note', id}.) */
+export function selectionOf(states = [], transitions = []) {
+  const names = [...new Set(states)];
+  const ids = [...new Set(transitions)];
+  if (names.length + ids.length > 1) return { kind: 'many', states: names, transitions: ids };
+  if (names.length) return { kind: 'state', id: names[0] };
+  return ids.length ? { kind: 'transition', id: ids[0] } : null;
 }
 
-/** The selection of these state names: none, one state, or several. */
-export function statesSelection(names) {
-  const unique = [...new Set(names)];
-  if (!unique.length) return null;
-  return unique.length === 1 ? { kind: 'state', id: unique[0] } : { kind: 'states', ids: unique };
+export function selectedStates(selection) {
+  if (selection?.kind === 'state') return [selection.id];
+  return selection?.kind === 'many' ? [...selection.states] : [];
+}
+
+export function selectedTransitions(selection) {
+  if (selection?.kind === 'transition') return [selection.id];
+  return selection?.kind === 'many' ? [...selection.transitions] : [];
 }
 
 export function sameSelection(a, b) {
-  if (a?.kind !== b?.kind) return false;
-  return a?.kind === 'states' ? a.ids.join('\n') === b.ids.join('\n') : a?.id === b?.id;
+  const key = (s) => (s ? [s.kind, s.kind === 'note' ? s.id : '', ...selectedStates(s), '', ...selectedTransitions(s)].join('\n') : '');
+  return key(a) === key(b);
 }
 
-/** Ctrl/Shift+click: the selection with `name` added, or taken out when it was in it. */
-export function toggled(selection, name) {
-  const names = selectedStates(selection);
-  return statesSelection(names.includes(name) ? names.filter((n) => n !== name) : [...names, name]);
+/** Ctrl/Shift+click: the selection with `item` ({kind: 'state' | 'transition', id}) added, or taken out when it was
+ * in it. */
+export function toggled(selection, item) {
+  const flip = (ids) => (ids.includes(item.id) ? ids.filter((id) => id !== item.id) : [...ids, item.id]);
+  const states = selectedStates(selection);
+  const transitions = selectedTransitions(selection);
+  return item.kind === 'state' ? selectionOf(flip(states), transitions) : selectionOf(states, flip(transitions));
 }
 
 /** The states whose box lies wholly inside `band` (a rubber band, canvas units). */
@@ -238,8 +296,39 @@ export function clipToBox(box, tx, ty) {
   return [cx + dx * scale, cy + dy * scale];
 }
 
-/** A drawn edge: ELK's route, or a straight line when an end was moved by hand. */
-export function edgeRoute(route, source, target, moved) {
+/**
+ * Transitions between the same two states, either way, side by side: {transition id: {offset, at, crowd, spread}}. `offset`:
+ * how far to the right of its own direction its straight line is drawn -- 0 for one alone, each 6 to its right for
+ * one there and one back, their labels beside them. Three or more (`crowd`) lie wider apart, each label above its
+ * line at its own place along the way (`at`, a fraction of it). `spread`: the widest offset of the group, so all of
+ * it are routed alike (orthogonalRoute). Self-transitions and internal ones are no pair.
+ */
+export function lanes(transitions) {
+  const between = new Map();
+  for (const t of transitions) {
+    if (!t.target || t.target === t.source) continue;
+    const key = [t.source, t.target].sort().join('\n');
+    if (!between.has(key)) between.set(key, []);
+    between.get(key).push(t);
+  }
+  const found = {};
+  for (const group of between.values()) {
+    const crowd = group.length > 2;
+    const spread = ((group.length - 1) / 2) * (crowd ? CROWD_GAP : LANE_GAP);  // the widest offset of them
+    group.forEach((t, i) => {
+      // across and along the way from the first name to the second; a transition the other way counts from its end
+      const across = (i - (group.length - 1) / 2) * (crowd ? CROWD_GAP : LANE_GAP);
+      const along = crowd ? (i + 1) / (group.length + 1) : 0.5;
+      const forward = t.source < t.target;
+      found[t.id] = { offset: forward ? -across : across, at: forward ? along : 1 - along, crowd, spread };
+    });
+  }
+  return found;
+}
+
+/** A drawn edge: ELK's route, or a straight line when an end was moved by hand; its `lane` (lanes) draws that line
+ * beside the centre line: `side` says on which side, for its label, or a crowd's `at` where along it. */
+export function edgeRoute(route, source, target, moved, lane = null) {
   if (route && route.points.length && !moved) return { points: route.points, label: route.label, straight: false };
   if (source === target) {  // a self-transition: a loop over the top right corner
     const x = source.x + source.w * 0.75;
@@ -248,7 +337,166 @@ export function edgeRoute(route, source, target, moved) {
   }
   const from = clipToBox(source, target.x + target.w / 2, target.y + target.h / 2);
   const to = clipToBox(target, source.x + source.w / 2, source.y + source.h / 2);
-  return { points: [from, to], label: null, straight: true };
+  const offset = lane?.offset || 0;
+  if (!offset) return { points: [from, to], label: null, straight: true };  // a crowd's middle one too: its at is 0.5
+  const length = Math.hypot(to[0] - from[0], to[1] - from[1]) || 1;
+  const right = [-(to[1] - from[1]) / length, (to[0] - from[0]) / length];
+  const shift = ([x, y]) => [x + right[0] * offset, y + right[1] * offset];
+  const drawn = { points: [shift(from), shift(to)], label: null, straight: true };
+  return lane.crowd ? { ...drawn, at: lane.at } : { ...drawn, side: right.map((v) => v * Math.sign(offset)) };
+}
+
+/**
+ * A right-angled route between two boxes, as a person draws one: out of the side that faces the other box, one bend
+ * half way, in through the side that faces back (a Z; a straight line when both are level). Along the other axis when
+ * the facing sides leave no room; with room on neither, an L: out of a side, in through the top or bottom (or the
+ * other way round); with no room for its legs either, a straight line across where the two face each other. Between
+ * a composite and a state inside it: straight from the state to the composite's nearest border but the top, where
+ * its name is (or back). null when the boxes overlap or all but meet corner to corner. Its `lane` (lanes) moves it to
+ * the right of its way and bends lanes apart, so transitions between the same two states neither cover nor cross each
+ * other: every lane of a group takes the same way (the checks count the group's `spread`, in the gaps and across the
+ * boxes), squeezed closer where it leaves no room -- a right angle before room for their labels. A crowd's label sits
+ * on a level segment of its own (`span`: a Z's level leg or middle segment, an L's level leg) at its place along it
+ * (`at`); a pair's beside the middle, on the side its lane bends to (`side`).
+ */
+/** Box `a` lies inside box `b` (a state in its composite); not itself: a self-transition keeps its loop. */
+const inside = (a, b) => a.w * a.h < b.w * b.h
+  && a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h;
+
+export function orthogonalRoute(source, target, lane = null) {
+  const spread = lane ? lane.spread ?? Math.abs(lane.offset || 0) : 0;
+  // ponytail: fixed steps, not the exact fit -- each step is one more try of three short loops
+  for (const k of spread ? [1, 0.8, 0.6, 0.4, 0.2] : [1]) {
+    const drawn = rightAngle(source, target, lane && { ...lane, offset: (lane.offset || 0) * k, spread: spread * k });
+    if (drawn) return drawn;
+  }
+  return null;
+}
+
+function rightAngle(source, target, lane) {
+  const offset = lane?.offset || 0;
+  const spread = lane?.spread || 0;
+  const s = [source.x + source.w / 2, source.y + source.h / 2];
+  const t = [target.x + target.w / 2, target.y + target.h / 2];
+  const order = Math.abs(t[0] - s[0]) >= Math.abs(t[1] - s[1]) ? [0, 1] : [1, 0];  // sideways first, or up or down
+  const crowd = lane?.crowd ? { at: lane.at } : null;
+  const axis = (u) => (u === 0 ? ['x', 'w'] : ['y', 'h']);
+  const ends = (u) => {  // along u (x or y): which way, where a line leaves the source, where it meets the target
+    const [low, size] = axis(u);
+    const dir = Math.sign(t[u] - s[u]) || 1;
+    return [dir, dir > 0 ? source[low] + source[size] : source[low], dir > 0 ? target[low] : target[low] + target[size]];
+  };
+  const place = (u) => (along, across) => (u === 0 ? [along, across] : [across, along]);
+  const level = (u, dir, out, into, across) => {  // a straight line along u, labelled as one
+    const right = u === 0 ? [0, dir] : [-dir, 0];
+    return { points: [place(u)(out, across), place(u)(into, across)], label: null,
+      ...(crowd || (offset ? { side: right.map((c) => c * Math.sign(offset)) } : {})) };
+  };
+  const inner = inside(source, target) ? source : inside(target, source) ? target : null;
+  if (inner) {  // a composite and a state inside it: straight between the state and the composite's nearest border
+    const outer = inner === source ? target : source;
+    const gaps = [inner.x - outer.x, outer.x + outer.w - inner.x - inner.w, inner.y - outer.y, outer.y + outer.h - inner.y - inner.h];
+    // not the top, where the composite's name is; a border it lies against leaves no line
+    const room = gaps.map((gap, i) => (i !== 2 && gap >= RUN / 2 ? gap : Infinity));
+    if (Math.min(...room) === Infinity) return null;
+    const side = room.indexOf(Math.min(...room));  // left, right, top, bottom
+    const u = side < 2 ? 0 : 1;
+    const [low, size] = axis(u);
+    const [cross, span] = axis(1 - u);
+    if (2 * spread >= inner[span]) return null;  // lanes wider than the state: closer
+    const border = side % 2 ? outer[low] + outer[size] : outer[low];
+    const face = side % 2 ? inner[low] + inner[size] : inner[low];
+    const [out, into] = inner === source ? [face, border] : [border, face];
+    const dir = Math.sign(into - out) || 1;
+    return level(u, dir, out, into, inner[cross] + inner[span] / 2 + (u === 0 ? dir : -dir) * offset);
+  }
+  for (const u of order) {  // a Z: out through a left or right side (x), or top or bottom (y)
+    const v = 1 - u;
+    const [dir, out, into] = ends(u);
+    // room for the runs, and lanes that start and end on the boxes' sides
+    if ((into - out) * dir < 2 * (RUN + spread) || 2 * spread >= Math.min(source[axis(v)[1]], target[axis(v)[1]])) continue;
+    const shift = (u === 0 ? dir : -dir) * offset;  // to the right of the way
+    const [sv, tv] = [s[v] + shift, t[v] + shift];
+    if (Math.abs(tv - sv) < 1) return level(u, dir, out, into, sv);
+    // the lanes bend in the order they lie in, seen on the canvas (whichever way each goes): none crosses another
+    const bend = (out + into) / 2 - shift * dir * (Math.sign(tv - sv) || 1);
+    const at = place(u);
+    const outward = Math.sign(bend - (out + into) / 2);
+    return { points: [at(out, sv), at(bend, sv), at(bend, tv), at(into, tv)], label: null,
+      ...(crowd ? { ...crowd, span: u === 0 ? [at(out, sv), at(bend, sv)] : [at(bend, sv), at(bend, tv)] }
+        : outward ? { side: at(outward, 0) } : {}) };
+  }
+  for (const u of order) {  // an L: the first leg along u, the second along v
+    const v = 1 - u;
+    const [du, out] = ends(u);
+    const [dv, , into] = ends(v);
+    if ((t[u] - out) * du - spread < RUN || (into - s[v]) * dv - spread < RUN
+      || 2 * spread >= source[axis(v)[1]] || 2 * spread >= target[axis(u)[1]]) continue;
+    const leg = s[v] + (u === 0 ? du : -du) * offset;  // each leg to the right of its way
+    const corner = t[u] + (u === 0 ? -dv : dv) * offset;
+    const at = place(u);
+    const points = [at(out, leg), at(corner, leg), at(corner, into)];
+    return { points, label: null, span: u === 0 ? points.slice(0, 2) : points.slice(1),
+      ...(crowd || (offset ? { side: [0, (u === 0 ? du : dv) * Math.sign(offset)] } : {})) };
+  }
+  for (const u of order) {  // straight across, in the middle of where the two face each other: no bend, no run
+    const [low, size] = axis(1 - u);
+    const [dir, out, into] = ends(u);
+    const [from, to] = [Math.max(source[low], target[low]), Math.min(source[low] + source[size], target[low] + target[size])];
+    if ((into - out) * dir > 0 && (to - from) / 2 > spread) return level(u, dir, out, into, (from + to) / 2 + (u === 0 ? dir : -dir) * offset);
+  }
+  return null;
+}
+
+/** A transition drawn in its line `style` (LINE_STYLES): straight, or right-angled -- ELK's route while both ends
+ * are where ELK put them, else ours (straight where no right angle fits). Anything but 'straight' is right-angled. */
+export function transitionRoute(style, route, source, target, moved, lane) {
+  // straight: centre to centre -- but between a composite and a state inside it, that line would leave through the
+  // state and end on the far border: the right angle's line to the nearest border is a straight one too
+  if (style === 'straight') {
+    return ((inside(source, target) || inside(target, source)) && orthogonalRoute(source, target, lane))
+      || edgeRoute(null, source, target, true, lane);
+  }
+  if (route?.points.length && !moved) return edgeRoute(route, source, target, false, lane);
+  // a self-transition fits no right angle: edgeRoute draws its loop
+  return orthogonalRoute(source, target, lane) || edgeRoute(null, source, target, true, lane);
+}
+
+/** The key of each transition's line style in the layout: the way it goes, "source→target". A style belongs to the
+ * way, not to one transition: those that go it share it (they lie side by side, lanes), and none moves to another
+ * when transitions are reordered, retargeted or removed -- there is no stable name for one transition. */
+export function lineKeys(transitions) {
+  return Object.fromEntries(transitions.filter((t) => t.target).map((t) => [t.id, `${t.source}→${t.target}`]));
+}
+
+/** The layout's line styles ({way: style}) with the state `old` named `name`; its ways win over ones left from a
+ * state of that name removed before. */
+export function renamedLines(lines, old, name) {
+  const rename = (part) => (part === old ? name : part);
+  const kept = {};
+  const moved = {};
+  for (const [key, style] of Object.entries(lines || {})) {
+    const [from, to] = key.split('→');
+    const way = `${rename(from)}→${rename(to)}`;
+    if (way === key) kept[key] = style;
+    else moved[way] = style;
+  }
+  return { ...kept, ...moved };
+}
+
+/** Where an edge's label text starts ([x, baseline]; its box reaches 3 beyond, 11 above and 4 below): ELK's spot,
+ * above the middle of a straight line -- one of a crowd above its place along it (`at`) --, or beside it on its
+ * `side`, clear of the line going back. */
+export function labelSpot(drawn, width) {
+  if (drawn.label) return [drawn.label.x + 4, drawn.label.y + 12];
+  // a Z's: on its middle segment; an L's: on its level leg (span)
+  const [a, b] = drawn.span || [drawn.points[0], drawn.points[drawn.points.length - 1]];
+  const at = drawn.at ?? 0.5;
+  const [mx, my] = [a[0] + (b[0] - a[0]) * at, a[1] + (b[1] - a[1]) * at];
+  if (!drawn.side) return [mx - width / 2, my - 6];
+  const [sx, sy] = drawn.side;
+  const reach = Math.abs(sx) * (width / 2 + 3) + Math.abs(sy) * 7.5 + 4;  // half the box across the line, and a gap
+  return [mx + sx * reach - width / 2, my + sy * reach + 3.5];
 }
 
 export function pathData(points) {
@@ -365,24 +613,49 @@ export function problemIndex(graph, problems, rootFile) {
 }
 
 /**
- * What a run shows on the canvas: the root frame's active states and visit counts, where it is paused, the root
- * states that submachine frames run under, and the last transition the root frame fired.
+ * What one frame of a run shows on the canvas -- the root's ('') or a submachine's (its prefix): its active states
+ * and visit counts, where it is paused, its states that submachine frames run under, and the last transition it
+ * fired. A frame that has ended is gone from the run's view: `traced` (foldTrace over its journal) stands in.
  */
-export function runOverlay(run) {
+export function runOverlay(run, prefix = '', traced = null) {
   const frames = run?.view?.frames || [];
-  const root = frames.find((frame) => !frame.prefix) || null;
+  const frame = frames.find((f) => (f.prefix || '') === prefix) || null;
   const paused = run?.debug?.paused || null;
   const lastTransition = [...(run?.journal || [])].reverse()
-    .find((row) => row.kind === 'trace' && row.status === 'transition' && !(row.data?.frame));
+    .find((row) => row.kind === 'trace' && row.status === 'transition' && (row.data?.frame || '') === prefix);
+  const below = frame ? frames.filter((f) => f.prefix && f.prefix !== prefix && f.prefix.startsWith(prefix) && f.path) : [];
+  const ended = frame ? null : traced;
   return {
-    active: new Set(root?.config || []),
-    current: root?.state || null,
-    visits: Object.assign(Object.create(null), root?.visits || {}),  // by state name: see problemIndex
-    paused: paused && !paused.frame ? paused.state : null,
-    submachines: new Set(frames.filter((frame) => frame.prefix && frame.path).map((frame) => frame.path.split('/')[0])),
+    active: new Set(frame?.config || (ended?.state ? [ended.state] : [])),
+    current: frame?.state || ended?.state || null,
+    visits: Object.assign(Object.create(null), frame?.visits || ended?.visits || {}),  // by state name: see problemIndex
+    paused: paused && (paused.frame || '') === prefix ? paused.state : null,
+    // a child's path goes on from this frame's: its next segment is the state of this frame it runs under
+    submachines: new Set(below.map((f) => (frame.path ? f.path.slice(frame.path.length + 1) : f.path).split('/')[0])),
     lastEdge: lastTransition && Number.isInteger(lastTransition.data?.index)
-      ? `${lastTransition.data.from}#${lastTransition.data.index}` : null,
+      ? `${lastTransition.data.from}#${lastTransition.data.index}` : traced?.lastEdge || null,
   };
+}
+
+/** One journal row folded into `frames` (prefix -> what the trace says of that frame: its machine, the visits of its
+ * states, the state it is in or ended in, its last transition and how it ended); rows in seq order. */
+export function foldTrace(frames, row) {
+  if (row?.kind !== 'trace' || !row.data?.machine) return frames;
+  const prefix = row.data.frame || '';
+  const seen = frames.get(prefix)
+    || { machine: row.data.machine, visits: Object.create(null), state: null, lastEdge: null, ended: null };
+  if (row.status === 'enter') {
+    seen.visits[row.state] = Math.max(seen.visits[row.state] || 0, row.data.visit || 1);
+    seen.state = row.state;
+  } else if (row.status === 'transition' && Number.isInteger(row.data.index)) {
+    seen.lastEdge = `${row.data.from}#${row.data.index}`;
+  } else if (row.status === 'final') {
+    seen.state = row.state;
+  } else if (row.status === 'end') {
+    seen.ended = row.data.reason || 'finished';
+  }
+  frames.set(prefix, seen);
+  return frames;
 }
 
 /** `a: &base` or `a: !tag` (maybe with a comment): the value itself is on the lines below the key. */
@@ -454,6 +727,76 @@ export function relativeSpot(nodes, id) {
   return { x: Math.round(box.x - (parent ? parent.x : 0)), y: Math.round(box.y - (parent ? parent.y : 0)) };
 }
 
+/** The composite a state dropped at (x, y) goes into: the innermost of `composites` whose box holds the point -- not
+ * the state itself, nor one inside it, nor one it sits in (those grow around it while it is dragged, so they would
+ * hold the point wherever it goes). null: none there. */
+export function dropInto(nodes, composites, name, x, y) {
+  const moved = nodes[stateId(name)];
+  const chain = (box) => { const up = []; for (let at = box; at; at = at.parent ? nodes[at.parent] : null) up.push(at); return up; };
+  const around = new Set(chain(moved));
+  let best = null;
+  for (const one of composites) {
+    const box = nodes[stateId(one)];
+    if (!box || around.has(box) || chain(box).includes(moved) || x < box.x || x > box.x + box.w || y < box.y || y > box.y + box.h) continue;
+    if (!best || box.w * box.h < best.box.w * best.box.h) best = { one, box };  // a composite inside another is smaller
+  }
+  return best ? best.one : null;
+}
+
+/** Positions that keep states side by side where they are drawn (`nodes`) once they are grouped into a new
+ * composite `name`: the composite's box around theirs, each of them relative to it. (Close to the top of a composite
+ * they sit in, the new one's title band pushes them down: applyPositions keeps it inside that one's padding.) */
+export function groupedSpots(nodes, names, name) {
+  const spots = names.map((one) => relativeSpot(nodes, stateId(one)));
+  const x = Math.min(...spots.map((spot) => spot.x)) - PAD.left;
+  const y = Math.min(...spots.map((spot) => spot.y)) - PAD.top;
+  return Object.fromEntries([[name, { x, y }], ...names.map((one, i) => [one, { x: spots[i].x - x, y: spots[i].y - y }])]);
+}
+
+/** A note (notes: in the file, free text) on the canvas: this wide, its text wrapped in lines of this height. */
+export const NOTE = { w: 220, pad: 10, line: 15, lines: 16, fold: 12, gap: 16 };
+/** A note's position in the layout sidecar: beside the states' (a state name has no colon). */
+export const noteKey = (name) => `note:${name}`;
+
+/** A note's text as the lines it is drawn in: its own line breaks kept, words wrapped to the note's width (a word
+ * wider than the note cut), at most NOTE.lines -- the last one ends in … when there is more. */
+export function noteLines(text, width = NOTE.w - 2 * NOTE.pad, px = 12) {
+  const most = Math.max(1, Math.floor(width / (px * 0.56)));  // the characters textWidth fits in `width`
+  const lines = [];
+  for (const paragraph of String(text ?? '').replace(/\s+$/, '').split('\n')) {
+    let line = '';
+    for (const word of paragraph.split(/\s+/).filter(Boolean).map((one) => shorten(one, most))) {
+      const next = line ? `${line} ${word}` : word;
+      if (line && textWidth(next, px) > width) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = next;
+      }
+    }
+    lines.push(line);
+  }
+  return lines.length > NOTE.lines ? [...lines.slice(0, NOTE.lines - 1), `${shorten(lines[NOTE.lines - 1], most - 2)} …`] : lines;
+}
+
+/** The notes' boxes {name: {x, y, w, h, lines}}: where the layout placed them, else stacked right of the states --
+ * each in its own slot of the stack, which a dragged one leaves empty (the others do not jump while it moves). */
+export function notePlaces(notes, positions, nodes) {
+  const boxes = Object.values(nodes || {});
+  const x = boxes.length ? Math.max(...boxes.map((b) => b.x + b.w)) + 48 : 24;
+  let y = boxes.length ? Math.min(...boxes.map((b) => b.y)) : 24;
+  const places = {};
+  for (const note of notes || []) {
+    const lines = noteLines(note.text);
+    const h = 2 * NOTE.pad + lines.length * NOTE.line;
+    const spot = positions?.[noteKey(note.name)];
+    const placed = Number.isFinite(spot?.x) && Number.isFinite(spot?.y);
+    places[note.name] = placed ? { x: spot.x, y: spot.y, w: NOTE.w, h, lines } : { x, y, w: NOTE.w, h, lines };
+    y += h + NOTE.gap;
+  }
+  return places;
+}
+
 // ---------------------------------------------------------------------------------------------------- the canvas
 
 function el(name, attrs = {}, parent = null) {
@@ -478,15 +821,18 @@ function spriteIcon(parent, name, x, y, size, cls = 'sg-icon') {
 }
 
 /**
- * The canvas. Callbacks: onSelect({kind: 'state'|'transition', id} | {kind: 'states', ids} | null), onConnect(source, target),
- * onMove({name: {x, y}}) with every position the drag changed, onOpen({kind, id}) on a double click.
+ * The canvas. Callbacks: onSelect(a selection, see selectionOf), onConnect(source, target),
+ * onMove({name: {x, y}}) with every position the drag changed (a note's under noteKey), onOpen({kind, id}) on a
+ * double click (kind state, transition or note),
+ * onReparent(name, into, spot, here) when one state is dropped on a composite it is not in: `spot` its position in
+ * that one, `here` in the one it is in.
  */
 export class Canvas {
-  constructor(svg, { onSelect, onConnect, onMove, onOpen } = {}) {
+  constructor(svg, { onSelect, onConnect, onMove, onOpen, onReparent } = {}) {
     this.svg = svg;
-    this.handlers = { onSelect, onConnect, onMove, onOpen };
+    this.handlers = { onSelect, onConnect, onMove, onOpen, onReparent };
     this.graph = { states: [], transitions: [] };
-    this.positions = {};
+    this.takeLayout({});
     this.auto = { nodes: {}, edges: {} };
     this.view = { x: 0, y: 0, k: 1 };
     this.selected = null;
@@ -505,21 +851,22 @@ export class Canvas {
     this.viewport = el('g', { class: 'sg-viewport' }, svg);
     // composites under the transitions: their filled box would hide the ones inside them
     this.compositeLayer = el('g', { class: 'sg-composites' }, this.viewport);
+    this.noteLayer = el('g', { class: 'sg-notes' }, this.viewport);
     this.edgeLayer = el('g', { class: 'sg-edges' }, this.viewport);
     this.nodeLayer = el('g', { class: 'sg-nodes' }, this.viewport);
     this.dragLayer = el('g', { class: 'sg-drag' }, this.viewport);
     this.bindPointer();
   }
 
-  /** Lay the graph out (ELK) and draw it; positions: the sidecar's {name: {x, y}}. */
-  async setGraph(graph, positions = {}) {
+  /** Lay the graph out (ELK) and draw it with the sidecar's layout: positions {name: {x, y}}, line, lines. */
+  async setGraph(graph, layout = {}) {
     this.graph = graph || { states: [], transitions: [] };
-    this.positions = { ...(positions || {}) };
+    this.takeLayout(layout);
     const run = ++this.layoutRun;
     let auto = { nodes: {}, edges: {} };
     if (this.graph.states.length && this.elk) {
       try {
-        auto = layoutFrom(await this.elk.layout(elkInput(this.graph)));
+        auto = layoutFrom(await this.elk.layout(elkInput(this.graph, autoOf(layout))));
       } catch (error) {
         console.error('stategraph: layout failed', error);  // eslint-disable-line no-console
         auto = gridLayout(this.graph);
@@ -533,9 +880,14 @@ export class Canvas {
     return true;
   }
 
-  setPositions(positions) {
-    this.positions = { ...(positions || {}) };
+  setLayout(layout) {
+    this.takeLayout(layout);
     this.draw();
+  }
+
+  takeLayout(layout) {
+    this.positions = { ...(layout?.positions || {}) };
+    this.lines = { line: layout?.line, lines: { ...(layout?.lines || {}) } };
   }
 
   setOverlay(overlay) {
@@ -554,8 +906,11 @@ export class Canvas {
     const { nodes, moved } = applyPositions(this.auto, this.positions);
     this.nodes = nodes;
     this.compositeLayer.replaceChildren();
+    this.noteLayer.replaceChildren();
     this.edgeLayer.replaceChildren();
     this.nodeLayer.replaceChildren();
+    this.notes = notePlaces(this.graph.notes, this.positions, nodes);
+    for (const note of this.graph.notes || []) this.drawNote(note, this.notes[note.name]);
     const byName = new Map(this.graph.states.map((state) => [state.name, state]));
     // outer composites first, so the ones nested in them are drawn on top
     const order = Object.keys(nodes).sort((a, b) => depth(nodes, a) - depth(nodes, b));
@@ -575,18 +930,21 @@ export class Canvas {
         const source = nodes[initialId(region)];
         const target = nodes[stateId(initial)];
         if (!source || !target) continue;
-        const drawn = edgeRoute(route, source, target, moved.has(initialId(region)) || moved.has(stateId(initial)));
+        const drawn = transitionRoute(this.lines.line, route, source, target, moved.has(initialId(region)) || moved.has(stateId(initial)));
         el('path', { d: pathData(drawn.points), class: 'sg-edge sg-edge--initial', 'marker-end': 'url(#sg-arrow-plain)' },
           this.edgeLayer);
       }
     }
+    const lanesOf = lanes(this.graph.transitions);
+    const keys = lineKeys(this.graph.transitions);
     for (const transition of this.graph.transitions) {
       const source = nodes[stateId(transition.source)];
       const target = transition.target ? nodes[stateId(transition.target)] : null;
       if (!source || !target) continue;
       const route = this.auto.edges[edgeId(transition.id)];
-      const drawn = edgeRoute(route, source, target,
-        moved.has(stateId(transition.source)) || moved.has(stateId(transition.target)));
+      const style = this.lines.lines?.[keys[transition.id]] || this.lines.line || 'orthogonal';
+      const drawn = transitionRoute(style, route, source, target,
+        moved.has(stateId(transition.source)) || moved.has(stateId(transition.target)), lanesOf[transition.id]);
       this.drawEdge(transition, drawn);
     }
     this.decorate();
@@ -595,7 +953,7 @@ export class Canvas {
   drawState(state, box) {
     const kind = state.composite ? 'composite' : state.type;
     const group = el('g', {
-      class: `sg-node sg-node--${kind}${state.wait ? ' sg-node--wait' : ''}`,
+      class: `sg-node sg-node--${kind}${state.wait ? ' sg-node--wait' : ''}${state.name === this.drop ? ' sg-node--drop' : ''}`,
       'data-state': state.name, tabindex: 0, role: 'button', 'aria-label': `State ${state.name}`,
     }, state.composite ? this.compositeLayer : this.nodeLayer);
     const title = el('title', {}, group);
@@ -632,7 +990,21 @@ export class Canvas {
         'data-handle': state.name }, group);
     }
     // overlay slots, filled by decorate()
-    el('g', { class: 'sg-badges', 'data-x': box.x + box.w, 'data-y': box.y, 'data-left': box.x }, group);
+    el('g', { class: 'sg-badges', 'data-x': box.x + box.w, 'data-y': box.y, 'data-left': box.x, 'data-bottom': box.y + box.h },
+      group);
+  }
+
+  drawNote(note, box) {
+    const group = el('g', { class: 'sg-note', 'data-note': note.name, tabindex: 0, role: 'button', 'aria-label': `Note ${note.name}` },
+      this.noteLayer);
+    el('title', {}, group).textContent = note.text;
+    const { x, y, w, h } = box;
+    const f = NOTE.fold;
+    el('path', { class: 'sg-note-box', d: `M${x} ${y} H${x + w - f} L${x + w} ${y + f} V${y + h} H${x} Z` }, group);
+    el('path', { class: 'sg-note-fold', d: `M${x + w - f} ${y} V${y + f} H${x + w}` }, group);
+    box.lines.forEach((line, i) => {
+      if (line) text(group, line, { x: x + NOTE.pad, y: y + NOTE.pad + 11 + i * NOTE.line, class: 'sg-note-text' });
+    });
   }
 
   drawEdge(transition, drawn) {
@@ -649,16 +1021,7 @@ export class Canvas {
     el('path', { d, class: 'sg-edge', 'marker-end': `url(#sg-arrow-${kind === 'error' ? 'error' : 'plain'})` }, group);
     const label = edgeText(transition);
     if (!label) return;
-    let lx;
-    let ly;
-    if (drawn.label) {
-      lx = drawn.label.x + 4;
-      ly = drawn.label.y + 12;
-    } else {
-      const [a, b] = [drawn.points[0], drawn.points[drawn.points.length - 1]];
-      lx = (a[0] + b[0]) / 2 - textWidth(label, 11, true) / 2;
-      ly = (a[1] + b[1]) / 2 - 6;
-    }
+    const [lx, ly] = labelSpot(drawn, textWidth(label, 11, true));
     el('rect', { class: 'sg-edge-label-bg', x: lx - 3, y: ly - 11, width: textWidth(label, 11, true) + 6, height: 15, rx: 3 }, group);
     text(group, label, { x: lx, y: ly, class: 'sg-edge-label' });
   }
@@ -670,6 +1033,7 @@ export class Canvas {
     const problems = this.overlay.problems || { states: {}, transitions: {} };
     const breakpoints = this.overlay.breakpoints || new Set();
     const chosen = new Set(selectedStates(this.selected));
+    const chosenEdges = new Set(selectedTransitions(this.selected));
     for (const group of this.viewport.querySelectorAll('.sg-node')) {
       const name = group.dataset.state;
       const pinned = problems.states[name];
@@ -696,12 +1060,23 @@ export class Canvas {
       else if (pinned?.warnings) badge(`${pinned.warnings} warn`, 'sg-badge--warn');
       const visits = run && Object.hasOwn(run.visits, name) ? run.visits[name] : 0;
       if (visits) badge(`×${visits}`, 'sg-badge--info');
+      const subruns = run?.subruns && Object.hasOwn(run.subruns, name) ? run.subruns[name] : 0;
+      if (subruns) {  // on the bottom edge, right: the top row holds the problems and the visits already
+        const value = subruns === 1 ? '1 run' : `${subruns} runs`;
+        const width = textWidth(value, 10) + 10;
+        const bottom = Number(badges.dataset.bottom);
+        el('rect', { x: right - 4 - width, y: bottom - 8, width, height: 16, rx: 8, class: 'sg-badge sg-badge--sub' }, badges);
+        text(badges, value, { x: right - 4 - width / 2, y: bottom + 3.5, class: 'sg-badge-text', 'text-anchor': 'middle' });
+      }
       if (breakpoints.has(name)) el('circle', { cx: Number(badges.dataset.left), cy: top, r: 5, class: 'sg-breakpoint' }, badges);
+    }
+    for (const group of this.noteLayer.querySelectorAll('.sg-note')) {
+      group.classList.toggle('is-selected', this.selected?.kind === 'note' && this.selected.id === group.dataset.note);
     }
     for (const group of this.edgeLayer.querySelectorAll('.sg-link')) {
       const id = group.dataset.transition;
       const pinned = problems.transitions[id];
-      group.classList.toggle('is-selected', this.selected?.kind === 'transition' && this.selected.id === id);
+      group.classList.toggle('is-selected', chosenEdges.has(id));
       group.classList.toggle('is-last', run?.lastEdge === id);
       group.classList.toggle('has-error', Boolean(pinned?.errors));
       const edge = group.querySelector('.sg-edge');
@@ -718,7 +1093,7 @@ export class Canvas {
   }
 
   bounds() {
-    const boxes = Object.values(this.nodes || {});
+    const boxes = [...Object.values(this.nodes || {}), ...Object.values(this.notes || {})];
     if (!boxes.length) return { x: 0, y: 0, w: 1, h: 1 };
     const x = Math.min(...boxes.map((b) => b.x));
     const y = Math.min(...boxes.map((b) => b.y)) - 24;
@@ -757,6 +1132,13 @@ export class Canvas {
     }
   }
 
+  /** The middle of what is in view, in canvas units: where a new note goes (null while the canvas is hidden). */
+  viewCenter() {
+    const rect = this.svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return { x: Math.round((rect.width / 2 - this.view.x) / this.view.k), y: Math.round((rect.height / 2 - this.view.y) / this.view.k) };
+  }
+
   toCanvas(event) {
     const rect = this.svg.getBoundingClientRect();
     return [(event.clientX - rect.left - this.view.x) / this.view.k, (event.clientY - rect.top - this.view.y) / this.view.k];
@@ -783,24 +1165,30 @@ export class Canvas {
       if (event.button !== 0) return;
       const handle = event.target.closest?.('[data-handle]');
       const node = event.target.closest?.('.sg-node');
+      const note = event.target.closest?.('.sg-note');
       const link = event.target.closest?.('.sg-link');
       const [x, y] = this.toCanvas(event);
       const adding = event.shiftKey || event.ctrlKey || event.metaKey;
       if (handle) {
         gesture = { type: 'connect', source: handle.dataset.handle, x, y };
       } else if (adding) {
-        // with Ctrl or Shift: a click toggles the state under it, a drag -- from anywhere -- draws a band
-        gesture = { type: 'band', name: node?.dataset.state || null, x, y, moved: false };
+        // with Ctrl or Shift: a click toggles the state or transition under it, a drag -- from anywhere -- draws a band
+        const item = node ? { kind: 'state', id: node.dataset.state }
+          : link ? { kind: 'transition', id: link.dataset.transition } : null;
+        gesture = { type: 'band', item, x, y, moved: false };
       } else if (node) {
         // a state of a selection of several moves them all (a composite takes the states inside it along); the
         // positions count from where they were, not step by step: a rounded step would drift, or stick when zoomed
         const name = node.dataset.state;
         const chosen = selectedStates(this.selected);
-        const names = this.selected?.kind === 'states' && chosen.includes(name)
+        const names = this.selected?.kind === 'many' && chosen.includes(name)
           ? outermost(chosen, (child) => this.nodes?.[stateId(child)]?.parent?.slice(2) || null) : [name];
         const { nodes } = applyPositions(this.auto, this.positions);
         const from = Object.fromEntries(names.map((one) => [one, relativeSpot(nodes, stateId(one))]));
         gesture = { type: 'move', name, names, from, x, y, moved: false };
+      } else if (note && this.notes?.[note.dataset.note]) {
+        const box = this.notes[note.dataset.note];
+        gesture = { type: 'note', name: note.dataset.note, from: { x: box.x, y: box.y }, x, y, moved: false };
       } else if (link) {
         this.select({ kind: 'transition', id: link.dataset.transition }, { quiet: false });
         return;
@@ -842,9 +1230,20 @@ export class Canvas {
       // screen pixels, not canvas units: zoomed out, 4 units are less than a pixel and a click became a drag
       if (!gesture.moved && (Math.abs(dx) + Math.abs(dy)) * this.view.k < 4) return;
       gesture.moved = true;
+      if (gesture.type === 'note') {
+        const spot = { x: Math.round(gesture.from.x + dx), y: Math.round(gesture.from.y + dy) };
+        this.positions = { ...this.positions, [noteKey(gesture.name)]: spot };
+        this.draw();
+        return;
+      }
       const moved = Object.fromEntries(gesture.names.map((name) => [name,
         { x: gesture.from[name].x + dx, y: gesture.from[name].y + dy }]));
       this.positions = { ...this.positions, ...moved };
+      // a state dragged alone -- not a composite of a selection, dragged by a state inside it -- goes into the one
+      // it is dropped on
+      if (gesture.names.length === 1 && gesture.names[0] === gesture.name && this.nodes) {
+        this.drop = dropInto(this.nodes, this.graph.states.filter((s) => s.composite).map((s) => s.name), gesture.name, x, y);
+      }
       this.draw();
     });
     const finish = (event) => {
@@ -859,15 +1258,27 @@ export class Canvas {
         const target = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.sg-node');
         if (target && done.moved && event.type === 'pointerup') this.handlers.onConnect?.(done.source, target.dataset.state);
       } else if (done.type === 'band') {
-        // a band adds what lies wholly inside it; a click toggles its state -- on the empty canvas it keeps all
+        // a band adds the states wholly inside it; a click toggles what it is on -- on the empty canvas it keeps all
         if (done.moved && done.band) {
-          this.select(statesSelection([...selectedStates(this.selected), ...statesWithin(this.nodes, done.band)]),
-            { quiet: false });
-        } else if (!done.moved && done.name) {
-          this.select(toggled(this.selected, done.name), { quiet: false });
+          this.select(selectionOf([...selectedStates(this.selected), ...statesWithin(this.nodes, done.band)],
+            selectedTransitions(this.selected)), { quiet: false });
+        } else if (!done.moved && done.item) {
+          this.select(toggled(this.selected, done.item), { quiet: false });
         }
+      } else if (done.type === 'note') {
+        const key = noteKey(done.name);
+        if (done.moved) this.handlers.onMove?.({ [key]: this.positions[key] });
+        else this.select({ kind: 'note', id: done.name }, { quiet: false });
       } else if (done.type === 'move') {
-        if (done.moved) {
+        const into = this.drop;
+        this.drop = null;
+        if (done.moved && into && event.type === 'pointerup') {  // a cancelled drag puts nothing anywhere
+          const { nodes } = applyPositions(this.auto, this.positions);
+          const box = nodes[stateId(done.name)];
+          const holder = nodes[stateId(into)];
+          this.handlers.onReparent?.(done.name, into, { x: Math.round(box.x - holder.x), y: Math.round(box.y - holder.y) },
+            relativeSpot(nodes, stateId(done.name)));
+        } else if (done.moved) {
           const { nodes } = applyPositions(this.auto, this.positions);
           this.handlers.onMove?.(Object.fromEntries(done.names.map((name) => [name, relativeSpot(nodes, stateId(name))])));
         } else {
@@ -883,17 +1294,25 @@ export class Canvas {
       // clicked is what lies under the pointer
       const hit = document.elementFromPoint(event.clientX, event.clientY) || event.target;
       const node = hit.closest?.('.sg-node');
+      const note = hit.closest?.('.sg-note');
       const link = hit.closest?.('.sg-link');
       if (node) this.handlers.onOpen?.({ kind: 'state', id: node.dataset.state });
+      else if (note) this.handlers.onOpen?.({ kind: 'note', id: note.dataset.note });
       else if (link) this.handlers.onOpen?.({ kind: 'transition', id: link.dataset.transition });
     });
     svg.addEventListener('keydown', (event) => {
+      const note = event.target.closest?.('.sg-note');
+      if (note && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        this.select({ kind: 'note', id: note.dataset.note }, { quiet: false });
+        return;
+      }
       const node = event.target.closest?.('.sg-node');
       if (node && (event.key === 'Enter' || event.key === ' ')) {
         event.preventDefault();
         const name = node.dataset.state;
         const adding = event.shiftKey || event.ctrlKey || event.metaKey;
-        this.select(adding ? toggled(this.selected, name) : { kind: 'state', id: name }, { quiet: false });
+        this.select(adding ? toggled(this.selected, { kind: 'state', id: name }) : { kind: 'state', id: name }, { quiet: false });
       }
     });
   }

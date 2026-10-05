@@ -42,6 +42,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import stat
 import unicodedata
 from pathlib import Path
 from typing import Any, Optional
@@ -50,6 +51,7 @@ from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.message_roles import DEVELOPER, NOTE_CLOSE, SYSTEM, role_of
 from agent_system.llm.models import ChatMessage
 from agent_system.paths import launch_dir
+from agent_system.utils.path_sandbox import remote_outside
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +220,10 @@ def choose_root(roots: list[Path], configured: str) -> tuple[Optional[Path], Opt
     if not roots:
         return None, None
     if configured:
+        if remote_outside(configured, Path.cwd(), roots):
+            # Resolving would open the host before containment could refuse it.
+            return None, (f"root {configured} lies outside what its file tools reach "
+                          f"({', '.join(map(str, roots))}) -- no project instructions")
         root = resolve_configured_root(configured)
         if any(root == reach or root.is_relative_to(reach) for reach in roots):
             return root, None
@@ -244,7 +250,7 @@ def resolve_configured_root(value: str) -> Path:
     other relative path counts against the working directory -- the
     installation, which both CLIs enter at startup.
     """
-    if value == ".":
+    if value and Path(value) == Path("."):
         return launch_dir().resolve()
     return (Path.cwd() / value).resolve()
 
@@ -282,6 +288,14 @@ def _read(root: Path, name: str, max_bytes: int) -> Optional[tuple[bytes, int]]:
         logger.warning("project_instructions: %r is not a plain file name -- skipped", name)
         return None
     candidate = root / name
+    if candidate.is_symlink() and not _link_may_be_followed(root, candidate):
+        # A symlink inside the project is still not a model's decision to read
+        # what it names: AGENTS.md -> .env would send the keys to the provider
+        # on every call, store them with the session and hand them to every
+        # sub-session. Git stores symlinks, so a cloned repository can ship one.
+        logger.warning("project_instructions: %s is a link to something other than a visible "
+                       "Markdown file of the project -- not read", candidate)
+        return None
     try:
         path = candidate.resolve(strict=True)
     except (OSError, RuntimeError):
@@ -295,10 +309,8 @@ def _read(root: Path, name: str, max_bytes: int) -> Optional[tuple[bytes, int]]:
                        candidate, root, path)
         return None
     if candidate.is_symlink() and not _may_follow(path.relative_to(root)):
-        # A symlink inside the project is still not a model's decision to read
-        # what it names: AGENTS.md -> .env would send the keys to the provider
-        # on every call, store them with the session and hand them to every
-        # sub-session. Git stores symlinks, so a cloned repository can ship one.
+        # The text passed, the file it names does not: a Windows 8.3 name
+        # (SECRET~1 is .secret) spells a dot-name without the dot.
         logger.warning("project_instructions: %s points to %s, which is not a visible Markdown "
                        "file of the project -- not read", candidate, path)
         return None
@@ -310,6 +322,50 @@ def _read(root: Path, name: str, max_bytes: int) -> Optional[tuple[bytes, int]]:
         logger.warning("project_instructions: %s could not be read: %s", path, exc)
         return None
     return raw, max(size, len(raw))
+
+
+def _link_may_be_followed(root: Path, link: Path) -> bool:
+    """Whether the symlink ``link`` leads, in one hop and through no other link, to
+    a file :func:`_may_follow` allows -- judged on its text and on ``lstat`` alone.
+
+    Not by resolving it: resolving opens what the link names, and on Windows a
+    link to ``\\\\host\\share\\x.md`` -- or into a directory link to one -- makes
+    the machine connect to that host and sign in with the user's credentials
+    (measured), before any containment check could refuse it.
+    """
+    try:
+        text = os.readlink(link)
+    except OSError:
+        return False
+    if text.startswith("\\\\?\\") and text[5:6] == ":":
+        text = text[4:]  # Windows reports a local target as \\?\C:\...
+    target = Path(text)
+    if ".." in target.parts:
+        return False
+    try:
+        inside = (target if target.is_absolute() else link.parent / target).relative_to(root)
+    except ValueError:
+        return False  # another drive, a host, a device: lexically outside
+    step = root
+    for part in inside.parts:
+        step = step / part
+        if _is_link(step):
+            return False
+    return _may_follow(inside)
+
+
+#: Reparse points that lead elsewhere: a symlink, and a junction -- which
+#: ``is_symlink()`` does not report (``is_junction`` needs Python 3.12).
+_LINK_TAGS = frozenset(getattr(stat, name) for name in ("IO_REPARSE_TAG_SYMLINK", "IO_REPARSE_TAG_MOUNT_POINT")
+                       if hasattr(stat, name))
+
+
+def _is_link(path: Path) -> bool:
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False  # not there: resolve() finds nothing to read either
+    return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) in _LINK_TAGS
 
 
 def _may_follow(target: Path) -> bool:

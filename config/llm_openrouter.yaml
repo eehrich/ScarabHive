@@ -38,11 +38,15 @@ llm_system:
 
     openrouter-gemini:
       extends: openrouter-base
+      prompt_cache_ttl_minutes: 5   # implicit cache, about 3-5 min, set by Google (not configurable); from 4096 prompt tokens
+      context_window: 1048576     # Flash and Lite: full window, no long-context tier (Pro: below)
       tool_schema_dialect: gemini_function_declarations   # sonst MALFORMED_FUNCTION_CALL
       provider_routing: # make a defined order to avoid reasoning breaks
+        # AI Studio first: measured 2026-10-01 replaying 30 calls of one agent
+        # run, 2 runs each (docs/llm_catalog.md, "AI Studio vor Vertex").
         order:
-        - google-vertex
         - google-ai-studio
+        - google-vertex
         # Ohne diesen Riegel darf OpenRouter ueber die Liste hinaus ausweichen
         # — dann greift die definierte Reihenfolge nicht mehr, und der
         # Prompt-Cache des vorherigen Anbieters ist verloren. Faellt die Liste
@@ -63,6 +67,7 @@ llm_system:
     openrouter-gemini-pro:
       extends: openrouter-gemini
       model: google/gemini-3.1-pro-preview
+      context_window: 200000      # window 1M, but Pro costs double above 200K prompt tokens
 
     openrouter-gemini-pro-unlimited:
       extends: openrouter-gemini-pro
@@ -85,7 +90,6 @@ llm_system:
     openrouter-gemini-flash-lite:
       extends: openrouter-gemini
       model: google/gemini-3.5-flash-lite
-      context_window: 400000
       max_tokens: 0
       thinking_level: low
 
@@ -95,6 +99,8 @@ llm_system:
     #
     openrouter-gpt:
       extends: openrouter-base
+      prompt_cache_ttl_minutes: 30  # fixed for GPT-5.6+/6 ("30m" is the only ttl OpenAI accepts); every hit renews it
+      context_window: 272000      # window 1.05M, but above 272K prompt tokens input costs double
       provider_routing:
         order:
         - openai
@@ -111,21 +117,14 @@ llm_system:
       extends: openrouter-gpt-astra
       max_tokens: 0
 
+    # Terra is gone since GPT-6 (its alias stays on gpt-5.6-terra); Sol took its place.
     openrouter-gpt-sol:
       extends: openrouter-gpt
       model: ~openai/gpt-sol-latest
+      max_tokens: 32768
 
     openrouter-gpt-sol-unlimited:
       extends: openrouter-gpt-sol
-      max_tokens: 0
-
-    openrouter-gpt-terra:
-      extends: openrouter-gpt
-      model: ~openai/gpt-terra-latest
-      max_tokens: 32768
-
-    openrouter-gpt-terra-unlimited:
-      extends: openrouter-gpt-terra
       max_tokens: 0
 
     openrouter-gpt-luna:
@@ -155,10 +154,15 @@ llm_system:
 
     openrouter-claude:
       extends: openrouter-base
+      # Anthropic's default cache ttl, what our cache_control sends; every hit
+      # renews it. 1 h (2x input per write) is not wired -- and on the Responses
+      # route OpenRouter drops a cache_control that carries a ttl.
+      prompt_cache_ttl_minutes: 5
       # Claude spricht cache_control, nicht die OpenAI-Breakpoints — und
       # OpenRouter reicht die nur ueber Chat Completions durch, nicht ueber
       # die Responses-API der Basis. Ohne beides laeuft Claude ohne Cache.
       provider: openai_httpx
+      context_window: 1000000     # Claude 5.x: 1M at one price, no long-context tier
       prompt_cache_marker_style: anthropic
       reasoning_details_mode: keep_all   # sonst bricht das Cache-Praefix jede Runde
       include_thoughts: false     # Chat Completions liefert keine Thoughts
@@ -281,6 +285,7 @@ llm_system:
     openrouter-grok:
       extends: openrouter-base
       model: ~x-ai/grok-latest
+      context_window: 200000      # window 500K, but double price above 200K prompt tokens
 
     openrouter-grok-unlimited:
       extends: openrouter-grok
@@ -306,7 +311,7 @@ llm_system:
     openrouter-minimax-m3:
       extends: openrouter-base
       model: minimax/minimax-m3
-      context_window: 1000000
+      context_window: 524288      # the minimax endpoint's limit (prompt included)
       provider_routing:
         order:
         - minimax
@@ -321,6 +326,7 @@ llm_system:
     openrouter-glm:
       extends: openrouter-base
       model: z-ai/glm-5.3
+      context_window: 1000000     # no price tier; OpenRouter only routes to endpoints the request fits
       capabilities:
         image_input: true
 
@@ -333,12 +339,14 @@ llm_system:
     openrouter-glm-flash:
       extends: openrouter-base
       model: ~z-ai/glm-flash-latest
+      context_window: 1000000     # no price tier, as glm
       # openrouter-base setzt 16384 — die laengsten Scorer-Laeufe kamen auf 15.3k
       max_tokens: 0
 
     openrouter-kimi-k3:
       extends: openrouter-base
       model: moonshotai/kimi-k3
+      context_window: 1000000     # no price tier; OpenRouter only routes to endpoints the request fits
       capabilities:
         image_input: true
 
@@ -447,13 +455,13 @@ llm_system:
       max_steps: 500
 
     or-gpt-full:
-      model_ref: openrouter-gpt-terra
-      description: "OpenRouter GPT Terra"
+      model_ref: openrouter-gpt-sol
+      description: "OpenRouter GPT Sol"
       max_steps: 500
 
     or-gpt-full-unlimited:
-      model_ref: openrouter-gpt-terra-unlimited
-      description: "OpenRouter GPT Terra - No output token limit"
+      model_ref: openrouter-gpt-sol-unlimited
+      description: "OpenRouter GPT Sol - No output token limit"
       max_steps: 500
 
     or-gpt-mini:

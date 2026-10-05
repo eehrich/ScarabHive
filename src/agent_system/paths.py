@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 #: (``parents[2]``/``parents[3]``, depending on how deep the module sits).
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+
+def default_config_path() -> Path:
+    """The config an entry point loads when none is named: AGENT_CONFIG_PATH, else the project's
+    config/config.yaml -- not the working directory's: a module run from elsewhere must find the
+    same file the API loads."""
+    return Path(os.environ.get("AGENT_CONFIG_PATH") or PROJECT_ROOT / "config" / "config.yaml")
+
 #: Where the process started, once it has moved away from there. None means
 #: it never did -- a test, the API, anything embedding this -- and then the
 #: working directory still IS where the person is, so nothing here may

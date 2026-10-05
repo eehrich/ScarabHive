@@ -11,7 +11,11 @@ Behaviour is keyed on markers in the files it is pointed at:
   NOINST      in a .gd -> the check walker reports it FAILED, no stderr block
   PRINTERR    in main.gd -> an unprefixed stderr line, exit 0
   CRASH       in main.gd -> a crash handler dump (no ERROR: prefix), exit 139
-  hang.tscn   as scene -> never quits (for the timeout path)
+  hang.tscn   as scene -> never quits (for the timeout path); its pid in stub.pid
+  spawn.tscn  as scene -> starts a child holding the pipes (pid in child.pid), then hangs
+  orphan.tscn as scene -> prints, leaves an orphan holding the pipes (orphan.pid), hangs;
+              orphan_exit.tscn the same, but exits 0 instead of hanging
+  $GODOT_STUB_HANG_VERSION -> --version writes its pid there and never answers
   HANG_IMPORT / IMPORT_FAIL marker files in the project -> --import hangs / exits 2
   PORT_TAKEN  marker file -> the bundled addon cannot bind its port (editor open)
   ADDON_ERROR marker file -> a different addon error, which IS a project error
@@ -76,6 +80,10 @@ def main(argv: list[str]) -> int:
     print(BANNER)
     print()
     if "--version" in argv:
+        hang = os.environ.get("GODOT_STUB_HANG_VERSION")
+        if hang:  # a pid file to write, then no answer
+            Path(hang).write_text(str(os.getpid()), encoding="utf-8")
+            time.sleep(30)
         print("4.7.2.stable.stub")
         return 0
 
@@ -175,7 +183,22 @@ def main(argv: list[str]) -> int:
 
     # A plain run of the project or a scene.
     scene = next((a for a in argv if a.endswith(".tscn")), None)
-    if scene and scene.endswith("hang.tscn"):
+    if scene and scene.endswith("spawn.tscn"):
+        # What the console wrapper does: a child that inherits the pipes.
+        import subprocess
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+        (project / "child.pid").write_text(str(child.pid), encoding="utf-8")
+    if scene and scene.endswith(("orphan.tscn", "orphan_exit.tscn")):
+        # A grandchild whose parent is already gone: out of reach of the tree
+        # kill, and it keeps the pipes open.
+        import subprocess
+        print("printed before the hang", flush=True)
+        grandchild = ("import subprocess, sys; p = subprocess.Popen([sys.executable, '-c', "
+                      "'import time; time.sleep(20)']); "
+                      f"open({str(project / 'orphan.pid')!r}, 'w').write(str(p.pid))")
+        subprocess.run([sys.executable, "-c", grandchild])
+    if scene and scene.endswith(("hang.tscn", "spawn.tscn", "orphan.tscn")):
+        (project / "stub.pid").write_text(str(os.getpid()), encoding="utf-8")
         time.sleep(30)
     print("scene ready")
     if "--" in argv:

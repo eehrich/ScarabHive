@@ -12,4 +12,5 @@ provides = ["anthropic"]
 provides_batch = ["anthropic"]
 requires = { agent_system = ">=0.6.0" }
 # 0.77.0: the first SDK whose messages.create/stream take output_config (structured output, F11).
-dependencies = ["anthropic>=0.77.0"]
+# <1: 1.x moves to httpx2; untested here.
+dependencies = ["anthropic>=0.77.0,<1"]

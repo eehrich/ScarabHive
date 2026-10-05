@@ -23,6 +23,14 @@ def write_config(root: Path, master: str, **includes: str) -> str:
 
 
 class TestTheKeysTheConfigurationNames:
+    def test_the_local_layer_is_read_as_the_loader_reads_it(self, tmp_path):
+        """PowerShell 5.1's `>` writes it as UTF-16; the loader reads that, so the panel must list its keys."""
+        config = write_config(tmp_path, "auth:\n  enabled: false\n")
+        (tmp_path / "local.yaml").write_bytes("plugins:\n  servers:\n    x:\n      token: ${ONLY_LOCAL_KEY}\n"
+                                              .encode("utf-16"))
+
+        assert "ONLY_LOCAL_KEY" in status.api_keys(config)
+
     def test_a_key_is_found_where_the_loader_reads_it_and_a_comment_names_nothing(self, tmp_path):
         config = write_config(
             tmp_path,
@@ -91,7 +99,8 @@ class TestTheStateOfAKey:
 
         keys = status.keys_status(config)
 
-        assert keys == [{"name": "FAST_KEY", "state": "set", "named_in": ["llm_system.models.fast"]}]
+        assert keys == [{"name": "FAST_KEY", "state": "set", "named_in": ["llm_system.models.fast"],
+                         "from_environment": True}]
         assert "4f9a8c7e2b" not in repr(keys)
 
 
@@ -355,6 +364,14 @@ class TestTheAdminsPassword:
         result = self.status_of(users, username="root", password="whatever-configured")
 
         assert (result["admin"], result["default_admin_password"]) == ("admin", True), result
+
+    def test_an_admin_on_the_configured_password_is_flagged(self, users):
+        """The config holds it in clear text: the panel says so, though the install scripts leave that admin alone."""
+        self.add(users, "root", "MyPrivate-Secret-77")
+
+        result = self.status_of(users, username="root", password="MyPrivate-Secret-77")
+
+        assert (result["admin"], result["default_admin_password"]) == ("root", True), result
 
     def test_a_changed_password_is_seen(self, users):
         self.add(users, "admin", "a-long-own-password")

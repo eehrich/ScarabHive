@@ -1,0 +1,518 @@
+@database "file_ops"
+@author "Enrico Ehrich"
+@$VER: file_ops.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "File operations"
+@{h1}File operations
+
+The tools an agent works on files with: read a text file, list a folder,
+find files by name, search their text, find code by meaning, and -- unless
+the instance is read-only -- create, replace, edit, delete, move and rename
+files. Every path must lie inside the folders the instance is given; the
+plugin refuses everything else before it touches the disk. Several agents
+use it under different instance names, each with folders of its own.
+
+@{code}
+For users
+  @{"  Where an agent can read and write  " link sandbox}
+
+For agents and developers
+  @{"  Reading and listing  " link read}
+  @{"  Finding files and text  " link search}
+  @{"  Semantic search  " link semantic}
+  @{"  Changing files  " link write}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node sandbox "Where an agent can read and write"
+@{h1}Where an agent can read and write
+
+@{h2}Instances, folders and the allowlist
+
+The plugin runs as instances: each server entry with @{tt}type: file_ops@{utt}
+in the configuration is one, with its own name, its own folders and its own
+tools. The tools are named after the instance --
+@{tt}file_ops_read_file@{utt}, @{tt}coder_fs_read_file@{utt},
+@{tt}coder_fs_ro_read_file@{utt} -- and an agent gets them through its
+allowlist, @{tt}+coder_fs/*@{utt} for all tools of @{tt}coder_fs@{utt}. What
+an agent can reach is therefore decided in two places: its allowlist says
+which instances it has, and each instance's @{tt}allowed_directories@{utt}
+say which folders those instances reach.
+
+@{table}
+Instance | Folders | Used by
+file_ops | data/workspace | the default instance, e.g. the sysadmin agent
+coder_fs | data/workspace/, src/plugins/coder/skills/, src/, . | the coder, read and write
+coder_fs_ro | the same, read-only | the coder's explorer, reviewer and tester
+workspace_file_ops | . (off) | nobody; see "Setting it up"
+@{body}
+
+A read-only instance (@{tt}read_only: true@{utt}) does not offer the write
+tools at all, and refuses them if one is called anyway -- so "the reviewer
+only reads" is a property of the configuration, not a sentence in a prompt.
+
+@{h2}What an entry in allowed_directories means
+
+@{bullet}A relative entry (@{tt}src@{utt}, @{tt}data/workspace/@{utt})
+counts from the project folder.
+@{bullet}@{tt}.@{utt} (also @{tt}./@{utt}) is the folder the command was
+started in -- where you stood when you typed @{tt}agent-cli@{utt}. Started
+in the project, that is the project. With @{tt}.@{utt} in the list, the
+agent can reach everything below that folder, the configuration and its
+secrets included when it is the project.
+@{bullet}A @{tt}data/...@{utt} entry follows the data directory when that
+is moved (@{tt}AGENT_DATA_DIR@{utt}, @{tt}paths.data_dir@{utt}).
+@{bullet}Without the key the instance gets @{tt}src@{utt}, @{tt}docs@{utt},
+@{tt}tests@{utt} and @{tt}tmp@{utt} of the project. An empty list allows
+nothing.
+
+The folders are fixed when the instance starts; a later change of the
+working directory does not move them.
+
+@{h2}How a path is checked
+
+Every path a tool takes goes through the same check, before anything on the
+disk is opened:
+
+@{bullet}A relative path counts from the folder the server runs in, the
+project -- also when the
+allowed folder is @{tt}.@{utt} and you started elsewhere; there an agent has
+to use absolute paths.
+@{bullet}The path is resolved first -- @{tt}..@{utt} collapsed, links and
+junctions followed -- and then it must lie inside one of the folders.
+@{tt}notes/../notes/a.md@{utt} is allowed, @{tt}../outside.txt@{utt} is
+not, whatever it is spelt like. A link inside a folder that points outside
+is refused for reading and writing. A hard link is not: it is the file
+itself, not a pointer to it, so a hard link made inside a folder to a file
+outside reads that file. Making one needs write access to the folder by
+other means, a terminal for instance; this plugin cannot. Writing to it
+replaces the entry and leaves the outside file as it was.
+@{bullet}An absolute path is fine when it lands inside, on any drive; one on
+another drive or elsewhere on this one is refused. On Windows
+@{tt}/e/Projects/x@{utt}, as Git Bash writes it, means
+@{tt}E:\\Projects\\x@{utt}.
+@{bullet}A network or device path -- @{tt}\\\\host\\share\\x@{utt},
+@{tt}//host/share/x@{utt}, @{tt}\\\\?\\UNC\\...@{utt},
+@{tt}\\\\.\\pipe\\...@{utt} -- is refused on its text alone, unless it lies
+inside a folder that is itself such a share. That covers every path that
+begins with two slashes or backslashes in any mix, and the NT prefix
+@{tt}\\??\\@{utt} (also written @{tt}/??/@{utt}), as in
+@{tt}\\??\\UNC\\host\\share@{utt}. Resolving such a path first would
+make Windows connect to that host and sign in with your credentials (an
+NTLM hash to whoever runs it); refused on its text, the host is never
+contacted. The check is the core's, shared by every plugin that uses its
+path sandbox.
+@{bullet}A path starting with @{tt}~@{utt} is refused: it is not your home
+folder here, and would otherwise become a folder named @{tt}~@{utt}.
+@{bullet}A path with a NUL character is refused.
+
+Paths an agent never types are guarded too. A search only walks the
+allowed folders and never enters a linked folder or a junction; a linked
+file is found only when its target lies inside an allowed folder.
+
+@{h2}What an agent cannot do inside
+
+@{bullet}Delete, move or rename an allowed folder itself -- only what is in
+it.
+@{bullet}Reach through a link: deleting, moving or renaming a link acts on
+the link, never on what it points to; a junction counts as a link. A link
+or a folder moves only within one drive -- across drives the move is
+refused rather than copied, because a copy would bring in what a junction
+points to. (Creating or editing a file through a link inside the folders
+writes the file it points to, as an editor would.)
+
+@{h2}What the check does not cover
+
+@{bullet}Windows device names are not refused by name. On Windows 11
+@{tt}CON@{utt}, @{tt}COM1@{utt}, @{tt}con.txt@{utt} or @{tt}AUX.log@{utt}
+are ordinary file names; only @{tt}NUL@{utt} still names the null device,
+which exists but is not a file, so reading it fails.
+@{bullet}The folders bound this plugin only. A shell tool given to the same
+agent reaches whatever the shell reaches.
+@endnode
+
+@node read "Reading and listing"
+@{h1}Reading and listing
+
+@{h2}read_file
+
+Reads a text file. Always UTF-8; bytes that are not are replaced, so a
+binary file comes back as unreadable text rather than an error.
+
+@{table}
+Parameter | Meaning
+filePath | the file
+offset | the first line, counted from 1 (0 means 1 too)
+limit | how many lines
+@{body}
+
+Without @{tt}offset@{utt} and @{tt}limit@{utt} a file up to
+@{tt}max_unpaginated_file_size_kb@{utt} (100 KB) comes back whole, with its
+own line endings; a larger one comes back as its first
+@{tt}default_line_limit@{utt} (500) lines. With an offset and no limit, a
+small file is read to its end, a large one for 500 lines.
+
+The answer: @{tt}content@{utt}, @{tt}total_lines@{utt},
+@{tt}lines_read@{utt}, @{tt}offset@{utt} (here counted from 0),
+@{tt}encoding@{utt}, @{tt}file_path@{utt}. Refusals are
+@{tt}{"status": "error", "error": ..., "error_type": ...}@{utt} with
+@{tt}FileNotFoundError@{utt} ("File not found: ..."),
+@{tt}NotAFileError@{utt}, @{tt}SecurityError@{utt} (outside the folders)
+or @{tt}ValueError@{utt} for a number it cannot read ("offset: a whole
+number, got 'x'"). Numbers sent as text -- @{tt}"40"@{utt} -- are taken.
+
+@{h2}list_directory
+
+@{table}
+Parameter | Default | Meaning
+dir_path | -- | the folder
+recursive | false | the whole tree below it
+pattern | -- | a glob the entries must match, see @{" Finding files and text " link search}
+include_hidden | false | also names starting with a dot
+include_ignored | false | also what .gitignore and the exclude patterns hide, and dotfiles
+max_results | 200 | the most entries, files and folders together
+@{body}
+
+A plain listing shows the folder's own entries. A recursive one uses the
+same walk as the searches: it skips what @{tt}.gitignore@{utt} and the
+exclude patterns hide, never enters a linked folder, and only lists a
+linked file whose target lies in the listed folder.
+
+The answer: @{tt}files@{utt} and @{tt}directories@{utt} as full paths,
+sorted, their counts, @{tt}truncated@{utt} when there were more than
+@{tt}max_results@{utt}, and @{tt}skipped@{utt}: which filters were on and
+notes saying what that means for an empty answer.
+
+@{code json}
+{"filePath": "E:/work/app/main.py"}
+{"filePath": "E:/work/app/big.log", "offset": 501, "limit": 500}
+{"dir_path": "E:/work/app", "recursive": true, "pattern": "*.py"}
+@{body}
+@endnode
+
+@node search "Finding files and text"
+@{h1}Finding files and text
+
+Both tools walk all allowed folders on demand -- no index, nothing to wait
+for. Folders that lie inside each other are walked once.
+
+@{h2}search_files
+
+Finds files by a glob: @{tt}pattern@{utt}, @{tt}max_results@{utt} (50),
+@{tt}include_ignored@{utt} (false). The answer: @{tt}files@{utt} (full
+paths, sorted), @{tt}total_found@{utt}, @{tt}truncated@{utt},
+@{tt}skipped@{utt}.
+
+@{table}
+Pattern | Matches
+*.py | the file name, at any depth
+hooks/*.py | a path below any folder called hooks; * stays within one folder
+src/**/*.py | ** spans any number of folders, none included
+test_?.py | ? is one character
+[ab].txt | one of the listed characters
+@{body}
+
+Patterns ignore case. Backslashes, a leading @{tt}./@{utt} and a leading
+part that repeats the allowed folder's own name
+(@{tt}data/workspace/*.txt@{utt} when the folder is data/workspace) are
+understood.
+
+@{h2}grep_search
+
+@{table}
+Parameter | Default | Meaning
+query | -- | the text, or with is_regex a Python regular expression
+is_regex | false | treat query as a regular expression
+case_sensitive | false | tell upper and lower case apart
+include_pattern | -- | only files matching this glob
+context_lines | 2 | lines before and after each match
+max_results | 100 | the most matches
+include_ignored | false | also what the filters hide
+@{body}
+
+Each match: @{tt}file_path@{utt}, @{tt}line_number@{utt} (from 1, as
+read_file counts), @{tt}line_content@{utt}, @{tt}context_before@{utt},
+@{tt}context_after@{utt}. Also @{tt}total_matches@{utt},
+@{tt}total_files@{utt} (files actually read), @{tt}truncated@{utt},
+@{tt}skipped@{utt}. Files over @{tt}max_file_size_for_indexing_kb@{utt}
+(1024 KB) and binary files (decided by their first 4 KB, not their name)
+are skipped and counted in the notes. A broken regular expression answers
+@{tt}RegexError@{utt}.
+
+@{h2}What is skipped
+
+@{bullet}The exclude patterns: @{tt}.git@{utt}, @{tt}__pycache__@{utt},
+@{tt}node_modules@{utt}, @{tt}.venv@{utt}, @{tt}*.pyc@{utt},
+@{tt}*.min.js@{utt}, @{tt}*.min.css@{utt}, @{tt}*.map@{utt} -- or the
+instance's @{tt}search.exclude_patterns@{utt}, which replace them.
+@{bullet}What each allowed folder's @{tt}.gitignore@{utt} and
+@{tt}.ignore@{utt} hide (needs the @{tt}pathspec@{utt} package).
+@{bullet}Names starting with a dot, unless @{tt}search.search_hidden@{utt}.
+
+@{tt}include_ignored: true@{utt} lifts all of them except @{tt}.git@{utt}
+-- on a large tree that walk takes minutes. An allowed folder that lies
+inside another one is never hidden by the outer one's filters. When a
+search finds nothing while filters were on, its notes say so: "not found"
+and "hidden" are different answers.
+
+@{code json}
+{"pattern": "**/test_*.py"}
+{"query": "def cancel", "include_pattern": "*.py", "context_lines": 1}
+{"query": "TODO|FIXME", "is_regex": true, "max_results": 20}
+@{body}
+@endnode
+
+@node semantic "Semantic search"
+@{h1}Semantic search
+
+Finds code by meaning when the agent does not know the word the code uses:
+"how a run is cancelled" finds the cancel handler. It is off unless an
+instance sets @{tt}search.enable_semantic_search: true@{utt}; otherwise the
+tool answers @{tt}SemanticSearchDisabled@{utt} and names grep_search.
+
+@{table}
+Parameter | Default | Meaning
+query | -- | what to look for, in words
+max_results | 10 | how many hits
+filter_pattern | -- | a glob on the file's path or name, e.g. *.py
+@{body}
+
+Each hit is a symbol -- a Python function or class, a Markdown heading, or
+a short window of other text -- with @{tt}file_path@{utt},
+@{tt}line@{utt}, @{tt}symbol@{utt}, @{tt}similarity_score@{utt} (1 is the
+same meaning), @{tt}distance@{utt}, @{tt}filename@{utt},
+@{tt}size_bytes@{utt} and @{tt}extension@{utt}. With a filter the search
+looks ten times deeper (at most 200) before filtering, and says when none
+of those matched it.
+
+@{h2}The index
+
+The first semantic search of an instance starts building the index in the
+background and answers @{tt}IndexNotReady@{utt} until it is done -- it never
+waits for it. An instance that builds the index answers from it only once a
+whole pass has finished, never "nothing found" from half an index. An
+instance that only reads a shared index (@{tt}enable_indexing: false@{utt},
+like @{tt}coder_fs_ro@{utt}) cannot know that: it answers as soon as the
+store holds anything, so while the owner's first build runs its hits cover
+only part of the tree. After
+that, the index is refreshed every @{tt}auto_reindex_interval@{utt} seconds
+(300), and a search picks up what changed since, at most every 30 seconds,
+without waiting for it. The embeddings are made locally; nothing leaves the
+machine. The index lives in @{tt}data/cache/file_ops_chromadb@{utt}, one
+collection per instance (@{tt}file_ops_<instance>@{utt}). Two instances on
+the same tree can share one: give both the same
+@{tt}collection_name@{utt} and set @{tt}enable_indexing: false@{utt} on the
+one that only reads -- as @{tt}coder_fs_ro@{utt} does with
+@{tt}coder_fs@{utt}'s index.
+@endnode
+
+@node write "Changing files"
+@{h1}Changing files
+
+Only an instance that is not read-only has these tools; a read-only one
+answers @{tt}ReadOnlyError@{utt} if they are called anyway.
+
+@{h2}manage
+
+@{table}
+operation | Needs | Does
+create | path, content | writes a new file; with overwrite: true replaces one whole
+delete | path | removes a file or an empty folder; a full one with recursive: true
+move | path, destination | moves a file or folder; the destination must not exist
+rename | path, new_name | renames in place; new_name has no / or \\
+@{body}
+
+@{bullet}create makes missing parent folders, writes through a temporary
+file next to the target and renames it into place, so a file is never
+half-written; a replaced file keeps its permissions. Answer:
+@{tt}file_path@{utt}, @{tt}bytes_written@{utt}, @{tt}created_dirs@{utt},
+@{tt}replaced@{utt}. An existing file without overwrite answers
+@{tt}FileExistsError@{utt}; a folder, @{tt}IsADirectoryError@{utt}.
+@{bullet}delete answers the @{tt}type@{utt} it removed: file, directory or
+link. A link goes, what it points to stays. A full folder without
+recursive answers @{tt}DirectoryNotEmptyError@{utt}.
+@{bullet}move creates the destination's parent folders. A file also moves
+to another drive; a link or a folder only within one, see
+@{" Where an agent can read and write " link sandbox}.
+@{bullet}An allowed folder itself cannot be deleted, moved or renamed.
+@{bullet}@{tt}overwrite@{utt} and @{tt}recursive@{utt} take true/false,
+also as text: @{tt}"false"@{utt} is false. Anything else is refused with a
+message naming the parameter.
+
+@{h2}replace_string_in_file
+
+Replaces one piece of text in a file: @{tt}filePath@{utt},
+@{tt}oldString@{utt}, @{tt}newString@{utt}. The old text must occur
+exactly once.
+
+@{bullet}Found once: replaced. The file keeps its line endings and
+permissions, written the same safe way as create. Answer:
+@{tt}changes.replacements@{utt} (1) and @{tt}changes.lines@{utt}, the first
+and last line the new text now stands on.
+@{bullet}The model's @{tt}\\n@{utt} matches a file's @{tt}\\r\\n@{utt}.
+@{bullet}Found more than once: @{tt}AmbiguousMatchError@{utt} with
+@{tt}occurrences@{utt} -- nothing is changed; add surrounding lines.
+@{bullet}Found only with different indentation:
+@{tt}WhitespaceMatchError@{utt} with the file's line, the searched line
+and a @{tt}corrected_old_string@{utt} to send instead.
+@{bullet}Not found: @{tt}StringNotFoundError@{utt}.
+
+@{code json}
+{"operation": "create", "path": "E:/work/app/notes.md", "content": "# Notes\n"}
+{"operation": "move", "path": "E:/work/app/notes.md", "destination": "E:/work/app/docs/notes.md"}
+{"filePath": "E:/work/app/main.py", "oldString": "retries = 3\n", "newString": "retries = 5\n"}
+@{body}
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Seven tools, named @{tt}<instance>_read_file@{utt},
+@{tt}_manage@{utt}, @{tt}_replace_string_in_file@{utt},
+@{tt}_list_directory@{utt}, @{tt}_search_files@{utt},
+@{tt}_grep_search@{utt} and @{tt}_semantic_search@{utt}; a read-only
+instance leaves out manage and replace_string_in_file. Their descriptions
+come from the plugin's @{tt}schema.yaml@{utt}; read_file's names the size
+and line limits of its instance. The bounds the schema shows are held by
+the server: a number above one is taken as the maximum, below as the
+minimum -- @{tt}max_results@{utt} 1 to 1000 for list_directory, 1 to 500
+for search_files and grep_search, 1 to 50 for semantic_search,
+@{tt}context_lines@{utt} 0 to 10, read_file's @{tt}limit@{utt} at least 1. A refusal outside the folders reads "Path
+is outside the allowed directories: X. Allowed: A, B" -- the model learns
+where it may work.
+
+The chat's status line ends with the result: "Read main.py: 120/120
+lines", "Created notes.md: 9 bytes", "Replaced in main.py: 1
+occurrence(s)", "Deleted file: old.txt", "Listed app: 12 files, 3
+directories", "Grep 'def cancel': 4 matches in 2 files", "File search
+'*.py': 50 matches".
+
+@{h2}Tokens and cache
+
+Tool answers are ordinary tool results: appended, nothing earlier changes.
+The costly ones are the reads: read_file returns a file up to 100 KB
+whole, and grep_search returns each matching line with its context. On a
+large tree narrow the pattern and keep @{tt}max_results@{utt} small.
+
+@{h2}Known gaps
+
+@{bullet}Relative paths count from the project, also when the allowed
+folder is the launch folder.
+@{bullet}There is no size limit on reading or writing a file; only
+read_file's pages and grep's skipping of large files bound what an answer
+holds.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The default instance, in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+file_ops:
+  type: file_ops
+  enabled: true
+  allowed_directories:
+    - data/workspace
+  max_unpaginated_file_size_kb: 100  # Auto-paginate files larger than 100KB
+  default_line_limit: 500  # Default lines when paginating large files
+  search:
+    enable_indexing: true
+    index_on_startup: true
+    enable_semantic_search: true
+    auto_reindex_interval: 3600
+    exclude_patterns:
+      - "**/.git/**"
+      - "**/__pycache__/**"
+      - "**/node_modules/**"
+      - "**/.venv/**"
+      - "**/*.min.js"
+      - "**/*.min.css"
+      - "**/*.map"
+@{body}
+
+A second instance is a second entry with @{tt}type: file_ops@{utt} and a
+name of its own. The coder's read-only twin, from
+@{tt}src/plugins/coder/agents/tools.yaml@{utt}:
+
+@{code yaml}
+coder_fs_ro:
+  type: file_ops
+  enabled: true
+  description: "coder harness: read-only file access for reviewer and explorer"
+  read_only: true
+  allowed_directories:
+    - data/workspace/
+    - src/plugins/coder/skills/
+    - src/
+    - .
+  max_unpaginated_file_size_kb: 200
+  default_line_limit: 500
+  search:
+    enable_semantic_search: true
+    enable_indexing: false
+    collection_name: file_ops_coder_tree
+    exclude_patterns:
+      - '**/.git/**'
+      - '**/__pycache__/**'
+      - '**/node_modules/**'
+      - '**/.venv/**'
+      - '**/*.pyc'
+      - '**/dist/**'
+      - '**/build/**'
+@{body}
+
+An agent sees an instance's tools when its allowlist names it:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+coder_fs_ro/*"
+@{body}
+
+@{tt}workspace_file_ops@{utt}, also in plugins.yaml, allows @{tt}.@{utt}
+and is off: it reaches the whole checkout -- secrets, the user database,
+every session. Switch it on only for an agent you trust with all of that.
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+allowed_directories | src, docs, tests, tmp | the folders; see "Where an agent can read and write"
+read_only | false | true: no write tools
+max_unpaginated_file_size_kb | 100 | read_file returns a file up to this size whole
+default_line_limit | 500 | lines read_file returns of a larger file without limit
+@{body}
+
+Under @{tt}search:@{utt}
+
+@{table}
+Key | Default | Meaning
+exclude_patterns | .git, __pycache__, node_modules, .venv, *.pyc, *.min.js, *.min.css, *.map | globs every walk skips; a list here replaces them
+search_hidden | false | also search dotfiles
+max_file_size_for_indexing_kb | 1024 | larger files are not indexed and not searched by grep
+enable_semantic_search | false | the semantic_search tool works
+enable_indexing | true | this instance builds and refreshes the index; false: it only reads one
+index_on_startup | true | the first semantic search starts the build; false: nothing ever does
+auto_reindex_interval | 300 | seconds between refreshes of the index
+collection_name | file_ops_<instance> | the index collection; the same name shares one
+chroma_db_path | data/cache/file_ops_chromadb | where the index lives
+force_recreate_chroma_collection | false | drop the index when the store opens
+@{body}
+
+It needs @{tt}pathspec@{utt} to honour @{tt}.gitignore@{utt}; without it
+the walks skip only the exclude patterns and say so. Semantic search needs
+a vector store (@{tt}chromadb@{utt}); the embedding model is downloaded
+once on first use.
+
+Each instance also tells other plugins which folders it works on: the
+project-instructions plugin reads an @{tt}AGENTS.md@{utt} from them, and
+the file checkpoints plugin takes them as the folders whose changes it
+records.
+@endnode

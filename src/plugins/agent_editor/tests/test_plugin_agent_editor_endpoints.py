@@ -340,7 +340,8 @@ plugins:
     steady:
       type: basic_agent
       agent_config:
-        tools: {allowed: ["files/*", "web/nothing", "ext_on.*", "ext_off.*", "ext_on", "ext_o*", "ext_off*", "ext_on.ech?", "zzz*", "ext_on.", "[a]*"]}
+        tools: {allowed: ["files/*", "web/nothing", "ext_on.*", "ext_off.*", "ext_on", "ext_o*", "ext_off*", "ext_on.ech?", "zzz*", "ext_on.", "[a]*"],
+                blocked: ["web/web_fetch"], deferred: ["files/*", "web/web_fetch", "ext_off.*"]}
     broken:
       type: basic_agent
       agent_config:
@@ -363,6 +364,8 @@ def test_problems_name_what_the_editor_warns_about(db, tree, tmp_path, monkeypat
     assert listed["steady"]["problems"] == [  # the same allowed list, other blocked
         "Matches no tool: web/nothing", "Matches no tool: ext_on", "Matches no tool: ext_on.ech?", "Matches no tool: zzz*",
         "Matches no tool: ext_on.", "Matches no tool: [a]*",
+        # web_fetch exists but steady blocks it; an external pattern is not judged
+        "Deferred matches no allowed tool: web/web_fetch",
         "External server is off: ext_off.*", "External server is off: ext_off*",
     ]
     assert listed["broken"]["problems"] == [f"Does not resolve: {listed_error(answer, 'broken')}"]
@@ -378,7 +381,11 @@ def listed_error(answer, name: str) -> str:
 def test_without_any_profile_every_chain_member_is_a_problem(db, tree, tmp_path, llm):
     path = tmp_path / "config/llm.yaml"
     if llm is None:
-        path.unlink()  # no llm_system at all (an empty file would count as an empty one)
+        # no llm_system at all: the master names no llm.yaml (a file it names must be there -- settings fails the
+        # start without it -- and an empty one would count as an empty llm_system)
+        tree.write_text(tree.read_text(encoding="utf-8").replace("  - llm.yaml\n", ""), encoding="utf-8")
+        assert "llm.yaml" not in tree.read_text(encoding="utf-8"), "fixture: the master still names llm.yaml"
+        path.unlink()
     else:
         path.write_text(llm, encoding="utf-8")
     assert (load_settings(str(tree)).llm_system is None) is (llm is None)

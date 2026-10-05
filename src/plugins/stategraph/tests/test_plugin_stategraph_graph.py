@@ -181,3 +181,18 @@ def test_a_missing_root_file_gives_the_empty_graph():
     graph = graph_view(load_tree("m/nothing.yaml", SnapshotSources({})))
 
     assert graph["states"] == [] and graph["initial"] is None
+
+
+
+def test_notes_come_with_their_names_in_file_order():
+    text = MACHINE.replace("initial:", "notes:\n  why: |\n    two\n    lines\n  odd: 3\ninitial:", 1)
+    assert view(text)["notes"] == [{"name": "why", "text": "two\nlines\n"}, {"name": "odd", "text": ""}]
+    assert view(MACHINE)["notes"] == []
+
+
+def test_a_notes_block_shared_through_an_anchor_is_locked():
+    base = "stategraph: 1\nid: m\ninitial: a\nstates:\n  a: {type: final}\n"
+    shared = graph_view(load_tree("m/m.yaml", SnapshotSources({"m/m.yaml": base + "notes: &n {why: text}\n"})))
+    plain = graph_view(load_tree("m/m.yaml", SnapshotSources({"m/m.yaml": base + "notes: {why: text}\n"})))
+
+    assert "notes" in shared["locked"] and "notes" not in plain["locked"]

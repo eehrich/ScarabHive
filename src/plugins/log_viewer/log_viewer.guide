@@ -1,0 +1,296 @@
+@database "log_viewer"
+@author "Enrico Ehrich"
+@$VER: log_viewer.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Log Viewer"
+@{h1}Log Viewer
+
+The application writes what it does into log files: the API server, the
+command line, profiling and security each into their own. This plugin
+reads them. You see the newest entries in the @{b}Logs@{ub} panel, narrow
+them by level and search, and follow them while they grow; an agent gets
+three tools to list the files, read their last lines and search them --
+for example a coder agent looking for the traceback behind a failed call.
+Only the files named in the configuration are ever opened, by the panel
+and by the tools alike.
+
+@{image docs/panel.png "The Logs panel with the newest entries of a log file"}
+
+@{code}
+For users
+  @{"  The Logs panel  " link panel}
+
+For agents and developers
+  @{"  log_viewer_list  " link list}
+  @{"  log_viewer_tail  " link tail}
+  @{"  log_viewer_search  " link search}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Logs panel"
+@{h1}The Logs panel
+
+Open it from the launcher (@{b}Debugging@{ub}, "Logs") or the command
+palette. It belongs to no session: it shows the log files of the server,
+whichever chat is open.
+
+@{image docs/panel.png "The Logs panel"}
+
+@{h2}What you see
+
+@{bullet}The @{b}file@{ub} menu lists the configured log files that exist.
+A file's rotations -- @{tt}api.log.1@{utt}, @{tt}api.log.2@{utt} and so
+on, up to the first number missing -- belong to it: the panel reads
+through them as if they were one file.
+@{bullet}Next to the filters, how many entries are shown and the size of
+the file, with its rotations "in 3 files".
+@{bullet}The entries, oldest at the top, each with its time (the full
+date and time as a tooltip), its level and its message. Errors and
+critical entries are tinted.
+
+An entry is a line that starts with a date and time, together with the
+lines after it that do not: a traceback folds under its first line and
+opens with a click; entries you opened stay open when the list reloads.
+The panel knows these line forms:
+
+@{code}
+2026-01-01 10:00:00,000 INFO agent_system.api Server started
+2026-01-01 10:00:00 INFO [agent_system.profiling] Profiling started
+2026-01-01 10:00:00,000 - agent_system.api - WARNING - Slow answer
+2026-01-01 10:00:00 | ERROR | DENIED | GET /admin | user=bob
+@{body}
+
+@{tt}WARN@{utt} counts as warning, @{tt}FATAL@{utt} as critical. A line
+with a time but no level is an entry without a level; lines at the top of
+a file that no timed line leads form an entry of their own, without time
+and level. The panel's own requests in an access log are left out while
+they are routine (debug, info or no level); a warning or error about them
+is shown.
+
+@{h2}What you can do
+
+@{table}
+Control | Does
+Search | shows only entries that contain the text, anywhere in the entry, its traceback included; upper and lower case alike, no patterns
+Last 100 ... 5000 | how many of the newest matching entries are shown; 500 at the start
+Error, Warning, Info, Debug | which levels are shown; Error takes critical along. With all four on, entries without a level are shown too; with some off, they are not
+Follow | on (the start): the newest entry stays in view. Off: a reload keeps your place
+@{body}
+
+A different file, search, count or level always starts at the newest
+entry. The toolbar reloads at once, or every 5 seconds when you switch the
+automatic reload on (it is off the first time; the menu next to it sets
+another interval), and says when the entries were last loaded. File,
+filters, Follow and the reload setting are kept in the browser for the
+next time.
+
+@{h2}When there is nothing to show
+
+@{bullet}@{b}No log files@{ub}: none of the configured files exists yet.
+@{bullet}@{b}No level chosen@{ub}: all four level buttons are off; the
+server is not asked.
+@{bullet}@{b}No entries@{ub}: the file has nothing to show -- it is empty
+or holds only blank lines and the panel's own polling, which are left out
+-- or nothing matches the search and levels. The panel says which.
+@{bullet}@{b}The log could not be loaded@{ub}, with the server's reason,
+when a call fails -- for a file that disappeared or cannot be read.
+
+None of them keeps the entries shown before, so nothing old passes for
+current.
+
+@{h2}The two calls behind it
+
+@{table}
+Call | Answers
+GET /plugins/log_viewer/logs/list | every configured file with exists and rotation_count; one that exists also with size and modified across its rotations and rotation_files
+GET /plugins/log_viewer/logs/content/<name> | entries, each with timestamp, level and message, oldest first
+@{body}
+
+The content call takes @{tt}lines@{utt} (1 to 5000, default 500),
+@{tt}levels@{utt} (comma-separated from debug, info, warning, error,
+critical; empty for all, entries without a level included) and
+@{tt}search@{utt}. It answers 404 for a name that is not configured --
+whatever else a path names is never opened -- or a configured file that
+does not exist, 422 for a count out of range or an unknown level, and 500
+with the reason when the file cannot be read. It reads the files from
+their end and stops as soon as it has the entries asked for, so a long log
+is not read whole.
+@endnode
+
+@node list "log_viewer_list"
+@{h1}log_viewer_list
+
+Lists the configured log files, so an agent knows which names the other
+two tools take. It has no parameters.
+
+@{h2}Answer
+
+@{tt}logs@{utt}: one entry per configured file, in the configured order,
+with @{tt}name@{utt} (the name to pass on) and @{tt}exists@{utt}; one that
+exists also with @{tt}size@{utt} in bytes and @{tt}modified@{utt} as a
+Unix time. Rotations are not listed, and the size is that of the file
+itself.
+
+@{code json}
+{"logs": [{"name": "logs/api.log", "size": 48213, "modified": 1790000000.0, "exists": true},
+          {"name": "logs/security.log", "exists": false}]}
+@{body}
+@endnode
+
+@node tail "log_viewer_tail"
+@{h1}log_viewer_tail
+
+The newest lines of one log file -- what happened last.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+log_file | required; a configured name, exactly as log_viewer_list gives it (logs/api.log, not logs\api.log or an absolute path)
+lines | how many of the newest lines; a whole number of at least 1, 500 when left out
+@{body}
+
+@{h2}Answer
+
+@{tt}log_file@{utt}, @{tt}lines@{utt} (the lines as text, oldest first),
+@{tt}total_lines@{utt} (all lines of the file) and
+@{tt}returned_lines@{utt}. Lines are lines here, not entries: a traceback
+is several of them. The tool reads the file itself, not its rotations.
+
+A refusal is @{tt}{"error": "..."}@{utt}:
+
+@{bullet}"Log file logs/other.log not in allowed list" -- not configured;
+@{bullet}"Log file logs/security.log not found" -- configured, not there;
+@{bullet}"lines must be a whole number of at least 1, not 0";
+@{bullet}"Missing required parameter: log_file";
+@{bullet}"Failed to read log file: ..." when it cannot be read.
+
+@{h2}An example
+
+@{code json}
+{"log_file": "logs/api.log", "lines": 50}
+@{body}
+@endnode
+
+@node search "log_viewer_search"
+@{h1}log_viewer_search
+
+Finds lines by a regular expression, in one log file or in all of them.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+pattern | required; a Python regular expression, matched against each line on its own, upper and lower case alike
+log_file | one configured name; left out, every configured file that exists is searched, in the configured order
+max_results | stop after this many matching lines; a whole number of at least 1, 100 when left out
+@{body}
+
+@{h2}Answer
+
+@{bullet}@{tt}results@{utt}: the matching lines, each with
+@{tt}file@{utt}, @{tt}line_number@{utt} (from 1), @{tt}line@{utt} and
+@{tt}match: true@{utt}. A file that cannot be read shows up as
+@{tt}{"file": ..., "error": "Failed to read file: ..."}@{utt} and the
+search goes on with the next.
+@{bullet}@{tt}total_matches@{utt}: the matching lines found.
+@{bullet}@{tt}files_searched@{utt}: the files really read -- after
+@{tt}max_results@{utt} the rest is not opened.
+@{bullet}@{tt}truncated@{utt}: true when the search stopped at
+@{tt}max_results@{utt}; there may be more, or exactly that many.
+@{bullet}@{tt}pattern@{utt}: the pattern searched.
+
+The lines come in file order, oldest first, so a small
+@{tt}max_results@{utt} finds the oldest matches, not the newest; for the
+latest error, tail the file instead. A refusal is @{tt}{"error": "..."}@{utt}: "Invalid
+regex pattern: ...", "Log file ... not in allowed list", "Log file ... not
+found", "max_results must be a whole number of at least 1, not 0",
+"Missing required parameter: pattern".
+
+@{h2}An example
+
+@{code json}
+{"pattern": "Traceback|ERROR", "log_file": "logs/api.log", "max_results": 20}
+@{body}
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The three tools are named after the plugin instance
+(@{tt}log_viewer_list@{utt}, @{tt}log_viewer_tail@{utt},
+@{tt}log_viewer_search@{utt} in the default setup); their descriptions and
+every parameter's description come from the plugin's
+@{tt}schema.yaml@{utt}. The names of the files are not in the
+descriptions: an agent calls @{tt}log_viewer_list@{utt} first, or is told
+them. A refused call answers with an @{tt}error@{utt} text, as listed with
+each tool. In the chat, the call's status line ends with the result: "4
+log file(s)", "50/12840 lines -- logs/api.log", "3 matches in 2 file(s) --
+'Traceback'", or the error.
+
+@{h2}Tokens and cache
+
+Tool answers are ordinary tool results: appended, nothing earlier changes;
+the plugin has no hook. What costs is their size: a tail without
+@{tt}lines@{utt} returns 500 whole lines, and neither tool cuts a long
+line. A small @{tt}lines@{utt}, a narrow pattern and a small
+@{tt}max_results@{utt} keep an answer short.
+
+@{h2}Known gaps
+
+@{bullet}The tools read a file without its rotations; the panel reads
+both.
+@{bullet}The tools search line by line with a regular expression; the
+panel searches whole entries for plain text.
+@{bullet}Tail reads the whole file to count its lines; on a very large
+log that takes a moment.
+@{bullet}Whatever the logs hold, the agent reads: request paths, user
+names, error texts. Configure only files an agent may see.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    log_viewer:
+      type: log_viewer
+      enabled: true
+      log_files:
+        - logs/api.log
+        - logs/cli.log
+        - logs/profiling.log
+        - logs/security.log
+@{body}
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+log_viewer/*"
+@{body}
+
+The panel needs nothing more; it is there as soon as the plugin is on.
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+log_files | the four files above | the only files the tools and the panel open
+@{body}
+
+The names are relative to the working directory the server was started
+in, and they are compared as written: a tool call or panel request must
+use the name exactly as configured. The plugin keeps no data of its own;
+the panel's choices live in the browser.
+@endnode

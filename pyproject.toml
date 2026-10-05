@@ -37,7 +37,6 @@ tool-weather = "plugins.weather.__main__:cli_main"
 tool-datetime = "plugins.datetime.__main__:cli_main"
 tool-web-scraper = "plugins.web_scraper.__main__:cli_main"
 tool-http-server = "plugins.http_server.__main__:cli_main"
-tool-script-interpreter = "plugins.script_interpreter.__main__:cli_main"
 tool-basic-operations = "plugins.basic_operations.__main__:cli_main"
 tool-file-ops = "plugins.file_ops.__main__:main"
 tool-sqlite-query = "plugins.sqlite_query.__main__:cli_main"
@@ -66,7 +65,7 @@ dev = [
     "ruff>=0.12",
     "mypy>=1.7",
     "smithery>=0.1.0",
-    "mcp==1.14.1",  # Pin exact version - requires pydantic>=2.11
+    "mcp>=2.2,<3",  # 2.x: MCPError, snake_case fields, httpx2 (src/plugins/mcp_client)
     "uv>=0.8.0",
     "types-PyYAML>=6.0",
     "types-pytz>=2024.1",

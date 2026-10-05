@@ -7,9 +7,14 @@ to Gemini format.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import sys
+import time
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+import httpx
 
 from agent_system.llm.message_roles import DEVELOPER, USER, developer_turn, resolve_rung
 from agent_system.utils.json_utils import repair_json
@@ -1147,59 +1152,39 @@ class ThinkingProgressTracker:
         self.consecutive_no_progress = 0
 
 
-def extract_usage_from_metadata(usage_metadata: Any, use_camel_case: bool = False) -> Dict[str, Any]:
-    """Extract usage info from Gemini metadata in OpenAI-compatible format.
-    
-    Handles both SDK objects (snake_case attributes) and HTTP responses 
-    (snake_case or camelCase keys).
-    
-    Args:
-        usage_metadata: Usage metadata from Gemini (SDK object or dict)
-        use_camel_case: If True, expect camelCase keys (HTTP API format)
-        
-    Returns:
-        OpenAI-compatible usage dict with prompt_tokens, completion_tokens, 
-        total_tokens, and optionally prompt_tokens_details.cached_tokens
+def extract_usage_from_metadata(usage_metadata: Any) -> Dict[str, Any]:
+    """Gemini's usage metadata (SDK object, or a REST dict in either key style) in the
+    OpenAI shape the core prices and reports.
+
+    Gemini counts the thinking apart from the answer (``thoughtsTokenCount``) and bills it
+    as output; ``completion_tokens`` is both, as on every other route, and the thinking is
+    also given as ``completion_tokens_details.reasoning_tokens``. Leaving it out priced a
+    thinking model's calls at the answer alone.
     """
     if not usage_metadata:
         return {}
-    
-    # Handle SDK objects (have attributes)
-    if hasattr(usage_metadata, 'prompt_token_count'):
-        usage = {
-            "prompt_tokens": getattr(usage_metadata, 'prompt_token_count', 0),
-            "completion_tokens": getattr(usage_metadata, 'candidates_token_count', 0),
-            "total_tokens": getattr(usage_metadata, 'total_token_count', 0),
-        }
-        cached_tokens = getattr(usage_metadata, 'cached_content_token_count', 0)
-    elif isinstance(usage_metadata, dict):
-        # Handle HTTP responses - try both snake_case and camelCase
-        if use_camel_case:
-            usage = {
-                "prompt_tokens": usage_metadata.get("promptTokenCount", 0),
-                "completion_tokens": usage_metadata.get("candidatesTokenCount", 0),
-                "total_tokens": usage_metadata.get("totalTokenCount", 0),
-            }
-            cached_tokens = usage_metadata.get("cachedContentTokenCount", 0)
-        else:
-            # Try snake_case first, fall back to camelCase
-            usage = {
-                "prompt_tokens": usage_metadata.get("prompt_token_count", 
-                    usage_metadata.get("promptTokenCount", 0)),
-                "completion_tokens": usage_metadata.get("candidates_token_count",
-                    usage_metadata.get("candidatesTokenCount", 0)),
-                "total_tokens": usage_metadata.get("total_token_count",
-                    usage_metadata.get("totalTokenCount", 0)),
-            }
-            cached_tokens = usage_metadata.get("cached_content_token_count",
-                usage_metadata.get("cachedContentTokenCount", 0))
-    else:
+    is_dict = isinstance(usage_metadata, dict)
+    if not is_dict and not hasattr(usage_metadata, "prompt_token_count"):
         return {}
-    
-    # Add cached tokens if present
-    if cached_tokens and cached_tokens > 0:
+
+    def count(snake: str, camel: str) -> int:
+        if is_dict:
+            value = usage_metadata.get(snake, usage_metadata.get(camel))
+        else:
+            value = getattr(usage_metadata, snake, None)
+        return value if isinstance(value, int) else 0  # None when unreported
+
+    thoughts = count("thoughts_token_count", "thoughtsTokenCount")
+    usage: Dict[str, Any] = {
+        "prompt_tokens": count("prompt_token_count", "promptTokenCount"),
+        "completion_tokens": count("candidates_token_count", "candidatesTokenCount") + thoughts,
+        "total_tokens": count("total_token_count", "totalTokenCount"),
+    }
+    cached_tokens = count("cached_content_token_count", "cachedContentTokenCount")
+    if cached_tokens > 0:
         usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
-    
+    if thoughts > 0:
+        usage["completion_tokens_details"] = {"reasoning_tokens": thoughts}
     return usage
 
 
@@ -1348,3 +1333,102 @@ def apply_retry_thinking_config(
     else:
         gen_cfg.pop("thinkingConfig", None)
 
+
+
+def ending_error(error: BaseException) -> str:
+    """The post_llm_response error text for a request that ended by *error*."""
+    if isinstance(error, asyncio.CancelledError):
+        return str(error) or "cancelled"
+    if isinstance(error, GeneratorExit):
+        return "stream abandoned by the caller"
+    return str(error) or type(error).__name__
+
+
+class RequestEnd:
+    """One post_llm_response per request, whatever ends it.
+
+    The message debugger, the otel chat span and the cost readers see only what
+    reaches post_llm_response. ``start`` sends pre_llm_request; ``report`` sends
+    the end (an answer, or a refusal after the retries); ``fail`` is the outer
+    guard's: it reports an end nothing has reported yet -- a cancel mid-request
+    or during a retry wait, a stream the caller abandoned, an unexpected
+    exception -- with the usage seen so far. A request never sent reports nothing.
+    """
+
+    def __init__(self, client: Any, provider: str, is_streaming: bool) -> None:
+        self.client = client
+        self.provider = provider
+        self.is_streaming = is_streaming
+        self.url = ""
+        self.usage: Optional[Dict[str, Any]] = None
+        self.ended = False
+        self._started_at: Optional[float] = None
+
+    def _info(self) -> Dict[str, Any]:
+        return {"provider": self.provider, "model": self.client.model, "url": self.url,
+                "is_streaming": self.is_streaming, "timestamp_ms": time.time() * 1000}
+
+    async def start(self, url: str, payload: Any) -> None:
+        self.url = url
+        self._started_at = time.time()
+        await self.client._notify_pre_request({**self._info(), "payload": payload})
+
+    async def report(self, **info: Any) -> None:
+        self.ended = True  # before the await: a cancel landing in the hook must not report twice
+        duration_ms = (time.time() - self._started_at) * 1000 if self._started_at else None
+        await self.client._notify_post_response({**self._info(), "duration_ms": duration_ms, **info})
+
+    async def fail(self, error: BaseException) -> None:
+        if self._started_at is not None and not self.ended:
+            await self.report(error=ending_error(error), usage=self.usage)
+
+
+def _status_of(error: BaseException) -> Optional[int]:
+    """The HTTP status an error carries: httpx's response, or the SDK's ``code``."""
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code
+    sdk_errors = sys.modules.get("google.genai.errors")
+    if sdk_errors is not None and isinstance(error, sdk_errors.APIError):
+        return error.code if isinstance(error.code, int) else None
+    return None
+
+
+def is_refusal(error: BaseException) -> bool:
+    """A 4xx that another try of the same request will not change (not 408 or 429).
+
+    Retried, a dead key or a missing model cost three more requests and 7 s
+    before the fallback and the block of the model could happen.
+    """
+    status = _status_of(error)
+    if "too many states" in str(error).lower():
+        return False  # Gemini's sporadic schema 400: a retry does help
+    return status is not None and 400 <= status < 500 and status not in (408, 429)
+
+
+def raise_after_retries(error: Exception, provider: str, model: str, message: str) -> None:
+    """Raise what a request that failed after its retries raises.
+
+    The agent server falls back to the next profile only on these: a 5xx as
+    LLMServerError, any other refusal as httpx.HTTPStatusError (its status
+    decides whether the model is blocked), no answer at all -- timeout, stall,
+    dropped connection -- as LLMConnectionError. The SDK's own errors carry the
+    status as ``code``. Anything else becomes ``Exception(message)``.
+    """
+    from agent_system.llm.models import LLMConnectionError, LLMServerError
+
+    status = _status_of(error)
+    if status is not None:
+        if status >= 500:
+            raise LLMServerError(str(error), provider=provider, model=model,
+                                 status_code=status) from error
+        if isinstance(error, httpx.HTTPStatusError):
+            raise error
+        request = httpx.Request("POST", f"https://{provider}.invalid/{model}")
+        raise httpx.HTTPStatusError(str(error), request=request,
+                                    response=httpx.Response(status, request=request)) from error
+    aiohttp = sys.modules.get("aiohttp")
+    if isinstance(error, (httpx.TransportError, TimeoutError)) or (
+            aiohttp is not None and isinstance(error, aiohttp.ClientError)):
+        raise LLMConnectionError(f"{type(error).__name__}: {error}",
+                                 provider=provider, model=model) from error
+    raise Exception(message) from error

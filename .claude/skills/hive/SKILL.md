@@ -85,12 +85,11 @@ Name of the System is ScarabHive
 | `comfyui/` | ComfyUI image generation |
 | `message_debugger/` | LLM request/response debugging |
 | `message_validator/` | Message validation |
-| `request_logger/` | API request logging |
+| `request_logger/` | Logs each LLM call and run end (hooks) |
 | `log_viewer/` | Log viewing & filtering |
 | `batch_monitor/` | Batch operation monitoring |
 | `user_management/` | User management |
 | `lessons_learned/` | Lessons learned storage |
-| `markdown_formatter/` | Markdown formatting |
 | `datetime/` | Date/time utilities |
 | `simple_prompt_inject/` | Prompt injection utility |
 

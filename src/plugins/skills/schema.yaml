@@ -3,8 +3,8 @@ tools:
     function:
       name: "{{ name }}_list"
       description: |
-        List the skills available to you, with their description and the files
-        each one bundles. Use this to find out WHICH skill covers a task and
+        List the skills available to you with their description; with 'name',
+        its files too. Use this to find out WHICH skill covers a task and
         WHAT reference material it carries, then read what you need with
         {{ name }}_read.
       parameters:
@@ -12,7 +12,7 @@ tools:
         properties:
           name:
             type: string
-            description: "Optional: only this skill (shows its files in detail)."
+            description: "Optional: only this skill, with its files."
         required: []
 
   - type: function
@@ -32,4 +32,7 @@ tools:
           path:
             type: string
             description: "Optional skill-relative file path; omit for SKILL.md."
+          offset:
+            type: integer
+            description: "Char offset to continue a cut-off read."
         required: [name]

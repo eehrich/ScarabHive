@@ -76,7 +76,7 @@
     await until('the jobs', () => keys('active').join() === ACTIVE);
     // run-1111-a runs on gpu1: running now; far-6666-f waits on gpu2, which cannot be asked: left queued
     const run = cells('active', 'run-1111-a');
-    const running = run[0] === 'run-1111' && run[1] === 'Flux Cover' && run[2] === 'running' && /^\d+s$/.test(run[4])
+    const running = run[0] === 'run-1111' && run[1] === 'Flux Portrait' && run[2] === 'running' && /^\d+s$/.test(run[4])
       && row('active', 'run-1111-a').children[0].title === 'run-1111-a' && row('active', 'run-1111-a').querySelector('.pk-badge--info') !== null;
     const waiting = cells('active', 'wait-2222-b');
     const queued = waiting[2] === 'queued' && /^3m 2\ds$/.test(waiting[4]) && cells('active', 'far-6666-f')[2] === 'queued'
@@ -84,7 +84,7 @@
     // lost-3333-c is nowhere on gpu1: failed; hist-7777-g is in gpu1's history: completed
     const lost = cells('recent', 'lost-3333-c');
     const hist = cells('recent', 'hist-7777-g');
-    const synced = lost[1] === 'flux_cover' && lost[2].startsWith('failed') && lost[2].includes('Job lost (server restart or queue cleared)')
+    const synced = lost[1] === 'flux_portrait' && lost[2].startsWith('failed') && lost[2].includes('Job lost (server restart or queue cleared)')
       && hist[2] === 'completed' && /^\d+s$/.test(hist[4]);
     return running && queued && synced && recentSeeded()
       && statValue('active') === '3' && statValue('completed') === '3' && statValue('failed') === '2'

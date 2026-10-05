@@ -3,9 +3,9 @@
 log_viewer serves the logs, and they carry every user's prompts, names, IPs
 and session ids; ssh_control runs commands on the configured hosts with the
 server's keys and adds hosts. Any `user` token reached both. The rules are in
-config/config.yaml (auth.plugin_security.endpoint_rules): this mounts the real
-plugins through the registry with exactly those rules and asks every route
-they mount.
+config/security.yaml (auth.plugin_security.endpoint_rules), which config.yaml
+includes: this loads the shipped config, mounts the real plugins through the
+registry with exactly those rules and asks every route they mount.
 """
 from __future__ import annotations
 
@@ -13,11 +13,11 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent_system.config.models import AgentConfig, AgentSystemConfig, AuthConfig, PluginSecurityConfig, ToolServerConfig
+from agent_system.config.models import AgentConfig, AgentSystemConfig, AuthConfig, ToolServerConfig
+from agent_system.config.settings import load_settings
 from agent_system.plugins.web_adapter import PluginWebRegistry
 
 SHIPPED_CONFIG = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
@@ -25,8 +25,8 @@ PANELS = ("log_viewer", "ssh_control")
 
 
 def _shipped_auth() -> AuthConfig:
-    raw = yaml.safe_load(SHIPPED_CONFIG.read_text(encoding="utf-8"))["auth"]["plugin_security"]
-    auth = AuthConfig(enabled=True, plugin_security=PluginSecurityConfig(**raw))
+    # as the API gets them: the include read, not one file's text
+    auth = AuthConfig(enabled=True, plugin_security=load_settings(str(SHIPPED_CONFIG)).auth.plugin_security)
     auth.endpoint_security.audit_enabled = False
     return auth
 

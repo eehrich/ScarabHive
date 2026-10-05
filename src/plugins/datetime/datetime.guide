@@ -1,0 +1,329 @@
+@database "datetime"
+@author "Enrico Ehrich"
+@$VER: datetime.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Date and Time"
+@{h1}Date and Time
+
+A clock and a calendar for agents. Language models do not know what time it
+is and are unreliable at date arithmetic; this plugin gives an agent one
+tool that answers both: the current time in any timezone, adding and
+subtracting durations, converting between timezones and to Unix
+timestamps, weekdays, calendar facts, business days and days until a date.
+It asks the clock when the agent calls it, so the time reaches the model as
+a fresh answer instead of being frozen into the prompt. It keeps no state
+and has no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  The datetime tool  " link tool}
+  @{"  Operations in detail  " link operations}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration (@{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    datetime:
+      type: datetime
+      enabled: true
+@{body}
+
+An agent sees the tool when its allowlist names it:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+datetime/*"
+@{body}
+
+It needs @{tt}pytz@{utt}, which is part of the core requirements. The
+plugin reads nothing from its server entry. Its only setting is the
+system-wide @{tt}context.timezone@{utt} in @{tt}config/config.yaml@{utt},
+the zone of "now" when a call names none (see
+@{" The datetime tool " link tool}). It stores nothing on disk or in memory
+between calls.
+@endnode
+
+@node tool "The datetime tool"
+@{h1}The datetime tool
+
+One tool, named after the instance plus @{tt}_operations@{utt}:
+@{tt}datetime_operations@{utt} in the default setup. The
+@{tt}operation@{utt} parameter picks what it does.
+
+@{h2}Operations
+
+@{table}
+Operation | Does
+current | the current date and time
+format | reads a date and writes it in another format
+parse | reads a date and breaks it into its parts
+add_time, subtract_time | a date plus or minus a duration; add and subtract are accepted too
+convert_timezone | the same moment in another timezone
+to_timestamp | a date as a Unix timestamp; timestamp is accepted too
+calendar_info | weekday, week of year, quarter, leap year, days in the month and the month as a small calendar
+business_days | business days between two dates, or a date plus N business days
+day_of_week | the weekday of a date
+days_until | calendar days from one date to another
+@{body}
+
+@{h2}Parameters
+
+These are the ones the model is offered. Nothing has a default the model
+must know: what is left out is taken as below.
+
+@{table}
+Parameter | Used by | Meaning
+operation | all | required; an unknown name answers "Unknown operation: x"
+datetime | all but current | the input date; left out: now (see timezone). format and parse require it
+timezone | see below | an IANA name like Europe/Berlin, or UTC, or local (the server's clock, without offset); default below
+format | current, format | iso, human, date_only, time_only, or a strftime pattern; default iso for current, %Y-%m-%d %H:%M:%S for format
+input_format | format | a strptime pattern for datetime instead of the automatic reading
+years, months, days, hours, minutes, seconds | add_time, subtract_time | the duration; each 0 when left out
+days | business_days | business days to add (negative: go back)
+target_date | days_until, business_days | the end date
+@{body}
+
+What @{tt}timezone@{utt} does depends on the operation:
+
+@{table}
+Operation | timezone is
+current | the zone the answer is given in
+add_time, subtract_time, calendar_info, day_of_week, days_until, business_days | the zone of "now" when no datetime is given; ignored when one is
+convert_timezone | the target zone
+format, parse, to_timestamp | ignored
+@{body}
+
+Without @{tt}timezone@{utt}, "now" is in @{tt}context.timezone@{utt} from
+@{tt}config/config.yaml@{utt} (Europe/Berlin by default) -- the zone the
+system prompt's current date is rendered in, so the tool's "today" is the
+prompt's today, also around midnight. When that setting is missing or not a
+known zone, it is UTC. convert_timezone does not use it: its target without
+@{tt}timezone@{utt} is UTC.
+
+A @{tt}format@{utt} that is not one of the four names is used as a strftime
+pattern as it stands: a word without @{tt}%@{utt}, like "short", comes back
+literally.
+
+@{h2}How dates are read
+
+@{bullet}Most operations take ISO 8601: @{tt}2026-01-15@{utt},
+@{tt}2026-01-15T14:30@{utt}, @{tt}2026-01-15T14:30:00+01:00@{utt}; a
+trailing @{tt}Z@{utt} means UTC. Anything else is refused with Python's
+text, e.g. "Invalid isoformat string: 'next friday'".
+@{bullet}@{tt}format@{utt} and @{tt}parse@{utt} read more: a plain number is
+a Unix timestamp in UTC (so "20260115" is 23 August 1970), and besides ISO
+8601 a few written forms -- @{tt}15.01.2026@{utt}, @{tt}15/01/2026@{utt};
+parse also @{tt}15.01.2026 14:30@{utt}, @{tt}January 15, 2026@{utt},
+@{tt}15 January 2026@{utt} and @{tt}Thursday, January 15, 2026@{utt}. With
+slashes the day comes first: @{tt}03/04/2026@{utt} is the 3rd of April;
+@{tt}01/15/2026@{utt} is read month first only because 15 cannot be a month.
+@{bullet}A date without offset stays without one -- except for Unix
+timestamps, where it counts as UTC, and in convert_timezone, where it is
+taken as UTC.
+
+@{h2}Answers
+
+Every answer has @{tt}status@{utt}, @{tt}success@{utt} or
+@{tt}error@{utt}. The fields of each operation are in
+@{" Operations in detail " link operations}. A failure answers
+@{tt}{"status": "error", "error": "..."}@{utt}, mostly with the input
+echoed under @{tt}input@{utt}. The plugin's own texts:
+
+@{table}
+error | When
+Missing required parameter: operation | no operation
+Unknown operation: x | a name not in the list above
+Invalid timezone: x | an unknown zone in timezone
+Missing required parameter: datetime | format without datetime
+Missing required parameter: datetime_string or datetime | parse without datetime
+Could not parse datetime: x | format or parse could not read the date
+business_days needs target_date (to count) or days (to add) | business_days with neither
+Missing required parameter: target_date | days_until without it
+@{body}
+
+Anything else -- a date that is not ISO 8601, an input_format that does not
+match ("time data '15.01.2026' does not match format '%Y'") -- answers
+the same way with Python's text.
+
+@{h2}An example
+
+@{code json}
+{"operation": "current", "timezone": "Europe/Berlin", "format": "human"}
+{"operation": "add_time", "datetime": "2026-01-31", "months": 1}
+{"operation": "convert_timezone", "datetime": "2026-01-15T14:30:00Z", "timezone": "America/New_York"}
+{"operation": "business_days", "datetime": "2026-09-01", "target_date": "2026-09-10"}
+@{body}
+
+The second answers @{tt}2026-02-28T00:00:00@{utt}, the third
+@{tt}2026-01-15T09:30:00-05:00@{utt}, the fourth 7.
+@endnode
+
+@node operations "Operations in detail"
+@{h1}Operations in detail
+
+@{h2}current
+
+The fields: @{tt}current_time@{utt} (ISO 8601 with offset),
+@{tt}timestamp@{utt} (the same ISO text -- not a number),
+@{tt}unix_timestamp@{utt} (the number, whole seconds), @{tt}timezone@{utt}
+(the zone's name, "Local" for local), @{tt}year@{utt} ... @{tt}second@{utt},
+@{tt}weekday@{utt} (0 is Monday), @{tt}weekday_name@{utt},
+@{tt}month_name@{utt} and @{tt}formatted@{utt} in the requested format.
+human looks like "Wednesday, September 30, 2026 at 04:22:45 AM".
+
+@{h2}format and parse
+
+@{tt}format@{utt} answers @{tt}original@{utt}, @{tt}formatted_time@{utt},
+@{tt}parsed_datetime@{utt} (ISO), the parts year to second,
+@{tt}weekday@{utt}, @{tt}weekday_name@{utt} and @{tt}month_name@{utt}.
+
+@{tt}parse@{utt} answers @{tt}original@{utt}, @{tt}parsed_format@{utt} (the
+pattern that matched, @{tt}unix_timestamp@{utt} for a number,
+@{tt}iso8601@{utt} for other ISO forms), @{tt}parsed_datetime@{utt} and
+@{tt}iso_format@{utt} (the same), @{tt}unix_timestamp@{utt} and
+@{tt}components@{utt}: the parts plus @{tt}quarter@{utt},
+@{tt}day_of_year@{utt} and @{tt}week_of_year@{utt} (ISO week). It is the
+way to turn a Unix timestamp into a date.
+
+@{h2}add_time and subtract_time
+
+Weeks and days are added first, then months and years; a day that the
+target month does not have becomes its last day: 31 January plus one month
+is 28 February, and 31 March minus one month is 28 February too. These
+calendar units move the wall clock. Hours, minutes and seconds come last
+and are elapsed time.
+
+Without @{tt}datetime@{utt} the start is now in @{tt}timezone@{utt} (default:
+the prompt's zone, see @{" The datetime tool " link tool}), and the two
+kinds of units differ across a daylight-saving change. In Berlin, now plus
+60 days in September keeps the hour and ends in +01:00; 01:30 on 25 October
+plus 2 hours is 02:30+01:00, and 01:30 on 29 March plus 1 hour is
+03:30+02:00. A given datetime carries a fixed offset, and the result keeps
+it. The answer: @{tt}original@{utt} (the input, or
+"current time"), @{tt}result@{utt} and @{tt}result_datetime@{utt} (the
+same ISO text), @{tt}human_readable@{utt}, and the duration under
+@{tt}added@{utt} or @{tt}subtracted@{utt}.
+
+@{h2}convert_timezone
+
+A date without offset is taken as UTC. The answer:
+@{tt}original_time@{utt} and @{tt}converted_time@{utt} (ISO),
+@{tt}human_readable@{utt} with the zone's abbreviation,
+@{tt}time_difference_hours@{utt} (the target's offset minus the source's),
+@{tt}from_timezone@{utt} and @{tt}to_timezone@{utt}. Without
+@{tt}timezone@{utt} the target is UTC. Without @{tt}datetime@{utt} it
+converts now.
+
+@{h2}to_timestamp
+
+@{tt}timestamp@{utt} (whole seconds), @{tt}timestamp_milliseconds@{utt},
+@{tt}iso_format@{utt} and the input under @{tt}datetime@{utt}. A date
+without offset is UTC; without @{tt}datetime@{utt} it is now.
+
+@{h2}calendar_info
+
+@{tt}date@{utt}, year, month, @{tt}month_name@{utt},
+@{tt}month_abbr@{utt}, day, @{tt}weekday@{utt} (0 is Monday),
+@{tt}weekday_name@{utt}, @{tt}weekday_abbr@{utt}, @{tt}day_of_year@{utt},
+@{tt}week_of_year@{utt} (ISO week), @{tt}quarter@{utt},
+@{tt}is_weekend@{utt}, @{tt}is_leap_year@{utt}, @{tt}days_in_month@{utt},
+@{tt}first_weekday_of_month@{utt} (0 is Monday) and
+@{tt}calendar_month@{utt}, the month as a small text calendar.
+
+@{h2}business_days
+
+Business days are Monday to Friday; holidays are not known.
+
+@{bullet}With @{tt}target_date@{utt}: counts the business days from
+@{tt}datetime@{utt} (default today) up to the target -- the first day
+counts, the target does not. The answer: @{tt}business_days_between@{utt},
+@{tt}total_days@{utt}, and @{tt}dates_swapped@{utt} true when the target
+lay before the start (the count is the same either way).
+@{bullet}With @{tt}days@{utt}: steps that many business days forward
+(backward when negative), skipping Saturdays and Sundays. The answer:
+@{tt}result_date@{utt}, @{tt}weekday@{utt}, @{tt}weekday_name@{utt},
+@{tt}is_business_day@{utt}. With 0 it is the start date, weekend or not.
+@{bullet}With both, target_date wins: it counts.
+
+Times are dropped; only the dates count.
+
+@{h2}day_of_week and days_until
+
+@{tt}day_of_week@{utt} answers @{tt}day_of_week@{utt} (the name),
+@{tt}weekday_number@{utt} (0 is Monday) and @{tt}is_weekend@{utt}.
+
+@{tt}days_until@{utt} counts calendar days from @{tt}datetime@{utt} (default
+today in @{tt}timezone@{utt}) to @{tt}target_date@{utt}, dates only:
+@{tt}days@{utt} (negative when the target has passed),
+@{tt}is_future@{utt}, @{tt}is_past@{utt}, @{tt}is_today@{utt}.
+
+@{h2}For direct callers
+
+The code also reads parameters the model is not offered: @{tt}weeks@{utt}
+for add and subtract, @{tt}from_timezone@{utt} and @{tt}to_timezone@{utt}
+for convert_timezone (to_timezone wins over timezone), @{tt}start_date@{utt},
+@{tt}end_date@{utt} and @{tt}add_business_days@{utt} for business_days and
+days_until (they win over datetime, target_date and days),
+@{tt}timestamp@{utt} for to_timestamp (the other direction: a date from a
+Unix timestamp), @{tt}year@{utt} and @{tt}month@{utt} for calendar_info,
+and @{tt}format: custom@{utt} with @{tt}custom_format@{utt} for current.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The description and parameters come from the plugin's
+@{tt}schema.yaml@{utt}; they are short on purpose, since they are sent with
+every request. The model sees the parameters of
+@{" The datetime tool " link tool}, not the ones for direct callers. Error
+texts are listed there.
+
+@{h2}The status line
+
+While it works: "Processing current datetime operation". When done, the
+operation and its answer, cut at 70 characters: "current:
+2026-09-30T04:22:45.393738+02:00", "days_until: 85", "calendar_info: Wednesday",
+"business_days: 7", "add_time: Wednesday, September 30, 2026 at 06:13:03
+AM". A failure shows "day_of_week failed: Invalid timezone: Mars/Olympus".
+
+@{h2}Tokens and cache
+
+The time reaches the model only as a tool answer, appended to the end of
+the conversation like any other. The plugin has no hook and adds nothing
+to the system prompt, so the cached prompt in front of it stays intact.
+That is the point of asking a tool: a clock written into the system prompt
+or near the start of the history changes on every turn and makes the whole
+conversation behind it miss the cache. Prompt templates may therefore use
+@{tt}current_date@{utt} (it changes once a day) but not the time; a test
+(@{tt}tests/config/test_prompts_have_no_ticking_clock.py@{utt}) holds them
+to that. An agent that needs the exact time calls this tool.
+
+An answer is a few hundred characters; calendar_info carries the month as a
+text calendar as well.
+
+@{h2}Known gaps
+
+@{bullet}No holidays: business_days knows only weekends.
+@{bullet}format and parse read a plain number as a Unix timestamp, and
+slash dates day first.
+@{bullet}timezone is ignored for a given datetime: 14:30 without offset
+stays 14:30 without offset. To place a local time in a zone, write the
+offset into the date (@{tt}2026-01-15T14:30:00+01:00@{utt}).
+@{bullet}Durations are not checked: a value that is not a number answers
+with Python's error text.
+@endnode

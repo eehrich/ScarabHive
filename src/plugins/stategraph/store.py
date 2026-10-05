@@ -62,6 +62,9 @@ class MachineFile:
     path: Path
     root: str
     writable: bool
+    #: In the first writable root, where a new machine is saved: the author's own, not a shipped machine an operator
+    #: made writable in place.
+    own: bool
 
 
 class FileSources:
@@ -130,7 +133,7 @@ class MachineStore:
                 if (file.name.endswith(".layout.yaml") or not _ID.fullmatch(machine_id) or machine_id in machines
                         or not file.is_file()):
                     continue
-                machines[machine_id] = MachineFile(machine_id, file, root, self.is_writable(file))
+                machines[machine_id] = MachineFile(machine_id, file, root, self.is_writable(file), self.is_own(file))
         return list(machines.values())
 
     def find(self, machine_id: str) -> Optional[MachineFile]:
@@ -147,6 +150,9 @@ class MachineStore:
     def is_writable(self, path: Path) -> bool:
         resolved = str(path.resolve())
         return any(resolved.startswith(str(Path(w).resolve()) + os.sep) for w in self.writable)
+
+    def is_own(self, path: Path) -> bool:
+        return bool(self.writable) and str(path.resolve()).startswith(str(Path(self.writable[0]).resolve()) + os.sep)
 
     # ------------------------------------------------------------ reading
     def read(self, machine_id: str) -> tuple[MachineFile, str]:
@@ -221,24 +227,6 @@ class MachineStore:
         texts = {rel: _lf(files[rel]) for rel in targets}
         _write_all({rel: (targets[rel], texts[rel]) for rel in targets})
         return {rel: version_of(text) for rel, text in texts.items()}
-
-    def write(self, machine_id: str, text: str, *, expected_version: Optional[str]) -> MachineFile:
-        found = self.find(machine_id)
-        if found is None:
-            if not self.writable:
-                raise PermissionError("no writable machine root configured")
-            path = Path(self.writable[0]) / f"{machine_id}.yaml"
-            if expected_version is not None and path.exists():
-                raise VersionConflict(version_of(path.read_text(encoding="utf-8")))
-            found = MachineFile(machine_id, path, "writable", True)
-        else:
-            if not found.writable:
-                raise PermissionError(f"{found.path} is not in a writable machine root")
-            current = version_of(found.path.read_text(encoding="utf-8"))
-            if expected_version != current:
-                raise VersionConflict(current)
-        _atomic_write(found.path, text)
-        return found
 
     def delete(self, machine_id: str, *, expected_version: str, companion: Optional[Path] = None) -> list[str]:
         """Remove a machine from a writable root: its file (the version the caller saw, no blind delete), its layout

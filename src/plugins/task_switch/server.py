@@ -3,8 +3,10 @@
 This plugin allows agents to manage their own task state, enabling
 dynamic prompt switching based on the current operational mode.
 
-The plugin modifies the agent's `template_vars` at runtime, making the
-current task available in Jinja2 prompts as {{ current_task }}.
+The plugin sets the session's template vars at runtime (the agent's
+`template_vars` only when there is no session), making the current task
+available in Jinja2 prompts as {{ current_task }}. The user guide is
+task_switch.guide.
 
 Configuration in agent YAML:
 ```yaml
@@ -127,14 +129,17 @@ class TaskSwitchServer(SchemaBasedToolServer):
     
     async def _check_precondition(self, task_name: str, agent: Any, params: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """Check precondition for a task. Returns gate status."""
-        precondition = self._task_preconditions.get(task_name)
-        if not precondition:
+        if task_name not in self._task_preconditions:
             return {"gate_open": True}
-        
-        tool_name = precondition.get("tool")
+        precondition = self._task_preconditions[task_name]
+
+        # A gate that cannot be checked is closed: it is operator config, and a
+        # typo must not open every switch it was meant to guard
+        tool_name = precondition.get("tool") if isinstance(precondition, dict) else None
         if not tool_name:
-            logger.warning(f"Precondition for task '{task_name}' missing 'tool' field")
-            return {"gate_open": True}
+            logger.error(f"Precondition for task '{task_name}' has no 'tool': switch refused")
+            return {"gate_open": False,
+                    "reason": f"Gate for task '{task_name}' is misconfigured: no tool"}
         
         # Get template vars from agent config (lowest priority)
         template_vars = {}
@@ -148,18 +153,7 @@ class TaskSwitchServer(SchemaBasedToolServer):
             if session_template_vars:
                 template_vars.update(session_template_vars)
                 logger.debug(f"Added session template_vars to precondition check: {list(session_template_vars.keys())}")
-        
-        # Also include session metadata if available (for runtime vars)
-        if session_id and agent and hasattr(agent, '_session_service') and agent._session_service:
-            try:
-                session = await agent._session_service.get(session_id)
-                if session and session.metadata:
-                    # Session metadata takes precedence over static config
-                    template_vars.update(session.metadata)
-                    logger.debug(f"Added session metadata to template_vars: {list(session.metadata.keys())}")
-            except Exception as e:
-                logger.debug(f"Could not load session metadata: {e}")
-        
+
         # Render params with template vars
         raw_params = precondition.get("params", {})
         rendered_params = self._render_template_value(raw_params, template_vars)
@@ -170,8 +164,9 @@ class TaskSwitchServer(SchemaBasedToolServer):
             result = await agent.call_tool(tool_name, rendered_params)
             
             if not isinstance(result, dict):
-                logger.warning(f"Precondition tool '{tool_name}' returned non-dict: {type(result)}")
-                return {"gate_open": True, "warning": "Precondition check returned unexpected type"}
+                logger.error(f"Precondition tool '{tool_name}' returned non-dict: {type(result)}")
+                return {"gate_open": False,
+                        "reason": f"Gate tool '{tool_name}' for task '{task_name}' did not answer an object"}
             
             # Check gate field
             gate_field = precondition.get("gate_field", "can_proceed")
@@ -206,7 +201,7 @@ class TaskSwitchServer(SchemaBasedToolServer):
     async def set_task(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Set the current task state (with optional precondition check)."""
         status = params.get("_status")
-        task_name = params.get("task_name", "").strip()
+        task_name = str(params.get("task_name") or "").strip()
         agent = params.get("_agent")
         session_id = params.get("_session_id")
         
@@ -262,8 +257,7 @@ class TaskSwitchServer(SchemaBasedToolServer):
         # Persist to session storage (for session reload)
         persisted = False
         if session_id:
-            await self._persist_context_vars(agent, session_id, {self._task_var_name: task_name})
-            persisted = True
+            persisted = await self._persist_context_vars(agent, session_id, {self._task_var_name: task_name})
         
         if status:
             await status.end(f"Task: {previous_task} → {task_name}")
@@ -340,7 +334,15 @@ class TaskSwitchServer(SchemaBasedToolServer):
                     "vars='{\"book_id\": 42}'."
                 ),
             }
-        
+
+        # The task variable changes through set_task only: here it would skip
+        # allowed_tasks and every gate
+        if self._task_var_name in context_vars:
+            error = f"'{self._task_var_name}' is the task variable: switch it with {self.name}_set_task"
+            if status:
+                await status.error(error)
+            return {"status": "error", "error": error}
+
         # Get previous values from SESSION-SCOPED template vars (not agent_config!)
         # CRITICAL: This ensures session isolation - multiple sessions won't contaminate each other
         previous_values = {}
@@ -383,8 +385,7 @@ class TaskSwitchServer(SchemaBasedToolServer):
         # Persist to session storage (for session reload)
         persisted = False
         if session_id:
-            await self._persist_context_vars(agent, session_id, context_vars)
-            persisted = True
+            persisted = await self._persist_context_vars(agent, session_id, context_vars)
         
         # Build concise status message
         if status:
@@ -403,8 +404,8 @@ class TaskSwitchServer(SchemaBasedToolServer):
             "persisted": persisted
         }
 
-    async def _persist_context_vars(self, agent: Any, session_id: str, vars_to_update: Dict[str, Any]) -> None:
-        """Persist context variables to session storage.
+    async def _persist_context_vars(self, agent: Any, session_id: str, vars_to_update: Dict[str, Any]) -> bool:
+        """Persist context variables to session storage; True when they were written.
         
         This ensures template_vars survive server restarts and session reloads.
         Creates the session file if it doesn't exist yet (e.g., for new chats where
@@ -412,12 +413,12 @@ class TaskSwitchServer(SchemaBasedToolServer):
         """
         if not agent or not hasattr(agent, '_session_service') or not agent._session_service:
             logger.debug("No session service - context vars not persisted")
-            return
+            return False
         
         try:
             session_manager = agent._session_service.session_manager
             if not session_manager:
-                return
+                return False
             
             # Get user_id from session tracker
             user_id = "anonymous"
@@ -453,11 +454,11 @@ class TaskSwitchServer(SchemaBasedToolServer):
                         logger.info(f"Created session {session_id} for user {user_id} to persist context_vars")
                     except Exception as create_error:
                         logger.warning(f"Could not create session {session_id} to persist context vars: {create_error}")
-                        return
+                        return False
             
                 if not session_data:
                     logger.warning(f"Could not load/create session {session_id} to persist context vars")
-                    return
+                    return False
             
                 # Update or create context_vars field
                 if "context_vars" not in session_data:
@@ -468,6 +469,8 @@ class TaskSwitchServer(SchemaBasedToolServer):
                 # Save session
                 await session_manager.save_session(session_data)
                 logger.debug(f"Persisted context vars to session {session_id}: {list(vars_to_update.keys())}")
+                return True
             
         except Exception as e:
             logger.warning(f"Failed to persist context vars to session {session_id}: {e}")
+            return False

@@ -189,7 +189,8 @@ class MessageDebuggerWebFactory:
     async def clear_all(self, request: Request, current_user: Optional[User] = Depends(get_optional_user)):
         """Clear all captured data."""
         require_everything(request, current_user, "What the message debugger captured")
-        result = self.db.clear_all()
+        # On the writer (see MessageDebuggerDB.call), off the event loop: a clear of a large file takes long
+        result = await asyncio.to_thread(self.db.call, self.db.clear_all)
         return {'status': 'cleared', **result}
     
     async def prune(
@@ -208,11 +209,13 @@ class MessageDebuggerWebFactory:
         the size of the remaining data, so it can fail on a full disk; that is
         reported instead of erroring the request.
 
-        Runs OFF the event loop (it can take many seconds) and under the
-        retention lock so it never collides with the per-write auto retention.
+        Runs OFF the event loop (it can take many seconds), on the DB's writer
+        thread -- this process's captures made meanwhile wait in its queue instead
+        of failing on the write lock (MessageDebuggerDB.call); other processes'
+        still meet the lock -- and under the retention lock.
         """
         require_everything(request, current_user, "What the message debugger captured")
-        result = await asyncio.to_thread(self._run_manual_prune, vacuum)
+        result = await asyncio.to_thread(self.db.call, lambda: self._run_manual_prune(vacuum))
         return {'status': 'pruned', **result}
 
     def _run_manual_prune(self, vacuum: bool) -> dict:

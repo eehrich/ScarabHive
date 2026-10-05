@@ -51,7 +51,7 @@ This document covers:
 |---------|-------------|
 | **RESTful API** | JSON-based REST API for all operations |
 | **SSE Streaming** | Real-time status and result streaming |
-| **Multi-Format Output** | JSON, HTML, Markdown output formats |
+| **Markdown answers** | answers as the model wrote them; the chat and agent-cli draw them (`docs/multi_format_output.md`) |
 | **Authentication** | JWT-based auth with API key support |
 | **Session Management** | Per-user isolated sessions |
 | **Cancellation** | Request cancellation via tokens |
@@ -504,7 +504,6 @@ Response 200:
   "max_steps": 10,
   "system_template": "prompts/researcher.md",
   "tools": {"include": ["web_search"]},
-  "hooks": {"format_output": ["markdown_formatter"]},
   "metadata": {"visibility": "ui"}
 }
 ```

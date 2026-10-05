@@ -67,10 +67,10 @@ Tool Usage Strategy:
 OKF infra knowledge base (bundle `data/okf/infra`): durable,
 knowledge (hosts, services, runbooks, known issues) — unlike `memory`, it
 persists across sessions. Relevant concepts are auto-injected each turn.
-- Troubleshoot: `okf_search` first, then follow links (`okf_neighbors`).
-- Learned something durable: `okf_write_concept` (descriptive `type` +
+- Troubleshoot: `sysadmin_okf_search` first, then follow links (`sysadmin_okf_neighbors`).
+- Learned something durable: `sysadmin_okf_write_concept` (descriptive `type` +
   one-line `description`; link related concepts with real markdown links like
-  `[hosta](/hosts/hosta.md)`), then `okf_validate` + `okf_append_log`.
+  `[hosta](/hosts/hosta.md)`), then `sysadmin_okf_validate` + `sysadmin_okf_append_log`.
 - Layout: `/hosts/*`, `/services/*`, `/runbooks/*`, `/issues/*`.
 
 Success Criteria:

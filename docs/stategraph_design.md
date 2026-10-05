@@ -44,8 +44,8 @@ this document.
 ## 2. The file format (`stategraph: 1`)
 
 A machine is one YAML file `<id>.yaml` in a machine root (§7.2). It may have a companion
-Python module and a layout sidecar `<id>.layout.json`, which holds editor positions and is
-never read by the engine. Keys are chosen so YAML 1.1 readers cannot corrupt them: there is
+Python module and a layout sidecar `<id>.layout.json`, which holds editor positions (and the
+panel's line styles: `line` for the machine, `lines` by `source→target`) and is never read by the engine. Keys are chosen so YAML 1.1 readers cannot corrupt them: there is
 no `on`, `yes` or `no` key. Unknown keys are errors (`extra="forbid"`), so a typo never
 silently drops behaviour.
 
@@ -138,7 +138,8 @@ def writer_task(ctx, params):
 | `stategraph` | `1` | yes | Format version: the integer `1`. The loader refuses anything else, `true` and `1.0` included (SG001). |
 | `id` | name | yes | Machine id, unique across all machine roots. The file is `<id>.yaml`. |
 | `title`, `description` | string | | Shown in the panel and the catalog. |
-| `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of its origin -- "My machines" for the writable root, else the plugin folder that holds its `machines/` directory. |
+| `notes` | name → text | | Free text for the reader: each note is drawn on the panel's canvas, where its place is kept in the layout. The engine never reads it. |
+| `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of its origin -- "My machines" for the first writable root, else the plugin folder that holds its `machines/` directory. |
 | `python` | path | | Companion module, relative to the file (`\` reads as `/`; an absolute path is SG004: a run's snapshot holds only relative files). Its public names are in scope for all code of this machine. |
 | `imports` | alias → ref | | Submachines this machine uses. A ref is a relative path (`./x.yaml`; `\` reads as `/`, an absolute path is SG006) or a machine id. `do: {machine: …}` names an alias, never an id. |
 | `machines` | name → machine | | Machines inside this file: a mapping like a machine file without `stategraph`, `id`, `python`, `imports`, `group`, `machines`, `agent`. `do: {machine: <name>}` runs one in its own frame, like an import (machine id `<id>.<name>` in frames and traces). They share the file's companion module and its imports; one runs no other machine of the file, and its name is no import alias. Problems are reported at `machines.<name>....` in the file. |
@@ -218,7 +219,7 @@ common keys.
 
 | Kind | Keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task` (template, required); `schema` (JSON schema: parse the answer as JSON and validate); `parse` (a companion function or `module:func`, `fn(text) -> out`; raising `ValueError` sends the message back to the same instance); `parse_retries` (feedback rounds, default 1); `check` (a companion function or `module:func`, `fn(out)` or `fn(sg, out)`, sync or async, run on the usable answer -- the text without `schema`/`parse`: raising `ValueError` sends its message back as feedback within the same rounds, then `check_failed`; its `sg.tool()` calls are keyed by a hash of the answer they check, so a resume whose agent answers anew does not replay another answer's calls); `vars` (template map, over the machine's vars); `advanced`; `continue` (template: an instance id of this run and of this agent, to follow up instead of starting a new instance) | the answer text, or the parsed value. `activity.instance_id` names the instance for a later `continue`. |
+| `agent: <name>` | `task` (template, required); `schema` (JSON schema: parse the answer as JSON and validate); `parse` (a companion function or `module:func`, `fn(text) -> out`; raising `ValueError` sends the message back to the same instance); `parse_retries` (feedback rounds, default 1); `check` (a companion function or `module:func`, `fn(out)` or `fn(sg, out)`, sync or async, run on the usable answer -- the text without `schema`/`parse`: raising `ValueError` sends its message back as feedback within the same rounds, then `check_failed`; its `sg.tool()` calls are keyed by a hash of the answer they check, so a resume whose agent answers anew does not replay another answer's calls); `vars` (template map, over the machine's vars); `llm_profile` (the LLM profile this call runs on instead of the agent's own, as `--llm` does: a literal or `{{ params.x }}` with an enum, checked against `llm_system.profiles` (SG007); not with `advanced`); `llm_params` (template map or one template: LLM params for this call over the agent's own for the model it runs on, both via `override_for_profile`; only `service_tier`, `thinking_level`, `thinking_budget`, `include_thoughts`, `max_tokens`, `temperature`, `provider_affinity_minutes` -- not which model, where the request and its API key go, or what it may do; a fallback after an error and a stuck run's escalation run with the agent's own params); `advanced`; `continue` (template: an instance id of this run and of this agent, to follow up instead of starting a new instance) | the answer text, or the parsed value. `activity.instance_id` names the instance for a later `continue`. |
 | `tool: <flat tool name>` | `args` (template map); `error_if` (Python expression over `out`) | the tool's result. An error-shaped result (the core predicate `tools/base.py::_error_result_message`) or a true `error_if` raises `tool_failed` with `error.data` = the full result. |
 | `decide: noul\|choice\|score` | `question` (template); `criteria` (choice: `{option: meaning}` with ≥2 options; score: `[lowest, …, highest]` with ≥2; noul: optional `{true: …, false: …}`); `input` (template, the content to judge, not empty); `profile` (a decision profile of `llm_system.decision_profiles`; default: `llm_system.default_decision_profile`); or `by` (an agent decides instead of a decision model; not together with `profile`) with `advanced` and `parse_retries` (default 1) | `{value, confidence, probabilities}`. `value` is a probability (noul), an option (choice) or a scale point (score). `confidence` and `probabilities` may be `null`. |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`; `input`; `profile` or `by` | `{name: {value, confidence, probabilities}}`, from one call. |
@@ -248,7 +249,8 @@ checks of an `agent:` (SG005, SG007). `machine` is always a literal alias.
   `stategraph-call`; context variables copied), so the event
   loop -- terminate, timeouts, the lease heartbeat -- goes on meanwhile. A thread cannot be
   killed: on a timeout or terminate the activity ends at once and the thread's late result is
-  dropped. `sg.tool()` works only on the event loop: a sync function may return
+  dropped; `sg.cancelled` (a `threading.Event`, set once nobody waits for the answer) lets a long
+  function return early. `sg.tool()` works only on the event loop: a sync function may return
   `sg.tool(...)`, which is then awaited there, but not run it itself; an async function awaits
   it as usual.
 
@@ -721,6 +723,12 @@ store.py   machine roots, versions   server.py  web_endpoints.py
   that (absolute host paths, e.g. Windows keys) is rewritten the same way when it is read.
 - `journal`: rows `(run_id, seq, kind, key, state, status, data)`, unique on
   `(run_id, kind, key)`. `seq` is append order, for display only.
+- `frames`: `(run_id, prefix, machine_id, path)`, a row per submachine frame a run started (a
+  replay starts it again: kept once). A machine's runs list the runs it ran in by it
+  (`GET /api/runs?nested=true`), and the panel's frame picker reads it (`frames_started`, the first
+  500; the panel adds the frames the run's journal names). A runs.db from before the table gets it
+  filled once from its journal's `end` rows, each with the path of the activity that started it (its
+  prefix without `/m/` and a retry's `/a<n>`), in the order they started.
 
 **Key grammar**
 
@@ -751,7 +759,7 @@ frame := "" | frame "s" N "/" ("m" | "b." NAME | "i." INDEX) "/"
 
 | Kind | Key | Content |
 |---|---|---|
-| `activity` | activity key | `status` started → done / error. `data`: kind, state path, `input_hash`, attempt, `inputs` (the rendered fields the hash covers -- kept in the done or error row, what the activity was given), `out` or `error`, meta (instance id, request id, vars, cost, mocked, attempts, `failures`: `[{attempt, type, message}]` of the attempts a retry ran again, also in the started rows so a resume keeps them). An error raised by Python code (a `call`, a kind or backend bug) keeps the last frames of its traceback in `error.data.traceback` (2,000 characters from the end) and is logged. A composite activity (`parallel`, `map`, `machine`) records its aggregate outcome under its own key; its children have their own rows. |
+| `activity` | activity key | `status` started → done / error. `data`: kind, state path, `input_hash`, attempt, `inputs` (the rendered fields the hash covers -- kept in the done or error row, what the activity was given), `out` or `error`, meta (instance id, request id, vars, model, cost -- an agent's also `tokens`, `cost_is_estimate`, `cost_unpriced_calls` --, mocked, attempts, `failures`: `[{attempt, type, message}]` of the attempts a retry ran again, also in the started rows so a resume keeps them). An error raised by Python code (a `call`, a kind or backend bug) keeps the last frames of its traceback in `error.data.traceback` (2,000 characters from the end) and is logged. A composite activity (`parallel`, `map`, `machine`) records its aggregate outcome under its own key; its children have their own rows. |
 | `event` | `pending:<id>`, then `<frame>s<N>:event` once consumed | name and data (the inbox) |
 | `edit` | `<frame>s<N>:<hook>:<n>` | a debugger `set`: path and the evaluated JSON value |
 | `timer` | `<frame>s<N>:timer` | a fired wait timeout |
@@ -877,7 +885,13 @@ A run executes as an asyncio task in the process that started it (usually the AP
 - **Controls follow the lease.** Debugger commands, `set`, `evaluate` and events act in
   the owning process only; a process that has lost the run refuses them ("another process
   owns run ... now"), and a debugger edit it could not journal leaves its context
-  unchanged. Breakpoints of a run that no process holds a live lease on are stored in its
+  unchanged. Another process asks for pause, continue, step or terminate through the run's
+  row (`control`, a request with its own id): the owner takes its runs' requests each second
+  (a partial index holds only the rows with one open) and carries them out; one it does not
+  take within 5 s -- or whose asker stopped -- is withdrawn and refused (409). One request at a
+  time: a second one while the first is open is refused, not written over it; a sweep or a
+  new owner drops a request nobody took. `run_to` and breakpoints need the owner's
+  machine to check them, `evaluate` and `set` an answer back: they stay in the owning process. Breakpoints of a run that no process holds a live lease on are stored in its
   row and apply when it is resumed; while another process holds it they are refused with
   that owner's name.
 - **`run_key`.** A caller may pass a `run_key` (e.g. its request id): the same request again
@@ -900,7 +914,7 @@ A run executes as an asyncio task in the process that started it (usually the AP
 | Need | Primitive |
 |---|---|
 | agent call | The registered agent (`runner.registry.get(name)`), run with `run_events(task, request_id=<run>_NNN, session_id=<instance>)` per attempt (`NNN` counts on across resumes, §5.2); the answer is the final event's summary, an `error` event or an empty answer is `agent_failed`. A create first makes the instance session with `session_manager.create_session(parent_session_id=sg_<run>)` (a sub-session of the run's own session, shown below it); with a `nesting` (an agent started the run: the facade, a tool call) the instance sits at the caller's `depth` + 1 with its `depth_budget` - 1, where the caller's SAM would have put it, and a budget below 1 fails the activity with `config`. A continue checks that the instance's parent is this run's session and its agent the one named. `open_for_run` before and `save_session` after the run keep the instance's conversation on disk, so a continue after a resume sees it. One run per instance at a time. The run is awaited as a task of its own: a timeout or terminate cancels the run's request (its token) before the task -- a cancel that lands in one of the agent's tool calls becomes a "cancelled" tool result and the agent would run on -- and the run gets until the CancellationManager would force-cancel it (its cleanup timeout plus one monitor round, and a second: 12 s by default; `AGENT_STOP_GRACE`) to stop -- also when a terminate follows a timeout meanwhile. A run that outlives it keeps its instance busy until it ends. |
-| tool call | `runner.dispatch_tool_call(tool, args, …)`. Configured `inject_params` (fnmatch pattern → params, as in tool_script) are applied after rendering, so secrets never live in machine files. A `ToolDispatchError` becomes `tool_denied`. |
+| tool call | `runner.dispatch_tool_call(tool, args, …)` of the run's runner (§8.3). Configured `inject_params` (fnmatch pattern → params, as in tool_script; the instance's, then the runner's) are applied after rendering, so secrets never live in machine files. A `ToolDispatchError` becomes `tool_denied`. |
 | decision | `create_decisions_from_profile(system_config, profile).decide(input, questions)` |
 | vars | `session_manager.replace_session_context_vars(user, <instance>, vars)` (a save merges into the stored vars, and a sub-agent of the instance inherits them) and `agent._session_tracker.set_session_template_vars(<instance>, vars)` after clearing, both before the run |
 | cancellation | `get_cancellation_manager()`: the run's backend holds a token under the run id. Terminate calls `cancel_sub_requests(<run id>)`, which reaches every `<run>_NNN` sub-run in flight -- not the run's own token: a cancelled token has the platform force-cancel its whole request tree after the cleanup timeout, and the `finally` activities start sub-runs after the terminate. They call agents and decisions without the token (§2.8). A cancel from outside that reaches the run's token -- a caller whose request id prefixes the run id, e.g. a book cancel above the agent facade -- terminates the run the same way, so its `finally` activities run; but that cancel is the caller's own, so the platform force-cancels every task under the caller's request id prefix after the cleanup timeout (10 s), the `finally` activities' tool calls and agent runs included: on this path a `finally` has 10 s, not 60. An activity that ends because the run was cancelled is not journaled as an error, and no error transition fires. The run's cancel is: its task being cancelled (terminate, halt, `limits.timeout`, a timeout above the activity, a fail-fast sibling), the run ending, or its token cancelled from outside. Any other `CancelledError` out of an attempt -- a future some library cancelled -- fails the activity (`agent_failed`, `tool_failed`, `decision_failed`, `call_failed`, else `activity_failed`), and its error transition fires. |
@@ -984,14 +998,17 @@ src/plugins/stategraph/
 
 - `data/stategraph/machines` is writable and not versioned.
 - `src/plugins*/*/machines` is versioned; writer machines live next to their plugin.
-- The first root that has an id wins, and writable roots come first.
+- The first root that has an id wins; by default the writable root comes first.
+- A shipped folder named in `writable_machine_dirs` (a developer's local config, never a server's:
+  a pull would meet its edits) is edited in place; its machines keep their plugin's folder and stay
+  the catalog's `examples`. New machines still go into the first writable root.
 - **Saves** write a machine tree all or nothing: each file goes into a temp file next to its
   target first, then the temp files replace the targets; if one replace fails, the files
   replaced so far get their old bytes back (a new one is removed) and the error says so. Files
   are written as UTF-8 with LF line endings on every OS, and the versions a save returns are of
   the text as a read gives it back.
 - **Folders.** The panel lists machines in folders: a machine's `group` (§2.2), else the folder
-  of its origin ("My machines" for the writable root, else the plugin folder that holds its
+  of its origin ("My machines" for the first writable root, else the plugin folder that holds its
   `machines/`).
 
 ---
@@ -1002,16 +1019,16 @@ src/plugins/stategraph/
 
 | Tool | Parameters | Result |
 |---|---|---|
-| `catalog` | `agents?`, `tools?` (fnmatch patterns) | Activity kinds with their fields; the agents a machine may run (every agent of the registry that SG007 accepts); the tools the runner may call (flat name, description, parameters, required); decision profiles; example machine ids |
+| `catalog` | `agents?`, `tools?` (fnmatch patterns), `machine_id?` | Activity kinds with their fields; the agents a machine may run (every agent of the registry that SG007 accepts); the runner of the machine (default: a new machine's) and the tools it may call (flat name, description, parameters, required); decision profiles; example machine ids |
 | `list_machines` | | id, title, file, writable, and whether it validates |
-| `get_machine` | `machine_id` | the tree: `files {relative path: text}`, `versions {path: sha}`, problems |
+| `get_machine` | `machine_id` | the tree: `files {relative path: text}`, `versions {path: sha}`, problems; `runner` (and `runner_problem`) |
 | `validate_machine` | `files` (or `yaml`), `machine_id?` | problems |
 | `save_machine` | `files`, `expected_versions?` | versions; refused with errors or on a version conflict |
-| `run_machine` | `machine_id` (or `request`: `<id> {json}`), `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`), `mock_only`, `breakpoints`, `watchpoints`, `pause_at_start`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, run_status, state, output, error, paused, accepts}` (`mocks_unused` when a mock path went unused), with a `run_key` also `attached`, `resumed` or `ended` (§5.7). `wait: finish` also returns when the run pauses or waits for an event. |
+| `run_machine` | `machine_id` (or `request`: `<id> {json}`), `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`, `{"$timeout": true}` for a wait state), `mock_only`, `breakpoints`, `watchpoints`, `pause_at_start`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, run_status, state, output, error, paused, accepts}` (`mocks_unused` when a mock path went unused), with a `run_key` also `attached`, `resumed` or `ended` (§5.7). `wait: finish` also returns when the run pauses or waits for an event. |
 | `list_runs` | `machine_id?`, `status?`, `limit?` | the newest runs the caller may see (own and nobody's; an admin every run) |
 | `get_run` | `run_id`, `steps?`, `after?` (a journal seq: the rows after it), `kinds?`, `state?`, `wait?` (`finish`: wait for a running run's end, pause or wait; `max_wait`), `full_output?` | `run_status`, `state`, `output`, `error`, `frames` (with their context, and a wait state's `waiting_since`/`deadline`), `inbox`, journal rows (texts over 2,000 characters cut, the output over 20,000) |
 | `control_run` | `run_id`, `action` (pause, continue, step, run_to, terminate, resume, fork, set_breakpoints, set_watchpoints, evaluate, set), + action args (a fork: `at_step`, `definition`, `pause`, `mocks`), `steps?` | run state (with `steps`: its journal rows) |
-| `send_event` | `run_id`, `name`, `data?`, `frame?` | accepted, or why not |
+| `send_event` | `run_id`, `name`, `data?`, `frame?` | accepted, or why not -- a waiting frame has taken it when the answer comes, so a read right after shows what it started (a frame busy with an activity takes it when it next waits) |
 
 `get_run`, `control_run` and `send_event` answer another user's run as missing unless the asker
 is an admin or auth is off (§8.3).
@@ -1023,10 +1040,11 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
 ### 8.2 REST (`/plugins/stategraph/…`, JSON)
 
 - `GET /` is the panel. `GET /api/catalog` gives its fields the agents, the runner's tools and the
-  decision profiles; `GET /api/runs` takes `status` and `before` (the last run id of the page before).
+  decision profiles (`machine_id`: the tools of that machine's runner); `GET /api/runs` takes `status`, `before` (the last run id of the page before) and
+  `nested` (with `machine_id`: also the runs it ran in as a submachine).
 - **Machines.** `GET /api/machines`; `GET|PUT /api/machines/{id}` (tree and versions,
   409 on conflict); `POST /api/machines` (new from template); `POST /api/validate`;
-  `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none); `PUT /api/machines/{id}/layout`;
+  `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none; `{op: group_states, names, name}` puts states side by side into a new composite; `{op: set_note, name, text}` sets a note of `notes:` (text empty or null removes it, the last one takes `notes:` along); `{op: move_state, name, into}` puts a state last into a composite, or a simple state without do, which becomes one (`into` null: the top level), the region it leaves taking the first state left there as initial; a composite's last state is neither removed nor moved out; with `expected_version` written at once, with `drafts` -- the caller's unsaved files -- applied to the root file's draft and written nowhere, answering `{graph, problems, draft}`); `PUT /api/machines/{id}/layout`;
   `DELETE /api/machines/{id}` with `{expected_version}`.
 - **Delete** (panel and REST only; no tool deletes). It removes the machine's file (the version
   the caller saw: 409 on a change), its layout sidecar and its companion module -- unless
@@ -1034,7 +1052,8 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
   writable roots is refused (403); one that another machine imports is refused (409) until
   those imports are gone. Its runs keep their definition snapshot and stay readable.
 - **Palette.** `GET /api/kinds`.
-- **Runs.** `GET|POST /api/runs`; `GET /api/runs/{id}` (`?steps=`); `GET /api/runs/{id}/journal`;
+- **Runs.** `GET|POST /api/runs`; `GET /api/runs/{id}` (`?steps=`; with `frames_started`, the submachine
+  frames the run started -- the tool's `get_run` leaves them out); `GET /api/runs/{id}/journal`;
   `POST /api/runs/{id}/control` (`steps`: the journal rows of the answer);
   `POST /api/runs/{id}/events`. `GET /api/runs/{id}`, control and events follow the owner rule
   (§8.3); the run list and the journal endpoint do not filter.
@@ -1042,7 +1061,9 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
 **The panel.** The machine list shows collapsible folders by group (the open ones are
 remembered; a search opens every folder it finds something in). The machines pane and the
 inspector fold away (toolbar buttons). A writable machine has a delete button. Double-click on
-a state renames it. The inspector has a form for every field of a state (its activity's fields
+a state renames it. **Note** in the palette adds a note (`notes:`, free text) in the middle of the view; it is
+dragged like a state, a click opens its text in the inspector, and emptied or deleted it goes. A state's
+`description` is a free-text box at the top of its inspector. The inspector has a form for every field of a state (its activity's fields
 come from the kind's JSON schema, `GET /api/kinds`) and of the machine; Apply sends only the
 changed keys as `update_state` / `update_machine` (objects as YAML text, `{"$yaml": ...}`), set
 in place with the file's comments; a value with an anchor, alias or merge in it is edited in the
@@ -1053,14 +1074,25 @@ edit or another machine drops them. Each run has a **Result** card: its output o
 end state of every frame, and every finished activity folded, with its full answer when opened;
 an agent's instance session and the run's own session (§5.8) open in the chat.
 
-**Working in the panel.** the graph bar finds a state by name, **Undo** (Ctrl+Z) writes back the file as it was
-before the last edit, **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand; the wheel
+**Saving.** The panel saves by hand: graph edits go onto the drafts (`edit` with `drafts`), moves and line styles
+onto the layout it holds, and **Save** (Ctrl+S) writes the layout, then the drafts with the versions they were read
+at -- a file changed meanwhile is a conflict, not overwritten, and undo steps drafted from an older version go.
+Opening another machine, a reload or a run of unsaved changes asks first; Duplicate waits for Save or Revert. Text
+typed in the YAML tab reaches the graph with Validate (`/validate` over the drafts); a graph edit before that asks,
+since it would work from the text the graph was drawn from. **Auto-save** (kept per browser) writes each edit and move at once, as before; switched
+on, it saves what is unsaved first.
+
+**Working in the panel.** the graph bar finds a state by name, **Undo** (Ctrl+Z) puts back the root file as it was
+before the last edit -- the draft, or with auto-save the file -- **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand (a state placed by hand takes its region's
+start dot along, left of it; transitions between the same two states are drawn side by side; a transition's **Line** -- right-angled (the default: ELK's route, re-routed when a state is moved) or straight; moving never changes it; between a composite and a state inside it both go to the composite's nearest border but the top -- is set in its inspector, for all of a selection, or for the machine in the overview, and kept in the layout); the wheel
 scrolls the graph, Ctrl+wheel zooms; the palette adds a **Composite** with a first state inside (one edit,
-one undo step); Ctrl or Shift+click (or +Enter), or a Ctrl or Shift+drag box, selects several states -- dragging
-one moves them all, Delete removes them in one edit (a state inside a selected composite goes with it);
+one undo step); a state dragged onto a composite goes into it where it was dropped (the composite is marked on the way), **Inside** in its inspector moves it into another composite or out to the top level; Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box
+the states in it -- dragging one moves them all, Delete removes them in one edit (a state inside a selected
+composite goes with it), **Group** puts the states into a new composite (placed by hand, they keep their place;
+an undo puts their positions back too);
 narrow, the state palette is a menu and the machine list folds
 away once a machine is open. **Duplicate** copies a machine (a shipped one too) under a new id into
-the writable root, its companion module as `<id>.py`; what it imports from a file it names by machine id. The error badge in the head opens the overview
+the first writable root, its companion module as `<id>.py`; what it imports from a file it names by machine id. The error badge in the head opens the overview
 with every problem, each a link to its place. The machine's settings stand first in the overview;
 an agent, tool, `by`, `profile` or `machine` field offers the catalog's names (`GET /api/catalog`),
 every field says what it is for, and a transition's trigger has **New event…**, which declares the
@@ -1070,7 +1102,11 @@ asked again with what was typed. A waiting run has a button per event it takes i
 event with data, or one several frames wait for, opens the event form, which picks the event the
 wait takes and says what it is). The runs list scrolls, filters by status and loads older runs;
 **Run again** on the Result card starts the run's params and mocks anew, and the start form keeps a
-machine's last params.
+machine's last params. With a run selected, a state that started submachine runs carries a badge
+("2 runs") and its inspector ends with the folded list of them, each with **Show**: the
+submachine's graph with that frame on it (an ended one drawn from its journal); the debug bar
+picks among its frames and goes back to the run's machine. A submachine's runs list holds the
+runs it ran in too.
 
 **Graph edits and YAML anchors.** An edit changes only the state's own text. It is refused where
 another place would see the change: a transitions list the state inherits through its own `<<:`
@@ -1110,7 +1146,23 @@ Machines contain Python and run agents and tools.
   of nobody (no `user_id`) is visible to all (`server.sees_run`). Whoever resumes or terminates
   a run only triggers it: it runs as its row's user (§5.8). A fork is a new run of the forking
   user and never continues the source's instances (§5.6).
-- **Recursion.** The runner's allowlist must never contain stategraph's own tools (SG007
+- **Runners.** A run is hosted by a runner agent, and its tool allowlist bounds every `tool`
+  activity and `sg.tool()` of the run. The runner is chosen by the root machine's folder
+  (`runners.py`): the enabled server entry whose own `runs_machines_in` (not inherited; project-
+  relative, globs allowed) names the deepest folder holding the file, else the instance's
+  `runner_agent`. Never by the machine file: a writable machine cannot pick the runner with the
+  most tools. Two runners naming one folder leave it without one: every machine there has SG007
+  and cannot be started (a run started before keeps its runner). The run row keeps the runner (`runs.runner`) from the start: a resume and a
+  snapshot fork use it, a fork onto the current definition takes the folder's now; a row from
+  before the column falls back to the folder's. A plugin that ships machines ships their runner
+  in its own `agents/*.yaml` (`type: stategraph_runner` and `+` entries); its `inject_params` go
+  over the instance's, param by param. Validation asks each tool question with the tree's root
+  file (`extra["root"]`); the backend asks without one and gets its own runner. Every runner,
+  every instance's default included, is refused as an agent (SG007). The whole tree runs with the
+  root's runner: a tree file in a writable folder whose runner is not the root's (an import by
+  machine id finds the writable root first) is SG007 when that runner is not the default; and a
+  save refuses (409) a `<x>.yaml` that would hide machine x of a root searched later.
+- **Recursion.** No runner's allowlist may contain stategraph's own tools (SG007
   refuses them), so a machine cannot rewrite or start machines.
 - **Agents.** A machine runs the agents its file names (`agent:` and `decide`'s `by:`) -- literal
   names, or a parameter with an enum, so validation sees every one (SG005); SG007 checks that each
@@ -1231,9 +1283,9 @@ is configuration only (`story_designer_agent` plus `v4_sam.allowed_agents`, and
 
 ## 11. Known limits of the prototype
 
-- **Cross-process debugging.** Runs of other processes cannot be paused from the panel.
-  Commands would go through the run row, polled at hooks. That is the next step once runs
-  execute in writer_jobs.
+- **Cross-process debugging.** Of a run another process holds, pause, continue, step and
+  terminate go through its row (§5.7); `run_to`, breakpoints, `evaluate` and `set` act only in
+  the owning process.
 - **Browser tests.** The panel is checked for syntax and logic with JavaScriptCore (`jsc`), or
   with node where `jsc` is missing (`tests/js/node_jsc.mjs` gives node jsc's `print`, `load` and
   `readFile`, so one test source serves both), not in a browser. The first real browser session
@@ -1241,5 +1293,6 @@ is configuration only (`story_designer_agent` plus `v4_sam.allowed_agents`, and
 - **The v6 machine has not run live yet.** It is tested against a simulated v6 world (store
   semantics, forum, story row, agents as fakes, a crash and resume in the beats); its first run
   with real panels is a manual step, best with a breakpoint after the worlds.
-- **Cost.** An agent run reports no usage to the backend. `run.cost` and `limits.max_cost` need the usage
-  tracker's per-request-id sums; only `decide` reports cost today.
+- **Cost.** An agent activity reports its LLM calls' tokens and cost, its sub-agents' included (their
+  events reach the run's stream), priced per call by the core's rule; LLM calls a tool makes on its own
+  are not in it. `run.cost` and `limits.max_cost` are not built.

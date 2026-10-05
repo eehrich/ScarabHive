@@ -14,6 +14,7 @@ import pytest
 
 from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder
 from plugins.coding_cli import live as live_module
+from plugins.coding_cli import run as cli
 from plugins.coding_cli.live import CAP_PAYLOAD, LiveRun
 
 from test_plugin_coding_cli_server import call, ended, make_server  # noqa: F401 - fixtures below
@@ -268,3 +269,56 @@ async def test_a_tool_call_the_view_shows_is_not_repeated_as_progress(tmp_path, 
         assert progress == ["Checking the parser."], progress
     else:
         assert progress == ["Checking the parser. (+1)"], progress
+
+
+async def test_an_event_whose_message_is_text_costs_nothing(parent, tmp_path, caplog):
+    """Claude Code's system events carry text in "message" (permission_denied: a tool call refused):
+    the view stopped at the first, and the rest of its batch was lost."""
+    view = await LiveRun.open("run1_001", "text", tmp_path)
+    await view.feed([
+        {"type": "assistant", "message": "API Error: overloaded"},
+        {"type": "user", "message": {"content": "a plain prompt"}},
+        {"type": "system", "subtype": "permission_denied", "message": "Bash wurde verweigert"},
+        {"type": "assistant", "message": {"id": "m0", "content": 5}},
+        _assistant("m1", {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}),
+        _tool_result("t1", "ok"),
+    ])
+    await view.close({"state": "done", "result": "done"})
+    events = [e["event"] for e in _envelopes(parent)]
+    assert [e["action"] for e in events if e["type"] == "tool_call"] == ["Bash"]
+    assert [e["result"] for e in events if e["type"] == "tool_result"] == [{"content": "ok"}]
+    assert "relaying a run's stream failed" not in caplog.text
+    assert cli.actions({"type": "assistant", "message": "API Error"}, tmp_path) == []
+    assert cli.actions({"type": "assistant", "message": {"content": 5}}, tmp_path) == [], "the run's watch reads it too"
+
+
+async def test_an_event_that_breaks_the_view_costs_only_itself(parent, tmp_path, caplog, monkeypatch):
+    real = LiveRun._assistant
+
+    async def flaky(self, message, content):
+        if message.get("id") == "bad":
+            raise RuntimeError("a shape nobody foresaw")
+        await real(self, message, content)
+    monkeypatch.setattr(LiveRun, "_assistant", flaky)
+    view = await LiveRun.open("run1_001", "flaky", tmp_path)
+    await view.feed([_assistant("bad", {"type": "text", "text": "x"}),
+                     _assistant("m1", {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}})])
+    await view.close({"state": "done", "result": "done"})
+    assert [e["event"]["action"] for e in _envelopes(parent) if e["event"]["type"] == "tool_call"] == ["Bash"]
+    assert caplog.text.count("relaying a run's stream failed") == 1
+
+
+async def test_arguments_nested_deeper_than_the_view_walks_cost_nothing_else(parent, tmp_path):
+    """1,500 levels parse, but the view's capping recursed out: the rest of the batch was lost, the tool's
+    row never ended."""
+    view = await LiveRun.open("run1_001", "deep", tmp_path)
+    deep = json.loads("[" * 1_500 + "]" * 1_500)
+    await view.feed([
+        _assistant("m1", {"type": "tool_use", "id": "t1", "name": "mcp__s__x", "input": {"a": deep}}),
+        _tool_result("t1", "ok"),
+    ])
+    await view.close({"state": "done", "result": "done"})
+    events = [e["event"] for e in _envelopes(parent)]
+    tool_call = next(e for e in events if e["type"] == "tool_call")
+    assert "nested deeper" in tool_call["params"]
+    assert [e["result"] for e in events if e["type"] == "tool_result"] == [{"content": "ok"}]

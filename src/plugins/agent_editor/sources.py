@@ -276,6 +276,11 @@ def problems(store: Store, snap: Snapshot, name: str, skill_names: set[str],
     if tools is not None:
         result = tools(list(agent.tools.allowed or []), list(agent.tools.blocked or []))
         found += [f"Matches no tool: {pattern}" for pattern in result["unmatched"]]
+        # tools.deferred holds back allowed tools only: a pattern that names none of them defers nothing
+        granted = [tool.split("/", 1) for tool in result["tools"]]
+        found += [f"Deferred matches no allowed tool: {pattern}" for pattern in dict.fromkeys(agent.tools.deferred or [])
+                  if pattern not in result["external"]
+                  and not any(tool_matches_patterns(tool, server, [pattern]) for server, tool in granted)]
         # a blocked pattern for a server that is off blocks nothing yet: no problem
         found += [f"External server is off: {pattern}" for pattern, on in result["external"].items()
                   if not on and pattern in result["allowed"]]

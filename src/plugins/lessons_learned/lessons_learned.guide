@@ -1,0 +1,512 @@
+@database "lessons_learned"
+@author "Enrico Ehrich"
+@$VER: lessons_learned.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Lessons Learned"
+@{h1}Lessons Learned
+
+What an agent has learned and should keep doing -- "check every date
+against the timeline", "run the targeted tests before a commit" -- kept
+across sessions, per agent. An agent stores lessons with its tool, teaches
+them to another agent, and confirms or contradicts them as it goes; each
+lesson carries a confidence that the evidence moves. An optional hook puts
+the active lessons of an agent in front of its model, another one lets an
+LLM pick lessons out of the conversation as it goes on. In the
+@{b}Lessons Learned@{ub} panel you review, activate, edit, merge and clean
+up the lessons of every agent.
+
+@{image docs/panel.png "The Lessons Learned panel with the lessons of several agents"}
+
+@{code}
+For users
+  @{"  The Lessons Learned panel  " link panel}
+
+For agents and developers
+  @{"  The lessons_learned tool  " link tool}
+  @{"  Confidence, evidence and duplicates  " link rules}
+  @{"  The inject_lessons hook  " link inject}
+  @{"  The extract_lessons hook  " link extract}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Lessons Learned panel"
+@{h1}The Lessons Learned panel
+
+Open it from the launcher (@{b}Context & memory@{ub}, "Lessons Learned").
+Lessons belong to agents, not to chat sessions: the panel shows the
+lessons of every agent, whatever is open in the chat.
+
+@{image docs/panel.png "The Lessons Learned panel"}
+
+@{h2}What you see
+
+@{bullet}Six figures: all lessons, how many are active, draft, inactive and
+archived, and how many agents have lessons. The agent filter narrows the
+first five to that agent.
+@{bullet}Filters by agent, status and category, and the order: by priority
+(then confidence), by confidence, by evidence, newest first or recently
+updated. An agent or category you filter for stays in its menu, also once
+no lesson has it any more.
+@{bullet}The lessons, 50 to a page with @{b}Previous@{ub} and
+@{b}Next@{ub}: title, text, id and tags; agent, category, priority,
+confidence (green from 0.7, red below 0.4), status, evidence, applications
+(how often the hook put it in front of the model) and source --
+@{i}Manual@{ui}, @{i}Cross-agent@{ui} (taught), @{i}Reflection@{ui} (stored
+by the agent itself) or @{i}Auto@{ui} (extracted).
+
+The panel reloads every 30 seconds; the menu next to the reload button sets
+another interval or turns it off. If the lessons cannot be loaded, the
+error takes the place of the figures and no stale list stays.
+
+@{h2}Search
+
+The search box finds lessons by meaning -- "dates" finds "Check every date
+against the timeline". It searches every status unless the status filter
+names one, and the agent and category filters narrow it too. Up to 50
+lessons come back, the closest first, with their similarity; a click on a
+column head sorts them. @{b}Clear@{ub} goes back to the list.
+
+@{h2}What you can do with a lesson
+
+@{table}
+Button | Shown on | Does
+Activate | a draft | makes it active, so the hook uses it; refused if it is no longer a draft
+Edit | every lesson | opens it, loaded afresh, in the editor
+Delete | every lesson | removes it with its evidence, after asking
+@{body}
+
+@{b}New lesson@{ub} opens the editor empty: the agent of the agent filter,
+category general, active, source manual, priority 5, confidence 0.8. The
+editor has every field -- agent, category, title (200 characters), text
+(2000), status, source, priority 1 to 10, confidence 0 to 1 and tags,
+comma-separated. Changing the agent moves the lesson to that agent. A save
+sends every field; the confidence you set holds until the next evidence
+(see @{" Confidence " link rules}), a lesson you save as inactive stays
+inactive whatever evidence comes. When a save worked but the search index
+could not take the lesson, a warning says so: it is listed, but search and
+the duplicate check miss it until the index works again.
+
+When the server refuses -- the lesson is gone, no longer a draft, or the
+agent has reached its lesson limit -- the panel shows the reason. After
+@{b}Activate@{ub} or @{b}Delete@{ub} the list is loaded anew either way; a
+refused save keeps the editor open with what you typed, and the list as it
+was.
+
+@{h2}Consolidate
+
+@{b}Consolidate@{ub} merges lessons that say the same. Lessons of one agent,
+archived ones left out, at least as similar as the threshold (empty: the plugin's
+@{tt}dedup_similarity_threshold@{utt}, 0.82) form a group; an LLM judges
+each group and writes the merged title and text. The lesson it keeps gets
+the evidence and applications of the others, which are deleted.
+
+@{bullet}Leave the agent empty for every agent.
+@{bullet}@{b}Dry run@{ub}, on at first, only shows what would be merged.
+@{bullet}A bar shows the progress; the result lists each group --
+@{i}Merged@{ui} (which lesson stays, which went), @{i}Would merge@{ui},
+@{i}Skipped@{ui} with the reason, @{i}Kept separate@{ui} -- and the agents
+whose lessons could not be compared at all.
+@{bullet}One merge runs at a time; a second is refused. A merge goes on
+when you close the panel, a dry run stops.
+
+@{h2}Clean up
+
+@{b}Clean up@{ub} deletes lessons by filter: agent, status, older than a
+number of days (by creation), evidence at most, confidence at most. A
+lesson must match every filter set. @{b}Preview@{ub} lists the matches;
+@{b}Delete@{ub} then removes only those, after asking -- a lesson that
+came to match since is not touched. Changing a filter drops the preview.
+Without any filter the server refuses.
+@endnode
+
+@node tool "The lessons_learned tool"
+@{h1}The lessons_learned tool
+
+The plugin gives an agent one tool, named like the plugin instance
+(@{tt}lessons_learned@{utt} in the default setup). Every call names an
+@{tt}operation@{utt}; without one it lists. Lessons belong to agents, not
+sessions: an agent's lessons are those stored under its name, and ids
+count per agent -- @{tt}coder_les_001@{utt}, @{tt}coder_les_002@{utt},
+...
+
+@{h2}Operations
+
+@{table}
+operation | Needs | Does
+store | title, content | a new draft lesson of the calling agent; see @{" duplicates " link rules}
+search | query | the active lessons closest in meaning
+list | -- | lessons of every status, filtered and sorted
+update | lesson_id | changes the fields given
+confirm | lesson_id | records evidence for or against a lesson; its confidence is calculated anew
+teach | target_agent, title, content | a new draft lesson of another agent
+delete | lesson_id | removes the lesson with its evidence
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+title | store, teach, update | up to 200 characters
+content | store, teach, update | up to 2000 characters; with the title, what search compares
+category | store, teach, update; list, search | any name, the schema offers nine; store and teach without it: general. For list and search a filter
+priority | store, teach, update | 1 to 10, rounded to a whole number; store and teach without it: 5
+tags | store, teach, update | a list, or one comma-separated string; update replaces them
+query | search | what to look for, in words
+lesson_id | update, confirm, delete | an id an answer returned
+status | update; list | draft, active, inactive or archived; for list a filter
+confidence | update | 0 to 1; holds until the next evidence
+evidence_type | confirm | confirm (default), contradict or neutral
+description | confirm | a note kept with the evidence
+target_agent | teach | the agent the lesson is for
+agent_name | list, search | whose lessons; without it the calling agent's
+limit | list, search | 1 to 100; without it list 20, search 10
+sort_by | list | priority (default, then confidence), confidence, evidence, created, updated, applied -- highest or newest first
+@{body}
+
+A lesson stored by the tool is a @{b}draft@{ub}: listed, and seen by the
+duplicate check, but not found by search nor put in front of the model
+until it is active -- by @{b}Activate@{ub} in the panel or
+@{tt}update@{utt} with @{tt}status: active@{utt}. There is no offset: a
+list shows at most 100 lessons, the filters narrow it. Any agent can
+update, confirm or delete any lesson whose id it names.
+
+@{h2}Answers
+
+@{bullet}store, teach: @{tt}status: stored@{utt}, the new
+@{tt}lesson_id@{utt}, @{tt}agent_name@{utt}, @{tt}title@{utt} and
+@{tt}lesson_status: draft@{utt}. When a similar lesson exists nothing is
+stored: the answer is the evidence added to that one, with
+@{tt}dedup_action@{utt} (@{tt}confirm@{utt} or @{tt}merge@{utt}) and
+@{tt}similar_to@{utt}, its id.
+@{bullet}search: @{tt}results@{utt} -- whole lessons with a
+@{tt}similarity@{utt} from 0 to 1, the closest first -- @{tt}count@{utt}
+and @{tt}query@{utt}.
+@{bullet}list: @{tt}lessons@{utt}, @{tt}total@{utt} (all that match),
+@{tt}limit@{utt}, @{tt}offset@{utt}.
+@{bullet}update: @{tt}status: updated@{utt}, @{tt}updated_fields@{utt}.
+@{bullet}confirm: @{tt}status: evidence_added@{utt},
+@{tt}evidence_type@{utt}, @{tt}new_confidence@{utt},
+@{tt}evidence_count@{utt}. The same kind of evidence for the same lesson
+from the same session is kept once, and the session a lesson came from
+does not confirm it: either answers @{tt}status: evidence_exists@{utt} with
+the figures unchanged.
+@{bullet}delete: @{tt}status: deleted@{utt}.
+@{bullet}What still worked but could not be done completely comes as
+@{tt}warnings@{utt}: a lesson stored without the duplicate check, or left
+out of the search index; agents whose lessons a search could not reach.
+@{bullet}A refusal is @{tt}{"error": "..."}@{utt}: a parameter missing, a
+title over 200 characters, a priority outside 1 to 10, a lesson id not
+found, the agent's lesson limit reached, a search that could not run at
+all. A status or confidence out of range on update fails with the
+database's message.
+
+@{h2}An example
+
+@{code json}
+{"operation": "store", "title": "Run the targeted tests before a commit", "content": "The whole suite takes twenty minutes; run the tests of the module you changed.", "category": "workflow", "priority": 8}
+{"operation": "update", "lesson_id": "coder_les_004", "status": "active"}
+{"operation": "search", "query": "which tests to run"}
+{"operation": "confirm", "lesson_id": "coder_les_004", "description": "The targeted run caught a broken import"}
+{"operation": "teach", "target_agent": "reviewer", "title": "Run the targeted tests before a commit", "content": "..."}
+@{body}
+@endnode
+
+@node rules "Confidence, evidence and duplicates"
+@{h1}Confidence, evidence and duplicates
+
+@{h2}Confidence
+
+A lesson starts with a confidence by its source: 0.8 made in the panel
+(the editor sets it), 0.6 taught, 0.5 stored by the agent, 0.4 extracted.
+Every piece of evidence calculates it anew from that start and the
+difference of confirming and contradicting evidence; neutral evidence is
+counted, but moves nothing. A session gives a lesson at most one evidence
+of each kind -- a lesson confirmed twice in one conversation, or a
+conversation read twice, counts once -- and the session a lesson came from
+does not confirm it. Each confirmation adds less than the one
+before: an agent's own lesson (0.5) is at 0.58 after one, 0.65 after three,
+0.71 after ten, never above 0.75; contradictions lower it the same way,
+never below half the start. A confidence set by hand holds until the next
+evidence.
+
+Evidence comes from @{tt}confirm@{utt}, from a store or teach of a lesson
+that already exists, and from the extraction finding a lesson again. A
+merge moves the evidence of the lessons merged away to the one it keeps --
+where two came from the same session, one of a kind stays -- adds one
+confirming evidence per lesson merged away, and keeps the highest
+confidence of the group, without calculating anew.
+
+@{h2}Duplicates
+
+@{tt}store@{utt} and @{tt}teach@{utt} compare the new lesson with the
+lessons of the agent it is for, in every status. At a similarity of
+@{tt}dedup_similarity_threshold@{utt} (0.82) or more nothing is stored; the
+closest lesson gets a confirming evidence instead. From
+@{tt}exact_duplicate_threshold@{utt} (0.95) the answer says
+@{tt}dedup_action: confirm@{utt}, below it @{tt}merge@{utt} -- both do the
+same. When the check cannot run (the embedding model is missing), the
+lesson is stored and the answer warns that it was not checked.
+
+@{h2}Status
+
+@{bullet}draft -- stored or taught by an agent, or extracted; not used.
+@{bullet}active -- found by search and put in front of the model by the
+hook.
+@{bullet}inactive, archived -- kept, but not used. Archived lessons do not
+count toward an agent's limit.
+
+A status changes by hand -- the panel, or @{tt}update@{utt}. Evidence
+changes it only in one direction: an inactive lesson whose confidence is
+0.4 or more after new evidence becomes active again -- unless a person set
+it inactive. A lesson saved or created as inactive in the panel stays
+inactive whatever evidence comes, until a person gives it another status
+in the panel: an agent's @{tt}update@{utt} to any other status is refused.
+One an agent set inactive with @{tt}update@{utt} is the model's judgement,
+and evidence may overrule it. Lessons already inactive before this rule
+count as set so by a person. Such a lesson carries
+@{tt}inactive_by_person: 1@{utt} in search and list answers; on every
+other lesson the field is left out.
+@endnode
+
+@node inject "The inject_lessons hook"
+@{h1}The inject_lessons hook
+
+@{tt}inject_lessons@{utt} runs before each LLM call and puts the agent's
+active lessons in front of its model. It is off until an agent switches it
+on.
+
+@{h2}What the model gets
+
+A message at the end of the history, from the plugin (a
+@{tt}developer@{utt} turn): the agent's active lessons with a confidence
+of at least @{tt}min_confidence@{utt}, the most evidence first, then the
+highest confidence, then priority; at most @{tt}max_lessons@{utt}. They are
+grouped by category, each text cut at 300 characters, and the block ends
+before it would pass @{tt}max_tokens@{utt} (counted as four characters a
+token). The mark before a lesson shows its confidence: ● from 0.8, ◐ from
+0.5, ○ below.
+
+@{code markdown}
+## LESSONS LEARNED
+The following are verified lessons from past sessions. Apply them where relevant to improve quality and consistency.
+
+### Domain Knowledge
+- ● **Check every date against the timeline** [P8]
+  Dates drift between chapters; check each one against the timeline.
+  Tags: continuity, dates
+### Workflow
+- ◐ **Run the targeted tests before a commit** [P7]
+  The whole suite takes twenty minutes.
+@{body}
+
+The message is added only when it differs from the last one the hook
+added; otherwise nothing changes. Every lesson in the block counts as
+applied at every LLM call, also when nothing was added -- the block from
+before still stands. An agent without active lessons gets nothing.
+
+@{h2}Switching it on
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      lessons_learned.inject_lessons:
+        enabled: true
+        max_lessons: 10
+        min_confidence: 0.5
+@{body}
+
+@{h2}Settings
+
+@{table}
+Key | Default | Meaning
+max_lessons | 15 | how many lessons the block may hold
+max_tokens | 1500 | the size of the block, about four characters a token
+min_confidence | 0.3 | lessons below it stay out
+include_categories | every category | a list: only these
+exclude_categories | none | a list: not these
+@{body}
+
+The settings are read only from the agent's override, as above; the
+plugin's server entry does not set them.
+@endnode
+
+@node extract "The extract_lessons hook"
+@{h1}The extract_lessons hook
+
+@{tt}extract_lessons@{utt} runs at the end of every request the agent
+answers, with the conversation so far, and asks an LLM which lessons the
+part it has not read yet holds: corrections, preferences, domain
+knowledge, quality and error patterns -- not one-off facts or how to use
+the tools. It is off until an agent switches it on, and it changes nothing
+in the conversation.
+
+@{h2}What it does
+
+@{bullet}It reads only the text of messages a person or the assistant
+wrote: what the user wrote and what the assistant answered. Not the system
+prompt, not tool calls or results, and nothing a plugin or the loop put
+into the conversation -- among them the lessons block of
+@{" inject_lessons " link inject}.
+@{bullet}It remembers, per session and agent, the last message it read --
+by its text, the message before it and their timestamps, not by position
+-- and next time reads the messages after it. It waits until there are at
+least @{tt}min_turns@{utt} of them -- with the default 5, about every
+third request -- and 100 characters of text.
+@{bullet}One reading takes up to 8000 characters; a single message longer
+than that is shortened to fit. Readings follow each other until fewer
+than @{tt}min_turns@{utt} unread messages are left, within 15 seconds a
+request: a reading starts only while the longest one so far still fits.
+What is left then is read after the next request. If the message just
+remembered cannot be found again, the readings stop for that request
+rather than read the same messages twice. A second request of the same
+session while the readings run leaves them to the first.
+@{bullet}The session is free for the next message only after the hook is
+done: with extraction on, the user may wait up to about 15 seconds more
+after an answer, one LLM call per reading.
+@{bullet}When the remembered message is gone -- a compaction replaced the
+history -- it reads every written message that is left. The compaction's
+summary is not among them: it was put in by a plugin.
+@{bullet}After each reading the LLM answered, even with no lesson, it
+remembers the last message read -- also when text stands around the JSON,
+or a comma before a closing bracket. Not when the answer was empty, no
+JSON, or cut off and had to be mended, and not when a lesson could not be checked
+for duplicates: then the same messages are read again after the next
+request. While the duplicate check cannot run at all (the embedding model
+is missing), the LLM is not asked.
+@{bullet}Of the lessons it names, the first
+@{tt}max_lessons_per_session@{utt} are taken. Each is checked for
+@{" duplicates " link rules}: a known one gets a confirming evidence, a new
+one is stored as a draft, or active with @{tt}auto_approve@{utt}, source
+@{i}Auto@{ui}. A lesson the duplicate check could not check, or the store
+refused (the agent's limit), is skipped.
+
+The hook's own timeout is 30 seconds; the readings keep within their 15.
+
+@{h2}Switching it on
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      lessons_learned.extract_lessons:
+        enabled: true
+        min_turns: 6
+        extraction_llm_profile: "or-deepseek-flash"
+@{body}
+
+@{h2}Settings
+
+@{table}
+Key | Default | Meaning
+min_turns | 5 | messages a person or the assistant wrote, not yet read, before the LLM is asked
+max_lessons_per_session | 5 | how many of the lessons named are taken, per reading
+auto_approve | false | true: new lessons are stored active, not as drafts
+extraction_llm_profile | the server's llm_profile | the LLM profile that extracts
+@{body}
+
+Read from the agent's override; only the profile falls back to the
+plugin's server entry.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The tool description and every parameter's description come from the
+plugin's @{tt}schema.yaml@{utt}. A refused call answers
+@{tt}{"error": "Both 'title' and 'content' are required."}@{utt},
+@{tt}{"error": "'title' is longer than 200 characters."}@{utt},
+@{tt}{"error": "Lesson 'coder_les_009' not found."}@{utt},
+@{tt}{"error": "A person switched lesson 'coder_les_009' off in the panel;
+only the panel can switch it on again."}@{utt},
+@{tt}{"error": "Lesson limit (500) reached for agent 'coder'. Archive or
+delete older lessons."}@{utt} and the like. In the chat, the call's status
+line ends with the result: "Lesson stored: coder_les_004", "Not stored:
+similar to coder_les_001, evidence added", "Found 3 lessons", "Retrieved
+12 lessons", "Evidence added: confirm (confidence: 0.583)", "Lesson taught
+to editor: editor_les_002".
+
+@{h2}Tokens and cache
+
+Tool answers are ordinary tool results: appended, nothing earlier changes.
+@{tt}list@{utt} and @{tt}search@{utt} return whole lessons, each text up to
+2000 characters; a small @{tt}limit@{utt} keeps an answer short. The hook
+appends its block at the end of the history and only when it changed; it
+never rewrites the system prompt or an earlier message. But a changed
+block is a whole new block: new evidence can reorder the lessons or change
+a mark, and each such change appends the full list again.
+
+@{h2}Known gaps
+
+@{bullet}A lesson the agent stores is a draft: its own search does not find
+it, and the hook does not use it, until it is activated.
+@{bullet}Evidence never makes a lesson inactive: its confidence cannot fall
+below half its start, and the switch waits for 0.2. It does make an
+inactive lesson active again, unless a person set it inactive in the panel.
+@{bullet}Messages still waiting for @{tt}min_turns@{utt} company -- up to
+@{tt}min_turns@{utt} minus one -- are lost when a compaction removes them
+before the next reading. Closing that would need the extraction to run
+before the compaction.
+@{bullet}An answer that keeps failing is asked for again after every
+request.
+@{bullet}"Applications" counts LLM calls, not sessions.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    lessons_learned:
+      type: lessons_learned
+      enabled: true
+      database_path: "data/lessons_learned/lessons.db"
+      max_lessons_per_agent: 500
+      dedup_similarity_threshold: 0.82
+      exact_duplicate_threshold: 0.95
+      llm_profile: "or-deepseek-flash"
+      consolidation_llm_profile: "or-deepseek-flash"
+@{body}
+
+An agent sees the tool when its allowlist names it:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+lessons_learned/*"
+@{body}
+
+Search, the duplicate check and consolidation need a vector store
+(@{tt}chromadb@{utt}, or @{tt}sqlite-vec@{utt}) and the embedding model
+all-MiniLM-L6-v2, made locally. Without the model lessons are still
+stored, listed and edited, with a warning; search answers an error. Once
+the model is back, the lessons it missed are indexed by the next search or
+store of that agent.
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+database_path | lessons_learned/lessons.db in the data directory | the SQLite database
+max_lessons_per_agent | 200 | lessons an agent may have, archived ones not counted; a store beyond it is refused
+dedup_similarity_threshold | 0.82 | similarity from which a new lesson is a duplicate; also the consolidation's default
+exact_duplicate_threshold | 0.95 | from here a duplicate is reported as confirm, not merge
+llm_profile | turbo | the LLM profile of the extraction, unless the agent sets one
+consolidation_llm_profile | turbo | the LLM profile that judges a consolidation
+@{body}
+
+Lessons, their evidence, the applications and a log of the extractions
+live in the database; the search index lies beside it in
+@{tt}vectors/@{utt}.
+@endnode

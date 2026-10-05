@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import copy
 import errno
+import functools
 import json
 import logging
 import time
@@ -32,7 +33,7 @@ import httpx
 
 from ...llm.message_roles import DEVELOPER, leading_instructions, role_of
 from ...llm.model_health import model_health
-from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
+from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError, abandon_report
 from ...llm import schema_worker
 from ...llm.structured_output import (
     JSON_OBJECT, STRUCTURED_OUTPUT_INVALID, STRUCTURED_OUTPUT_UNAVAILABLE, STRUCTURED_OUTPUT_UNSUPPORTED,
@@ -48,7 +49,7 @@ from ...tools.status import (
     current_request_id
 )
 from .components.tool_integration import ToolIntegrationManager
-from .components.tool_execution import ToolExecutionManager, tool_message_was_blocked, tool_result_is_error
+from .components.tool_execution import ToolExecutionManager, tool_message_never_ran, tool_result_is_error
 from .components.status_forwarding import StatusEventForwarder, relay_run_event
 from .components.session_tracking import SessionTracker
 from .components.request_manager import AgentRequestManager
@@ -59,6 +60,7 @@ from .reasoning_loop import ReasoningLoopError, build_detectors
 from .escalation import StuckEscalator
 from .tool_discovery import ToolDiscoveryService
 from .tool_schema_builder import ToolSchemaBuilder, server_matches_patterns
+from .deferred_tools import DeferredTools
 
 
 logger = logging.getLogger(__name__)
@@ -209,8 +211,8 @@ def _name_the_model(event: dict, llm: Any) -> dict:
     model = getattr(llm, "model", None)
     if isinstance(model, str) and model:
         event["model"] = model
-        batch = getattr(llm, "batch_provider", None)
-        event["batch"] = isinstance(batch, str) and bool(batch)
+        # Who answered, not what the client is: a batch client's sync fallback bills in full.
+        event["batch"] = getattr(llm, "last_was_batch", None) is True
     return event
 
 
@@ -256,6 +258,9 @@ class ConversationContext:
     status_forwarder: 'StatusEventForwarder'  # Per-request forwarder instance
     session_id: Optional[str] = None  # Session ID for session-scoped operations
     user_reset_token: Any = None  # Token for resetting current_run_user
+    # Schemas held back until the model loads them (tools.deferred); loading
+    # appends to tools_schema in place. None when the agent defers nothing.
+    deferred_tools: Optional[DeferredTools] = None
 
 
 class Agent(ToolServer):
@@ -467,6 +472,7 @@ class Agent(ToolServer):
         # They reflect the most recent request and are NOT session-correct.
         self._current_messages: List[ChatMessage] = []
         self._current_tools_schema: List[Dict[str, Any]] = []
+        self._current_held_back_schemas: List[Dict[str, Any]] = []
 
         # Initialize component managers for better code organization
         # Create request manager first (owns _active_requests dict)
@@ -1004,6 +1010,18 @@ class Agent(ToolServer):
         interfere, and previous-request history doesn't leak into new requests.
         """
         return ToolCallLoopDetector(**self._loop_detection_config)
+
+    def _switches_model(self, llm_override: Optional[LLMClient]) -> bool:
+        """Whether *llm_override* takes the run off the agent's own models -- then stuck escalation stays off.
+        A profile of its own chain is one it runs on anyway: its primary with params only (--llm-params, a
+        machine call's llm_params), or a cheaper member a machine call picks (llm_profile). Its advanced
+        profile, a foreign one (--llm) or a client that does not say which count as a switch."""
+        if llm_override is None:
+            return False
+        cfg = self.agent_config
+        chain = (cfg.llm_profile if isinstance(cfg.llm_profile, list) else [cfg.llm_profile]) if cfg else []
+        profile = getattr(llm_override, "profile_name", None)
+        return profile is None or profile not in chain or profile == cfg.advanced_llm_profile
 
     def _create_stuck_escalator(self, *, already_advanced: bool) -> StuckEscalator:
         """Per-request escalator (window + budget state must not leak across
@@ -1800,14 +1818,31 @@ class Agent(ToolServer):
         entry["messages"] = messages
         self._evict_live_state(session_id)
 
-    def _set_live_tools_schema(self, session_id: Optional[str], tools_schema: List[Dict[str, Any]]) -> None:
-        """Record the live tool schema for a session (request-scoped)."""
+    def _set_live_tools_schema(self, session_id: Optional[str], tools_schema: List[Dict[str, Any]],
+                               held_back: Optional[List[Dict[str, Any]]] = None) -> None:
+        """Record the live tool schema for a session (request-scoped), and the
+        schemas tools.deferred holds back from it (get_run_tool_schemas)."""
         self._current_tools_schema = tools_schema
+        self._current_held_back_schemas = list(held_back or [])
         if not session_id:
             return
         entry = self._live_state_by_session.setdefault(session_id, {})
         entry["tools_schema"] = tools_schema
+        entry["held_back_schemas"] = self._current_held_back_schemas
         self._evict_live_state(session_id)
+
+    def get_run_tool_schemas(self, session_id: Optional[str]) -> List[Dict[str, Any]]:
+        """Every schema the current run of *session_id* may call: the live list,
+        then every deferred schema (a loaded one comes twice; a lookup by name
+        finds it either way).
+
+        For a caller that dispatches by name without the model having loaded
+        the tool (tool_script): it needs the tool's parameters either way. The
+        shared, racy fields answer only when the session is not tracked."""
+        entry = self._live_state_by_session.get(session_id) if session_id else None
+        if entry is None:
+            return list(self._current_tools_schema) + list(self._current_held_back_schemas)
+        return list(entry.get("tools_schema") or []) + list(entry.get("held_back_schemas") or [])
 
     def _evict_live_state(self, keep_session: str) -> None:
         """Bound the per-session live-state dict (simple FIFO eviction)."""
@@ -1914,7 +1949,7 @@ class Agent(ToolServer):
         return await discovery_service.discover_allowed_tools()
 
     async def describe_context_inputs(
-        self, session_id: Optional[str] = None
+        self, session_id: Optional[str] = None, messages: Optional[list] = None
     ) -> tuple[str, list[Dict[str, Any]]]:
         """(system prompt, tool schemas) as they go into a call of *session_id*.
 
@@ -1928,8 +1963,16 @@ class Agent(ToolServer):
         * One discovery, not two. Both halves need the list of usable tools,
           and asking for it twice means awaiting list_tools() on every
           registered server a second time.
+
+        *messages* is the session's history as stored: the deferred tools it
+        loaded are sent again, so they count. Without it this process's
+        tracker is asked, which knows only the sessions that ran here.
         """
-        tools_schema, usable_tools = await self._schemas_for(*await self.list_usable_tools())
+        if messages is None:
+            messages = (self._session_tracker.get_session_messages(session_id) or []
+                        if session_id and self._session_tracker else [])
+        tools_schema, usable_tools = await self._schemas_for(
+            *await self.list_usable_tools(), history=messages)
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
         system_msg, _ = self._render_prompts(
             usable_tools, max_steps, current_step=0, session_id=session_id)
@@ -1937,25 +1980,37 @@ class Agent(ToolServer):
 
     async def _schemas_for(self, usable_tools: list[str],
                            allowed_patterns: Optional[list[str]],
-                           blocked_patterns: Optional[list[str]]
+                           blocked_patterns: Optional[list[str]],
+                           history: Optional[list] = None,
                            ) -> tuple[list[Dict[str, Any]], list[str]]:
         """The LLM schemas for an ALREADY discovered set of tools, and the
         tool names after expansion and filtering -- what a run renders as
-        ``tools``."""
+        ``tools``.
+
+        Every schema, unless a session's *history* is given (empty for a new
+        one): then the schemas a run of it would send -- the deferred ones held
+        back except those the history already loaded."""
         schema_builder = ToolSchemaBuilder(
             agent_name=self.name,
             tool_integration_manager=self._tool_integration_manager,
             server_getter_func=self._get_server_from_any_registry,
         )
-        tools_schema, _mapping, usable, _display = await schema_builder.build_schemas(
+        tools_schema, mapping, usable, _display = await schema_builder.build_schemas(
             usable_tools,
             allowed_patterns=allowed_patterns,
             blocked_patterns=blocked_patterns,
         )
-        return list(tools_schema), usable
+        tools_schema = list(tools_schema)
+        if history is not None:
+            deferred = DeferredTools.split(tools_schema, mapping, self._deferred_patterns(), self.name)
+            if deferred is not None:
+                deferred.restore(history, tools_schema)
+        return tools_schema, usable
 
     async def build_llm_tool_schemas(self) -> list[Dict[str, Any]]:
-        """The tool schemas this agent hands the model, exactly as they go out.
+        """The tool schemas of every tool this agent may call. A run sends
+        the deferred ones (tools.deferred) only once loaded; what it sends is
+        describe_context_inputs'.
 
         EXACTLY the pipeline that builds the LLM schema -- discovery (deny-all
         on empty allowed, _tool_visible, externals) plus ToolSchemaBuilder
@@ -2284,6 +2339,7 @@ class Agent(ToolServer):
 
         # Initialize tool integration
         await self._tool_integration_manager.setup_tool_integration()
+        await self._tool_integration_manager.connect_on_demand_servers()
 
         # Get tools this agent can use (filtered by agent_config)
         # Returns tuple: (tools, allowed_patterns, blocked_patterns)
@@ -2306,6 +2362,7 @@ class Agent(ToolServer):
             allowed_patterns=allowed_patterns,
             blocked_patterns=blocked_patterns
         )
+        deferred_tools = DeferredTools.split(tools_schema, tool_name_mapping, self._deferred_patterns(), self.name)
 
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
@@ -2323,7 +2380,7 @@ class Agent(ToolServer):
             messages.append(ChatMessage(role="system", content=tools_msg))
 
         # Execute session start hooks for new sessions AFTER creating system messages
-        # This allows hooks like markdown_formatter to inject additional system prompts
+        # This allows hooks to inject additional system prompts
         # A session starts once: one taken back to no messages (/undo) is not new again
         if self._session_tracker.start_session(session_id):
             modified_messages = await self._hook_manager.execute_session_start_hooks(
@@ -2366,8 +2423,13 @@ class Agent(ToolServer):
         # Track live messages for this session (request-scoped)
         self._set_live_messages(session_id, messages.copy())
 
-        # Track current tool schemas per-session for token estimation by hooks
-        self._set_live_tools_schema(session_id, tools_schema)
+        if deferred_tools is not None:
+            deferred_tools.restore(messages, tools_schema)
+
+        # Track current tool schemas per-session for token estimation by hooks.
+        # The same list the run sends: a tool loaded later is counted too.
+        self._set_live_tools_schema(session_id, tools_schema,
+                                    held_back=deferred_tools.schemas() if deferred_tools is not None else None)
 
         # Return initialized context
         return ConversationContext(
@@ -2381,7 +2443,12 @@ class Agent(ToolServer):
             status_forwarder=status_forwarder,
             session_id=session_id,
             user_reset_token=user_reset_token,
+            deferred_tools=deferred_tools,
         )
+
+    def _deferred_patterns(self) -> list[str]:
+        tools_config = getattr(self.agent_config, "tools", None)
+        return list(getattr(tools_config, "deferred", None) or [])
 
     def _presence_hold(self, session_id: str, request_id: str) -> None:
         """Session presence (core/session_presence.py): the request holds its
@@ -2730,76 +2797,100 @@ class Agent(ToolServer):
             reasoning_chars = 0
             reasoning_ticked_at = 0
 
-            async for chunk in llm.chat_tools_streaming(
+            # Closed when the loop is left early (a ReasoningLoopError, a cancel):
+            # the client reports that call's end at once, not when GC finds it.
+            async with contextlib.aclosing(llm.chat_tools_streaming(
                 messages, tools_schema,
                 cancellation_token=cancellation_token,
                 status_scope=status_scope,
                 **wire_format,
-            ):
-                chunk_type = chunk.get("type")
+            )) as stream:
+                async for chunk in stream:
+                    chunk_type = chunk.get("type")
 
-                if chunk_type == "thinking_delta":
-                    # Gemini reasoning/thinking tokens (not content)
-                    yield {"type": "reasoning_delta", "step": step + 1, "delta": chunk["delta"]}
+                    if chunk_type == "thinking_delta":
+                        # Gemini reasoning/thinking tokens (not content)
+                        yield {"type": "reasoning_delta", "step": step + 1, "delta": chunk["delta"]}
 
-                    # Watch the thinking for a loop. What arrives here is
-                    # whatever the client calls a thinking delta: raw
-                    # reasoning for most models, and for the OpenAI family a
-                    # SUMMARY of it — the threshold was calibrated on raw
-                    # reasoning, so for those models this guards the
-                    # degenerate case rather than measuring a known shape.
-                    for _detector in reasoning_detectors:
-                        loop_reason = _detector.record(chunk["delta"])
-                        if loop_reason:
-                            logger.warning(
-                                "[%s] Aborting the call: %s (model=%s, %d characters "
-                                "of thinking so far)",
-                                self.name, loop_reason, getattr(llm, "model", "?"),
-                                _detector.characters_seen)
-                            raise ReasoningLoopError(
-                                loop_reason,
-                                characters=_detector.characters_seen)
+                        # Watch the thinking for a loop. What arrives here is
+                        # whatever the client calls a thinking delta: raw
+                        # reasoning for most models, and for the OpenAI family a
+                        # SUMMARY of it — the threshold was calibrated on raw
+                        # reasoning, so for those models this guards the
+                        # degenerate case rather than measuring a known shape.
+                        for _detector in reasoning_detectors:
+                            loop_reason = _detector.record(chunk["delta"])
+                            if loop_reason:
+                                logger.warning(
+                                    "[%s] Aborting the call: %s (model=%s, %d characters "
+                                    "of thinking so far)",
+                                    self.name, loop_reason, getattr(llm, "model", "?"),
+                                    _detector.characters_seen)
+                                # The client reports the stream it is left with;
+                                # its row takes the reason (see the handler).
+                                abandon_report.set({"reported": False, "fields": {
+                                    "error": f"reasoning loop aborted: {loop_reason}",
+                                    "finish_reason": "reasoning_loop_aborted",
+                                    "response_data": {"reasoning_loop": {
+                                        "characters": _detector.characters_seen,
+                                        "reason": loop_reason}}}})
+                                raise ReasoningLoopError(
+                                    loop_reason,
+                                    characters=_detector.characters_seen)
 
-                    if on_reasoning_progress is not None:
-                        reasoning_parts.append(chunk["delta"])
-                        reasoning_chars += len(chunk["delta"])
-                        if reasoning_chars - reasoning_ticked_at >= _REASONING_PROGRESS_TICK:
-                            try:
-                                await on_reasoning_progress(
-                                    "".join(reasoning_parts), reasoning_chars,
-                                    reasoning_ticked_at)
-                            except Exception as exc:  # an observer never breaks the call
-                                logger.warning("[%s] llm_progress hooks failed: %s",
-                                               self.name, exc)
-                            reasoning_ticked_at = reasoning_chars
+                        if on_reasoning_progress is not None:
+                            reasoning_parts.append(chunk["delta"])
+                            reasoning_chars += len(chunk["delta"])
+                            if reasoning_chars - reasoning_ticked_at >= _REASONING_PROGRESS_TICK:
+                                try:
+                                    await on_reasoning_progress(
+                                        "".join(reasoning_parts), reasoning_chars,
+                                        reasoning_ticked_at)
+                                except Exception as exc:  # an observer never breaks the call
+                                    logger.warning("[%s] llm_progress hooks failed: %s",
+                                                   self.name, exc)
+                                reasoning_ticked_at = reasoning_chars
 
-                    # Check status events after each token (zero overhead)
-                    for status_event in yield_pending_status_fn():
-                        yield status_event
+                        # Check status events after each token (zero overhead)
+                        for status_event in yield_pending_status_fn():
+                            yield status_event
 
-                elif chunk_type == "content_delta":
-                    # Yield token delta for real-time display
-                    yield {"type": "thinking_delta", "step": step + 1, "delta": chunk["delta"], "accumulated": chunk["accumulated"]}
-                    accumulated_content.append(chunk["delta"])
+                    elif chunk_type == "content_delta":
+                        # Yield token delta for real-time display
+                        yield {"type": "thinking_delta", "step": step + 1, "delta": chunk["delta"], "accumulated": chunk["accumulated"]}
+                        accumulated_content.append(chunk["delta"])
 
-                    # Check status events after each token (zero overhead)
-                    for status_event in yield_pending_status_fn():
-                        yield status_event
+                        # Check status events after each token (zero overhead)
+                        for status_event in yield_pending_status_fn():
+                            yield status_event
 
-                elif chunk_type == "tool_call_delta":
-                    # Tool calls are accumulated server-side, we can skip yielding deltas for now
-                    # Future: could yield tool_call_delta events for UI to show "Calling get_weather..."
-                    # Still yield status events to prevent delays
-                    for status_event in yield_pending_status_fn():
-                        yield status_event
+                    elif chunk_type == "stream_restart":
+                        # The client retries from scratch after deltas went out:
+                        # this call's buffers and loop windows start over, and the
+                        # chat empties the step's thinking (the answer re-renders
+                        # from `accumulated` by itself).
+                        accumulated_content = []
+                        reasoning_detectors = build_detectors(
+                            enabled=bool(self._reasoning_loop_config["enabled"]) and watch_reasoning,
+                            repetition_threshold=float(
+                                self._reasoning_loop_config["repetition_threshold"]))
+                        reasoning_parts, reasoning_chars, reasoning_ticked_at = [], 0, 0
+                        yield {"type": "reasoning_reset", "step": step + 1}
 
-                elif chunk_type == "final":
-                    final_assistant = chunk["assistant"]
-                    # Preserve usage data from final chunk
-                    if "usage" in chunk:
-                        final_usage = chunk["usage"]
-                    if chunk.get("finish_reason"):
-                        final_finish_reason = chunk["finish_reason"]
+                    elif chunk_type == "tool_call_delta":
+                        # Tool calls are accumulated server-side, we can skip yielding deltas for now
+                        # Future: could yield tool_call_delta events for UI to show "Calling get_weather..."
+                        # Still yield status events to prevent delays
+                        for status_event in yield_pending_status_fn():
+                            yield status_event
+
+                    elif chunk_type == "final":
+                        final_assistant = chunk["assistant"]
+                        # Preserve usage data from final chunk
+                        if "usage" in chunk:
+                            final_usage = chunk["usage"]
+                        if chunk.get("finish_reason"):
+                            final_finish_reason = chunk["finish_reason"]
 
             # Yield any remaining status events after streaming completes
             for status_event in yield_pending_status_fn():
@@ -3055,7 +3146,7 @@ class Agent(ToolServer):
         # this shared Agent singleton). Disabled unless configured and an advanced
         # profile exists and we're not already running advanced.
         escalator = self._create_stuck_escalator(
-            already_advanced=(use_advanced_model or llm_override is not None))
+            already_advanced=(use_advanced_model or self._switches_model(llm_override)))
         escalate_error_streak = int(
             getattr(self.agent_config, "escalate_error_streak", 2)) if self.agent_config else 2
 
@@ -3470,6 +3561,11 @@ class Agent(ToolServer):
                         else:
                             messages.append(note)
                         context.messages = messages
+                # A tool the history calls goes out with its schema: the hooks
+                # may have written calls in since the run started (tool_preload),
+                # as appended messages may. Loads nothing when nothing is new.
+                if context.deferred_tools is not None:
+                    context.deferred_tools.restore(messages, tools_schema)
                 pending_thinking_complete = None
                 _llm_call_started = asyncio.get_event_loop().time()
                 health_asked_at = model_health.now()
@@ -3490,8 +3586,9 @@ class Agent(ToolServer):
                     ):
                         event_type = event.get("type")
 
-                        if event_type == "reasoning_delta":
-                            # Yield Gemini reasoning/thinking tokens to WebUI
+                        if event_type in ("reasoning_delta", "reasoning_reset"):
+                            # Yield Gemini reasoning/thinking tokens to WebUI; a
+                            # reset empties the step's thinking after a stream restart.
                             yield event
                         elif event_type == "thinking_delta":
                             # Yield real-time token deltas to WebUI
@@ -3501,9 +3598,8 @@ class Agent(ToolServer):
                             # the events of sub-agents working while this call waits.
                             yield event
                         elif event_type == "thinking_complete":
-                            # CRITICAL: Make a deep copy of assistant dict to prevent
-                            # format_output hooks in app.py from modifying the stored message!
-                            # app.py formats events for display, but we need raw Markdown in messages
+                            # A copy: the event goes on to every reader of the run, and the
+                            # message kept in the session must not change with what one of them does
                             llm_out = {"assistant": copy.deepcopy(event["assistant"])}
                             # Preserve usage data if present in event
                             if "usage" in event:
@@ -3641,7 +3737,15 @@ class Agent(ToolServer):
                     # entry carrying "error" is the shape it already uses for
                     # its own failed attempts, which is why it skips the
                     # latency stash and leaves cost attribution untouched.
-                    notify = getattr(current_llm, "_notify_post_response", None)
+                    #
+                    # A client that reports every ending already wrote the row
+                    # when the stream closed -- with its usage, and with the
+                    # reason set at the abort (abandon_report). Then this one
+                    # would be a second row for the same call.
+                    pending = abandon_report.get()
+                    abandon_report.set(None)
+                    notify = (None if pending is not None and pending.get("reported")
+                              else getattr(current_llm, "_notify_post_response", None))
                     if notify is not None:
                         await notify({
                             # Most clients name themselves in their own
@@ -3934,33 +4038,18 @@ class Agent(ToolServer):
             except Exception as e:
                 logger.warning(f"Post-LLM hooks failed: {e}", exc_info=True)
 
-            # Format content for display (markdown -> HTML for web UI)
-            formatted_content = content
+            # The answer goes out as the model wrote it -- Markdown, which the chat and agent-cli draw
+            # themselves. A structured run's answer is JSON, and its events say so.
             content_format = getattr(assistant_msg, 'content_format', 'text')  # Default to 'text' if not set by hooks
-            # A structured run's answer is JSON, not markdown: rendered to HTML it would be neither
-            # what the caller asked for nor parseable (<p>{<br>"a": 1</p>).
-            structured_answer = response_format is not None and not tool_calls
-            if structured_answer:
+            if response_format is not None and not tool_calls:
                 content_format = "json"
-            try:
-                if content and self._hook_manager and not structured_answer:
-                    formatted_content, content_format = await self._hook_manager.execute_format_output_hooks(
-                        output=content,
-                        request_id=request_id or "unknown",
-                        session_id=session_id or "unknown",
-                        output_format='html'
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to format content for display: {e}", exc_info=True)
-                # Keep original content on error
-                formatted_content = content
 
             # Emit thinking event with LLM response (for UI to show assistant reasoning)
-            yield {"type": "thinking", "step": step + 1, "assistant": {"content": formatted_content, "tool_calls": tool_calls, "content_format": content_format}}
+            yield {"type": "thinking", "step": step + 1, "assistant": {"content": content, "tool_calls": tool_calls, "content_format": content_format}}
 
             # Also emit simplified thinking event if we have content and no tool calls (final answer)
             if content and not tool_calls:
-                yield {"type": "thinking", "content": formatted_content, "content_format": content_format}
+                yield {"type": "thinking", "content": content, "content_format": content_format}
 
             # Yield pending status events after LLM response
             for status_event in yield_pending_status_events():
@@ -4165,11 +4254,11 @@ class Agent(ToolServer):
                                             yield {"type": "error", "message": error_msg,
                                                    "error_type": STRUCTURED_OUTPUT_INVALID}
                                             return
-                                        content = formatted_content = assistant_msg.content = checked.text
+                                        content = assistant_msg.content = checked.text
                                         content_format = assistant_msg.content_format = "json"
                                     results["summary"] = content
                                     self._set_live_messages(session_id, messages.copy())
-                                    final_event = {"type": "final", "summary": formatted_content,
+                                    final_event = {"type": "final", "summary": content,
                                                    "content_format": content_format}
                                     if llm_out and "usage" in llm_out:
                                         final_event["usage"] = llm_out["usage"]
@@ -4208,6 +4297,9 @@ class Agent(ToolServer):
                     # What this run was switched to, for the sub-agents its
                     # tools start (agent_config.inherit_parent_llm).
                     llm_profile=self._profile_to_hand_down(llm_override),
+                    intercept=(functools.partial(context.deferred_tools.intercept,
+                                                 tools_schema=tools_schema)
+                               if context.deferred_tools is not None else None),
                 ):
                     if item.get("type") == "status":
                         # Yield status events in real-time during tool execution
@@ -4229,9 +4321,10 @@ class Agent(ToolServer):
                 # tool retried with slightly varied wrong args). N in a row →
                 # open an escalation window. Only calls that ran count: a call a
                 # hook blocked (a policy, a person saying no) is no sign that a
-                # stronger model is needed -- a step of nothing but blocked calls
-                # neither grows the streak nor breaks it.
-                ran_messages = [m for m in tool_messages if not tool_message_was_blocked(m)]
+                # stronger model is needed, nor is a deferred tool called before
+                # it was loaded -- a step of nothing but such calls neither grows
+                # the streak nor breaks it.
+                ran_messages = [m for m in tool_messages if not tool_message_never_ran(m)]
                 if tool_messages and not ran_messages:
                     prev_step_all_errored = True
                 elif ran_messages and all(self._tool_message_is_error(m) for m in ran_messages):
@@ -4464,15 +4557,14 @@ class Agent(ToolServer):
                         return
                     # Delivered as checked: a fence around the whole answer is gone, in the
                     # session too -- the caller parses what the session keeps (openai_api).
-                    content = formatted_content = assistant_msg.content = checked.text
+                    content = assistant_msg.content = checked.text
                     content_format = assistant_msg.content_format = "json"
                 # Assistant message was already added above before post_llm hooks
                 results["summary"] = content
                 # Update tracked messages with final response
                 self._set_live_messages(session_id, messages.copy())
 
-                # Use the already formatted content from above
-                final_event = {"type": "final", "summary": formatted_content, "content_format": content_format}
+                final_event = {"type": "final", "summary": content, "content_format": content_format}
                 # Include usage data if available from last LLM call
                 if llm_out and "usage" in llm_out:
                     final_event["usage"] = llm_out["usage"]
@@ -4495,7 +4587,7 @@ class Agent(ToolServer):
                 # Treat whatever content we have as final (even if empty)
                 results["summary"] = content or ""
                 self._set_live_messages(session_id, messages.copy())
-                final_event = {"type": "final", "summary": formatted_content or "", "content_format": content_format}
+                final_event = {"type": "final", "summary": content or "", "content_format": content_format}
                 if llm_out and "usage" in llm_out:
                     final_event["usage"] = llm_out["usage"]
                 yield final_event

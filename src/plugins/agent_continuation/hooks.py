@@ -61,6 +61,21 @@ REQUIRED_SPAWNS_MARKER = "agent_continuation.required_spawns"
 
 _EXPRESSIONS = SandboxedEnvironment()
 
+#: Requests (continuation counts) and sessions (seen creates) held at once. A
+#: run that ends on its step budget, a cancel or an error never shows the hook
+#: a final answer, so without a cap its entry stayed for the life of the process.
+#: Every continuation moves its request to the newest place, so a live run is only
+#: dropped when this many others continued between two of its replies.
+_MAX_TRACKED = 10_000
+
+
+def _put(table: Dict[str, Any], key: str, value: Any) -> None:
+    """Set ``table[key]`` as the newest entry; drop the oldest beyond the cap."""
+    table.pop(key, None)
+    table[key] = value
+    while len(table) > _MAX_TRACKED:
+        del table[next(iter(table))]
+
 
 def _context_vars(context: HookContext) -> Dict[str, Any]:
     """The agent's template_vars with the session's vars on top — the values
@@ -136,7 +151,11 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         if server_config and hasattr(server_config, "config") and server_config.config:
             config.update(server_config.config)
 
-        self._max_continuations: int = int(config.get("max_continuations", 10))
+        # The same guard as an agent's own value: `int()` alone let a 0 switch
+        # the hook off for every agent and a non-number stop the plugin from
+        # loading. The fallback is the schema default.
+        self._max_continuations: int = 10
+        self._max_continuations = self._resolve_max_continuations(config, "plugins.yaml")
         self._default_continue_message: str = str(
             config.get(
                 "default_continue_message",
@@ -239,8 +258,10 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 agent_name, raw, self._max_continuations)
             return self._max_continuations
         try:
+            if isinstance(raw, float) and not raw.is_integer():  # 2.5, inf, nan: no whole number
+                raise ValueError(raw)
             value = int(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             logger.warning(
                 "[AgentContinuation] '%s': max_continuations=%r is not a "
                 "number — using the plugin value %d",
@@ -380,7 +401,7 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         # call, and no keyword may declare such an answer final.
         missing = self._missing_spawns(agent_cfg, context)
         if missing:
-            self._continuation_counts[request_id] = count + 1
+            _put(self._continuation_counts, request_id, count + 1)
             spec = agent_cfg["required_spawns"]
             message = str(spec.get("message") or
                           "Required sub-agents were never spawned: {missing}. "
@@ -482,7 +503,7 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         )
 
         if should_continue:
-            self._continuation_counts[request_id] = count + 1
+            _put(self._continuation_counts, request_id, count + 1)
             continue_msg = (
                 agent_cfg.get("continue_message")
                 or self._default_continue_message
@@ -509,7 +530,7 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         followup = self._next_followup(context, agent_cfg)
         if followup is not None:
             index, message = followup
-            self._continuation_counts[request_id] = count + 1
+            _put(self._continuation_counts, request_id, count + 1)
             logger.info(
                 f"[AgentContinuation] Follow-up {index + 1} for '{agent_name}'"
             )
@@ -540,7 +561,8 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             return
         creates = _creates(tool_calls, str(spec["tool"]))
         if creates:
-            self._seen_creates.setdefault(context.session_id, {}).update(creates)
+            _put(self._seen_creates, context.session_id,
+                 {**self._seen_creates.get(context.session_id, {}), **creates})
 
     def _missing_spawns(self, agent_cfg: Dict[str, Any], context: HookContext) -> List[str]:
         """Required agent types this session never spawned, in configured order.

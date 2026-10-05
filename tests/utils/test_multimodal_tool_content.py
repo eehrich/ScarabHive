@@ -1,9 +1,16 @@
 """Tests for multimodal tool content utilities."""
 
 import base64
+import json
+import logging
+import os
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from agent_system.utils.multimodal_tool_content import (
+    create_multimodal_injection,
     encode_multimodal_item,
     create_injection_message_content,
     create_gemini_parts,
@@ -104,6 +111,73 @@ class TestEncodeMultimodalItem:
         
         assert result is not None
         assert result.description == "Pydantic model test"
+
+
+HOST_PATHS = [r"\\evil.example\share\x.png", r"\\?\UNC\evil.example\share\x.png",
+              r"\??\UNC\evil.example\share\x.png", "//evil.example/share/x.png"]
+
+
+@pytest.fixture
+def touched(monkeypatch):
+    """Every path the file system is asked about -- exists(), stat(), open, read."""
+    seen: list = []
+
+    def spy(owner, name):
+        real = getattr(owner, name)
+
+        def wrapper(target, *args, **kwargs):
+            seen.append(str(target))
+            return real(target, *args, **kwargs)
+        monkeypatch.setattr(owner, name, wrapper)
+
+    for name in ("exists", "stat", "open", "read_bytes"):
+        spy(Path, name)
+    spy(os, "stat")
+    return seen
+
+
+class TestHostPathsAreNeverTouched:
+    """exists()/stat() on a share makes Windows sign in to the host (NTLM leak),
+    and this runs on every LLM request for every path in the history."""
+
+    @pytest.mark.parametrize("hostile", HOST_PATHS)
+    def test_encode_skips_a_host_path_without_stat(self, touched, hostile):
+        item = {"type": "image", "path": hostile, "mime_type": "image/png"}
+        assert encode_multimodal_item(item) is None
+        assert not [p for p in touched if "evil" in p]
+
+    @pytest.mark.parametrize("supports_vision", [True, False])
+    @pytest.mark.parametrize("hostile", HOST_PATHS)
+    def test_injection_skips_a_host_path_and_keeps_the_local_file(
+            self, tmp_path, touched, caplog, hostile, supports_vision):
+        image = tmp_path / "ok.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\nlocal")
+        msg = SimpleNamespace(name="shot", tool_call_id="c1", multimodal_content=[
+            {"type": "image", "path": hostile, "mime_type": "image/png"},
+            {"type": "image", "path": str(image), "mime_type": "image/png"},
+        ])
+
+        with caplog.at_level(logging.WARNING):
+            result = create_multimodal_injection(msg, supports_vision=supports_vision)
+
+        assert not [p for p in touched if "evil" in p]
+        assert str(image) in touched, "spy saw nothing -- the test would be vacuous"
+        refused = [r for r in caplog.records if "evil" in r.getMessage()]
+        assert len(refused) == 1 and refused[0].levelno == logging.WARNING
+        text = json.dumps(result)
+        assert "not found" in text  # reported like a missing file
+        if supports_vision:
+            images = [c for c in result["content"] if c.get("type") == "image_url"]
+            assert len(images) == 1
+            assert base64.b64encode(image.read_bytes()).decode() in images[0]["image_url"]["url"]
+
+    def test_a_local_file_still_encodes_under_the_spy(self, tmp_path, touched):
+        image = tmp_path / "ok.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\nlocal")
+        result = encode_multimodal_item({"type": "image", "path": str(image), "mime_type": "image/png"})
+        assert result is not None
+        assert base64.b64decode(result.data) == image.read_bytes()
+        assert str(image) in touched
 
 
 class TestCreateInjectionMessageContent:

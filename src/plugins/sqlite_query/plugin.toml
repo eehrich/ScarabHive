@@ -12,4 +12,4 @@ type = ["tool-server"]
 category = "tools"
 tags = ["database", "sql", "sqlite", "debugging"]
 requires = { agent_system = ">=0.6.0" }
-dependencies = ["mcp>=1.14.1"]
+dependencies = []

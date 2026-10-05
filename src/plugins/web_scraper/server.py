@@ -12,16 +12,20 @@ internal admin port and hand the body back.
 from __future__ import annotations
 
 import asyncio
+import codecs
+import contextlib
 import hashlib
 import ipaddress
 import json
 import logging
+import math
 import os
 import random
 import re
 import socket
 import urllib.parse
 import uuid
+import zlib
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -41,6 +45,14 @@ logger = logging.getLogger(__name__)
 # check: they resolve to link-local 169.254.169.254, which is non-global
 # anyway, but the explicit block survives odd resolver behaviour.
 _BLOCKED_METADATA_HOSTS = {"metadata.google.internal", "metadata.goog", "metadata"}
+# IPv6 ranges with an IPv4 address inside, judged by that address. Named
+# here because Python's is_global calls them public: all of them on older
+# versions, ::/96 and 64:ff9b::/96 still on 3.12.
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_V4_COMPATIBLE = ipaddress.ip_network("::/96")
+_V4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")  # SIIT
+_6TO4 = ipaddress.ip_network("2002::/16")
+_LOCAL_NAT64 = ipaddress.ip_network("64:ff9b:1::/48")
 
 MAX_HOPS = 10
 RETRY_STATUSES = (429, 502, 503, 504)
@@ -55,11 +67,12 @@ _USER_AGENTS = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
 )
-# No Accept-Encoding here: httpx advertises exactly the encodings it can
-# decode. Forcing "br" on a host without brotli made every brotli response
-# undecodable.
+# Only the encodings _decoded_body can inflate in bounded steps. httpx's own
+# default adds br and zstd when installed, and decodes each network chunk
+# whole: a 329-byte brotli body grew to 200 MB before the size cap saw a byte.
 _BROWSER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
     "Accept-Language": "en-US,en;q=0.9,de;q=0.8",
     "Upgrade-Insecure-Requests": "1",
     "Sec-Fetch-Dest": "document",
@@ -87,8 +100,14 @@ _PRE_TOKEN = "␟"
 # word per inline tag.
 _BLOCK_TAGS = ("p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
                "section", "article", "blockquote", "pre", "dd", "dt", "td", "th")
-# Control characters (tab, LF, CR excepted), zero-width and bidi marks.
-_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u200B-\u200D\uFEFF\u202A-\u202E]")
+# Control characters (tab, LF, CR excepted), zero-width and invisible
+# operators, bidi marks and isolates, and the Unicode tag characters: a
+# browser shows none of them, a model reads the tags as plain ASCII -- the
+# classic way to hide an instruction in a page. NOT the zero-width
+# (non-)joiners U+200C/U+200D: Persian words, Indic conjuncts and emoji
+# sequences are built with them, and they carry nothing hidden.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u200B\u200E\u200F\u2060-\u2064"
+                            r"\u2066-\u2069\uFEFF\u202A-\u202E\U000E0000-\U000E007F]")
 
 
 class WebScraperSSRFError(Exception):
@@ -96,6 +115,10 @@ class WebScraperSSRFError(Exception):
 
 
 class _DownloadTooLarge(Exception):
+    pass
+
+
+class _PageTooLarge(Exception):
     pass
 
 
@@ -114,10 +137,129 @@ def _number(params: dict[str, Any], key: str, default: float) -> float:
     if value is None:
         return default
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        logger.info("web_scraper: ignoring unusable %s=%r, using %s", key, value, default)
-        return default
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        result = math.nan
+    # "inf", Infinity and 1e400 parse, and then int() raises on them.
+    if math.isfinite(result):
+        return result
+    logger.info("web_scraper: ignoring unusable %s=%r, using %s", key, value, default)
+    return default
+
+
+def _scrub(value: Any) -> Any:
+    """``value`` with _CONTROL_CHARS removed from every string inside it."""
+    if isinstance(value, str):
+        return _CONTROL_CHARS.sub("", value)
+    if isinstance(value, list):
+        return [_scrub(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _scrub(v) for k, v in value.items()}
+    return value
+
+
+class _UnsupportedEncoding(Exception):
+    pass
+
+
+class _Inflate:
+    """One content-coding layer, inflated in steps that never pass a limit."""
+
+    def __init__(self, coding: str) -> None:
+        self.coding = coding
+        self.gzip = coding != "deflate"
+        self.decoder: Any = None
+        self.head = b""  # deflate: the first bytes, until the header can be judged
+        self.total = 0
+        self.done = False  # the stream ended and what followed was no new member
+
+    def feed(self, data: bytes, room: int) -> bytes:
+        """Inflate ``data``, at most ``room`` bytes of output (room > 0)."""
+        if not data or self.done:
+            return b""
+        if self.decoder is None:
+            self.head += data
+            if not self.gzip and len(self.head) < 2:
+                return b""
+            data, self.head = self.head, b""
+            if self.gzip:
+                wbits = 47  # gzip or zlib header, detected
+            else:
+                # "deflate" is meant to be zlib-wrapped, and some servers send
+                # it raw -- httpx accepts both, so this does too.
+                b0, b1 = data[0], data[1]
+                wbits = 15 if b0 & 0x0F == 8 and ((b0 << 8) | b1) % 31 == 0 else -15
+            self.decoder = zlib.decompressobj(wbits)
+        out = []
+        while data and room > 0:
+            piece = self.decoder.decompress(data, room)
+            out.append(piece)
+            room -= len(piece)
+            data = b""
+            if not self.decoder.eof:
+                continue
+            # A gzip body may be several members in a row; each one decodes
+            # under the same limit. Anything else after the end is dropped
+            # unread: fed on, it piled up in the decoder's unused_data.
+            tail = self.decoder.unused_data
+            if self.gzip and tail[:2] == b"\x1f\x8b":
+                data = tail
+                self.decoder = zlib.decompressobj(47)
+            elif tail and not (self.gzip and tail == b"\x1f"):  # b"\x1f": wait for the next byte
+                self.done = True
+        return b"".join(out)
+
+    def finish(self) -> None:
+        """Raise unless the stream reached its end: a cut-off body is not a whole one."""
+        if self.decoder is None and not self.head:
+            return  # no body at all
+        if self.decoder is None or not self.decoder.eof:
+            raise httpx.DecodingError(f"{self.coding} body is truncated")
+
+
+async def _decoded_body(resp: httpx.Response, limit: int, too_large: type[Exception]):
+    """The body, decoded, in pieces; ``too_large`` is raised past ``limit`` bytes.
+
+    Read raw and inflated here with ``max_length``, never with httpx's
+    decoder: that one inflates each network chunk whole, so a small
+    compressed chunk became hundreds of megabytes in memory before any cap
+    could count it. An encoding this cannot bound is refused unread.
+
+    Stacked codings ("gzip, gzip") are undone in reverse order, every layer
+    under the same limit. "identity" and "none" mean no coding.
+    """
+    header = resp.headers.get("content-encoding") or ""
+    codings = [c for c in (t.strip().lower() for t in header.split(",")) if c not in ("", "identity", "none")]
+    unknown = [c for c in codings if c not in ("gzip", "x-gzip", "deflate")]
+    if unknown:
+        raise _UnsupportedEncoding(", ".join(unknown)[:100])
+    stages = [_Inflate(c) for c in reversed(codings)]
+    total = 0
+    # The wire bytes are counted too: junk after the end of a stream, or
+    # endless empty gzip members, decode to nothing and would otherwise
+    # never reach the cap. Compressed data is at most a little larger than
+    # what it holds; the margin covers gzip's overhead on incompressible data.
+    raw_total, raw_limit = 0, limit + limit // 64 + 65536
+    try:
+        async for chunk in resp.aiter_raw():
+            raw_total += len(chunk)
+            if raw_total > raw_limit:
+                raise too_large()
+            for stage in stages:
+                # At most one byte past the cap: that is enough to know.
+                chunk = stage.feed(chunk, limit + 1 - stage.total)
+                stage.total += len(chunk)
+                if stage.total > limit:
+                    raise too_large()
+            total += len(chunk)
+            if total > limit:
+                raise too_large()
+            if chunk:
+                yield chunk
+        for stage in stages:
+            stage.finish()
+    except zlib.error as e:
+        raise httpx.DecodingError(f"{header[:100]} body does not decode: {e}") from None
 
 
 class WebScraperServer(SchemaBasedToolServer):
@@ -151,6 +293,9 @@ class WebScraperServer(SchemaBasedToolServer):
         directories = list(getattr(server_config, "allowed_directories", None) or [])
         self.download_sandbox = PathSandbox.from_config(directories, base=Path.cwd()) if directories else None
         self.max_download_mb = float(getattr(server_config, "max_download_mb", 100))
+        # A page is held in memory whole and parsed: without a cap, one URL
+        # that streams without end grew the server's memory until it died.
+        self.max_page_mb = float(getattr(server_config, "max_page_mb", 10))
 
     def get_template_vars(self) -> dict[str, Any]:
         vars = super().get_template_vars()
@@ -201,8 +346,22 @@ class WebScraperServer(SchemaBasedToolServer):
                 ip = ipaddress.ip_address(addr)
             except ValueError:
                 raise WebScraperSSRFError(f"Unparseable address {addr!r} for host {host!r}")
+            if ip.version == 6 and (ip in _NAT64 or ip in _V4_COMPATIBLE or ip in _V4_TRANSLATED):
+                # All three carry an IPv4 address in their last 32 bits, and
+                # Python calls them global -- 64:ff9b::a00:5 is 10.0.0.5 on a
+                # network with a NAT64 gateway, ::7f00:1 and the SIIT form
+                # ::ffff:0:7f00:1 are 127.0.0.1.
+                ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+            elif ip.version == 6 and ip in _6TO4:
+                # 2002:AABB:CCDD::/48 is the 6to4 network of AA.BB.CC.DD.
+                ip = ipaddress.IPv4Address((int(ip) >> 80) & 0xFFFFFFFF)
+            elif ip.version == 6 and ip in _LOCAL_NAT64:
+                # Local-use NAT64 (RFC 8215): its IPv4 part depends on the
+                # operator's prefix length, so nothing to judge -- refused.
+                raise WebScraperSSRFError(f"Blocked local NAT64 address {ip} for host {host!r}")
             if not ip.is_global:
-                raise WebScraperSSRFError(f"Blocked non-public address {ip} for host {host!r}")
+                shown = str(ip) if str(ip) == addr else f"{ip} ({addr})"
+                raise WebScraperSSRFError(f"Blocked non-public address {shown} for host {host!r}")
 
     # ── HTTP ─────────────────────────────────────────────────────────────
 
@@ -237,26 +396,53 @@ class WebScraperServer(SchemaBasedToolServer):
         """One GET, redirects followed by hand.
 
         Returns (text, status_code, final_url, content_type); ``text`` is
-        empty when the body is not a text type. Raises WebScraperSSRFError
-        and httpx.HTTPError -- the caller decides about retries.
+        empty when the body is not a text type. Raises WebScraperSSRFError,
+        _PageTooLarge and httpx.HTTPError -- the caller decides about retries.
+
+        ``timeout`` bounds the whole attempt, hops and body included. httpx's
+        own timeout is per network wait, so a server that sends a byte every
+        few seconds held the call open for as long as it liked.
         """
+        try:
+            async with asyncio.timeout(timeout):
+                return await self._fetch_hops(target_url, user_agent, timeout, session_id, request_proxy)
+        except TimeoutError:
+            raise httpx.TimeoutException(f"no complete answer within {timeout:g} s") from None
+
+    async def _fetch_hops(self, target_url: str, user_agent: str, timeout: float,
+                          session_id: str | None, request_proxy: str | None) -> tuple[str, int, str, str]:
+        limit = int(self.max_page_mb * 1024 * 1024)
         async with self._client(target_url, user_agent, timeout, session_id, request_proxy) as client:
             url = target_url
             for hop in range(MAX_HOPS + 1):
                 await self._assert_url_safe(url)
-                resp = await client.get(url)
-                if resp.is_redirect and resp.headers.get("location"):
-                    if hop == MAX_HOPS:
-                        # Falling through here would hand the caller the last
-                        # 3xx stub as if it were the page.
-                        raise _TooManyRedirects(f"more than {MAX_HOPS} redirects from {target_url}")
-                    url = urllib.parse.urljoin(url, resp.headers["location"])
-                    continue
-                break
-        content_type = (resp.headers.get("content-type") or "").lower()
-        # A missing content-type is treated as text: small servers omit it.
-        is_text = not content_type or content_type.startswith(_TEXT_TYPES)
-        return (resp.text or "") if is_text else "", resp.status_code, str(resp.url), content_type
+                # Streamed: `get` buffered every body whole, a PDF the tool
+                # then refuses as well as a page of any size.
+                async with client.stream("GET", url) as resp:
+                    if resp.is_redirect and resp.headers.get("location"):
+                        if hop == MAX_HOPS:
+                            # Falling through here would hand the caller the last
+                            # 3xx stub as if it were the page.
+                            raise _TooManyRedirects(f"more than {MAX_HOPS} redirects from {target_url}")
+                        url = urllib.parse.urljoin(url, resp.headers["location"])
+                        continue
+                    content_type = (resp.headers.get("content-type") or "").lower()
+                    # A missing content-type is treated as text: small servers omit it.
+                    if content_type and not content_type.startswith(_TEXT_TYPES):
+                        return "", resp.status_code, str(resp.url), content_type
+                    body = bytearray()
+                    async for chunk in _decoded_body(resp, limit, _PageTooLarge):
+                        body += chunk
+                    # The header's charset, else UTF-8. Latin-1 and ASCII are
+                    # read as cp1252, as browsers do: pages that declare them
+                    # carry smart quotes and the euro sign at 0x80-0x9F, which
+                    # would otherwise decode to control characters and vanish.
+                    encoding = resp.encoding or "utf-8"
+                    if codecs.lookup(encoding).name in ("iso8859-1", "ascii"):
+                        encoding = "cp1252"
+                    text = body.decode(encoding, errors="replace")
+                    return text, resp.status_code, str(resp.url), content_type
+        raise AssertionError("unreachable")  # pragma: no cover
 
     async def _fetch_with_retry(self, target_url: str, user_agent: str, timeout: float,
                                 max_retries: int = 3, params: dict | None = None) -> tuple[str, int, str, str]:
@@ -268,8 +454,8 @@ class WebScraperServer(SchemaBasedToolServer):
                 raise RuntimeError(f"Web scraper fetch cancelled for {target_url}")
             try:
                 result = await self._fetch_html_once(target_url, user_agent, timeout, session_id=session_id)
-            except WebScraperSSRFError:
-                raise
+            except (WebScraperSSRFError, httpx.DecodingError):
+                raise  # the same body decodes the same way next time
             except httpx.HTTPError as e:
                 if attempt == max_retries:
                     raise
@@ -345,7 +531,12 @@ class WebScraperServer(SchemaBasedToolServer):
         text = cls._clean_text(soup.get_text(" "))
         for i, block in enumerate(blocks):
             text = text.replace(f"{_PRE_TOKEN}{i}{_PRE_TOKEN}", "\n" + block.strip("\n") + "\n")
-        return {"title": title, "text": text, "links": links, "tables": tables, "lists": lists}
+        # Invisible characters go from every field on the way out: only after
+        # parsing is `&#xE0041;` a tag character, and title, links, tables,
+        # lists and code blocks reach the model too. On the output, not the
+        # tree -- replacing strings in the tree cost a sibling search each,
+        # and a page of 80k dirty lines took minutes.
+        return _scrub({"title": title, "text": text, "links": links, "tables": tables, "lists": lists})
 
     @staticmethod
     def _extract_tables(soup) -> list[dict[str, Any]]:
@@ -397,7 +588,22 @@ class WebScraperServer(SchemaBasedToolServer):
 
     # ── tools ────────────────────────────────────────────────────────────
 
+    # Every answer passes _scrub on the way out, errors included: a bot-wall
+    # error quotes the page's title, content_type is the server's header, and
+    # a page cached before the strip existed is served from disk as it was.
+
     async def page(self, params: dict[str, Any]) -> dict[str, Any]:
+        return _scrub(await self._page(params))
+
+    async def download(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Save the URL's body to a file inside the download sandbox."""
+        result = await self._download(params)
+        answer = _scrub(result)
+        if "path" in result:  # names the file on disk; the model chose it, not the page
+            answer["path"] = result["path"]
+        return answer
+
+    async def _page(self, params: dict[str, Any]) -> dict[str, Any]:
         operation = params.get("operation", "content")
         if operation not in ("content", "links"):
             return {"error": f"Unknown operation: {operation}. Supported: 'content', 'links'"}
@@ -431,6 +637,13 @@ class WebScraperServer(SchemaBasedToolServer):
             except (httpx.HTTPError, httpx.InvalidURL, _TooManyRedirects) as e:
                 await status.error(f"Fetch failed: {type(e).__name__} -- {url[:60]}")
                 return {"url": url, "error": f"Fetch failed: {type(e).__name__}: {e}"}
+            except _PageTooLarge:
+                await status.error(f"larger than {self.max_page_mb:g} MB -- {url[:60]}")
+                return {"url": url, "error": f"Page exceeds max_page_mb ({self.max_page_mb:g} MB); "
+                                             f"use {self.name}_download to save it as a file"}
+            except _UnsupportedEncoding as e:
+                await status.error(f"content-encoding {e} refused -- {url[:60]}")
+                return {"url": url, "error": f"Unsupported content-encoding {str(e)!r}: only gzip and deflate are read"}
 
             blocked, why = self._is_blocked_response(html, code, final_url)
             if blocked:
@@ -438,7 +651,7 @@ class WebScraperServer(SchemaBasedToolServer):
                 return {"url": url, "final_url": final_url, "status_code": code, "error": why}
             if not html:
                 if content_type and not content_type.startswith(_TEXT_TYPES):
-                    why = f"Not a text page ({content_type}); use {self.name}_download to save the file"
+                    why = f"Not a text page ({content_type[:100]}); use {self.name}_download to save the file"
                 else:
                     why = f"Empty response (HTTP {code})"
                 await status.error(f"{why[:50]} -- {url[:60]}")
@@ -446,7 +659,9 @@ class WebScraperServer(SchemaBasedToolServer):
                         "content_type": content_type, "error": why}
 
             page = {"url": url, "final_url": final_url, "status_code": code,
-                    "content_type": content_type, **self._extract(html, final_url)}
+                    "content_type": content_type,
+                    # Parsing a large page takes seconds; not on the event loop.
+                    **await asyncio.to_thread(self._extract, html, final_url)}
             if self.cache_enabled:
                 # 0 (absent, or a value the model made up) means: the
                 # instance's configured lifetime.
@@ -483,8 +698,7 @@ class WebScraperServer(SchemaBasedToolServer):
         await status.end(f"{got} {where}", meta={"total_chars": len(text), "truncated": truncated})
         return result
 
-    async def download(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Save the URL's body to a file inside the download sandbox."""
+    async def _download(self, params: dict[str, Any]) -> dict[str, Any]:
         url, path = params.get("url"), params.get("path")
         if not url or not isinstance(url, str):
             return {"error": "Missing required parameter 'url' (string)"}
@@ -512,6 +726,7 @@ class WebScraperServer(SchemaBasedToolServer):
         part = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.part")
         digest = hashlib.sha256()
         written = 0
+        created: list[Path] = []
         await status.progress(f"Downloading {url[:80]}")
         try:
             async with self._client(url, self._user_agent(), _number(params, "timeout", 60),
@@ -532,18 +747,19 @@ class WebScraperServer(SchemaBasedToolServer):
                                     "error": f"HTTP {resp.status_code}"}
                         # The cap is enforced on the bytes as they arrive, never
                         # on Content-Length: the header can lie or be absent.
+                        # Folders made here are removed again if the download fails.
+                        created = [p for p in target.parents if not p.exists()]
                         target.parent.mkdir(parents=True, exist_ok=True)
                         with part.open("wb") as fh:
-                            async for chunk in resp.aiter_bytes():
+                            async for chunk in _decoded_body(resp, limit, _DownloadTooLarge):
                                 written += len(chunk)
-                                if written > limit:
-                                    raise _DownloadTooLarge()
                                 fh.write(chunk)
                                 digest.update(chunk)
                         content_type = (resp.headers.get("content-type") or "").split(";")[0].strip()
                         final_url, code = str(resp.url), resp.status_code
                         break
             os.replace(part, target)
+            created = []
         except WebScraperSSRFError as e:
             await status.error(f"Blocked redirect: {e}")
             return {"url": url, "error": f"Blocked URL (SSRF protection): {e}"}
@@ -553,6 +769,9 @@ class WebScraperServer(SchemaBasedToolServer):
         except _DownloadTooLarge:
             await status.error(f"larger than {self.max_download_mb:g} MB -- {url[:60]}")
             return {"url": url, "error": f"Download exceeds max_download_mb ({self.max_download_mb:g} MB)"}
+        except _UnsupportedEncoding as e:
+            await status.error(f"content-encoding {e} refused -- {url[:60]}")
+            return {"url": url, "error": f"Unsupported content-encoding {str(e)!r}: only gzip and deflate are read"}
         except httpx.InvalidURL as e:
             await status.error(f"Unusable URL -- {url[:60]}")
             return {"url": url, "error": f"Unusable URL: {e}"}
@@ -564,6 +783,9 @@ class WebScraperServer(SchemaBasedToolServer):
         finally:
             if part.exists():
                 part.unlink()
+            for folder in created:  # nearest first; a folder not empty stays
+                with contextlib.suppress(OSError):
+                    folder.rmdir()
 
         await status.end(f"{written} bytes ({content_type or 'unknown type'}) -- {target.name}",
                          meta={"bytes": written, "content_type": content_type})

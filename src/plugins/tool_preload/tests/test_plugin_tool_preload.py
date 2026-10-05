@@ -625,8 +625,12 @@ class TestRobustness:
         assert result.modified is True, "the completed pair was thrown away"
         assert agent.calls == [("first", {}), ("second", {})], (
             "the chain continued past the raising call")
-        assert len(result.context.messages) == 3
+        assert len(result.context.messages) == 5
         assert result.context.messages[1].tool_calls[0]["function"]["name"] == "first"
+        # The raising call is recorded as the loop records it: an error result.
+        assert result.context.messages[3].tool_calls[0]["function"]["name"] == "second"
+        assert json.loads(result.context.messages[4].content) == {
+            "error": "Tool 'second' execution failed: boom", "type": "RuntimeError"}
 
         # The outer guard: planning itself raises (broken config).
         result = await plugin.preload(make_context(
@@ -719,6 +723,22 @@ class TestRobustness:
         assert result.modified is False
 
     @pytest.mark.asyncio
+    async def test_a_note_written_in_front_of_the_task_is_not_matched(self, plugin):
+        """simple_prompt_inject ``task_start`` writes a note in front of the
+        task and records it in ``prefixed_by``. Matched along, a long note
+        pushed the directive behind it past the cap, and the preload vanished."""
+        from plugins.tool_preload.hooks import MATCH_TEXT_LIMIT
+
+        agent = FakeAgent()
+        rules = [{"match": "MARKER", "tool": "t", "params": {}}]
+        note = "n" * (MATCH_TEXT_LIMIT + 500) + "\n\n---\n\n"
+        task = ChatMessage(role="user", content=note + "do MARKER", prefixed_by={"hint": note})
+
+        await plugin.preload(make_context([task], rules, agent))
+
+        assert agent.calls == [("t", {})]
+
+    @pytest.mark.asyncio
     async def test_multimodal_user_message_matches_on_its_text_parts(self, plugin):
         agent = FakeAgent()
         rules = [{"match": "Dok\\s+(?P<doc>\\S+)", "tool": "json_store_read",
@@ -733,3 +753,196 @@ class TestRobustness:
 
         assert agent.calls == [("json_store_read", {"doc": "plan.md"})]
         assert result.modified is True
+
+
+# ---------------------------------------------------------------------------
+# Through the real dispatcher (HookRegistry + Agent.dispatch_tool_call)
+# ---------------------------------------------------------------------------
+class _Server:
+    """A tool server: records its calls, answers via ``answer(params)``."""
+
+    def __init__(self, answer):
+        self.answer, self.calls = answer, []
+
+    async def call(self, tool_name, params):
+        self.calls.append(tool_name)
+        return self.answer(params)
+
+
+def _real_agent(servers, allowed, override):
+    """A minimal agent running the REAL dispatch and authorization methods."""
+    from types import SimpleNamespace
+    from agent_system.servers.agent.server import Agent
+
+    class _Agent:
+        name = "probe_agent"
+        dispatch_tool_call = Agent.dispatch_tool_call
+        _resolve_flat_tool_name = Agent._resolve_flat_tool_name
+        tool_dispatch_denial = Agent.tool_dispatch_denial
+
+        def __init__(self):
+            self._servers = servers
+            overrides = {"tool_preload.preload": override} if override else {}
+            self.agent_config = SimpleNamespace(
+                tools=SimpleNamespace(allowed=allowed, blocked=[]),
+                hooks=SimpleNamespace(enabled=True, overrides=overrides),
+                template_vars={})
+
+        def _get_server_from_any_registry(self, server_name):
+            return self._servers.get(server_name)
+
+    return _Agent()
+
+
+_DOC_RULE = {"enabled": True, "rules": [
+    {"match": r"document\s+(?P<doc>[\w-]+)", "tool": "docs_read",
+     "params": {"doc": "{doc}"}}]}
+
+
+async def _run_hooks(agent, messages):
+    """One pre_llm_call pass as the agent runs it: schema default off, the
+    agent's override decides (hook_runs_for), the registry builds hook_config."""
+    from agent_system.hooks import HookRegistry
+    from agent_system.servers.agent.components.hook_integration import hook_runs_for
+    from plugins.tool_preload.plugin import PLUGIN_FACTORY
+
+    registry = HookRegistry()
+    await registry.register_hook(HookType.PRE_LLM_CALL, "tool_preload.preload",
+                                 PLUGIN_FACTORY("tool_preload", None, None), enabled=False)
+    ctx = HookContext(hook_type=HookType.PRE_LLM_CALL, request_id="r1", session_id="s1",
+                      agent_name="probe_agent", agent=agent, messages=messages)
+    result = await registry.execute_hooks(
+        HookType.PRE_LLM_CALL, ctx,
+        hook_filter=lambda name, default: hook_runs_for(agent.agent_config.hooks, name, default))
+    return result.messages
+
+
+class TestThroughTheDispatcher:
+    @pytest.mark.asyncio
+    async def test_the_agents_override_switches_it_on_and_carries_the_rules(self):
+        server = _Server(lambda p: {"status": "success", "doc": p["doc"]})
+        system = ChatMessage(role="system", content="sys")
+
+        msgs = await _run_hooks(_real_agent({"docs": server}, ["docs/*"], _DOC_RULE),
+                                [system, user("edit document plan-a")])
+        assert server.calls == ["docs_read"]
+        assert json.loads(msgs[-1].content) == {"status": "success", "doc": "plan-a"}
+        assert msgs[2].injected_by == "tool_preload"
+
+        msgs = await _run_hooks(_real_agent({"docs": server}, ["docs/*"], None),
+                                [system, user("edit document plan-a")])
+        assert server.calls == ["docs_read"], "ran without the agent's override"
+        assert len(msgs) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_tool_outside_the_allowlist_is_never_called(self):
+        server = _Server(lambda p: {"status": "success"})
+        msgs = await _run_hooks(_real_agent({"docs": server}, ["other/*"], _DOC_RULE),
+                                [user("document plan-a")])
+        assert server.calls == []
+        assert len(msgs) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_raising_tool_reaches_the_model_as_an_error(self):
+        """The model's own call would show the failure. With nothing recorded
+        the model called the tool again without knowing it had just failed."""
+        def boom(params):
+            raise RuntimeError("disk gone")
+        server = _Server(boom)
+        msgs = await _run_hooks(_real_agent({"docs": server}, ["docs/*"], _DOC_RULE),
+                                [user("document plan-a")])
+        assert server.calls == ["docs_read"]
+        assert [m.role for m in msgs] == ["user", "assistant", "tool"]
+        assert msgs[1].tool_calls[0]["id"] == msgs[2].tool_call_id
+        assert json.loads(msgs[2].content) == {
+            "error": "Tool 'docs_read' execution failed: disk gone", "type": "RuntimeError"}
+
+    @pytest.mark.asyncio
+    async def test_every_request_is_a_prefix_of_the_next(self):
+        """Two turns: the pairs only ever extend the list, the next step does
+        not fire again, and the second turn's identical call is deduplicated."""
+        server = _Server(lambda p: {"status": "success", "doc": p["doc"]})
+        agent = _real_agent({"docs": server}, ["docs/*"], _DOC_RULE)
+        msgs = [ChatMessage(role="system", content="sys"), user("document plan-a")]
+        requests = []
+        for turn in (1, 2):
+            for step in ("tool", "answer"):
+                msgs = await _run_hooks(agent, msgs)
+                requests.append([(m.role, m.content) for m in msgs])
+                msgs = msgs + [ChatMessage(role="assistant", content=f"{step} {turn}")]
+            msgs = msgs + [user("again document plan-a")]
+
+        for earlier, later in zip(requests, requests[1:]):
+            assert later[:len(earlier)] == earlier
+        assert server.calls == ["docs_read"]
+
+
+class TestTimeBudget:
+    @pytest.mark.asyncio
+    async def test_no_call_starts_after_the_budget_and_each_left_is_noted(self):
+        """The registry's timeout discards every pair, done calls included, and
+        the model repeats them. The budget stops the chain before that."""
+        import asyncio
+        from plugins.tool_preload.hooks import SKIPPED_TEXT
+
+        class _Slow:
+            def __init__(self):
+                self.calls = []
+
+            async def call(self, tool_name, params):
+                self.calls.append(tool_name)
+                await asyncio.sleep(0.3)
+                return {"status": "success", "tool": tool_name}
+
+        server = _Slow()
+        override = {"enabled": True, "max_seconds": 0.2, "rules": [
+            {"match": "go", "calls": [{"tool": "docs_a"}, {"tool": "docs_b"},
+                                      {"tool": "docs_c"}]}]}
+        agent = _real_agent({"docs": server}, ["docs/*"], override)
+
+        msgs = await _run_hooks(agent, [user("go")])
+
+        assert server.calls == ["docs_a"]
+        assert [m.role for m in msgs] == ["user"] + ["assistant", "tool"] * 3
+        assert json.loads(msgs[2].content) == {"status": "success", "tool": "docs_a"}
+        for tool_msg in (msgs[4], msgs[6]):
+            assert json.loads(tool_msg.content) == {"error": SKIPPED_TEXT}
+
+        # A skipped call is not "already made": the next turn runs the rule again.
+        msgs = msgs + [ChatMessage(role="assistant", content="ok"), user("go")]
+        await _run_hooks(agent, msgs)
+        assert server.calls[1] == "docs_a"
+
+    @pytest.mark.parametrize("value", ["soon", 0, -1, True, None, float("nan")])
+    def test_an_invalid_budget_is_the_default(self, value):
+        from plugins.tool_preload.hooks import DEFAULT_MAX_SECONDS, _max_seconds
+        assert _max_seconds({"max_seconds": value}) == DEFAULT_MAX_SECONDS
+        assert _max_seconds({"max_seconds": 3}) == 3.0
+
+
+class TestFailureEndsOnlyItsRule:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing", ["docs_boom", "other_tool"])
+    async def test_the_next_rule_still_runs(self, failing):
+        """A raising tool (docs_boom) or a refused one (other_tool, outside the
+        allowlist) ends the rest of ITS chain. The plan used to be one flat
+        list, so the failure dropped every later rule too."""
+        def answer(params):
+            if params.get("which") == "boom":
+                raise RuntimeError("boom")
+            return {"status": "success"}
+
+        server = _Server(answer)
+        failing_call = ({"tool": "docs_boom", "params": {"which": "boom"}}
+                        if failing == "docs_boom" else {"tool": "other_tool"})
+        override = {"enabled": True, "rules": [
+            {"match": "go", "calls": [failing_call, {"tool": "docs_after"}]},
+            {"match": "go", "tool": "docs_independent"}]}
+        agent = _real_agent({"docs": server, "other": _Server(answer)}, ["docs/*"], override)
+
+        msgs = await _run_hooks(agent, [user("go")])
+
+        ran = [m.tool_calls[0]["function"]["name"] for m in msgs if m.tool_calls]
+        assert "docs_after" not in ran, "the failed rule's chain went on"
+        assert ran[-1] == "docs_independent", "the independent rule was dropped"
+        assert server.calls[-1] == "docs_independent"

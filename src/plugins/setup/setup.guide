@@ -1,0 +1,394 @@
+@database "setup"
+@author "Enrico Ehrich"
+@$VER: setup.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Setup"
+@{h1}Setup
+
+What a fresh installation still lacks, in one place: the API keys the
+configuration names and which of them are missing, whether the admin
+account still opens with the password everyone knows, and whether logins
+are signed with a key that has been printed in public. The @{b}Setup@{ub}
+panel shows all of it, lets an administrator enter a key, change the
+admin's password and give the installation a signing key of its own, and
+sends one short request to see whether the chat actually answers.
+
+Two tools give an agent the same view and the same chat test. A key is
+never passed through a tool or the chat: it is entered in the panel and
+saved on this machine, in @{tt}config/local.env@{utt}, never in the
+repository.
+
+@{image docs/panel.png "The Setup panel with everything still to do"}
+
+@{code}
+For users
+  @{"  The Setup panel  " link panel}
+
+For agents and developers
+  @{"  setup_status  " link status}
+  @{"  setup_probe_chat  " link probe}
+  @{"  The panel's endpoints  " link endpoints}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Setup panel"
+@{h1}The Setup panel
+
+Open it from the launcher (@{b}Administration@{ub}, "Setup"). Only an
+administrator sees and opens it; without authentication the one user is
+the owner and may. The panel belongs to the installation, not to a chat
+session: it shows the same whatever session is open. It reads the state
+when it opens and after each action; the reload button reads it anew, and
+the menu next to it turns on reloading every 30 seconds or at another
+interval.
+
+@{image docs/panel.png "The Setup panel"}
+
+@{h2}Chat
+
+The default agent and its first LLM profile -- the agent the chat started
+with; a config reload does not change it. @{b}Test the chat@{ub} sends one
+short request ("Answer with the single word OK.") through that profile,
+built the way the chat's next message builds its client: from the
+configuration as the API runs now, so a key saved in this panel a moment
+ago is the one tried. The test waits up to a minute, and the section says
+@{i}Testing@{ui} meanwhile, also across a reload. Then it shows the model
+and @{b}Answers@{ub}, or @{b}No answer@{ub} with the error the provider
+gave: a refused key reads as such. A profile that runs through the batch
+queue is not tested -- it would queue a real batch job. Only the arrival of
+an answer counts; its text is not shown.
+
+@{h2}Access
+
+@{table}
+Line | Fix | OK | Unknown
+Admin password | an active admin still opens with a publicly known password | no admin does | authentication is off, or the user database is missing or cannot be read
+Signing key | the key logins are signed with is a known one | this installation's own | cannot be told here
+@{body}
+
+A @{i}publicly known password@{ui} is the configured default admin's
+password, which stands in the config file in clear text, and the ones the
+repository has printed: @{tt}admin123@{utt}, which the shipped configuration
+created until October 2026, and the documentation's example
+@{tt}CHANGE_THIS_PASSWORD@{utt}, under @{tt}admin@{utt} or the configured
+name. The install scripts replace only the printed ones: the configured
+password is the operator's own. The admin is created once, while there are no
+users; changing the default in the config later does not change the
+account. A deactivated account does not count.
+
+When you are logged in as the admin concerned, a form below lets you
+change the password right there: the current one and a new one of 8
+characters or more. The server checks the current password; a wrong one
+is refused with a message and the form keeps what you typed. Logged in as
+another admin you see the warning only -- log in as that user to change
+it.
+
+A @{i}known signing key@{ui} is one the repository has printed (in the
+shipped config, docs, templates or tests, all of which its history keeps),
+the configuration model's default, or an empty key: whoever has it can
+forge a login. The line judges the key the API signs with now, which it
+set at start and keeps until a restart; with authentication off nothing
+signs, and the line judges the configured key instead (setup_status
+answers null there). Behind it the panel reports the
+key the config file names, which the next restart applies:
+
+@{bullet}@{b}Restart@{ub} -- the file names another key; it applies after
+a restart.
+@{bullet}@{b}Fix@{ub} -- the file names a known or empty key while an own
+one runs: replace it before the next restart, which would otherwise bring
+the known key back.
+@{bullet}@{b}Unknown@{ub} -- the file's auth section cannot be read.
+
+While the file names a known key, @{b}Make an own signing key@{ub} is
+offered. After you confirm, it writes a random key as
+@{tt}AUTH_SECRET_KEY@{utt} into @{tt}config/local.env@{utt} and points
+@{tt}auth.secret_key@{utt} at it in @{tt}config/local.yaml@{utt}. It
+applies after the next restart of the API, and everyone logs in again
+then. It writes nothing when a start would already sign with an own key,
+and refuses with the reason when @{tt}AUTH_SECRET_KEY@{utt} is set in the
+API's environment (which wins over any file), when
+@{tt}config/local.yaml@{utt} sets the key itself, or when the auth section
+does not load.
+
+@{h2}API keys
+
+Every key the configuration names, one row each:
+
+@{table}
+Column | Shows
+Key | the variable's name
+State | @{b}Set@{ub}, @{b}Missing@{ub}, or @{b}Placeholder@{ub}: a copied template value such as sk-or-v1-... (three dots), which the provider refuses
+Named in | up to three config sections that write the variable, and how many more (all of them on hover)
+Enter | a password field and @{b}Save@{ub}
+@{body}
+
+A key counts as named when a loaded config file writes it as
+@{tt}${NAME}@{utt}, or when an entry ending in @{tt}_env@{utt} gives a
+variable's name that its plugin reads itself. Commented-out lines name
+nothing. A section is where the variable is written, not every entry that
+inherits it through @{tt}extends@{utt}. The signing key is not listed: it
+has its own button. The table never shows a key's value, and a missing key
+matters only for what uses it -- whether the chat answers, the test above
+tells.
+
+@{b}Save@{ub} writes the key into @{tt}config/local.env@{utt}, which a
+start reads before @{tt}config/secrets.env@{utt} (the first file to name a
+variable wins), puts it into the API's environment and reloads the
+configuration. The chat uses it from the next message on. Sub-agents,
+background jobs, fallback models and plugins that read their key at start
+keep the old one until the API restarts; for a key a plugin
+section names, the confirmation says so. If the reload fails, the key is saved all the same
+and the message says to restart.
+
+A key set in the environment the API was started with has no field: the
+environment wins over any file at every start, so it must be changed
+there. A value is refused when it is empty, spans lines, holds a character
+that is not printable, or starts or ends with a quote. What you typed stays
+in the field when a save is refused, and a refresh does not lose it.
+
+@{h2}When something fails
+
+If the state cannot be read, a line at the top says why and stays until
+the next read succeeds; a chat test still shows its outcome. A refused
+button or save shows the server's reason as a message.
+@endnode
+
+@node status "setup_status"
+@{h1}setup_status
+
+What this installation still lacks: the same state the panel shows, as
+JSON. The tool takes no parameters and never returns a key's value.
+
+@{h2}Answer
+
+@{code json}
+{"status": "success",
+ "keys": [{"name": "OPENROUTER_API_KEY", "state": "set",
+           "named_in": ["llm_system.models.openrouter-base"], "from_environment": false}],
+ "chat": {"agent": "chat_agent", "profile": "chat"},
+ "auth": {"admin": "admin", "default_admin_password": true, "shared_signing_key": true,
+          "signing_key_needs_restart": false, "configured_signing_key_known": true}}
+@{body}
+
+@{table}
+Field | Meaning
+keys | every key the configuration names, sorted by name (see @{" API keys " link panel})
+keys[].state | set, missing or placeholder -- as the environment of the process running the tool has it
+keys[].from_environment | set by the real environment, which no file can change
+chat.agent, chat.profile | the default agent and its first LLM profile; profile null: the agent names none
+auth.admin | the admin a known password opens, else the configured default admin's name
+auth.default_admin_password | true: an active admin opens with a known password
+auth.shared_signing_key | true: logins are signed with a known key
+auth.signing_key_needs_restart | the config file names another key than the running one
+auth.configured_signing_key_known | the key the config file names, which a restart applies, is a known one
+@{body}
+
+In @{tt}auth@{utt}, null means it cannot be told from here, never "no".
+@{tt}default_admin_password@{utt} is null without authentication, or where
+no user database exists or it cannot be read. Only the API with
+authentication knows the key it signs with: run anywhere else (agent-cli,
+a session the API wakes, an API without authentication) the tool judges
+the configured key in its place, answers null for a pending restart, and
+null rather than false for an own configured key -- that says nothing of
+the key a running API signs with. A known configured key is true
+wherever it is read. @{tt}configured_signing_key_known@{utt} is null where
+the config file's auth section does not load.
+
+@{h2}Who may call it
+
+An active administrator of the configured user database, or the owner:
+anyone when authentication is off, and agent-cli at the machine, which
+runs as @{tt}cli_user@{utt} (no account may take that name). Anyone else
+gets @{tt}{"status": "error", "error": "only an administrator may read the
+setup status"}@{utt}. Where the user database cannot be read nobody is let
+in: "the user database could not be read (locked, or not a user
+database): try again in a moment; if it persists, the file needs
+checking".
+@endnode
+
+@node probe "setup_probe_chat"
+@{h1}setup_probe_chat
+
+Sends one short request through an LLM profile the way an agent builds its
+client, and says whether an answer came. It costs one small request.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+profile | the LLM profile to try; omitted or empty: the default agent's first profile
+@{body}
+
+@{h2}Answer
+
+@{code json}
+{"status": "success", "agent": "chat_agent", "profile": "chat",
+ "model": "<the model id>", "ok": true}
+@{body}
+
+@{tt}status@{utt} is success whenever the probe ran; the outcome is
+@{tt}ok@{utt}. With @{tt}ok: false@{utt}, @{tt}error@{utt} says why:
+
+@{table}
+error | When
+<type>: <message> | the provider's error type, then its message cut to 300 characters -- a refused key among them
+no answer within 60 s | the provider did not answer in time
+the model answered with nothing | an empty answer
+the default agent 'x' names no LLM profile | no profile given and the default agent has none
+profile 'x' runs through the batch queue: a probe would queue a batch job | a batch profile, never sent
+@{body}
+
+@{tt}model@{utt} is present once the client was built. The agent comes
+from the configuration the process started with; the client from the
+configuration as the API runs after a key was saved in the panel, else
+from the started one.
+
+@{h2}Errors
+
+@{bullet}A profile that does not exist: "no LLM profile named 'x': omit it
+to probe the default chat, or name one of: a, b, c" -- up to 30 profiles
+that can be probed (batch ones left out) and how many more.
+@{bullet}A profile that is not a string: "profile must be the name of an
+LLM profile".
+@{bullet}The caller is no administrator: "only an administrator may probe
+the chat" -- the same rule as @{" setup_status " link status}.
+@endnode
+
+@node endpoints "The panel's endpoints"
+@{h1}The panel's endpoints
+
+Under @{tt}/plugins/setup/@{utt}. The whole path is admin only by its rule
+in @{tt}config/security.yaml@{utt}; the data endpoints check for an
+administrator themselves as well (without authentication the one user is
+the owner). The POST endpoints take JSON only -- anything else is answered
+415 -- so a page elsewhere cannot send one on the admin's login cookie.
+
+@{table}
+Method and path | Does | Answers
+GET / | the panel page; it carries no data | HTML
+GET /state | keys, chat, auth: the fields of setup_status (the signing key as above) | JSON
+POST /probe | the chat test through the default agent's first profile; the body is ignored | as setup_probe_chat without the status field
+POST /key | writes one key: {"name": ..., "value": ...} | {"name", "reload_error", "state"}
+POST /signing-key | an own signing key in the local layer | {"message", "state"}
+@{body}
+
+@{h2}POST /key
+
+@{table}
+Status | When
+400 | the body is no JSON object with two strings; the name is no API key the configuration names; the value is empty, spans lines, holds a character that is not printable, starts or ends with a quote, or is longer than the environment can hold
+409 | the name is set in the environment the API was started with; the configuration came from no file
+500 | config/local.env could not be written
+@{body}
+
+The file and the process's environment are written together, one save at
+a time. Then the configuration reloads (the auth section stays as the API
+started with it); @{tt}reload_error@{utt} is null, or why the reload
+failed -- the key is written either way. The log names the key, never the
+value.
+
+@{h2}POST /signing-key
+
+Answers 409 "No signing key written: ..." where the auth section does not
+load, @{tt}AUTH_SECRET_KEY@{utt} is set in the environment, or
+@{tt}config/local.yaml@{utt} sets @{tt}auth.secret_key@{utt} to something
+else. @{tt}message@{utt} says what was done, including that the
+installation already has an own key.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Two tool descriptions from @{tt}schema.yaml@{utt}, about 1,200 characters
+together. The status tool's description tells the model never to ask for a
+key in the chat: the user enters it in the Setup panel. Neither tool
+writes anything; answers never carry a key's value.
+
+@{h2}Answers and errors
+
+Errors come as @{tt}{"status": "error", "error": ...}@{utt}; the texts are
+quoted in @{" setup_status " link status} and
+@{" setup_probe_chat " link probe}. A probe that ran but got no answer is a
+success with @{tt}ok: false@{utt} and the provider's error.
+
+@{h2}The chat status line
+
+@{code}
+12 keys, 2 not set: OPENAI_API_KEY, TAVILY_API_KEY
+chat answers: chat (<the model id>)
+chat does not answer: AuthenticationError: ...
+setup status: administrators only
+probe_chat: no profile 'fast'
+@{body}
+
+The list of keys not set (missing or placeholder) is cut to 100
+characters, a probe's line to 140.
+
+@{h2}Tokens and cache
+
+No hook, nothing injected: the prompt is unchanged. Tool answers are
+ordinary tool results, appended. A status answer grows with the number of
+keys, each with its sections. A probe costs one short request on the
+probed profile.
+
+@{h2}Known gaps
+
+@{bullet}A key written into a secrets file by hand needs a restart: the
+files are read once per process. After a config reload from elsewhere,
+the probe tool still builds its client from the started configuration;
+only a key saved in the panel moves it.
+@{bullet}Which key the API signs with only the API can tell: the panel,
+and setup_status called in a chat there.
+@{bullet}@{tt}cli_user@{utt} is every run without a user of its own
+(agent-cli or @{tt}agent_run@{utt} without @{tt}--session-user@{utt}),
+whoever started it. An agent allowed these tools must not be one such a
+run starts.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin brings its own server entry, in
+@{tt}src/plugins/setup/agents/setup.yaml@{utt}, which the configuration's
+include of @{tt}../src/plugins*/*/agents/*.yaml@{utt} picks up:
+
+@{code yaml}
+plugins:
+  servers:
+    setup:
+      type: setup
+      enabled: true
+      description: "What this installation still lacks: API keys, the admin password, its own signing key"
+@{body}
+
+The panel's route rule, in @{tt}config/security.yaml@{utt}:
+
+@{code yaml}
+- pattern: "/plugins/setup/*"
+  policy: "require_auth"
+  min_role: "admin"
+  description: "Setup panel requires admin role"
+@{body}
+
+No agent is allowed the tools in the shipped configuration. One that
+should have them names them in its allowlist:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+setup/*"
+@{body}
+
+The plugin has no server settings and no data of its own. It writes
+beside the configuration file it was loaded from: keys into
+@{tt}config/local.env@{utt}, the signing key's pointer into
+@{tt}config/local.yaml@{utt} -- this machine's own layer, never in the
+repository. It reads the user database at @{tt}auth.database_path@{utt},
+without ever creating or changing it.
+@endnode

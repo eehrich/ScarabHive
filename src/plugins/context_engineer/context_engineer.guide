@@ -1,0 +1,667 @@
+@database "context_engineer"
+@author "Enrico Ehrich"
+@$VER: context_engineer.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Context Engineer"
+@{h1}Context Engineer
+
+A long agent run fills the model's context with tool results, files,
+images and old turns until it gets expensive or no longer fits. The
+Context Engineer keeps it in bounds without losing what it takes out:
+before an LLM call it moves large tool results, attached files and media
+into stores on disk and leaves a short placeholder in their place; when
+that is not enough it archives or removes old messages -- written to the
+archive first. The agent gets tools to look through what was moved out
+and read it back piece by piece, and a small core memory for facts it
+must not lose. The @{b}Context Engineer@{ub} panel shows every
+compaction, what a session's stores hold and its facts.
+
+@{image docs/panel.png "The Context Engineer panel with the compactions and facts of a session"}
+
+@{code}
+For users
+  @{"  The Context Engineer panel  " link panel}
+
+For agents and developers
+  @{"  The list tool  " link list}
+  @{"  The read tool  " link read}
+  @{"  The store_fact tool  " link store_fact}
+  @{"  The compact tool and /compact  " link compact}
+  @{"  The compaction hook  " link hook}
+  @{"  What a compaction does  " link layers}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Context Engineer panel"
+@{h1}The Context Engineer panel
+
+Open it from the launcher (@{b}Context & memory@{ub}, "Context
+Engineer"), or from a session's info button, which opens it on that
+session.
+
+@{image docs/panel.png "The Context Engineer panel"}
+
+@{h2}Which data it shows
+
+The panel follows the chat: it shows the session open there and switches
+with it. Opened from a session's info button it stays on that session --
+the toolbar says so, and @{b}Follow the chat@{ub} lets go of it. @{b}All
+sessions@{ub} shows the compactions of every session, with a column
+naming the session, and no stores; that view is an admin's, anyone else
+gets "The context engineering could not be loaded" and the reason. With
+no session open the panel says so and asks for nothing. Another user's
+session looks like one where nothing happened.
+
+The panel reloads every 10 seconds; the menu next to the reload button
+sets another interval or turns it off.
+
+@{h2}What you see
+
+@{bullet}Four figures over every compaction of the session (or of all):
+how many, the tokens saved, the average reduction, and the media items
+taken out -- split into the media window (always_compact_media_keep_last),
+duplicates, and other events.
+@{bullet}For a session, three more from its stores on disk: the stored
+tool results and attached files, the archived messages, and the core
+memory facts, each with its tokens -- the facts against the core memory
+budget.
+@{bullet}@{b}Core memory@{ub}: the session's facts with category and
+importance, by category, the most important first.
+@{bullet}@{b}Compactions@{ub}: the newest 100, newest first -- a note
+above the table says when there are more. Each row has the time, the
+agent, the tokens before and after, the tokens saved, the reduction, the
+tool results stored, the media taken out (with the megabytes) and the
+layers that ran. A click on a column head sorts by it.
+
+The layer badges (hover one for its meaning):
+
+@{table}
+Badge | Means
+T | a new tool result too large for the window was stored on arrival
+P | over the message limit, the oldest messages were archived and removed
+M | only the newest messages with media keep it
+B | the request was over its size limit; large media was taken out
+L1 | tool results, attached files and inline media stored away
+L2 | old messages archived and replaced by a placeholder with a summary
+L3 | old messages archived and removed
+@{body}
+
+Only a run that changed something is listed. The list is kept in
+@{tt}data/context_engineer/history.json@{utt}, the last 1000, and
+survives a restart. It is the server process's list: a compaction in an
+@{tt}agent-cli@{utt} run is written to the same file by that process, but
+the panel does not show it, and the next save of one process overwrites
+the other's.
+
+The panel only reads; nothing you do there changes a session. A store
+that cannot be read answers with the reason, and the panel shows it.
+@endnode
+
+@node list "The list tool"
+@{h1}The list tool
+
+@{tt}context_engineer_list@{utt} (named after the plugin instance) shows
+what was moved out of the agent's own conversation: one line per item
+with its ref, size and a summary, never the whole text. With
+@{tt}filter@{utt} it searches instead and adds the matching excerpt to
+each line -- often the whole answer.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+section | history (archived messages), tool_results (stored tool results and attached files), facts (core memory), all; without it history when browsing, all with a filter; all needs a filter
+filter | words to look for; without it the tool pages through one section
+offset | browsing only: none for the newest page, negative counts back from the end, 0 or more is a position from the start
+limit | 1 to 50 lines, per section when filtering; without it 20
+role | history only: user, assistant or tool
+@{body}
+
+Every section is in order of storing, oldest first. How a filter
+matches in history: with semantic search on (the shipped configuration),
+the messages closest in meaning together with those holding every word;
+when the meaning search finds nothing, or semantic search is off, the
+messages holding any of the words, ranked (and, when no whole word
+matches, the filter as a piece of text). In tool_results and facts the
+filter matches as one piece of text, case ignored. With a role, the
+history search keeps only that role's messages among the ones it found.
+
+@{h2}Answers
+
+@{bullet}@{tt}entries@{utt}, each with @{tt}ref@{utt} and
+@{tt}kind@{utt}: a message with its role, tool, @{tt}tokens@{utt},
+@{tt}at@{utt} and @{tt}summary@{utt}; a tool result with its tool,
+@{tt}tokens@{utt}, @{tt}at@{utt}, @{tt}chars@{utt} and a
+@{tt}summary@{utt} -- with a filter @{tt}match@{utt} in its place; a
+fact with its category, importance and @{tt}summary@{utt} (the fact
+itself), no ref, tokens or time. With a filter messages and facts carry
+@{tt}match@{utt} as well.
+@{bullet}Browsing adds @{tt}total@{utt}, @{tt}offset@{utt},
+@{tt}has_more_before@{utt}, @{tt}has_more_after@{utt} and
+@{tt}next_offset@{utt}; a filter adds a @{tt}hint@{utt} instead.
+@{bullet}Refused: an unknown section (with the valid ones) and
+@{tt}section='all'@{utt} without a filter, as @{tt}{"status": "error",
+"error": ...}@{utt}.
+
+@{h2}An example
+
+@{code json}
+{}
+{"offset": -50}
+{"section": "tool_results"}
+{"filter": "QS-4711"}
+@{body}
+@endnode
+
+@node read "The read tool"
+@{h1}The read tool
+
+@{tt}context_engineer_read@{utt} reads one stored item by its ref -- a
+piece at a time, so reading it does not put the whole thing back into the
+context it was taken out of.
+
+@{h2}Refs
+
+@{table}
+Ref | Is
+arch_... | an archived message
+TR_... | a stored tool result or attached file; its tool_call id (call_... or toolu_...) or the 8-character content_hash of the placeholder work too
+a file path | a media file to load back into the conversation
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+ref | the ref, from list or from a placeholder in the conversation
+offset | where to start, in characters; negative counts back from the end (-2000 = the last 2000); 0 without it
+limit | characters to return, up to 5000; 2000 without it (0 as well)
+find | instead of a piece: the places that contain this text, up to 12, each with 200 characters around it
+@{body}
+
+@{h2}Answers
+
+@{bullet}A piece: @{tt}content@{utt}, @{tt}offset@{utt},
+@{tt}returned_chars@{utt}, @{tt}total_chars@{utt},
+@{tt}truncated@{utt}, @{tt}has_more_before@{utt},
+@{tt}has_more_after@{utt} and @{tt}next_offset@{utt} to continue, with
+the item's tool or role, tokens, time and summary.
+@{bullet}With find: @{tt}matches@{utt} (@{tt}at@{utt} and
+@{tt}snippet@{utt}), @{tt}match_count@{utt} and
+@{tt}more_matches@{utt}; offset and limit do not apply.
+@{bullet}A media path: "File will be loaded in the next response.
+Estimated cost: ~N tokens" -- the file is shown to the model on its next
+call. Only files under the data directory are loaded; any other path is
+refused ("Path is outside the allowed media directories."), as is a file
+that is gone or of a type it does not know.
+@{bullet}An archived message that points to another archived message is
+followed to the text; the answer then says @{tt}resolved_ref@{utt}.
+@{bullet}Refused: no ref, a ref of no known shape, a ref not found --
+each as @{tt}{"status": "error", "error": ..., "hint": ...}@{utt} naming
+where valid refs come from.
+
+@{h2}An example
+
+@{code json}
+{"ref": "TR_4f1c2a9b3e", "find": "Traceback"}
+{"ref": "TR_4f1c2a9b3e", "offset": -2000}
+{"ref": "arch_9a0c3b17e2d4"}
+@{body}
+@endnode
+
+@node store_fact "The store_fact tool"
+@{h1}The store_fact tool
+
+@{tt}context_engineer_store_fact@{utt} keeps a fact in the session's core
+memory: a decision, a preference, something the agent must not lose when
+the messages around it are compacted. The facts are shown to the model in
+the note the hook adds (see @{"  What the model sees  " link model}) and
+listed by @{tt}list(section='facts')@{utt}.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+fact | the text; required, and not blank
+category | decisions, preferences, facts, context or tasks; without it, or with any other value, facts
+importance | 0.0 to 1.0, clamped; without it 0.5
+@{body}
+
+@{h2}The budget
+
+A session's facts share @{tt}core_memory_max_tokens@{utt} (2000 by
+default, 5000 in the shipped configuration). When a new fact does not fit,
+it pushes out facts that are not more important than it, least important
+and then oldest first; if those do not make room, it is refused and
+nothing is pushed out. The same text stored again (case ignored) is not
+added twice; a higher importance raises the kept one.
+
+@{h2}Answers
+
+@{bullet}@{tt}status: "success"@{utt} with the @{tt}category@{utt} and
+@{tt}importance@{utt} the fact is kept under and @{tt}total_facts@{utt}.
+@{bullet}@{tt}status: "error"@{utt}: "Fact parameter is required" (also for a blank fact),
+"This fact alone is larger than core memory (N tokens); store a shorter
+summary of it.", or "Core memory is full of more important facts; this
+one was not stored. Use a higher importance if it matters more."
+
+@{h2}An example
+
+@{code json}
+{"fact": "The API runs on port 8000 behind nginx", "category": "facts", "importance": 0.8}
+@{body}
+@endnode
+
+@node compact "The compact tool and /compact"
+@{h1}The compact tool and /compact
+
+@{tt}context_engineer_compact@{utt} (no parameters) runs the compaction
+hook now on the running conversation, with the agent's own settings.
+Typed at the chat prompt as @{tt}/compact@{utt} it is available where
+the agent's allowlist has the tool.
+
+@{bullet}@{b}Called by the model@{ub} the automatic rules apply: below
+the thresholds, or while the hysteresis holds, no layer runs. The passes
+that run on every call still do -- with @{tt}always_compact_media_keep_last@{utt}
+above 0 (the shipped configuration) the media window and the duplicate
+media, and over @{tt}max_messages@{utt} Pre-Layer P unless held.
+@{bullet}@{b}/compact typed by a person@{ub} skips the thresholds and the
+hysteresis: Layer 1 runs whatever the token count, the message limit and
+the media passes apply; Layers 2 and 3 only above their thresholds (see
+@{"  What a compaction does  " link layers}).
+
+@{h2}Answers
+
+@{tt}status: "success"@{utt} with @{tt}modified@{utt},
+@{tt}original_tokens@{utt}, @{tt}final_tokens@{utt},
+@{tt}tokens_saved@{utt}, @{tt}reduction_percent@{utt},
+@{tt}layers_applied@{utt}, @{tt}tool_results_stored@{utt},
+@{tt}messages_archived@{utt}, @{tt}messages_dropped@{utt} and
+@{tt}messages_pruned@{utt}. A run turned away adds @{tt}reason@{utt}
+(@{tt}below_threshold@{utt} or @{tt}hysteresis@{utt}), with the current
+reading as both token counts. An empty conversation answers "No messages
+in conversation"; without a session @{tt}{"status": "error", "error":
+"Session context not available"}@{utt}.
+
+It works also for an agent whose hook is switched off: then the tool is
+the only way a compaction happens.
+@endnode
+
+@node hook "The compaction hook"
+@{h1}The compaction hook
+
+@{tt}engineer_context@{utt} runs before each LLM call of an agent that
+switches it on -- it is off by default, on for @{tt}multi_turn_agent@{utt}
+and the agents built on it. It runs before context_summarizer's hook.
+
+@{h2}Switching it on
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      context_engineer.engineer_context:
+        enabled: true
+        tool_result_keep_last: 8      # any compaction setting, for this agent
+@{body}
+
+Every compaction setting of @{"  Setting it up  " link setup} can be set
+here for one agent; a key left blank keeps the plugin's value. Six are
+the plugin's alone and are ignored here (logged): session_ttl_seconds,
+max_tracked_sessions, session_data_ttl_days, enable_semantic_search,
+core_memory_max_tokens, storage_path. A misspelled key is logged too.
+
+@{h2}The reading
+
+The hook measures the call as the larger of the prompt tokens of the
+session's last LLM call (from context_usage_tracker, unless a compaction
+has made that stale) and an estimate of the messages plus the tool
+definitions. The window is the answering model's.
+
+@{h2}When it does something
+
+A call is taken up when any of these holds; otherwise the hook changes
+nothing, and adds nothing:
+
+@{bullet}the reading is at @{tt}layer1_threshold@{utt} or above;
+@{bullet}the request is larger than @{tt}max_request_bytes@{utt};
+@{bullet}the conversation has more messages than @{tt}max_messages@{utt}
+(when that is above 0);
+@{bullet}@{tt}always_compact_media_keep_last@{utt} is above 0 (the
+shipped configuration: 2, so every call is taken up);
+@{bullet}the last message is from a person and
+@{tt}compact_media_after_user_message@{utt} is on;
+@{bullet}a new tool result is due for Pre-Layer T (see
+@{"  What a compaction does  " link layers}) -- then only T runs.
+
+@{h2}The hysteresis
+
+Every rewrite of old messages breaks the provider's prompt cache from
+there on, so after a run of Pre-Layer P or a layer the next such run waits
+until the reading has grown by @{tt}min_tokens_between_compactions@{utt}
+(20000) since -- unless a deeper layer has become due, the byte limit is
+exceeded, or a person typed /compact. The media passes and Pre-Layer T are
+not held.
+
+@{h2}What the chat shows
+
+A run that changed something shows a status line: "Engineering context:
+152000 tokens (target: 70000)", then "Context engineered: saved 81200
+tokens (53.4%), 12 tool result(s) stored, 2 media item(s) compacted". A
+run that changed nothing shows none.
+@endnode
+
+@node layers "What a compaction does"
+@{h1}What a compaction does
+
+The passes run in this order. What leaves the conversation is written to
+a store first; if that write fails, the messages stay.
+
+@{h2}Pre-Layer T: oversized new results
+
+A tool result of the current round (after the model's last answer) larger
+than @{tt}tool_result_max_window_share@{utt} (0.25) of the window is
+stored before any request carries it, whatever the thresholds and the
+hysteresis say. Only that round is touched, so what earlier requests sent
+stays as it was.
+
+With @{tt}tool_result_summary_from@{utt} above 0, a new result with at
+least that many tokens of prose is stored the same way, and a cheap model
+(@{tt}tool_result_summary_profile@{utt}, "summarizer") writes a summary
+into the placeholder -- for an agent handed long answers by sub-agents.
+@{tt}tool_result_summary_tools@{utt} limits it to tools by name pattern
+(@{tt}*_manage_sub_agent@{utt}); empty means every tool. A structured
+(JSON) result is not summarized; a wrapper around prose is summarized by
+its prose. The model reads the first 60000 characters; a summary longer
+than half the prose, or all summaries of one round past 20 seconds, fall
+back to the plain placeholder. The result goes to that profile's
+provider.
+
+@{h2}Pre-Layer P: the message limit
+
+Over @{tt}max_messages@{utt} messages (0: off), the oldest are archived
+and removed down to @{tt}max_messages_prune_to@{utt} (0, or a value above
+max_messages: half the limit). Among the oldest, placeholders go first.
+A single system note, @{tt}pruned_notice@{utt}, says how many have left
+in all and how to find them.
+
+@{h2}The media passes
+
+@{bullet}@{b}M@{ub} (@{tt}always_compact_media_keep_last@{utt} N, 0 off):
+when more than N messages carry images, audio or video, only the newest
+N minus @{tt}always_compact_media_headroom@{utt} (at least 1) keep theirs.
+What arrived since the model's last answer always stays for that call: a
+round of parallel tool calls may bring several images, and the model sees
+each of them once.
+@{bullet}@{b}Duplicates@{ub} (@{tt}deduplicate_media@{utt}, on): the same
+file or the same bytes twice -- every copy but the newest goes.
+@{bullet}@{b}After a new message from a person@{ub}
+(@{tt}compact_media_after_user_message@{utt}, only while M is off): all
+media outside the newest message and the current request.
+@{bullet}@{b}B@{ub}: still over @{tt}max_request_bytes@{utt}, every item
+of 10 KB or more outside the last two messages.
+
+An inline item is saved to disk first (with
+@{tt}store_media_before_compaction@{utt}, kept
+@{tt}media_store_ttl_seconds@{utt} since its last use, at most
+@{tt}media_store_max_files@{utt} per session); in its place stands a hint
+naming the file, which read loads again. An image given only by a remote
+URL stays. @{tt}compact_media_after_final_response@{utt} has no effect.
+
+@{h2}Layer 1: reversible
+
+From @{tt}layer1_threshold@{utt} on (or /compact, or the byte limit):
+
+@{bullet}A tool result of at least @{tt}tool_result_min_size@{utt} tokens
+is stored when it is older than the newest
+@{tt}tool_result_keep_last@{utt} results, or larger than
+@{tt}tool_result_max_inline_size@{utt} even if it is among them.
+@{bullet}Files attached to a message (text files) of that size go to the
+same store; so does inline media of that size, except in the current
+request's messages.
+@{bullet}Media files attached to messages, of that size, are taken out,
+except on the newest @{tt}tool_result_keep_last@{utt} tool results --
+over the byte limit on those too.
+
+The answers of list and read are never stored away: the agent just
+fetched them. When Layer 1 brings the reading to @{tt}target_tokens@{utt}
+and the request to @{tt}target_request_bytes@{utt}, the run ends here.
+
+@{h2}Layer 2: archive old turns
+
+From @{tt}layer2_threshold@{utt}: messages at least
+@{tt}archive_after_turns@{utt} turns old (a turn begins with a message
+from a person) are archived and replaced in place by an
+@{tt}archived_ref@{utt} placeholder with a short summary (at most
+@{tt}max_summary_tokens@{utt}). A tool call and its results go together;
+system messages stay while @{tt}keep_system_messages@{utt} is on. The
+shipped configuration sets 9999, which switches this layer off in
+practice.
+
+@{h2}Layer 3: remove
+
+From @{tt}layer3_threshold@{utt}: messages at least
+@{tt}drop_after_turns@{utt} turns old are archived and removed, and then
+more of the oldest until the estimate is at @{tt}target_tokens@{utt}.
+Always kept: system messages (with keep_system_messages), the prune note,
+the first input, the current request's messages, the round the model has
+not seen yet, and the newest @{tt}tool_result_keep_last@{utt} units
+before it.
+
+@{h2}After a run
+
+After a removal the conversation must still open with an input; messages
+left in front of the first one are archived and removed too. Provider
+reasoning (encrypted reasoning, thought signatures)
+is marked unusable from the first changed message on; the session's
+measured token figures are marked stale.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The tool descriptions and parameter descriptions come from the plugin's
+@{tt}schema.yaml@{utt}; the answers and error texts are in the tool
+nodes. The call's status line ends with its result: "history: 20 of 143
+(from #123, 123 older)", "'QS-4711': 2 message, 1 tool_result",
+"TR_4f1c2a9b3e: 2000 of 9340 chars, 7340 left", "Stored fact: The API
+runs on port 8000 behind nginx...", "Compacted: saved 81200 tokens (53.4%
+reduction)".
+
+@{h2}Placeholders
+
+Where a tool result was stored:
+
+@{code json}
+{"type": "tool_result_ref", "tool_name": "read_file", "ref_id": "TR_4f1c2a9b3e", "content_hash": "9f86d081", "token_count": 12480}
+@{body}
+
+-- with a @{tt}summary@{utt} when Pre-Layer T had one written. Where a
+message was archived, in its own role:
+@{tt}{"type": "archived_ref", "ref_id": "arch_...", "summary": "User:
+..."}@{utt}. Where media was: @{tt}[Image 'plot.png' compacted.
+read(ref="...") loads it again.]@{utt}. Where messages were pruned or
+removed, one system message at the front with
+@{tt}"type": "pruned_notice"@{utt}, the total and how to find them.
+
+@{h2}The stored-information note
+
+On a call the hook takes up, and when the session has something stored or
+a fact, a note from the plugin is added at the end of what goes to the
+model -- not saved with the conversation, and not added again while an
+identical one is there:
+
+@{code markdown}
+# Context Engineer - Stored Information
+
+Some information has been stored externally to save context space. Use the provided tools to retrieve full content when needed.
+
+## Tool Results
+Some tool results have been stored externally. When you see a JSON reference with `type: tool_result_ref`, use list(section='tool_results') ...
+
+## Conversation Archive
+Older messages have been archived. ...
+
+<core_memory>
+## Decisions
+- Never deploy on Fridays
+</core_memory>
+@{body}
+
+The session keeps the note it was first shown, so the note does not
+change on every call: it is written anew only when messages were
+archived or removed, when something else (context_summarizer) rewrote the
+conversation, or when the first tool results were stored. A fact stored in
+between is in the conversation as the store_fact call until then.
+
+@{h2}Tokens and cache
+
+Everything the hook does before the model's last answer rewrites old
+messages and breaks the provider's prompt cache from the first changed
+message on; the next call pays the rest of the conversation once. That is
+why the layers cut deep (to @{tt}target_tokens@{utt}, to
+@{tt}max_messages_prune_to@{utt}) and the hysteresis spaces them out.
+Pre-Layer T touches only the round no request has carried yet, and the
+note stands at the end: neither breaks the cache.
+
+@{h2}Known gaps
+
+@{bullet}The panel's compaction list belongs to the server process: a
+compaction in an @{tt}agent-cli@{utt} run is not shown, and the two
+processes overwrite each other's saves of @{tt}history.json@{utt}.
+@{bullet}The media store keeps a file @{tt}media_store_ttl_seconds@{utt}
+after its last use; a hint older than that names a file that is gone.
+@{bullet}The stores of a session keep the settings they were created
+with; a media store setting changed for an agent reaches only sessions it
+starts.
+@{bullet}Without a known context window the size cap of Pre-Layer T
+does not run; its summaries (tool_result_summary_from) still do.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration (@{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    context_engineer:
+      type: context_engineer
+      enabled: true
+      config:
+        layer1_threshold: 140000
+        layer2_threshold: 170000
+        layer3_threshold: 200000
+        target_tokens: 70000
+        min_tokens_between_compactions: 20000
+        store_media_before_compaction: true
+        media_store_ttl_seconds: 604800
+        media_store_max_files: 500
+        max_request_bytes: 30408704
+        target_request_bytes: 25165824
+        core_memory_max_tokens: 5000
+        tool_result_min_size: 500
+        tool_result_keep_last: 5
+        tool_result_max_inline_size: 10000
+        archive_after_turns: 9999
+        keep_system_messages: true
+        enable_semantic_search: true
+        session_data_ttl_days: 14
+        drop_after_turns: 30
+        max_summary_tokens: 100
+        max_messages: 190
+        max_messages_prune_to: 100
+        deduplicate_media: true
+        compact_media_after_user_message: true
+        compact_media_after_final_response: true
+        always_compact_media_keep_last: 2
+        always_compact_media_headroom: 1
+@{body}
+
+The hook runs for an agent that switches it on (see
+@{"  The compaction hook  " link hook}); the tools only for an agent
+whose allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+context_engineer/*"
+@{body}
+
+@{h2}Server settings
+
+These go under @{tt}config:@{utt} in the server entry; what is not set
+there takes the default below. All but the last six can be set per agent.
+
+@{table}
+Key | Default | Meaning
+layer1_threshold | 80000 | tokens from which Layer 1 runs
+layer2_threshold | 100000 | tokens from which Layer 2 runs
+layer3_threshold | 120000 | tokens from which Layer 3 runs
+target_tokens | 60000 | where the layers stop
+max_request_bytes | 94371840 (90 MB) | a larger request is compacted whatever the tokens
+target_request_bytes | 73400320 (70 MB) | Layer 1 ends only below this too
+tool_result_min_size | 500 | tokens a tool result, file or media item must have to be stored
+tool_result_keep_last | 3 | newest tool results Layer 1 keeps (unless too large)
+tool_result_max_inline_size | 5000 | tokens from which Layer 1 stores a result even among the newest
+tool_result_max_window_share | 0.25 | Pre-Layer T: share of the window a new result may take; 0 off
+tool_result_summary_from | 0 | Pre-Layer T: prose tokens from which a new result is summarized; 0 off
+tool_result_summary_profile | summarizer | the llm profile that writes those summaries; empty: none
+tool_result_summary_tools | [] | tool name patterns that may be summarized; empty: every tool
+archive_after_turns | 10 | Layer 2: age in turns
+keep_system_messages | true | system messages are never archived or removed
+drop_after_turns | 50 | Layer 3: age in turns
+max_summary_tokens | 100 | length of an archive placeholder's summary
+max_messages | 0 | Pre-Layer P: message limit; 0 off
+max_messages_prune_to | 0 | Pre-Layer P: messages kept; 0: half the limit
+min_tokens_between_compactions | 20000 | the hysteresis
+deduplicate_media | true | remove older copies of the same media
+compact_media_after_user_message | false | take media out when a person writes
+compact_media_after_final_response | false | no effect
+always_compact_media_keep_last | 0 | messages with media that keep it; 0 off
+always_compact_media_headroom | 0 | how far below keep_last an eviction goes
+store_media_before_compaction | true | save inline media to disk before taking it out
+media_store_ttl_seconds | 604800 | how long a saved media file is kept after its last use
+media_store_max_files | 500 | saved media files per session, the oldest go first
+session_ttl_seconds | 7200 | a session's open stores are closed after this idle time
+max_tracked_sessions | 100 | sessions kept open, the least recently used closed first
+session_data_ttl_days | 0 | delete a session's stored data after this many idle days; 0 off
+enable_semantic_search | false | search the archive by meaning as well (a vector store)
+core_memory_max_tokens | 2000 | the core memory budget per session
+storage_path | data/context_engineer | where the stores lie
+@{body}
+
+A misspelled key is logged at start and reaches nothing.
+
+@{h2}Where data lives
+
+Each session has a folder named after it under the storage path:
+@{tt}tool_results.db@{utt} (tool results and attached files),
+@{tt}archive.db@{utt} (archived messages), @{tt}core_memory.json@{utt} and
+@{tt}media/@{utt} (saved media). With semantic search on and chromadb
+installed, the vectors of all sessions lie in @{tt}_shared_vectors/@{utt};
+with another vector backend each session keeps its own in
+@{tt}vectors/@{utt}. With @{tt}session_data_ttl_days@{utt} set (the
+shipped configuration: 14), a sweep at most once an hour deletes the
+folders -- and vectors -- of sessions idle longer than that. The panel's
+compaction list is @{tt}data/context_engineer/history.json@{utt}.
+
+@{h2}Behind the panel
+
+@{table}
+Method | Path | Answer
+GET | /plugins/context_engineer/history?session_id=&limit= | the newest limit compactions (1 to 1000, default 100) and the figures over all of them
+GET | /plugins/context_engineer/session?session_id= | what the session's stores hold: tool_results and archived (count, tokens), core_memory (facts, tokens, max_tokens); 503 when a store cannot be read
+@{body}
+
+A user sees her own sessions; another user's session answers as one with
+nothing in it. All sessions at once is an admin's (403 otherwise).
+@endnode

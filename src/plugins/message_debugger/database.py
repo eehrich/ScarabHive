@@ -6,6 +6,7 @@ Uses SQLite with WAL mode for concurrent read/write access.
 from __future__ import annotations
 
 import atexit
+import concurrent.futures
 import json
 import logging
 import queue
@@ -492,6 +493,33 @@ class MessageDebuggerDB:
                     "message_debugger: write queue full — DB writes lagging, "
                     "dropped %d capture(s) so far", self._dropped,
                 )
+
+    def call(self, fn: "Callable[[], Any]") -> Any:
+        """Run ``fn`` on the background writer and wait for its result (blocks the caller).
+
+        For the maintenance that holds the write lock long -- a clear or a VACUUM
+        of a multi-GB file takes minutes: run on another connection, every capture
+        written meanwhile waited out the 10 s busy timeout and was lost. Behind
+        the writer, this process's captures wait in the queue instead (up to its
+        limit); another process writing the same file still meets the lock.
+        """
+        if self._closed:
+            raise RuntimeError("the message debugger database is closed")
+        done: "concurrent.futures.Future[Any]" = concurrent.futures.Future()
+
+        def job() -> None:
+            try:
+                done.set_result(fn())
+            except BaseException as e:  # noqa: BLE001 -- handed to the caller
+                done.set_exception(e)
+
+        self._write_q.put(job)  # waits for a slot: maintenance is not dropped like a capture
+        while True:
+            try:
+                return done.result(timeout=1.0)
+            except concurrent.futures.TimeoutError:
+                if not self._writer_thread.is_alive():  # closed meanwhile: the job sits behind the sentinel
+                    raise RuntimeError("the message debugger database was closed") from None
 
     def flush(self, timeout: float = 5.0) -> bool:
         """Block until the write queue is drained, or ``timeout`` elapses.

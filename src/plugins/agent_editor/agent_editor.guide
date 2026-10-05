@@ -1,0 +1,577 @@
+@database "agent_editor"
+@author "Enrico Ehrich"
+@$VER: agent_editor.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Agent Editor"
+@{h1}Agent Editor
+
+Agents are entries in the YAML files of the config tree: a model chain,
+the tools they may use, a prompt, hooks, limits. The @{b}Agent Editor@{ub}
+panel lists every agent, shows what it sets itself and what it inherits,
+and lets an admin change it in a form. A save writes only the agent's own
+entry back into the file it came from -- comments, layout and the rest of
+the file stay as they are -- after showing the change as a diff. New agents
+get a file of their own; the panel also says which agents run with older
+settings than the files hold.
+
+The plugin gives agents no tool and no hook: it is a panel for people.
+
+@{image docs/panel.png "The Agent Editor with an agent open on its General tab"}
+
+@{code}
+For users
+  @{"  The panel: list and head  " link panel}
+  @{"  The tabs  " link tabs}
+  @{"  The Tools tab  " link tools}
+  @{"  The Sub-agents tab  " link subagents}
+  @{"  How saving works  " link saving}
+  @{"  What needs a restart  " link restart}
+
+For developers
+  @{"  The HTTP API  " link api}
+  @{"  Limits and known gaps  " link limits}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The panel: list and head"
+@{h1}The panel: list and head
+
+Open it from the launcher (@{b}Agents & tools@{ub}, "Agent Editor"). It
+needs authentication switched on and an active admin account; with
+authentication off it says so and shows nothing else.
+
+@{image docs/panel.png "The Agent Editor"}
+
+@{h2}The list
+
+On the left, every agent of the config tree, grouped by where it is
+defined: @{tt}config@{utt} for everything outside the plugin folders, the
+plugin's name for a file under @{tt}src/plugins*/<plugin>/@{utt}. The
+search looks at names, descriptions and tags; the filter shows all agents,
+the enabled or disabled ones, those with problems, those that need a
+restart, or the read-only ones. The corner of the list sets its width,
+which the panel keeps for the next visit. By default nothing reloads by
+itself: the reload button loads anew, and the menu next to it turns on an
+automatic reload (every 30 seconds unless you pick another interval),
+skipped while a write is on its way; a form with unsaved changes is left as it is.
+
+Each row shows the description and these badges:
+
+@{table}
+Badge | Means
+off | the entry is disabled
+new | enabled on disk, not started yet
+restart | the running app has older settings; see @{" What needs a restart " link restart}
+read-only | the panel cannot write this entry; the reason is in the badge's tooltip
+N problems | what the editor warns about; the problems are in the tooltip
+@{body}
+
+An entry is an agent when the running app says so for it. For an entry
+the app has not declared, its final type decides: @{tt}agent@{utt}, a
+plugin type that builds agents lazily, or a type all of whose running
+instances are agents.
+
+The problems are read from the files as saved: "Does not resolve"
+(with the loader's reason), "Unknown model profile", "Prompt template not
+found", "Unknown skill", "Matches no tool" (an allowed or blocked pattern
+that names no tool of the running app), "Deferred matches no allowed tool"
+(a @{tt}tools.deferred@{utt} pattern that holds back none of the agent's
+tools) and "External server is off" (an
+allowed pattern for an external MCP server that is disabled). When the
+config defines no model profiles at all, every profile of a chain is
+unknown. When the tool catalogue cannot be built, the patterns are not
+checked and a banner above the list says so; so does any file the loader
+cannot read.
+
+@{h2}New agent
+
+@{b}New@{ub} asks for a name -- lower case letters, digits and
+@{tt}_@{utt}, starting with a letter, 2 to 64 characters -- and what to
+start from:
+
+@{bullet}@{b}Blank basic_agent@{ub}: @{tt}type: basic_agent@{utt},
+enabled.
+@{bullet}@{b}Inherit from an agent@{ub}: @{tt}type@{utt} is that agent;
+everything else comes from it.
+@{bullet}@{b}Copy of an agent@{ub}: its own entry, copied.
+
+The form then opens with the new agent, marked "new, not saved yet";
+nothing is written before @{b}Save@{ub}. The file is
+@{tt}config/agents/<name>.yaml@{utt}; see @{" How saving works " link saving}.
+
+@{h2}The head
+
+Above the tabs: the agent's name; what it is based on (a button that
+opens the parent agent, or the plugin class); its file, with a button that
+copies the path; and how it relates to the running app:
+
+@{table}
+Shown | Means
+Active | the app runs it with the settings on disk (ready, not necessarily busy)
+Active with older settings | the app runs it, the files say something else
+Not active yet | enabled on disk, started with the next restart
+Disabled | disabled and not running
+Still active, gone from disk | running, but disabled or removed in the files
+@{body}
+
+A banner under the head says what a restart or a config reload would apply
+-- with a @{b}Reload config@{ub} button when a reload applies something --
+and why a read-only agent cannot be edited.
+
+@{b}Revert@{ub} goes back to the entry as loaded; "unsaved changes" marks
+an edited form. @{b}Save@{ub} shows the diff and writes on confirmation.
+The menu next to it offers @{b}Duplicate@{ub} (a copy under a new name),
+@{b}New child agent@{ub} (one that inherits from this one) and
+@{b}Delete@{ub}, which is off while another entry inherits from this one
+(its tooltip names them). Leaving an agent, or opening another one, with
+unsaved changes asks first.
+
+@{b}Reload config@{ub} in the toolbar asks, then calls the core's
+@{tt}POST /admin/reload-config@{utt} and reports how many servers it
+refreshed or which ones failed.
+
+@{h2}When the server refuses
+
+A refused write shows its reason; nothing was written. When the file changed
+on disk since the agent was loaded, a dialog offers @{b}Keep my
+changes@{ub} (the form stays, a save is refused until you reload) or
+@{b}Reload from disk@{ub}.
+@endnode
+
+@node tabs "The tabs"
+@{h1}The tabs
+
+A field the entry does not set shows the inherited value, marked
+@{i}inherited@{ui}. Setting it writes the key into the entry; the reset
+button next to its label removes the key again. The Tools and Sub-agents
+tabs have nodes of their own: @{" The Tools tab " link tools},
+@{" The Sub-agents tab " link subagents}.
+
+@{h2}General
+
+@{bullet}@{b}Enabled@{ub} -- whether the app starts the agent. Never
+inherited: an entry without it stays off.
+@{bullet}@{b}Based on@{ub} -- an agent class (starts from its defaults) or
+another agent (passes on everything it has). Changing it reloads the
+inherited values of every tab.
+@{bullet}@{b}Description@{ub}, @{b}Visibility@{ub} (ui, tool, both,
+private -- the help line says what each means), @{b}Category@{ub},
+@{b}Tags@{ub} (Enter adds one).
+
+@{h2}Model
+
+@{bullet}@{b}Model chain@{ub} -- profiles in order: the first answers,
+the others take over when it fails. Add one by name, provider or model;
+move and remove with the buttons. An unknown profile is marked. Emptied,
+the key goes and the inherited chain applies (the loader refuses an empty
+one).
+@{bullet}@{b}Advanced chain@{ub} -- used while the agent escalates.
+Without it @{tt}use_advanced_model@{utt} runs on the model chain and
+auto-escalation stays off. Emptied while the parent has one, it is
+written as an empty list, which switches the inherited one off.
+@{bullet}@{b}Caller's model@{ub} (@{tt}inherit_parent_llm@{utt}) -- run
+on the model the calling run was switched to, when it was switched.
+@{bullet}@{b}Fallback recovery@{ub} -- seconds a failed profile rests.
+@{bullet}@{b}LLM parameters@{ub} -- YAML, for every profile or keyed by
+profile name or @{tt}*@{utt}.
+
+@{h2}Run
+
+The core's run settings, key by key: @{b}Max steps@{ub}; auto-escalation
+(@{tt}auto_escalate_on_stuck@{utt}, @{tt}escalate_error_streak@{utt},
+@{tt}escalate_rounds@{utt}, @{tt}escalate_max_calls@{utt}); loop detection
+(@{tt}enabled@{utt}, @{tt}history_size@{utt},
+@{tt}exact_match_threshold@{utt}, @{tt}sequence_threshold@{utt},
+@{tt}block_after_threshold@{utt}, @{tt}auto_unblock_after_steps@{utt});
+reasoning loop detection (@{tt}enabled@{utt},
+@{tt}repetition_threshold@{utt} from 0.01 to 1); and the timeouts
+@{tt}session_lock_timeout@{utt}, @{tt}tool_cleanup_timeout@{utt},
+@{tt}llm_task_max_iterations@{utt}. Each field has a help line.
+
+A number outside what the runtime can use -- the config would take it --
+is marked red, counts as an unsaved change and holds @{b}Save@{ub} back.
+A note above the escalation fields says when auto-escalation cannot run:
+no advanced chain, one that starts with the model chain's first profile,
+advanced steps or calls at 0, or chains inherited from a parent that does
+not resolve.
+
+@{h2}Prompt
+
+@{bullet}@{b}Template file@{ub} or @{b}Inline prompt@{ub}. A template
+path starting with @{tt}./@{utt} or @{tt}../@{utt} is relative to the
+agent's file, any other to the repository root. The preview shows the file
+and whether it is found. An inline prompt wins over a template; under a
+parent with an inline prompt, choosing a template file writes an empty
+@{tt}system_prompt@{utt} so the file applies.
+@{bullet}@{b}Template variables@{ub} -- YAML, the prompt's Jinja variables.
+@{bullet}@{b}Skills@{ub} -- two checklists, @{b}Always@{ub} (in the prompt
+from the start) and @{b}On demand@{ub} (listed; the agent loads them),
+with a search and a filter. A bare list (@{tt}skills: [a]@{utt}) is the
+"always" list; changing one of the two writes it out as
+@{tt}always:@{utt}, and "on demand" stays inherited. A list with
+@{tt}+@{utt} or @{tt}!@{utt} entries is edited in the YAML tab.
+
+@{h2}Hooks
+
+A switch for all lifecycle hooks of the agent, and a table of the hooks the
+app has registered, one row per hook name, with its types and default. Per
+hook: inherited/default, on or off for this agent, and its own settings as
+YAML (the gear button). They are written to
+@{tt}agent_config.hooks.overrides.<hook>@{utt}. Search, type and state
+filters narrow the table; overrides for hooks the app does not know are
+listed below it.
+
+@{h2}YAML
+
+The agent's own entry as it is written to the file, for every key without
+a form control (@{tt}self_tool_descriptions@{utt}, a plugin's own keys).
+@{b}Apply to form@{ub} takes the typed text; so does leaving the tab. Text
+that does not parse stays, with the error below it, and keeps the tab
+open. @{b}Show the form's entry@{ub} drops the typed text.
+
+@{h2}Every YAML field
+
+An error under a YAML field is about the text it was shown for: typing on
+hides it, leaving the field or saving parses again. A save stopped by YAML
+that does not parse opens the tab and the field. Anchors, aliases, dates
+and keys that are not text are refused: quote such values. An unquoted
+@{tt}- !server/*@{utt} is read as the removal entry it looks like and
+written back quoted.
+@endnode
+
+@node tools "The Tools tab"
+@{h1}The Tools tab
+
+The tab's title counts the tools that reach the agent. At the top, a live
+summary: how many tools reach it, how many tools each pattern names, and
+which patterns name nothing ("matches nothing"). A pattern for an external
+MCP server is not judged -- the editor has no list of external tools -- and
+is marked "external, not checked", or "external server off".
+
+@{h2}Allowed and Blocked
+
+Two lists, each with a source:
+
+@{table}
+Source | Means
+Inherited | the parent's list, unchanged
+Extend inherited | the inherited entries stay; this agent adds (@{tt}+x@{utt}) or removes (@{tt}!x@{utt}) entries
+Own list | this list replaces the inherited one
+@{body}
+
+A list that mixes @{tt}+@{utt}/@{tt}!@{utt} entries with plain ones is
+refused by the loader; the tab says so and edits nothing until a source is
+picked. Switching from an own list to "extend" turns what it had beyond
+the inherited list into @{tt}+@{utt} entries and what it dropped into
+@{tt}!@{utt} entries.
+
+@{h2}The tree
+
+Every tool server of the running app with its tools, searchable (server
+names, plugin types, tool names and descriptions) and filtered to the
+servers in the list or not in it. Ticking a server writes
+@{tt}server/*@{utt}; ticking a tool writes @{tt}server/tool@{utt}.
+A tool that another pattern grants or blocks is locked, and its label
+names the pattern; a blocked tool shows unticked in the allowed tree.
+Patterns that are not a server or a tool of the tree are chips below it;
+type one and press Enter.
+
+@{h2}How patterns match
+
+The panel counts as the agent does. A server is considered when the
+allowed list as a whole matches it (a @{tt}server/tool@{utt} entry counts);
+its tools are kept when the list matches them; then the blocked ones are
+dropped. So @{tt}web/web_*@{utt} alone grants nothing -- the server pass
+does not let @{tt}web@{utt} through -- but next to @{tt}web/web_search@{utt}
+it grants every @{tt}web_*@{utt} tool. An external server's tool is
+reached by its exact dotted name (@{tt}everything.echo@{utt}) or a pattern
+ending in @{tt}*@{utt} (@{tt}everything.*@{utt}); a bare
+@{tt}everything@{utt} or @{tt}everything/*@{utt} is not.
+@endnode
+
+@node subagents "The Sub-agents tab"
+@{h1}The Sub-agents tab
+
+Only there when the @{tt}sub_agent_manager@{utt} plugin is installed. An
+agent starts sub-agents through the managers its allowed tools grant, and
+each manager's own lists decide which agents it can start.
+
+@{h2}Managers this agent uses
+
+One row per enabled manager: a switch for the grant, which agents it can
+start, whether it runs yet ("not active yet"), and @{b}Configure@{ub}.
+
+@{bullet}The switch writes @{tt}<manager>/*@{utt} into the agent's allowed
+tools (or @{tt}!<manager>/*@{utt} to take back an inherited grant); it is
+saved with the agent. It is locked, the reason in its tooltip, while a
+pattern it does not write grants the manager or a block stops it -- edit
+those in the Tools tab.
+@{bullet}@{b}Configure@{ub} opens the manager's own entry: the agents it
+can start (a checklist with search and filter) and its limits
+(@{tt}max_sub_agents_per_session@{utt}, @{tt}max_sub_agents_per_type@{utt},
+@{tt}max_nesting_depth@{utt}, @{tt}default_wait_timeout@{utt}: whole
+numbers from 0, empty for the plugin default;
+@{tt}auto_archive_on_limit@{utt}, @{tt}allow_advanced_model@{utt}). A list
+with patterns or @{tt}+@{utt}/@{tt}!@{utt} entries, or none, is shown as
+it is; @{b}Pick agents instead@{ub} replaces it with a checklist.
+@{b}Save manager@{ub} writes the manager's entry after its own diff; its
+other keys stay. Unsaved manager edits are asked about before they are
+dropped.
+@{bullet}@{b}New manager@{ub} creates @{tt}config/agents/<name>.yaml@{utt}
+with a manager that starts no agent yet, grants it to this agent and opens
+it. It runs after the next restart.
+
+@{h2}Managers that may start this agent
+
+One switch per manager, with the list entry that decides (blocked,
+@{tt}*@{utt}, the exact name, a pattern). It is written into that
+manager's file right away, after its diff, and edits the manager's lists
+as little as possible:
+
+@{bullet}A list the manager does not have, or has with
+@{tt}+@{utt}/@{tt}!@{utt} entries, gets @{tt}+name@{utt} (or
+@{tt}!name@{utt} to lift an inherited block), so the inherited list keeps
+applying; a plain list gets the bare name.
+@{bullet}Allowing takes the agent off @{tt}blocked_agents@{utt} and, if
+that is not enough, adds it to @{tt}allowed_agents@{utt}; stopping takes it
+off @{tt}allowed_agents@{utt} and, if still allowed, adds it to
+@{tt}blocked_agents@{utt}.
+@{bullet}A @{tt}+@{utt}/@{tt}!@{utt} list that becomes empty is removed,
+not left as @{tt}[]@{utt}, which would replace the inherited one.
+@{bullet}A manager whose own list is a single value (@{tt}"*"@{utt}) is not
+changed; the answer says so.
+@endnode
+
+@node saving "How saving works"
+@{h1}How saving works
+
+@{h2}Only the own entry
+
+The editor edits the agent's entry exactly as written in its file:
+@{tt}${NAME}@{utt} stays unexpanded, @{tt}+@{utt}/@{tt}!@{utt} prefixes
+and @{tt}./@{utt} paths stay. Inherited values are never copied in.
+
+@{h2}The steps of a save
+
+@{bullet}@{b}Diff first.@{ub} The panel asks for a dry run and shows the
+change; nothing is written until @{b}Write file@{ub}. A save that changes
+nothing says so.
+@{bullet}@{b}Conflict check.@{ub} The panel sends the version of the file
+it loaded (a hash of its bytes). When the file changed on disk meanwhile,
+the save is refused ("changed on disk; reload"). The file is read once
+more right before the write.
+@{bullet}@{b}In place.@{ub} Only the lines the edit changes are
+rendered anew; every other line is copied byte for byte, CRLF files stay
+CRLF. Removed keys go, new keys go to the end of their block, a changed
+list keeps its flow style and the comments of the items it still holds.
+Values are written so the loader reads them back unchanged
+(@{tt}1e-05@{utt} as @{tt}1.0e-05@{utt}; @{tt}on@{utt}, @{tt}yes@{utt},
+@{tt}null@{utt}, @{tt}y@{utt} quoted). The result must parse back to
+exactly the intended data, else nothing is written and the answer names
+the value, or says the file's layout does not allow an in-place edit.
+@{bullet}@{b}Atomic write.@{ub} A temporary file beside it, then a
+rename; the file keeps its permissions.
+@{bullet}@{b}Check and roll back.@{ub} The whole config is loaded again;
+the agent and every agent that inherits from it are checked: a type chain
+that ends in an unknown type, an inheritance cycle, the inheritance merge,
+every profile of both chains, the effective template (unless an inline
+prompt wins). A problem that was not there before restores the old file
+and answers with one @{tt}location: message@{utt} per line. Problems an
+entry already had neither block a save nor hide a new one. If the file
+changed again during the check, it is left alone and the answer says so;
+if the old content cannot be put back, the answer names the file that
+holds the rejected content.
+
+@{h2}New agents
+
+A new agent is written to @{tt}config/agents/<name>.yaml@{utt} with the
+header comment "Created with the Agent Editor.". The name must not be a
+server, a plugin type or an existing file; the file is only created, never
+replaced, and only inside the repository. A copy re-bases its
+@{tt}./@{utt} and @{tt}../@{utt} template paths to the new file. When the
+config's includes do not pick the file up, or the agent does not load, the
+file is removed again.
+
+@{h2}Delete
+
+Refused while another entry inherits from the agent. The entry goes with
+the comment block directly above its key (at the key's own indentation),
+the comments inside it and one separating blank line. When it was the
+file's last server, the file keeps @{tt}servers: {}@{utt}; it is deleted
+only when nothing but blank lines, that structure and the editor's own
+header would remain. The dialog names managers whose own
+@{tt}allowed_agents@{utt} still list the agent.
+
+@{h2}Secrets and paths in what the panel shows
+
+Inherited and effective values are what the loader made of the files,
+with two things put back. A value the config expanded from
+@{tt}${NAME}@{utt} shows as @{tt}${NAME}@{utt} -- for every variable a
+config file names and every name in the secrets files; a value of 8
+characters or more is replaced wherever it appears, a shorter one only
+where it is the whole string. Error texts show such values of 8
+characters or more as @{tt}${NAME}@{utt} as well. And a
+template path the loader made absolute shows relative to the repository,
+so a value copied into an entry stays valid.
+@endnode
+
+@node restart "What needs a restart"
+@{h1}What needs a restart
+
+The app builds its agents when it starts. The panel compares each
+resolved entry on disk with what the app runs -- the whole entry except
+@{tt}enabled@{utt}; for a built agent its live @{tt}agent_config@{utt} and
+role gate, which a config reload changes.
+
+@{table}
+State | Means
+in_sync | disk and app agree ("Active")
+changed | they differ; the keys are named ("Active with older settings")
+new | enabled on disk, not started ("Not active yet")
+removed | started, but disabled or gone on disk ("Still active, gone from disk")
+off | disabled and not started ("Disabled")
+@{body}
+
+Changed keys are named one level down where it helps:
+@{tt}max_steps@{utt}, @{tt}tools.allowed@{utt},
+@{tt}hooks.overrides@{utt}, @{tt}metadata.visibility@{utt}.
+
+@{b}Reload config@{ub} applies only @{tt}max_steps@{utt},
+@{tt}auto_escalate_on_stuck@{utt}, @{tt}escalate_rounds@{utt},
+@{tt}escalate_max_calls@{utt}, @{tt}escalate_error_streak@{utt},
+@{tt}fallback_recovery_seconds@{utt}, @{tt}inherit_parent_llm@{utt} and
+@{tt}metadata.min_role@{utt}, and only to agents that are built and
+registered as plugin servers; the panel lists those separately. Everything
+else -- model chain, tools, prompt, hooks, visibility, any change to an
+agent not built yet -- takes a restart. The panel only says so: restarting
+is the operator's.
+@endnode
+
+@node api "The HTTP API"
+@{h1}The HTTP API
+
+All under @{tt}/plugins/agent_editor/@{utt}, JSON in and out; an error's
+@{tt}detail@{utt} is a string. Every data endpoint, reads included, checks for
+an active admin in the user database itself, on top of the route rules: a
+token's role claim does not count, API keys are refused. Writes take
+@{tt}Content-Type: application/json@{utt} only.
+
+@{table}
+Method and path | Does
+GET / | the panel
+GET /agents | every agent row (file, group, editable, state, restart, problems) and errors
+GET /agents/{name} | own, inherited and effective entry, parent, children, version, live state, sub-agent access, prompt file
+GET /inherited?type= | what an entry of that type gets without keys of its own; without type, basic_agent
+POST /agents | create: name, entry, source (a copy), dry_run
+PUT /agents/{name} | save: entry, version, dry_run
+DELETE /agents/{name} | delete: version, dry_run
+GET /managers | the enabled sub-agent managers with their lists and the agents each can start
+POST /managers | create a manager: name, allowed_agents, dry_run
+PUT /managers/{name} | save a manager's entry; its type and enabled cannot change here
+PUT /agents/{name}/spawnable | sam, allowed, version (of the manager's file), dry_run
+GET /meta | picker data: agent classes, profiles, skills, hooks, prompt files, reloadable fields
+GET /tools | the tools of every tool server, by server
+POST /tools/effective | the tools a pair of lists yields after inheritance, with per-pattern counts
+GET /prompt?path=&agent= | a prompt file; ./ paths relative to the agent's file
+POST /yaml | an entry rendered as YAML
+POST /yaml/parse | YAML text parsed into an entry
+@{body}
+
+A write with @{tt}dry_run@{utt} answers the diff only; without it the
+answer carries the file's new @{tt}version@{utt}.
+
+@{table}
+Status | When
+400 | the write is not possible: a read-only entry, a name taken, an entry still inherited from, a manager list that cannot change that way, a value or layout that cannot be written in place, a refused prompt path
+401 | not signed in
+403 | not an active admin, or authentication off
+404 | unknown agent, type or manager
+409 | the file changed on disk (the detail says so)
+415 | not JSON
+422 | an invalid request, or an entry that does not load (the file is back as it was)
+500 | the config on disk does not load, or the old content could not be put back
+@{body}
+
+The prompt preview reads only relative paths to @{tt}.md@{utt},
+@{tt}.txt@{utt} and @{tt}.markdown@{utt} files inside the repository, at
+most 200 000 characters. Absolute, UNC, drive and stream paths are refused
+as text before the path is touched.
+@endnode
+
+@node limits "Limits and known gaps"
+@{h1}Limits and known gaps
+
+@{bullet}@{b}Read-only entries.@{ub} An entry defined in more than one
+file is shown but not editable, and so is an agent a plugin ships (its
+file lies in the plugin's folder, outside the writable folders: a change
+there would meet the next pull -- @{b}Duplicate@{ub} makes an agent of
+your own from it), one in a read-only file, a file outside the
+repository, a file mixing CRLF and LF line endings, or a file the
+round-trip parser cannot read (a duplicate key, which the loader
+accepts). An entry holding a value JSON cannot carry (a date, a number as
+a key, @{tt}.inf@{utt}) shows it as text and cannot be saved or copied
+from the form; deleting it and the manager switches still work.
+@{bullet}@{b}Rare layouts are refused.@{ub} When the in-place result
+would not read back as intended -- irregularly indented keys, a file that
+ends inside a block scalar without a final newline -- nothing is written.
+@{bullet}@{b}Comments in a replaced list.@{ub} A list of mappings that
+changes loses the comments inside the mappings it replaces; a list written
+as @{tt}[]@{utt} becomes a block list with its first item.
+@{bullet}@{b}Rollback window.@{ub} Between the write and the check the
+new file is on disk for about a tenth of a second.
+@{bullet}@{b}Tool catalogue.@{ub} Only servers the app has built: an agent
+not started yet (lazy start) and external MCP servers are not in the tree.
+@{bullet}@{b}Short secrets.@{ub} A secret shorter than 8 characters is
+masked only where it is a whole value.
+@{bullet}@{b}Others editing.@{ub} The editor reads the files again at most
+once a second; the panel shows another edit at its next refresh, and the
+version check keeps a save from overwriting it.
+@{bullet}@{b}Without a runtime.@{ub} In an app without a runtime in its
+state, every live state is empty.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    agent_editor:
+      type: agent_editor
+      enabled: true
+@{body}
+
+It needs @{tt}auth.enabled: true@{utt} and an admin account. The route
+rule in @{tt}config/security.yaml@{utt} keeps non-admins out before the
+plugin's own check:
+
+@{code yaml}
+- pattern: "/plugins/agent_editor/*"
+  policy: "require_auth"
+  min_role: "admin"
+@{body}
+
+New agents and managers are written to @{tt}config/agents/<name>.yaml@{utt};
+the master config must include that folder (the default includes
+@{tt}agents*/*.yaml@{utt}).
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+config_path | the app's config, else config/config.yaml | the master config of the tree to edit
+root | the working directory | the repository root: files outside it are read-only, templates resolve against it
+writable_dirs | the master config's folder | folders, relative to the root, whose files the panel writes; new agents go into config/agents, which must be one of them
+@{body}
+
+@{tt}config_path@{utt} and @{tt}root@{utt} are for tests; the running app
+needs neither. @{tt}writable_dirs@{utt} opens a plugin's folder on a
+developer's machine, in @{tt}config/local.yaml@{utt} (list the config
+folder too, or its agents turn read-only). The plugin depends on
+@{tt}ruamel.yaml@{utt}, which renders a file keeping its comments. No data
+of its own: it reads and writes the config files.
+@endnode

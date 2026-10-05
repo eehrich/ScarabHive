@@ -64,7 +64,7 @@
       && statValue('tool_results') === '2' && statSub('tool_results') === `${number(live.tool_results)} tokens` && live.tool_results > 0
       && statValue('archived') === '3' && statSub('archived') === `${number(live.archived)} tokens` && live.archived > 0
       && statValue('facts') === '4' && statSub('facts') === `${number(live.facts)} / ${number(2000)} tokens` && live.facts > 0;
-    const table = column(1) === `blender|${MARKUP}|writer` && column(2) === `${number(10000)}|${number(40000)}|${number(50000)}`
+    const table = column(1) === `blender|${MARKUP}|reviewer` && column(2) === `${number(10000)}|${number(40000)}|${number(50000)}`
       && column(4) === `${number(1000)}|${number(4000)}|${number(20000)}` && column(5) === '10.0%|10.0%|40.0%'
       && column(6) === '–|–|3' && column(7) === '2|3 (3.0 MB)|–' && column(8) === '|PL1L2|L1'
       && rows()[1].cells[8].querySelector('.pk-badge--warn')?.textContent === 'L2' && !heads().includes('Session');

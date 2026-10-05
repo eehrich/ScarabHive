@@ -170,42 +170,46 @@ class TestCalculatorTool:
     @pytest.mark.asyncio
     async def test_division_by_zero(self, example_server):
         """Test calculator division by zero handling."""
-        with pytest.raises(ValueError, match="Division by zero is not allowed"):
-            await example_server.call("example_calculator", {
-                "operation": "divide",
-                "a": 10,
-                "b": 0
-            })
+        result = await example_server.call("example_calculator", {
+            "operation": "divide",
+            "a": 10,
+            "b": 0
+        })
+        assert result["status"] == "error"
+        assert 'Division by zero is not allowed' in result["error"]
 
     @pytest.mark.asyncio
     async def test_invalid_operation(self, example_server):
         """Test calculator with invalid operation."""
-        with pytest.raises(ValueError, match="Invalid operation 'power'"):
-            await example_server.call("example_calculator", {
-                "operation": "power",
-                "a": 2,
-                "b": 3
-            })
+        result = await example_server.call("example_calculator", {
+            "operation": "power",
+            "a": 2,
+            "b": 3
+        })
+        assert result["status"] == "error"
+        assert "Invalid operation 'power'" in result["error"]
 
     @pytest.mark.asyncio
     async def test_missing_parameters(self, example_server):
         """Test calculator with missing parameters."""
-        with pytest.raises(ValueError, match="Missing required parameters"):
-            await example_server.call("example_calculator", {
-                "operation": "add",
-                "a": 5
-                # Missing 'b' parameter
-            })
+        result = await example_server.call("example_calculator", {
+            "operation": "add",
+            "a": 5
+            # Missing 'b' parameter
+        })
+        assert result["status"] == "error"
+        assert 'Missing required parameters: a, b' in result["error"]
 
     @pytest.mark.asyncio
     async def test_invalid_number_format(self, example_server):
         """Test calculator with invalid number format."""
-        with pytest.raises(TypeError, match="Invalid number format"):
-            await example_server.call("example_calculator", {
-                "operation": "add",
-                "a": "not_a_number",
-                "b": 5
-            })
+        result = await example_server.call("example_calculator", {
+            "operation": "add",
+            "a": "not_a_number",
+            "b": 5
+        })
+        assert result["status"] == "error"
+        assert 'a and b must be numbers' in result["error"]
 
     @pytest.mark.asyncio
     async def test_custom_precision(self, system_config):
@@ -314,29 +318,32 @@ class TestFormatterTool:
     @pytest.mark.asyncio
     async def test_invalid_format(self, example_server):
         """Test formatter with invalid format type."""
-        with pytest.raises(ValueError, match="Invalid format 'capitalize'"):
-            await example_server.call("example_formatter", {
-                "text": "hello world",
-                "format": "capitalize"
-            })
+        result = await example_server.call("example_formatter", {
+            "text": "hello world",
+            "format": "capitalize"
+        })
+        assert result["status"] == "error"
+        assert "Invalid format 'capitalize'" in result["error"]
 
     @pytest.mark.asyncio
     async def test_missing_parameters(self, example_server):
         """Test formatter with missing parameters."""
-        with pytest.raises(ValueError, match="Missing required parameters"):
-            await example_server.call("example_formatter", {
-                "text": "hello world"
-                # Missing 'format' parameter
-            })
+        result = await example_server.call("example_formatter", {
+            "text": "hello world"
+            # Missing 'format' parameter
+        })
+        assert result["status"] == "error"
+        assert "Invalid format 'None'" in result["error"]
 
     @pytest.mark.asyncio
     async def test_invalid_text_type(self, example_server):
         """Test formatter with invalid text type."""
-        with pytest.raises(TypeError, match="Text parameter must be a string"):
-            await example_server.call("example_formatter", {
-                "text": 12345,
-                "format": "uppercase"
-            })
+        result = await example_server.call("example_formatter", {
+            "text": 12345,
+            "format": "uppercase"
+        })
+        assert result["status"] == "error"
+        assert 'text must be a string' in result["error"]
 
     @pytest.mark.asyncio
     async def test_text_length_limit(self, system_config):
@@ -347,11 +354,12 @@ class TestFormatterTool:
         
         server = ExampleServer("example", system_config, config)
         
-        with pytest.raises(ValueError, match="Text length 10 exceeds maximum 5"):
-            await server.call("example_formatter", {
-                "text": "1234567890",  # 10 characters
-                "format": "uppercase"
-            })
+        result = await server.call("example_formatter", {
+            "text": "1234567890",  # 10 characters
+            "format": "uppercase"
+        })
+        assert result["status"] == "error"
+        assert 'Text length 10 exceeds maximum 5' in result["error"]
 
     @pytest.mark.asyncio
     async def test_empty_text(self, example_server):
@@ -558,3 +566,71 @@ class TestModernPattern:
             # Should be async
             assert inspect.iscoroutinefunction(method), \
                 f"Method {method_name} should be async"
+
+
+class TestContract:
+    """The plugin-authoring contract: error answers, own validation, end lines."""
+
+    async def test_calculator_result_beyond_decimal_context_is_answered(self, example_server):
+        """1e20 * 1e20 has more digits than Decimal's context; it raised before."""
+        result = await example_server.call("example_calculator", {
+            "operation": "multiply", "a": 1e20, "b": 1e20})
+        assert result["result"] == 1e40
+
+    @pytest.mark.parametrize("value", ["Infinity", "sNaN"])
+    async def test_calculator_refuses_non_finite_operand(self, example_server, value):
+        result = await example_server.call("example_calculator", {
+            "operation": "add", "a": value, "b": 1})
+        assert result["status"] == "error"
+        assert "finite" in result["error"]
+
+    async def test_calculator_refuses_result_beyond_float(self, example_server):
+        """A result a float cannot hold would reach the model as Infinity."""
+        result = await example_server.call("example_calculator", {
+            "operation": "multiply", "a": 1e200, "b": 1e200})
+        assert result["status"] == "error"
+        assert "too large" in result["error"]
+
+    async def test_status_refuses_non_boolean_verbose(self, example_server):
+        """The string "false" is truthy; it must not switch verbose on."""
+        result = await example_server.call("example_status", {"verbose": "false"})
+        assert result["status"] == "error"
+        assert "config" not in result
+
+    @pytest.mark.parametrize("tool,params,expected", [
+        ("example_calculator", {"operation": "add", "a": 10, "b": 5}, "add 10, 5 = 15"),
+        ("example_formatter", {"text": "hello", "format": "reverse"}, "reverse: 5 -> 5 chars"),
+        ("example_status", {}, "example: active, 3 tools"),
+    ])
+    async def test_end_line_names_the_result(self, example_server, tool, params, expected):
+        """Through call_with_status, the scope closes with the result, not "completed"."""
+        from agent_system.tools.status import StatusPhase, get_status_bus
+
+        bus = get_status_bus()
+        method = tool[len("example_"):]
+        queue = await bus.subscribe(server=f"example.{method}()")
+        try:
+            await example_server.call_with_status(tool, params)
+        finally:
+            bus.unsubscribe(queue)
+        closing = []
+        while not queue.empty():
+            event = queue.get_nowait()
+            if event.phase in (StatusPhase.END, StatusPhase.ERROR):
+                closing.append((event.phase, event.message))
+        assert closing == [(StatusPhase.END, expected)]
+
+    async def test_cli_builds_its_server(self):
+        """The CLI passed a config= keyword the constructor does not take."""
+        from argparse import Namespace
+        from plugins.example.cli import run_calculator
+
+        result = await run_calculator(Namespace(operation="add", a=10.0, b=5.0, precision=2))
+        assert result["result"] == 15.0
+
+    async def test_error_text_cuts_what_it_quotes(self, example_server):
+        """An error echoing a huge argument back would be an unbounded answer."""
+        result = await example_server.call("example_calculator", {
+            "operation": "x" * 10_000, "a": 1, "b": 2})
+        assert result["status"] == "error"
+        assert len(result["error"]) < 200

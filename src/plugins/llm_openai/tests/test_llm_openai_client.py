@@ -549,7 +549,8 @@ class TestOpenAIClientRetryExhaustion:
 
     @pytest.mark.asyncio
     async def test_chat_tools_retry_exhaustion_none_response(self, openai_client):
-        """Test that exhausted retries in streaming return error payload."""
+        """Exhausted stream retries raise LLMConnectionError, which the agent server falls back on."""
+        from agent_system.llm.models import LLMConnectionError
         client, mock_instance = openai_client
         
         # Mock asyncio.sleep to avoid delays
@@ -566,17 +567,9 @@ class TestOpenAIClientRetryExhaustion:
             
             messages = [ChatMessage(role="user", content="Test")]
             
-            # Collect all events
-            events = []
-            async for event in client.chat_tools_streaming(messages, []):
-                events.append(event)
-            
-            # Should yield final event with error, not raise AttributeError
-            assert len(events) == 1
-            final_event = events[0]
-            assert final_event["type"] == "final"
-            assert "error" in final_event["assistant"]
-            assert "Stream failed after" in final_event["assistant"]["error"]["message"]
+            with pytest.raises(LLMConnectionError, match="peer closed connection"):
+                async for _ in client.chat_tools_streaming(messages, []):
+                    pass
             # Verify multiple retry attempts were made
             assert mock_chat.completions.create.call_count >= 2
 
@@ -763,7 +756,7 @@ async def test_an_error_while_a_token_is_watching_stays_an_error(openai_client, 
 
     if call == "chat":
         answer = await client.chat([ChatMessage(role="user", content="hi")], cancellation_token=token)
-        assert "boom" in json.loads(answer)["_llm_error"]["error"]
+        assert json.loads(answer)["_llm_error"]["message"] == "boom"
     else:
         result = await client.chat_tools([ChatMessage(role="user", content="hi")], [], cancellation_token=token)
         assert result["assistant"]["error"]["message"] == "boom"
@@ -794,7 +787,7 @@ async def test_a_cancel_during_a_backoff_is_a_cancel(openai_client, call, status
         else:
             await client.chat_tools([ChatMessage(role="user", content="hi")], [], cancellation_token=token)
 
-    assert "cancelled by user" in str(cancelled.value).lower()
+    assert "cancelled" in str(cancelled.value).lower()
     assert mock_instance.chat.completions.create.await_count == 1, "the cancelled request was retried"
 
 
@@ -808,11 +801,14 @@ async def test_a_stream_that_keeps_failing_reaches_the_post_response_hook(openai
         seen.append(info)
 
     client.set_llm_hooks(on_post_response=post)
-    events = [e async for e in client.chat_tools_streaming([ChatMessage(role="user", content="hi")], [])]
+    from agent_system.llm.models import LLMConnectionError
 
-    assert "Stream failed after 4 attempts" in events[-1]["assistant"]["error"]["message"]
+    with pytest.raises(LLMConnectionError):
+        async for _ in client.chat_tools_streaming([ChatMessage(role="user", content="hi")], []):
+            pass
+
     outcome = [info.get("error") for info in seen if info.get("finish_reason") != "retry"]
-    assert outcome == ["Stream failed after 4 attempts: down"], "the debugger kept a request without its response"
+    assert outcome == ["Network/protocol error: down"], "the debugger kept a request without its response"
 
 
 async def test_a_cancel_mid_stream_is_a_cancel_not_an_upstream_error(openai_client):

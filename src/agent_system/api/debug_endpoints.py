@@ -54,7 +54,7 @@ async def health_check() -> dict[str, Any]:
 # =============================================================================
 
 async def require_admin_viewer(request: Request) -> None:
-    """Administrators only, checked here and not only by the route rules in config.yaml: 401 or 403."""
+    """Administrators only, checked here and not only by the route rules in config/security.yaml: 401 or 403."""
     from ..ui.routes import viewer_role
 
     if await viewer_role(request) != "admin":

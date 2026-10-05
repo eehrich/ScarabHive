@@ -64,6 +64,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Windows refuses os.replace onto a file another process has open, and a read
+# that lands during a replace -- both with PermissionError. Retry briefly.
+# Elsewhere a PermissionError is a real permission problem: raise at once.
+_RETRY_SHARING = os.name == "nt"
+_SHARING_ATTEMPTS = 40
+_SHARING_PAUSE_S = 0.05
+
+
+def _retry_sharing_violation(fn):
+    for attempt in range(_SHARING_ATTEMPTS):
+        try:
+            return fn()
+        except PermissionError:
+            if not _RETRY_SHARING or attempt == _SHARING_ATTEMPTS - 1:
+                raise
+            time.sleep(_SHARING_PAUSE_S)
+
+
+def _file_sig(st: os.stat_result) -> Tuple[int, int, int]:
+    """Identity, time and size: a file another process put in place differs
+    in its inode even when time and size happen to match."""
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
 
 class JsonStoreServer(SchemaBasedToolServer):
     """In-memory, validated JSON document store."""
@@ -147,9 +170,30 @@ class JsonStoreServer(SchemaBasedToolServer):
         # namespace -> doc name -> bounded stack of pre-mutation snapshots
         self._doc_history: Dict[str, Dict[str, "deque[Dict[str, Any]]"]] = {}
         self._ns_last_access: Dict[str, float] = {}
+        # namespace -> file name -> ((inode, mtime_ns, size) as this process
+        # last loaded or saved it, doc name). A file whose stat differs was
+        # written by another process and is reloaded before the next operation.
+        self._file_sigs: Dict[str, Dict[str, Tuple[Tuple[int, int, int], Optional[str]]]] = {}
+
+        # A read answer is sent to the model whole; above this it is refused
+        # with a hint to narrow it, never cut (cut JSON is invalid JSON). A store
+        # that sizes its documents (max_doc_bytes set) reads them whole, indented.
+        default_read = (2 * self._max_doc_bytes if "max_doc_bytes" in config_dict
+                        else 50000)
+        try:
+            self._max_read_chars: int = int(config_dict.get("max_read_chars", default_read))
+        except (TypeError, ValueError):
+            self._max_read_chars = default_read
+        if self._max_read_chars < 1:
+            self._max_read_chars = default_read
 
         if self._persist:
             self._sweep_expired_files()
+
+    def get_template_vars(self) -> Dict[str, Any]:
+        """schema.yaml variables: where a call without namespace lands."""
+        return {"name": self.name,
+                "ns_default": "your session" if self._session_scoped else "the default store"}
 
     # ------------------------------------------------------------------
     # Namespaces
@@ -178,13 +222,11 @@ class JsonStoreServer(SchemaBasedToolServer):
                 self._doc_owners.pop(k, None)
                 self._doc_history.pop(k, None)
                 self._ns_last_access.pop(k, None)
+                self._file_sigs.pop(k, None)
                 logger.info("json_store: evicted idle namespace '%s' (TTL)", k)
         self._ns_last_access[ns] = now
-        if ns not in self._docs and self._persist:
-            docs, owners = self._load_namespace(ns)
-            if docs:
-                self._docs[ns] = docs
-                self._doc_owners[ns] = owners
+        if ns not in self._docs:
+            self._sync_namespace(ns)
         return self._docs.setdefault(ns, {})
 
     # ------------------------------------------------------------------
@@ -196,7 +238,7 @@ class JsonStoreServer(SchemaBasedToolServer):
                                *{f"LPT{i}" for i in range(1, 10)}}
 
     @classmethod
-    def _safe_filename(cls, raw: str) -> str:
+    def _safe_filename(cls, raw: str, hash_trailing_dot: bool = True) -> str:
         """Deterministic filesystem-safe name. Namespace and doc names are
         LLM-supplied, so they must not be able to escape the storage dir or
         hit Windows-invalid names — and distinct raws must never share a file.
@@ -204,10 +246,12 @@ class JsonStoreServer(SchemaBasedToolServer):
         anything with uppercase — NTFS/macOS paths are case-INsensitive, so
         'Run7' and 'run7' would otherwise be the same file) gets a '~<sha1>'
         suffix of the exact raw. '~' is outside the safe charset, so the two
-        forms can never collide with each other."""
+        forms can never collide with each other. A trailing '.' is hashed too:
+        Windows drops it, so namespace 'run.' would open the directory 'run'."""
         s = re.sub(r"[^A-Za-z0-9_.-]", "_", raw)[:60]  # keep Windows MAX_PATH headroom
         reserved = s.split(".")[0].upper() in cls._WIN_RESERVED
-        if s != raw or s != s.lower() or reserved or not s.strip("._-"):
+        if (s != raw or s != s.lower() or reserved or not s.strip("._-")
+                or (hash_trailing_dot and s.endswith("."))):
             # surrogatepass: names come from parsed LLM JSON, which can carry
             # lone surrogates — hashing must never raise on them.
             digest = hashlib.sha1(
@@ -232,55 +276,194 @@ class JsonStoreServer(SchemaBasedToolServer):
                        "owner": self._doc_owners.get(ns, {}).get(name),
                        "data": self._docs.get(ns, {}).get(name)}
             path = self._doc_file(ns, name)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.parent / (path.name + ".tmp")
-            # surrogatepass mirrors _load_namespace's read: document values come
-            # from parsed LLM JSON and may contain lone surrogates — strict
-            # utf-8 would raise and the doc would silently stay memory-only.
-            tmp.write_text(json.dumps(payload, ensure_ascii=False),
-                           encoding="utf-8", errors="surrogatepass")
-            os.replace(tmp, path)
+            self._file_sigs.setdefault(ns, {})[path.name] = (
+                self._write_payload(path, payload), name)
             return None
         except (OSError, UnicodeError, ValueError, TypeError) as e:
             logger.error("json_store: persisting '%s' (ns '%s') failed: %s",
                          name, ns, e)
             return f"document saved in memory, but writing it to disk failed: {e}"
 
-    def _unpersist_doc(self, params: Dict[str, Any], name: str) -> None:
+    @staticmethod
+    def _write_payload(path: Path, payload: Dict[str, Any]) -> Tuple[int, int, int]:
+        """Write atomically (tmp + replace); return the sig of the file written."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Per-process tmp name: two processes sharing the storage must not
+        # write into (and then rename) each other's half-written tmp file.
+        tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"
+        # surrogatepass mirrors _sync_namespace's read: document values come
+        # from parsed LLM JSON and may contain lone surrogates — strict
+        # utf-8 would raise and the doc would silently stay memory-only.
+        tmp.write_text(json.dumps(payload, ensure_ascii=False),
+                       encoding="utf-8", errors="surrogatepass")
+        try:
+            # Stat the tmp BEFORE the replace: the rename keeps its identity,
+            # so a file another process puts in place right after ours never
+            # passes for ours.
+            st = os.stat(tmp)
+            _retry_sharing_violation(lambda: os.replace(tmp, path))
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
+        return _file_sig(st)
+
+    def _unpersist_doc(self, params: Dict[str, Any], name: str) -> Optional[str]:
+        """Remove a document's file. Returns an error string when that fails —
+        the file then keeps its sig, so a sync does not load it back."""
+        if not self._persist:
+            return None
+        ns = self._ns(params)
+        path = self._doc_file(ns, name)
+        try:
+            _retry_sharing_violation(lambda: path.unlink(missing_ok=True))
+        except OSError as e:
+            logger.error("json_store: removing persisted '%s' failed: %s", name, e)
+            return f"document deleted in memory, but removing its file failed: {e}"
+        self._file_sigs.get(ns, {}).pop(path.name, None)
+        return None
+
+    def _sync_namespace(self, ns: str, migrate: bool = True) -> None:
+        """Bring a namespace in memory up to date with its directory: load
+        files this process has not seen or that changed since it last loaded
+        or saved them (another process wrote them), drop documents whose file
+        another process deleted. A reloaded document takes value and owner
+        from the file and loses its undo history — those snapshots describe a
+        state that is no longer the one on disk. Documents never saved (persist
+        failed) are left alone. A corrupt file is skipped with a warning."""
+        bucket = self._docs.setdefault(ns, {})
         if not self._persist:
             return
-        try:
-            self._doc_file(self._ns(params), name).unlink(missing_ok=True)
-        except OSError as e:  # pragma: no cover - unlink race
-            logger.error("json_store: removing persisted '%s' failed: %s", name, e)
-
-    def _load_namespace(self, ns: str) -> Tuple[Dict[str, Any],
-                                                Dict[str, Optional[str]]]:
-        """Read all persisted documents of a namespace (empty dicts if none).
-        A corrupt file is skipped with a warning, never fatal."""
-        docs: Dict[str, Any] = {}
-        owners: Dict[str, Optional[str]] = {}
+        owners = self._doc_owners.setdefault(ns, {})
+        history = self._doc_history.get(ns, {})
+        first_sync = ns not in self._file_sigs
+        sigs = self._file_sigs.setdefault(ns, {})
         ns_dir = self._storage_dir / self._safe_filename(ns)
-        if not ns_dir.is_dir():
-            return docs, owners
-        for f in sorted(ns_dir.glob("*.json")):
+        legacy_dir = self._storage_dir / self._safe_filename(ns, hash_trailing_dot=False)
+        if first_sync and legacy_dir != ns_dir:
+            self._migrate_legacy_dir(ns, legacy_dir, ns_dir)
+        try:
+            files = {f.name: f for f in ns_dir.glob("*.json")} if ns_dir.is_dir() else {}
+        except OSError as e:
+            logger.warning("json_store: listing %s failed: %s", ns_dir, e)
+            return
+        for fname in [n for n in sigs if n not in files]:
+            _, name = sigs.pop(fname)
+            if name is not None:
+                bucket.pop(name, None)
+                owners.pop(name, None)
+                history.pop(name, None)
+        loaded = 0
+        moved = False
+        for fname, f in sorted(files.items()):
             try:
-                payload = json.loads(f.read_text(encoding="utf-8",
-                                                 errors="surrogatepass"))
-                if not isinstance(payload, dict):
-                    logger.warning("json_store: skipping malformed persisted "
-                                   "doc %s (not an object)", f)
+                sig = _file_sig(f.stat())
+                if fname in sigs and sigs[fname][0] == sig:
                     continue
-                name = str(payload.get("doc") or f.stem)
-                docs[name] = payload.get("data")
-                owners[name] = payload.get("owner")
-            except (OSError, ValueError, UnicodeError) as e:
+                payload = json.loads(_retry_sharing_violation(
+                    lambda: f.read_text(encoding="utf-8", errors="surrogatepass")))
+            except OSError as e:  # vanished or locked: try again next call
+                logger.warning("json_store: reading %s failed: %s", f, e)
+                continue
+            except (ValueError, UnicodeError) as e:
                 logger.warning("json_store: skipping corrupt persisted doc %s: %s",
                                f, e)
-        if docs:
-            logger.info("json_store: reloaded %d doc(s) for namespace '%s' "
-                        "from disk", len(docs), ns)
-        return docs, owners
+                sigs[fname] = (sig, None)
+                continue
+            if not isinstance(payload, dict):
+                logger.warning("json_store: skipping malformed persisted "
+                               "doc %s (not an object)", f)
+                sigs[fname] = (sig, None)
+                continue
+            if payload.get("namespace") not in (None, ns):
+                # Another namespace's file (Windows once stored 'run.' in the
+                # folder of 'run'); _migrate_legacy_dir moves it out.
+                sigs[fname] = (sig, None)
+                continue
+            name = str(payload.get("doc") or f.stem)
+            expected = self._safe_filename(name) + ".json"
+            if fname != expected:
+                # Written under an older naming rule: move it to its name now,
+                # then load the result in a second pass. A file still there in
+                # that pass could not be removed; its data is in the new one.
+                if not migrate:
+                    sigs[fname] = (sig, None)
+                    continue
+                if self._move_legacy_file(f, payload, ns_dir / expected) is not None:
+                    moved = True
+                    continue
+            bucket[name] = payload.get("data")
+            owners[name] = payload.get("owner")
+            history.pop(name, None)
+            sigs[fname] = (sig, name)
+            loaded += 1
+        if loaded:
+            logger.info("json_store: loaded %d doc(s) for namespace '%s' "
+                        "from disk", loaded, ns)
+        if moved:
+            self._sync_namespace(ns, migrate=False)
+
+    @staticmethod
+    def _remove_file(f: Path) -> None:
+        try:
+            _retry_sharing_violation(lambda: f.unlink(missing_ok=True))
+        except OSError as e:
+            logger.warning("json_store: removing %s failed: %s", f, e)
+
+    def _move_legacy_file(self, f: Path, payload: Dict[str, Any],
+                          target: Path) -> Optional[Tuple[int, int, int]]:
+        """Move a file saved under an older name to ``target`` without losing
+        newer data: a hard link never overwrites (a second process migrating
+        at the same moment gets FileExistsError). When both exist, the later
+        written one wins — a process still running old code keeps writing the
+        old name. Returns the target's sig, or None when ``f`` stays in place."""
+        def old_is_newer() -> bool:
+            return f.stat().st_mtime_ns > target.stat().st_mtime_ns
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(f, target)
+            except FileExistsError:
+                if old_is_newer():
+                    self._write_payload(target, payload)
+            except (OSError, AttributeError, NotImplementedError):
+                # no hard links on this file system: check, then write
+                if not target.exists() or old_is_newer():
+                    self._write_payload(target, payload)
+            sig = _file_sig(target.stat())
+        except OSError as e:
+            logger.warning("json_store: moving %s failed: %s", f, e)
+            return None
+        self._remove_file(f)
+        return sig
+
+    def _migrate_legacy_dir(self, ns: str, legacy_dir: Path, ns_dir: Path) -> None:
+        """Move this namespace's files out of the folder an older naming rule
+        gave it (a trailing '.', which Windows drops: 'run.' landed in 'run').
+        Only files whose payload names this namespace move — on Windows the
+        legacy folder is another namespace's folder."""
+        try:
+            if not legacy_dir.is_dir():
+                return
+            files = sorted(legacy_dir.glob("*.json"))
+        except OSError:
+            return
+        for f in files:
+            try:
+                payload = json.loads(_retry_sharing_violation(
+                    lambda: f.read_text(encoding="utf-8", errors="surrogatepass")))
+            except (OSError, ValueError, UnicodeError):
+                continue
+            if not isinstance(payload, dict) or payload.get("namespace") != ns:
+                continue
+            target = ns_dir / (self._safe_filename(str(payload.get("doc") or f.stem))
+                               + ".json")
+            self._move_legacy_file(f, payload, target)
+        try:
+            # On Windows 'run.' IS the folder of namespace 'run': leave it.
+            if legacy_dir.resolve().name == legacy_dir.name:
+                legacy_dir.rmdir()   # only succeeds when empty
+        except OSError:
+            pass
 
     def _sweep_expired_files(self) -> None:
         """Drop namespace dirs whose NEWEST file is past the retention —
@@ -681,7 +864,8 @@ class JsonStoreServer(SchemaBasedToolServer):
     @staticmethod
     def _top_level(value: Any) -> Any:
         if isinstance(value, dict):
-            return list(value.keys())
+            keys = list(value.keys())
+            return keys[:15] + ([f"+{len(keys) - 15} more"] if len(keys) > 15 else [])
         if isinstance(value, list):
             return f"array[{len(value)}]"
         return type(value).__name__
@@ -882,7 +1066,17 @@ class JsonStoreServer(SchemaBasedToolServer):
                 ),
             }
 
-        result = await handler(params)
+        # Another process may have changed this namespace on disk since we last
+        # looked; without this its changes were invisible and overwritten here.
+        self._sync_namespace(self._ns(params))
+        try:
+            result = await handler(params)
+        except (AttributeError, TypeError, ValueError) as e:
+            # A parameter of the wrong JSON type (doc: 5, depth: "abc"): answer
+            # like every other refusal, with a terminal status event.
+            logger.warning("json_store: %s refused: %r", operation, e)
+            result = {"status": "error",
+                      "error": f"Invalid parameter for '{operation}': {e}"}
 
         # Exactly one terminal status event per operation — the handlers never
         # touch _status, so it can neither go missing nor be emitted twice.
@@ -955,6 +1149,11 @@ class JsonStoreServer(SchemaBasedToolServer):
         except ValueError as e:
             return {"status": "error", "error": str(e)}
         text = self._canonical(value)
+        if len(text) > self._max_read_chars:
+            return {"status": "error",
+                    "error": f"'{name}'{'.' + path if path else ''} is {len(text)} "
+                             f"chars, over the read limit of {self._max_read_chars}. "
+                             f"Read a part with 'path'; 'outline' shows the structure."}
         return {"status": "ok", "doc": name, "path": path or None,
                 "chars": len(text), "json": text}
 
@@ -1068,6 +1267,9 @@ class JsonStoreServer(SchemaBasedToolServer):
                         raise ValueError(f"List index {idx} out of range (length {len(parent)})")
                     parent = parent[idx]
                 else:
+                    if isinstance(seg, int):
+                        # an int key would be stored as-is: unreadable by path, "0" after a restart
+                        raise ValueError(f"Path expects an array at '[{seg}]' but found an object")
                     if seg not in parent or not isinstance(parent[seg], (dict, list)):
                         parent[seg] = container
                     parent = parent[seg]
@@ -1145,8 +1347,11 @@ class JsonStoreServer(SchemaBasedToolServer):
         self._snapshot(params, name, "delete_doc")   # so undo can recreate it
         del bucket[name]
         self._owners(params).pop(name, None)
-        self._unpersist_doc(params, name)
-        return {"status": "ok", "deleted": name, "remaining": list(bucket.keys())}
+        result = {"status": "ok", "deleted": name, "remaining": list(bucket.keys())}
+        persist_error = self._unpersist_doc(params, name)
+        if persist_error:
+            result["persist_error"] = persist_error
+        return result
 
     async def undo(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Revert the LAST mutation on a document (repeatable up to the history
@@ -1195,10 +1400,13 @@ class JsonStoreServer(SchemaBasedToolServer):
         # The undone operation had created the document → remove it again.
         bucket.pop(name, None)
         owners.pop(name, None)
-        self._unpersist_doc(params, name)
-        return {"status": "ok", "doc": name, "undone": snap["op"],
-                "restored": False, "deleted": True,
-                "snapshots_left": len(stack)}
+        result = {"status": "ok", "doc": name, "undone": snap["op"],
+                  "restored": False, "deleted": True,
+                  "snapshots_left": len(stack)}
+        persist_error = self._unpersist_doc(params, name)
+        if persist_error:
+            result["persist_error"] = persist_error
+        return result
 
     async def list_docs(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """List the caller's documents with size and top-level keys."""
@@ -1218,7 +1426,14 @@ class JsonStoreServer(SchemaBasedToolServer):
             return err
         depth_param = params.get("depth")
         depth = 3 if depth_param is None else max(0, int(depth_param))
-        return {"status": "ok", "doc": name, "outline": self._outline(bucket[name], depth)}
+        outline = self._outline(bucket[name], depth)
+        size = len(self._canonical(outline))
+        if size > self._max_read_chars:
+            return {"status": "error",
+                    "error": f"Outline of '{name}' at depth {depth} is {size} chars, "
+                             f"over the read limit of {self._max_read_chars}. "
+                             f"Use a smaller 'depth'."}
+        return {"status": "ok", "doc": name, "outline": outline}
 
     #: Haeufige deutsche/englische Funktionswoerter (>=4 Zeichen), die als
     #: Sättigungs-Signal wertlos sind. Bewusst klein — perfekte Filterung ist

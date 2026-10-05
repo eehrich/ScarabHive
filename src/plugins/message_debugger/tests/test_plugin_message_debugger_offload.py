@@ -171,6 +171,23 @@ class TestCaptureCorrectness:
         assert turns[0]["agent_name"] == "agentX"
 
     @pytest.mark.asyncio
+    async def test_a_turn_is_stamped_when_captured_not_when_written(self, hooks, db, messages, monkeypatch):
+        # The writer can lag minutes behind; a turn's time must still be its call's.
+        import plugins.message_debugger.hooks as hooks_module
+        release = threading.Event()
+        db.submit(lambda: release.wait(5))  # the writer is busy with an earlier job
+        before = time.time() * 1000
+        await hooks.debugger_capture_pre_llm(HookContext(
+            hook_type="pre_llm_call", agent_name="a", request_id="r", session_id="s", messages=messages))
+        after = time.time() * 1000
+        # The writer reaches the turn only "an hour later".
+        monkeypatch.setattr(hooks_module, "time", type("Clock", (), {"time": staticmethod(lambda: after / 1000 + 3600)}))
+        release.set()
+        assert db.flush(timeout=3)
+        [turn] = db.get_turns(owner=EVERYONE)
+        assert before <= turn["timestamp_ms"] <= after
+
+    @pytest.mark.asyncio
     async def test_tool_calls_captured(self, hooks, db):
         captured = {}
         real = db.insert_turn

@@ -55,13 +55,40 @@ trade.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Iterable
 
 from agent_system.paths import resolve_data_path
 
 logger = logging.getLogger(__name__)
+
+
+def remote_outside(path: str, base: Path, roots: Iterable[Path]) -> bool:
+    """Whether ``path`` names a host or a device (``\\\\host\\share``, ``//host/share``,
+    ``\\\\?\\...``, ``\\\\.\\...``) that lies in no root -- judged on the text alone.
+
+    Resolving such a path is not lexical: Windows opens it, and for a share that
+    means connecting to the host and signing in with the user's NTLM credentials
+    -- before containment could refuse it (measured in file_ops: four file system
+    calls on the host per refused path). ``abspath`` and ``commonpath`` only
+    compute, so nothing here is opened. A share that is itself a root is allowed.
+    """
+    # \??\ is the NT object namespace: no drive to pathlib, yet \??\UNC\host\share reaches the host too
+    if path.replace("/", "\\").startswith("\\??\\"):
+        return True
+    if not PureWindowsPath(path).drive.startswith("\\\\"):
+        return False
+    target = os.path.normcase(os.path.abspath(os.path.join(base, path)))
+    for root in roots:
+        folder = os.path.normcase(str(root))
+        try:
+            if os.path.commonpath([target, folder]) == folder:
+                return False
+        except ValueError:  # another drive or host
+            continue
+    return True
 
 
 class PathSandboxDenied(Exception):
@@ -120,6 +147,11 @@ class PathSandbox:
             raise PathSandboxDenied(
                 f"Sandbox is read-only, refusing to write: {path}")
 
+        if isinstance(path, str) and remote_outside(path, self.base, self.roots):
+            logger.warning("PathSandbox rejected a host or device path: %r", path)
+            raise PathSandboxDenied(
+                f"Path is outside the allowed directories: {path}. "
+                f"Allowed: {self.describe_roots()}")
         try:
             candidate = Path(path)
             # A leading "~" is a home-directory intent that nothing here

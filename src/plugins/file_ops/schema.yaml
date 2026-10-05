@@ -5,21 +5,21 @@ tools:
   - type: function
     function:
       name: "{{ name }}_read_file"
-      description: "Read the contents of a file. Line numbers are 1-indexed. This tool will truncate its output at 2000 lines and may be called repeatedly with offset and limit parameters to read larger files in chunks."
+      description: "Read a text file. A file over {{ max_unpaginated_kb }} KB returns its first {{ default_line_limit }} lines and total_lines; read the rest with offset and limit."
       parameters:
         type: object
         properties:
           filePath:
             type: string
-            description: "The absolute path of the file to read."
+            description: "Absolute path"
           offset:
             type: integer
             minimum: 1
-            description: "Optional: the 1-based line number to start reading from. Only use this if the file is too large to read at once. If not specified, the file will be read from the beginning."
+            description: "1-based start line"
           limit:
             type: integer
             minimum: 1
-            description: "Optional: the maximum number of lines to read. Only use this together with `offset` if the file is too large to read at once."
+            description: "Maximum lines to read"
         required: ["filePath"]
         additionalProperties: false
 
@@ -28,9 +28,8 @@ tools:
     function:
       name: "{{ name }}_manage"
       description: |
-        File and directory management operations: create, delete, move, rename.
-        All paths must be within allowed directories. Parent directories are auto-created for create operation.
-        To replace a file completely, use create with overwrite: true -- never delete and create again.
+        Create, delete, move or rename files and directories within the allowed directories.
+        create makes missing parent directories.
       parameters:
         type: object
         properties:
@@ -38,31 +37,30 @@ tools:
             type: string
             enum: ["create", "delete", "move", "rename"]
             description: |
-              Operation to perform:
-              - create: Create file with content. Fails if it exists, unless overwrite is true -- that replaces the whole content in one call, no delete first.
-              - delete: Delete file or empty directory
-              - move: Move file/directory to new location
-              - rename: Rename file/directory (same directory)
+              - create: new file with content; fails if it exists unless overwrite
+              - delete: file or empty directory (non-empty: recursive)
+              - move: to destination
+              - rename: to new_name, same directory
           path:
             type: string
-            description: "Absolute path to the file or directory to operate on"
+            description: "Absolute path"
           content:
             type: string
-            description: "File content (required for create operation, files only)"
+            description: "File content (create)"
           destination:
             type: string
-            description: "Destination path (required for move operation)"
+            description: "Destination path (move)"
           new_name:
             type: string
-            description: "New name without path (required for rename operation)"
+            description: "New name without path (rename)"
           overwrite:
             type: boolean
             default: false
-            description: "Replace the file if it exists, content and all (for create operation). Editing a part of a file is what replace_string_in_file is for."
+            description: "create: replace an existing file whole (never delete first)"
           recursive:
             type: boolean
             default: false
-            description: "Allow recursive deletion of non-empty directories (for delete operation)"
+            description: "delete: also non-empty directories"
         required: ["operation", "path"]
         additionalProperties: false
 
@@ -70,21 +68,19 @@ tools:
     function:
       name: "{{ name }}_replace_string_in_file"
       description: |
-        This is a tool for making edits in an existing file in the workspace. For moving or renaming files, use run in terminal tool with the 'mv' command instead. For larger edits, split them into smaller edits and call the edit tool multiple times to ensure accuracy. Before editing, always ensure you have the context to understand the file's contents and context. To edit a file, provide: 1) filePath (absolute path), 2) oldString (MUST be the exact literal text to replace including all whitespace, indentation, newlines, and surrounding code etc), and 3) newString (MUST be the exact literal text to replace \`oldString\` with (also including all whitespace, indentation, newlines, and surrounding code etc.). Ensure the resulting code is correct and idiomatic.). Each use of this tool replaces exactly ONE occurrence of oldString.
-
-        CRITICAL for \`oldString\`: Must uniquely identify the single instance to change. Include at least 3 lines of context BEFORE and AFTER the target text, matching whitespace and indentation precisely. If this string matches multiple locations, or does not match exactly, the tool will fail.
+        Edit an existing file: replace exactly ONE occurrence of oldString with newString. Split larger edits into several calls. To move or rename, use {{ name }}_manage.
       parameters:
         type: object
         properties:
           filePath:
             type: string
-            description: "An absolute path to the file to edit."
+            description: "Absolute path"
           oldString:
             type: string
-            description: "The exact literal text to replace, preferably unescaped. For single replacements (default), include at least 3 lines of context BEFORE and AFTER the target text, matching whitespace and indentation precisely. For multiple replacements, specify expected_replacements parameter. If this string is not the exact literal text (i.e. you escaped it) or does not match exactly, the tool will fail."
+            description: "Exact literal text, unescaped, whitespace and indentation included. Must occur exactly once: include ~3 lines of context before and after."
           newString:
             type: string
-            description: "The exact literal text to replace `old_string` with, preferably unescaped. Provide the EXACT text. Ensure the resulting code is correct and idiomatic."
+            description: "Exact literal replacement text, unescaped"
         required: ["filePath", "oldString", "newString"]
         additionalProperties: false
 {% endif %}
@@ -240,16 +236,22 @@ tools:
         additionalProperties: false
 
 config:
-  # Read-only mode: disables all write/modification operations
-  # When true, only read_file, list_directory, search_files, grep_search, semantic_search are available
+  # DOCUMENTATION, not defaults: a tool server does not read this block. The
+  # values are what server.py falls back to when the server entry in
+  # plugins.yaml leaves a key out.
+
+  # Read-only mode: the write tools (manage, replace_string_in_file) are not
+  # rendered, and the server refuses them if one is called anyway.
   read_only: false
-  
-  # Sandbox security: restricts file operations to these directories only
-  # Prevents path traversal attacks and unauthorized file access
+
+  # The sandbox: every path a tool takes must resolve inside one of these.
+  # Relative entries count from the project; "." is the folder the CLI was
+  # started in. Without the key: src, docs, tests and tmp of the project.
   allowed_directories:
-    - data/workspace
-  max_file_size_for_indexing_kb: 1024
-  max_file_size_mb: 10
+    - src
+    - docs
+    - tests
+    - tmp
   
   # File reading limits to prevent memory issues with large files
   max_unpaginated_file_size_kb:
@@ -286,6 +288,8 @@ config:
     # Off unless configured — the server defaults it to false.
     enable_semantic_search: false
     auto_reindex_interval: 300
+    # Files larger than this are left out of the index, and grep skips them.
+    max_file_size_for_indexing_kb: 1024
 
     # Search dotfiles and dot-directories as well.
     search_hidden: false

@@ -58,7 +58,8 @@ llm_system:
 
     gemini-3-flash:
       extends: gemini-3-pro
-      model: gemini-3-flash-preview
+      model: gemini-3.8-flash
+      context_window: 1048576     # full window: Flash has no long-context price tier
 
     gemini-3-flash-nostream:
       extends: gemini-3-flash
@@ -76,10 +77,11 @@ llm_system:
 
     gemini-3-pro:
       provider: gemini_sdk
+      prompt_cache_ttl_minutes: 5   # implicit cache, about 3-5 min, set by Google (not configurable); from 4096 prompt tokens
       model: gemini-3.1-pro-preview
       api_key: ${GOOGLE_API_KEY}
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000
+      context_window: 200000      # window 1M, but Pro costs double above 200K prompt tokens
       request_timeout: 240
       max_tokens: 16384
       thinking_level: high
@@ -112,7 +114,8 @@ llm_system:
 
     gemini-3-flash-batch:
       extends: gemini-3-pro-batch
-      model: gemini-3-flash-preview
+      model: gemini-3.8-flash
+      context_window: 1048576     # no long-context tier, unlike Pro
       max_tokens: null
 
     gemini-3-pro-batch:
@@ -120,7 +123,7 @@ llm_system:
       model: gemini-3.1-pro-preview
       api_key: ${GOOGLE_API_KEY}
       batch_provider: gemini
-      context_window: 200000
+      context_window: 200000      # Pro: double price above 200K prompt tokens
       max_tokens: 16384
       thinking_level: high
       include_thoughts: false
@@ -132,32 +135,37 @@ llm_system:
         streaming: false
         json_mode: true
 
-    claude-sonnet-5:
-      extends: claude-opus-5-thinking
-      model: claude-sonnet-5
+    # Anthropic has no -latest aliases: the entries are named by family and
+    # name its newest model; the next one is a `model:` line.
+    claude-sonnet:
+      extends: claude-opus-thinking
+      model: claude-sonnet-5-5
       request_timeout: 180
       thinking_budget: null
       include_thoughts: false
 
-    claude-sonnet-5-thinking:
-      extends: claude-sonnet-5
+    claude-sonnet-thinking:
+      extends: claude-sonnet
       request_timeout: 300
       thinking_budget: 8192
       include_thoughts: true
 
-    claude-opus-5:
-      extends: claude-opus-5-thinking
+    claude-opus:
+      extends: claude-opus-thinking
       request_timeout: 300
       max_tokens: 16384
       thinking_budget: null
       include_thoughts: false
 
-    claude-opus-5-thinking:
+    claude-opus-thinking:
       provider: anthropic
+      # Anthropic's default cache ttl, what our cache_control sends; every hit
+      # renews it. 1 h (2x input per write instead of 1.25x) is not wired.
+      prompt_cache_ttl_minutes: 5
       thinking_request_shape: adaptive   # budget_tokens gibt hier 400
-      model: claude-opus-5
+      model: claude-opus-5-5
       api_key: ${ANTHROPIC_API_KEY}
-      context_window: 1000000
+      context_window: 1000000     # Claude 5.x: 1M at one price, no long-context tier
       request_timeout: 600
       max_tokens: 32768
       thinking_budget: 16384
@@ -173,14 +181,14 @@ llm_system:
         - chat_completions
         default_api_type: chat_completions
 
-    claude-fable-5:
-      extends: claude-opus-5-thinking
+    claude-fable:
+      extends: claude-opus-thinking
       model: claude-fable-5-1
       thinking_budget: null
       include_thoughts: false
 
-    claude-haiku-4-5:
-      extends: claude-opus-5-thinking
+    claude-haiku:
+      extends: claude-opus-thinking
       thinking_request_shape: budget     # kennt adaptive nicht
       model: claude-haiku-4-5-20251001
       context_window: 200000
@@ -189,15 +197,15 @@ llm_system:
       thinking_budget: null
       include_thoughts: false
 
-    claude-sonnet-5-batch:
-      extends: claude-opus-5-batch
-      model: claude-sonnet-5
+    claude-sonnet-batch:
+      extends: claude-opus-batch
+      model: claude-sonnet-5-5
       max_tokens: 8192
 
-    claude-opus-5-batch:
+    claude-opus-batch:
       provider: batch
       thinking_request_shape: adaptive   # budget_tokens gibt hier 400
-      model: claude-opus-5
+      model: claude-opus-5-5
       api_key: ${ANTHROPIC_API_KEY}
       batch_provider: anthropic
       context_window: 1000000
@@ -209,31 +217,21 @@ llm_system:
         streaming: false
         json_mode: true
 
-    claude-haiku-4-5-batch:
-      extends: claude-opus-5-batch
+    claude-haiku-batch:
+      extends: claude-opus-batch
       thinking_request_shape: budget     # kennt adaptive nicht
       model: claude-haiku-4-5-20251001
       context_window: 200000
       max_tokens: 8192
 
-    gpt-5-nano:
-      extends: gpt-5
-      model: gpt-5.4-nano
-      capabilities:
-        image_input: false
-        supported_api_types:
-        - chat_completions
-        audio_input: false
-        video_input: false
-        max_image_size: null
-        supported_image_formats: []
-        image_detail_control: false
-
-    gpt-5-mini:
+    # OpenAI direct. It has no -latest aliases (OpenRouter does), so each
+    # family names its newest model; the next one is a `model:` line.
+    gpt-luna:
       provider: openai_httpx
-      model: gpt-5.4-mini
+      prompt_cache_ttl_minutes: 30  # fixed for GPT-5.6+/6 ("30m" is the only ttl OpenAI accepts); every hit renews it
+      model: gpt-6-luna
       api_key: ${OPENAI_API_KEY}
-      context_window: 272000
+      context_window: 272000      # window 1.05M, but above 272K prompt tokens input costs double
       request_timeout: 240
       httpx_timeouts:
         connect: 10.0
@@ -258,50 +256,28 @@ llm_system:
         - webp
         image_detail_control: true
 
-    gpt-5:
-      extends: gpt-5-mini
-      model: gpt-5.4
+    gpt-sol:
+      extends: gpt-luna
+      model: gpt-6.1-sol
       httpx_timeouts: null
       capabilities:
         audio_input: false
         video_input: false
 
-    gpt-5-codex:
-      extends: gpt-5
-      model: gpt-5.4-codex
+    gpt-astra:
+      extends: gpt-sol
+      model: gpt-6-astra
 
-    gpt-5-codex-mini:
-      extends: gpt-5-codex
-      model: gpt-5.4-codex-mini
-      httpx_timeouts:
-        connect: 10.0
-        read: 240.0
-        write: 10.0
-        pool: 5.0
-      capabilities:
-        audio_input: false
-        video_input: false
+    gpt-luna-batch:
+      extends: gpt-sol-batch
+      model: gpt-6-luna
 
-    gpt-5-nano-batch:
-      extends: gpt-5-batch
-      model: gpt-5.4-nano
-      capabilities:
-        image_input: false
-        json_mode: false
-        max_image_size: null
-        supported_image_formats: []
-        image_detail_control: false
-
-    gpt-5-mini-batch:
-      extends: gpt-5-batch
-      model: gpt-5.4-mini
-
-    gpt-5-batch:
+    gpt-sol-batch:
       provider: batch
-      model: gpt-5.4
+      model: gpt-6-sol            # batch is offered for gpt-6-sol, not (yet) for 6.1
       api_key: ${OPENAI_API_KEY}
       batch_provider: openai_httpx
-      context_window: 272000
+      context_window: 272000      # double price above 272K prompt tokens
       request_timeout: 240
       capabilities:
         tools: true
@@ -520,64 +496,64 @@ llm_system:
       description: "Google Gemini Pro (batch)"
       max_steps: 500
 
+    gpt-pro:
+      model_ref: gpt-astra
+      description: "OpenAI GPT Astra (direct), flagship"
+      max_steps: 500
+
     gpt-full:
-      model_ref: gpt-5
-      description: "OpenAI full model for complex tasks"
+      model_ref: gpt-sol
+      description: "OpenAI GPT Sol (direct) for complex tasks"
       max_steps: 500
-      
+
     gpt-mini:
-      model_ref: gpt-5-mini
-      description: "OpenAI mini model (sync)"
+      model_ref: gpt-luna
+      description: "OpenAI GPT Luna (direct), fast and cheap"
       max_steps: 500
-      
+
     gpt-mini-batch:
-      model_ref: gpt-5-mini-batch
-      description: "OpenAI mini model (batch)"
+      model_ref: gpt-luna-batch
+      description: "OpenAI GPT Luna (batch)"
       max_steps: 500
-    
+
     gpt-full-batch:
-      model_ref: gpt-5-batch
-      description: "OpenAI full model (batch)"
-      max_steps: 500
-      
-    gpt-nano:
-      model_ref: gpt-5-nano
-      description: "OpenAI nano model for fast tasks"
+      model_ref: gpt-sol-batch
+      description: "OpenAI GPT Sol (batch)"
       max_steps: 500
 
     # Claude profiles
     claude-sonnet:
-      model_ref: claude-sonnet-5
-      description: "Claude Sonnet 5 - Best speed/intelligence balance in Sonnet tier; near-Opus quality on coding & agentic work"
+      model_ref: claude-sonnet
+      description: "Claude Sonnet (newest) - Best speed/intelligence balance in Sonnet tier; near-Opus quality on coding & agentic work"
       max_steps: 500
 
     claude-sonnet-batch:
-      model_ref: claude-sonnet-5-batch
-      description: "Claude Sonnet 5 (batch)"
+      model_ref: claude-sonnet-batch
+      description: "Claude Sonnet (batch)"
       max_steps: 500
 
     claude-opus:
-      model_ref: claude-opus-5
-      description: "Claude Opus 5 - For complex agentic coding and enterprise work; most capable Opus-tier"
+      model_ref: claude-opus
+      description: "Claude Opus (newest) - For complex agentic coding and enterprise work; most capable Opus-tier"
       max_steps: 500
 
     claude-opus-batch:
-      model_ref: claude-opus-5-batch
-      description: "Claude Opus 5 (batch)"
+      model_ref: claude-opus-batch
+      description: "Claude Opus (batch)"
       max_steps: 500
 
     claude-fable:
-      model_ref: claude-fable-5
-      description: "Claude Fable 5 - Anthropic's most capable model; next-generation intelligence for long-running agents ($10/$50 per MTok)"
+      model_ref: claude-fable
+      description: "Claude Fable (newest) - Anthropic's most capable model; next-generation intelligence for long-running agents ($10/$50 per MTok)"
       max_steps: 500
 
     claude-haiku:
-      model_ref: claude-haiku-4-5
+      model_ref: claude-haiku
       description: "Claude Haiku 4.5 - Fastest model with near-frontier intelligence"
       max_steps: 500
     
     claude-haiku-batch:
-      model_ref: claude-haiku-4-5-batch
+      model_ref: claude-haiku-batch
       description: "Claude Haiku 4.5 (batch)"
       max_steps: 500
 
@@ -635,7 +611,7 @@ llm_system:
   tts_models:
     gemini-tts-flash:
       provider: gemini_tts
-      model: gemini-3.1-flash-tts-preview
+      model: gemini-3.8-flash-tts
       api_key: "${GOOGLE_API_KEY}"
       # Default-Stimme des Eintrags (per Aufruf via TTSVoice uebersteuerbar).
       # Tief + deutsch: Algenib > Charon > Algieba; Katalog: GEMINI_TTS_VOICES.
@@ -668,7 +644,7 @@ llm_system:
   tts_profiles:
     gemini-tts:
       model_ref: gemini-tts-flash
-      description: "Gemini 3.1 Flash TTS - fast, cost-effective"
+      description: "Gemini 3.8 Flash TTS - fast, cost-effective"
 
     gemini-tts-pro:
       model_ref: gemini-tts-pro
@@ -698,4 +674,4 @@ llm_system:
   decision_profiles:
     laya:
       model_ref: laya
-      description: "Laya, open weights on a local laya-serve - measured blind to German language errors (README of llm_decisions)"
+      description: "Laya, open weights on a local laya-serve"

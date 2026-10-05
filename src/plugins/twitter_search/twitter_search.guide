@@ -1,0 +1,263 @@
+@database "twitter_search"
+@author "Enrico Ehrich"
+@$VER: twitter_search.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Twitter search"
+@{h1}Twitter search
+
+Twitter search lets an agent search posts on X (formerly Twitter) from
+the last seven days through the official X API v2. The agent sends a
+query -- keywords, hashtags, mentions, X's search operators -- and gets
+back the posts with their author, date, language and likes, reposts,
+replies and quotes. It needs an X developer account with a bearer token,
+and X bills every post it reads. Nothing is cached. It is off in the
+default configuration and has no hooks and no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  Searching posts  " link tweets}
+  @{"  Errors and rate limits  " link errors}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt} is there, switched off:
+
+@{code yaml}
+plugins:
+  servers:
+    twitter_search:
+      type: twitter_search
+      enabled: false
+@{body}
+
+Set @{tt}enabled: true@{utt}, and allow the tool in an agent's list:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+twitter_search/*"
+@{body}
+
+@{h2}The bearer token
+
+The plugin reads one credential, the environment variable
+@{tt}TWITTER_BEARER_TOKEN@{utt}. There is no setting for it in
+@{tt}plugins.yaml@{utt}. Put it in @{tt}config/secrets.env@{utt} (or the
+machine's own @{tt}config/local.env@{utt}) as
+@{tt}TWITTER_BEARER_TOKEN=...@{utt}, see
+@{" Configuration files " link scarabhive/config}; a start takes those
+files into the environment. The token is read once, when the plugin's
+server is created: after adding or changing it, restart.
+
+To get a token: create a developer account and an app at
+@{tt}developer.x.com@{utt}, then open the app's "Keys and tokens" and
+generate the bearer token. The token must belong to an app that may use
+recent search (@{tt}GET /2/tweets/search/recent@{utt}); otherwise every
+call answers "403 Forbidden".
+
+Without a token the plugin still loads and the tool is still offered;
+every call then answers @{tt}"status": "setup_required"@{utt} with the
+steps above, and the log says "TWITTER_BEARER_TOKEN not found in
+environment".
+
+@{h2}What it costs
+
+X bills API access per use: at the time of writing, by X's price list
+(@{tt}docs.x.com/x-api/getting-started/pricing@{utt}), a fixed amount per
+post read, with no free tier for new accounts. Check the current prices
+there. What matters for this plugin: every call is a request to X --
+nothing is cached -- and X's recent search returns at least 10 posts per
+request. A call with @{tt}limit@{utt} 3 still reads 10 posts; the plugin
+passes on 3. The most a call reads is 50.
+
+@{h2}Server settings
+
+None. The plugin has no settings of its own; the request timeout (30
+seconds) and the limits are fixed in the code.
+
+@{h2}Dependencies and data
+
+The plugin needs @{tt}tweepy@{utt} (4.14 or later), listed in its
+@{tt}plugin.toml@{utt}. Without it the tool answers "tweepy library not
+installed". The plugin stores nothing.
+
+tweepy talks to X through @{tt}requests@{utt}, which always verifies the
+server's certificate here: @{tt}network.ssl_verify: false@{utt} in
+@{tt}config.yaml@{utt} does not reach it. A proxy is taken from the usual
+@{tt}HTTPS_PROXY@{utt} environment variable.
+
+@{h2}Running it on its own
+
+@{tt}python -m plugins.twitter_search --query "godot" --max-results 5 --lang de@{utt}
+runs one search in the terminal and prints the posts;
+@{tt}--lang@{utt} (default en) is added to the query as X's
+@{tt}lang:@{utt} operator.
+With @{tt}--server --port 9004@{utt} it serves the tool over HTTP instead,
+bound to 127.0.0.1 (see
+@{" HTTP server: starting it " link http_server/cli}).
+@endnode
+
+@node tweets "Searching posts"
+@{h1}Searching posts
+
+@{tt}twitter_search_tweets@{utt} (the name follows the plugin instance)
+sends one query to X's recent search and answers with the posts found.
+Recent search covers the last seven days; older posts are not found.
+
+@{h2}Parameters
+
+The framework does not check the arguments against the schema; what
+follows is what the code does with them.
+
+@{table}
+Parameter | Meaning
+query | required; X search syntax: words, @{tt}#hashtag@{utt}, @{tt}\@user@{utt}, @{tt}"exact phrase"@{utt}, @{tt}from:user@{utt}, @{tt}lang:de@{utt}, @{tt}-is:retweet@{utt}, @{tt}OR@{utt}. Leading and trailing spaces are removed; empty, or not text, is an error
+limit | how many posts at most; default 10, also when null. Below 1 is taken as 1, above 50 as 50, a fraction is cut (5.9 is 5), a number as text ("5") is read. Not a number: an error
+@{body}
+
+X checks the query itself: a query it cannot parse answers "400 Bad
+Request" (see @{" Errors and rate limits " link errors}).
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+status | success, error or setup_required
+query | the query, without leading and trailing spaces
+tweets | the posts, in the order X returns them
+total_results | how many posts are in @{tt}tweets@{utt}
+message | with no posts: "No tweets found for query: <query>"
+api_info | @{tt}version@{utt} and @{tt}search_window@{utt} ("Last 7 days")
+@{body}
+
+Each post has @{tt}id@{utt}, @{tt}text@{utt}, @{tt}created_at@{utt} (ISO
+time, UTC), @{tt}lang@{utt} and @{tt}source@{utt} (the client it was
+posted with, when X sends one). @{tt}author@{utt} carries
+@{tt}id@{utt}, @{tt}username@{utt}, @{tt}name@{utt}, @{tt}verified@{utt}
+and @{tt}followers_count@{utt}; it is missing when X sent no author for
+the post. @{tt}metrics@{utt} carries @{tt}likes@{utt}, @{tt}retweets@{utt},
+@{tt}replies@{utt} and @{tt}quotes@{utt}. A post's address is
+@{tt}https://x.com/<username>/status/<id>@{utt}; the answer does not
+spell it out.
+
+@{h2}An example
+
+@{code json}
+{"query": "godot 4.5 -is:retweet lang:en", "limit": 5}
+@{body}
+
+@{code json}
+{"status": "success", "query": "godot 4.5 -is:retweet lang:en",
+ "tweets": [
+   {"id": 1840000000000000000, "text": "Godot 4.5 is out ...",
+    "created_at": "2026-09-29T14:02:11+00:00", "lang": "en", "source": null,
+    "author": {"id": 123, "username": "godotengine", "name": "Godot Engine",
+               "verified": false, "followers_count": 150000},
+    "metrics": {"likes": 812, "retweets": 140, "replies": 37, "quotes": 12}},
+   ...],
+ "total_results": 5,
+ "api_info": {"version": "Twitter API v2", "search_window": "Last 7 days"}}
+@{body}
+@endnode
+
+@node errors "Errors and rate limits"
+@{h1}Errors and rate limits
+
+Every error comes back as an answer, never as a failed tool call. A
+refusal before anything is sent carries @{tt}status@{utt} and
+@{tt}error@{utt}:
+
+@{table}
+error | When
+Empty query | no query, only spaces, or not text
+limit must be a whole number from 1 to 50, got <value> | a limit that is not a number
+tweepy library not installed | tweepy is missing; @{tt}message@{utt} says how to install it
+Twitter search for '<query>' cancelled by user | the run was stopped before the request; the answer has only @{tt}error@{utt} and @{tt}cancelled: true@{utt}
+@{body}
+
+Without a token the answer is @{tt}"status": "setup_required"@{utt} with
+@{tt}message@{utt} "Twitter API credentials not configured" and
+@{tt}setup_instructions@{utt}.
+
+When X answers with an error, @{tt}error@{utt} is X's status line and
+explanation (for instance "429 Too Many Requests"),
+@{tt}error_type@{utt} the class of the error, and @{tt}message@{utt} a hint
+chosen by that class:
+
+@{table}
+error_type | message
+TooManyRequests | X API rate limit reached; it resets in N seconds. (without X's reset time: "try again later")
+Unauthorized | X rejected the bearer token. Check TWITTER_BEARER_TOKEN.
+Forbidden | X refused access: the app's plan, permissions or credits do not cover recent search.
+BadRequest | X rejected the request, usually the query syntax.
+TwitterServerError | X server error; try again later.
+any other | Twitter API request failed.
+TimeoutError | no answer within 30 seconds: error "X API did not answer within 30 seconds", message "Try again later."
+@{body}
+
+Anything else -- a network error, for instance -- answers with
+@{tt}error@{utt} (the exception's text) and @{tt}message@{utt} "An
+unexpected error occurred".
+
+@{h2}Rate limits
+
+X limits requests per 15-minute window, per app. The plugin does not
+wait for the window: it answers the error above at once, with the seconds
+until X resets the window, and the model decides what to do. A stop is
+checked once, before the request is sent.
+
+@{h2}The timeout
+
+The connection to X gets 30 seconds to open and 30 seconds for each
+read; the whole call is also cut off after 30 seconds. Either way the
+answer is the TimeoutError above. A request still running when the call
+is cut off ends at the latest when its own read limit runs out; nothing is
+left hanging. Posts X already delivered before the cut may still be billed.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+Tool and parameter descriptions come from the plugin's
+@{tt}schema.yaml@{utt}; together they are about 540 characters in every
+request of an agent that has the tool. The tool is offered also when no
+token is set; each call then answers @{tt}setup_required@{utt}.
+
+The chat's status line shows "Searching Twitter for: <query>" and ends
+with "Found 5 tweets for: <query>", "No tweets found for query: <query>",
+or with the error ("Twitter API error: <X's text>", "Twitter API
+credentials not configured", "tweepy library not installed", "X API did
+not answer within 30 seconds"). A refused query or limit ends without a
+status line.
+
+@{h2}Size of an answer
+
+At most 50 posts. A post's @{tt}text@{utt} is what X puts in that field,
+up to 280 characters; the plugin does not request the full text of a long
+post (X's @{tt}note_tweet@{utt}), so a long post arrives cut. With author
+and metrics a post is a few hundred characters, 50 stubbed posts of
+280 characters each made an answer of 32,843 characters.
+
+@{h2}Tokens and cache
+
+Answers are ordinary tool results, appended to the history; nothing
+earlier is changed, so the prompt cache stays intact.
+
+@{h2}Posts are untrusted
+
+Posts are text written by anyone on X, handed to the model as data. A
+post can carry instructions aimed at the model. The plugin does not filter
+or mark them; what the model does with them is up to its prompt and the
+tools it has.
+@endnode

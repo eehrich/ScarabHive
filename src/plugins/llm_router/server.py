@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, TYPE_CHECKING
 
+from agent_system.llm import hook_notify
 from agent_system.llm.models import ChatMessage
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.llm.text_sanitizer import sanitize_for_llm
@@ -87,8 +88,6 @@ class LLMRouterServer(SchemaBasedToolServer):
                     'model_ref': model_ref,
                     'provider': provider,
                     'model': model_name,
-                    'max_steps': serializable_config.get('max_steps', 'unlimited'),
-                    'config': serializable_config
                 }
             else:
                 # Handle simple string descriptions
@@ -97,11 +96,21 @@ class LLMRouterServer(SchemaBasedToolServer):
                     'model_ref': 'unknown',
                     'provider': 'unknown', 
                     'model': 'unknown',
-                    'max_steps': 'unlimited',
-                    'config': serializable_config
                 }
         
         return profile_details
+
+    def _provider_of(self, profile: str) -> str:
+        """The provider of the profile's model entry, as llm.yaml names it.
+
+        Not the client's own attribute: clients name themselves unevenly
+        (openai_httpx's says "openai", most say nothing). Never raises -- the
+        answer it labels has already been paid for.
+        """
+        try:
+            return self._get_profile_details()[profile]["provider"]
+        except Exception:
+            return "unknown"
 
     def _make_client(self, profile: str):
         """Create an LLM client for one profile.
@@ -136,15 +145,27 @@ class LLMRouterServer(SchemaBasedToolServer):
             return {"error": "LLM routing request cancelled by user", "cancelled": True,
                     "forced": cancellation_token.is_forced}
 
-        # Handle both message formats first
-        if "messages" in params:
-            messages = [ChatMessage(**m) for m in params["messages"]]
-            # Sanitize message content
-            for msg in messages:
-                if msg.content:
+        # Handle both message formats first. A malformed argument answers an
+        # error instead of raising, and an empty one counts as missing: it
+        # used to reach the provider as an empty prompt.
+        raw_messages = params.get("messages")
+        text = params.get("message")
+        if raw_messages:
+            if not isinstance(raw_messages, list):
+                return {"error": "messages must be a list of {role, content} objects"}
+            messages = []
+            for i, m in enumerate(raw_messages):
+                try:
+                    msg = ChatMessage(**m)
+                except (TypeError, ValueError):
+                    return {"error": f"messages[{i}] is not a {{role, content}} object"}
+                # Only text is sanitized: the sanitizer turns a list of
+                # content parts into an empty string.
+                if isinstance(msg.content, str):
                     msg.content = sanitize_for_llm(msg.content)
-        elif "message" in params:
-            messages = [ChatMessage(role="user", content=sanitize_for_llm(params["message"]), timestamp=datetime.now(timezone.utc))]
+                messages.append(msg)
+        elif isinstance(text, str) and text:
+            messages = [ChatMessage(role="user", content=sanitize_for_llm(text), timestamp=datetime.now(timezone.utc))]
         else:
             return {"error": "No message or messages provided"}
 
@@ -158,6 +179,7 @@ class LLMRouterServer(SchemaBasedToolServer):
 
             # Create client using profile-based configuration
             client = self._make_client(profile=profile)
+            _book_as_agentless(client, params.get("_session_id") or "")
 
             content = await client.chat(messages, cancellation_token=cancellation_token)
 
@@ -172,7 +194,7 @@ class LLMRouterServer(SchemaBasedToolServer):
             return {
                 "content": content,
                 "profile": profile,
-                "provider": getattr(client, 'provider', 'unknown'),
+                "provider": self._provider_of(profile),
                 "model": getattr(client, 'model', 'unknown')
             }
         except asyncio.CancelledError:
@@ -252,3 +274,33 @@ class LLMRouterServer(SchemaBasedToolServer):
             "available_models": available_models, 
             "available_providers": available_providers
         }
+
+
+def _book_as_agentless(client: Any, session_id: str) -> None:
+    """Report the client's requests through llm/hook_notify.py.
+
+    No agent wires a client built here, so without this its requests reached
+    no pre_llm_request/post_llm_response hook: the message debugger, otel and
+    the usage tracker never saw them, and their cost counted nowhere. The
+    agent-less path is the right one, not the calling agent's hooks: the
+    tracker books an agent-less call as spend of its own, and would skip one
+    carrying the agent -- whose own ledger never sees this call.
+    """
+    if not hasattr(client, "set_llm_hooks"):
+        return
+
+    async def on_request(info: dict) -> None:
+        await hook_notify.notify_request(
+            provider=info.get("provider") or "unknown", model=info.get("model") or "",
+            url=info.get("url") or "", payload=info.get("payload"), session_id=session_id)
+
+    async def on_response(info: dict) -> None:
+        await hook_notify.notify_response(
+            provider=info.get("provider") or "unknown", model=info.get("model") or "",
+            url=info.get("url") or "", duration_ms=info.get("duration_ms") or 0.0,
+            response_data=info.get("response_data"), usage=info.get("usage"),
+            session_id=session_id, error=info.get("error"),
+            finish_reason=info.get("finish_reason"),
+            metadata={"served_by": (info.get("routing") or {}).get("selected")})
+
+    client.set_llm_hooks(on_pre_request=on_request, on_post_response=on_response)

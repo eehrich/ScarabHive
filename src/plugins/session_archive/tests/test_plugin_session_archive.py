@@ -17,8 +17,13 @@ from fastapi.testclient import TestClient
 from agent_system.auth import database
 from agent_system.auth.models import UserCreate, UserRole
 from agent_system.auth.security import create_access_token
-from agent_system.config.models import AgentSystemConfig, AuthConfig, ToolServerConfig
-from agent_system.services.session_archive import ArchiveError, ArchiveNotFound
+from agent_system.config.models import (
+    AgentSystemConfig,
+    AuthConfig,
+    SessionArchiveConfig,
+    ToolServerConfig,
+)
+from agent_system.services.session_archive import ArchiveBusy, ArchiveError, ArchiveNotFound
 from plugins.session_archive.plugin import PLUGIN_FACTORY
 
 PASSWORD = "correct-horse"
@@ -71,10 +76,11 @@ def db(tmp_path, monkeypatch):
     return users
 
 
-def client(archive: Any = None, auth_enabled: bool = True) -> TestClient:
+def client(archive: Any = None, auth_enabled: bool = True, sweep: bool = True) -> TestClient:
     plugin = PLUGIN_FACTORY(
         "session_archive",
-        AgentSystemConfig(auth=AuthConfig(enabled=auth_enabled)),
+        AgentSystemConfig(auth=AuthConfig(enabled=auth_enabled),
+                          session_archive=SessionArchiveConfig(enabled=sweep)),
         ToolServerConfig(),
     )
     app = FastAPI()
@@ -108,6 +114,14 @@ def test_the_listing_is_the_callers_own(db):
     # The user id the service was asked about is the token's, not anything the
     # caller could put in the URL.
     assert archive.calls == [("list", "ada")]
+
+
+@pytest.mark.parametrize("sweep", [True, False])
+def test_the_listing_says_whether_the_sweep_runs(db, sweep):
+    """With the sweep off, the panel must not promise that conversations move on their own."""
+    response = client(FakeArchive(), sweep=sweep).get(f"{BASE}/archived")
+
+    assert response.json()["sweep_enabled"] is sweep
 
 
 def test_two_users_see_two_archives(db):
@@ -160,6 +174,16 @@ def test_forgetting_something_unknown_is_a_404(db):
 
     assert response.status_code == 404
     assert "No archived session" in response.json()["detail"]
+
+
+def test_a_forget_while_the_index_is_held_is_readable(db):
+    """A sweep of another process holds the archive index: a refusal, not a 500."""
+    archive = FakeArchive(ArchiveBusy("the archive index of ada is held by another process"))
+    response = client(archive).delete(
+        f"{BASE}/archived/root_x", headers=as_user("ada", db))
+
+    assert response.status_code == 409
+    assert "held by another process" in response.json()["detail"]
 
 
 def test_forget_reaches_the_service(db):

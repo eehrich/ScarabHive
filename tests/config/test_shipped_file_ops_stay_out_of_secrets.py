@@ -18,7 +18,7 @@ from agent_system.config import settings
 from agent_system.config.settings import get_tool_server_config, load_settings
 from agent_system.config.models import AgentSystemConfig
 
-PRIVATE = ("config/secrets.env", "data/users.db", "data/sessions/alice/s1.json")
+PRIVATE = ("config/secrets.env", "config/local.env", "data/users.db", "data/sessions/alice/s1.json")
 
 #: The coder harness's read-write and read-only file access include "." on purpose.
 REPOSITORY_WIDE = {"coder_fs", "coder_fs_ro"}

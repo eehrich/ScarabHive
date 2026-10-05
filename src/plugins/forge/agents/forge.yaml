@@ -1,7 +1,7 @@
 # forge: GitLab and GitHub for the coder (docs/konzept.md).
 #
 # Hosts, repositories and their tokens are the operator's values and belong in
-# config/plugins.yaml under plugins.servers.forge (README, "Configuration").
+# config/plugins.yaml under plugins.servers.forge (forge.guide, "Setting it up").
 # This file is merged AFTER that one, so it sets nothing an operator would
 # tune -- a value here would silently override theirs. Without a configured
 # repository the instance offers no tools, so an installation without GitLab

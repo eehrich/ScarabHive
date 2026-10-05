@@ -7,6 +7,7 @@ const $ = (id) => document.getElementById(id);
 /** The archived conversations, or null: not loaded, or they could not be. */
 let archived = null;
 let retentionDays = null;
+let sweepOff = false;
 let load = 0;
 let busy = false;
 /** Restores and deletes on their way, by session id: their buttons stay off until answered. */
@@ -42,6 +43,7 @@ async function refresh(event) {
   if (mine !== load) return;
   archived = listed.archived;
   retentionDays = listed.retention_days;
+  sweepOff = listed.sweep_enabled === false;
   draw();
 }
 
@@ -61,9 +63,12 @@ function draw() {
   if (!archived.length) {
     render($('archived'), empty(
       'history', 'Nothing archived yet',
-      retentionDays
-        ? `Conversations move here once every session in them is older than ${retentionDays} days.`
-        : 'Conversations move here once they are old enough.'));
+      sweepOff
+        // Nothing moves on its own then: saying it would is a promise nobody keeps.
+        ? `The periodic sweep is off. Archive now moves the conversations whose sessions are all older than ${retentionDays} days.`
+        : retentionDays
+          ? `Conversations move here once every session in them is older than ${retentionDays} days.`
+          : 'Conversations move here once they are old enough.'));
     return;
   }
 
@@ -141,9 +146,13 @@ async function sweep() {
     // A pass stops at a cap, so "Archived 200" is not "done" -- and the list
     // refreshing under it looks exactly like done.
     const left = report.capped ? `, ${report.remaining} still waiting — run it again` : '';
+    // Nothing archived is not "nothing old enough" when old ones were in use
+    // or failed: `remaining` counts those.
     toast(report.trees
       ? `Archived ${report.trees} conversation(s), ${report.sessions} sessions${left}`
-      : 'Nothing was old enough to archive', { kind: report.trees ? 'ok' : 'info' });
+      : report.remaining
+        ? `Nothing archived: ${report.remaining} conversation(s) old enough are in use or failed`
+        : 'Nothing was old enough to archive', { kind: report.trees ? 'ok' : 'info' });
     if (report.errors?.length) toast(report.errors[0], { kind: 'warn' });
   } catch {
     // shown by api()

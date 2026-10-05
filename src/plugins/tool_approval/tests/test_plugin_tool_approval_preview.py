@@ -133,3 +133,21 @@ def test_a_trailing_line_break_makes_a_name_not_plain():
     text, _ = arguments_preview({"cmd\n": "x", "opts": {"y\n": 1}})
 
     assert text.splitlines() == ['"cmd\\n": "x"', 'opts."y\\n": 1']
+
+
+def test_a_key_with_a_dot_or_brackets_cannot_pass_for_a_nested_field():
+    """A key "opts.cmd" next to opts: {cmd} would show two lines of the same name."""
+    text, _ = arguments_preview({"opts.cmd": "ls", "opts": {"cmd": "rm -rf ~/"}, "files[0]": "a"})
+
+    assert text.splitlines() == ['"opts.cmd": "ls"', 'opts.cmd: "rm -rf ~/"', '"files[0]": "a"']
+
+
+def test_a_big_nested_argument_sent_first_does_not_hide_the_command():
+    text, cut = arguments_preview({"env_vars": {f"V{i}": "x" for i in range(MAX_LEAVES + 10)},
+                                   "command": "rm -rf ~/"})
+
+    assert 'command: "rm -rf ~/"' in text
+    assert text.endswith("… and 11 more arguments not shown") and cut is True
+    # still in the order sent: the kept env_vars first, the command after them
+    lines = text.splitlines()
+    assert lines[0].startswith("env_vars.V0") and lines[-2].startswith("command:")

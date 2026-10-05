@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
+MAX_RESULTS = 20
 # ddgs's own sentinel for "every engine answered, none had a hit" -- as
 # opposed to "every engine failed", which arrives as the same exception type
 # carrying the engine's error.
@@ -45,11 +46,20 @@ class DuckDuckGoSearchServer(SchemaBasedToolServer):
 
     async def web_search(self, params: dict[str, Any]) -> dict[str, Any]:
         query = (params.get("query") or "").strip()
-        max_results = int(params.get("max_results", 10))
         status = params["_status"]
 
         if not query:
             return {"engine": "duckduckgo", "query": query, "results": [], "error": "Empty query"}
+
+        # The framework does not enforce the schema's 1..20: ddgs reads 0 as
+        # "no limit" and collects every engine's hits, a negative number
+        # slices from the end. Clamp, so the answer stays bounded.
+        raw = params.get("max_results")
+        try:
+            max_results = 10 if raw is None else min(max(int(raw), 1), MAX_RESULTS)
+        except (TypeError, ValueError, OverflowError):
+            return {"engine": "duckduckgo", "query": query, "results": [],
+                    "error": f"max_results must be a whole number from 1 to {MAX_RESULTS}, got {raw!r}"}
 
         key = self._cache_key(query, max_results)
         if self.cache_enabled and not params.get("ignore_cache", False):
@@ -100,7 +110,13 @@ class DuckDuckGoSearchServer(SchemaBasedToolServer):
         # hiccup on DuckDuckGo's side than a fact about the query, and a
         # cached "nothing" would repeat the hiccup for the cache lifetime.
         if self.cache_enabled and results:
-            await self.cache.set(key, result, ttl=params.get("cache_ttl"))
+            # A cache_ttl that is not a number takes the configured one: it
+            # must not turn a search that succeeded into a raise.
+            try:
+                ttl = int(params["cache_ttl"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                ttl = None
+            await self.cache.set(key, result, ttl=ttl)
         await status.end(f"{len(results)} results -- {query[:60]}", meta={"results": len(results)})
         return result
 

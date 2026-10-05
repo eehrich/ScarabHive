@@ -45,9 +45,6 @@ class MockHookPlugin(PluginHook):
     async def on_post_tool_call(self, context: HookContext) -> HookResult:
         return HookResult(success=True, modified=False, context=context)
     
-    async def on_format_output(self, context: HookContext) -> HookResult:
-        return HookResult(success=True, modified=False, context=context)
-    
     async def on_session_start(self, context: HookContext) -> HookResult:
         return HookResult(success=True, modified=False, context=context)
     
@@ -396,8 +393,8 @@ async def test_multiple_hook_types_same_plugin(clean_registry):
                 'enabled': True
             },
             {
-                'name': 'format_hook',
-                'type': 'format_output',
+                'name': 'start_hook',
+                'type': 'session_start',
                 'enabled': True
             }
         ]
@@ -408,7 +405,7 @@ async def test_multiple_hook_types_same_plugin(clean_registry):
     assert len(registered) == 3
     assert clean_registry.get_hook_info('multi_hook_plugin.pre_hook') is not None
     assert clean_registry.get_hook_info('multi_hook_plugin.post_hook') is not None
-    assert clean_registry.get_hook_info('multi_hook_plugin.format_hook') is not None
+    assert clean_registry.get_hook_info('multi_hook_plugin.start_hook') is not None
 
 
 @pytest.mark.asyncio
@@ -430,6 +427,42 @@ async def test_instance_hook_config_disables_the_registration_default(clean_regi
 
     assert registered == ['writer_summarizer.summarize']
     assert clean_registry.get_hook_info('writer_summarizer.summarize')['enabled'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registered", ["by bootstrap", "by the tool integration's fallback"])
+@pytest.mark.parametrize("entry", ["agent tool integration", "CLI bootstrap"])
+async def test_an_instance_the_callers_config_does_not_know_keeps_its_hook_default(monkeypatch, entry, registered):
+    """The hook registry is the process's, and whoever wires the hooks first reads every instance's default from
+    ITS config. One built on another config -- a test rig, a CLI -- did not know the writer's inject instances
+    (hook_config.enabled: false), and their notes went to every agent. The default the instance was built with
+    holds."""
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+    from agent_system.hooks.registry import get_hook_registry
+    from agent_system.plugins import discovery, tool_adapter
+    from agent_system.plugins.tool_adapter import PluginToolRegistry
+    from agent_system.tools.integration import ToolServerIntegration
+
+    plugin = MockHookPlugin("dark_inject", {})
+    plugin.get_schema_data = lambda: {'hooks': [{'name': 'inject', 'type': 'pre_llm_call', 'enabled': True}]}
+    tools = PluginToolRegistry()
+    built_with = ToolServerConfig(type="dark_inject", hook_config={"enabled": False})
+    if registered == "by bootstrap":
+        tools.register_existing_plugin_instance("dark_inject", plugin, AgentSystemConfig(), built_with)
+    else:
+        tools.plugin_factories["dark_inject"] = lambda name, system_config, server_config: plugin
+        await tools.register_plugin_simple("dark_inject", AgentSystemConfig(), built_with)
+    callers_config = AgentSystemConfig()  # knows no such server
+    if entry == "agent tool integration":
+        integration = ToolServerIntegration(config=callers_config)
+        integration.plugin_registry = tools
+        await integration._register_plugin_hooks(callers_config)
+    else:
+        monkeypatch.setattr(tool_adapter, "plugin_tool_registry", tools)
+        monkeypatch.setattr(discovery, "_BOOTSTRAPPED_HOOKS_REGISTERED", False)
+        await discovery.register_bootstrapped_plugin_hooks(callers_config)
+
+    assert get_hook_registry().get_hook_info('dark_inject.inject')['enabled'] is False
 
 
 @pytest.mark.asyncio

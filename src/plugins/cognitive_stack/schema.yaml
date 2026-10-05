@@ -30,7 +30,7 @@ tools:
         # pop_batch parameters
         count:
           type: integer
-          description: "Required for 'pop_batch': Number of frames to pop from stack"
+          description: "For 'pop_batch': number of frames to pop (default: 1)"
           minimum: 1
 
         # Common parameters

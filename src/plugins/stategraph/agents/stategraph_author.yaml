@@ -46,8 +46,6 @@ plugins:
           overrides:
             context_engineer.engineer_context:
               enabled: true
-            markdown_formatter.format_markdown_output:
-              enabled: true
 
       metadata:
         author: "Enrico Ehrich"

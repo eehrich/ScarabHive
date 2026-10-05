@@ -7,12 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections import deque
+from pathlib import Path, PureWindowsPath
 from typing import Any, TYPE_CHECKING
 
 from agent_system.core.session_presence import wake_blocked, wake_session
+from agent_system.paths import PROJECT_ROOT, resolve_data_path
 from agent_system.plugins.cache import PluginCache
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
 
 from . import machine_store
 from .background import RemoteProcessManager
@@ -27,6 +31,12 @@ logger = logging.getLogger(__name__)
 #: What a recorded result may carry per stream -- enough for the tail of a
 #: build, not the whole log.
 _RECORDED_STREAM_CAP = 30_000
+
+
+#: Windows device names (CON, NUL, COM1, ...). Windows 11 treats them as plain
+#: files inside a folder; older Windows opens the device instead.
+_reserved = getattr(os.path, "isreserved",
+                    lambda path: os.name == "nt" and PureWindowsPath(path).is_reserved())
 
 
 def _short(command: str, limit: int = 60) -> str:
@@ -82,6 +92,16 @@ class SSHControlToolServer(SchemaBasedToolServer):
                            name, config_dict.get('machines') or [])}
 
         self.connection_manager = SSHConnectionManager(config_dict, command_history=self.command_history)
+        # upload_file and download_file touch local files only inside
+        # local_root; unset, both refuse (fail closed).
+        self._local_files: PathSandbox | None = None
+        # Blank counts as unset: "  " resolved to the project root on Windows.
+        local_root = str(config_dict.get('local_root') or '').strip()
+        if local_root:
+            root = resolve_data_path(local_root)
+            root = (root if root.is_absolute() else PROJECT_ROOT / root).resolve()
+            self._local_root = root
+            self._local_files = PathSandbox.from_config([str(root)], base=root)
         self.processes = RemoteProcessManager(self.connection_manager)
         # Where a finished command's outcome survives THIS process: a run
         # woken for it is a new one and has none of these in memory.
@@ -100,6 +120,34 @@ class SSHControlToolServer(SchemaBasedToolServer):
             f"SSH Control Tool Server '{name}' initialized with "
             f"{len(self.connection_manager.machines)} machines"
         )
+
+    def _local_file(self, local_path: str, *, write: bool) -> str:
+        """The file local_path names inside local_root, resolved -- the path that is then opened.
+
+        Symlinks and junctions are followed before the check, so a link out of
+        the root is refused like any other path outside it.
+        """
+        if self._local_files is None:
+            raise PermissionError(
+                "Local files are disabled: local_root is not set. The operator "
+                "must set local_root in the ssh_control configuration.")
+        relative = Path(local_path)
+        if not relative.is_absolute() and not relative.drive:
+            # Joined here: the sandbox sends a relative data/... to the data directory.
+            local_path = str(self._local_root / relative)
+        try:
+            full = self._local_files.resolve(local_path)
+        except PathSandboxDenied as exc:
+            raise PermissionError(str(exc)) from exc
+        if _reserved(full.name):
+            raise PermissionError(f"Refusing a Windows device name: {local_path}")
+        if full.is_dir():
+            raise IsADirectoryError(f"local_path is a directory, not a file: {local_path}")
+        if write:
+            # ponytail: checked, then opened -- a link planted between the two
+            # by another process is not caught; nothing in this plugin makes links.
+            full.parent.mkdir(parents=True, exist_ok=True)
+        return str(full)
 
     # MCP Tool Handlers - auto-dispatched by SchemaBasedToolServer
 
@@ -575,6 +623,7 @@ class SSHControlToolServer(SchemaBasedToolServer):
             raise ValueError("Missing required parameter: local_path")
         if not remote_path:
             raise ValueError("Missing required parameter: remote_path")
+        local_path = self._local_file(local_path, write=False)
 
         # Handle single machine or list of machines
         machines = [machine] if isinstance(machine, str) else machine
@@ -620,14 +669,19 @@ class SSHControlToolServer(SchemaBasedToolServer):
                     'success': False
                 })
             else:
-                responses.append({
+                response = {
                     'machine': result.machine,
                     'local_path': result.local_path,
                     'remote_path': result.remote_path,
                     'bytes_transferred': result.bytes_transferred,
                     'duration': result.duration,
                     'success': result.success
-                })
+                }
+                if not result.success:
+                    # A failed transfer comes back as a result, not an
+                    # exception; its reason used to be dropped right here.
+                    response['error'] = result.error
+                responses.append(response)
 
         # Send completion status
         if status:
@@ -654,8 +708,11 @@ class SSHControlToolServer(SchemaBasedToolServer):
                     meta={'successful': successful, 'bytes': total_bytes}
                 )
             else:
+                first_error = next((str(r.get('error') or '')[:60] for r in responses
+                                    if not r.get('success', False)), '')
                 await status.error(
-                    f"Uploaded: {machine_str}: {filename} ({successful} ok, {failed} failed)",
+                    f"Upload failed: {machine_str}: {filename} ({successful} ok, {failed} failed"
+                    + (f": {first_error})" if first_error else ")"),
                     meta={'successful': successful, 'failed': failed}
                 )
 
@@ -686,6 +743,7 @@ class SSHControlToolServer(SchemaBasedToolServer):
             raise ValueError("Missing required parameter: remote_path")
         if not local_path:
             raise ValueError("Missing required parameter: local_path")
+        local_path = self._local_file(local_path, write=True)
 
         logger.info(f"Downloading file from {machine}: {remote_path} -> {local_path}")
 
@@ -708,6 +766,10 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 remote_path,
                 local_path
             )
+            if not result.success:
+                # A failed transfer is a result, not an exception: the reason
+                # and the error line are the except branch's
+                raise RuntimeError(result.error)
 
             # Send completion status
             if status:
@@ -743,7 +805,7 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 import os
                 filename = os.path.basename(remote_path)
                 await status.error(
-                    f"Downloaded: {machine}: {filename} - {str(e)}",
+                    f"Download failed: {machine}: {filename} - {str(e)}",
                     meta={'error': str(e)}
                 )
 
@@ -875,6 +937,14 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 await status.error(error_msg)
             return {'success': False, 'error': error_msg}
 
+        max_connections = params.get('max_connections', 3)
+        if isinstance(max_connections, bool) or not isinstance(max_connections, int) or max_connections < 1:
+            # 0 would make every command wait 30 s for a slot, a negative value raises
+            error_msg = f"max_connections must be a whole number of at least 1, not {max_connections!r}"
+            if status:
+                await status.error(error_msg)
+            return {'success': False, 'error': error_msg}
+
         # Send status update
         if status:
             await status.progress(f"Adding machine: {name} ({username}@{host})")
@@ -886,7 +956,6 @@ class SSHControlToolServer(SchemaBasedToolServer):
         key_path = params.get('key_path', '~/.ssh/id_rsa')
         tags = params.get('tags', [])
         persistent = params.get('persistent', False)
-        max_connections = params.get('max_connections', 3)
 
         try:
             # Create MachineConfig
@@ -923,13 +992,15 @@ class SSHControlToolServer(SchemaBasedToolServer):
                     timeout=10.0
                 )
 
-                # Test with simple command
-                result = await asyncio.wait_for(
-                    conn.run('echo "Connection test"', check=False),
-                    timeout=5.0
-                )
-
-                conn.close()
+                # Test with simple command; the connection is closed whatever
+                # happens -- a test that timed out used to leave it open
+                try:
+                    result = await asyncio.wait_for(
+                        conn.run('echo "Connection test"', check=False),
+                        timeout=5.0
+                    )
+                finally:
+                    conn.close()
 
                 if result.exit_status != 0:
                     error_msg = f"Connection test failed: exit code {result.exit_status}"
@@ -940,7 +1011,8 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 logger.info(f"Connection test successful for {name}")
 
             except asyncio.TimeoutError:
-                error_msg = f"Connection timeout for {name} after 10 seconds"
+                error_msg = (f"Connection timeout for {name}: "
+                             f"10 seconds to connect, 5 for the test command")
                 if status:
                     await status.error(error_msg)
                 return {'success': False, 'error': error_msg}

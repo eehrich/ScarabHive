@@ -21,8 +21,10 @@
 
   <section class="pk-card" aria-labelledby="keysTitle">
     <div class="pk-card-head"><h2 id="keysTitle" class="pk-card-title">API keys</h2></div>
-    <p class="pk-help">Each key the configuration names. Enter a key in <code>config/secrets.env</code>
-      (template: <code>config/secrets.env.example</code>) and restart; entering it here comes next.</p>
+    <p class="pk-help">Each key the configuration names. A key entered here is saved in <code>config/local.env</code>
+      on this machine, never in the repository, and the chat uses it from the next message on.
+      Sub-agents, background jobs, fallback models and plugins that read their key at start use it after a
+      restart of the API.</p>
     <div id="keys"><span class="pk-skeleton"></span></div>
   </section>
 </div>

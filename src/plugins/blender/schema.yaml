@@ -112,7 +112,7 @@ tools:
         required: [format]
 
 config:
-  # The addon listens here once "Start MCP Server" is clicked in Blender's
+  # The addon listens here once "Connect to MCP server" is clicked in Blender's
   # N-panel. Remote Blender: point host at it, but note that exports and
   # screenshots are then written on THAT machine, not this one.
   host: "127.0.0.1"

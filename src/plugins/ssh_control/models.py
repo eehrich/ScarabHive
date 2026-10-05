@@ -19,7 +19,7 @@ class MachineConfig(BaseModel):
     password: str | None = None
     connection_timeout: int = 10
     command_timeout: int = 300
-    max_connections: int = 3
+    max_connections: int = Field(3, ge=1)  # 0 would stall every command, <0 raises
     tags: list[str] = Field(default_factory=list)
 
 

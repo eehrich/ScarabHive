@@ -124,6 +124,9 @@ class TestLLMRouterServerNew:
         profiles = result["profiles"]
         assert "turbo" in profiles
         assert "normal" in profiles
+        # Tool results cost tokens: no copy of the profile entry, no max_steps
+        # the router's single call never uses.
+        assert set(profiles["turbo"]) == {"description", "model_ref", "provider", "model"}
 
     @pytest.mark.asyncio
     async def test_unknown_tool(self, mock_system_config, mock_server_config):
@@ -142,15 +145,17 @@ class TestLLMRouterServerNew:
         from types import SimpleNamespace
         
         mock_llm_system = SimpleNamespace(
-            profiles={"test": {"provider": "openai", "model": "gpt-5-nano"}},
-            models={"gpt-5-nano": {"provider": "openai"}}
+            profiles={"test": {"model_ref": "nano"}},
+            models={"nano": {"provider": "openai_httpx", "model": "gpt-5-nano"}}
         )
         mock_system_config.llm_system = mock_llm_system
         
         server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
         mock_status = AsyncMock()
         
-        # Mock the make_client method to return a mock client
+        # Mock the make_client method to return a mock client. The answer's
+        # provider comes from the model entry, not from what the client
+        # calls itself (openai_httpx's client says "openai").
         mock_client = AsyncMock()
         mock_client.chat.return_value = "Mocked response"
         mock_client.provider = "openai"
@@ -166,7 +171,7 @@ class TestLLMRouterServerNew:
             assert "content" in result
             assert result["content"] == "Mocked response"
             assert result["profile"] == "test" 
-            assert result["provider"] == "openai"
+            assert result["provider"] == "openai_httpx"
             assert result["model"] == "gpt-5-nano"
             
             # Verify chat was called
@@ -247,3 +252,145 @@ class TestLLMRouterCancellation:
 
         assert result == {"error": "LLM routing request cancelled by user",
                           "cancelled": True, "forced": False}
+
+
+class TestLLMRouterChatArguments:
+    """A bad argument answers an error; nothing empty reaches the provider."""
+
+    @staticmethod
+    async def _call(mock_system_config, mock_server_config, **args):
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
+        client = AsyncMock()
+        client.chat.return_value = "ok"
+        with patch.object(server, "_make_client", return_value=client):
+            result = await server.call("llm_router_chat", {
+                "profile": "test", "_status": AsyncMock(), **args})
+        return result, client
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [
+        {"messages": [{"content": "no role"}]},
+        {"messages": ["plain text"]},
+        {"messages": "plain text"},
+    ])
+    async def test_malformed_messages_answer_an_error(self, mock_system_config, mock_server_config, args):
+        result, client = await self._call(mock_system_config, mock_server_config, **args)
+        assert "{role, content}" in result["error"]
+        client.chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [
+        {"message": ""},
+        {"messages": []},
+        {"messages": None},
+        {"message": 5},
+    ])
+    async def test_an_empty_prompt_is_a_missing_one(self, mock_system_config, mock_server_config, args):
+        result, client = await self._call(mock_system_config, mock_server_config, **args)
+        assert result == {"error": "No message or messages provided"}
+        client.chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_null_messages_fall_back_to_message(self, mock_system_config, mock_server_config):
+        result, client = await self._call(
+            mock_system_config, mock_server_config, messages=None, message="hi")
+        assert result["content"] == "ok"
+        assert client.chat.call_args.args[0][0].content == "hi"
+
+    @pytest.mark.asyncio
+    async def test_content_parts_are_passed_on(self, mock_system_config, mock_server_config):
+        parts = [{"type": "text", "text": "hi"}]
+        result, client = await self._call(
+            mock_system_config, mock_server_config,
+            messages=[{"role": "user", "content": parts}])
+        assert result["content"] == "ok"
+        assert client.chat.call_args.args[0][0].get_text_content() == "hi"
+
+
+class TestLLMRouterHooks:
+    """The router's requests reach the hooks as agent-less calls (llm/hook_notify.py)."""
+
+    @pytest.mark.asyncio
+    async def test_requests_reach_the_hook_registry_without_an_agent(
+            self, mock_system_config, mock_server_config, monkeypatch):
+        from agent_system.hooks import get_hook_registry
+        from agent_system.llm.models import LLMClient
+
+        usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+
+        class FakeClient(LLMClient):
+            provider = "openai"
+            model = "some/model"
+
+            async def chat(self, messages, cancellation_token=None, status_scope=None):
+                await self._notify_pre_request(
+                    {"provider": "openai_httpx", "model": self.model, "url": "http://127.0.0.1:9/x",
+                     "payload": {"messages": []}})
+                await self._notify_post_response(
+                    {"provider": "openai_httpx", "model": self.model, "url": "http://127.0.0.1:9/x",
+                     "duration_ms": 12.0, "usage": usage, "finish_reason": "stop"})
+                return "ok"
+
+        seen = []
+
+        async def capture(hook_type, context, **kwargs):
+            seen.append((hook_type.name, context))
+            return []
+
+        monkeypatch.setattr(get_hook_registry(), "execute_hooks", capture)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
+        with patch.object(server, "_make_client", return_value=FakeClient()):
+            result = await server.call("llm_router_chat", {
+                "profile": "test", "message": "hi", "_status": AsyncMock(),
+                "_session_id": "s-1", "_agent": object()})
+
+        assert result["content"] == "ok"
+        assert [name for name, _ in seen] == ["PRE_LLM_REQUEST", "POST_LLM_RESPONSE"]
+        post = seen[1][1]
+        # No agent: that is what makes the usage tracker book it, once.
+        assert post.agent is None
+        assert post.llm_usage == usage
+        assert post.session_id == "s-1"
+        assert post.llm_model == "some/model"
+
+
+class TestLLMRouterCLI:
+    """python -m plugins.llm_router builds the server from the loaded config."""
+
+    def test_a_message_goes_to_the_profile(self, monkeypatch, capsys):
+        from types import SimpleNamespace
+
+        import agent_system.config.settings as settings
+        from plugins.llm_router import __main__ as cli
+
+        config = SimpleNamespace(
+            network=None,
+            llm_system=SimpleNamespace(
+                profiles={"fast": {"model_ref": "m"}},
+                models={"m": {"provider": "openai_httpx", "model": "some/model"}}))
+        monkeypatch.setattr(settings, "load_settings", lambda path=None: config)
+        client = AsyncMock()
+        client.chat.return_value = "pong"
+        client.model = "some/model"
+        monkeypatch.setattr(LLMRouterServer, "_make_client", lambda self, profile: client)
+
+        with pytest.raises(SystemExit) as exit_info:
+            cli.cli_main(["--profile", "fast", "--message", "ping"])
+
+        assert exit_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "fast: openai_httpx/some/model" in out
+        assert "pong" in out
+        assert client.chat.call_args.args[0][0].content == "ping"
+
+    def test_without_a_profile_it_refuses(self, monkeypatch, capsys):
+        import agent_system.config.settings as settings
+        from plugins.llm_router import __main__ as cli
+
+        # Never the real config (and its secrets), even when the check fails.
+        monkeypatch.setattr(settings, "load_settings", lambda path=None: pytest.fail("config loaded"))
+
+        with pytest.raises(SystemExit) as exit_info:
+            cli.cli_main(["--message", "ping"])
+        assert exit_info.value.code == 2
+        assert "--profile" in capsys.readouterr().err

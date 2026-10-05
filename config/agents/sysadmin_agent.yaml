@@ -5,6 +5,9 @@ plugins:
     ssh_control:
       type: ssh_control
       enabled: true
+      # upload_file/download_file only read and write local files in here;
+      # without it both tools refuse.
+      local_root: data/ssh_control/files
       machines:
         - name: hosta
           host: 192.0.2.2
@@ -56,6 +59,17 @@ plugins:
           key_path: ~/.ssh/id_rsa
           max_connections: 3
 
+    # The infra knowledge bundle, in an instance of its own: sandboxed to
+    # data/okf/infra, which the shared `okf` excludes (config/plugins.yaml).
+    # So of the okf tools, only sysadmin_okf/* can write what the hook below
+    # injects into this agent's prompt (a shell can still write the files).
+    sysadmin_okf:
+      type: okf
+      enabled: true
+      description: "sysadmin: durable infra knowledge (OKF bundle)"
+      allowed_directories:
+        - data/okf/infra
+
     # the agent
     sysadmin_agent:
       type: multi_turn_agent
@@ -93,14 +107,12 @@ plugins:
             - "+file_ops/*"
             - "+terminal/*"            
             - "+ssh_control/*"
-            - "+okf/*"                    # durable infra knowledge base (runbooks, known issues, hosts)
+            - "+sysadmin_okf/*"           # durable infra knowledge base (runbooks, known issues, hosts)
             - "+ask_user/*"               # ask the person in the chat before a choice that is theirs
 
         hooks:
           enabled: true
           overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true
             sequential_thinking.inject_active_sessions:
               enabled: true
             todo.inject_todo_tasks:
@@ -108,7 +120,7 @@ plugins:
             # OKF context injection: fold relevant infra knowledge (hosts,
             # services, runbooks, known issues) from the bundle into the prompt
             # each turn — lexical hit + its linked concepts.
-            okf.okf_context_injection:
+            sysadmin_okf.okf_context_injection:
               enabled: true
               hook_bundle: "data/okf/infra"
               hook_max_concepts: 5

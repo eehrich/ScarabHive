@@ -68,6 +68,10 @@ def _result_status(content: str) -> str:
     return "ok"
 
 
+def _call_ids(msg: Any) -> List[Any]:
+    return [_get(call, "id") for call in _get(msg, "tool_calls") or []]
+
+
 def _fingerprint(arguments: Any) -> str:
     raw = arguments if isinstance(arguments, str) else json.dumps(
         arguments, sort_keys=True, default=str)
@@ -91,9 +95,12 @@ def build_excerpt(
     """
     history = list(messages or [])
     last = history[-1] if history else None
+    # The loop appends the answer before post_llm_call, but not verbatim: None
+    # content becomes "", and repaired arguments are copies. Compared as is,
+    # the judge saw the step twice -- its thinking and its calls doubled.
     already_there = (last is not None and _get(last, "role") == "assistant"
-                     and _get(last, "content") == _get(assistant or {}, "content")
-                     and _get(last, "tool_calls") == _get(assistant or {}, "tool_calls"))
+                     and (_get(last, "content") or "") == (_get(assistant or {}, "content") or "")
+                     and _call_ids(last) == _call_ids(assistant or {}))
     if assistant and not already_there:
         history.append(assistant)
 

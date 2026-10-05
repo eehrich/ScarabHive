@@ -1,0 +1,237 @@
+@database "basic_operations"
+@author "Enrico Ehrich"
+@$VER: basic_operations.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Basic Operations"
+@{h1}Basic Operations
+
+Two small tools for agents. @{b}wait@{ub} pauses for a number of seconds --
+for a build, a deployment or a rate limit to pass -- and shows a countdown
+in the chat's status line; for a long pause it can instead end the turn and
+have the session woken when the time is up. @{b}ping@{ub} answers "Pong!"
+with the server's time, a quick check that the tool path works. The plugin
+keeps no data and has no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  The wait tool  " link wait}
+  @{"  Waking instead of waiting  " link wake}
+  @{"  The ping tool  " link ping}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration (@{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    basic_operations:
+      type: basic_operations
+      enabled: true
+      max_wait_seconds: 3600
+      default_update_interval: 5.0
+@{body}
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+basic_operations/*"
+@{body}
+
+It needs nothing beyond the core requirements. The settings, read from the
+server entry when the plugin starts:
+
+@{table}
+Key | Default in code | Meaning
+max_wait_seconds | 3600 | the longest wait accepted, also shown to the model as the maximum of seconds
+default_update_interval | 1.0 | how long the wait loop sleeps between looks at the clock; it must be above 0, or every wait answers "Update interval must be positive"
+@{body}
+
+The interval does not set how often the status line changes (every 10
+seconds, fixed) nor how fast a stop is noticed (within a second, fixed); in
+practice it changes nothing a user sees. The model cannot set it.
+
+Waking a session (see @{" Waking instead of waiting " link wake}) needs
+session presence, @{tt}session_presence.enabled@{utt} in
+@{tt}config/config.yaml@{utt}. The plugin stores nothing on disk.
+
+@{h2}Running it on its own
+
+@{code}
+python -m plugins.basic_operations --operation ping --include-details
+python -m plugins.basic_operations --operation wait --seconds 5 --message "build"
+python -m plugins.basic_operations --server --port 9010
+@{body}
+
+Run from @{tt}src/@{utt} (or with it on @{tt}PYTHONPATH@{utt}). The first
+two call a tool once and print the answer. @{tt}--server@{utt} serves both
+tools over HTTP on 127.0.0.1 (default port 9010); calls need the key from
+the @{tt}HTTP_SERVER_AUTH_KEY@{utt} environment variable when it is set.
+@endnode
+
+@node wait "The wait tool"
+@{h1}The wait tool
+
+@{tt}basic_operations_wait@{utt} in the default setup (the instance name
+plus @{tt}_wait@{utt}). It holds the agent's turn until the time is up; the
+chat shows a countdown meanwhile, and the user's stop ends it within a
+second.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+seconds | required; any number above 0 up to max_wait_seconds (the schema says from 0.1, the code takes less). A number as text ("30") is read too
+message | what the status line calls the wait; default "Waiting" (also for null or empty). Cut to 100 characters
+wake | true: do not hold the turn, wake the session when the time is up (see @{" Waking instead of waiting " link wake}); default false. The text "false" is false
+@{body}
+
+@{h2}Answers
+
+A finished wait:
+
+@{code json}
+{"status": "success", "message": "Wait completed successfully",
+ "requested_seconds": 30.0, "actual_seconds": 30.004, "user_message": "build"}
+@{body}
+
+When @{tt}wake@{utt} was asked for but the call waited here after all, the
+answer adds @{tt}wake_note@{utt} with the reason (see
+@{" Waking instead of waiting " link wake}).
+
+Stopped by the user: @{tt}status@{utt} "cancelled", @{tt}cancelled@{utt}
+true, @{tt}actual_seconds@{utt} how long it had waited (0 when stopped
+before it began), plus @{tt}requested_seconds@{utt} and
+@{tt}user_message@{utt}.
+
+Refused, as @{tt}{"status": "error", "error": "..."}@{utt}:
+
+@{table}
+error | When
+seconds must be a number above 0 | seconds is 0 or negative, missing, null, NaN, text that is not a number, a list or an object
+Wait time exceeds maximum of 3600.0 seconds | seconds above max_wait_seconds, infinity included
+Update interval must be positive | default_update_interval in the server entry is 0 or below
+@{body}
+
+@{h2}An example
+
+@{code json}
+{"seconds": 45, "message": "waiting for the deployment"}
+@{body}
+@endnode
+
+@node wake "Waking instead of waiting"
+@{h1}Waking instead of waiting
+
+A wait holds the turn: the agent does nothing else and the run stays open.
+With @{tt}wake: true@{utt} and @{tt}seconds@{utt} of 60 or more, the call
+answers at once instead:
+
+@{code json}
+{"status": "success", "waiting": true, "requested_seconds": 600.0,
+ "user_message": "build", "note": "end your turn now -- you are woken in 600 s. ..."}
+@{body}
+
+The agent ends its turn; when the time is up the session is woken and a
+new turn starts. The wake carries no text of its own -- the message appears
+in the server log ("the wait is over: build"), not in the woken turn. Below
+60 seconds a wake is not armed: the woken turn reads the whole conversation
+again, which costs more than waiting.
+
+When the session cannot be woken, the call waits here as without
+@{tt}wake@{utt} and says why in @{tt}wake_note@{utt}:
+
+@{table}
+wake_note | Why
+a wake needs at least 60 s | seconds below 60
+session presence is off (config: session_presence.enabled) | waking is not configured
+this call has no session to wake | a call without a session
+this call belongs to no session, so there is nobody to wake | a call without a user
+this run was itself woken and ends with its turn | the run is a wake itself; a wake does not arm the next
+waking is switched off (config: session_presence.max_wake_depth is 0) | waking off by setting
+a sub-agent's session is never woken | the caller is a sub-agent; its parent run takes its result
+@{body}
+
+@{h2}The limit
+
+An armed wake is a sleeping task in the process that took the call,
+nothing on disk. A one-shot @{tt}agent-cli run@{utt} ends with its turn,
+and a restart or plugin reload before the time is up drops the wake (the
+log says so). Then nobody rings, and the session sits where it ended its
+turn. For a pause that must survive that, wait without @{tt}wake@{utt}.
+@endnode
+
+@node ping "The ping tool"
+@{h1}The ping tool
+
+@{tt}basic_operations_ping@{utt}: shows that a tool call reaches the server
+and comes back.
+
+@{table}
+Parameter | Meaning
+include_details | true adds details (below); default false. The text "false" is false
+@{body}
+
+@{code json}
+{"status": "success", "message": "Pong!",
+ "timestamp": "2026-09-30T07:19:17.570+02:00", "server_name": "basic_operations"}
+@{body}
+
+@{tt}timestamp@{utt} is the server's local time in ISO 8601, to the
+millisecond, with its UTC offset.
+@{tt}details@{utt} holds @{tt}python_version@{utt}, @{tt}platform@{utt} and
+@{tt}server_config@{utt} (the two settings from
+@{" Setting it up " link setup}).
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The descriptions and parameters come from the plugin's
+@{tt}schema.yaml@{utt}, about 1,250 characters for both tools, sent with
+every request. The maximum of @{tt}seconds@{utt} is filled in from
+@{tt}max_wait_seconds@{utt}. Nothing checks the arguments against the
+schema before the call; the code takes what the tables in
+@{" The wait tool " link wait} and @{" The ping tool " link ping} say.
+
+@{h2}The status line
+
+@{table}
+When | Line
+wait begins | build: starting countdown - 30.0s
+every 10 seconds | build: 20.0s remaining
+wait done | Waited 30.0s of 30.0s -- build
+stopped | build: cancelled after 12.3s
+wake armed | build: waking the session in 600.0s
+ping | Pong from basic_operations at 2026-09-30T07:19:17.570+02:00
+@{body}
+
+A refused call shows its error text.
+
+@{h2}Tokens and cache
+
+An answer is a few hundred characters (ping with details a little more),
+appended to the end of the conversation like any other tool answer. The
+plugin has no hook and adds nothing to the system prompt, so the cached
+prompt stays intact. A plain wait costs no tokens while it runs; a wake
+costs a whole turn, which is why it needs 60 seconds or more.
+
+@{h2}Known gaps
+
+@{bullet}A wake is lost on a restart, and never happens from a one-shot
+agent-cli run (see @{" Waking instead of waiting " link wake}).
+@{bullet}The woken turn is not told which wait woke it.
+@endnode

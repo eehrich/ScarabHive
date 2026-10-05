@@ -1,0 +1,404 @@
+@database "context_summarizer"
+@author "Enrico Ehrich"
+@$VER: context_summarizer.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Context Summarizer"
+@{h1}Context Summarizer
+
+A long conversation gets expensive and at some point no longer fits the
+model. The Context Summarizer shrinks it: before an LLM call it has a
+second, cheaper model summarize the older messages and puts the summaries
+in their place. The prompts and the most recent messages stay as they
+were. It runs by itself when a conversation grows past a number of
+messages or a share of the model's context window; an agent can also
+start it with a tool, and you with @{tt}/summarize@{utt}. The
+@{b}Context Summarizer@{ub} panel lists every run with what it saved and
+what it wrote.
+
+@{image docs/panel.png "The Context Summarizer panel with the runs of a session"}
+
+@{code}
+For users
+  @{"  The Context Summarizer panel  " link panel}
+
+For agents and developers
+  @{"  The summarize tool  " link summarize}
+  @{"  The check_stats tool  " link check_stats}
+  @{"  The summarizing hook  " link hook}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Context Summarizer panel"
+@{h1}The Context Summarizer panel
+
+Open it from the launcher (@{b}Context & memory@{ub}, "Context
+Summarizer"), or from a session's info button, which opens it on that
+session.
+
+@{image docs/panel.png "The Context Summarizer panel"}
+
+@{h2}Which runs it shows
+
+The panel follows the chat: it shows the runs of the session open there
+and switches with it. Opened from a session's info button it stays on
+that session -- the toolbar says so, and @{b}Follow the chat@{ub} lets go
+of it. @{b}All sessions@{ub} shows the runs of every session, with a
+column naming the session; that view is an admin's, anyone else gets
+"The history could not be loaded" and the reason. With no session open
+the panel says so and asks for nothing.
+
+The list reloads every 5 seconds; the menu next to the reload button sets
+another interval or turns it off.
+
+@{h2}What you see
+
+@{bullet}Four figures: the runs (and how many were applied, rejected and
+skipped), the tokens saved, the messages summarized and the average
+reduction. Tokens, messages and reduction count applied runs only.
+@{bullet}The runs, newest first, the newest 100 -- a line above the table
+says when there are more. Each row has the time, the outcome, the messages
+before and after, the tokens before and after, the tokens saved and the
+reduction. A click on a column head sorts by it.
+
+What the outcomes mean:
+
+@{table}
+Outcome | Means
+applied | the summaries replaced the older messages
+rejected | the summaries were written but saved too little; the conversation stayed as it was
+skipped | too few older messages, or too small ones to ever save enough; no summary was asked for
+@{body}
+
+A run that did not start at all -- the conversation below the thresholds,
+or the pause after the last run not over -- is not listed.
+
+@{h2}What you can do
+
+@{bullet}A row -- click, Enter or Space -- opens the run in a drawer: its
+figures, how many chunks were summarized and how many failed, the
+summaries it wrote and the messages they replaced (each cut at 5000
+characters). A rejected or skipped run kept no messages. A run that has
+dropped out of the history meanwhile is refused with a notice.
+@{bullet}The trash button forgets every run of every session, after
+asking. Only an admin may (anyone, with authentication off); for anyone
+else the server refuses and the panel shows why.
+
+The runs are kept in the memory of the server process, at most the last
+1000, and are gone after a restart. A run made by an agent in another
+process (an @{tt}agent-cli@{utt} run) is not among them.
+@endnode
+
+@node summarize "The summarize tool"
+@{h1}The summarize tool
+
+@{tt}context_summarizer_summarize@{utt} (named after the plugin instance)
+summarizes the conversation now, whatever its size. It is what
+@{tt}/summarize [reason]@{utt} runs at the chat prompt. It runs the same
+steps as the hook (see @{"  The summarizing hook  " link hook}) but skips
+the size check and the pause between runs -- and it starts that pause
+for the hook.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+reason | free text, returned in the answer and logged; without it "manual_trigger"
+chunk_size | 2 to 50: older messages summarized together; without it the configured summarization_chunk_size (10)
+preserve_recent | 2 to 100: recent messages kept as they are; without it the configured preserve_recent_count (10)
+@{body}
+
+Both numbers hold for this run only; other runs, also running at the same
+time, keep the configured values.
+
+@{h2}Answers
+
+@{bullet}@{tt}status: "success"@{utt} with @{tt}original_count@{utt} and
+@{tt}summarized_count@{utt} (messages before and after, the prompts
+counted), @{tt}tokens_saved@{utt} (an estimate), @{tt}summary_preview@{utt}
+(the first 200 characters of the first summary), @{tt}reason@{utt} and
+@{tt}modified@{utt}.
+@{bullet}@{tt}modified: false@{utt}: nothing changed, and
+@{tt}not_applied@{utt} says why -- @{tt}insufficient_old_messages@{utt}
+(fewer than two messages older than the ones kept),
+@{tt}insufficient_potential_reduction@{utt} (even dropping all older
+messages would not save the minimum reduction),
+@{tt}insufficient_reduction@{utt} (the summaries saved too little) or
+@{tt}no_context_window@{utt} (the answering model's window is unknown).
+@{bullet}An empty conversation answers @{tt}original_count: 0@{utt} and
+"No messages in conversation".
+@{bullet}@{tt}status: "error"@{utt} with @{tt}error@{utt}: a chunk_size or
+preserve_recent out of range ("preserve_recent must be a whole number from
+2 to 100, got 500"), a call without a session ("Session context not
+available (session_id or agent missing)"), or a failed run
+("Summarization failed: ..."). Nothing is changed then.
+
+@{h2}An example
+
+@{code json}
+{"reason": "planning is done", "preserve_recent": 20}
+@{body}
+@endnode
+
+@node check_stats "The check_stats tool"
+@{h1}The check_stats tool
+
+@{tt}context_summarizer_check_stats@{utt} (no parameters) measures the
+conversation, for an agent deciding whether to summarize. @{tt}/stats@{utt}
+at the chat prompt runs it.
+
+@{table}
+Field | Means
+message_count | messages, the prompts included
+estimated_tokens | estimate of the messages plus the tool definitions
+tool_definition_tokens | the tool definitions' share of it
+actual_tokens | the prompt tokens of the session's last LLM call, from context_usage_tracker; 0 without one, or when a compaction since made it stale
+total_tokens | the larger of the two
+context_window | the window of the model answering the session
+utilization_percentage | total_tokens as a share of the window
+trigger_threshold | summarization_trigger_percentage, in percent
+max_messages | the message count that triggers the hook for this agent; 0 when none does -- also when the hook is switched off for the agent
+recommendation | "summarize" when the utilization reaches the threshold or the messages exceed max_messages, else "ok"
+@{body}
+
+An empty conversation answers zeros and "ok"; without a session the
+answer is @{tt}{"status": "error", "error": "Session context not
+available"}@{utt}.
+@endnode
+
+@node hook "The summarizing hook"
+@{h1}The summarizing hook
+
+@{tt}summarize_context@{utt} runs before every LLM call of every agent
+while the plugin instance is enabled -- it is on by default -- after
+context_engineer's hook.
+
+@{h2}When it fires
+
+Either condition is enough:
+
+@{bullet}@{b}The message count@{ub}: more messages than
+@{tt}max_messages@{utt}, the prompts counted. The shipped configuration
+sets 200.
+@{bullet}@{b}The tokens@{ub}: the larger of the session's last measured
+prompt tokens (from context_usage_tracker, unless a compaction made them
+stale) and an estimate of the messages plus the tool definitions reaches
+@{tt}summarization_trigger_percentage@{utt} of the answering model's
+context window. The shipped configuration sets 80%.
+
+In practice it is the message count that fires it: tool-call chains
+reach 200 messages long before 80% of a large window. For an agent that
+also runs context_engineer's hook -- it is off by default and on for
+@{tt}multi_turn_agent@{utt} and the agents built on it -- context_engineer
+prunes at 190 messages first, and the summarizer steps in when that did
+not bring the count under 200. For every other agent the summarizer is
+the first to act.
+
+It does nothing when the answering model's window is unknown, and nothing
+for @{tt}min_time_between_summarizations@{utt} seconds (500 in the shipped
+configuration) after a run of the same session that sent the summarizing
+model at least one call -- applied, rejected or failed alike, and a manual
+run too.
+
+@{h2}What a run does
+
+@{bullet}Tool calls without a result are removed from assistant messages
+(not from the last message: its calls are still running).
+@{bullet}The messages are split into the system messages (kept, when
+@{tt}preserve_system_messages@{utt} is on), the last
+@{tt}preserve_recent_count@{utt} messages (kept) and the older ones. A
+tool result in the kept part whose call is older goes with its call.
+@{bullet}The running turn's own messages from a person are never
+summarized: every message a person wrote (or the wake of a woken run)
+since the model's last final answer -- the task, and anything typed into
+the run while it worked. An answer a hook followed up on (a "Continue"
+note) does not end the turn, also when a person wrote into the run after
+that note. An answer followed directly by a message from a person does
+end it: the stored history cannot tell that message from the question
+of a new turn. When a long tool chain has pushed them out of
+the recent messages, each stays where it is, between the summaries of
+what came before and after it.
+@{bullet}Fewer than two older messages, or older messages too small to
+reach @{tt}min_summary_reduction@{utt} even if they vanished: skipped.
+@{bullet}The older messages are cut into chunks of
+@{tt}summarization_chunk_size@{utt}, a call and its results always in
+one chunk. More than @{tt}max_chunks@{utt} chunks, counted over all the parts
+between those messages, make the chunks larger instead; only a turn with
+more such parts than @{tt}max_chunks@{utt} goes past it, one chunk per
+part. All chunks go to the summarizing model (@{tt}llm_profile@{utt})
+at once, each with @{tt}summary_prompt_template@{utt}. A chunk of one
+message, or one whose call fails, stays as it was.
+@{bullet}If the new conversation is not at least
+@{tt}min_summary_reduction@{utt} smaller (estimated), the run is
+rejected and nothing changes. Otherwise it is applied.
+
+The chat shows the run as a status line: "Summarizing 30 older messages
+using LLM (preserving 10 recent messages)", then "Summarized 30 messages:
+41200 -> 9800 tokens (76.2% reduction)" -- or "Not applied: 12.0%
+reduction is below the 30.0% minimum". A skipped run shows no line.
+
+@{h2}Switching it off, and max_messages per agent
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      context_summarizer.summarize_context:
+        enabled: false        # this agent is never summarized
+@{body}
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      context_summarizer.summarize_context:
+        max_messages: 120     # this agent: after 120 messages
+@{body}
+
+@{tt}max_messages@{utt} is the only setting an agent's override changes;
+every other setting comes from the plugin's server entry (see
+@{"  Setting it up  " link setup}).
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The tool descriptions and parameter descriptions come from the plugin's
+@{tt}schema.yaml@{utt}; the answers and error texts are those in
+@{"  The summarize tool  " link summarize} and
+@{"  The check_stats tool  " link check_stats}. The call's status line
+ends with its result: "Summarized 32 → 14 messages (saved ~3711 tokens)",
+"Not summarized: insufficient_old_messages", "Context: 48 messages,
+~31000 tokens (incl. 2400 tool def tokens) (31.0% of 100000)".
+
+@{h2}After a compaction
+
+What the model keeps: its prompts, the system messages of the
+conversation (moved to the front, before the summaries), the last
+@{tt}preserve_recent_count@{utt} messages (10) and what a person wrote in
+the running turn (the task, and anything typed into the run since),
+exactly as they were.
+
+What it loses: every other older message -- the text of the conversation, the
+tool calls with their arguments and the full tool results. In their place
+it gets one user message per chunk, marked as written by the plugin, not
+by a person:
+
+@{code}
+[Summary of 10 older messages (chunk 1/3)]
+
+The user asked for a deployment plan; we chose PostgreSQL and ...
+@{body}
+
+The chat shows these as injected messages of the plugin instance
+(@{tt}context_summarizer@{utt}), not as something you wrote. /undo, /retry
+and the turn counting of other plugins pass over them and find the turns
+at the questions people wrote -- the running turn's are still there,
+since they are never summarized; an earlier turn whose question went
+into a summary is no longer a turn of its own.
+
+The summarizing model reads each older message as "n. ROLE (time): text"
+with its tool calls; images, audio and other non-text parts are not in
+what it reads, so they are gone after the run. Reasoning carried over
+from the model's earlier turns (encrypted reasoning, thought signatures)
+across the replaced span is marked unusable. A manual run from inside a
+tool call keeps that call: its result follows the summaries as usual.
+
+@{h2}Tokens and cache
+
+An applied run rewrites the conversation behind the prompts. The
+provider's prompt cache keeps only the prompts in front; the next call
+pays the rest of the (now much shorter) conversation in full once, and
+from then on the history grows append-only again until the next run. The
+summaries themselves cost one call of the summarizing model per chunk --
+at most 10 per run by default (more only when a turn's messages from a
+person split the older part into more pieces than that). The pause between automatic runs (500
+seconds in the shipped setup) keeps a rejected run from repeating on
+every step. After an applied run the session's measured token figures
+are marked stale, so later hooks and check_stats go by the estimate until
+the next LLM call measures again.
+
+@{h2}Known gaps
+
+@{bullet}The summary is only as good as the summarizing model; a chunk it
+fails on stays in full, and a run whose chunks all fail is rejected.
+@{bullet}If the summarizing profile cannot be created at all (a typo in
+@{tt}llm_profile@{utt}), the answering model summarizes instead. An
+outage of the summarizing model at run time is not caught that way: the
+chunks stay in full and the conversation does not shrink.
+@{bullet}Tool results are summarized like any other text. A tool whose
+result must survive word for word belongs in the recent messages or in a
+store the agent can read again.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration (@{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    context_summarizer:
+      type: context_summarizer
+      enabled: true
+      config:
+        llm_profile: or-deepseek-flash
+        max_message_preview_length: 5000
+        min_time_between_summarizations: 500
+        max_chunks: 10
+        max_messages: 200
+        summarization_trigger_percentage: 0.8
+@{body}
+
+With the instance enabled the hook runs for every agent. The tools only
+for an agent whose allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+context_summarizer/*"
+@{body}
+
+@{h2}Server settings
+
+These go under @{tt}config:@{utt} in the server entry; what is not set
+there takes the default below.
+
+@{table}
+Key | Default | Meaning
+max_messages | 0 | fire above this many messages; 0: by tokens only
+summarization_trigger_percentage | 0.60 | fire when the tokens reach this share of the window
+preserve_recent_count | 10 | recent messages kept as they are
+preserve_system_messages | true | keep system messages; false: they are summarized like the others
+summarization_chunk_size | 10 | older messages per summary
+max_chunks | 10 | most summaries per run, the chunks grow instead; 0: no limit
+llm_profile | turbo | the profile that writes the summaries
+summary_prompt_template | see schema.yaml | the prompt; {messages} is replaced by the chunk; empty refuses to start
+min_summary_reduction | 0.3 | how much smaller the conversation must get to be applied
+min_time_between_summarizations | 200 | seconds between automatic runs of a session
+max_tracked_sessions | 200 | sessions whose last run the pause remembers
+max_message_preview_length | 5000 | characters of each message the panel keeps
+@{body}
+
+The summarizing client is created once per process, on the first run; a
+changed @{tt}llm_profile@{utt} takes effect after a restart.
+
+@{h2}Behind the panel
+
+@{table}
+Method | Path | Answer
+GET | /plugins/context_summarizer/history?session_id=&limit= | the newest limit runs (1 to 1000, default 100) without their messages, and the figures over all of them
+GET | /plugins/context_summarizer/events/{id} | one run with the messages it replaced and the summaries; 404 when gone
+POST | /plugins/context_summarizer/clear | forgets every run
+@{body}
+
+A user sees the runs of her own sessions; another user's session answers
+as one without runs, and its runs as gone. All sessions at once and
+clearing are an admin's (403 otherwise).
+@endnode

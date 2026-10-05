@@ -1,0 +1,271 @@
+@database "context_usage_tracker"
+@author "Enrico Ehrich"
+@$VER: context_usage_tracker.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Context & Cost Usage"
+@{h1}Context & Cost Usage
+
+What every LLM call costs: the plugin records each call's tokens, what
+the prompt cache saved and wrote, the latency, the price, and how full the
+model's context window was. The @{b}Context & Cost Usage@{ub} panel adds
+it up per session -- sub-agents included -- per agent and per model, and
+shows every call on its own. Other parts of the system read the same
+records: the chat's @{tt}/costs@{utt} and @{tt}/context@{utt}, and the
+plugins that compact a conversation when its context runs full.
+
+The plugin gives the model no tool and changes nothing it sees; it only
+counts.
+
+@{image docs/panel.png "The Context & Cost Usage panel with the figures of a session"}
+
+@{code}
+For users
+  @{"  The panel  " link panel}
+
+For agents and developers
+  @{"  What it records  " link hooks}
+  @{"  Who reads the figures  " link readers}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The panel"
+@{h1}The Context & Cost Usage panel
+
+Open it from the launcher (@{b}Context@{ub}, "Context & Cost Usage"), or
+from a session's info button, which opens it on that session.
+
+@{image docs/panel.png "The Context & Cost Usage panel"}
+
+@{h2}Which calls it counts
+
+Two buttons in the toolbar choose the scope. @{b}Chat session@{ub} shows
+the session open in the chat and switches with it; opened from a
+session's info button it stays on that session instead -- the button then
+names it, and @{b}Follow the chat@{ub} lets go of it. With no session open
+it says so rather than counting every session. @{b}All sessions@{ub}
+counts every call; only an admin may look at that (see below).
+
+A session's calls include those of its sub-agents, at any depth: they run
+in sessions of their own, but their request ids start with the request id
+of the session that spawned them.
+
+The figures look at the newest calls only -- 1000 by default, the
+server's @{tt}max_history@{utt} -- per session, or over all sessions. The
+database keeps more (see @{" Setting it up " link setup}). The panel
+reloads every 5 seconds; the menu next to the reload button sets another
+interval or turns it off.
+
+@{h2}The figures at the top
+
+@{table}
+Figure | Shows
+Total cost | the sum of every priced call, in cents; ~ in front when some prices are estimates. Below it how many calls were billed and how many estimated
+Calls | how many calls the figures cover
+Output tokens | the tokens the model wrote; below it the prompt tokens
+Cached | prompt tokens read from the provider's cache, and their share of the prompt
+Cache writes | prompt tokens written into the cache
+Context now | prompt and output tokens of the last call that carried a conversation, and their share of that model's window; in a session's view @{i}stale@{ui} when the conversation was compacted since
+@{body}
+
+A price is either billed -- the provider reported it with the answer --
+or estimated from @{tt}config/llm_pricing.yaml@{utt}. An estimate carries
+a ~ and the warning colour, a billed price is green; a call priced neither
+way has no price and counts as none, not as zero.
+
+@{h2}The tabs
+
+@{bullet}@{b}Overview@{ub}: a chart of the newest 60 calls -- total,
+prompt, output and cached tokens on the left scale, the cost in cents on
+the right -- for all agents or the one chosen above it. A line clicked in
+the legend is hidden and stays hidden. Below it the context tokens and
+the share of the window used: now, lowest, highest and average. Calls
+without a conversation (see @{" What it records " link hooks}) are left
+out of these two rows.
+@{bullet}@{b}Agents@{ub}: per agent the calls, token sums, cached tokens
+with their share of the prompt, cache writes, total and average cost,
+average latency, the largest call and the time of the last. Most
+expensive first. Under @{b}All sessions@{ub} these are all-time totals,
+kept apart from the calls, so they count further back than the other
+figures.
+@{bullet}@{b}LLMs@{ub}: calls, token sums, cached share and cost per model,
+with the average and the 95th percentile latency. Most used first.
+@{bullet}@{b}Calls@{ub}: the newest 50, 100, 250 or 500 calls, newest
+first, for all agents or one: time, agent, session and request, model,
+tokens, share of the window, latency and cost. In a session's view, a
+call of a sub-agent is marked ↳. A row -- click, Enter or Space -- opens the call with everything
+recorded about it, including the estimated size of the tool definitions
+and the number of messages sent.
+
+A click on a column head sorts a table by it, a second click the other
+way; the order holds through the reloads.
+
+@{h2}Clearing
+
+The bin in the toolbar deletes every recorded call and every agent's
+totals, of every session, after asking. Only an admin may; for anyone
+else the server refuses and the panel shows why.
+
+@{h2}Who sees what
+
+With authentication on, a user sees the figures of her own sessions. A
+session of another user shows nothing, as if it had no calls.
+@{b}All sessions@{ub} and clearing are for admins; for anyone else the
+panel shows the server's refusal instead of the figures. With
+authentication off, whoever uses the instance sees everything.
+@endnode
+
+@node hooks "What it records"
+@{h1}What it records
+
+Two hooks record the calls. Both are on for every agent as soon as the
+plugin is enabled; neither has settings.
+
+@{h2}track_usage -- the calls of an agent
+
+Runs after each LLM call an agent makes (@{tt}post_llm_call@{utt}) and
+stores one row:
+
+@{table}
+Field | From
+agent, session, request id | the agent that made the call
+model | the client that served it -- a model chosen in the chat counts, not the agent's default
+prompt, output, cached, cache-write tokens | the provider's usage, read the same way for every provider
+total tokens | the provider's total, else prompt plus output
+context window | the client that served the call, else the agent's configured model
+share of the window | total tokens divided by the window
+tool definitions | an estimate of the tokens the tool schemas took
+messages | how many messages were sent
+latency | the wall-clock time of the answer
+cost | billed by the provider, else estimated; a batch call at the batch price
+@{body}
+
+A call whose answer carries no usage is not recorded. A failure while
+recording is logged and never fails the call.
+
+To leave out one agent:
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      context_usage_tracker.track_usage:
+        enabled: false
+@{body}
+
+@{h2}track_non_agent_usage -- calls without an agent
+
+Some clients call a provider with no agent around them: the decisions
+client, and speech synthesis. This hook (@{tt}post_llm_response@{utt})
+records exactly those -- a call made by an agent is left to the hook
+above, so nothing is counted twice. The row is booked under the name the
+call gives, else the provider's name, with a context window of 0: such a
+call carries no conversation, so it counts as spend but never as a
+context reading.
+
+It records only what the provider measured. A call reported without a
+usage -- a failure that was never billed, a retry, a synthesis from a
+provider that returns audio and no token count -- leaves no row. A call
+billed and then refused by the client is booked: it was spent.
+
+@{h2}Stale after a compaction
+
+When a plugin that compacts the conversation rewrites it, it marks the
+session's last reading @{i}stale@{ui}: the tokens counted describe a
+conversation that no longer exists. The next call of the conversation
+clears the mark; a call without a context does not.
+@endnode
+
+@node readers "Who reads the figures"
+@{h1}Who reads the figures
+
+The records are the one place that sees every call of the process,
+sub-agents' included, so several parts of the system ask them. They find
+the plugin by its instance name, @{tt}context_usage_tracker@{utt}: an
+instance under another name records, but nobody else reads it.
+
+@{bullet}The chat's @{tt}/costs@{utt} adds up the calls, tokens, cache
+share and cost of the session and its sub-agents; @{tt}/context@{utt}
+shows what the provider counted on the last call next to the estimate of
+what the conversation holds now.
+@{bullet}The context engineer and the context summarizer take the larger
+of the last call's prompt tokens and their own estimate as the size of
+the context, and mark
+the session stale after they compacted it.
+@{bullet}The panel of the sub-agent manager shows each sub-agent's
+context from the same records.
+
+@{h2}The web API
+
+Under @{tt}/plugins/context_usage_tracker/@{utt}:
+
+@{table}
+Request | Answers
+GET usage?session_id= | @{tt}latest@{utt} (the last call with a conversation; with @{tt}is_stale@{utt} when a session is asked for), @{tt}agents@{utt} (per agent), @{tt}statistics@{utt} (timespan, context series, totals)
+GET history?session_id=&agent_id=&last_n= | @{tt}history@{utt}: the calls, oldest first; without last_n every call the figures cover
+POST clear | deletes everything; @{tt}{"status": "cleared"}@{utt}
+GET / | the panel
+@{body}
+
+Without @{tt}session_id@{utt} the answers cover every session; only an
+admin may ask so, anyone else gets 403. Another user's session answers
+empty. Without a session store in the process the answer is 503.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+Nothing. The plugin has no tool, and both hooks only read the call after
+it happened: they add no message, change no prompt and leave the prompt
+cache as it was.
+
+The cost is time, and small. The row is written off the event loop, so
+other sessions keep running; this call waits for it, at most the hook's
+5 seconds, after which it goes on and the write finishes in the
+background.
+
+@{h2}Known gaps
+
+@{bullet}A synthesis from a provider that reports no token usage costs
+money but leaves no row here.
+@{bullet}The rows carry no owner. A session id that another user's
+deleted session had, used again, brings that user's old calls along.
+@{bullet}Old calls are pruned only by a process that has written 500
+calls since it started; a process that never gets there prunes nothing.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    context_usage_tracker:
+      type: context_usage_tracker
+      enabled: true
+@{body}
+
+Keep the instance name @{tt}context_usage_tracker@{utt}; the chat and
+the context plugins look for it by that name. No agent needs an allowlist
+line -- there is no tool -- and both hooks run without being switched on.
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+storage_path | context_usage_tracker.json in the data directory | names the store; the database is usage.db in a folder of the same name without the suffix
+max_history | 1000 | how many of the newest calls the figures and the panel look at
+@{body}
+
+With the defaults the calls are in
+@{tt}data/context_usage_tracker/usage.db@{utt}, an SQLite database that
+the API, the command line and workers write at the same time. Calls older
+than 90 days are pruned, and at most 500,000 are kept; the agents' totals
+are kept apart and are not pruned. A @{tt}context_usage_tracker.json@{utt}
+from an older version at @{tt}storage_path@{utt} is imported once, the
+first time the database is opened, and left in place.
+@endnode

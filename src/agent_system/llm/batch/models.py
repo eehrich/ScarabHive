@@ -168,9 +168,11 @@ class BatchJob:
         """Estimate total input tokens across all requests in this batch.
         
         Returns:
-            Total estimated input tokens
+            Total estimated input tokens; for a finished job the figure kept
+            before its messages were cleared
         """
-        return sum(req.estimate_input_tokens() for req in self.requests)
+        kept = self.metadata.get("estimated_input_tokens")
+        return kept if kept is not None else sum(req.estimate_input_tokens() for req in self.requests)
     
     @property
     def is_terminal(self) -> bool:

@@ -1,5 +1,5 @@
 # Debate Panel Moderator Agent
-# Orchestrates structured 5-participant debates with diverse perspectives and parallel execution
+# Orchestrates structured 8-participant debates with diverse perspectives and parallel execution
 
 plugins:
   servers:
@@ -55,7 +55,7 @@ plugins:
     debate_panel_moderator:
       type: basic_agent
       enabled: true
-      description: "Moderates multi-participant panel debates (5 agents) with diverse roles and parallel execution"
+      description: "Moderates multi-participant panel debates (8 agents) with diverse roles and parallel execution"
 
       agent_config:
         llm_profile: [or-gemini-flash, or-deepseek-flash, chat]
@@ -81,8 +81,6 @@ plugins:
         hooks:
           enabled: true
           overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true
             # not needed, he has already the history in his message list
             #debate_forum.inject_debate_context:
             #  enabled: true              

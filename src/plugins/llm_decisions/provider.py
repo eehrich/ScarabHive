@@ -6,8 +6,8 @@ manifest also declares. Nothing here serves ``chat()``: this plugin declares
 ``provides_decisions`` alone, so ``PROVIDERS`` is deliberately absent and the
 plugin never appears as an LLM provider.
 
-Both providers build the same client -- one wire; system_one.py says what was
-measured on which host -- and differ only in the ``Host`` they hand it.
+Every provider builds the same client -- one wire; system_one.py says what was
+measured on which host -- and they differ only in the ``Host`` they hand it.
 """
 from __future__ import annotations
 
@@ -51,7 +51,15 @@ def build_systemone_decisions(cfg: "DecisionModelConfig"):
     return _build(cfg, SYSTEM_ONE)
 
 
+def build_ollama_decisions(cfg: "DecisionModelConfig"):
+    """A local Ollama's ``/v1/systemone`` (0.35+: nimble, tev1)."""
+    from .system_one import OLLAMA
+
+    return _build(cfg, OLLAMA)
+
+
 DECISION_PROVIDERS = {
     "openrouter_decisions": build_openrouter_decisions,
     "systemone_decisions": build_systemone_decisions,
+    "ollama_decisions": build_ollama_decisions,
 }

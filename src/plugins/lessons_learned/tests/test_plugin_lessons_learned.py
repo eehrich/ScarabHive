@@ -884,11 +884,10 @@ class TestExtractionParsing:
         assert len(candidates) == 0
 
     def test_parse_invalid_json(self):
-        """Parse invalid JSON should return empty."""
+        """An answer that is no JSON is no answer: None, not "no lessons"."""
         from plugins.lessons_learned.extraction import _parse_extraction_response
 
-        candidates = _parse_extraction_response("not json at all")
-        assert len(candidates) == 0
+        assert _parse_extraction_response("not json at all") is None
 
     def test_parse_missing_required_fields(self):
         """Lessons without title/content should be skipped."""
@@ -994,9 +993,9 @@ class TestConversationFormatting:
         from plugins.lessons_learned.extraction import _format_conversation
 
         messages = [
-            MagicMock(role="system", content="System prompt"),
-            MagicMock(role="user", content="Hello"),
-            MagicMock(role="assistant", content="Hi there"),
+            MagicMock(role="system", content="System prompt", injected_by=None),
+            MagicMock(role="user", content="Hello", injected_by=None),
+            MagicMock(role="assistant", content="Hi there", injected_by=None),
         ]
         result = _format_conversation(messages)
         assert "[user]: Hello" in result
@@ -1008,7 +1007,7 @@ class TestConversationFormatting:
         from plugins.lessons_learned.extraction import _format_conversation
 
         messages = [
-            MagicMock(role="user", content="X" * 1000)
+            MagicMock(role="user", content="X" * 1000, injected_by=None)
             for _ in range(20)
         ]
         result = _format_conversation(messages, max_chars=2000)

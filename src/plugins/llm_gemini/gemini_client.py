@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import uuid
+from contextlib import aclosing
 from typing import Dict, List, Optional
 
 import httpx
@@ -19,12 +20,15 @@ from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, L
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
+    RequestEnd,
     adjust_thinking_for_retry,
     apply_retry_thinking_config,
     build_thinking_config,
     convert_openai_tools_to_gemini,
     extract_usage_from_metadata,
+    is_refusal,
     prepare_messages_for_gemini,
+    raise_after_retries,
     response_format_fields,
     StreamingLoopDetector,
     ThinkingProgressTracker,
@@ -87,16 +91,11 @@ class GeminiClient(LLMClient):
         # Store safety settings for Gemini content filtering
         self.safety_settings = safety_settings
 
-        # Setup HTTPX timeouts
-        if httpx_timeouts:
-            self.timeouts = httpx.Timeout(**httpx_timeouts)
-        else:
-            self.timeouts = httpx.Timeout(
-                connect=10.0,
-                read=float(request_timeout),
-                write=10.0,
-                pool=5.0
-            )
+        # A key httpx_timeouts leaves out falls back here -- httpx.Timeout
+        # refuses a partial set, and request_timeout is the read default.
+        self.timeouts = httpx.Timeout(**{
+            "connect": 10.0, "read": float(request_timeout), "write": 10.0, "pool": 5.0,
+            **(httpx_timeouts or {})})
 
         # SSL verification
         if isinstance(ssl_verify, str):
@@ -122,6 +121,19 @@ class GeminiClient(LLMClient):
     ):
         """Stream chat with tools using Gemini native API."""
         self._require_response_format(response_format)
+        end = RequestEnd(self, "gemini", is_streaming=True)
+        # aclosing: a caller that stops reading closes the request with it.
+        async with aclosing(self._stream(messages, tools, cancellation_token, status_scope,
+                                         response_format, end)) as stream:
+            try:
+                async for chunk in stream:
+                    yield chunk
+            except BaseException as error:
+                await end.fail(error)
+                raise
+
+    async def _stream(self, messages, tools, cancellation_token, status_scope,
+                      response_format, end: RequestEnd):
         # Status reporting helper
         async def report_status(message: str) -> None:
             if status_scope is None:
@@ -191,39 +203,37 @@ class GeminiClient(LLMClient):
             ]
 
         url = f"{self.base_url}/models/{self.model}:streamGenerateContent?key={self.api_key}&alt=sse"
+        await end.start(url.split("?")[0], payload)  # the URL without the key
 
-        # Notify pre-request hook (LLM-client level)
-        import time as _time
-        await self._notify_pre_request({
-            "provider": "gemini",
-            "model": self.model,
-            "url": url.split("?")[0],  # Strip API key
-            "payload": payload,
-            "is_streaming": True,
-            "timestamp_ms": _time.time() * 1000,
-        })
-
-        # Accumulators
-        accumulated_content = []  # Only non-thought content (for final message)
-        accumulated_thoughts = []  # Thought summaries (streamed but not saved)
-        accumulated_tool_calls = {}  # id -> tool call
-        accumulated_usage = None
-        # For parallel function calls: store the first thought_signature to propagate to all calls
-        first_thought_signature = None
         # Track MALFORMED_FUNCTION_CALL for auto-retry
         got_malformed_function_call = False
-        # Track MAX_TOKENS for logging purposes
-        hit_max_tokens = False
         # Loop detection utilities
         loop_detector = StreamingLoopDetector()
         progress_tracker = ThinkingProgressTracker()
+        # Whether the caller has seen a delta of an attempt that did not
+        # finish: a retry starts from scratch, so it is told to drop what it
+        # has (stream_restart) -- otherwise it shows the text twice.
+        yielded_delta = False
 
         last_exception = None
-        _streaming_request_start = _time.time()
         for attempt in range(self.max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
-            
+            if yielded_delta:
+                yielded_delta = False
+                yield {"type": "stream_restart"}
+
+            # Every attempt starts from scratch.
+            accumulated_content = []  # Only non-thought content (for final message)
+            accumulated_thoughts = []  # Thought summaries
+            accumulated_tool_calls = {}  # id -> tool call
+            accumulated_usage = end.usage = None
+            last_finish_reason = None  # Gemini's, reported with the answer
+            # For parallel function calls: the first thought_signature, propagated to all calls
+            first_thought_signature = None
+            loop_detector.reset()
+            progress_tracker.reset()
+
             # Per-attempt flag: a stale True from an earlier attempt made the
             # MAX_TOKENS check throw away good follow-up answers and re-request.
             # (got_malformed_function_call stays sticky on purpose -- mode=ANY.)
@@ -322,6 +332,12 @@ class GeminiClient(LLMClient):
                                 logger.debug(f"Failed to parse chunk: {data[:100]}")
                                 continue
 
+                            # Usage first: a chunk without candidates or
+                            # content may carry it (the last one often does).
+                            usage_metadata = chunk.get("usageMetadata")
+                            if usage_metadata:
+                                accumulated_usage = end.usage = extract_usage_from_metadata(usage_metadata)
+
                             # Process candidates
                             candidates = chunk.get("candidates", [])
                             if not candidates:
@@ -335,6 +351,7 @@ class GeminiClient(LLMClient):
                             # Check for MALFORMED_FUNCTION_CALL finish reason
                             finish_reason = candidate.get("finishReason")
                             if finish_reason:
+                                last_finish_reason = finish_reason
                                 logger.debug(f"Gemini chunk finishReason: {finish_reason}")
                                 loop_detector.reset()  # Reset on finish_reason
                                 progress_tracker.reset()  # Reset on finish_reason
@@ -379,13 +396,16 @@ class GeminiClient(LLMClient):
                                         chunk_has_progress = True  # Non-thought content = progress
                                     
                                     
-                                    # Stream everything live (thoughts + content combined for display)
-                                    all_text = "".join(accumulated_thoughts) + "".join(accumulated_content)
-                                    yield {
-                                        "type": "content_delta",
-                                        "delta": text_delta,
-                                        "accumulated": all_text
-                                    }
+                                    # Thinking as thinking_delta: the agent server shows
+                                    # it as thinking and watches it for loops. As
+                                    # content_delta it read as the answer.
+                                    yielded_delta = True
+                                    if is_thought:
+                                        yield {"type": "thinking_delta", "delta": text_delta,
+                                               "accumulated": "".join(accumulated_thoughts)}
+                                    else:
+                                        yield {"type": "content_delta", "delta": text_delta,
+                                               "accumulated": "".join(accumulated_content)}
 
                                 # Handle function calls
                                 if "functionCall" in part:
@@ -435,6 +455,7 @@ class GeminiClient(LLMClient):
                                     chunk_has_progress = True  # Tool call = progress
                                     
                                     logger.debug(f"Yielding tool_call_delta for {func_name}")
+                                    yielded_delta = True
                                     yield {
                                         "type": "tool_call_delta",
                                         "index": len(accumulated_tool_calls) - 1,
@@ -456,12 +477,6 @@ class GeminiClient(LLMClient):
                             if chunk_has_progress or finish_reason:
                                 loop_detector.reset()
 
-                            # Handle usage metadata (at top level of chunk, not in candidate)
-                            usage_metadata = chunk.get("usageMetadata")
-                            if usage_metadata:
-                                # Use shared utility for usage extraction
-                                accumulated_usage = extract_usage_from_metadata(usage_metadata)
-
                         # Stream finished successfully
                         logger.debug(f"Gemini streaming complete: {len(accumulated_content)} content parts, {len(accumulated_tool_calls)} tool calls")
                         
@@ -475,15 +490,7 @@ class GeminiClient(LLMClient):
                                 )
                                 await self._notify_retry("gemini", self.model, url.split("?")[0], True, "MALFORMED_FUNCTION_CALL (empty response)", attempt, self.max_retries + 1)
                                 await self._cancellable_sleep(wait_time, cancellation_token)
-                                # Reset accumulators for retry (keep got_malformed_function_call=True for mode=ANY)
-                                accumulated_content = []
-                                accumulated_thoughts = []
-                                accumulated_tool_calls = {}
-                                accumulated_usage = None
-                                first_thought_signature = None
-                                loop_detector.reset()
-                                progress_tracker.reset()
-                                # DON'T reset got_malformed_function_call - we need it for mode=ANY in retry
+                                # got_malformed_function_call stays set: the retry forces mode=ANY
                                 continue
                             else:
                                 logger.error(
@@ -502,14 +509,6 @@ class GeminiClient(LLMClient):
                                 )
                                 await self._notify_retry("gemini", self.model, url.split("?")[0], True, "MAX_TOKENS (stuck in thinking)", attempt, self.max_retries + 1)
                                 await self._cancellable_sleep(wait_time, cancellation_token)
-                                # Reset accumulators for retry
-                                accumulated_content = []
-                                accumulated_thoughts = []
-                                accumulated_tool_calls = {}
-                                accumulated_usage = None
-                                first_thought_signature = None
-                                loop_detector.reset()
-                                progress_tracker.reset()
                                 continue
                             else:
                                 logger.error(
@@ -536,14 +535,7 @@ class GeminiClient(LLMClient):
                         if accumulated_usage:
                             final_result["usage"] = accumulated_usage
 
-                        # Notify post-response hook for streaming
-                        _s_duration = (_time.time() - _streaming_request_start) * 1000
-                        await self._notify_post_response({
-                            "provider": "gemini", "model": self.model,
-                            "url": url.split("?")[0], "is_streaming": True,
-                            "duration_ms": _s_duration, "usage": accumulated_usage,
-                            "timestamp_ms": _time.time() * 1000,
-                        })
+                        await end.report(usage=accumulated_usage, finish_reason=last_finish_reason)
 
                         logger.debug("Yielding final result")
                         yield {"type": "final", **final_result}
@@ -565,7 +557,7 @@ class GeminiClient(LLMClient):
                 else:
                     await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
                     logger.error(f"Gemini request failed after {self.max_retries + 1} attempts")
-                    raise Exception(f"Request timeout after {self.max_retries + 1} attempts") from e
+                    raise_after_retries(e, "gemini", self.model, f"Request timeout after {self.max_retries + 1} attempts")
 
             except Exception as e:
                 last_exception = e
@@ -608,7 +600,8 @@ class GeminiClient(LLMClient):
                 # Check if this is a 400 error that might be caused by mode=ANY
                 # If we got 400 after forcing mode=ANY, try without it
                 is_400_error = "HTTP 400" in error_str or "400 Bad Request" in error_str
-                if is_400_error and got_malformed_function_call and "toolConfig" in payload:
+                healed = is_400_error and got_malformed_function_call and "toolConfig" in payload
+                if healed:
                     logger.warning(
                         "[Gemini] HTTP 400 after mode=ANY retry. Removing forced function calling for next attempt."
                     )
@@ -618,6 +611,11 @@ class GeminiClient(LLMClient):
                     # Reset the flag so we don't add it back
                     got_malformed_function_call = False
                 
+                if not healed and is_refusal(e):
+                    # A refusal a retry does not change: at once to the fallback.
+                    await report_status(f"Refused: {self.model}")
+                    raise_after_retries(e, "gemini", self.model, f"Gemini streaming failed: {e}")
+
                 logger.error(f"Gemini streaming error: {e}", exc_info=True)
                 if attempt < self.max_retries:
                     wait_time = 2 ** attempt
@@ -625,18 +623,10 @@ class GeminiClient(LLMClient):
                     logger.warning(f"Retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
                     await self._notify_retry("gemini", self.model, url.split("?")[0], True, f"Error: {error_str[:200]}", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
-                    # Reset accumulators for retry
-                    accumulated_content = []
-                    accumulated_thoughts = []
-                    accumulated_tool_calls = {}
-                    accumulated_usage = None
-                    first_thought_signature = None
-                    loop_detector.reset()
-                    progress_tracker.reset()
                     continue
                 else:
                     await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
-                    raise Exception(f"Gemini streaming failed: {str(e)}") from e
+                    raise_after_retries(e, "gemini", self.model, f"Gemini streaming failed: {e}")
 
         # If we get here, all retries failed
         if last_exception:
@@ -654,6 +644,16 @@ class GeminiClient(LLMClient):
     ) -> Dict:
         """Non-streaming chat with tools using Gemini native API."""
         self._require_response_format(response_format)
+        end = RequestEnd(self, "gemini", is_streaming=False)
+        try:
+            return await self._request(messages, tools, cancellation_token, status_scope,
+                                       response_format, end)
+        except BaseException as error:
+            await end.fail(error)
+            raise
+
+    async def _request(self, messages, tools, cancellation_token, status_scope,
+                       response_format, end: RequestEnd) -> Dict:
         # Status reporting helper
         async def report_status(message: str) -> None:
             if status_scope is None:
@@ -725,20 +725,9 @@ class GeminiClient(LLMClient):
             ]
 
         url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
-
-        # Notify pre-request hook (LLM-client level)
-        import time as _time
-        await self._notify_pre_request({
-            "provider": "gemini",
-            "model": self.model,
-            "url": url.split("?")[0],  # Strip API key from URL
-            "payload": payload,
-            "is_streaming": False,
-            "timestamp_ms": _time.time() * 1000,
-        })
+        await end.start(url.split("?")[0], payload)  # the URL without the key
 
         # Track MALFORMED_FUNCTION_CALL for auto-retry
-        _request_start = _time.time()
         got_malformed_function_call = False
         last_exception = None
         for attempt in range(self.max_retries + 1):
@@ -800,13 +789,17 @@ class GeminiClient(LLMClient):
                         raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
                     data = response.json()
+                    usage = extract_usage_from_metadata(data.get("usageMetadata"))
 
                     # Extract response
                     candidates = data.get("candidates", [])
                     if not candidates:
+                        # A blocked prompt (promptFeedback) is an answer too:
+                        # reported, or the debugger shows a request without one.
+                        await end.report(usage=usage, response_data=data)
                         return {
                             "assistant": {"role": "assistant", "content": ""},
-                            "usage": {}
+                            "usage": usage
                         }
 
                     candidate = candidates[0]
@@ -902,32 +895,7 @@ class GeminiClient(LLMClient):
                     if tool_calls:
                         assistant["tool_calls"] = tool_calls
 
-                    # Extract usage from top-level response (not from candidate!)
-                    usage_metadata = data.get("usageMetadata", {})
-                    
-                    # Gemini API uses snake_case: prompt_token_count, candidates_token_count, total_token_count, cached_content_token_count
-                    usage = {
-                        "prompt_tokens": usage_metadata.get("promptTokenCount", usage_metadata.get("prompt_token_count", 0)),
-                        "completion_tokens": usage_metadata.get("candidatesTokenCount", usage_metadata.get("candidates_token_count", 0)),
-                        "total_tokens": usage_metadata.get("totalTokenCount", usage_metadata.get("total_token_count", 0))
-                    }
-                    
-                    # Extract cached tokens (implicit caching for Gemini 2.5+)
-                    cached_tokens = usage_metadata.get("cachedContentTokenCount", usage_metadata.get("cached_content_token_count", 0))
-                    if cached_tokens > 0:
-                        # Store in OpenAI-compatible format: prompt_tokens_details.cached_tokens
-                        usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
-
-                    # Notify post-response hook
-                    _duration_ms = (_time.time() - _request_start) * 1000
-                    await self._notify_post_response({
-                        "provider": "gemini", "model": self.model,
-                        "url": url.split("?")[0], "is_streaming": False,
-                        "duration_ms": _duration_ms, "usage": usage,
-                        "finish_reason": finish_reason,
-                        "response_data": data,
-                        "timestamp_ms": _time.time() * 1000,
-                    })
+                    await end.report(usage=usage, finish_reason=finish_reason, response_data=data)
 
                     return {"assistant": assistant, "usage": usage}
 
@@ -947,7 +915,7 @@ class GeminiClient(LLMClient):
                 else:
                     await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
                     logger.error(f"Gemini request failed after {self.max_retries + 1} attempts")
-                    raise Exception(f"Request timeout after {self.max_retries + 1} attempts") from e
+                    raise_after_retries(e, "gemini", self.model, f"Request timeout after {self.max_retries + 1} attempts")
 
             except Exception as e:
                 last_exception = e
@@ -990,7 +958,8 @@ class GeminiClient(LLMClient):
                 # Check if this is a 400 error that might be caused by mode=ANY
                 # If we got 400 after forcing mode=ANY, try without it
                 is_400_error = "HTTP 400" in error_str or "400 Bad Request" in error_str
-                if is_400_error and got_malformed_function_call and "toolConfig" in payload:
+                healed = is_400_error and got_malformed_function_call and "toolConfig" in payload
+                if healed:
                     logger.warning(
                         "[Gemini] Non-streaming HTTP 400 after mode=ANY retry. Removing forced function calling for next attempt."
                     )
@@ -1000,6 +969,11 @@ class GeminiClient(LLMClient):
                     # Reset the flag so we don't add it back
                     got_malformed_function_call = False
                 
+                if not healed and is_refusal(e):
+                    # A refusal a retry does not change: at once to the fallback.
+                    await report_status(f"Refused: {self.model}")
+                    raise_after_retries(e, "gemini", self.model, f"Gemini request failed: {e}")
+
                 logger.error(f"Gemini request error: {e}", exc_info=True)
                 if attempt < self.max_retries:
                     wait_time = 2 ** attempt
@@ -1010,7 +984,7 @@ class GeminiClient(LLMClient):
                     continue
                 else:
                     await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
-                    raise Exception(f"Gemini request failed: {str(e)}") from e
+                    raise_after_retries(e, "gemini", self.model, f"Gemini request failed: {e}")
 
         # If we get here, all retries failed
         if last_exception:

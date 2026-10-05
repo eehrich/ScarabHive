@@ -56,59 +56,49 @@ tools:
           prompt_id:
             type: string
             description: >
-              The job ID returned from a previous 'execute' operation.
-              Required for operations: status, result, cancel, wait_for_completion.
-          
+              Job ID from 'execute', for status, result, cancel, wait_for_completion;
+              for 'load': all outputs 'result' saved for this job.
+
           poll_interval:
             type: integer
             default: 2
+            minimum: 1
             description: >
-              Time in seconds between status checks (for operation='wait_for_completion').
-              Default: 2 seconds.
-          
+              Seconds between status checks (wait_for_completion).
+
           category:
             type: string
             description: >
-              Filter workflows by category (for operation='list').
-              Common categories: image_generation, audio, video, tts, text
-          
+              'list' filter, e.g. image_generation, audio, video, tts, text
+
           download:
             type: boolean
             default: true
             description: >
-              For operation='result' and 'wait_for_completion': whether to download files locally.
-              If true (default), files are saved to the output directory.
-          
+              'result': save files to the output directory.
+
           include_content:
             type: boolean
             default: false
             description: >
-              For operation='result' and 'wait_for_completion': whether to include the generated
-              media/text content in the response for LLM analysis. When true, images/audio/video/text
-              will be attached so the LLM can see and analyze the generated content.
-              Text outputs include content directly in the response for immediate use.
-              Useful for workflows where you want the LLM to describe or evaluate the output.
-          
+              'result' and 'wait_for_completion': attach generated images/audio/video so you can see them.
+
           output_prefix:
             type: string
             default: "comfy"
             description: >
-              Prefix for downloaded output files.
-              Useful for organizing outputs from different jobs.
-          
+              Prefix of downloaded files: 1-64 letters, digits, '_', '.' or '-'.
+
           file_path:
             type: string
             description: >
-              For operation='load': Path to a specific file to load (absolute or relative to output directory).
-              Use this to load a file you already know the path to.
-              For operation='upload_image': Path to the local image file to upload to ComfyUI's input
-              folder. Returns a filename usable as reference_image in img2img/IPAdapter workflows.
-          
+              'load': file path inside the output directory.
+              'upload_image': local image to upload; returns a filename usable as reference_image.
+
           filename:
             type: string
             description: >
-              For operation='load': Filename to search for in the output directory.
-              The plugin will search for this file and load it for analysis.
+              'load': filename to search for in the output directory.
         required:
           - operation
         additionalProperties: false
@@ -139,7 +129,8 @@ config:
         If a job is not found in ComfyUI's queue or history after this threshold,
         it's considered lost/dropped and marked as failed immediately rather than
         waiting for the full timeout. This handles cases where jobs are lost due to
-        network issues, server restarts, or queue clearing.
+        server restarts or queue clearing. A server that cannot be reached is not such a job: after the same
+        time wait_for_completion answers status "unreachable" and records nothing.
       default: 60
       minimum: 1
     
@@ -158,7 +149,7 @@ config:
       description: >
         Automatically delete output files older than this many hours.
         Set to 0 to disable automatic cleanup.
-        Cleanup runs on plugin startup and after each job completion.
+        Cleanup runs on the first tool call and after each operation='result'.
       default: 48
       minimum: 0
     

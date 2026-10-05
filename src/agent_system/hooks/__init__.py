@@ -6,7 +6,6 @@ Provides extensible hooks allowing plugins to intercept agent lifecycle points:
 - post_llm_call: After LLM response (modify response, extract metadata)
 - pre_llm_request / post_llm_response: LLM-client level (exact API payloads)
 - llm_progress: During a streaming LLM call
-- format_output: Format final output (convert to markdown, HTML, etc.)
 - session_start: Initialize session (inject system prompts, setup state)
 - session_end: Cleanup session (persist state, generate summaries)
 - pre_tool_call: before each tool call of the model (and of a tool_script

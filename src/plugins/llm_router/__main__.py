@@ -1,105 +1,62 @@
 #!/usr/bin/env python3
-"""CLI entrypoint for the llm_router plugin.
+"""CLI: send one message to an LLM profile through the plugin, or serve it.
 
-Provides a help/CLI surface so `python -m plugins.llm_router --help` works
-for tooling and tests.
+    python -m plugins.llm_router --profile fast --message "Hello"
+    python -m plugins.llm_router --server --port 8081
 """
 
 from __future__ import annotations
 
-import asyncio
 import argparse
-import json
-from typing import Any
-
-from .server import LLMRouterServer
-from agent_system.servers.http_server import serve_tool_server
-from agent_system.utils.logging import setup_logging
+import asyncio
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="plugins.llm_router", description="LLM Router Tool Server")
-
-    # Core LLM parameters
-    parser.add_argument("--message", "--prompt", help="Single message to send to LLM")
-    parser.add_argument("--provider", choices=["openai", "ollama"], default="openai", help="LLM provider to use")
-    parser.add_argument("--model", help="Specific model to use (optional)")
-    parser.add_argument("--default-provider", choices=["openai", "ollama"], default="openai", help="Default provider")
-    parser.add_argument("--default-model", default="gpt-4o-mini", help="Default model")
-
-    # Server mode options
+    parser.add_argument("--message", "--prompt", help="Message to send to the profile's model")
+    parser.add_argument("--profile", help="LLM profile of config/llm.yaml (as the tool's profile)")
+    parser.add_argument("--config", help="Config file (default: config/config.yaml or AGENT_CONFIG_PATH)")
     parser.add_argument("--server", action="store_true", help="Run in server mode (tool server)")
     parser.add_argument("--port", type=int, default=8081, help="Port to listen on when in server mode")
-
-    # Misc
     parser.add_argument("--version", action="version", version="llm_router plugin 1.0.0")
-
     return parser
 
 
-async def async_main():
-    # Setup logging for proper color output
-    setup_logging(True, "INFO", "logs/llm_router.log")
-    
-    parser = build_parser()
-    args = parser.parse_args()
+async def _run(args: argparse.Namespace) -> int:
+    from agent_system.config.models import ToolServerConfig
+    from agent_system.config.settings import load_settings
 
-    server = LLMRouterServer("llm_router")
+    from .server import LLMRouterServer
 
+    # The loaded config, not a bare AgentSystemConfig(): the profiles live
+    # in llm.yaml, and a default config has none.
+    server = LLMRouterServer("llm_router", load_settings(args.config),
+                             ToolServerConfig(type="llm_router", enabled=True))
     if args.server:
+        from agent_system.servers.http_server import serve_tool_server
+
         print(f"Starting LLM Router Tool Server on port {args.port}")
         await serve_tool_server(server, port=args.port)
-    else:
-        if not args.message:
-            print("Error: --message is required when not in server mode")
-            return
+        return 0
 
-        try:
-            result = await server.call("chat", {
-                "message": args.message,
-                "provider": args.provider,
-                "model": args.model
-            })
-            print(f"LLM Response ({args.provider}/{args.model}):")
-            if isinstance(result, dict):
-                if "content" in result:
-                    print(result["content"])
-                elif "response" in result:
-                    print(result["response"])
-                else:
-                    print(json.dumps(result, indent=2))
-            else:
-                print(result)
-        except Exception as e:
-            print(f"Error: {e}")
+    # call_with_status opens the status scope the tool expects in ``_status``.
+    result = await server.call_with_status(
+        "llm_router_chat", {"profile": args.profile, "message": args.message})
+    if result.get("error"):
+        print(f"Error: {result['error']}")
+        return 1
+    print(f"LLM Response ({result['profile']}: {result['provider']}/{result['model']}):")
+    print(result["content"])
+    return 0
 
 
-def main(argv: list[str] | None = None) -> None:
-    # Setup logging for proper color output
-    setup_logging(True, "INFO", "logs/llm_router.log")
-    
+def cli_main(argv: list[str] | None = None) -> None:
+    """Synchronous entry point for the console script."""
     parser = build_parser()
     args = parser.parse_args(argv)
-
-    # For tests, print a concise summary showing that the parser accepted the args.
-    summary: dict[str, Any] = {
-        "description": "LLM Router Tool Server",
-        "message": args.message,
-        "provider": args.provider,
-        "model": args.model,
-        "default_provider": args.default_provider,
-        "default_model": args.default_model,
-        "server_mode": args.server,
-        "port": args.port,
-    }
-
-    print("LLM Router Tool Server")
-    print(json.dumps(summary))
-
-
-def cli_main():
-    """Synchronous entry point for console script."""
-    asyncio.run(async_main())
+    if not args.server and not (args.message and args.profile):
+        parser.error("--message and --profile are required when not in server mode")
+    raise SystemExit(asyncio.run(_run(args)))
 
 
 if __name__ == "__main__":

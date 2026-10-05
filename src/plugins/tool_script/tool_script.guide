@@ -1,0 +1,421 @@
+@database "tool_script"
+@author "Enrico Ehrich"
+@$VER: tool_script.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Tool Script"
+@{h1}Tool Script
+
+An agent that chains tools -- read a document, reshape it, post it -- pays
+for every hop: each result enters its context, and it types the values
+again as the next call's arguments, which is slow, costs tokens and now and
+then garbles a value. With this plugin the agent writes one small Python
+script instead. The script calls the agent's other tools on the server, one
+after the other; their results stay in the script, and only what the script
+hands back as @{tt}result@{utt} reaches the model. A script can call only
+what the agent itself may call.
+
+The plugin has no panel. You see a script at work in the chat's status
+line: which call it is on, and what it logs.
+
+@{code}
+For agents and developers
+  @{"  The run_script tool  " link tool}
+  @{"  What a script may call  " link calls}
+  @{"  The script language  " link language}
+  @{"  Limits  " link limits}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node tool "The run_script tool"
+@{h1}The run_script tool
+
+The plugin gives an agent one tool, @{tt}<instance>_run_script@{utt}
+(@{tt}wf_pipe_run_script@{utt} for the reference agent). It runs the script
+it is given, once, in a fresh sandbox: nothing is kept from one script to the
+next.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+script | the Python source; required, an empty one is refused
+timeout | seconds for this run; at most the server's @{tt}timeout@{utt} (120), which is also what applies without it or with 0; a negative, non-numeric, infinite or NaN value is refused
+dry_run | true: only check the syntax and list the tools the script names; nothing runs
+@{body}
+
+@{h2}What a script has
+
+@{table}
+Name | Does
+call_tool(name, **params) | calls a tool by the exact name from the agent's tool list and returns its result as plain data
+log(text) | a progress line: shown in the chat's status line and returned in @{tt}log@{utt}
+parse_json(text) | turns JSON text into data -- tools often return JSON as a string, and there is no json module; bad JSON raises ToolCallError
+ToolCallError | what a failed call raises; catch it with @{tt}except ToolCallError:@{utt}
+result | not given, but read at the end: whatever the script assigns to it is the answer
+@{body}
+
+A call fails with ToolCallError when the tool answers
+@{tt}{"status": "error", ...}@{utt} or @{tt}{"error": ...}@{utt} without a
+status, when its parameters do not fit its schema, when the agent may not
+call it, when a tool hook blocks it, when it takes longer than
+@{tt}per_call_timeout@{utt}, or when its result is too large. With
+@{tt}except ToolCallError as e@{utt}, @{tt}e@{utt} is the message text.
+
+@{h2}Answers
+
+A script that ran to the end:
+
+@{code json}
+{"status": "ok", "result": {"posted": 42}, "calls": [{"tool": "wf_json_manage_json", "ok": true, "ms": 12}, {"tool": "forum_post_message", "ok": true, "ms": 80}]}
+@{body}
+
+@{bullet}@{tt}result@{utt}: the script's @{tt}result@{utt}, or null. Values
+JSON does not know come back as their text (a set as
+@{tt}"{'a'}"@{utt}).
+@{bullet}@{tt}calls@{utt}: every call in order, with its time in
+milliseconds.
+@{bullet}@{tt}output@{utt}: what the script printed, when it printed.
+@{bullet}@{tt}log@{utt}: the log lines, when there are any.
+
+A script that failed -- a Python error, a failed call it did not catch, a
+limit, a cancel:
+
+@{code json}
+{"status": "error", "error": "KeyError: 'title'", "line": 3, "calls": [{"tool": "wf_json_manage_json", "ok": true, "ms": 9}], "committed_side_effects": "1 tool call(s) committed, 0 failed; nothing after the failure was executed. Committed side effects are NOT rolled back — do not repeat calls marked ok:true.", "variables": {"doc": "d1", "data": "<dict, 5210 chars — omitted>"}}
+@{body}
+
+@{bullet}@{tt}error@{utt}: what went wrong, with the exception's type in
+front.
+@{bullet}@{tt}line@{utt}: the script line the error happened on, also
+inside a loop or a function. An abort (cancel, call limit, timeout between
+calls) has none.
+@{bullet}@{tt}calls@{utt}: as above; a failed call has @{tt}ok: false@{utt}
+and its @{tt}error@{utt}.
+@{bullet}@{tt}variables@{utt}: the script's variables; values up to 200
+characters as they are, larger ones only as type and size.
+@{bullet}@{tt}output@{utt} and @{tt}log@{utt}, as above.
+
+Nothing is rolled back: a call marked @{tt}ok: true@{utt} has happened. The
+agent sends a new script that goes on after the last such call.
+
+A refusal before anything ran -- no script, a bad timeout, another script
+still running in the session -- is only @{tt}{"status": "error", "error":
+"..."}@{utt}.
+
+@{h2}dry_run
+
+@{code json}
+{"status": "ok", "dry_run": true, "call_tool_targets": ["wf_json_manage_json", "forum_post_message"], "note": "Syntax OK. Sandbox restrictions (no imports, no attribute tricks) are enforced at run time."}
+@{body}
+
+Only calls whose tool name is written out as a string are listed. A syntax
+error answers @{tt}Syntax error at line N: ...@{utt}.
+
+@{h2}An example
+
+@{code python}
+doc = call_tool("wf_json_manage_json", operation="read", doc="d1")
+data = parse_json(doc["json"])
+posted = []
+for item in data["items"]:
+    if item["ready"]:
+        r = call_tool("forum_post_message", channel_id=5, content=item["text"])
+        posted.append(r["message_id"])
+log(f"posted {len(posted)}")
+result = {"posted": posted}
+@{body}
+@endnode
+
+@node calls "What a script may call"
+@{h1}What a script may call
+
+@{h2}The agent's own tools, and no others
+
+@{tt}call_tool@{utt} hands every call to the agent that runs the script, and
+the agent checks it the way it builds the tool list its model sees: the
+agent's @{tt}tools.allowed@{utt} first, then @{tt}tools.blocked@{utt}, with
+the same pattern matcher. A tool the model does not see, a script cannot
+call; an agent without an allowlist can call nothing. The answer is a
+ToolCallError such as @{tt}forum_post -> Tool 'forum_post' is not in this
+agent's allowed tools.@{utt}
+
+Never callable from a script:
+@{bullet}any @{tt}..._run_script@{utt} tool -- a script cannot start
+another script;
+@{bullet}external MCP tools -- in the model's tool list with "_" where the
+dot of their real name is (@{tt}search_web_search@{utt} for
+@{tt}search.web_search@{utt}). A script's call answers "Tool
+'search_web_search' is an external MCP tool — a script cannot call it. Call
+it directly instead."; the agent calls them itself.
+
+The plugin's own @{tt}allowed_tools@{utt} and @{tt}blocked_tools@{utt}
+(patterns on the tool name, as in a shell) narrow this further. They never
+widen it.
+
+@{h2}What happens on a call
+
+@{bullet}Checked in the script: a cancel, the time left, the call
+count, the tool name, the plugin's own lists.
+@{bullet}The agent's allowlist -- before anything about the tool's
+parameters, so a tool the agent may not call answers "not allowed", never
+its parameter list.
+@{bullet}The parameters must be plain data (text, numbers, true/false,
+null, lists, objects with text keys); the server's @{tt}inject_params@{utt}
+for this tool are added (see @{" Setting it up " link setup}); then they
+are checked against the tool's schema: an unknown or missing one fails at
+once, naming the valid ones.
+@{bullet}The agent drops any parameter the script passed that starts with
+@{tt}_@{utt} or is @{tt}request_id@{utt} / @{tt}requestId@{utt} -- a script
+cannot pose as another session or run -- and runs its
+@{tt}pre_tool_call@{utt} hooks, with source @{tt}tool_script@{utt}. A hook
+may change the call or stop it; stopped, it fails with the hook's text.
+@{bullet}The injected parameters join after the hooks, so no hook logs or
+shows them.
+@{bullet}The tool runs; its @{tt}post_tool_call@{utt} hooks see the result.
+A tool that raises comes back as an error result.
+@{bullet}The result is passed through JSON: the script only ever holds
+plain data.
+
+@{h2}What a called tool receives
+
+Its parameters, plus what the framework adds: @{tt}_session_id@{utt},
+@{tt}_user_id@{utt} (when the run has a user), @{tt}_agent_name@{utt},
+@{tt}_agent@{utt}, and a request id of its own -- the script's request id with
+@{tt}_ts01@{utt}, @{tt}_ts02@{utt}, ... per call -- as
+@{tt}_request_id@{utt} and also as @{tt}request_id@{utt} and
+@{tt}requestId@{utt}, without an underscore. A tool whose server reports
+status gets its own @{tt}_status@{utt} line. It does not get a
+@{tt}_cancellation_token@{utt}; a cancel reaches the script between calls
+(see @{" Limits " link limits}).
+@endnode
+
+@node language "The script language"
+@{h1}The script language
+
+Scripts are a subset of Python, run by an interpreter that walks the
+syntax tree and allows only what it knows. There is no way to reach a file,
+the network or the server's own objects: no import, no
+@{tt}open@{utt}, @{tt}eval@{utt} or @{tt}exec@{utt}, and attributes only on
+text, lists, dicts and sets (their listed methods) -- anything else,
+@{tt}"".__class__@{utt} or @{tt}call_tool.__globals__@{utt}, is refused. The
+only way out of the sandbox is @{tt}call_tool@{utt}.
+
+@{h2}What works
+
+@{bullet}Assignments, also @{tt}a, *rest = items@{utt} and
+@{tt}+=@{utt}; @{tt}if@{utt}/@{tt}elif@{utt}/@{tt}else@{utt}, @{tt}for@{utt},
+@{tt}while@{utt}, @{tt}x if c else y@{utt}.
+@{bullet}@{tt}def@{utt} with positional parameters and defaults,
+@{tt}return@{utt}, recursion; @{tt}lambda@{utt}.
+@{bullet}@{tt}try@{utt}/@{tt}except@{utt}/@{tt}else@{utt}/@{tt}finally@{utt},
+@{tt}raise ValueError("...")@{utt}.
+@{bullet}Lists, dicts, sets, tuples; list, dict and set comprehensions and
+generator expressions; slicing; f-strings with format specs
+(@{tt}f"{x:.2f}"@{utt}); @{tt}in@{utt}, @{tt}is@{utt}, chained comparisons.
+@{bullet}Methods: text -- @{tt}split join replace strip lstrip rstrip upper
+lower find rfind index rindex count startswith endswith partition
+rpartition splitlines center ljust rjust zfill title capitalize swapcase
+casefold@{utt} and the @{tt}is...@{utt} tests; lists -- @{tt}append extend
+insert remove pop clear count index reverse sort copy@{utt}; dicts --
+@{tt}get items keys values pop popitem update setdefault clear copy@{utt};
+sets -- @{tt}add remove discard pop clear copy update union intersection
+difference symmetric_difference issubset issuperset isdisjoint@{utt}.
+@{bullet}Functions: @{tt}len range sorted enumerate min max sum abs round
+int float str bool list dict set tuple type isinstance print format hex
+bin oct chr ord@{utt}, math (@{tt}sqrt floor ceil pow log exp sin cos
+...@{utt}) and @{tt}mean median mode stdev@{utt}. @{tt}min@{utt} and
+@{tt}max@{utt} take @{tt}key=@{utt} (a @{tt}lambda@{utt}) and
+@{tt}default=@{utt}.
+
+@{h2}What does not
+
+@{bullet}@{tt}import@{utt} -- there is no json module; use
+@{tt}parse_json@{utt}.
+@{bullet}@{tt}break@{utt} and @{tt}continue@{utt}: use a flag, or a
+function that returns.
+@{bullet}@{tt}del@{utt}, @{tt}with@{utt}, @{tt}class@{utt},
+@{tt}assert@{utt}, @{tt}global@{utt}.
+@{bullet}@{tt}zip any all map filter reversed@{utt}, @{tt}str.format@{utt}
+(use f-strings), @{tt}str.encode@{utt}.
+@{bullet}Names starting with @{tt}_@{utt} (@{tt}_@{utt} alone is allowed).
+@{bullet}@{tt}while True:@{utt} is refused as written; any other loop is
+bounded (see @{" Limits " link limits}).
+
+@{h2}Surprises
+
+@{bullet}Your own functions take positional arguments only:
+@{tt}f(1, b=5)@{utt} ignores @{tt}b@{utt} and uses its default.
+@{bullet}A function reads the script's variables, but names it assigns are
+gone when it returns; a list or dict it changes stays changed.
+@{bullet}One exception type per @{tt}except@{utt}: @{tt}except (KeyError,
+ValueError):@{utt} catches neither. @{tt}except ValueError@{utt} also
+catches RuntimeError.
+@{bullet}@{tt}except Exception:@{utt} and a bare @{tt}except:@{utt} catch
+errors, but never a cancel, the call limit, the script timeout or the
+print/log cap -- those end the script, also when a @{tt}finally:@{utt}
+raises something else on the way out.
+@{bullet}@{tt}sum()@{utt} adds numbers only: for lists use
+@{tt}extend@{utt}, for text @{tt}join@{utt}.
+@{bullet}A list or dict that contains itself cannot be printed or turned
+into text: it is refused as too large.
+@endnode
+
+@node limits "Limits"
+@{h1}Limits
+
+@{table}
+Limit | Default | What happens
+timeout | 120 s | the whole run, loops included; checked at every step of the script and before every call. A call already running finishes or hits per_call_timeout first, and one guarded operation may take about a second, so a run ends at most about per_call_timeout after the timeout
+per_call_timeout | 60 s | one call is cancelled and fails with ToolCallError "... timed out after 60s." -- a script can catch that one
+max_tool_calls | 20 | the 21st call ends the script: "max_tool_calls (20) exceeded — split the work into multiple scripts."
+max_call_result_bytes | 524288 | one call's result, as JSON characters; larger fails with ToolCallError and the advice to store the payload and pass a reference
+max_result_chars | 20000 | the script's @{tt}result@{utt}, as JSON characters; larger fails the script. A failure's error text is cut at this length (at least 1000)
+max_output_length | 4000 | characters of @{tt}print@{utt} output, and separately of @{tt}log@{utt} lines; past it the script ends, and no except catches that
+@{body}
+
+Fixed in the sandbox:
+
+@{bullet}A loop runs at most 100000 times; @{tt}range()@{utt} gives at most
+100000 numbers. Past it the loop fails with an error a script can catch.
+@{bullet}Arithmetic that would take the server more than milliseconds is
+refused at once: numbers over 200000 bits (about 60000 digits) in
+@{tt}**@{utt}, @{tt}*@{utt}, @{tt}//@{utt} and @{tt}%@{utt}; a
+three-argument @{tt}pow@{utt} with an exponent or modulus over 2048 bits;
+sorting more than a million items; @{tt}round(n, -d)@{utt} with
+@{tt}d@{utt} over 60000; @{tt}int(text, base)@{utt} over 200000 bits;
+@{tt}sum min max set sorted mean median mode stdev@{utt} over about 30
+million characters of content -- a thousand copies of a 60000-digit number,
+say; plain floats and small numbers never reach it.
+@{bullet}A text or list may not grow past about 6.5 million items -- by
+@{tt}*@{utt}, @{tt}+@{utt}, @{tt}extend@{utt}, @{tt}ljust@{utt},
+@{tt}rjust@{utt}, @{tt}center@{utt}, @{tt}zfill@{utt}, @{tt}replace@{utt},
+@{tt}join@{utt}, a format or @{tt}%@{utt} width or precision
+(@{tt}f"{x:>200000000}"@{utt}, @{tt}"%*d" % (n, 1)@{utt}), or turning a
+big container into text (@{tt}str@{utt}, @{tt}print@{utt}, f-strings,
+@{tt}format@{utt}, @{tt}%@{utt}, an error message) -- the size is estimated
+before the text is built. Unbounded recursion ends in a RecursionError.
+@{bullet}A memory fuse: when the server process grows by more than 1 GB
+while the script runs, the script ends ("Memory grew by more than 1024 MB
+during the script; aborted"), and no except catches that. It is read every
+50 ms.
+@{bullet}One script per session at a time. A second one is refused: "Another
+script is already running in this session — wait for it to finish (one
+script per session)."
+
+A cancel of the run is checked at every step of the script, before every
+call and while a call waits; the script then ends with "Request cancelled —
+script aborted ...". A tool that is already running is not stopped by it.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The tool description and the parameter texts come from the plugin's
+@{tt}schema.yaml@{utt}: when to use a script (two or more dependent calls),
+the rules for @{tt}call_tool@{utt}, @{tt}result@{utt},
+@{tt}parse_json@{utt} and @{tt}log@{utt}, what the sandbox allows and what
+not, and a short example. Everything a failed run answers -- the error, the
+calls, the variables -- is made for the model to write the next script
+from.
+
+In the chat, the call's status line follows the script: "script: call 2 —
+wf_json_manage_json", "script: <a log line>", and at the end "Script ran:
+2/2 tool call(s)". A failed run ends the line with its error.
+
+@{h2}Tokens and cache
+
+This is what the plugin is for. The model pays for the script it writes and
+for the answer -- the @{tt}result@{utt}, the list of calls, what was printed
+and logged -- but not for the results of the calls in between, which
+never leave the server, and it types no value a second time. Four
+dependent calls are one model turn instead of four.
+
+The answer is an ordinary tool result: appended, nothing earlier changes,
+the cached prompt stays as it was. Keep @{tt}result@{utt} small; a large
+payload belongs in a store, with its reference in the result.
+
+@{h2}Known gaps
+
+@{bullet}The memory fuse measures the whole server process: other work
+growing at the same time counts against the script, and a loop that
+allocates fast can pass the 1 GB by a few hundred MB before the next
+reading. Without psutil there is no fuse.
+@{bullet}A script that only computes keeps a worker thread busy up to its
+timeout.
+@{bullet}External MCP tools cannot be called from a script.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The default configuration has no tool_script server. The reference agent,
+@{tt}workflow_agent@{utt}, brings its own in its agent file
+(@{tt}config/agents/workflow_agent.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    wf_pipe:
+      type: tool_script
+      enabled: true
+      description: "workflow_agent scripted tool chains"
+      config:
+        timeout: 120
+        per_call_timeout: 60
+        max_tool_calls: 20
+@{body}
+
+An agent gets the tool, and the tools its scripts may call, through its
+allowlist:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "wf_json/*"
+      - "wf_pipe/*"
+      - "datetime/*"
+@{body}
+
+Here scripts can call the @{tt}wf_json@{utt} and @{tt}datetime@{utt} tools
+-- and nothing else, whatever the script says. The plugin needs
+@{tt}jsonschema@{utt} and the @{tt}script_interpreter@{utt} plugin's
+sandbox in the tree; it keeps no data.
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+timeout | 120 | seconds for a whole run; the model may ask for less
+per_call_timeout | 60 | seconds for one call
+max_tool_calls | 20 | calls per script
+max_call_result_bytes | 524288 | largest result of one call, in JSON characters
+max_result_chars | 20000 | largest @{tt}result@{utt}, in JSON characters
+max_output_length | 4000 | characters of print output, and of log lines
+allowed_tools | none | patterns on tool names a script may call; empty: whatever the agent may call
+blocked_tools | none | patterns on tool names a script may not call
+inject_params | none | values added to calls, see below
+@{body}
+
+@{h2}inject_params
+
+Values the server adds to a script's calls, for secrets the model must
+never type: a mapping from a tool-name pattern to parameters.
+
+@{code yaml}
+      config:
+        inject_params:
+          "records_update": {write_key: "..."}
+@{body}
+
+The configured value always wins over one the script passed, and the script
+may leave the parameter out even when the tool requires it. The values join
+after the tool hooks, so no hook logs them; a parameter starting with
+@{tt}_@{utt} or named @{tt}request_id@{utt}/@{tt}requestId@{utt} is dropped.
+An entry that is not a mapping is ignored with a warning in the log.
+@endnode

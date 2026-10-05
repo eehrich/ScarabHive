@@ -7,14 +7,15 @@ the backend choice itself.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.utils import process_sandbox as ps
 from plugins.terminal.server import TerminalServer
 
-PLAIN = ("Execute a shell command either synchronously (wait for completion) "
-         "or as a background process.")
+PLAIN = "Run a shell command, in the foreground or in the background."
 
 
 def description(tmp_path, mode: str, cwd=None) -> str:
@@ -52,6 +53,7 @@ def test_a_host_without_a_backend_announces_the_refusal(tmp_path, monkeypatch):
     assert "Commands are refused here" in description(tmp_path, "workspace-write")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows forbids a double quote in a file name")
 def test_a_workspace_path_with_quotes_survives_the_yaml(tmp_path, monkeypatch):
     """The note lands inside a double-quoted YAML string."""
     monkeypatch.setattr(ps, "_host", lambda: "macos")

@@ -46,9 +46,6 @@ IMPORT_TO_DIST = {
 
 #: (plugin, import) pairs that are deliberately undeclared, each with a reason.
 KNOWN_OPTIONAL = {
-    # Guarded fallback import inside a function; the plugin works without it
-    # and says so in the error path (errors.py).
-    ("script_interpreter", "sandboxed_python"),
     # Dev-layout absolute import (`from src.plugins...`) in __main__/cli —
     # not a package.
     ("sqlite_query", "src"),

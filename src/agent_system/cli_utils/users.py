@@ -17,8 +17,10 @@ import typer
 from pydantic import ValidationError
 from tabulate import tabulate
 
+from agent_system.cli_utils.common import dumb_terminal
+
 from agent_system.auth.database import setup_database, UserDatabase
-from agent_system.auth.models import UserCreate, UserUpdate, UserRole
+from agent_system.auth.models import UserCreate, UserUpdate, UserRole, validation_reasons
 from agent_system.config.settings import load_settings
 
 
@@ -45,7 +47,11 @@ def _supports_color() -> bool:
     # Check if FORCE_COLOR is set (for CI/testing)
     if os.environ.get("FORCE_COLOR"):
         return True
-    
+
+    # A terminal that says it is dumb, as the rest of agent-cli has it (common.get_output_format)
+    if dumb_terminal():
+        return False
+
     # Check if stdout is a TTY
     try:
         return sys.stdout.isatty()
@@ -60,9 +66,7 @@ def _colorize(text: str, color_code: str) -> str:
     return f"\x1b[{color_code}m{text}\x1b[0m"
 
 
-def _validation_message(error: ValidationError) -> str:
-    """Field and reason per error, never the input: pydantic's own text echoes the password."""
-    return "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in error.errors())
+_validation_message = validation_reasons
 
 
 def get_configured_db() -> UserDatabase:

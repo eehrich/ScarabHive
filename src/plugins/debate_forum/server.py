@@ -1,7 +1,7 @@
 """Debate Forum Plugin - MCP Tool Server.
 
 Provides tools for creating/managing debate channels and posting messages.
-Used by agent pipelines (e.g., V5a story design) to run structured LLM debates.
+Used by moderator agents (e.g. a panel comparing API designs) to run structured LLM debates.
 """
 from __future__ import annotations
 
@@ -19,6 +19,15 @@ from .database import DebateForumDB
 logger = logging.getLogger(__name__)
 
 PRESENCE_OFF = "Session presence is off (session_presence.enabled in config.yaml)"
+
+
+def _flag(value: Any, default: bool) -> bool:
+    """A boolean argument as models send it: true/false, or "false" and the like as text; null is the default."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "no", "off")
+    return bool(value)
 
 
 class DebateForumServer(SchemaBasedToolServer):
@@ -44,7 +53,7 @@ class DebateForumServer(SchemaBasedToolServer):
 
     async def create_group(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name", "")
-        description = params.get("description", "")
+        description = params.get("description") or ""
         if not name:
             return {"error": "name is required"}
         result = self.db.create_group(name=name, description=description)
@@ -57,7 +66,7 @@ class DebateForumServer(SchemaBasedToolServer):
     # ── Tool: list_groups ─────────────────────────────────────
 
     async def list_groups(self, params: dict[str, Any]) -> dict[str, Any]:
-        limit = params.get("limit", 100)
+        limit = params.get("limit") or 100
         groups = self.db.list_groups(limit=limit)
         status = params.get("_status")
         if status:
@@ -75,6 +84,9 @@ class DebateForumServer(SchemaBasedToolServer):
 
         if not name or not topic:
             return {"error": "name and topic are required"}
+        # The foreign key would refuse it with a bare IntegrityError
+        if group_id is not None and not self.db.get_group(group_id):
+            return {"error": f"Group {group_id} not found (see list_groups)"}
 
         status = params.get("_status")
         if status:
@@ -100,10 +112,10 @@ class DebateForumServer(SchemaBasedToolServer):
 
     async def post_message(self, params: dict[str, Any]) -> dict[str, Any]:
         channel_id = params.get("channel_id")
-        agent_name = params.get("agent_name", "")
-        agent_role = params.get("agent_role", "")
-        round_num = params.get("round", 1)
-        content = params.get("content", "")
+        agent_name = params.get("agent_name") or ""
+        agent_role = params.get("agent_role") or ""
+        round_num = params.get("round") or 1
+        content = params.get("content") or ""
         metadata = params.get("metadata")
 
         # ── Append mode: continue an existing message with another chunk ──
@@ -111,7 +123,7 @@ class DebateForumServer(SchemaBasedToolServer):
         # (append=true + message_id). The chunks are concatenated server-side
         # into ONE complete message, so nothing is truncated and the stored
         # JSON stays whole. Continuation chunks skip the min-length check.
-        if params.get("append"):
+        if _flag(params.get("append"), False):
             message_id = params.get("message_id")
             if not message_id or not content:
                 return {"error": "append=true requires 'message_id' and 'content'"}
@@ -185,8 +197,8 @@ class DebateForumServer(SchemaBasedToolServer):
         if not channel_id:
             return {"error": "channel_id is required"}
 
-        fmt = params.get("format", "text")
-        max_messages = params.get("max_messages", 0)
+        fmt = params.get("format") or "text"
+        max_messages = params.get("max_messages") or 0
 
         channel = self.db.get_channel(channel_id)
         if not channel:
@@ -219,7 +231,7 @@ class DebateForumServer(SchemaBasedToolServer):
     async def conclude(self, params: dict[str, Any]) -> dict[str, Any]:
         channel_id = params.get("channel_id")
         verdict = params.get("verdict", {})
-        summary = params.get("summary", "")
+        summary = params.get("summary") or ""
 
         # Extract summary from verdict object if not provided separately
         if not summary and isinstance(verdict, dict) and verdict.get("summary"):
@@ -314,7 +326,7 @@ class DebateForumServer(SchemaBasedToolServer):
 
     async def list_channels(self, params: dict[str, Any]) -> dict[str, Any]:
         status_filter = params.get("status", "") or None
-        limit = params.get("limit", 50)
+        limit = params.get("limit") or 50
         search = params.get("search", "") or None
         group_id: int | None = params.get("group_id") or None
 
@@ -342,7 +354,7 @@ class DebateForumServer(SchemaBasedToolServer):
 
     async def pin_message(self, params: dict[str, Any]) -> dict[str, Any]:
         message_id = params.get("message_id")
-        pinned = params.get("pinned", True)
+        pinned = _flag(params.get("pinned"), True)
 
         if not message_id:
             return {"error": "message_id is required"}

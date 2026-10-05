@@ -369,8 +369,10 @@ def resolve_llm_config_for_agent(
         getattr(agent_config, "llm_params", None), profile_name
     )
     if llm_params:
+        # exclude_unset: a full dump would mark every field as set, and
+        # providers and the timeout default below read model_fields_set.
         model_config = LLMModelConfig.model_validate(
-            {**model_config.model_dump(), **llm_params}
+            {**model_config.model_dump(exclude_unset=True), **llm_params}
         )
         logger.debug("Applied agent llm_params on model_ref=%s: %s", model_ref, llm_params)
 
@@ -403,6 +405,10 @@ def resolve_llm_config_for_agent(
         # (model_copy(update=...) applies update values AS-IS, so the deep
         # copy below does not cover this one.)
         updates["httpx_timeouts"] = config.llm_system.httpx_timeouts.model_copy()
+        if "request_timeout" in model_config.model_fields_set:
+            # The model's own request_timeout is its read timeout; the system
+            # default must not override it (deepseek-pro: 480 s ran with 180).
+            updates["httpx_timeouts"].read = float(model_config.request_timeout)
     provider_routing = _resolve_provider_routing(config.llm_system, model_config)
     if provider_routing != model_config.provider_routing:
         # deepcopy for the same reason as httpx_timeouts above: update values

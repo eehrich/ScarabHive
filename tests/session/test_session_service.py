@@ -686,3 +686,25 @@ async def test_an_ephemeral_session_is_never_written(session_service_env, write)
 
     assert written == {f"{EPHEMERAL_SESSION_PREFIX}abc": False, "kept_one": True}
     assert [s["session_id"] for s in await sm.list_sessions("user1")] == ["kept_one"]
+
+
+def test_the_title_skips_a_note_a_plugin_injected():
+    """A hint injected behind the system prompt (simple_prompt_inject, role
+    user) stood first and named every such session alike."""
+    from agent_system.services.session_service import SessionService
+
+    title = SessionService._extract_session_title(None, [
+        {"role": "system", "content": "SYSTEM"},
+        {"role": "user", "content": "- **Schon oft gelesen**", "injected_by": "v4_oft_gelesen_inject"},
+        {"role": "user", "content": "Schreibe Szenen für Beat B01"},
+    ])
+    assert title == "Schreibe Szenen für Beat B01"
+
+    # Written in front of the task (task_start), recorded in prefixed_by --
+    # in a string and in the first text part of a list alike.
+    prefix = "- **Schon oft gelesen**\n\n---\n\n"
+    for content in (prefix + "Schreibe Szenen",
+                    [{"type": "text", "text": prefix + "Schreibe Szenen"}, {"type": "image_url"}]):
+        title = SessionService._extract_session_title(None, [
+            {"role": "user", "content": content, "prefixed_by": {"hint": prefix}}])
+        assert title == "Schreibe Szenen", content

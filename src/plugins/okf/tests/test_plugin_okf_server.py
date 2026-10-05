@@ -581,6 +581,43 @@ class TestReadOnly:
         assert "read-only" in res["error"]
 
 
+class TestExcludedDirectories:
+    """A bundle another instance owns, carved out of a wider root: the shared
+    ``okf`` keeps ``data/okf`` but must not reach the sysadmin's ``infra``."""
+
+    @pytest.fixture
+    def carved(self, mock_system_config, tmp_path, bundle):
+        cfg = ToolServerConfig(type="okf", enabled=True, config={
+            "allowed_directories": [str(tmp_path)],
+            "excluded_directories": [str(bundle)]})
+        return OkfServer("okf", mock_system_config, cfg)
+
+    @pytest.mark.asyncio
+    async def test_the_excluded_bundle_cannot_be_written(self, carved, bundle):
+        res = await carved.write_concept({
+            "bundle": str(bundle), "path": "/x.md",
+            "frontmatter": {"type": "T"}, "body": "x"})
+        assert res["status"] == "error"
+        assert not (bundle / "x.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_parent_bundle_cannot_reach_into_it(self, carved, bundle, tmp_path):
+        """Bundle = the root, concept path = into the carve-out."""
+        res = await carved.write_concept({
+            "bundle": str(tmp_path), "path": f"/{bundle.name}/x.md",
+            "frontmatter": {"type": "T"}, "body": "x"})
+        assert res["status"] == "error"
+        assert not (bundle / "x.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_sibling_bundle_still_works(self, carved, tmp_path):
+        res = await carved.write_concept({
+            "bundle": str(tmp_path / "other"), "path": "/x.md",
+            "frontmatter": {"type": "T"}, "body": "x"})
+        assert res["status"] == "ok", res
+        assert (tmp_path / "other" / "x.md").exists()
+
+
 # ---------------------------------------------------------------------------
 # consumer hook
 # ---------------------------------------------------------------------------
@@ -1243,3 +1280,307 @@ class TestReadConceptPaginierung:
         })
         assert res["body"].splitlines() == ["Zeile 1"]
         assert res["lines_remaining"] == 49
+
+
+# ---------------------------------------------------------------------------
+# bugs found while writing the guide
+# ---------------------------------------------------------------------------
+
+class TestHostPathsAreRefusedUnopened:
+    """``\\\\host\\share`` is opened by resolve() -- a connection to the host
+    with the user's credentials -- so it must be refused on the text alone."""
+
+    @pytest.fixture
+    def opened(self, monkeypatch):
+        import pathlib
+        seen = []
+        real = pathlib.Path.resolve
+
+        def recording(self, *a, **kw):
+            seen.append(str(self))
+            return real(self, *a, **kw)
+
+        monkeypatch.setattr(pathlib.Path, "resolve", recording)
+        return seen
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("host", [r"\\evilhost\share\b", "//evilhost/share/b"])
+    async def test_bundle(self, server, opened, host):
+        res = await server.validate({"bundle": host})
+        assert res["status"] == "error"
+        assert not [p for p in opened if "evilhost" in p]
+
+    @pytest.mark.asyncio
+    async def test_concept_path(self, server, bundle, opened):
+        res = await server.read_concept(
+            {"bundle": str(bundle), "path": r"\\evilhost\share\x.md"})
+        assert res["status"] == "error"
+        assert not [p for p in opened if "evilhost" in p]
+
+    @pytest.mark.asyncio
+    async def test_log_dir(self, server, bundle, opened):
+        res = await server.append_log({
+            "bundle": str(bundle), "dir": r"\\evilhost\share",
+            "date": "2026-01-01", "description": "x"})
+        assert res["status"] == "error"
+        assert not [p for p in opened if "evilhost" in p]
+
+
+class TestBundleCache:
+    @pytest.mark.asyncio
+    async def test_a_renamed_concept_is_seen(self, server, bundle):
+        """A rename keeps the file count and every mtime."""
+        await server.list({"bundle": str(bundle)})
+        (bundle / "tables" / "orders.md").rename(bundle / "tables" / "sales.md")
+        res = await server.list({"bundle": str(bundle)})
+        assert {c["path"] for c in res["concepts"]} == {
+            "/tables/sales.md", "/tables/customers.md"}
+
+
+class TestArgumentBounds:
+    @pytest.fixture
+    def many(self, tmp_path):
+        root = tmp_path / "many"
+        root.mkdir()
+        for i in range(60):
+            nxt = f"[n](/c{i + 1}.md)" if i < 59 else ""
+            (root / f"c{i}.md").write_text(
+                f"---\ntype: t\n---\n\napple {nxt}\n", encoding="utf-8")
+        return root
+
+    @pytest.mark.asyncio
+    async def test_search_limit_is_clamped(self, server, many):
+        res = await server.search({"bundle": str(many), "query": "apple", "limit": 100})
+        assert res["count"] == 50
+        res = await server.search({"bundle": str(many), "query": "apple", "limit": -1})
+        assert res["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_subgraph_depth_is_clamped(self, server, many):
+        res = await server.subgraph({"bundle": str(many), "seed": "/c0.md", "depth": 99})
+        assert res["depth"] == 5
+        assert res["count"] == 6
+        res = await server.subgraph({"bundle": str(many), "seed": "/c0.md", "depth": None})
+        assert res["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_graph_tools_take_a_path_without_slash(self, server, bundle):
+        """read/write accept it; subgraph dropped such a seed silently."""
+        res = await server.neighbors({"bundle": str(bundle), "path": "tables/orders.md"})
+        assert res["neighbors"] == ["/tables/customers.md"]
+        res = await server.subgraph({"bundle": str(bundle), "seed": "tables/orders.md"})
+        assert res["count"] == 2
+
+
+class TestWriteKeepsData:
+    @pytest.mark.asyncio
+    async def test_frontmatter_update_without_body_keeps_the_body(self, server, bundle):
+        res = await server.write_concept({
+            "bundle": str(bundle), "path": "/tables/orders.md",
+            "frontmatter": {"status": "deprecated"}})
+        assert res["status"] == "ok"
+        read = await server.read_concept({"bundle": str(bundle), "path": "/tables/orders.md"})
+        assert "Joined with [customers]" in read["body"]
+        assert read["frontmatter"]["status"] == "deprecated"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_body_still_clears(self, server, bundle):
+        await server.write_concept({
+            "bundle": str(bundle), "path": "/tables/orders.md",
+            "frontmatter": {"type": "T"}, "body": ""})
+        read = await server.read_concept({"bundle": str(bundle), "path": "/tables/orders.md"})
+        assert read["body"] == ""
+
+    @pytest.mark.asyncio
+    async def test_a_non_markdown_path_is_refused(self, server, bundle):
+        """Answered ok before, and the file never showed up as a concept."""
+        res = await server.write_concept({
+            "bundle": str(bundle), "path": "/notes.txt",
+            "frontmatter": {"type": "T"}, "body": "x"})
+        assert res["status"] == "error"
+        assert not (bundle / "notes.txt").exists()
+
+
+class TestReadSizeCap:
+    @pytest.fixture
+    def big(self, mock_system_config, tmp_path):
+        cfg = ToolServerConfig(type="okf", enabled=True, config={
+            "allowed_directories": [str(tmp_path)], "max_concept_file_kb": 1})
+        srv = OkfServer("okf", mock_system_config, cfg)
+        root = tmp_path / "b"
+        root.mkdir()
+        (root / "big.md").write_text(
+            "---\ntype: t\n---\n\n" + "".join(f"{'x' * 99}\n" for _ in range(30)),
+            encoding="utf-8")
+        return srv, root
+
+    @pytest.mark.asyncio
+    async def test_a_whole_read_over_the_cap_is_refused(self, big):
+        srv, root = big
+        res = await srv.read_concept({"bundle": str(root), "path": "/big.md"})
+        assert res["status"] == "error"
+        assert "body" not in res
+        assert res["lines_total"] == 30
+
+    @pytest.mark.asyncio
+    async def test_a_large_page_stays_readable_in_slices(self, big):
+        srv, root = big
+        res = await srv.read_concept({"bundle": str(root), "path": "/big.md",
+                                      "start_line": 21, "line_count": 5})
+        assert res["status"] == "ok"
+        assert res["lines_returned"] == 5
+
+class TestLogDateIsReal:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [
+        {"date": "2026-13-45"},
+        {"date": "2026-01-01", "time": "25:61"},
+    ])
+    async def test_impossible_values_are_refused(self, server, bundle, args):
+        res = await server.append_log({"bundle": str(bundle), "description": "x", **args})
+        assert res["status"] == "error"
+        assert not (bundle / "log.md").exists()
+
+
+class TestHookSeedConcept:
+    @pytest.mark.asyncio
+    async def test_anchor_without_slash_is_found(self, mock_system_config, tmp_path, bundle):
+        """Written as tables/customers.md it was silently ignored."""
+        cfg = ToolServerConfig(type="okf", enabled=True,
+                               config={"allowed_directories": [str(tmp_path)]})
+        srv = OkfServer("okf", mock_system_config, cfg)
+        ctx = SimpleNamespace(
+            messages=[SimpleNamespace(role="user", content="nothing matches here")],
+            session_id="s1",
+            hook_config={"hook_bundle": str(bundle),
+                         "hook_seed_concept": "tables/customers.md"})
+        result = await srv.on_pre_llm_call(ctx)
+        assert result.modified is True
+        assert "Customers" in ctx.messages[-1].content
+
+
+class TestReindexKeepsIndexFrontmatter:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [{}, {"dir": "/tables"}])
+    async def test_okf_version_survives(self, server, bundle, args):
+        index = bundle / "tables" / "index.md" if args else bundle / "index.md"
+        index.write_text("---\nokf_version: '0.1'\n---\n\n# Old\n", encoding="utf-8")
+        res = await server.reindex({"bundle": str(bundle), **args})
+        assert res["status"] == "ok"
+        text = index.read_text(encoding="utf-8")
+        assert text.startswith("---\nokf_version: '0.1'\n---\n")
+        assert "](/tables/" in text
+        assert "# Old" not in text
+
+
+class TestSearchWords:
+    @pytest.mark.asyncio
+    async def test_non_ascii_words_stay_whole(self, server, tmp_path):
+        root = tmp_path / "words"
+        root.mkdir()
+        (root / "a.md").write_text("---\ntype: t\n---\n\nStraße\n", encoding="utf-8")
+        (root / "b.md").write_text("---\ntype: t\n---\n\nstra e\n", encoding="utf-8")
+        res = await server.search({"bundle": str(root), "query": "Straße"})
+        assert [r["path"] for r in res["results"]] == ["/a.md"]
+
+
+class _Recorder:
+    def __init__(self):
+        self.lines = []
+
+    async def progress(self, message, meta=None):
+        self.lines.append(message)
+
+    async def end(self, message="completed", meta=None):
+        self.lines.append(message)
+
+    async def error(self, message, meta=None):
+        self.lines.append(message)
+
+
+class TestReadTextsAreEnglish:
+    @pytest.fixture
+    def page(self, tmp_path):
+        root = tmp_path / "page"
+        root.mkdir()
+        (root / "p.md").write_text(
+            "---\ntype: t\n---\n" + "".join(f"line {i}\n" for i in range(1, 21)),
+            encoding="utf-8")
+        return root
+
+    @pytest.mark.asyncio
+    async def test_slice_hint_and_status_line(self, server, page):
+        rec = _Recorder()
+        res = await server.read_concept({"bundle": str(page), "path": "/p.md",
+                                         "start_line": 3, "line_count": 5,
+                                         "_status": rec})
+        assert "continue with start_line=8" in res["hint"]
+        assert "lines 3-7 of 20" in rec.lines[-1]
+
+    @pytest.mark.asyncio
+    async def test_start_past_the_end(self, server, page):
+        res = await server.read_concept({"bundle": str(page), "path": "/p.md",
+                                         "start_line": 21})
+        assert res["error"] == ("start_line=21 is past the end: the page has "
+                                "20 line(s). Nothing read.")
+
+
+class TestListIsBounded:
+    @pytest.mark.asyncio
+    async def test_a_large_bundle_is_cut_and_says_so(self, server, tmp_path):
+        from plugins.okf import server as okf_server
+        root = tmp_path / "large"
+        root.mkdir()
+        for i in range(okf_server.LIST_LIMIT + 5):
+            (root / f"c{i:04d}.md").write_text("---\ntype: t\n---\n", encoding="utf-8")
+        res = await server.list({"bundle": str(root)})
+        assert res["count"] == okf_server.LIST_LIMIT + 5
+        assert len(res["concepts"]) == okf_server.LIST_LIMIT
+        assert res["omitted"] == 5
+        assert "'dir'" in res["hint"]
+
+
+class TestReadOnlySchema:
+    def _names(self, mock_system_config, tmp_path, read_only):
+        cfg = ToolServerConfig(type="okf", enabled=True, config={
+            "allowed_directories": [str(tmp_path)], "read_only": read_only})
+        srv = OkfServer("okf", mock_system_config, cfg)
+        return {t["function"]["name"] for t in srv.get_tools()}
+
+    def test_write_tools_are_not_offered_when_read_only(self, mock_system_config, tmp_path):
+        writes = {"okf_write_concept", "okf_append_log", "okf_reindex"}
+        assert writes <= self._names(mock_system_config, tmp_path, False)
+        ro = self._names(mock_system_config, tmp_path, True)
+        assert not writes & ro
+        assert {"okf_list", "okf_read_concept", "okf_validate"} <= ro
+
+
+class TestUndecodableFiles:
+    @pytest.mark.asyncio
+    async def test_one_non_utf8_concept_is_skipped_not_fatal(self, server, bundle):
+        (bundle / "tables" / "bad.md").write_bytes(b"---\ntype: t\n---\n\n\xff\xfe\n")
+        res = await server.list({"bundle": str(bundle)})
+        assert res["status"] == "ok"
+        assert "/tables/bad.md" not in {c["path"] for c in res["concepts"]}
+        assert res["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_broken_index_is_rewritten(self, server, bundle):
+        (bundle / "index.md").write_bytes(b"\xff\xfe broken")
+        res = await server.reindex({"bundle": str(bundle)})
+        assert res["status"] == "ok"
+        assert (bundle / "index.md").read_text(encoding="utf-8").startswith("# Contents")
+
+
+class TestRepairKeepsBodyExact:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("header", ["type: [unclosed", "- a list"])
+    async def test_no_blank_line_is_added(self, server, tmp_path, header):
+        root = tmp_path / "repair"
+        root.mkdir()
+        (root / "c.md").write_text(f"---\n{header}\n---\n\nBody\n", encoding="utf-8")
+        for _ in range(2):
+            res = await server.write_concept({"bundle": str(root), "path": "/c.md",
+                                              "frontmatter": {"type": "T"}})
+            assert res["status"] == "ok"
+        assert (root / "c.md").read_text(encoding="utf-8") == "---\ntype: T\n---\n\nBody\n"

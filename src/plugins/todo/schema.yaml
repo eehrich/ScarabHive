@@ -93,7 +93,7 @@ tools:
         Task management tool. Operations: create, update, delete, list, get, summary.
         
         ⚠️ CRITICAL: Task IDs are auto-generated. Always use the returned 'task_id' from responses.
-        Duplicates (>90% similarity) return existing task_id, not new ones.
+        A near-duplicate title of an open task returns that task_id (status 'exists').
       parameters:
         type: object
         properties:
@@ -110,7 +110,7 @@ tools:
             type: string
             minLength: 1
             maxLength: 200
-            description: "Task title (required for create). Duplicate detection active: >90% similarity returns existing task."
+            description: "Required for create"
           
           description:
             type: string
@@ -131,8 +131,7 @@ tools:
           priority:
             type: string
             enum: ["low", "medium", "high", "critical"]
-            default: "medium"
-            description: "Task priority (optional, default: medium)"
+            description: "Task priority"
           
           tags:
             type: array
@@ -153,7 +152,7 @@ tools:
           allow_duplicates:
             type: boolean
             default: false
-            description: "Allow duplicates (create). Default false: >80% similarity returns existing task."
+            description: "create: skip the near-duplicate check"
           
           idempotency_key:
             type: string
@@ -199,8 +198,7 @@ tools:
             type: integer
             minimum: 1
             maximum: 1000
-            default: 100
-            description: "Max results (for list operation)"
+            description: "Max results (list)"
           
           offset:
             type: integer

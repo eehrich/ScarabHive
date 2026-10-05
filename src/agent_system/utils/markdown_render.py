@@ -1,10 +1,10 @@
-"""Central Markdown → HTML rendering for the web UIs.
+"""Markdown → HTML rendering on the server.
 
-Single source of truth for turning agent-authored Markdown into the HTML the
-frontends display: the main chat panel (via the ``markdown_formatter`` hook)
-and the debate-forum panel both call :func:`markdown_to_html`, so the converter
-config (extensions, Prism-compatible code classes, sanitisation) lives in ONE
-place and cannot drift between callers.
+For the pages that render on the server: the debate-forum panel, the help
+viewer and ``agent-cli --color html`` call :func:`markdown_to_html`, so the
+converter config (extensions, Prism-compatible code classes, sanitisation) lives
+in ONE place for them. The chat renders its answers in the browser
+(static/js/chat_module.js, markdown-it with raw HTML off).
 
 Output is tuned for Prism.js: fenced code blocks get ``class="language-<lang>"``
 so ``Prism.highlightAllUnder(...)`` can colour them on the client.
@@ -296,6 +296,27 @@ def _lists_after_paragraphs(source: str) -> str:
     return "\n".join(out)
 
 
+# Python-Markdown's opening fence: at the line start, then a {attrs} or a (.)lang.
+_OPENING_FENCE = re.compile(r"(`{3,}|~{3,}) *(\{[^\n]*\}|\.?[\w#.+-]* *)$")
+
+
+def _close_open_fence(source: str) -> str:
+    """Close a code fence the text leaves open (an answer cut off in its code).
+
+    Unclosed, the code is read as one paragraph of many lines, and Python-Markdown's
+    line-break pattern takes time growing with the square of that: 200 KB took 48 s.
+    Closed, the code shows as code again. A fence closes on a line of just itself.
+    """
+    fence = ""
+    for line in re.split(r"\r\n|\r|\n", source):
+        if not fence:
+            mark = _OPENING_FENCE.match(line)
+            fence = mark.group(1) if mark else ""
+        elif line.rstrip(" ") == fence:
+            fence = ""
+    return f"{source}\n{fence}" if fence else source
+
+
 def _fix_list_formatting(html: str) -> str:
     """Rescue lists that LLMs wrote without the required blank line, so they
     render inline inside a single <p> (``Intro - a - b - c``)."""
@@ -344,8 +365,8 @@ def markdown_to_html(
     (empty/non-string input, or the ``markdown`` library is unavailable) so
     callers can fall back to escaped plain text. ``allowed_tags`` narrows or
     widens :data:`DEFAULT_ALLOWED_TAGS` for the sanitiser. ``line_breaks=False`` reads text as a
-    document rather than a chat answer: a single newline is a space, as Markdown has it, and the
-    chat's list rescue stays off (a list under a paragraph line still shows, as on GitHub).
+    document rather than an agent's answer: a single newline is a space, as Markdown has it, and the
+    answers' list rescue stays off (a list under a paragraph line still shows, as on GitHub).
     """
     if not text or not isinstance(text, str):
         return None
@@ -354,12 +375,14 @@ def markdown_to_html(
         return None
 
     source = extract_markdown_content(text)
+    if code:
+        source = _close_open_fence(source)
     if not line_breaks:
         source = _lists_after_paragraphs(source)
     with _lock:
         converter.reset()
         html = converter.convert(source)
-    if line_breaks:  # the chat's rescue splits at every " - ": in a document that is a dash in an item
+    if line_breaks:  # the answers' rescue splits at every " - ": in a document that is a dash in an item
         html = _fix_list_formatting(html)
     html = _unwrap_raw_blocks(html)
     html = _remove_table_inline_styles(html)

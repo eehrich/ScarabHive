@@ -1,0 +1,217 @@
+@database "request_logger"
+@author "Enrico Ehrich"
+@$VER: request_logger.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Request Logger"
+@{h1}Request Logger
+
+Writes a trace of what the agents do with the LLM into the server's normal
+log: a line before and after every LLM call of an agent run, with the
+session, the agent, how long the call took and the first characters of the
+last message and of the answer; a line when a session starts; and a
+summary line when a run ends. It is meant for watching the flow while
+debugging, and doubles as the simplest example of a hook plugin. It has no
+tools and no panel, changes nothing the model sees, and is off in the
+default configuration.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+  @{"  What gets logged  " link log}
+  @{"  Privacy, access and limits  " link privacy}
+
+For agents and developers
+  @{"  The four hooks  " link hooks}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt} is there, switched off:
+
+@{code yaml}
+plugins:
+  servers:
+    request_logger:
+      type: request_logger
+      enabled: false
+@{body}
+
+Set @{tt}enabled: true@{utt} and restart the server. No allowlist line is
+needed -- the plugin has no tools -- and no extra packages. Once it is on,
+its hooks run for @{b}every@{ub} agent and sub-agent, the chat included;
+see @{" The four hooks " link hooks} for switching them off per agent.
+
+@{h2}Settings
+
+The settings go in a @{tt}config:@{utt} block of the server entry -- keys
+written directly in the entry are not read:
+
+@{code yaml}
+    request_logger:
+      type: request_logger
+      enabled: true
+      config:
+        log_level: DEBUG
+        log_message_content: false
+@{body}
+
+@{table}
+Key | Default | Meaning
+log_level | INFO | the level of every line the plugin writes: DEBUG, INFO, WARNING or ERROR; anything else is INFO
+log_message_content | true | false: no text from the conversation, only counts, IDs and times
+log_timing | true | false: no durations
+max_content_preview | 100 | characters of a message or answer shown; held to 10 ... 1000
+@{body}
+
+They are read once, when the plugin starts. An agent's hook override cannot
+change them.
+
+@{h2}Where the lines go
+
+The plugin opens no file of its own. It writes through the process's
+logger @{tt}plugins.request_logger.hooks@{utt}, so the lines land where the
+@{tt}logging:@{utt} block of @{tt}config/config.yaml@{utt} sends them: the
+API into @{tt}logs/api.log@{utt}, @{tt}agent-cli@{utt} into
+@{tt}logs/cli.log@{utt}, and the console. A line is written only when its
+level is at or above the level configured there; with the shipped
+@{tt}level: DEBUG@{utt} everything is written, with @{tt}level: INFO@{utt} a
+@{tt}log_level: DEBUG@{utt} here silences the plugin in the files.
+@endnode
+
+@node log "What gets logged"
+@{h1}What gets logged
+
+One run of an agent with two LLM calls, at the default settings:
+
+@{code}
+[RequestLogger] Session Started: session_id=abc123, agent=chat_agent
+[RequestLogger] Request #1 - Pre-LLM Call: session=abc123, messages=3, agent=chat_agent
+[RequestLogger] Last message: role=user, content=What is in the report folder?
+[RequestLogger] Request #1 - Post-LLM Call: duration=2345.67ms, response_preview=
+[RequestLogger] Request #2 - Pre-LLM Call: session=abc123, messages=5, agent=chat_agent
+[RequestLogger] Last message: role=tool, content={"files": ["q3.pdf", "notes.txt"]}
+[RequestLogger] Request #2 - Post-LLM Call: duration=1234.56ms, response_preview=There are two files...
+[RequestLogger] Run Ended: session_id=abc123, llm_calls=2, duration=3.61s
+@{body}
+
+@{bullet}@{b}Request #@{ub} counts the LLM calls of the whole process, across
+all sessions, from 1 at start; the post line repeats the number of its call.
+@{bullet}@{b}messages@{ub} is the length of the history the call is about to
+send, system prompt included.
+@{bullet}@{b}Last message@{ub} is the last message of that history -- the
+user's text, or a tool result. Text that is not plain (images) is shown as
+its Python form.
+@{bullet}@{b}duration@{ub} on the post line is the time from this plugin's
+pre hook to its post hook: the LLM call with its retries and fallbacks,
+plus the other hooks that run in between (a context compaction can take
+seconds).
+@{bullet}@{b}response_preview@{ub} is the answer's text. An answer that only
+calls tools has none, so it stays empty; tool calls and their arguments are
+not logged.
+@{bullet}@{b}Session Started@{ub} is written once, when a session without
+history gets its first run; a session resumed with its history has none.
+@{bullet}@{b}Run Ended@{ub} is written at the end of every run (every
+message the user sends), with that run's LLM calls and the time from its
+first LLM call.
+
+Plugins that call an LLM on their own, outside an agent's steps, are not
+seen.
+@endnode
+
+@node privacy "Privacy, access and limits"
+@{h1}Privacy, access and limits
+
+@{h2}Secrets
+
+The plugin sees the conversation, not the HTTP traffic: no headers, no
+Authorization, no cookies, no URLs of the provider. What it can write is
+text from the conversation -- up to @{tt}max_content_preview@{utt}
+characters of the last message and of the answer. That text is not
+masked. A key the user pasted into the chat, or a tool result that shows a
+config file, reaches the log as far as it falls within the preview. The
+only masking on the way is the log handlers' own: they hide the key of a
+callback URL (@{tt}/plugins/<name>/callback/***@{utt}) in every line.
+Set @{tt}log_message_content: false@{utt} to keep conversation text out
+entirely.
+
+@{h2}Who can read it
+
+The lines are part of the server's shared log files, not stored per user:
+every user's prompts and answers land in the same file. Who can read them:
+
+@{bullet}admins, in the Logs panel (its endpoints need the admin role);
+@{bullet}any agent whose allowlist has the @{tt}log_viewer@{utt} tools, for
+the files configured there -- whoever talks to that agent;
+@{bullet}anyone with file access to @{tt}logs/@{utt} on the server.
+
+On a server with several users, switch the content off or leave the plugin
+off.
+
+@{h2}Size and rotation
+
+The plugin adds up to three lines per LLM call. The files rotate as the
+@{tt}logging:@{utt} block says -- shipped: at 10 MB, keeping 5 old files
+(@{tt}api.log.1@{utt} ... @{tt}api.log.5@{utt}); the oldest is deleted. With
+rotation switched off there, the file is started fresh at each start of
+the process and grows without bound.
+
+@{h2}When writing fails
+
+A write that fails (disk full, file gone) is handled by Python's logging:
+the line is lost, a traceback goes to the console, and the request goes on.
+A log file locked for rotation by another process makes the write wait for
+the lock, as every other log line of the process does. An error inside a
+hook is logged and the call goes on; the pre and post hooks have 2 seconds,
+the session hooks 1.
+
+@{h2}Cost
+
+Each enabled hook gets its own copy of the conversation from the hook
+system, so the plugin adds two deep copies of the history per LLM call --
+noticeable only on very long conversations. It sends nothing to the model
+and adds no tokens.
+@endnode
+
+@node hooks "The four hooks"
+@{h1}The four hooks
+
+@{table}
+Hook | Type | When
+log_pre_llm | pre_llm_call | before every LLM call of an agent step
+log_post_llm | post_llm_call | after it, once the answer is complete
+log_session_start | session_start | the first run of a session without history
+log_session_end | session_end | the end of every run, after the conversation is saved
+@{body}
+
+All four only write log lines: they change neither the messages nor the
+answer, so they do not disturb the prompt cache and other hooks see the
+same context as without them. They run for every agent that has hooks on
+(the default), sub-agents and the chat included. What the pre hook
+measures is kept in the plugin per run (session and request), and dropped
+when the run ends; at most 1000 runs are kept at once, the oldest dropped
+first.
+
+@{h2}Switching them off
+
+For one agent, in its YAML -- one hook by its full name:
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      request_logger.log_pre_llm:
+        enabled: false
+@{body}
+
+For all agents, the same under @{tt}hooks: overrides:@{utt} at the end of
+@{tt}config/plugins.yaml@{utt}; there the key @{tt}request_logger@{utt}
+alone covers all four hooks. @{tt}hook_config: {enabled: false}@{utt} in the
+server entry registers them switched off. An agent's override wins over
+both.
+
+With @{tt}log_pre_llm@{utt} off, the post line has neither the call number
+(@{tt}#?@{utt}) nor a duration, and the run summary counts no calls.
+@endnode

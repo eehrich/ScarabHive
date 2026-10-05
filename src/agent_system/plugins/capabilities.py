@@ -48,7 +48,8 @@ class ExternalToolProvider(Protocol):
     """A plugin that federates tools from somewhere outside this process."""
 
     async def list_external_tools(self, *, force_refresh: bool = False) -> Dict[str, List[Dict[str, Any]]]:
-        """Return ``{server_name: [{name, description, input_schema, blocked}]}``."""
+        """Return ``{server_name: [{name, description, input_schema, blocked}]}`` -- the tools
+        the model may be offered; a provider leaves the ones it blocks out."""
         ...
 
     async def call_external_tool(self, server: str, tool: str, arguments: Dict[str, Any]) -> Any:

@@ -49,6 +49,44 @@ _ANSWER_FIELDS: dict[str, tuple[str, ...]] = {
     "days_until": ("days",),
 }
 
+# Named output formats; anything else is a strftime pattern.
+_NAMED_FORMATS = {
+    "human": "%A, %B %d, %Y at %I:%M:%S %p",
+    "date_only": "%Y-%m-%d",
+    "time_only": "%H:%M:%S",
+}
+
+
+def _render(dt: datetime, format_str: str) -> str:
+    """Render dt in a named format or a strftime pattern."""
+    if format_str == "iso":
+        return dt.isoformat()
+    return dt.strftime(_NAMED_FORMATS.get(format_str, format_str))
+
+
+def _now(params: dict[str, Any], default_tz: str) -> datetime:
+    """Now in the call's `timezone`, else `default_tz` ('local' = the server's clock).
+
+    Every operation that falls back to "now" goes through here, so they all
+    agree with `current` -- before, only `current` read `timezone` and the
+    others used the server's local clock, which the model cannot see.
+    """
+    timezone_str = params.get("timezone") or default_tz
+    if timezone_str.upper() == "UTC":
+        return datetime.now(timezone.utc)
+    if timezone_str.upper() == "LOCAL":
+        return datetime.now()
+    try:
+        return datetime.now(pytz.timezone(timezone_str))
+    except pytz.UnknownTimeZoneError:
+        raise ValueError(f"Invalid timezone: {timezone_str}") from None
+
+
+def _as_utc_if_naive(dt: datetime) -> datetime:
+    """A datetime without offset is UTC, as in convert_timezone -- not the
+    server's local zone, which `datetime.timestamp()` would assume."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
 
 class DateTimeServer(SchemaBasedToolServer):
     """DateTime Tool Server that provides comprehensive date and time information.
@@ -73,6 +111,19 @@ class DateTimeServer(SchemaBasedToolServer):
             server_config: Plugin-specific configuration
         """
         super().__init__(name, system_config, server_config)
+
+    def _default_timezone(self) -> str:
+        """The zone the system prompt's `current_date` is rendered in
+        (`context.timezone`), so "today" here is the prompt's today; UTC when
+        it is unset or unknown."""
+        tz = getattr(getattr(self.system_config, "context", None), "timezone", None)
+        if isinstance(tz, str) and tz:
+            try:
+                pytz.timezone(tz)
+                return tz
+            except pytz.UnknownTimeZoneError:
+                pass
+        return "UTC"
 
     async def operations(self, params: dict[str, Any]) -> dict[str, Any]:
         """
@@ -147,20 +198,7 @@ class DateTimeServer(SchemaBasedToolServer):
         format_str = params.get("format", "iso")
 
         try:
-            if timezone_str.upper() == "UTC":
-                tz = timezone.utc
-            elif timezone_str.upper() == "LOCAL":
-                tz = None  # Local timezone
-            else:
-                try:
-                    tz = pytz.timezone(timezone_str)
-                except pytz.UnknownTimeZoneError:
-                    return {"status": "error", "error": f"Invalid timezone: {timezone_str}"}
-
-            if tz:
-                now = datetime.now(tz)
-            else:
-                now = datetime.now()
+            now = _now(params, self._default_timezone())
 
             result = {
                 "status": "success",
@@ -179,20 +217,11 @@ class DateTimeServer(SchemaBasedToolServer):
                 "unix_timestamp": int(now.timestamp())
             }
 
-            # Add formatted versions
-            if format_str == "iso":
-                result["formatted"] = now.isoformat()
-            elif format_str == "human":
-                result["formatted"] = now.strftime("%A, %B %d, %Y at %I:%M:%S %p")
-            elif format_str == "date_only":
-                result["formatted"] = now.strftime("%Y-%m-%d")
-            elif format_str == "time_only":
-                result["formatted"] = now.strftime("%H:%M:%S")
-            elif format_str == "custom":
+            if format_str == "custom":
                 custom_format = params.get("custom_format", "%Y-%m-%d %H:%M:%S")
                 result["formatted"] = now.strftime(custom_format)
             else:
-                result["formatted"] = now.strftime(format_str)
+                result["formatted"] = _render(now, format_str)
 
             return result
 
@@ -224,7 +253,7 @@ class DateTimeServer(SchemaBasedToolServer):
                         if datetime_str.endswith('Z'):
                             # Handle UTC timezone marker
                             dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
-                        elif '+' in datetime_str[-6:] or datetime_str[-6] == '-':
+                        elif '+' in datetime_str[-6:] or datetime_str[-6:-5] == '-':
                             # Handle timezone offset (e.g., +01:00, -05:00)
                             dt = datetime.fromisoformat(datetime_str)
                         else:
@@ -263,14 +292,18 @@ class DateTimeServer(SchemaBasedToolServer):
                                 continue
                     
                     if dt is None:
-                        raise ValueError(f"Could not parse datetime: {datetime_str}")
+                        # The rest of ISO 8601 ("2026-01-15T14:30", fractions).
+                        try:
+                            dt = datetime.fromisoformat(datetime_str)
+                        except ValueError:
+                            raise ValueError(f"Could not parse datetime: {datetime_str}") from None
             else:
                 dt = datetime.strptime(datetime_str, input_format)
 
             return {
                 "status": "success",
                 "original": datetime_str,
-                "formatted_time": dt.strftime(format_str),
+                "formatted_time": _render(dt, format_str),
                 "parsed_datetime": dt.isoformat(),
                 "year": dt.year,
                 "month": dt.month,
@@ -327,7 +360,13 @@ class DateTimeServer(SchemaBasedToolServer):
                         continue
 
                 if dt is None:
-                    return {"status": "error", "error": f"Could not parse datetime: {datetime_str}"}
+                    # The list misses much of ISO 8601 ("2026-01-15T14:30",
+                    # fractions of a second).
+                    try:
+                        dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+                        used_format = "iso8601"
+                    except ValueError:
+                        return {"status": "error", "error": f"Could not parse datetime: {datetime_str}"}
 
             return {
                 "status": "success",
@@ -335,7 +374,7 @@ class DateTimeServer(SchemaBasedToolServer):
                 "parsed_format": used_format,
                 "parsed_datetime": dt.isoformat(),
                 "iso_format": dt.isoformat(),
-                "unix_timestamp": int(dt.timestamp()),
+                "unix_timestamp": int(_as_utc_if_naive(dt).timestamp()),
                 "components": {
                     "year": dt.year,
                     "month": dt.month,
@@ -368,20 +407,17 @@ class DateTimeServer(SchemaBasedToolServer):
 
         try:
             if not base_datetime:
-                dt = datetime.now()
+                dt = _now(params, self._default_timezone())
             else:
                 dt = datetime.fromisoformat(base_datetime.replace('Z', '+00:00'))
 
-            # Add simple time deltas
-            delta = timedelta(
-                weeks=weeks,
-                days=days,
-                hours=hours,
-                minutes=minutes,
-                seconds=seconds
-            )
-
-            result_dt = dt + delta
+            # Calendar units move the wall clock; clock units are elapsed time.
+            # With a pytz zone the two differ across a DST change, and pytz
+            # keeps the start's offset through arithmetic -- so the calendar
+            # part runs on the naive wall clock and is localized again, then
+            # the clock part is added and normalized to the offset it lands in.
+            zone = getattr(dt.tzinfo, "zone", None)
+            result_dt = (dt.replace(tzinfo=None) if zone else dt) + timedelta(weeks=weeks, days=days)
 
             # Handle years and months (more complex)
             if years or months:
@@ -398,6 +434,13 @@ class DateTimeServer(SchemaBasedToolServer):
                     month=result_month,
                     day=result_day
                 )
+
+            clock = timedelta(hours=hours, minutes=minutes, seconds=seconds)
+            if zone:
+                tz = pytz.timezone(zone)
+                result_dt = tz.normalize(tz.localize(result_dt) + clock)
+            else:
+                result_dt = result_dt + clock
 
             return {
                 "status": "success",
@@ -438,7 +481,8 @@ class DateTimeServer(SchemaBasedToolServer):
         """Convert datetime between timezones."""
         datetime_str = params.get("datetime", "")
         from_tz = params.get("from_timezone", "UTC")
-        to_tz = params.get("to_timezone", "UTC")
+        # `timezone` is the schema's name for the target.
+        to_tz = params.get("to_timezone") or params.get("timezone") or "UTC"
 
         try:
             if not datetime_str:
@@ -478,7 +522,9 @@ class DateTimeServer(SchemaBasedToolServer):
             }
 
         except Exception as e:
-            return {"status": "error", "error": str(e), "input": datetime_str, "from_tz": from_tz, "to_tz": to_tz}
+            # pytz's own text is only the quoted name: "'Mars/Olympus'".
+            error = f"Invalid timezone: {e.args[0]}" if isinstance(e, pytz.UnknownTimeZoneError) else str(e)
+            return {"status": "error", "error": error, "input": datetime_str, "from_tz": from_tz, "to_tz": to_tz}
 
     async def _unix_timestamp(self, params: dict[str, Any]) -> dict[str, Any]:
         """Convert between datetime and Unix timestamp."""
@@ -511,7 +557,7 @@ class DateTimeServer(SchemaBasedToolServer):
                 if not datetime_str:
                     dt = datetime.now(timezone.utc)
                 else:
-                    dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+                    dt = _as_utc_if_naive(datetime.fromisoformat(datetime_str.replace('Z', '+00:00')))
 
                 return {
                     "status": "success",
@@ -535,7 +581,7 @@ class DateTimeServer(SchemaBasedToolServer):
                 # Create a datetime for the first day of the specified month/year
                 dt = datetime(year, month, 1)
             elif not datetime_str:
-                dt = datetime.now()
+                dt = _now(params, self._default_timezone())
             else:
                 dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
 
@@ -567,17 +613,19 @@ class DateTimeServer(SchemaBasedToolServer):
 
     async def _business_days(self, params: dict[str, Any]) -> dict[str, Any]:
         """Calculate business days between dates or add business days."""
-        start_date = params.get("start_date", "")
-        end_date = params.get("end_date", "")
-        add_days = params.get("add_business_days", None)
+        # The schema offers datetime / target_date / days; the longer names
+        # are kept for direct callers.
+        start_date = params.get("start_date") or params.get("datetime", "")
+        end_date = params.get("end_date") or params.get("target_date", "")
+        add_days = params.get("add_business_days", params.get("days"))
 
         try:
             if not start_date:
-                start_dt = datetime.now().date()
+                start_dt = _now(params, self._default_timezone()).date()
             else:
                 start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00')).date()
 
-            if add_days is not None:
+            if add_days is not None and not end_date:
                 # Add business days to start_date
                 current_date = start_dt
                 days_added = 0
@@ -631,7 +679,7 @@ class DateTimeServer(SchemaBasedToolServer):
                 }
 
             else:
-                return {"status": "error", "error": "Either end_date or add_business_days parameter required"}
+                return {"status": "error", "error": "business_days needs target_date (to count) or days (to add)"}
 
         except Exception as e:
             return {"status": "error", "error": str(e), "input": {"start_date": start_date, "end_date": end_date, "add_days": add_days}}
@@ -642,7 +690,7 @@ class DateTimeServer(SchemaBasedToolServer):
 
         try:
             if not datetime_str:
-                dt = datetime.now()
+                dt = _now(params, self._default_timezone())
             else:
                 dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
 
@@ -660,14 +708,14 @@ class DateTimeServer(SchemaBasedToolServer):
     async def _days_until(self, params: dict[str, Any]) -> dict[str, Any]:
         """Calculate days until a target date."""
         target_date = params.get("target_date", "")
-        start_date = params.get("start_date", "")
+        start_date = params.get("start_date") or params.get("datetime", "")
 
         try:
             if not target_date:
                 return {"status": "error", "error": "Missing required parameter: target_date"}
 
             if not start_date:
-                start_dt = datetime.now().date()
+                start_dt = _now(params, self._default_timezone()).date()
             else:
                 start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00')).date()
 

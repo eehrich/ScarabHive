@@ -48,7 +48,7 @@ Root Session (meta_agent)
 
 ### Instance IDs
 
-Format: `sub_{agent_type}_{counter}`, or `sub_{instance_label}_{counter}` when a label is given (label sanitized to `[a-zA-Z0-9_-]`). The counter is 4-digit, shared across all SAM instances in the process, and each generated ID is checked against existing sessions.
+Format: `sub_{agent_type}_{counter}`, or `sub_{instance_label}_{counter}` when a label is given (label sanitized to `[a-zA-Z0-9_-]`). The counter (zero-padded to at least 4 digits) starts at a random number in each process, is shared across all SAM instances in the process, and each generated ID is checked against existing sessions.
 
 Examples:
 - `sub_web_research_agent_4521`
@@ -85,7 +85,7 @@ Each Sub-Agent Manager (SAM) instance provides **one** tool, `{{ name }}_manage_
 | Operation | Purpose |
 |-----------|---------|
 | `create` | Spawn and run a sub-agent (`blocking=true` by default; `false` = async) |
-| `continue` | Send a new message to an existing instance (`blocking` as above) |
+| `continue` | Send a new message to an existing instance (always waits for the answer) |
 | `poll` | Check the status of an async run (non-blocking) |
 | `wait` | Wait for one instance to finish (blocking) |
 | `wait_all` | Wait for several instances (`instance_ids`) |
@@ -249,7 +249,7 @@ The same `instance_id` cannot run concurrently. Pattern for parallel work: sever
 
 **Note:** This marks the sub-agent as archived but preserves the session file for audit trail. Pass `instance_ids` instead of `instance_id` to archive several at once.
 
-`poll`, `wait` and `cancel` take an `instance_id`; `wait_all` takes `instance_ids` (all must exist).
+`poll`, `wait` and `cancel` take an `instance_id`; `wait_all` takes `instance_ids` (an unknown one comes back as an error in `results`).
 
 ## Usage Examples
 
@@ -437,13 +437,13 @@ A sub-agent is spawnable only when all of these hold:
 1. Its server entry has `enabled: true`.
 2. Its instance name is in the calling SAM instance's `allowed_agents` (or matched by `*`/a glob) and not in `blocked_agents`.
 3. The calling agent's `agent_config.tools.allowed` contains `<sam instance>/*`.
-4. Its `metadata.visibility` is not `private` (the default) — `ui`, `tool` or `both`. Private agents are left out of the "Available" list in the tool description.
+4. Its `metadata.visibility` is not `private` (the default) — `ui`, `tool` or `both`. Private agents are left out of the "Available" list in the tool description, so the model never learns their name (a spawn by the exact name is not refused).
 
 The "Available" list applies the same `allowed_agents`/`blocked_agents` check as a spawn, globs included.
 
 ### Hook Configuration
 
-The `inject_sub_agent_context` hook appends this SAM instance's sub-agents and their status as a `developer` turn at the end of the history before each LLM call. The hook is registered with `enabled: false`; an agent turns it on with `hooks.overrides: {<sam instance>.inject_sub_agent_context: {enabled: true}}`. The `enabled` option below is the injector's own switch, not the registration. The options are read from `hook_config.inject_sub_agent_context` on the SAM server entry.
+The `inject_sub_agent_context` hook appends this SAM instance's sub-agents and their status as a `developer` turn at the end of the history before each LLM call. The hook is registered with `enabled: false`; an agent turns it on with `hooks.overrides: {<sam instance>.inject_sub_agent_context: {enabled: true}}`. The `enabled` option below is the injector's own switch, not the registration. The options are read from `hook_config.inject_sub_agent_context` on the SAM server entry; the same keys in the agent's override win over it.
 
 The block is marked with `injected_by: sub_agent_manager:<instance>` and written only when it says something new -- a sub-agent added, removed or changed status; rows are ordered open ones first (running, idle, interrupted), each group newest created first, and carry the task, but no usage counters or times. The status is what the sub-agent is doing: `running` while a run is under way (in this process, or in any other that holds the lock beside its session), `idle` once it is over, or `interrupted`, `failed`, `cancelled` for a last run that did not finish. Stored, running and idle are both `active`; the block never says that word. An earlier block keeps its place and is superseded by the newer one: deleting it would rewrite the prefix the provider has already cached. When the last sub-agent is archived, that is news too and is said once.
 

@@ -30,6 +30,9 @@ ALLOWED = {
     "plugins_writer/writer_admin/exchange/spec.py",
     # the package's own data folder next to the module, not the data directory
     "plugins_writer/writer_core/cross_scene_checker.py",
+    # the asset library in config form (ASSETS), like the machines' projects_dir defaults:
+    # project_on resolves it for a local Scarab server, one in Docker keeps its own data/
+    "plugins_priv/scarab_videos/machines/scarab_videos.py",
 }
 
 PREFIX = re.compile(r"^(\./)?data[/\\]")

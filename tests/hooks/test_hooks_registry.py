@@ -30,14 +30,6 @@ class SimpleHook(PluginHook):
             context.messages.append(ChatMessage(role="system", content=f"Hook {self.name} executed"))
             return HookResult(success=True, modified=True, context=context)
         return HookResult(success=True, modified=False, context=context)
-    
-    async def on_format_output(self, context: HookContext) -> HookResult:
-        """Uppercase the output."""
-        self.call_count += 1
-        if context.output:
-            context.output = context.output.upper()
-            return HookResult(success=True, modified=True, context=context)
-        return HookResult(success=True, modified=False, context=context)
 
 
 class FailingHook(PluginHook):
@@ -293,26 +285,6 @@ async def test_hook_info_retrieval(registry):
     assert info["enabled"] is True
     assert info["order_spec"]["before"] == ["end"]
     assert info["class"] == "SimpleHook"
-
-
-@pytest.mark.asyncio
-async def test_format_output_hooks(registry):
-    """Test format output hooks."""
-    context = HookContext(
-        hook_type=HookType.FORMAT_OUTPUT,
-        request_id="test-request",
-        session_id="test-session",
-        agent_name="test-agent",
-        output="hello world",
-    )
-    
-    hook = SimpleHook("formatter")
-    await registry.register_hook(HookType.FORMAT_OUTPUT, "formatter", hook)
-    
-    result_context = await registry.execute_hooks(HookType.FORMAT_OUTPUT, context)
-    
-    assert result_context.output == "HELLO WORLD"
-    assert hook.call_count == 1
 
 
 @pytest.mark.asyncio

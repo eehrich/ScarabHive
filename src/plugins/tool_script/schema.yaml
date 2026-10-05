@@ -13,11 +13,12 @@ tools:
 
         RULES:
         - call_tool uses EXACTLY the tool names and parameters from your tool
-          list (params are schema-validated; wrong names fail immediately).
-        - Assign your return value to `result` (JSON-serializable, keep it
-          small — store big payloads via a tool and return the reference).
-        - A tool result {"status":"error"} raises ToolCallError (catchable
-          with try/except ToolCallError). Other results are returned as data.
+          list.
+        - Assign your return value to `result` (JSON-serializable, small —
+          store big payloads via a tool and return the reference).
+        - A tool result {"status":"error"} or {"error": ...} raises
+          ToolCallError (catchable with try/except ToolCallError). Other
+          results are returned as data.
         - Tools returning JSON as TEXT (e.g. a store's read -> {"json": "..."}):
           use parse_json(text) to get data — there is no json module.
         - log("...") reports progress.
@@ -30,8 +31,11 @@ tools:
           x[1:3], dicts/lists/sets + their common methods, str + - in
           comparisons, list comprehensions, print(), parse_json().
         - NOT available: import (also no json module — use parse_json),
-          str.format (use f-strings), variables starting with "_",
-          open()/eval()/exec(), attribute tricks.
+          break/continue, while True, del, with, class, assert,
+          zip/any/all/map/filter/reversed, str.format (use f-strings),
+          variables starting with "_", open()/eval()/exec(), attribute tricks.
+        - Own functions take positional arguments only. One exception type
+          per except clause.
 
         Example:
           delta = call_tool("my_json_manage_json", operation="read", doc="d1")
@@ -43,20 +47,20 @@ tools:
         properties:
           script:
             type: string
-            description: "The Python script (sandbox subset, see tool description)."
+            description: "Python script"
           timeout:
             type: number
-            description: "Optional overall seconds for this run (capped by config)."
+            description: "Overall seconds for this run"
           dry_run:
             type: boolean
-            description: "Only check syntax and list call_tool targets — nothing is executed."
+            description: "Only check syntax and list call_tool targets; nothing runs"
         required: [script]
 
 config:
   timeout:
     type: number
     default: 120
-    description: "Overall script budget in seconds. Enforced between tool calls (an in-flight call finishes or hits per_call_timeout first)."
+    description: "Overall script budget in seconds, loops included. Checked at every step of the script and before every tool call; a call already running finishes or hits per_call_timeout first."
   per_call_timeout:
     type: number
     default: 60
@@ -76,7 +80,7 @@ config:
   max_output_length:
     type: integer
     default: 4000
-    description: "print()/log() buffer cap."
+    description: "Characters print() and log() may produce, each; past it the script ends (not catchable)."
   allowed_tools:
     type: array
     default: []

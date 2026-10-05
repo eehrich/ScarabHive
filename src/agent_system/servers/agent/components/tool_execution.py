@@ -10,7 +10,7 @@ import logging
 import time
 from contextlib import aclosing
 from datetime import datetime, timezone
-from typing import Dict, List, Any, Optional, TYPE_CHECKING, AsyncGenerator, Tuple
+from typing import Dict, List, Any, Optional, TYPE_CHECKING, AsyncGenerator, Callable, Tuple
 
 if TYPE_CHECKING:
     from ..server import Agent
@@ -22,6 +22,7 @@ from ....core.cancellation import get_cancellation_manager, cancellable_operatio
 from ....core.request_context import register_request_user
 from ....hooks.plugin_hook import HookType
 from .server_resolution import resolve_longest_prefix
+from ..deferred_tools import NOT_LOADED_TYPE
 from ....llm.caller_llm import context_for_tool
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
@@ -35,6 +36,8 @@ FRAMEWORK_REQUEST_ID_KEYS = frozenset({"request_id", "requestId"})
 
 #: "type" of the result the model reads for a call a pre_tool_call hook blocked.
 BLOCKED_CALL_TYPE = "ToolCallBlocked"
+#: Result types of calls that never ran (tool_message_never_ran).
+NEVER_RAN_TYPES = (BLOCKED_CALL_TYPE, NOT_LOADED_TYPE)
 
 
 class ToolDispatchError(Exception):
@@ -69,17 +72,17 @@ def tool_result_is_error(result: Any) -> bool:
     return "status" not in result and bool(result.get("error"))
 
 
-def tool_message_was_blocked(message: Any) -> bool:
-    """Whether a tool-result message stands for a call a pre_tool_call hook
-    blocked -- the call never ran."""
+def tool_message_never_ran(message: Any) -> bool:
+    """Whether a tool-result message stands for a call that never ran: one a
+    pre_tool_call hook blocked, or a deferred tool called before it was loaded."""
     content = getattr(message, "content", None)
-    if not isinstance(content, str) or BLOCKED_CALL_TYPE not in content:
+    if not isinstance(content, str) or not any(kind in content for kind in NEVER_RAN_TYPES):
         return False
     try:
         data = json.loads(content)
     except ValueError:
         return False
-    return isinstance(data, dict) and data.get("type") == BLOCKED_CALL_TYPE
+    return isinstance(data, dict) and data.get("type") in NEVER_RAN_TYPES
 
 
 def inject_runtime_params(params: Dict[str, Any], *,
@@ -123,6 +126,42 @@ def inject_runtime_params(params: Dict[str, Any], *,
         params["_agent"] = agent
 
     return params
+
+
+def pop_multimodal_content(tool_result: Any, tool_name: str) -> Optional[List[Any]]:
+    """Take ``_multimodal_content`` ([{type, path, mime_type, description}]) out of a result.
+
+    The items ride on the tool message as real image/audio parts; left in the
+    result they reach the model as a JSON list of paths. External MCP results
+    carry them too (mcp_client persists image blocks) -- that path used to
+    skip this, and a screenshot never reached a model as an image.
+    """
+    if not isinstance(tool_result, dict):
+        return None
+    raw_multimodal = tool_result.pop("_multimodal_content", None)
+    if not raw_multimodal:
+        return None
+    from pydantic import ValidationError
+    from ....llm.models import MultimodalToolContent
+    # An invalid item is dropped on its own: raising here would replace the
+    # whole tool result -- a job that already ran -- with an error, and the
+    # model would run it again.
+    multimodal_content: List[Any] = []
+    items = raw_multimodal if isinstance(raw_multimodal, list) else [raw_multimodal]
+    for item in items:
+        if isinstance(item, dict):
+            try:
+                multimodal_content.append(MultimodalToolContent(**item))
+            except ValidationError as exc:
+                logger.warning(
+                    "Dropping invalid multimodal item from tool %s: %s",
+                    tool_name, exc.errors(include_url=False),
+                )
+        elif isinstance(item, MultimodalToolContent):
+            multimodal_content.append(item)
+    if multimodal_content:
+        logger.debug("Extracted %d multimodal items from tool %s", len(multimodal_content), tool_name)
+    return multimodal_content or None
 
 
 class ToolExecutionManager:
@@ -235,6 +274,7 @@ class ToolExecutionManager:
         status_forwarder: Optional[StatusEventForwarder] = None,
         assistant_message: Optional[ChatMessage] = None,
         llm_profile: Optional[str] = None,
+        intercept: Optional[Callable[[Optional[str], Any, int], Optional[Dict[str, Any]]]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute tools in parallel while streaming status events in real-time.
 
@@ -252,6 +292,11 @@ class ToolExecutionManager:
             llm_profile: The profile the run was switched to, None when it runs its own
                              configuration. Each tool call runs in a context holding it, so a
                              sub-agent the tool starts can follow it (llm/caller_llm.py).
+            intercept: Answers a call itself instead of a tool server (name, arguments, step) ->
+                             result, or None to leave the call alone: the run's deferred tools
+                             (deferred_tools.py). An answered call reaches no hook. A call
+                             with broken JSON is shown with arguments None: it keeps its
+                             parse error, and an unloaded deferred tool is loaded for it.
 
         Yields:
             Dict with either:
@@ -322,6 +367,8 @@ class ToolExecutionManager:
 
             # If JSON parsing failed, return an error to the LLM so it can retry
             if json_parse_failed:
+                if intercept is not None:
+                    intercept(openai_tool_name, None, step)  # loads an unloaded deferred tool, in call order
                 tool_call_id = tc.get("id") or f"parse-error-{int(time.time()*1000)}"
                 error_content = json.dumps({
                     "error": (
@@ -345,6 +392,23 @@ class ToolExecutionManager:
                     content=error_content,
                     timestamp=datetime.now(timezone.utc),
                 ), [], []))
+                continue
+
+            answer = intercept(openai_tool_name, params, step) if intercept is not None else None
+            if answer is not None:
+                indexed_results.append((pos, ChatMessage(
+                    role="tool",
+                    tool_call_id=tc.get("id") or f"{openai_tool_name}-call-{int(time.time()*1000)}",
+                    name=sanitize_for_llm(openai_tool_name),
+                    content=json.dumps(answer, ensure_ascii=False),
+                    timestamp=datetime.now(timezone.utc),
+                ), [], []))
+                events_to_yield.extend([
+                    {"type": "tool_call", "step": step + 1, "server": tool_name, "action": openai_tool_name,
+                     "params": params, "request_id": request_id},
+                    {"type": "tool_result", "step": step + 1, "server": tool_name, "action": openai_tool_name,
+                     "result": answer, "request_id": request_id},
+                ])
                 continue
 
             if not tool_name or tool_name not in available_tools:
@@ -856,6 +920,7 @@ class ToolExecutionManager:
             # Use serializable_params to avoid passing non-JSON-serializable objects (like CancellationToken) to external servers
             tool_result = await tool_integration.call_tool(server_name, actual_tool_name, serializable_params, "external")
             logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])
+            multimodal_content = pop_multimodal_content(tool_result, tool_name)
 
             results.append({
                 "server": tool_name,
@@ -878,7 +943,8 @@ class ToolExecutionManager:
                 tool_call_id=tool_call_id,
                 name=sanitize_for_llm(openai_tool_name),
                 content=tool_msg_content,
-                timestamp=datetime.now(timezone.utc)
+                timestamp=datetime.now(timezone.utc),
+                multimodal_content=multimodal_content,
             )
             return message, events, results
         except (Exception, GeneratorExit) as e:
@@ -982,35 +1048,7 @@ class ToolExecutionManager:
 
             logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
 
-            # Extract multimodal content from tool result (if present)
-            # Tools can return _multimodal_content: [{type, path, mime_type, description}]
-            multimodal_content = None
-            if isinstance(tool_result, dict):
-                raw_multimodal = tool_result.pop("_multimodal_content", None)
-                if raw_multimodal:
-                    from pydantic import ValidationError
-                    from ....llm.models import MultimodalToolContent
-                    # Convert to Pydantic models. An invalid item is dropped on its
-                    # own: raising here would replace the whole tool result -- a job
-                    # that already ran -- with an error, and the model would run it again.
-                    multimodal_content = []
-                    items = raw_multimodal if isinstance(raw_multimodal, list) else [raw_multimodal]
-                    for item in items:
-                        if isinstance(item, dict):
-                            try:
-                                multimodal_content.append(MultimodalToolContent(**item))
-                            except ValidationError as exc:
-                                logger.warning(
-                                    "Dropping invalid multimodal item from tool %s: %s",
-                                    tool_name, exc.errors(include_url=False),
-                                )
-                        elif isinstance(item, MultimodalToolContent):
-                            multimodal_content.append(item)
-                    if multimodal_content:
-                        logger.debug(
-                            "Extracted %d multimodal items from tool %s",
-                            len(multimodal_content), tool_name
-                        )
+            multimodal_content = pop_multimodal_content(tool_result, tool_name)
 
             results.append({
                 "server": tool_name,

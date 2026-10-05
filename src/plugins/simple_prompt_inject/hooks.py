@@ -16,13 +16,18 @@ from typing import Any
 from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
-from agent_system.llm.message_roles import SYSTEM, is_input, role_of
+from agent_system.llm.message_roles import DEVELOPER, SYSTEM, USER, is_input, role_of
 from agent_system.llm.models import ChatMessage
+from agent_system.servers.agent.components.hook_integration import is_compaction_system_message
 from agent_system.utils.prompt_renderer import strip_prompt_comments
 
 logger = logging.getLogger(__name__)
 
 INJECTED_BY = "simple_prompt_inject"
+_POSITIONS = ("before_last_user", "end", "after_system", "task_start")
+_ROLES = (SYSTEM, DEVELOPER, USER)
+# Between the text and the task under "task_start".
+_TASK_SEPARATOR = "\n\n---\n\n"
 
 # Project config directory (config/)
 _CONFIG_DIR = Path(__file__).resolve().parent.parent.parent.parent / "config"
@@ -36,9 +41,12 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
     configured position, marked with ``injected_by``. What repeated calls do
     depends on the position: ``before_last_user`` moves the text with the turn
     and therefore replaces the previous copy, ``end`` appends it once and
-    writes again only when the rendered text changed, ``after_system`` keeps
+    writes again only when the rendered text changed (a developer copy is
+    dropped when the session is saved, so each turn appends it anew),
+    ``after_system`` keeps
     it right behind the system prompt and rewrites it there only when the
-    rendered text changed.
+    rendered text changed. ``task_start`` writes it in front of the task,
+    inside the first user message, and remembers it in ``prefixed_by``.
 
     Both ``prompt_text`` and ``prompt_file`` content support Jinja2 template
     syntax rendered with the agent's ``template_vars``.
@@ -46,15 +54,19 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
     Configuration (via plugins.yaml):
         prompt_text: Text to inject (empty = no-op)
         prompt_file: Path to .md file (relative to config/ or absolute)
-        injection_position: 'before_last_user', 'end' or 'after_system'
+        injection_position: 'before_last_user', 'end', 'after_system' or 'task_start'
         role: 'system', 'developer' or 'user'. A 'developer' message is what
             the RUN tells the model, and it keeps the position configured
             here. A 'system' message is part of the instructions and always
             stands behind the system prompt ('after_system').
     """
 
-    def __init__(self, plugin_dir: Path | str, server_config: Any = None) -> None:
+    def __init__(self, plugin_dir: Path | str, server_config: Any = None,
+                 name: str | None = None) -> None:
         super().__init__(plugin_dir)
+        # The instance's own marker: a second instance must not take the first
+        # one's message for its previous copy and delete it.
+        self.injected_by: str = name or INJECTED_BY
 
         # Merge schema defaults with runtime config from plugins.yaml
         config = self.get_config()
@@ -63,6 +75,21 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
 
         self.injection_position: str = str(config.get("injection_position", "before_last_user"))
         self.role: str = str(config.get("role", "developer"))
+        # Nobody checks the config against the schema's enums: an unknown role
+        # would reach the provider on every call, an unknown position acted as
+        # before_last_user without a word.
+        if self.injection_position not in _POSITIONS:
+            logger.error("simple_prompt_inject: unknown injection_position %r, using "
+                         "'before_last_user'", self.injection_position)
+            self.injection_position = "before_last_user"
+        if self.role not in _ROLES:
+            logger.error("simple_prompt_inject: unknown role %r, using 'developer'", self.role)
+            self.role = DEVELOPER
+        if self.injection_position == "task_start" and self.role != USER:
+            # The text goes into the task's own message, which is the user's.
+            logger.error("simple_prompt_inject: task_start writes into the user's "
+                         "task; role %r is ignored -- set 'user'", self.role)
+            self.role = USER
         if self.role == SYSTEM and self.injection_position != "after_system":
             # A system message belongs to the instructions at the head. Inside
             # the history Anthropic and Gemini hoist it there anyway, where it
@@ -139,28 +166,36 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
 
         # Render prompt through Jinja2
         rendered = self._render_template(self.prompt_template, template_vars)
+        if self.injection_position == "task_start":
+            return self._prefix_task(context, rendered)
         if not rendered:
-            return HookResult(success=True, modified=False, context=context)
+            # An empty rendering withdraws the note: a copy left from an
+            # earlier call would go on speaking.
+            kept = [m for m in context.messages if m.injected_by != self.injected_by]
+            if len(kept) == len(context.messages):
+                return HookResult(success=True, modified=False, context=context)
+            context.messages = kept
+            return HookResult(success=True, modified=True, context=context)
 
         # Build replacement message
         new_msg = ChatMessage(
             role=self.role,
             content=rendered,
-            injected_by=INJECTED_BY,
+            injected_by=self.injected_by,
         )
 
         # Work on a shallow copy so we don't mutate the original list
         messages = list(context.messages)
         previous = next((m for m in reversed(messages)
-                         if m.injected_by == INJECTED_BY), None)
+                         if m.injected_by == self.injected_by), None)
 
         if self.injection_position == "after_system":
             # Part of the instructions: behind the system prompt, and it stays
             # there. Rewritten only when the rendered text changed -- a head
             # that changes invalidates the cached prefix of the whole history.
-            rest = [m for m in messages if m.injected_by != INJECTED_BY]
+            rest = [m for m in messages if m.injected_by != self.injected_by]
             idx = self._after_system_prompt_index(rest)
-            if (len(rest) == len(messages) - 1 and messages[idx].injected_by == INJECTED_BY
+            if (len(rest) == len(messages) - 1 and messages[idx].injected_by == self.injected_by
                     and messages[idx].role == self.role and messages[idx].content == rendered):
                 return HookResult(success=True, modified=False, context=context)
             messages = rest
@@ -175,10 +210,10 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         else:
             # "before_last_user": here the POINT is the distance to the end --
             # a reminder the model should read just before it answers. That one
-            # has to move with the turn, so the previous copy goes. It costs
-            # the last message's cache, not the history's: everything in front
-            # of the insertion point stays byte-identical.
-            messages = [m for m in messages if m.injected_by != INJECTED_BY]
+            # has to move with the turn, so the previous copy goes. Each new
+            # turn costs the cache from where the previous copy stood -- the
+            # previous turn --, not the history's in front of it.
+            messages = [m for m in messages if m.injected_by != self.injected_by]
             idx = self._find_last_user_index(messages)
             if idx is not None:
                 messages.insert(idx, new_msg)
@@ -188,40 +223,123 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         context.messages = messages
         return HookResult(success=True, modified=True, context=context)
 
+    def _prefix_task(self, context: HookContext, rendered: str) -> HookResult:
+        """``task_start``: the text stands in front of the task, inside its message.
+
+        The task is the first user message a caller wrote (no ``injected_by``);
+        it stays theirs. The session keeps what the hook wrote, so
+        ``prefixed_by`` records the exact prefix: an unchanged text is left
+        alone (the cached prefix holds), a changed one replaces the old, an
+        empty rendering takes it out. An archive placeholder standing where
+        the task was is compaction's, not the caller's, and is skipped.
+        """
+        # A copy this instance placed at another position goes: the config
+        # changed over a restart, and the session still held it.
+        messages = [m for m in context.messages if m.injected_by != self.injected_by]
+        dropped = len(messages) != len(context.messages)
+        idx = next((i for i, m in enumerate(messages)
+                    if role_of(m) == USER and not m.injected_by
+                    and not is_compaction_system_message(m)), None)
+        if idx is None:
+            return self._settled(context, messages, dropped)
+        text = self._task_text(messages[idx].content)
+        if not (text or "").strip():
+            # Empty too: the message would be the note and a separator.
+            logger.warning("simple_prompt_inject: task_start found no text in the task of "
+                           "%s; nothing injected", context.agent_name)
+            return self._settled(context, messages, dropped)
+        task = messages[idx]
+        mine = dict(task.prefixed_by or {})
+        old = mine.pop(self.injected_by, "")
+        # Only other entries' texts may stand in front of this one's; past
+        # them the task begins, and a match there is the task's own words
+        # (the v4 tasks use this very separator between their parts).
+        head = sum(len(p) for p in mine.values())
+        # Stripped: a file ends in a newline, and the task would open on blank lines.
+        rendered = rendered.strip()
+        prefix = f"{rendered}{_TASK_SEPARATOR}" if rendered else ""
+        if old == prefix and (not prefix or self._at_head(text, prefix, head) is not None):
+            return self._settled(context, messages, dropped)
+        at = self._at_head(text, old, head) if old and old != prefix else None
+        base = text if at is None else text[:at] + text[at + len(old):]
+        # A task sent again as the chat showed it carries the text but no
+        # record of it: taken over, not written twice.
+        new_text = base if prefix and self._at_head(base, prefix, head) is not None else prefix + base
+        if prefix:
+            mine[self.injected_by] = prefix
+        messages[idx] = task.model_copy(update={
+            "content": self._with_task_text(task.content, new_text),
+            "prefixed_by": mine or None})
+        context.messages = messages
+        return HookResult(success=True, modified=True, context=context)
+
+    @staticmethod
+    def _at_head(text: str, prefix: str, head: int) -> int | None:
+        """Where ``prefix`` stands in front of the task -- at most behind
+        ``head`` characters of other entries' texts -- or None."""
+        at = text.find(prefix)
+        return at if 0 <= at <= head else None
+
+    @staticmethod
+    def _settled(context: HookContext, messages: list[ChatMessage], dropped: bool) -> HookResult:
+        """No change to the task; the list changed only if an old copy went."""
+        if dropped:
+            context.messages = messages
+        return HookResult(success=True, modified=dropped, context=context)
+
+    @staticmethod
+    def _task_text(content: Any) -> str | None:
+        """The task's text: the string, or the first text part of a list."""
+        if isinstance(content, str):
+            return content
+        for part in content or []:
+            text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+            if isinstance(text, str):
+                return text
+        return None
+
+    @staticmethod
+    def _with_task_text(content: Any, text: str) -> Any:
+        if isinstance(content, str):
+            return text
+        parts = list(content)
+        for i, part in enumerate(parts):
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts[i] = {**part, "text": text}
+                return parts
+            if isinstance(getattr(part, "text", None), str):
+                parts[i] = part.model_copy(update={"text": text})
+                return parts
+        return parts
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     @staticmethod
     def _get_template_vars(context: HookContext) -> dict[str, Any]:
-        """Extract template_vars from agent context.
+        """The agent's template_vars, overridden key by key by the session's.
 
-        Tries session-scoped vars first (they may be updated at runtime),
-        then falls back to static agent_config.template_vars.
+        Merged as the system prompt merges them: taking the session's vars
+        INSTEAD of the agent's dropped every agent var as soon as the session
+        held any variable at all -- another plugin's included -- and the text
+        changed mid-session.
         """
         agent = context.agent
         if agent is None:
             return {}
 
-        # Session-scoped template vars (preferred – may be updated at runtime)
+        merged: dict[str, Any] = {}
+        if hasattr(agent, "agent_config") and agent.agent_config:
+            merged.update(agent.agent_config.template_vars or {})
         if (
             context.session_id
             and hasattr(agent, "_session_tracker")
             and agent._session_tracker
         ):
-            session_vars = agent._session_tracker.get_session_template_vars(
-                context.session_id
-            )
-            if session_vars:
-                return dict(session_vars)
-
-        # Fallback: static agent_config template_vars
-        if hasattr(agent, "agent_config") and agent.agent_config:
-            cfg_vars = agent.agent_config.template_vars
-            if cfg_vars:
-                return dict(cfg_vars)
-
-        return {}
+            merged.update(agent._session_tracker.get_session_template_vars(
+                context.session_id) or {})
+        return merged
 
     def _render_template(self, template_str: str, template_vars: dict[str, Any]) -> str:
         """Render a Jinja2 template string with the given variables.

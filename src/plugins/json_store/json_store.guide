@@ -1,0 +1,463 @@
+@database "json_store"
+@author "Enrico Ehrich"
+@$VER: json_store.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "JSON Store"
+@{h1}JSON Store
+
+A place for agents to keep JSON documents while they work. An agent that
+builds a large JSON result over many steps -- collecting sub-agent answers,
+filling in one field after another -- breaks it when it types the whole
+document again each time: values get shortened, escapes go missing, commas
+vanish. With this plugin the document lives on the server as data. The agent
+sends pieces, the plugin checks and repairs them, merges them in code, and
+every read returns valid JSON. Several agents can share documents through a
+common namespace, each document can only be changed by the agent that
+created it, the last few changes can be undone, and everything is saved to
+disk so an aborted run can continue. It has no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  The tool  " link tool}
+  @{"  Paths, merging and undo  " link rules}
+  @{"  Namespaces and ownership  " link sharing}
+  @{"  Key models  " link keymodels}
+  @{"  Where the data lives  " link storage}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is not in the default @{tt}config/plugins.yaml@{utt}. Each agent
+that needs a store declares its own instance in its YAML, next to the agent.
+The workflow agent (@{tt}config/agents/workflow_agent.yaml@{utt}) has this
+one:
+
+@{code yaml}
+plugins:
+  servers:
+
+    # Validated JSON working documents for the workflow agent
+    wf_json:
+      type: json_store
+      enabled: true
+      description: "workflow_agent JSON documents (validated, code-side merge)"
+      config:
+        max_docs: 100
+        max_doc_bytes: 250000
+@{body}
+
+and allows it in the agent's tool list:
+
+@{code yaml}
+        tools:
+          allowed:
+            - "wf_json/*"
+@{body}
+
+The tool is then @{tt}wf_json_manage_json@{utt}: the instance name comes
+first. Several instances are separate stores with separate directories. No
+extra packages.
+
+@{h2}Server settings
+
+The settings go under @{tt}config:@{utt} in the server entry, as above --
+directly in the entry the plugin does not see them. They are read once, when
+the instance starts.
+
+@{table}
+Key | Default | Meaning
+session_scoped | true | a call without namespace uses the caller's session; false: all such calls share one space, "global"
+require_namespace | false | true: every call without namespace is refused (for stores that exist only to be shared)
+default_write_access | owner | owner or shared, for documents created without write_access; any other value makes every create fail
+max_docs | 50 | documents per namespace
+max_doc_bytes | 2097152 | size limit of one document, in characters of its compact JSON
+undo_depth | 5 | changes per document that undo can revert; 0 turns undo off
+namespace_ttl_hours | 48 | a namespace nobody touched this long is dropped from memory (reloaded from disk when used again); 0: never
+persist | true | save every document to disk; false: memory only
+storage_path | data/json_store | root directory; the instance name and the namespace are added below it
+max_read_chars | 50000 | largest read answer, in characters of the indented JSON; when the entry sets max_doc_bytes and not this, the default is twice max_doc_bytes, so a store sized for its documents reads them whole; a number below 1 or not a number means that default
+file_retention_hours | 336 | at startup, a namespace directory whose newest file is older than this is deleted; 0: keep forever
+key_models | none | allowed keys and types per document name; see @{" Key models " link keymodels}
+key_aliases | none | fixed renames of wrong keys, used with key_models
+@{body}
+
+With a data directory configured (@{tt}paths.data_dir@{utt} or
+@{tt}AGENT_DATA_DIR@{utt}), the default storage path lies in it. A relative
+@{tt}storage_path@{utt} you set yourself counts from the directory the
+process was started in.
+@endnode
+
+@node tool "The tool"
+@{h1}The tool
+
+One tool, @{tt}<instance>_manage_json@{utt}, with the action chosen by
+@{tt}operation@{utt}.
+
+@{h2}Operations
+
+@{table}
+operation | Does
+write | create a document; with if_exists replace, overwrite one
+read | the document, or the part at path, as JSON text
+merge | merge data into a document, creating it if it is missing
+merge_doc | merge the stored document source into doc
+set_value | set one value at path, creating what is missing on the way
+delete_keys | remove the given paths from a document
+delete_doc | remove a whole document
+undo | revert the last change to a document
+list | the documents of the namespace
+outline | the document's structure: keys and types, no values
+stats | terms that recur across the children of a part of the document
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+operation | all | required; an unknown one answers with the list of valid ones
+namespace | all | the shared space to work in; without it, the caller's own; see @{" Namespaces and ownership " link sharing}
+doc | all but list | the document name; for write it may be left out, then the plugin makes a new name like doc_3f9a1c07 and returns it; for merge_doc the target
+source | merge_doc | the document merged from; must differ from doc
+data | write, merge | the JSON as a value (preferred); wins when json_text is sent too
+json_text | write, merge | the JSON as text; repaired if needed, see below
+if_exists | write | error (default): a named document that exists is refused; replace: overwrite it
+write_access | write, merge, merge_doc, set_value | only when the call creates the document: owner or shared; default default_write_access
+path | read, set_value, stats | where in the document; see @{" Paths, merging and undo " link rules}; stats: empty means the whole document
+value | set_value | required; any JSON value, null included
+paths | delete_keys | required, a non-empty list of paths
+array_mode | merge, merge_doc | replace (default): a list overwrites a list; concat: appended
+depth | outline | how deep, default 3; below 0 counts as 0
+min_children | stats | a term must occur in this many children, default 2; values below 2 count as 2
+top | stats | how many terms, default 12 (also for 0)
+exclude | stats | terms to leave out: a list, or one comma-separated text; an entry matches as part of a term, ignoring case; entries under 3 characters are ignored
+@{body}
+
+A parameter of the wrong type (a number as @{tt}doc@{utt}, "abc" as
+@{tt}depth@{utt}) answers "Invalid parameter for 'outline': ...".
+
+@{h2}JSON sent as text
+
+@{tt}json_text@{utt} is read as follows: a Markdown code fence around it is
+removed; then it is parsed. If that fails, a repair library tries again
+(raw line breaks in strings, missing or extra commas, single quotes,
+missing closing brackets). A repair is only accepted when it gives an
+object or a list; otherwise the answer is "Invalid JSON at line L column C:
+... Auto-repair could not recover a JSON object/array — check for
+truncation or non-JSON content, then resend." What was done is listed in
+the answer's @{tt}repairs@{utt}: @{tt}stripped_code_fence@{utt},
+@{tt}auto_repaired_json@{utt}. A repair after a cut-off answer closes the
+brackets, so the document may be shorter than intended -- the answer's
+@{tt}chars@{utt} shows it.
+
+@{tt}data@{utt} is taken as it is. A text sent as @{tt}data@{utt} is
+stored as a text, not parsed.
+
+@{h2}Answers
+
+Every answer has @{tt}status@{utt}, ok or error; an error has
+@{tt}error@{utt} with the reason and changes nothing.
+
+@{table}
+operation | Fields besides status
+write | doc, chars (size of the compact JSON), top_level (the keys, at most 15 and then "+N more"; "array[N]"; or the type), replaced; repairs, remapped, persist_error when they apply
+merge | as write, with created and merged_keys (the incoming top-level keys) instead of replaced
+merge_doc | as merge, with merged_from
+set_value | doc, chars, top_level, set_path
+delete_keys | doc, chars, top_level, deleted, missing (the paths that were not there)
+delete_doc | deleted (the name), remaining (the names left); persist_error when the file could not be removed
+undo | doc, undone (the operation reverted), restored, chars, top_level, snapshots_left; or restored false and deleted true when the undone change had created the document; persist_error when saving or removing the file failed
+read | doc, path, chars (of the returned text), json (the JSON, indented by 2, non-ASCII kept)
+list | count, docs (doc, chars, writable, top_level each)
+outline | doc, outline
+stats | doc, path, n_children, min_children, recurring_terms (term and children each)
+@{body}
+
+A read whose text would be longer than @{tt}max_read_chars@{utt} is
+refused, never cut: "'plan' is 81234 chars, over the read limit of 50000.
+Read a part with 'path'; 'outline' shows the structure." The same limit
+holds for an outline: "Outline of 'plan' at depth 3 is 81234 chars, over
+the read limit of 50000. Use a smaller 'depth'."
+
+An unknown document answers "Document 'x' not found. Did you mean 'y'?
+Existing: [...]" with the fields @{tt}did_you_mean@{utt} and
+@{tt}existing@{utt} (up to 15 names).
+
+@{h2}The outline
+
+Objects show their keys, texts their length (@{tt}string(1200)@{utt}),
+other values their type (@{tt}int@{utt}, @{tt}float@{utt}, @{tt}bool@{utt},
+@{tt}null@{utt}). Of a list only the first element is shown, followed by
+"... +N more". Below the depth, objects become "object(N keys)" and lists
+"array(N)".
+
+@{h2}Recurring terms
+
+@{tt}stats@{utt} looks at the node at @{tt}path@{utt}: its values when it
+is an object, its elements when it is a list. For each child it collects
+all texts inside it, splits them into words of 4 letters or more
+(lowercase, digits dropped), leaves out a short built-in list of common
+English and German filler words, and adds each pair of neighbouring words.
+A term counts once per child. The answer lists the terms found in at least
+@{tt}min_children@{utt} children, the most widespread first; a single word
+is dropped when a pair containing it has the same count. Useful to see
+which phrases a set of drafts keeps repeating.
+
+@{h2}An example
+
+@{code json}
+{"operation": "write", "namespace": "plan-42", "doc": "plan", "data": {"title": "Launch", "steps": []}}
+{"operation": "set_value", "namespace": "plan-42", "doc": "plan", "path": "steps[0]", "value": {"label": "Draft"}}
+{"operation": "read", "namespace": "plan-42", "doc": "plan", "path": "steps[0].label"}
+@{body}
+@endnode
+
+@node rules "Paths, merging and undo"
+@{h1}Paths, merging and undo
+
+@{h2}Paths
+
+A path names keys with dots and list positions in brackets:
+@{tt}milestones[2].label@{utt}, @{tt}[0].x@{utt}. A plain number also
+works as a list position (@{tt}items.0@{utt}). Empty parts are skipped. A
+key that contains a dot or a bracket cannot be reached by a path.
+
+@{bullet}@{b}read@{ub} of a path that is not there answers "Path segment
+'x' not found — did you mean 'y'? (available keys: [...])".
+@{bullet}@{b}set_value@{ub} creates what is missing: an object for a name,
+a list for a bracket. A missing document is created as an object. On a list
+the position may be one past the end, which appends. A value in the way
+that is neither object nor list is replaced by one -- @{tt}a.x.y@{utt}
+turns @{tt}"x": 1@{utt} into @{tt}"x": {"y": ...}@{utt}. A bracket on an
+object is refused ("Path expects an array at '[0]' but found an object").
+@{bullet}@{b}delete_keys@{ub} applies the paths one after another. Removing
+a list element moves the later ones up: @{tt}["items[0]", "items[1]"]@{utt}
+removes the first and the originally third element.
+
+@{h2}Merging
+
+@{tt}merge@{utt} and @{tt}merge_doc@{utt} work the same way: objects are
+merged key by key, all the way down; any other value overwrites. Two lists
+are replaced, or joined with @{tt}array_mode: concat@{utt}. When one side
+is an object and the other is not, the merge is refused ("Root type
+mismatch ... use write to replace"), because the document would be lost.
+A merge into a document that does not exist creates it. @{tt}merge_doc@{utt}
+copies the source, so the two documents are independent afterwards; both
+must be in the same namespace.
+
+@{h2}The checks every change passes
+
+Before a write, merge, merge_doc or set_value is stored, in this order: the
+caller may change the document (see @{" Namespaces and ownership " link sharing});
+a new document fits under @{tt}max_docs@{utt} ("Too many documents (50).
+Delete unused ones."); the key model accepts it; the result fits under
+@{tt}max_doc_bytes@{utt} ("Document too large (N chars > limit M).").
+A refused change leaves the stored document as it was.
+
+@{h2}Undo
+
+Before each change the plugin keeps a copy of the document.
+@{tt}undo@{utt} puts the last copy back; call it again to go further, up to
+@{tt}undo_depth@{utt} (5) steps. It reverts every kind of change; undoing
+the change that created a document removes it, undoing a delete_doc brings
+the document back with its owner. A change that changed nothing (the same
+value again, delete_keys that found nothing) takes no step. Only the
+document's owner may undo, and on a shared document anyone -- also someone
+else's change. The copies are kept in memory only: a restart, or a
+namespace dropped for being idle, loses them ("Nothing to undo for 'x' (no
+recorded history)."). When another process changed the document, the
+copies are dropped too; see @{" Where the data lives " link storage}.
+@endnode
+
+@node sharing "Namespaces and ownership"
+@{h1}Namespaces and ownership
+
+@{h2}Which namespace a call uses
+
+@{bullet}With @{tt}namespace@{utt}: that one. Any agent, in any session,
+that passes the same text sees the same documents -- this is how a
+coordinator and its sub-agents share them.
+@{bullet}Without it: the caller's session. A sub-agent has a session of its
+own, so it does not see its coordinator's documents unless both pass the
+same namespace.
+@{bullet}Without it and with @{tt}session_scoped: false@{utt}, or when the
+call has no session: the common namespace @{tt}global@{utt}.
+@{bullet}With @{tt}require_namespace: true@{utt}, a call without it is
+refused: "'namespace' is required on this store — pass the shared store id
+you were given (the same value on every call). Without it your documents
+land in a private, per-session space that nobody else can read."
+
+@{h2}Who may change a document
+
+A document belongs to the session that created it (@{tt}write_access:
+owner@{utt}, the default). Everyone in the namespace may read it; changes
+by another session are refused: "Document 'x' belongs to another agent and
+is read-only for you. Read it freely, but do not modify it: write your own
+document instead (omit 'doc' to get a fresh id) and let its owner merge
+your changes." The usual way: each helper writes its own document without
+a name, reports the returned name, and the owner merges it with
+@{tt}merge_doc@{utt}. @{tt}list@{utt} shows for each document whether the
+caller may change it (@{tt}writable@{utt}).
+
+A document created with @{tt}write_access: shared@{utt} may be changed by
+anyone in the namespace. The owner is the session the framework puts into
+the call; a model or a script cannot pass another one, the framework drops
+it. The owner is saved with the document, so it still holds after a
+restart.
+@endnode
+
+@node keymodels "Key models"
+@{h1}Key models
+
+A key model fixes which keys a document may have and what type a value
+must be. It is set per document name under @{tt}key_models@{utt}; an entry
+named @{tt}"*"@{utt} applies to every document without its own, including
+the ones with generated names.
+
+@{code yaml}
+config:
+  key_models:
+    "*":
+      title: string
+      themes: array
+      notes: {}                     # anything
+      milestones:
+        - {label: string, date: string}
+      people:
+        "*": {role: string, age: {}}
+  key_aliases:
+    summary: summary_text
+@{body}
+
+@{table}
+Model node | Means
+an object of keys | only these keys; "*" among them allows any other key, modelled by its value
+{} | anything below
+a type name | the value must be string, number, integer, boolean, array, object, null or any; null always passes; an unknown name allows anything
+a list with one model | the value must be a list; each element follows the model
+@{body}
+
+A key that is not allowed is renamed when it can be: first by
+@{tt}key_aliases@{utt}, then when it is very close to an allowed key
+(@{tt}genere@{utt} to @{tt}genre@{utt}), unless that key is already there.
+The answer lists every rename in @{tt}remapped@{utt}. Anything else refuses
+the whole change: "Key model violation(s): 'x' (did you mean 'y'?); 'z'
+must be string but is array. Rename the flagged key ..." (up to 10 listed).
+The model is checked on write, merge, merge_doc and set_value, always on
+the whole resulting document; delete_keys and undo are not checked.
+@endnode
+
+@node storage "Where the data lives"
+@{h1}Where the data lives
+
+@{h2}In memory
+
+Each instance keeps its documents in the memory of the process that runs
+it, per namespace. The API and a command-line run are different processes
+with different memory; they meet on disk (below).
+
+@{h2}On disk
+
+With @{tt}persist@{utt} on, every change writes the touched document to
+@{tt}<storage_path>/<instance>/<namespace>/<doc>.json@{utt}, holding the
+names, the owner and the data. A namespace that is not in memory is read
+from there on first use -- so a run that was aborted and continued, or a
+restarted server, finds its documents again. A document that cannot be
+saved stays in memory, and the answer says so in @{tt}persist_error@{utt}.
+
+Names are made safe for the file system: anything but letters, digits,
+@{tt}_ . -@{utt} is replaced, and a name that had to change, has capitals,
+ends in a dot, is a reserved Windows name or is longer than 60 characters
+gets a short hash of the original. A namespace or document name cannot
+reach outside the storage directory, and two names never share a file.
+
+On Windows a file another process is reading cannot be replaced or
+deleted, and a read during a replace fails for a moment; there the plugin
+retries saving, reading and deleting for up to two seconds. On other
+systems such an error is a real permission problem and is reported at
+once. A file that could not be deleted keeps the document deleted in this
+process, and the answer carries @{tt}persist_error@{utt}; after a restart
+the document is back.
+
+Files saved under an older naming rule -- a name ending in a dot, whose
+folder Windows shared with the name without the dot -- are moved to their
+current name the first time the namespace is loaded. When a file exists
+under both names, the one written later is kept.
+
+@{h2}Two processes on one store
+
+Before every call the plugin compares the namespace's files with what it
+last loaded or saved itself (identity, time and size of each file). A file another
+process wrote is loaded again, with its owner; a file another process
+deleted removes the document here too. A document loaded again this way
+loses its undo copies -- they describe a state that is no longer the one on
+disk. So the API and a command-line run on the same namespace see each
+other's changes. Two changes to the same document at the same moment are
+not merged: the one saved last wins.
+
+@{h2}How long it stays
+
+@{bullet}@{b}Memory@{ub}: a namespace nobody used for
+@{tt}namespace_ttl_hours@{utt} (48) is dropped from memory at the next call
+to the instance; its files stay. Without persistence this deletes the
+documents.
+@{bullet}@{b}Disk@{ub}: when an instance starts, it deletes every namespace
+directory whose newest file is older than @{tt}file_retention_hours@{utt}
+(14 days). Nothing is deleted while it runs.
+@{bullet}@{b}Undo copies@{ub}: memory only; see
+@{" Paths, merging and undo " link rules}.
+
+@{h2}How big it can grow
+
+@{bullet}A document: @{tt}max_doc_bytes@{utt} characters of compact JSON.
+@{bullet}A namespace: @{tt}max_docs@{utt} documents.
+@{bullet}Namespaces: no limit. Every session that uses the store without a
+namespace adds one.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The description and parameters come from the plugin's
+@{tt}schema.yaml@{utt}. It tells the model to send JSON as
+@{tt}data@{utt}, to let the plugin merge instead of typing the document
+again, to use undo to recover from a mistake, and that other agents'
+documents are read-only. Refusals come back with the texts in the other
+nodes; the model can correct its call from them -- unknown names and keys
+come with a "did you mean".
+
+The chat's status line says what each call did: "wrote 'plan' (412 chars)",
+"merged 'doc_3f9a1c07' → 'plan' [steps] (980 chars)", "set
+'plan'.steps[0] (430 chars)", "deleted 2 key(s) from 'plan', 1 not found",
+"undid merge → 'plan' (430 chars) (4 undo(s) left)"; a refusal shows as
+failed: "merge 'plan' failed: ...".
+
+@{h2}Tokens and cache
+
+The plugin exists to save tokens: merges, copies and single values do not
+pass through the model, and write answers carry only a summary. A
+@{tt}read@{utt} returns the whole document, or the part at
+@{tt}path@{utt}, indented -- up to @{tt}max_read_chars@{utt} (50000
+characters by default); a longer one is refused with a hint to read a part. Read
+parts, or look at @{tt}outline@{utt} first, when documents are large. Answers are appended to the history like any other
+tool answer; the plugin never changes an earlier message or the system
+prompt.
+
+@{h2}Known gaps
+
+@{bullet}A namespace is only a name: any agent of any user served by the
+same store that passes it reads the documents. Documents without a
+namespace are hidden only behind the session ID: passed as namespace, it
+opens them too.
+@{bullet}A text sent as @{tt}data@{utt} is stored as a text; the JSON it
+may contain is not parsed.
+@{bullet}The settings are read once; a change takes effect after a restart.
+@endnode

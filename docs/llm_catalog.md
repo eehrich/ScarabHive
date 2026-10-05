@@ -157,8 +157,10 @@ auf dem Backend, das den **Agent-Typ** zuletzt bedient hat — gleich welche
 Instanz, welcher Lauf, welcher Client (`agent_system/llm/backend_affinity.py`,
 Schlüssel Agent-Name + Modell, gesetzt über `set_app_title`). Dort liegt der
 Prompt, den alle Läufe des Typs teilen. Das gilt nur innerhalb von
-`provider_affinity_minutes` nach dem letzten Aufruf des Typs (Default 30,
-`0` = aus, pro Modelleintrag oder per `llm_params` pro Agent). Danach ist
+`provider_affinity_minutes` nach dem letzten Aufruf des Typs (Default: die
+Cache-Dauer des Modells `prompt_cache_ttl_minutes` — Claude und Gemini 5,
+GPT 30 —, ohne die 30; `0` = aus, pro Modelleintrag oder per `llm_params`
+pro Agent). Danach ist
 der Cache kalt, und es gilt wieder die konfigurierte `order`. Gemessen am
 22.09.2026 an den ersten Aufrufen von v4/v6-Läufen (72 h):
 
@@ -175,6 +177,40 @@ die übrigen `order`-Einträge weiter (gemessen: 34 von 38 Wechseln innerhalb
 eines Laufs waren genau das, die übrigen 4 Requests trugen keine `order`).
 Der Speicher lebt im Prozess; nach einem Neustart folgt der erste Aufruf
 jedes Typs wieder der `order`.
+
+**Modell-Pin für Aliase (Responses-Route):** Ein `~author/familie-latest`
+wird pro Request aufgelöst, und OpenRouter steigt still auf ein älteres Modell
+der Familie ab, wenn das neueste scheitert (429/5xx; undokumentiert,
+OpenRouterTeam/docs#601). Gemessen an einem `shorts_producer`-Lauf am
+30.09.2026:
+- 23 von 69 Aufrufen gingen nach einem 504 von gemini-3.8-flash an 3.7.
+- Die Aufrufe wechselten bunt zwischen beiden Modellen, und jeder Wechsel traf
+  auf einen kalten Cache: 20 % gelesen statt 74 %.
+- Jeder dieser Aufrufe wartete vorher rund 25 s auf den 504.
+
+Deshalb bleibt ein Lauf auf dem Modell, das seinen letzten Turn beantwortet
+hat. Das steht als `served_model` im Replay-Block. Der Request nennt den
+konkreten Slug, und den kann OpenRouter nicht mehr abstufen (`available=1`).
+Das gilt für jeden `~`-Alias auf der Responses-Route; DeepSeek stuft genauso
+ab, nach 429ern. Die Claude-Aliase laufen über Chat Completions und sind nicht
+gepinnt, dort wurde kein Abstieg beobachtet.
+
+Eine Ablehnung (429, 5xx, 404) schickt die Wiederholung wieder an den Alias,
+wie beim Anbieter-Pin; der Lauf folgt dann dem Modell, das geantwortet hat,
+bis dieses ablehnt. Ein Lauf ohne eigene Historie beginnt beim Alias, also
+beim neuesten Modell; eine fortgesetzte Session bleibt auf ihrem Modell, bis es
+ablehnt. Der Preis: Scheitert das gepinnte Modell, wartet derselbe
+Aufruf zweimal, weil der Alias es vor dem Abstieg noch einmal versucht.
+Dafür bleibt ein kurzer Aussetzer ohne Modellwechsel.
+
+Der Replay-Block eines anderen Modells desselben Alias gilt dabei als fremd:
+Sein verschlüsseltes Reasoning prüft nur das Modell, das es geschrieben hat.
+Früher trug der Block nur den Alias, und die Prüfung verglich Alias mit Alias.
+Ist ein Block einer Nachricht fremd, oder fehlt einer ihrer Tool-Aufrufe im
+Replay, wird die ganze Nachricht neu aufgebaut.
+Der Message-Validator fasst aufeinanderfolgende Turns zusammen; nur halb
+zurückgespielt, fehlten die Aufrufe der fremden Hälfte, ihre Ergebnisse
+standen aber im Request.
 
 ### `session_id`: Cache-Lokalität ohne harten Pin
 
@@ -283,6 +319,32 @@ Wer wirklich eigene Schwellen braucht, nimmt die nativen `gemini-3-*`-Einträge
 `service_tier: flex` ist Googles Flex Processing: billiger, dafür längere
 Warteschlange. Bei einer 429 auf dem Flex-Tier lässt der Client das Feld einmal
 fallen und wiederholt auf Standard.
+
+### AI Studio vor Vertex
+
+`openrouter-gemini` fragt Google AI Studio zuerst, Vertex danach. Gemessen am
+01.10.2026 mit den ersten 30 Aufrufen eines `shorts_producer`-Laufs. Sie wurden
+je zweimal pro Anbieter nachgespielt, mit einer eigenen Nonce, sodass kein
+Durchgang den Cache eines anderen trifft:
+
+| | Standard | Flex |
+|---|---|---|
+| AI Studio: aus dem Cache | 80–84 % | 82–84 % |
+| AI Studio: Kosten | 0,25–0,27 $ | 0,12–0,14 $ |
+| AI Studio: je Aufruf | 3,5 s | 4,5 s (max. 11 s) |
+| Vertex: aus dem Cache | 59–71 % | 77–83 % |
+| Vertex: Kosten | 0,32–0,40 $ | 0,13–0,14 $ |
+| Vertex: je Aufruf | 7–12 s | 19 s (max. 78 s) |
+
+Der Präfix war in allen Fällen byte-gleich. Vertex (auf OpenRouter nur sein
+`global`-Endpunkt) verfehlt seinen impliziten Cache öfter und ist langsamer. Auf
+Flex braucht Vertex 20–50 s pro Aufruf; die Messung vom 30.09. mit „Flex
+14–315 s“ lag auf Vertex. AI Studio ist mit Flex fast so schnell wie mit Standard,
+kostet aber nur die Hälfte. Ein echter Lauf bestätigt das: dieselbe Produktion
+mit Flex auf AI Studio kostete 0,35 $ bei 89 % Cache-Anteil.
+
+Fällt AI Studio aus (429/5xx), geht der Aufruf an Vertex. Der Pin auf den Anbieter
+(`served_by`) hält den Rest des Laufs dort, wo er angefangen hat.
 
 ## GPT-5.6 via OpenRouter
 

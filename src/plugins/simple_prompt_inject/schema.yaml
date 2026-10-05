@@ -30,21 +30,24 @@ config:
 
   injection_position:
     type: string
-    enum: ["before_last_user", "end", "after_system"]
+    enum: ["before_last_user", "end", "after_system", "task_start"]
     default: "before_last_user"
     description: >
       Where to inject the prompt, for every role alike:
       - before_last_user: right before the last user message. The text moves
-        with the turn, so it is rewritten on every call -- that is the point
-        for a reminder that must be read just before the answer, and it costs
-        the cache of the last message, not of the history.
-      - end: appended once and then left alone. Written again only when the
-        rendered text changes.
+        with the turn -- the point for a reminder read just before the
+        answer --, and each new turn costs the cache from the old copy on.
+      - end: appended once and then left alone; a changed text is appended
+        again. A developer copy is not saved, so each turn appends it anew.
       - after_system: right behind the system prompt, as part of the
         instructions, and it stays there. Rewritten only when the rendered text
         changes -- a changing head costs the cache of the whole history, so a
         text rendered from template_vars should be stable per session.
         role "system" always stands here.
+      - task_start: in front of the task, inside the first user message a
+        caller wrote, separated by a "---" line. The message stays the user's
+        (role must be "user"); the text is written once and replaced only when
+        it changes.
 
   role:
     type: string

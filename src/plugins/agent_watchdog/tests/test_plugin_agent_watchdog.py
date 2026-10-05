@@ -123,6 +123,23 @@ class TestExcerpt:
                                 spec_chars=10, reasoning_chars=8000, max_tool_calls=5)
         assert excerpt["recent_thinking"].count("unique thought") == 1
 
+    @pytest.mark.parametrize("content,arguments", [(None, "{}"), ("", '{"a": 1,}')])
+    def test_the_answer_as_the_loop_stores_it_is_not_counted_twice(self, content, arguments):
+        """The loop appends the answer with None content as "" and repaired
+        arguments as copies; the step used to reach the judge twice."""
+        from agent_system.llm.models import ChatMessage
+        stored = [{"id": "c1", "type": "function", "function": {"name": "grep", "arguments": "{}"}}]
+        answer = {"role": "assistant", "content": content, "reasoning_content": "unique thought",
+                  "tool_calls": [{"id": "c1", "type": "function",
+                                  "function": {"name": "grep", "arguments": arguments}}]}
+        history = [{"role": "user", "content": "task"},
+                   ChatMessage(role="assistant", content="", tool_calls=stored,
+                               reasoning_content="unique thought")]
+        excerpt = build_excerpt(history, answer, task_chars=100, spec_chars=10,
+                                reasoning_chars=8000, max_tool_calls=5)
+        assert excerpt["recent_thinking"].count("unique thought") == 1
+        assert len(excerpt["recent_tool_calls"]) == 1
+
 
 # --- reading the verdict --------------------------------------------------------
 
@@ -203,6 +220,22 @@ class FakeAgent:
 @pytest.fixture
 def plugin(tmp_path):
     return AgentWatchdogPlugin(PLUGIN_DIR, project_root=tmp_path)
+
+
+class TestPaths:
+    def test_the_log_goes_to_the_configured_data_directory(self, tmp_path, monkeypatch):
+        """The schema's literal default used to override data_path: a
+        configured data directory was ignored."""
+        monkeypatch.setenv("AGENT_DATA_DIR", str(tmp_path / "data_dir"))
+        plugin = AgentWatchdogPlugin(PLUGIN_DIR)
+        assert plugin._log_path == tmp_path / "data_dir" / "agent_watchdog" / "verdicts.jsonl"
+
+    def test_relative_paths_do_not_follow_the_working_directory(self, tmp_path, monkeypatch):
+        from agent_system.paths import PROJECT_ROOT
+        monkeypatch.chdir(tmp_path)
+        plugin = AgentWatchdogPlugin(PLUGIN_DIR, SimpleNamespace(config={"log_path": "x/v.jsonl"}))
+        assert plugin._root == PROJECT_ROOT
+        assert plugin._log_path == PROJECT_ROOT / "x" / "v.jsonl"
 
 
 def _context(step, request_id="req-1", hook_config=None, agent=None):
@@ -310,6 +343,21 @@ class TestHook:
         await _drain(plugin)
         entry = _log(plugin)[0]
         assert (entry["verdict"], entry["fail_open"]) == ("continue", fail_open)
+
+    @pytest.mark.asyncio
+    async def test_a_provider_error_in_the_body_is_a_judge_error(self, plugin):
+        """A 200 body carrying an error comes back as an answer with an
+        "error" key; it used to be logged as "unparseable", cause lost."""
+        llm = FakeLLM()
+        llm.chat_tools = lambda messages, tools: asyncio.sleep(0, result={"assistant": {
+            "role": "assistant", "content": "",
+            "error": {"message": "upstream 503", "type": "upstream_error_503"}}})
+        plugin._judge_llm = llm
+        await plugin.observe_step(_context(step=10))
+        await _drain(plugin)
+        entry = _log(plugin)[0]
+        assert (entry["verdict"], entry["fail_open"], entry["error"]) == (
+            "continue", "judge_error", "upstream 503")
 
     @pytest.mark.asyncio
     async def test_status_goes_to_a_child_id_and_never_reads_as_error(self, plugin, monkeypatch):
@@ -430,8 +478,82 @@ class TestShutdown:
 
     @pytest.mark.asyncio
     async def test_a_judge_still_running_at_shutdown_is_logged_as_cancelled(self, plugin):
-        plugin._config["judge_timeout_seconds"] = 0.05
+        # Shutdown waits the plugin's timeout; the agent's own, longer one
+        # keeps the judge from timing out by itself first.
+        plugin._config["judge_timeout_seconds"] = 1
         plugin._judge_llm = FakeLLM("{}", asyncio.Event())   # never released
-        await plugin.observe_step(_context(step=10))
+        await plugin.observe_step(_context(step=10, hook_config={"judge_timeout_seconds": 60}))
         await plugin.stop_plugin()
         assert _log(plugin)[0]["fail_open"] == "cancelled_at_shutdown"
+
+    @pytest.mark.asyncio
+    async def test_a_typo_in_the_timeout_still_waits_for_the_last_check(self, plugin):
+        """float("abc") used to raise in stop_plugin: the check was dropped
+        without a line."""
+        plugin._config["judge_timeout_seconds"] = "abc"
+        release = asyncio.Event()
+        plugin._judge_llm = FakeLLM(json.dumps({"verdict": "continue", "reason": "ok",
+                                                "evidence": "read the file"}), release)
+        await plugin.observe_step(_context(step=10))
+        asyncio.get_running_loop().call_later(0.1, release.set)
+        await plugin.stop_plugin()
+        assert _log(plugin)[0]["verdict"] == "continue"
+        assert "fail_open" not in _log(plugin)[0]
+
+
+# --- through the real dispatcher -----------------------------------------------
+
+class TestThroughTheDispatcher:
+    """HookRegistry as the agent loop calls it: hooks off by default, switched
+    on by the agent's override, settings arriving as context.hook_config."""
+
+    async def _registry(self, plugin):
+        from agent_system.hooks import HookRegistry
+        registry = HookRegistry()
+        for hook_type, name in ((HookType.POST_LLM_CALL, "observe_step"),
+                                (HookType.PRE_LLM_CALL, "remember_task"),
+                                (HookType.LLM_PROGRESS, "observe_reasoning")):
+            await registry.register_hook(hook_type, f"agent_watchdog.{name}", plugin,
+                                         enabled=False, timeout=5.0)
+        return registry
+
+    def _agent(self, overrides):
+        from agent_system.servers.agent.components.hook_integration import hook_runs_for
+        agent = FakeAgent()
+        agent.agent_config = SimpleNamespace(hooks=SimpleNamespace(enabled=True, overrides=overrides))
+        return agent, lambda name, default: hook_runs_for(agent.agent_config.hooks, name, default)
+
+    @pytest.mark.asyncio
+    async def test_the_override_switches_it_on_and_sets_the_rhythm(self, plugin):
+        plugin._judge_llm = FakeLLM("{}")
+        registry = await self._registry(plugin)
+        agent, hook_filter = self._agent(
+            {"agent_watchdog.observe_step": {"enabled": True, "first_check_step": 2}})
+        for step in (1, 2):
+            await registry.execute_hooks(HookType.POST_LLM_CALL, _context(step, agent=agent),
+                                         hook_filter=hook_filter)
+        await _drain(plugin)
+        assert [entry["step"] for entry in _log(plugin)] == [2]
+
+        silent, silent_filter = self._agent({})
+        await registry.execute_hooks(HookType.POST_LLM_CALL, _context(10, agent=silent),
+                                     hook_filter=silent_filter)
+        assert plugin._running == {} and len(_log(plugin)) == 1, "off without an override"
+
+    @pytest.mark.asyncio
+    async def test_a_check_inside_a_call_sees_the_task_remembered_before_it(self, plugin):
+        llm = FakeLLM("{}")
+        plugin._judge_llm = llm
+        registry = await self._registry(plugin)
+        agent, hook_filter = self._agent({
+            "agent_watchdog.remember_task": {"enabled": True},
+            "agent_watchdog.observe_reasoning": {"enabled": True, "every_n_reasoning_chars": 3000}})
+        await registry.execute_hooks(HookType.PRE_LLM_CALL, HookContext(
+            hook_type=HookType.PRE_LLM_CALL, request_id="req-1", session_id="s", agent=agent,
+            agent_name="observed", messages=_messages()), hook_filter=hook_filter)
+        progress = _progress(4000, 2000)
+        progress.agent = agent
+        await registry.execute_hooks(HookType.LLM_PROGRESS, progress, hook_filter=hook_filter)
+        await _drain(plugin)
+        assert llm.excerpt["user_messages"] == ["Find every caller of load_config."]
+        assert _log(plugin)[-1]["trigger"] == "reasoning"

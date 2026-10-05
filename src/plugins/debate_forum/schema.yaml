@@ -31,17 +31,14 @@ tools:
     function:
       name: "{{ name }}_create_group"
       description: >
-        Create a new channel group. Groups let you organize related debate channels
-        together (e.g. all channels for one story design run). Returns the group_id.
+        Create a group for related debate channels. Returns the group_id.
       parameters:
         type: object
         properties:
           name:
             type: string
-            description: "Group name (e.g. 'Story Design - Buch 5 - 2024-03-15')"            
           description:
             type: string
-            description: "Optional description (e.g. 'V5b pipeline run for book 5')"
         required: [name]
 
   - type: function
@@ -60,26 +57,23 @@ tools:
     function:
       name: "{{ name }}_create_channel"
       description: >
-        Create a new debate channel. Returns the channel_id.
-        Each debate gets its own channel where agents post messages.
+        Create a debate channel. Returns the channel_id.
       parameters:
         type: object
         properties:
           name:
             type: string
-            description: "Short channel name (e.g. 'synopsis-debatte-book-3')"
+            description: "Short name, e.g. 'api-design-options'"
           topic:
             type: string
-            description: "What is being debated (e.g. 'Welche der 3 Synopsen ist am besten?')"
+            description: "What is being debated"
           context:
             type: string
-            description: "Background context as text or JSON (genre, premise, candidates, etc.)"
+            description: "Background as text or JSON"
           group_id:
             type: integer
-            description: "Optional group ID to assign this channel to"
           metadata:
             type: object
-            description: "Optional metadata (book_id, stage, pipeline, etc.)"
         required: [name, topic]
 
   - type: function
@@ -94,16 +88,16 @@ tools:
         properties:
           channel_id:
             type: integer
-            description: "Channel to post to (new message)"
+            description: "Required for a new post"
           agent_name:
             type: string
-            description: "Agent display name (e.g. 'Mira', 'Sven')"
+            description: "Display name, e.g. 'Mira'; required for a new post"
           agent_role:
             type: string
             description: "Role in the debate"
           round:
             type: integer
-            description: "Round number (1, 2, 3, ...)"
+            description: "Round number"
           content:
             type: string
             description: "Message content (or next chunk if append=true)"
@@ -136,7 +130,7 @@ tools:
             enum: ["text", "json"]
           max_messages:
             type: integer
-            description: "Limit number of messages returned (0=all, default=0)"
+            description: "Only the first N messages (0 = all)"
         required: [channel_id]
 
   - type: function
@@ -215,9 +209,8 @@ tools:
     function:
       name: "{{ name }}_pin_message"
       description: >
-        Pin or unpin a message. Pinned messages are always included in the context
-        injection for sub-agents, regardless of the sliding window size.
-        Use this to preserve important context (original task, key decisions, etc.).
+        Pin or unpin a message. Pinned messages always stay in the agents' debate
+        context — use for the original task, key decisions.
       parameters:
         type: object
         properties:

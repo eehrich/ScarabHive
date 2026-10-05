@@ -1,13 +1,15 @@
 """Claude Code as a child process: its command line, its environment, its
 stream, and the git worktree it works in (docs/coding_cli_plugin_konzept.md).
 
-Every flag here was measured on Claude Code 2.1.257 (concept §2, M-CC-*). The
+Every flag here was measured on Claude Code 2.1.257, the MCP servers and
+--json-schema on 2.1.285 (concept §2, M-CC-*). The
 process runs detached and writes its stream into a file, so a run outlives
 the ScarabHive process that started it -- an API restart, a one-shot
 agent-cli run -- and whoever looks next finds its end on disk.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -15,7 +17,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Iterable, NamedTuple, Optional, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
 
 import psutil
 import yaml
@@ -29,6 +31,9 @@ from agent_system.utils import yaml_io
 # more (M-CC-6), and naming exactly these left exactly these (M-CC-9).
 PLAN_TOOLS = ("Read", "Glob", "Grep")
 EDIT_TOOLS = ("Read", "Edit", "Write", "Glob", "Grep")
+# A workdir with web: Claude Code's own search and page reader. Headless, each needs approval like
+# an MCP server's tools; measured on 2.1.285 under --restricted: searched and read, nothing refused.
+WEB_TOOLS = ("WebSearch", "WebFetch")
 # The shell tool may not run these itself, whatever allowed_commands says. A
 # program an allowed command starts is no tool call and is not checked.
 DENIED_COMMANDS = ("git push", "git remote", "git config", "git worktree")
@@ -71,22 +76,43 @@ def shell_tool() -> str:
 
 
 def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_commands: Iterable[str] = (),
-                  model: str = "", resume: str = "", rules: Optional[Path] = None) -> list[str]:
+                  mcp_servers: Optional[Mapping[str, Iterable[str]]] = None, model: str = "", resume: str = "",
+                  rules: Optional[Path] = None, json_schema: Optional[dict] = None, web: bool = False) -> list[str]:
     """The whole command line. The task goes in on stdin, so nothing the model
-    wrote ever becomes an argument; resume is a session id this plugin read."""
-    tools = list(PLAN_TOOLS if mode == "plan" else EDIT_TOOLS)
+    wrote becomes an argument but json_schema; resume is a session id this
+    plugin read, mcp_servers the operator's names, each with the tools its
+    entry blocks. web: the workdir's runs search and read the web (WEB_TOOLS), in either mode, and
+    never get the shell: a page can tell the model what to do, and a file it wrote and an allowed
+    command would run it. What the worktree shows can still leave in a URL WebFetch calls."""
+    tools = [*(PLAN_TOOLS if mode == "plan" else EDIT_TOOLS), *(WEB_TOOLS if web else ())]
     cmd = [*exe, "-p", "--output-format", "stream-json", "--verbose", "--restricted",
            "--strict-mcp-config", "--mcp-config", str(mcp_config),
            "--permission-mode", "plan" if mode == "plan" else "acceptEdits"]
-    commands = [c for c in allowed_commands if c] if mode != "plan" else []
+    commands = [c for c in allowed_commands if c] if mode != "plan" and not web else []
+    servers = (mcp_servers or {}) if mode != "plan" else {}
+    shell = shell_tool()
+    # Headless, a command nobody approved is refused (M-CC-9): the shell runs
+    # exactly these, never the denied ones. An MCP server's tools need the same
+    # approval (M-CC-10). --tools does not limit them; plan mode loads no server.
+    allowed = [*(f"{shell}({c})" for c in commands), *(f"mcp__{s}" for s in servers), *(WEB_TOOLS if web else ())]
+    # A tool the server's entry blocks stays refused, as the MCP client refuses it: a deny rule wins over
+    # every allow rule. Claude Code names it mcp__<server>__<tool>, any other character than A-Z a-z 0-9 _ -
+    # replaced by _ (its MCP docs) -- so the name is one value, too.
+    denied = [*(f"{shell}({c}:*)" for c in DENIED_COMMANDS if commands),
+              *(f"mcp__{s}__{re.sub(r'[^A-Za-z0-9_-]', '_', str(t))}"
+                for s, blocked in servers.items() for t in blocked)]
+    # Variadic: each value list runs to the next flag, and one always follows.
+    if allowed:
+        cmd += ["--allowedTools", *allowed]
+    if denied:
+        cmd += ["--disallowedTools", *denied]
     if commands:
-        # Headless, a command nobody approved is refused (M-CC-9): the shell
-        # runs exactly these, never the denied ones.
-        shell = shell_tool()
         tools.append(shell)
-        cmd += ["--allowedTools", *(f"{shell}({c})" for c in commands),
-                "--disallowedTools", *(f"{shell}({c}:*)" for c in DENIED_COMMANDS)]
     cmd += ["--tools", ",".join(tools)]
+    if isinstance(json_schema, dict):
+        # The model's schema, as one value: the JSON of a dict starts with "{",
+        # so it is never read as a flag. NaN is no JSON.
+        cmd += ["--json-schema", json.dumps(json_schema, allow_nan=False)]
     if model:
         cmd += ["--model", model]
     if resume:
@@ -158,11 +184,56 @@ def events_from(path: Path, offset: int) -> tuple[list[dict], int]:
     for line in chunk[:end].decode("utf-8", errors="replace").splitlines():
         try:
             event = json.loads(line)
-        except ValueError:
+            if isinstance(event, dict) and _SURROGATE_ESCAPE.search(line):
+                event = _text(event)
+        except (ValueError, RecursionError):
+            # No JSON, or nested past what the parser takes (the model's deep tool arguments): no event.
             continue
         if isinstance(event, dict):
             found.append(event)
     return found, offset + end
+
+
+# How deep the model's objects (json_schema, the structured output, a tool call's arguments) may nest where
+# Python's own code walks them -- the record's encoder (indent=...), the live view -- which recursed out at
+# about 1,000 levels; the parser takes about 3,000.
+MAX_NESTING = 100
+
+
+def nesting(value: Any) -> int:
+    """How deep lists and objects nest in value, counted without recursion: a
+    model can nest them deeper than Python's own encoder (indent=...) recurses."""
+    depth, level = 0, [value]
+    while True:
+        level = [x for x in level if isinstance(x, (dict, list))]
+        if not level:
+            return depth
+        depth += 1
+        level = [v for x in level for v in (x.values() if isinstance(x, dict) else x)]
+
+
+# A \ud800-\udfff escape: alone (a broken emoji the model wrote) json.loads makes it a lone surrogate, which no
+# UTF-8 writer takes -- the record, the live view, the framework's stream of the answer.
+_SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
+
+
+def _text(value: Any) -> Any:
+    """value with every lone surrogate replaced by U+FFFD, as a decoder replaces a broken byte."""
+    return json.loads(json.dumps(value, ensure_ascii=False).encode("utf-16", "surrogatepass")
+                      .decode("utf-16", "replace"))
+
+
+def message(event: dict) -> dict:
+    """A stream event's message -- {} where it has none that is an object: Claude Code's system
+    and error events carry text there."""
+    found = event.get("message")
+    return found if isinstance(found, dict) else {}
+
+
+def content(event: dict) -> list:
+    """The content blocks of a stream event's message; [] where they are no list."""
+    found = message(event).get("content")
+    return found if isinstance(found, list) else []
 
 
 def actions(event: dict, root: Path, tools: bool = True) -> list[str]:
@@ -171,7 +242,7 @@ def actions(event: dict, root: Path, tools: bool = True) -> list[str]:
     if event.get("type") != "assistant":
         return []
     lines = []
-    for block in (event.get("message") or {}).get("content") or []:
+    for block in content(event):
         if not isinstance(block, dict):
             continue
         if block.get("type") == "tool_use" and tools:
@@ -241,13 +312,23 @@ def _when(epoch: float) -> str:
 def git(cwd: Path, *args: str, timeout: float = 120, pinned: Sequence[str] = (), stdin: Optional[str] = None,
         ok: tuple[int, ...] = (0,)) -> str:
     try:
-        done = subprocess.run(["git", *pinned, *args], cwd=cwd, input=stdin, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        proc = subprocess.Popen(["git", *pinned, *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    except OSError as exc:
         raise GitError(f"git {args[0]}: {exc}") from exc
-    if done.returncode not in ok:
-        raise GitError(f"git {args[0]}: {(done.stderr or done.stdout).strip()[:300]}")
-    return done.stdout
+    try:
+        stdout, stderr = proc.communicate(stdin, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run kills git alone and then waits for its pipes: a filter
+        # or hook git started holds them open, and the timeout bounded nothing.
+        kill_tree(proc.pid, process_start(proc.pid))
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            # One git already left behind before the timeout is out of the tree.
+            proc.communicate(timeout=5)
+        raise GitError(f"git {args[0]}: timed out after {timeout:g} s") from exc
+    if proc.returncode not in ok:
+        raise GitError(f"git {args[0]}: {(stderr or stdout).strip()[:300]}")
+    return stdout
 
 
 class Worktree(NamedTuple):
@@ -282,6 +363,18 @@ def make_worktree(repo: Path, path: Path, branch: str, exclude: Iterable[str]) -
         git(path, "update-index", "--skip-worktree", "--", tracked)
         (path / tracked).unlink(missing_ok=True)
     return Worktree(base, git_dir, hidden)
+
+
+def remove_worktree(repo: Path, path: Path, branch: str) -> None:
+    """Takes back what make_worktree made for a run that never started, as far as it got. Only this
+    worktree's entry -- `remove --force` drops it even when the folder is gone (measured, git 2.36): a
+    repo-wide prune would drop the entries of the owner's own worktrees whose folder is missing just now
+    (an unmounted drive)."""
+    for args in (("worktree", "remove", "--force", str(path)), ("branch", "-D", branch)):
+        try:
+            git(repo, *args)
+        except GitError:
+            pass
 
 
 def secret_values(path: Path) -> set[str]:

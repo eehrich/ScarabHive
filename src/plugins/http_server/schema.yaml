@@ -1,23 +1,7 @@
-tools:
-  - type: function
-    function:
-      name: "{{ name }}_ops"
-      description: HTTP adapter for tool servers - health checks and proxied tool calls via REST API endpoints.
-      parameters:
-        type: object
-        properties:
-          operation:
-            type: string
-            enum: [health, call]
-            description: "'health' for server status, 'call' to proxy tool calls via HTTP"
-          tool:
-            type: string
-            description: "tool name to call (required for 'call' operation)"
-          params:
-            type: object
-            description: "Parameters for tool call (for 'call' operation)"
-        required: [operation]
-        additionalProperties: false
+# No tools: the plugin serves another plugin over HTTP from the command line
+# (python -m plugins.http_server). The API never wraps a plugin, so a tool
+# here could only fail -- and one that worked would bypass the agent's allowlist.
+tools: []
 
 config:
   host: 127.0.0.1

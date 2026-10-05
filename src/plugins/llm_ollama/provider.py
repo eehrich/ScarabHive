@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-from plugins.llm_common.model_dialects import warn_unwired
+from plugins.llm_common.model_dialects import DIALECT_KEYS, warn_unwired
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from .ollama_client import OllamaNativeAsyncClient
@@ -89,6 +89,9 @@ def build_ollama(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
         "modalities": None,
         "prompt_cache_key": None,
         "prompt_cache_mode": None,
+        # Warned about above, under this provider's name: the openai factory
+        # would warn a second time, naming a provider the entry never set.
+        **dict.fromkeys(DIALECT_KEYS),
     })
     # get_provider, not build_client: the delegation must reach the openai
     # FACTORY even when the public build_client seam is replaced by a test

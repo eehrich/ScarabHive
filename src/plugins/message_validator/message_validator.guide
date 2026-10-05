@@ -1,0 +1,257 @@
+@database "message_validator"
+@author "Enrico Ehrich"
+@$VER: message_validator.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Message Validator"
+@{h1}Message Validator
+
+Providers refuse a whole request when the conversation history breaks
+their rules: a tool call nobody answered, a tool answer to a call that is
+not there, a message wedged between a tool call and its answer, a tool
+name with a dot in it. Such histories happen -- a run is cancelled while
+its tools work, a blocked call gets no answer, a summary cuts the start
+of a conversation. Message Validator looks at the history before every
+LLM call and repairs its @{i}structure@{ui} so the request goes through.
+It never rewrites what a message says, except that two assistant turns in
+a row are joined into one, and a turn that loses all its tool calls and has
+no text reads "Tool execution was interrupted". It has no tools and no
+panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  The validation hook  " link hook}
+  @{"  What it repairs  " link repairs}
+  @{"  What it only reports  " link reports}
+  @{"  The structure hook  " link structure}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node hook "The validation hook"
+@{h1}The validation hook
+
+@{tt}validate_messages@{utt} is a @{tt}pre_llm_call@{utt} hook: it runs
+before every LLM call of every agent -- the web chat, sub-agents, woken
+runs, the one extra call after @{tt}max_steps@{utt} -- as long as the
+plugin is enabled and the agent has not switched hooks off. It is on by
+default. It runs after the hooks of the @{tt}prompt_injection@{utt}
+category and before message_debugger's.
+
+@{h2}What it does
+
+@{bullet}It checks the whole history the call is about to send (the list
+of messages, before the LLM client turns it into a provider's request) --
+see @{" What it repairs " link repairs} and
+@{" What it only reports " link reports}.
+@{bullet}Nothing found, or only things it does not repair: the history is
+left exactly as it was.
+@{bullet}Something repaired: the repaired list is what the call sends, and
+it replaces the session's history, so the repair happens once and is
+saved with the session. Every repair also resets the provider's reasoning
+chain (the encrypted or signed reasoning an assistant turn carries) from
+the first changed message on: the assistant turns there lose theirs, and
+the newest is marked as having lost its predecessors -- a chain the history
+no longer matches would be refused. Turns before the first change keep
+theirs.
+@{bullet}It adds no message of its own, so it sets no @{tt}injected_by@{utt}
+mark. Messages it moves or joins keep theirs.
+
+The hook returns two figures in the hook metadata, and the log carries
+the rest:
+
+@{table}
+Metadata key | Meaning
+validation_result | "No issues found", or e.g. "Found 1 errors, 2 warnings: 1 orphaned_tool_call, 2 consecutive_assistant_messages"
+issues_count | how many issues it found, repaired or not
+@{body}
+
+In the log: @{i}Message validation found 3 issues in
+message_validator: ...@{ui} whenever it found anything, @{i}Hook 'message_validator.validate_messages'
+repaired 3 issues@{ui} when it changed the history, and one line per
+moved message and per unanswered tool call.
+
+@{h2}Switching it off
+
+For one agent, in its YAML:
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      message_validator.validate_messages:
+        enabled: false
+@{body}
+
+The key is the full name, @{tt}<instance>.<hook>@{utt}. The hook has no
+per-agent settings; anything else in the override is ignored. Switching
+it off is rarely right: a provider then refuses the requests the hook
+would have repaired, and the agent loop counts on it to drop a tool call
+that loop detection blocked.
+@endnode
+
+@node repairs "What it repairs"
+@{h1}What it repairs
+
+Each check below names the issue type that appears in the log and in
+@{tt}validation_result@{utt}. Tool calls and answers are paired per
+@{i}block@{ui}: an assistant message with tool calls opens one, and the
+next assistant message with tool calls closes it. Only answers inside the
+open block count for its calls -- providers want the answers right after
+their calls, and a call id may come back in a later turn.
+
+@{table}
+Issue | Found when | Repair
+orphaned_tool_call | a tool call gets no answer in its block (or has no id) | that call is taken out of the message; answered calls of the same message stay. A turn left with no call and no text -- also after joining -- reads "Tool execution was interrupted"
+orphaned_tool_response | a tool answer's @{tt}tool_call_id@{utt} matches no unanswered call of the open block -- also a late answer after the next call turn | the tool answer is removed
+missing_tool_call_id | a tool answer has no @{tt}tool_call_id@{utt} | the tool answer is removed
+invalid_tool_name | a called tool's name is not letters, digits, _ and - only | the name is rewritten; if nothing usable is left, that call and its answer are removed, the message and its other calls stay
+empty_assistant_message | an assistant message has no tool call and no text (none, empty or blank) | the message is removed
+consecutive_assistant_messages | two assistant messages follow each other | they are joined into the first (see below)
+interleaved_message_in_tool_block | a non-tool message stands between a tool call and the answers still owed to it | it is moved to after the tool answers that follow it
+invalid_first_message | the first message after the system and developer instructions is not a user turn (or the task of a woken run) | removed, together with the tool answers of its calls, until a user turn comes first
+@{body}
+
+@{h2}Tool names
+
+The rewrite: @{tt}/@{utt} becomes @{tt}__@{utt}, @{tt}.@{utt} and spaces
+become @{tt}_@{utt}, every other character outside letters, digits,
+@{tt}_@{utt} and @{tt}-@{utt} is dropped, three or more underscores
+shrink to two, and underscores at both ends go.
+
+@{table}
+Called as | Sent as
+file_ops.read | file_ops_read
+server/tool | server__tool
+my tool! | my_tool
+@{body}
+
+@{h2}Joining assistant turns
+
+The text of both is joined with a blank line, and so is their reasoning
+text; their tool calls, attachments and reasoning details are put
+together in order. Anthropic thinking blocks are not concatenated: the
+joined message keeps the later turn's blocks, or the earlier one's when
+the later has none. Name, timestamp and @{tt}injected_by@{utt} are the
+first message's. A run of three or more
+becomes one message. An empty first turn is not lost in the join: the
+joined message takes its place.
+
+@{h2}In what order
+
+The repairs are made in this order: tool names renamed, tool calls
+without answers (and calls with unusable names) dropped, moved messages, joined turns, removals, the placeholder text, then the
+first-message rule. A repair can expose another issue -- two assistant
+turns meet once a message between them is removed -- so check and repair
+run again until nothing changes, at most three times per call. After
+that, every call turn is followed directly by exactly its answers, no
+tool answer stands alone, no two assistant turns meet, and a user turn
+comes first.
+@endnode
+
+@node reports "What it only reports"
+@{h1}What it only reports
+
+These checks log a warning and count in @{tt}issues_count@{utt}, but
+change nothing:
+
+@{table}
+Issue | Found when
+invalid_tool_response_json | a tool answer begins with @{tt}{@{utt} or @{tt}[@{utt} but is not valid JSON
+tool_response_too_large | a tool answer is larger than @{tt}max_tool_response_size_kb@{utt} (UTF-8 bytes)
+tool_response_large | a tool answer is larger than @{tt}warn_tool_response_size_kb@{utt}, but not than the maximum
+@{body}
+
+A tool answer that is plain text, or valid JSON of any kind, is fine. The
+JSON check fires on text that only looks like JSON as well, such as a
+tool answer starting with "[1/3] fetched". Tool answers without text are
+not checked.
+
+The size figures only warn: a tool answer over the maximum is still sent
+in full. To make tool answers smaller, cap them where they are made or
+with the context plugins. Such a tool answer stays in the history, so its
+warning is logged again before every call.
+@endnode
+
+@node structure "The structure hook"
+@{h1}The structure hook
+
+@{tt}validate_structure@{utt} runs as a @{tt}pre_llm_call@{utt} hook
+right before @{tt}validate_messages@{utt}, on by default like it. It
+looks for messages whose role is missing or empty, logs @{i}Structure
+validation issues: Message 3 missing role@{ui} and reports the list as
+@{tt}structure_errors@{utt} in the hook metadata. It never changes the
+history. Switch it off with
+@{tt}message_validator.validate_structure: {enabled: false}@{utt} in the
+agent's hook overrides.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+Nothing of the plugin itself: no tools, no instructions, no status line in
+the chat. The model sees the repaired history -- a tool call that was never
+answered is gone from its turn, a turn whose calls were all dropped and
+that has no text reads "Tool execution was interrupted", a message that had slipped between a
+tool call and its answer comes after the answer.
+
+@{h2}Tokens and cache
+
+@{bullet}A clean history is left alone -- nothing is rewritten, so every
+request stays the start of the next and the provider's prompt cache holds.
+Issues it only reports change nothing either.
+@{bullet}A repair rewrites the history from the first repaired message on,
+and so does the reasoning reset; everything before it stays as it was. The
+next request misses the cache from that message on. Because the repaired
+history replaces the session's, this happens once per defect, not on every
+call.
+@{bullet}The hook sees the plugin's own message list, before an LLM client
+turns it into a provider's request (a chat @{tt}messages@{utt} list or a
+Responses @{tt}input@{utt} list); it works the same for every provider. The
+tool-name rule is OpenAI's and is applied everywhere.
+
+@{h2}Known gaps
+
+@{bullet}A tool answer that comes later in its block, after other
+messages, counts as answered; the messages in between are moved, not
+removed.
+@{bullet}The settings are read when the plugin is created; a change takes
+effect after a restart.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration
+(@{tt}config/plugins.yaml@{utt}), and its hooks run for every agent:
+
+@{code yaml}
+plugins:
+  servers:
+    message_validator:
+      type: message_validator
+      enabled: true
+      config:
+        max_tool_response_size_kb: 9999
+        warn_tool_response_size_kb: 9998
+@{body}
+
+No tool, so no allowlist line. No extra packages.
+
+@{h2}Server settings
+
+These go under @{tt}config:@{utt}; what is not set there takes the default
+below. The values are not checked; the size figures of the shipped entry
+switch the size warnings off in practice.
+
+@{table}
+Key | Default | Meaning
+max_tool_response_size_kb | 50 | a tool answer above this many KB is logged as tool_response_too_large
+warn_tool_response_size_kb | 20 | a tool answer above this many KB is logged as tool_response_large
+@{body}
+
+The plugin stores nothing.
+@endnode

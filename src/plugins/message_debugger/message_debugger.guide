@@ -1,0 +1,302 @@
+@database "message_debugger"
+@author "Enrico Ehrich"
+@$VER: message_debugger.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Message Debugger"
+@{h1}Message Debugger
+
+What did the agent actually send to its model, and what came back? The
+Message Debugger records it for every LLM call: the messages of each step
+as the model gets them (a @{i}turn@{ui}), and the raw request to the
+provider with its response, usage, duration and error. It writes them into
+a database on the side, without slowing the agent down, and shows them in
+the @{b}Message Debugger@{ub} panel -- each user their own calls, an admin
+everyone's.
+
+@{image docs/panel.png "The Message Debugger panel with the turns of a request"}
+
+@{code}
+For users
+  @{"  The Message Debugger panel  " link panel}
+  @{"  Who sees what  " link access}
+
+For agents and developers
+  @{"  The capture hooks  " link hooks}
+  @{"  Size and retention  " link retention}
+  @{"  The HTTP API  " link api}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Message Debugger panel"
+@{h1}The Message Debugger panel
+
+Open it from the launcher (@{b}Debugging@{ub}, "Message Debugger"). From
+the chat it opens on one thing: click an answer's request id, or the
+session id in the header, and pick it under "Open in". Opened that way,
+both lists start filtered to that request or session. The panel does not
+follow the chat; the filters say what it shows.
+
+@{image docs/panel.png "The Message Debugger panel"}
+
+@{h2}The figures
+
+Turns, LLM requests, sessions, agents and errors among the captures you
+may see (see @{" Who sees what " link access}); an admin also sees the size
+of the database file. @{b}Errors@{ub} counts the responses that carry an
+error, retried attempts included. @{b}Sessions@{ub} is the number of
+sessions of the turns or of the requests, whichever is larger -- not the
+two together.
+
+@{h2}The two lists
+
+@{bullet}@{b}Turns@{ub}: one row per snapshot -- @{i}input@{ui}, the
+messages before the call, or @{i}output@{ui}, after it with the model's
+answer. Time, agent, step, number of messages, their estimated tokens, the
+share of the prompt read from the provider's cache and the cost (both from
+the answer's usage, so only on output rows), session and request.
+@{bullet}@{b}LLM requests@{ub}: the raw calls -- @{i}request@{ui} rows
+with the payload, @{i}response@{ui} rows with duration, tokens, cost and a
+status: the finish reason, @{i}error@{ui} with its text, or
+@{i}retry n/m@{ui} for an attempt that failed and was tried again. The
+model column names the backend a gateway routed the call to ("via ...")
+and marks streamed calls.
+
+Both come newest first, 50 at a time; @{b}Load more@{ub} brings 50 more,
+up to the newest 500 the filters match -- for older entries, narrow the
+filters. Each tab counts every entry its filters match. A click on a
+column head sorts the loaded entries by it.
+
+@{h2}Filters
+
+Agent, session id, request id, and for an admin a user; on the turns tab
+input or output, on the requests tab the provider and requests or
+responses. A request id takes the calls under it along: its tool calls
+(@{tt}<id>_001@{utt}) and sub-agents (@{tt}<id>_sub_...@{utt}), shown in
+the request column by what follows the id. A session shows its own calls;
+a sub-agent's are in its own session.
+
+@{h2}Refreshing
+
+The toolbar's refresh button loads what was captured since; the menu next
+to it refreshes every few seconds instead. Off -- as the panel starts
+until you pick a rate, which it remembers -- the lists hold still at the last refresh: a page more, another tab or
+other filters show nothing captured after it.
+
+@{h2}An entry
+
+A click on a row -- or Enter or Space -- opens it in a drawer:
+
+@{bullet}a turn: its facts and the messages as cards -- text as text, a
+JSON tool result and tool arguments as trees, every other field of the
+message by name -- and for output the model's answer;
+@{bullet}a request or response: its facts, the error, the usage, the
+request payload and the response data.
+
+The messages, usage, payload and response data have a copy button
+(JSON), the error one for its text. The arrows step to the next newer or
+older entry of the list; the filter button next to the session or request
+narrows both lists to it.
+
+@{h2}Maintenance (admins)
+
+The menu at the right of the toolbar:
+
+@{table}
+Item | Does
+Prune and reclaim disk space | shrinks the data below the size cap (see @{" Size and retention " link retention}), then compacts the file; reports what it did
+Clear all captured data | deletes every turn and request, after asking -- cost history included
+@{body}
+
+On a large database either takes minutes. Captures this server makes
+meanwhile wait in its queue (up to @{tt}capture_queue_max@{utt}, beyond
+that the newest are dropped) and are written after it; those of other
+processes writing the same file -- agent-cli runs, workers -- are lost.
+When the server refuses -- a list or entry you may not see, a panel of
+someone not signed in -- the panel shows its reason in place of the list,
+or in the drawer for an entry.
+@endnode
+
+@node access "Who sees what"
+@{h1}Who sees what
+
+Every capture carries the user whose call it was: the user the run's
+session was opened for, else the user its request was registered under. A
+call no run names a user for -- a TTS or decision call outside a run --
+and everything captured before captures had owners belong to nobody.
+
+@{table}
+Who | Sees
+A signed-in user | their own captures, made since their account was created; the figures without the file's size
+An admin | everyone's, nobody's included; the user filter narrows to one user
+Everyone, with authentication off | what an admin sees
+Not signed in (anonymous), agent-cli's cli_user | nothing: "Sign in to see the captures of your own runs."
+@{body}
+
+Another user's entry, opened by its number, answers "not found", as one
+that does not exist. Naming another user is refused ("Another user's
+captures are for admins."), and so are pruning and clearing, which act on
+everyone's captures.
+
+@{h2}Known gaps
+
+@{bullet}Entry numbers count over everyone's captures: from the gaps
+between their own, a user sees how many calls others made in between, and
+roughly when -- never what.
+@{bullet}An owner is a name. @{tt}agent-cli --session-user NAME@{utt}
+records under a name that need not be an account, and whoever registers
+that name later reads what is captured under it from then on.
+@endnode
+
+@node hooks "The capture hooks"
+@{h1}The capture hooks
+
+Four hooks, all on for every agent whose hooks are on:
+
+@{table}
+Hook | Runs | Records
+debugger_capture_pre_llm | before each LLM call, after the other hooks have changed the history | an input turn: the messages
+debugger_capture_post_llm | after each LLM call | an output turn: the same messages and the model's answer
+debugger_capture_pre_request | in the LLM client, before the request goes out | the raw payload, provider, model, URL, streaming
+debugger_capture_post_response | in the LLM client, when the call ends -- also failed and retried | response data, usage, duration, finish reason, error, the backend that served it
+@{body}
+
+Calls made outside an agent -- text-to-speech, decision models -- report
+their requests and responses too.
+
+@{h2}What a turn keeps
+
+Every field of every message, so a field added later shows up without a
+change here. @{tt}content@{utt} and @{tt}tool_calls@{utt} are kept whole;
+any other string longer than @{tt}max_field_chars@{utt} is cut to a
+preview that names its length ("... [5000 chars]") -- encrypted reasoning
+or base64 media would otherwise repeat in every snapshot of a run. The
+model's answer in an output turn is cut the same way, its text included:
+the whole answer is in the response entry. Each message gets its index,
+its length, with @{tt}include_token_estimates@{utt} an estimate of its
+tokens and, with tool calls on, their
+number and whether it is a tool result.
+
+@{h2}What they change
+
+Nothing: the hooks only read. The model sees no difference, and neither
+its tokens nor the prompt cache are touched. A hook hands its capture to a
+background writer and returns at once; a slow database makes the queue
+lag, never the agent. When the queue is full (@{tt}capture_queue_max@{utt})
+the newest captures are dropped, and the log says how many.
+
+@{h2}Switching them off
+
+For all agents, in the plugin's server entry (see @{" Setting it up " link setup}):
+@{tt}capture_enabled: false@{utt}, or one of the parts. For one agent, in
+its YAML:
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      message_debugger.debugger_capture_pre_llm:
+        enabled: false
+      message_debugger.debugger_capture_post_llm:
+        enabled: false
+@{body}
+
+The settings are read from the server entry only; an agent's override can
+switch a hook off, but not change its settings. An agent with
+@{tt}hooks.enabled: false@{utt} is not captured at all.
+@endnode
+
+@node retention "Size and retention"
+@{h1}Size and retention
+
+The database keeps its data below @{tt}max_db_size_mb@{utt} (5120 MB).
+Every 200 writes it measures the data; above about 90 % it works down to
+about 75 %, in slices of about a second:
+
+@{bullet}the oldest raw payloads and responses are emptied -- the row with
+provider, model, usage, request id and times stays, so cost reports keep
+working;
+@{bullet}the oldest turns are deleted;
+@{bullet}only when nothing else is left, the oldest request rows go.
+
+The file stops growing at its largest size and reuses the freed space; it
+does not shrink. @{b}Prune and reclaim disk space@{ub} in the panel runs
+the same down to 75 %, for at most two minutes (the automatic retention
+finishes the rest), and then compacts the file (VACUUM), which
+gives the space back to the disk -- also the space a clear freed. The
+compaction needs free disk space about the size of the remaining data; if
+it fails, the panel says so. @{tt}max_db_size_mb: 0@{utt} turns retention
+off; the prune then only compacts.
+@endnode
+
+@node api "The HTTP API"
+@{h1}The HTTP API
+
+Under @{tt}/plugins/message_debugger/@{utt} (the instance name), with the
+rules of @{" Who sees what " link access}:
+
+@{table}
+Route | Answers
+GET turns | turns without their messages: total, turns, as_of_id
+GET turns/{id} | one turn with messages and answer
+GET llm-requests | request log entries without payload and response: total, requests, as_of_id
+GET llm-requests/{id} | one entry, whole
+GET stats | the figures; for an admin also db_size_mb
+POST prune?vacuum=true | admins: retention down to 75 %, then VACUUM
+DELETE clear | admins: deletes everything
+GET / | the panel
+@{body}
+
+The lists take @{tt}agent_name@{utt}, @{tt}session_id@{utt},
+@{tt}request_id@{utt} (with the calls under it),
+@{tt}snapshot_type@{utt} (turns: pre_llm, post_llm) or
+@{tt}direction@{utt} and @{tt}provider@{utt} (requests),
+@{tt}user_id@{utt} (admins), @{tt}limit@{utt} (1 to 500, default 50) and
+@{tt}offset@{utt}. @{tt}as_of_id@{utt} is the newest entry the answer was
+made as of; passed back as @{tt}max_id@{utt}, a list and its total leave
+out what was captured since. Numbers only grow, also across a clear.
+A turn row carries the usage of its answer as @{tt}usage_json@{utt}.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    message_debugger:
+      type: message_debugger
+      enabled: true
+      config:
+        max_db_size_mb: 5120
+@{body}
+
+It has no tools; no allowlist entry is needed. The hooks run for every
+agent with hooks on.
+
+@{h2}Server settings
+
+All under @{tt}config:@{utt} in the server entry:
+
+@{table}
+Key | Default | Meaning
+capture_enabled | true | false: capture nothing
+capture_pre_llm | true | input turns
+capture_post_llm | true | output turns
+capture_llm_requests | true | raw requests and responses
+include_tool_calls | true | false: turns leave out tool calls and tool call ids
+include_token_estimates | true | false: no token estimate per message
+max_field_chars | 500 | preview length of long fields in a turn; 0 keeps everything
+db_path | empty | the database file; empty: message_debugger/debugger.db in the data directory
+max_db_size_mb | 5120 | the size cap; 0: no retention
+capture_queue_max | 2000 | captures waiting for the writer before the newest are dropped; 0: no limit
+@{body}
+
+The settings are read when the server starts. The database is one SQLite
+file with its @{tt}-wal@{utt} and @{tt}-shm@{utt} files beside it. Other
+tools, cost reports among them, read it directly: clearing it deletes
+their history too.
+@endnode

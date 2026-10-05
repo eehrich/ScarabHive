@@ -23,13 +23,9 @@ class MockStatus:
 
 @pytest.fixture
 def server():
-    """Create script interpreter server with loops enabled."""
+    """Create a script interpreter server."""
     system_config = Mock(spec=AgentSystemConfig)
-    server_config = ToolServerConfig(
-        type="script_interpreter",
-        enabled=True,
-        script_interpreter={"enable_loops": True, "enable_functions": True}
-    )
+    server_config = ToolServerConfig(type="script_interpreter", enabled=True)
     return ScriptInterpreterServer("script_interpreter", system_config, server_config)
 
 

@@ -18,5 +18,3 @@ tools:
         required: [query]
         additionalProperties: false
 
-config:
-  ssl_verify: true

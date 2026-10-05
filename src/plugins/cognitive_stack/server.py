@@ -21,6 +21,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _as_whole(value: Any, name: str, default: int) -> int:
+    """A whole number from an int, a whole float or its text; else ValueError.
+
+    The framework does not validate tool arguments against the schema, so a
+    "2" or a 2.5 reaches the handler as sent.
+    """
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = None
+        if number is not None and number.is_integer():
+            return int(number)
+    raise ValueError(f"{name} must be a whole number, got {value!r}")
+
+
 @dataclass
 class StackFrame:
     """Single frame in the cognitive stack."""
@@ -142,9 +160,6 @@ class CognitiveStackServer(SchemaBasedToolServer):
             stack_id: Cognitive stack ID (10-char hex)
             agent_session_id: Agent conversation session ID (for hook lookup)
         """
-        # Cleanup expired stacks periodically
-        self._cleanup_expired_stacks()
-
         if stack_id and stack_id in self._stacks:
             stack = self._stacks[stack_id]
             stack.last_accessed = datetime.now()
@@ -187,6 +202,10 @@ class CognitiveStackServer(SchemaBasedToolServer):
         Returns:
             Resolved stack_id or None
         """
+        # Every operation resolves first, so every call sweeps -- not only a
+        # push, which left expired stacks readable by peek/list/pop forever.
+        self._cleanup_expired_stacks()
+
         # Explicit stack_id has priority
         stack_id = params.get("stack_id")
         if stack_id:
@@ -217,7 +236,7 @@ class CognitiveStackServer(SchemaBasedToolServer):
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
 
-            depth = params.get("depth", 1)  # How many frames to peek (default: top 1)
+            depth = _as_whole(params.get("depth"), "depth", 1)  # 0 or less: all frames
 
             if stack_id not in self._stacks:
                 error_msg = f"Stack {stack_id} not found"
@@ -399,7 +418,6 @@ class CognitiveStackServer(SchemaBasedToolServer):
         try:
             # Extract parameters
             items = params.get("items", [])
-            stack_id = params.get("stack_id")
             agent_session_id = params.get("_session_id")
 
             # Validation
@@ -419,22 +437,9 @@ class CognitiveStackServer(SchemaBasedToolServer):
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
 
-            # Get or create stack
-            stack = self._get_or_create_stack(stack_id, agent_session_id)
-
-            # Check if batch would exceed depth limit
-            if len(stack.frames) + len(items) > stack.max_depth:
-                error_msg = f"Batch would exceed max depth ({stack.max_depth}). Current: {len(stack.frames)}, trying to add: {len(items)}"
-                if status:
-                    await status.error(error_msg)
-                return {
-                    "status": "error",
-                    "error": error_msg,
-                    "hint": "Reduce batch size or clear some frames first"
-                }
-
-            # Push all items
-            pushed_frames = []
+            # Validate every item before the first one is pushed: a bad item
+            # further down used to answer an error with the items before it
+            # already on the stack.
             for item in items:
                 if not isinstance(item, dict):
                     error_msg = (
@@ -447,13 +452,47 @@ class CognitiveStackServer(SchemaBasedToolServer):
                     return {"status": "error", "error": error_msg}
 
                 context = item.get("context")
-                if not context or not context.strip():
+                if not isinstance(context, str) or not context.strip():
                     error_msg = "Each item must have non-empty 'context'"
                     if status:
                         await status.error(error_msg)
                     return {"status": "error", "error": error_msg}
 
-                data = item.get("data", {})
+                # The hook lists the data's keys; anything but an object
+                # made it fail on every later call of the conversation.
+                if not isinstance(item.get("data") or {}, dict):
+                    error_msg = "'data' must be an object"
+                    if status:
+                        await status.error(error_msg)
+                    return {"status": "error", "error": error_msg}
+
+            # Get or create stack -- the conversation's own when no stack_id
+            # is given; reading only params["stack_id"] started a new stack
+            # (and remapped the conversation) on every push without one.
+            stack_id = self._resolve_stack_id(params)
+
+            # Check if batch would exceed depth limit (before a refused push
+            # can create a stack)
+            existing = self._stacks.get(stack_id) if stack_id else None
+            current = len(existing.frames) if existing else 0
+            limit = existing.max_depth if existing else self.max_depth
+            if current + len(items) > limit:
+                error_msg = f"Batch would exceed max depth ({limit}). Current: {current}, trying to add: {len(items)}"
+                if status:
+                    await status.error(error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "hint": "Reduce batch size or clear some frames first"
+                }
+
+            stack = self._get_or_create_stack(stack_id, agent_session_id)
+
+            # Push all items
+            pushed_frames = []
+            for item in items:
+                context = item["context"]
+                data = item.get("data") or {}
 
                 # Create frame
                 frame = StackFrame(
@@ -501,7 +540,7 @@ class CognitiveStackServer(SchemaBasedToolServer):
         status = params.get("_status")
         try:
             stack_id = self._resolve_stack_id(params)
-            count = params.get("count", 1)
+            count = _as_whole(params.get("count"), "count", 1)
 
             # Validation
             if not stack_id:
@@ -591,6 +630,8 @@ class CognitiveStackServer(SchemaBasedToolServer):
             return HookResult(success=True, modified=False, context=context)
 
         try:
+            # The same sweep as a tool call: never show a stack the next call finds gone
+            self._cleanup_expired_stacks()
             agent_session_id = context.session_id
             stack_id = self._agent_session_mapping.get(agent_session_id)
 
@@ -601,8 +642,12 @@ class CognitiveStackServer(SchemaBasedToolServer):
                 stack = self._stacks[stack_id]
 
                 if stack.frames:
-                    # Format active stack
-                    stack_prompt = self._format_stack_for_prompt(stack)
+                    # The agent's override (hooks.overrides) reaches the hook
+                    # only as context.hook_config; the server entry is the
+                    # fallback.
+                    shown = _as_whole((context.hook_config or {}).get("max_frames_in_prompt"),
+                                      "max_frames_in_prompt", self.max_frames_in_prompt)
+                    stack_prompt = self._format_stack_for_prompt(stack, shown)
                     logger.info(
                         f"[CognitiveStackHook] Injecting stack with {len(stack.frames)} frame(s)"
                     )
@@ -621,16 +666,19 @@ class CognitiveStackServer(SchemaBasedToolServer):
             # again; appended at the end, everything before it stays
             # byte-identical. The previous block stays where it is, and one
             # that compaction took away simply comes back.
+            # Marked with the instance name: under one fixed marker two
+            # instances took each other's block for their own and appended
+            # a new one on every call.
             previous = next(
                 (msg for msg in reversed(context.messages)
-                 if getattr(msg, 'injected_by', None) == "cognitive_stack"), None)
+                 if getattr(msg, 'injected_by', None) == self.name), None)
             if previous is not None and previous.content == stack_prompt:
                 return HookResult(success=True, modified=False, context=context)
 
             context.messages.append(ChatMessage(
                 role=DEVELOPER,
                 content=stack_prompt,
-                injected_by="cognitive_stack",
+                injected_by=self.name,
             ))
 
             return HookResult(success=True, modified=True, context=context)
@@ -657,14 +705,14 @@ You have no active stack. Use `{self.name}(operation="push_batch", items=[...])`
 ```
 """
 
-    def _format_stack_for_prompt(self, stack: CognitiveStack) -> str:
+    def _format_stack_for_prompt(self, stack: CognitiveStack, shown: int) -> str:
         """Format active stack for injection into prompt."""
         lines = []
         lines.append("## Active Cognitive Stack\n")
         lines.append(f"**Depth**: {len(stack.frames)}/{stack.max_depth}\n")
 
-        # Show recent frames (top N)
-        frames_to_show = stack.frames[-self.max_frames_in_prompt:]
+        # Show recent frames (top N; 0 or less: all)
+        frames_to_show = stack.frames[-shown:] if shown > 0 else stack.frames
 
         if frames_to_show:
             lines.append("**Working Memory (top frames):**")

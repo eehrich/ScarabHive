@@ -122,7 +122,7 @@ class TestTheTools:
         """A fresh load read a different file under --config, and a key entered since reaches neither."""
         seen = []
 
-        async def probe(config, profile=None):
+        async def probe(config, profile=None, llm_config=None):
             seen.append(config)
             return {"ok": True, "agent": None, "profile": profile}
         monkeypatch.setattr(module, "probe_chat", probe)
@@ -240,7 +240,7 @@ class TestThePanelContract:
         state = installation_state(config)
 
         assert set(state) == {"keys", "chat", "auth"}
-        assert state["keys"] and set(state["keys"][0]) == {"name", "state", "named_in"}
+        assert state["keys"] and set(state["keys"][0]) == {"name", "state", "named_in", "from_environment"}
         assert set(state["chat"]) == {"agent", "profile"}
         assert set(state["auth"]) == {"admin", "default_admin_password", "shared_signing_key",
                                       "signing_key_needs_restart", "configured_signing_key_known"}
@@ -258,8 +258,11 @@ def app(server, config):
 
 class TestThePanelEndpoints:
     @pytest.mark.parametrize("who, code", [(None, 401), ("bob", 403), ("ada", 200)])
-    def test_the_state_is_for_admins_only(self, app, users, who, code):
+    def test_the_state_is_for_admins_only(self, app, users, who, code, monkeypatch):
         from datetime import timedelta
+        # the app's config is this machine's: a gate that let the write through must fail here, not write there
+        monkeypatch.setattr(module, "write_key", lambda *args: pytest.fail("a key was written past the gate"))
+        monkeypatch.setattr(module, "ensure_signing_key", lambda *args: pytest.fail("a signing key past the gate"))
 
         from agent_system.auth.security import create_access_token
         headers = {}
@@ -273,6 +276,9 @@ class TestThePanelEndpoints:
         assert client.get("/plugins/setup/state", headers=headers).status_code == code
         if code != 200:
             assert client.post("/plugins/setup/probe", headers=headers, json={}).status_code == code
+            assert client.post("/plugins/setup/key", headers=headers,
+                               json={"name": "OPENROUTER_API_KEY", "value": "x"}).status_code == code
+            assert client.post("/plugins/setup/signing-key", headers=headers, json={}).status_code == code
 
     def test_without_authentication_the_owner_reads_it(self, app, config):
         app.state.config = without_auth(config)
@@ -340,6 +346,197 @@ class TestThePanelEndpoints:
         page = TestClient(app).get("/plugins/setup/")
 
         assert page.status_code == 200 and "/plugins/setup/static/panel.js" in page.text, page.text[:300]
+
+
+@pytest.fixture
+def machine(tmp_path, monkeypatch):
+    """An installation of this test's own: a master naming ${SETUP_TEST_KEY} in a server entry, loaded as the API
+    loads it, with the config service a reload reads from. What the test takes into the environment goes with it."""
+    from agent_system.config import settings
+    from agent_system.services.config_service import ConfigService
+    monkeypatch.setattr(settings, "_secrets_from_file", {})
+    monkeypatch.setattr(settings, "_secrets_loaded", set())  # the load below marks local.env read before it exists
+    monkeypatch.setenv(settings.SECRETS_FROM_FILE_ENV, "")
+    for name in ("SETUP_TEST_KEY", "AUTH_SECRET_KEY", "SETUP_UNNAMED_KEY"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+    master = tmp_path / "config.yaml"
+    master.write_text("auth:\n  enabled: false\n  secret_key: \"published-signing-key-replace-with-your-own-0000000000\"\n"
+                      "plugins:\n  servers:\n    target:\n      type: nothing\n      token: \"${SETUP_TEST_KEY}\"\n",
+                      encoding="utf-8")
+    config = load_settings(str(master))
+    app = FastAPI()
+    registry = PluginWebRegistry()
+    server = SetupServer("setup", config, ToolServerConfig(type="setup", enabled=True))
+    registry.register_web_plugin("setup", server)
+    registry.apply_to_app(app)
+    app.state.config, app.state.config_service, app.state.config_path = config, ConfigService(), str(master)
+    app.state.setup_server = server
+    app.dependency_overrides[require_admin_viewer] = lambda: None
+    return app, master
+
+
+def settings_file(master):
+    from agent_system.config.settings import _read_secrets_file
+    return _read_secrets_file(master.parent / "local.env")
+
+
+class TestTheKeyEndpoints:
+    def test_a_key_is_written_to_local_env_and_the_next_chat_uses_it(self, machine):
+        """The chat's next message builds its client from app.state.config (app.py _live_config): the reload after
+        the write is what carries the key there, and os.environ what carries it to a session the API wakes."""
+        app, master = machine
+        value = "sk-or-v1-" + secrets.token_hex(16)
+
+        answer = TestClient(app).post("/plugins/setup/key", json={"name": "SETUP_TEST_KEY", "value": value})
+
+        assert answer.status_code == 200, answer.text
+        assert value not in answer.text
+        assert answer.json()["reload_error"] is None, answer.json()
+        assert {key["name"]: key["state"] for key in answer.json()["state"]["keys"]}["SETUP_TEST_KEY"] == "set"
+        assert get_tool_server_config("target", app.state.config).token == value
+        assert __import__("os").environ["SETUP_TEST_KEY"] == value
+        assert "SETUP_TEST_KEY=" + value in (master.parent / "local.env").read_text(encoding="utf-8")
+        assert not (master.parent / "secrets.env").exists()
+
+    def test_a_body_that_is_no_json_is_a_400(self, machine):
+        """request.json() raised unguarded: broken JSON answered 500."""
+        app, master = machine
+
+        answer = TestClient(app, raise_server_exceptions=False).post(
+            "/plugins/setup/key", content=b"{not json", headers={"Content-Type": "application/json"})
+
+        assert answer.status_code == 400, answer.text
+        assert not (master.parent / "local.env").exists()
+
+    def test_only_a_key_the_configuration_names_is_taken(self, machine):
+        """Not PATH, not a variable some plugin never reads: the name must be one the files name."""
+        app, master = machine
+
+        answer = TestClient(app).post("/plugins/setup/key", json={"name": "SETUP_UNNAMED_KEY", "value": "v"})
+
+        assert answer.status_code == 400, answer.text
+        assert not (master.parent / "local.env").exists() and "SETUP_UNNAMED_KEY" not in __import__("os").environ
+
+    def test_a_key_set_by_the_environment_cannot_be_entered(self, machine, monkeypatch):
+        app, master = machine
+        monkeypatch.setenv("SETUP_TEST_KEY", "from-the-shell")
+
+        answer = TestClient(app).post("/plugins/setup/key", json={"name": "SETUP_TEST_KEY", "value": "other"})
+
+        assert answer.status_code == 409, answer.text
+        assert not (master.parent / "local.env").exists()
+
+    @pytest.mark.parametrize("value", ["a\nB=c", "a\u2028AUTH_SECRET_KEY=mine", "a\x85B=c", "tab\there"])
+    def test_a_value_the_file_cannot_hold_is_refused(self, machine, value):
+        """splitlines() breaks at U+2028 and U+0085 too: such a value would set another variable on the next read."""
+        app, master = machine
+
+        answer = TestClient(app).post("/plugins/setup/key", json={"name": "SETUP_TEST_KEY", "value": value})
+
+        assert answer.status_code == 400, answer.text
+        assert not (master.parent / "local.env").exists() and "SETUP_TEST_KEY" not in __import__("os").environ
+
+    def test_a_value_the_environment_cannot_take_is_not_written(self, machine, monkeypatch):
+        """Windows takes name=value up to 32767 units: written but not taken, the answer said "not written" while the
+        file held it."""
+        app, master = machine
+        monkeypatch.setattr(module, "environment_takes", lambda name, value: False)
+
+        answer = TestClient(app).post("/plugins/setup/key", json={"name": "SETUP_TEST_KEY", "value": "v"})
+
+        assert answer.status_code == 400 and "longer" in answer.json()["detail"], answer.text
+        assert not (master.parent / "local.env").exists()
+
+    def test_the_chat_test_tries_the_config_the_api_runs_now(self, machine, monkeypatch):
+        """A key saved in the panel reloads the config; Test the chat must try that one, not the start's."""
+        app, master = machine
+        seen = {}
+
+        async def probe(config, llm_config=None):
+            seen.update(config=config, llm_config=llm_config)
+            return {"ok": True}
+        monkeypatch.setattr(module, "probe_chat", probe)
+        app.state.config = app.state.config.model_copy()  # what a reload put there
+
+        assert TestClient(app).post("/plugins/setup/probe", json={}).status_code == 200
+        assert seen["llm_config"] is app.state.config and seen["config"] is not app.state.config, seen
+
+    async def test_the_probe_tool_tries_the_config_a_saved_key_reloaded(self, machine, monkeypatch):
+        """The tool has no request to ask the app: after a save it probes the config the save reloaded."""
+        app, master = machine
+        server = app.state.setup_server
+        seen = []
+
+        async def probe(config, profile=None, llm_config=None):
+            seen.append(llm_config)
+            return {"ok": True, "profile": "p"}
+        monkeypatch.setattr(module, "probe_chat", probe)
+
+        await server.call_with_status("setup_probe_chat", AT_THE_MACHINE)
+        assert TestClient(app).post("/plugins/setup/key", json={"name": "SETUP_TEST_KEY", "value": "v1"}).status_code == 200
+        await server.call_with_status("setup_probe_chat", AT_THE_MACHINE)
+
+        assert seen[0] is None and seen[1] is app.state.config, seen
+
+    def test_a_key_is_written_even_when_the_reload_fails_and_it_says_so(self, machine, monkeypatch):
+        """Someone else's broken edit on disk: the key is saved and in the process; the answer says a restart applies
+        it to the configuration."""
+        from agent_system.api.admin_endpoints import ConfigReloadFailed
+        app, master = machine
+
+        def failing(app):
+            raise ConfigReloadFailed("config failed to parse, nothing reloaded: bad indent")
+        monkeypatch.setattr(module, "reload_app_config", failing)
+
+        answer = TestClient(app).post("/plugins/setup/key", json={"name": "SETUP_TEST_KEY", "value": "sk-saved"})
+
+        assert answer.status_code == 200 and "bad indent" in answer.json()["reload_error"], answer.text
+        assert settings_file(master) == {"SETUP_TEST_KEY": "sk-saved"}
+
+    def test_the_signing_key_is_no_api_key(self, machine):
+        """Once the local layer names ${AUTH_SECRET_KEY}, the loader's files name it -- it is still not listed, nor
+        taken as a key: a short one would stop the next start."""
+        app, master = machine
+        client = TestClient(app)
+        assert client.post("/plugins/setup/signing-key", json={}).status_code == 200
+
+        state = client.get("/plugins/setup/state").json()
+        answer = client.post("/plugins/setup/key", json={"name": "AUTH_SECRET_KEY", "value": "short"})
+
+        assert "AUTH_SECRET_KEY" not in {key["name"] for key in state["keys"]}, state["keys"]
+        assert "SETUP_TEST_KEY" in {key["name"] for key in state["keys"]}, "fixture: the listing is not empty"
+        assert answer.status_code == 400, answer.text
+        assert settings_file(master)["AUTH_SECRET_KEY"] != "short"
+
+    @pytest.mark.parametrize("path", ["key", "signing-key"])
+    def test_a_page_elsewhere_cannot_send_it(self, machine, path):
+        app, master = machine
+
+        forged = TestClient(app).post(f"/plugins/setup/{path}", data={"name": "SETUP_TEST_KEY", "value": "v"})
+
+        assert forged.status_code == 415, forged.text
+        assert not (master.parent / "local.env").exists()
+
+    def test_an_own_signing_key_is_made_for_the_next_start(self, machine, monkeypatch):
+        from agent_system.config import settings
+        app, master = machine
+
+        answer = TestClient(app).post("/plugins/setup/signing-key", json={})
+
+        assert answer.status_code == 200, answer.text
+        auth = answer.json()["state"]["auth"]
+        assert auth["configured_signing_key_known"] is False, auth
+        monkeypatch.setattr(settings, "_secrets_loaded", set())  # the next start: a process that has read nothing yet
+        assert load_settings(str(master)).auth.secret_key == settings_file(master)["AUTH_SECRET_KEY"]
+
+    def test_a_signing_key_that_cannot_be_written_says_why(self, machine):
+        app, master = machine
+        (master.parent / "local.yaml").write_text("auth:\n  secret_key: \"set-by-hand\"\n", encoding="utf-8")
+
+        answer = TestClient(app).post("/plugins/setup/signing-key", json={})
+
+        assert answer.status_code == 409 and "itself" in answer.json()["detail"], answer.text
 
 
 class TestTheRealConfiguration:

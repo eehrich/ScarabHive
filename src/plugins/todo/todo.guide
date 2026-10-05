@@ -1,0 +1,320 @@
+@database "todo"
+@author "Enrico Ehrich"
+@$VER: todo.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Todo"
+@{h1}Todo
+
+An agent working on something bigger than one answer keeps a task list
+here: it breaks the work into tasks, marks what it is on, what depends on
+what, and what is done. Each chat session has its own list. You see it in
+the @{b}Todos@{ub} panel and can start, complete or delete tasks there
+yourself; an optional hook keeps the open tasks in front of the model.
+
+@{image docs/panel.png "The Todos panel with the tasks of a session"}
+
+@{code}
+For users
+  @{"  The Todos panel  " link panel}
+
+For agents and developers
+  @{"  The todo tool  " link tool}
+  @{"  Duplicates and dependencies  " link rules}
+  @{"  The task-list hook  " link hook}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Todos panel"
+@{h1}The Todos panel
+
+Open it from the launcher (@{b}Agents & tools@{ub}, "Todos"), or from a
+session's info button, which opens it on that session.
+
+@{image docs/panel.png "The Todos panel"}
+
+@{h2}Which list it shows
+
+The panel follows the chat: it shows the tasks of the session open there
+and switches when you switch sessions. Opened from a session's info button
+it is pinned to that session instead -- the toolbar says so ("Session
+...") and @{b}Follow the chat@{ub} lets go of it. With no session open it
+says so and shows nothing. The list reloads every 5 seconds; the menu next
+to the reload button sets another interval or turns it off.
+
+@{h2}What you see
+
+@{bullet}The figures at the top: all tasks, and how many are not started,
+in progress, blocked, cancelled and completed, with the share completed.
+@{bullet}Two filters, by status and by priority, and how many tasks they
+leave.
+@{bullet}Each task with its status, id, title, priority, age, tags,
+description and progress, what it depends on and what it blocks. A task
+not started that waits on an unfinished one is marked @{i}waiting@{ui}.
+
+@{h2}What you can do
+
+@{table}
+Button | Shown on | Does
+Start | a task not started that waits on nothing | sets it in progress
+Complete | a task in progress, blocked or waiting | sets it completed; tasks waiting on it become free
+Delete | a task no other task depends on | removes it, after asking
+@{body}
+
+An agent may change the same task a moment earlier. When the server refuses
+a click -- the task is gone, has gained a dependent, or is no longer in a
+state the button takes -- the panel shows the reason and loads the list
+anew.
+@endnode
+
+@node tool "The todo tool"
+@{h1}The todo tool
+
+The plugin gives an agent one tool, named like the plugin instance
+(@{tt}todo@{utt} in the default setup). Every call names an
+@{tt}operation@{utt}; the tasks belong to the session the agent runs in. A
+sub-agent runs in a session of its own and so keeps a list of its own.
+
+@{h2}Operations
+
+@{table}
+operation | Needs | Does
+create | title | a new task; see @{" Duplicates and dependencies " link rules}
+update | task_id | changes status, progress, priority, tags, dependencies, adds a note
+get | task_id | one task with what blocks it and what it blocks
+list | -- | tasks by filter, oldest first
+delete | task_id | removes a task; with dependents only with cascade
+summary | -- | counts, overall progress and the next tasks to take
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+title | create | up to 200 characters
+description | create | up to 2000 characters
+priority | create, update | low, medium, high, critical; a create without it is medium
+tags | create, update | on update the tags are added; none is removed
+depends_on | create, update | task ids; on update the list replaces the old one
+status | update | not-started, in-progress, completed, blocked, cancelled
+progress | update | 0 to 100
+note | update | appended to the task's notes with a timestamp
+allow_duplicates | create | true: no duplicate check
+idempotency_key | create | the same key returns the task made with it, whatever its title
+filter_status, filter_priority | list | lists of values; a task matches one of them
+filter_tags | list | a task matches when it has one of the tags
+only_unblocked | list | leave out tasks with an unfinished dependency
+limit, offset | list | a page of the result
+cascade | delete | also delete every task that depends on this one
+@{body}
+
+@{h2}Answers
+
+An answer that changes or refuses something carries a @{tt}status@{utt}: @{tt}created@{utt},
+@{tt}exists@{utt} (a duplicate or a known idempotency key: the existing
+task, with @{tt}reason@{utt}), @{tt}updated@{utt}, @{tt}deleted@{utt} (with
+@{tt}cascade_deleted@{utt}), @{tt}not_found@{utt}, @{tt}rejected@{utt}
+(a delete with dependents: @{tt}dependent_tasks@{utt}),
+@{tt}limit_reached@{utt} or @{tt}validation_failed@{utt} with a
+@{tt}message@{utt} saying what to change. @{tt}get@{utt} and
+@{tt}update@{utt} add @{tt}dependency_info@{utt} (@{tt}blocked_by@{utt},
+@{tt}blocking@{utt}); @{tt}list@{utt} adds counts and
+@{tt}has_more@{utt}/@{tt}next_offset@{utt} for paging;
+@{tt}summary@{utt} gives @{tt}by_status@{utt}, @{tt}by_priority@{utt},
+@{tt}overall_progress@{utt} (the mean progress), @{tt}completion_rate@{utt}
+and @{tt}next_unblocked@{utt}: up to five tasks not started and free,
+highest priority first. @{tt}get@{utt}, @{tt}list@{utt} and
+@{tt}summary@{utt} return their data without a status. A status or filter
+value the tool does not know, or a title over 200 characters, fails the
+call with an error.
+
+@{h2}An example
+
+@{code json}
+{"operation": "create", "title": "Write the migration", "priority": "high"}
+{"operation": "create", "title": "Run the migration on staging", "depends_on": ["task_001"]}
+{"operation": "update", "task_id": "task_001", "status": "completed", "note": "Reviewed"}
+{"operation": "list", "only_unblocked": true}
+@{body}
+
+Task ids are made by the plugin (@{tt}task_001@{utt}, @{tt}task_002@{utt},
+...). An agent uses the id an answer returned, never one it expects.
+@endnode
+
+@node rules "Duplicates and dependencies"
+@{h1}Duplicates and dependencies
+
+@{h2}Duplicates
+
+Models tend to create the same task twice, so @{tt}create@{utt} compares
+the title with every task not completed (cancelled ones count):
+
+@{bullet}95 % alike or more: nothing is created; the answer is the existing
+task with @{tt}status: exists@{utt}, @{tt}reason: duplicate_title@{utt}
+and the similarity.
+@{bullet}80 to 95 % alike: the task is created. The answer does not
+mention the similar one; only the log does.
+@{bullet}An @{tt}idempotency_key@{utt} is checked first, against all
+tasks: a retry with the same key returns the first task.
+
+@{tt}allow_duplicates: true@{utt} skips the title check, for tasks that
+are alike on purpose ("Review PR 123", "Review PR 124").
+
+@{h2}Dependencies
+
+A dependency must be an existing task, and no chain may lead back to the
+task itself; either is refused with a message. @{tt}blocked@{utt} is kept
+by the plugin, not set by hand:
+
+@{bullet}A task created with an unfinished dependency starts
+@{tt}blocked@{utt}.
+@{bullet}A task in progress becomes @{tt}blocked@{utt} when one of its
+dependencies is no longer complete.
+@{bullet}A blocked task becomes @{tt}not-started@{utt} again when all its
+dependencies are complete.
+@{bullet}Setting @{tt}blocked@{utt} by hand is refused while nothing
+blocks the task.
+
+A task not started that is given a dependency later stays not started;
+the panel marks it @{i}waiting@{ui}, and @{tt}only_unblocked@{utt} leaves
+it out. Set in progress through the tool, it turns @{tt}blocked@{utt} at
+once.
+
+@{h2}Statuses
+
+Any status can follow any other; the plugin keeps the times and the
+progress with them. The first @{tt}in-progress@{utt} sets
+@{tt}started_at@{utt}; @{tt}completed@{utt} sets @{tt}completed_at@{utt}
+and progress 100; leaving it clears @{tt}completed_at@{utt} again, the
+progress stays until it is set.
+@endnode
+
+@node hook "The task-list hook"
+@{h1}The task-list hook
+
+@{tt}inject_todo_tasks@{utt} runs before each LLM call and puts the open
+tasks in front of the model, so it does not have to call the tool to know
+where it stands. It is off until an agent switches it on.
+
+@{h2}What the model gets
+
+A message at the end of the history, from the plugin: a short reminder of
+the tool and the tasks, one line each with status, id, title, priority and
+progress, and what they depend on and block. With no tasks yet only the
+reminder. It is added only when it differs from the last one the hook
+added -- the conversation grows by a list when the list changes, and the
+cached prompt in front of it stays as it was.
+
+@{code markdown}
+## TODO Tool Available
+
+Use `todo()` to break down and track your work. ...
+
+**Current active tasks:**
+
+- ⏳ **task_002**: Implement the model [🔴 CRIT, 40%]
+  - Depends on: task_001
+  - Blocks: task_003
+- 🚫 **task_003**: Write the tests [🟡 MED, 0%]
+  - Depends on: task_002
+@{body}
+
+@{h2}Switching it on
+
+In the agent's YAML; its settings go in the same place:
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      todo.inject_todo_tasks:
+        enabled: true
+        max_tasks: 10
+@{body}
+
+@{h2}Settings
+
+@{table}
+Key | Default | Meaning
+max_tasks | 20 | how many tasks the list shows: the oldest first
+filter_status | not-started, in-progress, blocked | which tasks it shows
+include_completed | false | true: every task, whatever its status
+format | markdown | markdown, or text for one plain line per task
+@{body}
+
+The defaults come from the plugin; a @{tt}hook_config:@{utt} block in the
+plugin's server entry changes them for every agent, and an agent's own
+override wins over both.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The tool description and every parameter's description come from the
+plugin's @{tt}schema.yaml@{utt}. A refused call answers with a status and a
+@{tt}message@{utt} that says what to change, for example "UPDATE operation
+requires 'task_id' parameter", "Cannot manually set status to 'blocked'
+..." or "Cannot delete task task_002: 1 task(s) depend on it. Use
+cascade=True to delete all: task_003". The chat's status line ends with
+the result: "Created task_004 (blocked): ...", "Updated task_002: status,
+progress", "Listed 3 task(s)".
+
+@{h2}Tokens and cache
+
+Tool answers are ordinary tool results: appended, nothing earlier changes.
+A @{tt}list@{utt} without @{tt}limit@{utt} returns every matching task
+with its description -- on a long list, filter or page. The hook appends
+its list at the end of the history and only when the list changed; it
+never rewrites the system prompt or an earlier message.
+
+@{h2}Known gaps
+
+@{bullet}Tags can be added, not removed.
+@{bullet}@{tt}depends_on@{utt} on update replaces the whole list; to add
+one dependency, send the old ones with it.
+@{bullet}With more open tasks than @{tt}max_tasks@{utt}, the hook shows
+the oldest; the newest wait until older ones are done.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    todo:
+      type: todo
+      enabled: true
+@{body}
+
+An agent sees the tool when its allowlist names it:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+todo/*"
+@{body}
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+storage_path | todos in the data directory | where the task lists are kept
+max_tasks_per_session | 1000 | a create beyond it answers limit_reached
+enable_dependencies | true | false: nothing is blocked; a dependency must still exist
+auto_save | true | write each change to disk at once
+max_cache_size | 50 | sessions kept in memory; the rest are read from disk when asked
+@{body}
+
+Each session's tasks are one JSON file, named after the session, in the
+storage folder. A session the plugin holds in memory writes its file anew
+on the next change: delete a file only while the server is stopped.
+@endnode

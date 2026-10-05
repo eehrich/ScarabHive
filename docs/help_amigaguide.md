@@ -73,9 +73,9 @@ nächste Seite neu. Das `tabindex`, das Prism an den Block hängt, nimmt der Vie
 weg: sonst wäre nur jeder gefärbte Block ein Tab-Halt. Farben: Kit-Tokens, dieselbe
 Palette wie im Chat.
 
-Markdown-Dateien rendert `markdown_to_html` (der sanitisierte Renderer des Chats) mit
-`line_breaks=False`: ein Zeilenumbruch ist ein Leerzeichen, die Listen-Rettung des
-Chats bleibt aus, und eine Liste direkt unter einer Absatzzeile bekommt die Leerzeile,
+Markdown-Dateien rendert `markdown_to_html` (der sanitisierte Server-Renderer; der Chat
+zeichnet seine Antworten im Browser) mit `line_breaks=False`: ein Zeilenumbruch ist ein
+Leerzeichen, die Listen-Rettung für Antworten bleibt aus, und eine Liste direkt unter einer Absatzzeile bekommt die Leerzeile,
 die Python-Markdown braucht (wie GitHub).
 
 ## Sicherheit (bewusste Entscheidungen)

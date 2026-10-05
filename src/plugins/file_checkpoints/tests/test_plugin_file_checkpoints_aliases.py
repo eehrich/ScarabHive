@@ -12,7 +12,7 @@ import unicodedata
 
 import pytest
 
-from agent_system.file_rewind import NOTHING, PARTIAL, REFUSED, REWOUND
+from agent_system.file_rewind import PARTIAL, REFUSED, REWOUND
 from agent_system.hooks import HookContext, HookType
 from agent_system.tools.base import ToolServerRegistry
 from file_rewind_rig import SESSION, USER, Rig, create, replace, tree

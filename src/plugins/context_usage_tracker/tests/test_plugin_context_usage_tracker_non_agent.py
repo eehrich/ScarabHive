@@ -49,7 +49,7 @@ def a_response(*, agent=None, usage=DECISIONS_USAGE, error=None, **kwargs):
     context.llm_usage = usage
     context.llm_error = error
     context.llm_model = kwargs.get("model", "~typesafe/jev-latest")
-    context.llm_provider = "openrouter_decisions"
+    context.llm_provider = kwargs.get("provider", "openrouter_decisions")
     context.llm_duration_ms = 812.0
     return context
 
@@ -117,6 +117,29 @@ class TestWhatItCounts:
         recorded = snapshots(hooks)[0]
         assert recorded["cost_is_estimate"] is False
         assert recorded["cost"] == pytest.approx(DECISIONS_USAGE["cost"])
+
+    @pytest.mark.asyncio
+    async def test_a_batch_request_is_estimated_at_the_batch_price(self, hooks, tmp_path, monkeypatch):
+        """An llm_router call on a batch profile arrives here without an agent;
+        its provider ("batch_<name>") is all that says it bills at the discount."""
+        table = tmp_path / "llm_pricing.yaml"
+        table.write_text("batchy-model:\n  input: 1.0\n  output: 2.0\n  batch_discount: 0.5\n",
+                         encoding="utf-8")
+        from agent_system.llm import pricing as pricing_mod
+        monkeypatch.setattr(pricing_mod, "DEFAULT_PRICING_PATH", table)
+        pricing_mod._cache.update(path=None, mtime=None, table={})
+        usage = {"prompt_tokens": 100, "completion_tokens": 50}
+
+        await hooks.track_non_agent_usage(a_response(usage=usage, model="batchy-model",
+                                                     provider="batch_openai"))
+        await hooks.track_non_agent_usage(a_response(usage=usage, model="batchy-model",
+                                                     provider="openai"))
+
+        batch, sync = snapshots(hooks)
+        full = (100 * 1.0 + 50 * 2.0) / 1_000_000
+        assert batch["cost"] == pytest.approx(full * 0.5)
+        assert sync["cost"] == pytest.approx(full)
+        assert batch["cost_is_estimate"] is True
 
     @pytest.mark.asyncio
     async def test_a_call_that_carries_no_conversation_has_no_context_window(self, hooks):

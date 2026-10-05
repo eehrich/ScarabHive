@@ -7,7 +7,7 @@ OpenRouter says so themselves on the model page -- "chat completions SDKs will
 not work with it". The TTS clients live beside the chat clients for the same
 reason, with their own contract (``agent_system/llm/tts.py``). Why this lives
 in its own package and not in ``llm_openrouter`` or ``llm_openai_compat``:
-see the README beside this file.
+see the comment in plugin.toml beside this file.
 
 The wire is TypeSafe's ("System One"). Two of its hosts were measured with
 one questionnaire (2026-09-25); TypeSafe's own is taken from its API
@@ -25,10 +25,13 @@ reference -- there was no key here to call it::
                 answers plus fields of its own this client leaves alone
                 (answer_confidence, action, routing); ``model`` is always
                 "laya-rl-agent", and ``usage`` carries no cost
+    Ollama      /v1/systemone from 0.35 on (nimble, tev1) -- per its API
+                reference: model as asked, answers, usage{input_tokens,
+                output_tokens}; no id, provider or cost; bodies up to 64 KiB
 
 So one client, and what differs per host is data (``Host``): the provider name
-the hooks and the tracker book a call under, the default endpoint, and whether
-the host takes OpenRouter's ``session_id``.
+the hooks and the tracker book a call under, the default endpoint, whether
+the host takes OpenRouter's ``session_id``, and whether it bills at all.
 
 Three question types, and their ``criteria`` differ in SHAPE -- the one thing
 that turns into an HTTP 400 at runtime, so ``check_questions`` refuses it here:
@@ -44,13 +47,15 @@ pinned in one place here.
 
 Where the answer carries a ``cost`` it is the price -- no entry in
 llm_pricing.yaml is needed or would be used. Where it carries none, the cost is
-None: unknown, not free.
+None: unknown, not free -- except on a host that never bills (Ollama), where
+it is 0.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence, Union
@@ -70,6 +75,19 @@ _DECIDING_FIELD = {"noul": "noul", "choice": "choice", "score": "score"}
 
 State = Union[str, Mapping[str, Any], Sequence[Any]]
 
+#: The longest Retry-After this client sits out. A host asking for more gets no
+#: further attempt: the call fails at once and says how long it was asked to wait.
+MAX_RETRY_AFTER = 60.0
+
+
+def _retry_after(response: httpx.Response) -> Optional[float]:
+    """The host's Retry-After in seconds; None when absent or no duration."""
+    try:
+        seconds = float(response.headers.get("retry-after", ""))
+    except ValueError:  # absent, or an HTTP date
+        return None
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
+
 
 @dataclass(frozen=True)
 class Host:
@@ -82,17 +100,24 @@ class Host:
     ``takes_session_id``: OpenRouter documents ``session_id`` for grouping its
     logs; TypeSafe's reference lists model, state and questions only, and a
     field a host does not document is not sent there.
+    ``free``: the host never bills a call, so an answer without a cost costs
+    0 -- no row in llm_pricing.yaml for each model pulled.
     """
 
     provider: str
     url: str
     takes_session_id: bool
+    free: bool = False
 
 
 OPENROUTER = Host("openrouter_decisions", "https://openrouter.ai/api/alpha/decisions", True)
 #: TypeSafe's own endpoint, and the wire laya-serve speaks: a local Laya is this
 #: host with the url of the machine it runs on.
 SYSTEM_ONE = Host("systemone_decisions", "https://api.typesafe.ai/v1/systemone", False)
+#: Ollama 0.35+ serves its decision models (nimble, tev1) on this wire; the
+#: default port and address are llm_ollama's. Its reference lists model, state,
+#: questions and keep_alive -- no session_id. Free: Ollama runs on our own machines.
+OLLAMA = Host("ollama_decisions", "http://127.0.0.1:11434/v1/systemone", False, free=True)
 
 
 @dataclass(frozen=True)
@@ -122,8 +147,9 @@ class DecisionsResult:
     id: Optional[str]
     input_tokens: int
     output_tokens: int
-    #: What the call cost, as the API reports it. None when the answer carried no
-    #: cost at all -- which is not the same as free, and must not be added up as 0.
+    #: What the call cost, as the API reports it; 0 on a host that never bills.
+    #: None when the answer carried no cost at all -- which is not the same as
+    #: free, and must not be added up as 0.
     cost: Optional[float]
     duration_ms: float
 
@@ -137,7 +163,7 @@ class DecisionsError(RuntimeError):
 
     ``usage`` is set in that last case when the answer carried one -- the call
     was billed all the same, and a caller adding up spend must count it:
-    ``{"input_tokens", "output_tokens", "cost"}``, cost None when unreported.
+    ``{"input_tokens", "output_tokens", "cost"}``, cost as in the result.
     """
 
     def __init__(self, message: str, usage: Optional[dict] = None) -> None:
@@ -278,10 +304,15 @@ class DecisionsClient:
         """The retry loop. Everything it raises is reported by its caller."""
         last_error: Optional[Exception] = None
         for attempt in range(max(0, self.max_retries) + 1):
+            asked: Optional[float] = None
             try:
                 response = await self._post(payload, headers, cancellation_token)
                 if response.status_code in RETRYABLE_STATUS:
                     last_error = DecisionsError(f"HTTP {response.status_code}: {response.text[:300]}")
+                    asked = _retry_after(response)
+                    if asked is not None and asked > MAX_RETRY_AFTER:
+                        raise DecisionsError(f"Decisions API busy (HTTP {response.status_code}), asks to retry "
+                                             f"after {asked:.0f}s -- model={self.model}")
                 elif response.status_code >= 400:
                     raise DecisionsError(f"Decisions API error {response.status_code}: "
                                          f"{response.text[:500]} -- model={self.model}")
@@ -297,7 +328,7 @@ class DecisionsClient:
             except httpx.TransportError as e:  # includes TimeoutException
                 last_error = e
             if attempt < self.max_retries:
-                delay = 2.0 * (attempt + 1)
+                delay = asked if asked is not None else 2.0 * (attempt + 1)
                 logger.warning("Decisions attempt %d/%d failed (%s) -- retrying in %.0fs",
                                attempt + 1, self.max_retries + 1, last_error, delay)
                 await _notify_response(
@@ -338,16 +369,26 @@ class DecisionsClient:
                 f"Decisions API answered {response.status_code} with {type(data).__name__}, not an object "
                 f"({str(data)[:200]}) -- model={self.model}")
         usage = data.get("usage") or {}
-        input_tokens = int(usage.get("input_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or 0)
-        cost = None if usage.get("cost") is None else float(usage["cost"])
+        try:
+            input_tokens = int(usage.get("input_tokens") or 0)
+            output_tokens = int(usage.get("output_tokens") or 0)
+            cost = None if usage.get("cost") is None else float(usage["cost"])
+            if cost is None and self.host.free:
+                cost = 0.0
+        except (AttributeError, TypeError, ValueError) as e:
+            raise DecisionsError(f"Decisions API answered a usage this client cannot read "
+                                 f"({str(usage)[:200]}) -- model={self.model}") from e
         # An answer refused below was billed all the same: the error carries what
         # it cost, when the answer said so at all.
         billed = ({"input_tokens": input_tokens, "output_tokens": output_tokens, "cost": cost}
                   if usage else None)
         answers = {}
-        for name, answer in (data.get("answers") or {}).items():
-            kind = answer.get("type")
+        received = data.get("answers") or {}
+        if not isinstance(received, Mapping):
+            raise DecisionsError(f"Decisions API answered {type(received).__name__} where the answers object "
+                                 f"belongs ({str(received)[:200]}) -- model={self.model}", usage=billed)
+        for name, answer in received.items():
+            kind = answer.get("type") if isinstance(answer, Mapping) else None
             field = _DECIDING_FIELD.get(kind)
             # `field not in answer` would let a present-but-null value through, and
             # a None reaches the caller's threshold as a TypeError far from here.
@@ -356,7 +397,7 @@ class DecisionsClient:
                 # missing: reported, never guessed. A silently dropped answer
                 # would read as "the model did not answer that question".
                 raise DecisionsError(
-                    f"Decisions answer {name!r} has type {kind!r} with no usable value ({answer!r}) "
+                    f"Decisions answer {name!r} has type {kind!r} with no usable value ({str(answer)[:200]}) "
                     f"-- this client knows {', '.join(sorted(_DECIDING_FIELD))}", usage=billed)
             answers[name] = Answer(
                 name=name, type=kind, value=answer[field],

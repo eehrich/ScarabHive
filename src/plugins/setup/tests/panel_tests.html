@@ -50,9 +50,9 @@
   const toasts = () => all('.pk-toast').map((one) => one.textContent.replace(/\s+/g, ' ').trim()).join(' | ');
   const MARKUP = '<img src=x onerror=parent.__xss=1>';
   const KEYS = [
-    { name: 'OPENROUTER_API_KEY', state: 'set', named_in: ['llm_system.models.openrouter-base'] },
-    { name: 'TAVILY_API_KEY', state: 'missing', named_in: ['plugins.servers.tavily_search'] },
-    { name: MARKUP, state: 'placeholder', named_in: ['first', 'second', 'third', 'fourth', 'fifth'] },
+    { name: 'OPENROUTER_API_KEY', state: 'set', named_in: ['llm_system.models.openrouter-base'], from_environment: false },
+    { name: 'TAVILY_API_KEY', state: 'missing', named_in: ['plugins.servers.tavily_search'], from_environment: false },
+    { name: MARKUP, state: 'placeholder', named_in: ['first', 'second', 'third', 'fourth', 'fifth'], from_environment: false },
   ];
   const open = async () => { await go('/plugins/setup/'); await until('the panel drawn', () => $('#keys table, #keys .pk-empty')); };
   const type = (selector, value) => { const input = $(selector); input.value = value; input.dispatchEvent(new frame.contentWindow.Event('input', { bubbles: true })); };
@@ -183,8 +183,8 @@
   });
 
   await check('a load overtaken by a newer one is never drawn, nor clears the newer one’s notice', async () => {
-    const OLD = [{ name: 'OLD_KEY', state: 'set', named_in: ['old'] }];
-    const NEW = [{ name: 'NEW_KEY', state: 'set', named_in: ['new'] }];
+    const OLD = [{ name: 'OLD_KEY', state: 'set', named_in: ['old'], from_environment: false }];
+    const NEW = [{ name: 'NEW_KEY', state: 'set', named_in: ['new'], from_environment: false }];
     await stub({ keys: OLD });
     await open();
     // overtaken while it waits for the state: the next read answers OLD, late
@@ -212,6 +212,82 @@
     refresh();
     await until('the notice gone', () => $('#problem').hidden);
     return neverDrawn && noticeKept;
+  });
+
+  const written = async () => (await fetch('/__stub/written')).json();
+  const keyForm = (name) => all('#keys form[data-name]').find((form) => form.dataset.name === name);
+
+  await check('a key is sent and its field cleared, a refused one keeps what was typed, one the environment sets has no field', async () => {
+    await stub({ keys: [...KEYS, { name: 'SHELL_KEY', state: 'set', named_in: ['x'], from_environment: true }], key_refuse: false });
+    await open();
+    const shell = all('#keys tbody tr').find((row) => row.cells[0].textContent.trim() === 'SHELL_KEY');
+    const noField = !shell.querySelector('form') && shell.cells[3].textContent.includes('environment');
+    keyForm('TAVILY_API_KEY').querySelector('[name=value]').value = 'tvly-own-key';
+    keyForm('TAVILY_API_KEY').requestSubmit();
+    await until('the saved toast', () => toasts().includes('TAVILY_API_KEY saved'));
+    // named in plugins.servers.tavily_search: a plugin reads its key at start, the chat test would not tell
+    const restart = toasts().includes('takes it after a restart') && !toasts().includes('Test the chat');
+    const sent = (await written()).keys.at(-1);
+    const cleared = keyForm('TAVILY_API_KEY').querySelector('[name=value]').value === '';
+    await stub({ key_refuse: true });
+    keyForm('TAVILY_API_KEY').querySelector('[name=value]').value = 'a refused value';
+    keyForm('TAVILY_API_KEY').requestSubmit();
+    await until('the refusal', () => toasts().includes('not written'));
+    const kept = keyForm('TAVILY_API_KEY').querySelector('[name=value]').value === 'a refused value'
+      && !keyForm('TAVILY_API_KEY').querySelector('button').disabled;
+    await stub({ key_refuse: false, keys: KEYS });
+    // a value is never put into the page's markup or a message: only the input holds it, until it is sent
+    const nowhere = !doc().body.innerHTML.includes('tvly-own-key') && !toasts().includes('tvly-own-key');
+    return noField && sent.name === 'TAVILY_API_KEY' && sent.value === 'tvly-own-key' && cleared && kept && nowhere
+      && restart;
+  });
+
+  await check('an own signing key is offered only while a known one is configured, asked for first, then made', async () => {
+    const question = () => $('dialog.pk-dialog[open]');
+    const answer = (label) => [...question().querySelectorAll('button')].find((one) => one.textContent.trim() === label).click();
+    await stub({ auth: { shared_signing_key: false, signing_key_needs_restart: false, configured_signing_key_known: false } });
+    await open();
+    await until('the signing line', () => text('#access').includes('Signing key'));
+    const notOffered = !$('#ownKey');
+    await stub({ auth: { shared_signing_key: true, configured_signing_key_known: true } });
+    refresh();
+    await until('the offer', () => $('#ownKey'));
+    const before = (await written()).signing_keys_made;
+    $('#ownKey').click();
+    await until('the question', () => question());
+    answer('Cancel');
+    await until('the question gone', () => !question());
+    await sleep(300);
+    const notMadeUnasked = (await written()).signing_keys_made === before;
+    $('#ownKey').click();
+    await until('the question', () => question());
+    answer('Make it');
+    await until('the made toast', () => toasts().includes('a new signing key is in local.env'));
+    await until('the offer gone', () => !$('#ownKey'));
+    const made = (await written()).signing_keys_made === before + 1;
+    await stub({ auth: { shared_signing_key: false } });
+    return notOffered && notMadeUnasked && made;
+  });
+
+  await check('what is typed in one row survives a save in another, and a failed reload says to restart', async () => {
+    const MISSING = KEYS.map((key) => ({ ...key, state: key.name === 'OPENROUTER_API_KEY' ? 'missing' : key.state }));
+    await stub({ keys: MISSING, key_refuse: false, reload_error: null });
+    await open();
+    keyForm('TAVILY_API_KEY').querySelector('[name=value]').value = 'typed-in-another-row';
+    keyForm('OPENROUTER_API_KEY').querySelector('[name=value]').value = 'sk-or-saved';
+    let before = await calls();
+    keyForm('OPENROUTER_API_KEY').requestSubmit();
+    await until('the saved toast', () => toasts().includes('OPENROUTER_API_KEY saved'));
+    await reloaded('state', before);
+    const redrawn = all('#keys tbody tr').find((row) => row.cells[0].textContent.trim() === 'OPENROUTER_API_KEY')
+      .cells[1].textContent.trim() === 'Set';
+    const survived = keyForm('TAVILY_API_KEY').querySelector('[name=value]').value === 'typed-in-another-row';
+    await stub({ reload_error: 'config failed to parse, nothing reloaded: bad indent' });
+    keyForm('OPENROUTER_API_KEY').querySelector('[name=value]').value = 'sk-or-again';
+    keyForm('OPENROUTER_API_KEY').requestSubmit();
+    await until('the warning', () => toasts().includes('did not reload') && toasts().includes('restart the API'));
+    await stub({ reload_error: null, keys: KEYS });
+    return redrawn && survived;
   });
 
   await fetch('/__results', {

@@ -22,7 +22,8 @@ if TYPE_CHECKING:
 
 
 def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "LLMClient":
-    api_key = cfg.api_key or os.getenv("ANTHROPIC_API_KEY")
+    # Whitespace is no key (a stray newline from a secrets file).
+    api_key = (cfg.api_key or "").strip() or (os.getenv("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY is required when provider=anthropic")
 
@@ -48,8 +49,12 @@ def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) ->
         **temp_kw,
         api_key=api_key,
         base_url=cfg.base_url,
-        context_window=cfg.context_window or 200000,
-        request_timeout=cfg.request_timeout or 180,
+        # Set in the entry, not merely present: both fields have model defaults
+        # (32768, 120), and truthiness left this route's own unreachable.
+        context_window=(cfg.context_window if "context_window" in cfg.model_fields_set
+                        and cfg.context_window else 200000),
+        request_timeout=(cfg.request_timeout if "request_timeout" in cfg.model_fields_set
+                         and cfg.request_timeout else 180),
         max_retries=3,
         max_tokens=cfg.max_tokens or 8192,
         include_thinking=cfg.include_thoughts or False,
@@ -66,7 +71,7 @@ def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) ->
 def make_batch_backend(cfg: "LLMModelConfig") -> Optional["BatchProviderClient"]:
     """Batch backend for the queue manager; None when no API key is available
     (the caller logs the skip)."""
-    api_key = cfg.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = (cfg.api_key or "").strip() or (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
         return None
     from .anthropic_batch import AnthropicBatchClient

@@ -24,8 +24,8 @@ with the coordinator's root (root ``pps9mf3s1o`` → sub-agent
 prefix walk covers the whole tree however deep it nests.
 
 Cost model (mirrors config/llm_pricing.yaml):
-  - if the stored usage carries an OpenRouter ``cost`` field (> 0) it is used
-    verbatim (already the billed amount incl. caching);
+  - if the stored usage carries a ``cost`` field it is used verbatim, 0
+    included (OpenRouter's billed amount incl. caching; Ollama's 0);
   - otherwise: uncached_input·input + cached_input·cached_rate +
     output·output, per 1M tokens, ×batch_discount for batch providers.
 
@@ -139,24 +139,16 @@ def compute_cost(
     prompt_tokens: int,
     completion_tokens: int,
     cached_tokens: int,
-    or_cost: float,
     is_batch: bool,
     path: Path | None = None,
     cache_write_tokens: int = 0,
 ) -> float:
-    """Cost for one (model, agent) group. Prefers the billed OpenRouter cost.
+    """Estimated cost of calls that carry no billed cost; calc_tree_costs takes
+    a billed sum as it is.
 
     The formula itself lives in agent_system.llm.pricing.estimate_cost -- this
     used to be a third private copy of it, and the copies drifted.
-
-    CAVEAT on `or_cost`: callers aggregate it with SUM() over a whole
-    (model, agent, is_batch) group. If only SOME calls in that group carry a
-    provider cost, the partial sum is used for the entire group and the rest
-    are effectively free. Grouping by "has a cost field" is the real fix; this
-    signature keeps the existing behaviour.
     """
-    if or_cost and or_cost > 0:
-        return or_cost
     cost = estimate_cost(model, prompt_tokens, completion_tokens, cached_tokens,
                          cache_write_tokens=cache_write_tokens, is_batch=is_batch, path=path)
     # unknown model → uncounted (surfaced as a warning by the caller)
@@ -220,12 +212,17 @@ def calc_tree_costs(
     """Aggregate per (model, agent, batch) rows and price each.
 
     Returns (rows, warnings). ``warnings`` names models that had calls but no
-    price and no billed cost — i.e. counted as $0 (a hint to add a rate)."""
+    price and no billed cost — i.e. counted as $0 (a hint to add a rate).
+
+    Calls that carry a cost and calls that carry none are summed apart: a
+    billed cost -- 0 included (Ollama) -- is the price of its calls only, and
+    the others are estimated."""
     where, params = _tree_where(roots)
     cur = conn.execute(
         f"""
         SELECT model, agent_name,
                CASE WHEN provider LIKE 'batch!_%' ESCAPE '!' THEN 1 ELSE 0 END AS is_batch,
+               json_extract(usage_json, '$.cost') IS NOT NULL AS billed,
                COUNT(*) AS calls,
                COALESCE(SUM(json_extract(usage_json, '$.prompt_tokens')), 0) AS pt,
                COALESCE(SUM(json_extract(usage_json, '$.completion_tokens')), 0) AS ct,
@@ -236,24 +233,31 @@ def calc_tree_costs(
                COALESCE(SUM(json_extract(usage_json, '$.cost')), 0) AS or_cost
         FROM llm_requests
         WHERE ({where}) AND direction = 'response'
-        GROUP BY model, agent_name, is_batch
-        ORDER BY pt DESC
+        GROUP BY model, agent_name, is_batch, billed
         """,
         params,
     )
-    rows: list[dict] = []
+    merged: dict[tuple, dict] = {}
     unpriced: set[str] = set()
-    for model, agent, is_batch, calls, pt, ct, cached, writes, or_cost in cur.fetchall():
+    for model, agent, is_batch, billed, calls, pt, ct, cached, writes, or_cost in cur.fetchall():
         batch = bool(is_batch)
-        cost = compute_cost(pricing, model, pt, ct, cached, or_cost, batch,
-                            cache_write_tokens=writes)
-        if cost == 0 and (not or_cost or or_cost <= 0) and model not in pricing:
-            unpriced.add(model or "(empty)")
-        rows.append({
-            "model": model, "agent": agent, "is_batch": batch, "calls": calls,
-            "prompt_tokens": pt, "completion_tokens": ct, "cached_tokens": cached,
-            "cost": cost,
+        if billed:
+            cost = float(or_cost)
+        else:
+            cost = compute_cost(pricing, model, pt, ct, cached, batch,
+                                cache_write_tokens=writes)
+            if cost == 0 and (pt or ct) and model not in pricing:  # errors carry no tokens
+                unpriced.add(model or "(empty)")
+        row = merged.setdefault((model, agent, batch), {
+            "model": model, "agent": agent, "is_batch": batch, "calls": 0,
+            "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "cost": 0.0,
         })
+        row["calls"] += calls
+        row["prompt_tokens"] += pt
+        row["completion_tokens"] += ct
+        row["cached_tokens"] += cached
+        row["cost"] += cost
+    rows = sorted(merged.values(), key=lambda r: r["prompt_tokens"], reverse=True)
     return rows, sorted(unpriced)
 
 

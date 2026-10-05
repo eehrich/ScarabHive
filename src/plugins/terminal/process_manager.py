@@ -2,9 +2,13 @@
 
 import asyncio
 import logging
+import os
+import signal
 import uuid
 from datetime import datetime
 from typing import Awaitable, Callable, Dict, List, Optional
+
+from .executor import kill_tree, release_job, signal_tree
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +112,16 @@ class ProcessManager:
             """Read from stream and append to buffer."""
             while True:
                 try:
-                    line = await stream.readline()
+                    try:
+                        line = await stream.readuntil(b"\n")
+                    except asyncio.IncompleteReadError as e:
+                        line = e.partial  # the end, without a line break
+                    except asyncio.LimitOverrunError as e:
+                        # A line longer than the reader's limit (64 KiB) is
+                        # taken in pieces. readline() raised here and the
+                        # loop stopped reading: the pipe filled up and the
+                        # process blocked on its next write, for good.
+                        line = await stream.read(e.consumed)
                     if not line:
                         break
                     decoded = line.decode('utf-8', errors='replace')
@@ -134,6 +147,7 @@ class ProcessManager:
         # is_running true, and the recorded exit_code stayed None for good --
         # which is what a session woken by on_finish reads first.
         await process.wait()
+        release_job(process)
         proc_info["finished_at"] = datetime.now().isoformat()
         proc_info["exit_code"] = process.returncode
         logger.info(f"Background process {process_id} finished with exit code {process.returncode}")
@@ -252,9 +266,13 @@ class ProcessManager:
         signal_used = "SIGKILL" if force else "SIGTERM"
 
         try:
-            if force:
-                process.kill()
+            # The whole tree: ending the shell alone leaves what it started
+            # running (see kill_tree). On Windows terminate() is
+            # TerminateProcess as well, so there is no gentler way.
+            if force or os.name == "nt":
+                await kill_tree(process)
             else:
+                signal_tree(process, signal.SIGTERM)
                 process.terminate()
 
             # Wait for process to die (with timeout)
@@ -263,8 +281,7 @@ class ProcessManager:
             except asyncio.TimeoutError:
                 # Force kill if terminate didn't work
                 logger.warning(f"Process {process_id} did not terminate, forcing kill")
-                process.kill()
-                await process.wait()
+                await kill_tree(process)
                 signal_used = "SIGKILL (forced)"
 
             logger.info(f"Killed process {process_id} with {signal_used}")

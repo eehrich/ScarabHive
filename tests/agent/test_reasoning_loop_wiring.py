@@ -369,6 +369,50 @@ class TestTheRunLoopRetriesOnce:
         assert isinstance(aborts[0]["duration_ms"], float)
 
     @pytest.mark.asyncio
+    async def test_a_client_that_reports_its_abandon_leaves_one_row_with_the_reason(self):
+        """Clients now report a stream their caller abandons -- with the usage
+        so far. The server's own row came on top: two rows for one call. The
+        abort's reason reaches the client's row instead (abandon_report)."""
+        from agent_system.llm.models import LLMClient
+
+        class _ReportingLLM(_CountingLLM):
+            served_agent = None
+            _last_response_duration_ms = None
+
+            def __init__(self):
+                super().__init__(loops_for_calls=1)
+                self.rows: list[dict] = []
+
+                async def record(info):
+                    self.rows.append(info)
+                self._on_post_llm_response = record
+
+            _notify_post_response = LLMClient._notify_post_response
+
+            async def chat_tools_streaming(self, *args, **kwargs):
+                try:
+                    async for chunk in _CountingLLM.chat_tools_streaming(self, *args, **kwargs):
+                        yield chunk
+                except GeneratorExit:
+                    await self._notify_post_response({
+                        "model": "test/thinking-model", "is_streaming": True,
+                        "error": "stream abandoned by the caller", "usage": {"completion_tokens": 7}})
+                    raise
+
+        llm = _ReportingLLM()
+        agent = _real_agent()
+        agent.llm = llm
+
+        [event async for event in agent.run_events("do it", session_id="s8")]
+
+        aborts = [row for row in llm.rows if row.get("finish_reason") == "reasoning_loop_aborted"]
+        assert len(aborts) == 1, llm.rows
+        assert aborts[0]["usage"] == {"completion_tokens": 7}, "the client's usage was lost"
+        assert "reasoning loop" in aborts[0]["error"]
+        assert aborts[0]["response_data"]["reasoning_loop"]["characters"] >= 20_000
+        assert not [row for row in llm.rows if row.get("error") == "stream abandoned by the caller"]
+
+    @pytest.mark.asyncio
     async def test_a_healthy_model_is_called_once(self):
         """Without this the two tests above would also pass on a loop that
         simply calls twice every time."""

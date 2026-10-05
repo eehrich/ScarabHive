@@ -183,7 +183,8 @@ class LLMModelConfig(BaseModel):
     prompt_cache_mode: Optional[Literal["auto", "multi_turn", "task_sequence", "one_shot", "off"]] = None  # Cache-Verhalten des Agents (docs/prompt_cache_design.md §4). In Agent-yamls via llm_params "*" gesetzt (flache per-Agent-Form — es gibt keinen AgentConfig->Client-Pfad). "task_sequence" aktiviert die Segment-Leiter ueber deklarierten Sentinel-Grenzen; "multi_turn" dokumentiert Fortsetzungs-Caching (keine Marker); "off" strippt auch Sentinels. Default None ~ "auto" (nur deklarierte Grenzen markieren).
     prompt_cache_marker_style: Optional[Literal["openai", "anthropic", "none"]] = None  # Marker-Feld des Modells: "openai" = prompt_cache_breakpoint (GPT-5.6+), "anthropic" = cache_control ephemeral, "none" = Sentinels strippen. Default None = kein Marker ausser prompt_cache_key ist gesetzt (dann "openai", weil der Key Config-diszipliniert nur auf GPT-Eintraegen steht). Ein Modell, das cache_control spricht, sagt es HIER — der Client kennt keine Modellnamen.
     provider_routing: Optional[Dict[str, Any]] = None  # OpenRouter "provider" object: {order: [slugs], allow_fallbacks: bool, sort: "price", ...}. Order-only is enough to bias toward a sticky backend (improves implicit cache hit rate); allow_fallbacks: false would hard-pin. Systemweiter Default: llm_system.openrouter_routing (wird pro Schluessel von hier ueberstimmt). ⚠️ Nur die Pfade provider=openai_httpx und openai_responses reichen das Feld an den Request weiter — der SDK-Pfad provider=openai kennt es nicht und wuerde es STILL verwerfen (kein Modell im Katalog nutzt ihn; wer eines dorthin umstellt, verliert das Routing wortlos).
-    provider_affinity_minutes: Optional[float] = Field(default=None, ge=0)  # How long after an agent type's last call a new run of it starts on the backend that answered that call (sent as provider.order [that one] with allow_fallbacks false; a refusal releases the pin for that call and the retry goes out as configured). None = 30 min, 0 = off. The prompt a type's runs share is cached on that backend: measured 22.09.2026, a run's first call on it read 57.8 % from cache within 5 min of the previous call and 22.5 % within 30 min, on another backend 27.8 % and 9.0 %; past 30 min under 10 % either way. A run's own history (served_by) always wins. Only the OpenRouter routes (openai_httpx, openai_responses, openrouter_sdk) and only with provider_routing.order.
+    provider_affinity_minutes: Optional[float] = Field(default=None, ge=0)  # How long after an agent type's last call a new run of it starts on the backend that answered that call (sent as provider.order [that one] with allow_fallbacks false; a refusal releases the pin for that call and the retry goes out as configured). None = prompt_cache_ttl_minutes, without that 30 min; 0 = off. The prompt a type's runs share is cached on that backend: measured 22.09.2026, a run's first call on it read 57.8 % from cache within 5 min of the previous call and 22.5 % within 30 min, on another backend 27.8 % and 9.0 %; past 30 min under 10 % either way. A run's own history (served_by) always wins. Only the OpenRouter routes (openai_httpx, openai_responses, openrouter_sdk) and only with provider_routing.order.
+    prompt_cache_ttl_minutes: Optional[float] = Field(default=None, gt=0)  # How long the provider's prompt cache probably stays valid after its last write or hit, in minutes. Sent nowhere -- the system reads it: the backend pin (provider_affinity_minutes falls back to it) and whoever must judge whether a paused session's prefix is still cached. Anthropic 5 (its default ttl; 1 h would need a ttl in cache_control), GPT-5.6+/6 30 (fixed), Gemini implicit about 3-5. None = unknown.
     reasoning_details_mode: Optional[Literal["keep_last", "keep_all", "strip"]] = None  # How to round-trip provider reasoning blocks across turns: "keep_last" (default, Gemini — current turn's thought signature only), "keep_all" (encrypted chains that must stay intact, and every model whose cache matches the prefix byte for byte: stripping older blocks rewrites the prefix each turn and the cache is written anew instead of read — measured on book_launcher, ~26k tokens per step), "strip" (drop entirely). On the chat route keep_all also keeps the blocks of a turn whose chain was broken by a compaction WHILE its tools are still open, because that turn's thinking has to be echoed back complete (see utils/reasoning_artifacts); a model whose chain is encrypted and verified across turns wants the Responses route, where the chain reset stays unconditional. Literal: a typo must fail config load, not silently fall back to keep_last.
     plugins: Optional[List[Dict[str, Any]]] = None  # OpenRouter request plugins, passed through verbatim: [{"id": "context-compression", "engine": "middle-out"}, {"id": "response-healing"}, {"id": "moderation"}, {"id": "file-parser", "pdf": {...}}, {"id": "auto-router", ...}]. Free dicts for the same reason provider_routing is one — the vocabulary belongs to the gateway. UNSET by default: every one of them changes what the model sees or costs (context-compression rewrites the prompt), so none is turned on without a measurement behind it.
     prompt_cache_options: Optional[Dict[str, Any]] = None  # OpenRouter/OpenAI request-level cache controls, e.g. {"mode": "explicit"} — disables OpenAI-MANAGED breakpoints so only blocks carrying prompt_cache_breakpoint are cached (GPT-5.6+ only). Unset means the provider keeps its automatic breakpoints IN ADDITION to ours; which of the two caches better is unmeasured here, so this stays a deliberate per-model switch.
@@ -505,13 +506,17 @@ class ToolConfig(BaseModel):
     """Tool access control configuration"""
     allowed: Optional[List[str]] = Field(default_factory=list)  # list of allowed tools (use "*" to allow all tools)
     blocked: Optional[List[str]] = Field(default_factory=list)  # list of blocked tools
+    # Allowed tools whose schema is held back until the model loads it with
+    # tool_search (servers/agent/deferred_tools.py). Read for agents only; an
+    # external MCP server entry (RemoteMCPConfig.tools) ignores it.
+    deferred: Optional[List[str]] = Field(default_factory=list)
 
     def __init__(self, **data):
         # Normalize an explicit None to [] -- but only for keys that were
         # actually given. Injecting absent keys would mark them as "set",
         # so model_dump(exclude_unset=True) in the server-inheritance
         # resolver would export phantom empty lists that wipe parent lists.
-        for key in ("allowed", "blocked"):
+        for key in ("allowed", "blocked", "deferred"):
             if key in data and data[key] is None:
                 data[key] = []
         super().__init__(**data)
@@ -1036,6 +1041,13 @@ class RemoteMCPConfig(BaseModel):
     # cannot serve both.
     timeout: Optional[float] = None
 
+    # When the connection is made. "startup": every process that boots the
+    # plugins connects (and, for stdio, STARTS) the server. "on_demand": only
+    # a process running an agent whose tools.allowed names this server
+    # (``<name>.*`` or ``<name>.<tool>``) -- a browser server otherwise ran
+    # once per CLI worker, for nobody.
+    connect: Literal["startup", "on_demand"] = "startup"
+
     # Authentication and security
     auth: Optional[MCPAuthConfig] = None
 
@@ -1404,7 +1416,7 @@ class AuthConfig(BaseModel):
     # Default admin user (created on first startup if no users exist)
     default_admin_username: str = "admin"
     default_admin_password: Optional[str] = None  # Generated randomly if not set
-    default_admin_email: str = "admin@localhost"
+    default_admin_email: str = "admin@example.com"  # an EmailStr: "admin@localhost" failed it, and no admin was created
     
     # NEW: Anonymous access configuration
     anonymous_access: AnonymousAccessConfig = Field(default_factory=AnonymousAccessConfig)

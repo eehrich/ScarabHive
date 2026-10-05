@@ -37,11 +37,13 @@ DATA = REPO / "data"
 CONFIG = REPO / "config"
 SRC = REPO / "src"
 
-#: The agents the shipped configuration grants such a tool, all gated at admin.
+#: The agents the open configuration grants such a tool, all gated at admin. Agents of a further
+#: src/plugins_<name> root are not named here (the open-source checkout has none); the gate check
+#: below holds them all the same.
 EXPECTED_ADMIN = frozenset({
-    "amiga_coder", "blender_agent", "claude_code_agent", "coder", "coder_explorer", "coder_reviewer",
-    "coder_tester", "file_ops_test_agent", "gamedev", "gamedev_tester", "godot_agent", "skills_agent",
-    "skills_agent_multimodal", "sysadmin_agent",
+    "blender_agent", "claude_code_agent", "coder", "coder_explorer", "coder_reviewer",
+    "coder_tester", "file_ops_test_agent", "gamedev", "gamedev_tester", "godot_agent",
+    "skills_agent", "skills_agent_multimodal", "sysadmin_agent",
 })
 
 #: Granted a terminal, and still below admin: theirs (state_graph_terminal) runs one analysis script and
@@ -166,12 +168,25 @@ def test_the_file_detector_by_directory(default_file_dirs, server, flagged):
     assert ("probe" in _powerful({"probe": config}, default_file_dirs)) is flagged, server
 
 
+def _private_agents() -> set[str]:
+    """Every server a plugin root besides src/plugins declares in its agent files."""
+    import yaml
+
+    names = set()
+    for root in SRC.glob("plugins_*"):
+        for path in root.rglob("agents/*.yaml"):
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            names.update(((data.get("plugins") or {}).get("servers") or {}).keys())
+    return names
+
+
 def test_every_agent_granted_a_shell_or_the_checkout_is_admin_only(shipped, default_file_dirs):
     granted = _granted(shipped, _powerful(shipped, default_file_dirs))
 
-    assert set(granted) - set(LOWER) == EXPECTED_ADMIN, (
+    public = set(granted) - set(LOWER) - _private_agents()
+    assert public == EXPECTED_ADMIN, (
         "the agents granted a shell, code execution or file access to what holds secrets changed -- look at the "
-        f"difference, then gate it or update this list: {sorted(set(granted) - set(LOWER) ^ EXPECTED_ADMIN)}")
+        f"difference, then gate it or update this list: {sorted(public ^ EXPECTED_ADMIN)}")
     gates = {name: shipped[name].metadata.min_role if shipped[name].metadata else None for name in granted}
     wrong = {name: gate for name, gate in gates.items() if gate != LOWER.get(name, "admin")}
     assert wrong == {}, f"granted such a tool without the gate it needs: {wrong}"

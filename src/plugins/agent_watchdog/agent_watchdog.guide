@@ -1,0 +1,341 @@
+@database "agent_watchdog"
+@author "Enrico Ehrich"
+@$VER: agent_watchdog.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Agent Watchdog"
+@{h1}Agent Watchdog
+
+A long agent run can go in circles -- the same search again and again, a
+file read three times, a question reopened without anything new -- and
+from the outside it looks just like a run that is working hard. Agent
+Watchdog watches an agent that switched it on: every few steps a second,
+cheap model reads a short excerpt of the run and answers one question --
+did the recent stretch make a decision or close an open question? Its
+verdict (@{tt}continue@{utt}, @{tt}steer@{utt} or @{tt}abort@{utt}) is
+written to a log and shown as a status line in the chat.
+
+@{b}It only watches.@{ub} This is the first stage of the plugin: nothing is
+told to the agent, nothing is stopped, the agent's history is not touched.
+The log is there to find out whether the verdicts are good enough to act
+on. It has no tools and no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+  @{"  The verdict log  " link log}
+
+For agents and developers
+  @{"  The hooks  " link hooks}
+  @{"  The judge  " link judge}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt}, as shipped:
+
+@{code yaml}
+plugins:
+  servers:
+    agent_watchdog:
+      type: agent_watchdog
+      enabled: true
+      config:
+        llm_profile: "or-deepseek-flash"
+@{body}
+
+The plugin is on, but all three of its hooks are off for every agent. No
+allowlist line -- there are no tools. No extra packages.
+
+@{h2}Switching it on for an agent
+
+In the agent's YAML. Checks every few steps need one hook:
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      agent_watchdog.observe_step:
+        enabled: true
+        first_check_step: 10
+        every_n_steps: 10
+@{body}
+
+Checks inside one long model call (a model that thinks for minutes before
+it acts) need two more, always together -- see
+@{" The hooks " link hooks}:
+
+@{code yaml}
+      agent_watchdog.remember_task:
+        enabled: true
+      agent_watchdog.observe_reasoning:
+        enabled: true
+        every_n_reasoning_chars: 20000
+@{body}
+
+Each agent decides for itself: a sub-agent is watched only when its own
+YAML switches the hooks on, not because its parent does. Chat sessions,
+sub-agents and woken runs of an agent that has the hooks on are all
+watched.
+
+@{h2}Settings
+
+Every key except @{tt}llm_profile@{utt} and @{tt}log_path@{utt} can be set
+in two places: under @{tt}config:@{utt} in the server entry (for every
+agent), and in an agent's override of a hook (for that agent and that
+hook). The agent's value wins.
+
+@{table}
+Key | Default | Meaning
+llm_profile | turbo | the judge's LLM profile; server entry only
+judge_prompt | empty | a prompt file for the judge, relative to the project root; empty means the built-in one
+first_check_step | 10 | the step of the first check
+every_n_steps | 10 | steps between checks after the first
+every_n_reasoning_chars | 20000 | characters of thinking in one call between checks inside it
+task_chars | 4000 | characters of user messages the judge sees, newest first
+spec_chars | 3000 | characters from the end of the system prompt
+reasoning_chars | 8000 | characters of the most recent thinking
+max_tool_calls | 20 | how many of the latest tool calls the judge sees
+judge_timeout_seconds | 120 | a judge slower than this counts as continue
+log_path | empty | the log file, relative to the project root; empty means @{tt}agent_watchdog/verdicts.jsonl@{utt} in the data directory
+@{body}
+
+Steps are counted from 0 within one run, the way the agent loop counts
+them: @{tt}first_check_step: 10@{utt} is the eleventh model call, shown
+as step 11 in the chat. Every new message to the agent starts a new run
+at step 0, so a conversation of short turns is never checked by
+@{tt}observe_step@{utt}.
+
+A number setting that is not a whole number of at least 1 (0, a word,
+@{tt}true@{utt}) is logged as a warning and the server entry's value is
+used -- or the default above, when that one is not valid either.
+
+@{h2}Which hook reads which key
+
+An agent's override belongs to one hook, and each hook reads only its own:
+
+@{table}
+Hook | Reads
+observe_step | first_check_step, every_n_steps, task_chars, spec_chars, reasoning_chars, max_tool_calls, judge_prompt, judge_timeout_seconds
+remember_task | task_chars, spec_chars, max_tool_calls
+observe_reasoning | every_n_reasoning_chars, reasoning_chars, judge_prompt, judge_timeout_seconds
+@{body}
+
+So an agent that wants a custom judge prompt for both kinds of check sets
+@{tt}judge_prompt@{utt} in the @{tt}observe_step@{utt} override and in
+the @{tt}observe_reasoning@{utt} override.
+
+@{h2}Where the files are
+
+@{bullet}The log: @{tt}agent_watchdog/verdicts.jsonl@{utt} in the data
+directory (@{tt}data/@{utt} of the installation unless another one is
+configured). One file for every agent and every user. See
+@{" The verdict log " link log}.
+@{bullet}The built-in judge prompt: @{tt}prompts/judge.md@{utt} in the
+plugin folder, read once when the plugin starts. A configured
+@{tt}judge_prompt@{utt} file is read at its first check and then kept.
+Editing either takes a restart -- on purpose, so a save in the middle of a
+run cannot change how that run is judged.
+@endnode
+
+@node hooks "The hooks"
+@{h1}The hooks
+
+All three are off by default; an agent switches them on as
+@{" Setting it up " link setup} shows. None of them changes anything the
+agent sees, and none of them holds the agent up: the judge runs in the
+background, the hook itself returns at once.
+
+@{h2}observe_step
+
+A @{tt}post_llm_call@{utt} hook: it runs after every model call of the
+agent. At a due step -- @{tt}first_check_step@{utt}, then every
+@{tt}every_n_steps@{utt} -- it builds the excerpt (see
+@{" The judge " link judge}) and starts the judge.
+
+It does nothing when the step is not due, and when the previous check of
+the same run is still waiting for its answer: that step is skipped, not
+queued, and the next due step tries again.
+
+@{h2}remember_task and observe_reasoning
+
+A model that thinks for a long time inside one call has no step boundary
+to check at. @{tt}observe_reasoning@{utt} is an @{tt}llm_progress@{utt}
+hook: it runs while the call is still streaming, every 2000 characters of
+thinking, and starts the judge each time the call's thinking crosses
+another @{tt}every_n_reasoning_chars@{utt}. The judge then sees the call's
+own thinking so far, marked as still in progress.
+
+Inside the stream the hook has no access to the conversation, so
+@{tt}remember_task@{utt}, a @{tt}pre_llm_call@{utt} hook, builds the
+excerpt before every call and keeps it -- only the excerpt, for the last
+32 runs of the process. Without it, every check inside a call is logged as
+@{tt}task_not_visible@{utt} and no judge is asked.
+
+@{tt}observe_reasoning@{utt} is blind on clients that stream no thinking
+(Gemini, batch mode): there is nothing to count. A retry of the call
+starts counting at 0 again.
+
+@{h2}The status line
+
+While the judge works, the chat shows a line of its own below the
+agent's -- @{tt}checking step 10@{utt} -- and when it is done, the
+verdict:
+
+@{code text}
+continue: the agent decided to read the config loader next — coder
+continue (evidence_not_verbatim): no new information since the last search — coder
+continue (timeout) — step 20 of coder
+@{body}
+
+A @{tt}steer@{utt} or @{tt}abort@{utt} is not an error and is not shown
+as one. The line is cut at 140 characters.
+
+@{h2}At shutdown
+
+When the process ends, a judge that is still running is waited for, up to
+@{tt}judge_timeout_seconds@{utt} from the server entry. One still running
+after that is stopped and logged as @{tt}cancelled_at_shutdown@{utt}. A
+short-lived agent-cli run therefore still gets the line for its last
+check.
+@endnode
+
+@node judge "The judge"
+@{h1}The judge
+
+A separate model, from the profile in @{tt}llm_profile@{utt}. It gets the
+judge prompt as its system message and the excerpt as one user message,
+and has no tools. One client is made at the first check and used for every
+agent of the process.
+
+@{h2}The excerpt
+
+Bounded, however long the run is:
+
+@{table}
+Field | What it holds
+user_messages | the user messages of the run, newest first into @{tt}task_chars@{utt}, shown oldest first. Notes the run itself added (the step budget, "provide your final answer now") count as user messages
+expected_result | the last @{tt}spec_chars@{utt} of the system prompt, where a deliverable is usually described
+recent_thinking | the most recent @{tt}reasoning_chars@{utt} of the agent's thinking (or text, when a step has no thinking)
+recent_tool_calls | the latest @{tt}max_tool_calls@{utt} calls: tool name, a fingerprint of the arguments, the result as ok, empty, error or pending, and its size
+call_in_progress | true for a check inside a call
+@{body}
+
+Tool arguments are never shown -- for a writing tool they are the whole
+file. Identical fingerprints mean identical arguments. A result counts as
+@{tt}empty@{utt} when it is empty, or JSON whose top-level lists are all
+empty (a search that "succeeded" with no hits); as @{tt}error@{utt} when
+it is JSON with @{tt}status: error@{utt} or an @{tt}error@{utt} field.
+
+A run with no user message at all is not judged: the check is logged as
+@{tt}task_not_visible@{utt}.
+
+@{h2}The answer
+
+The judge answers with a JSON object: @{tt}verdict@{utt},
+@{tt}reason@{utt}, @{tt}evidence@{utt} (a word-for-word quote from the
+excerpt) and, for steer and abort, @{tt}message@{utt} -- what the agent
+would be told. The built-in prompt tells it: when in doubt, continue.
+
+Everything doubtful counts as @{tt}continue@{utt}, and the log line says
+why in @{tt}fail_open@{utt}:
+
+@{table}
+fail_open | When
+unparseable | the answer is not JSON (a code fence around it is fine)
+not_an_object | JSON, but not an object
+unknown_verdict | the verdict is none of the three
+no_evidence | no quote
+evidence_not_verbatim | the quote is not in the excerpt (spaces, case and a leading or trailing "..." do not matter)
+no_message | steer or abort without a message
+timeout | no answer within @{tt}judge_timeout_seconds@{utt}
+judge_error | the call failed -- network, provider error, refusal, unknown profile; the text is in @{tt}error@{utt}
+no_judge_llm | the agent carries no system configuration to build the judge from
+cancelled_at_shutdown | still running when the process ended
+task_not_visible | no user message to show, or a check inside a call without remember_task; no call was made
+@{body}
+
+A judge that is broken therefore never looks like a judge that approves of
+everything: count the lines with @{tt}fail_open@{utt}.
+
+@{h2}A prompt of your own
+
+@{tt}judge_prompt@{utt} names a Markdown file, relative to the project
+root. It has to keep the output contract -- the JSON fields and the
+verbatim quote -- or every check is logged as fail-open. A file that
+cannot be read falls back to the built-in prompt; the log line then
+carries @{tt}judge_prompt@{utt} and @{tt}judge_prompt_error@{utt}.
+@endnode
+
+@node log "The verdict log"
+@{h1}The verdict log
+
+One JSON line per check, appended to @{tt}verdicts.jsonl@{utt} (see
+@{" Setting it up " link setup} for where it is). Nothing ever trims it.
+
+@{table}
+Field | Meaning
+ts | when the line was written, UTC
+request_id, session_id, agent | the run that was watched
+observed_model | the model the agent was running on
+step | the agent's step, counted from 0
+trigger | step or reasoning
+reasoning_chars | for a check inside a call: its thinking so far
+task_preview | the first 200 characters of the newest user message the judge saw
+judge_prompt, judge_prompt_error | when a prompt file is configured
+judge_model | the judge's model
+verdict, reason, evidence, message | the judge's answer as used
+usage, finish_reason | the judge call's token usage and stop reason
+latency_ms | how long the judge took
+fail_open | why the answer was not used as given; see @{" The judge " link judge}
+raw | when the answer itself was not usable (unparseable to no_message): its first 2000 characters
+error | with judge_error: what failed
+@{body}
+
+The judge's calls do not go through the watched agent's LLM hooks: they
+are not in the message debugger and do not count toward the agent's
+usage. @{tt}usage@{utt} in this log is the only record of what the judge
+costs.
+
+The log holds the beginning of every watched user message, for every user
+of the installation, in one file.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{b}The watched agent sees nothing.@{ub} No message is added, no message is
+changed, every hook returns without modifying the call. The
+@{tt}message@{utt} a steer or abort verdict carries goes into the log
+only.
+
+@{h2}Tokens and cache
+
+None for the agent: its history and its cached prompt are untouched, and
+the agent does not wait for the judge. The judge costs one call of its own
+model per check. The excerpt is bounded by the settings -- by default at
+most about 15 000 characters plus the tool call list and the prompt
+(about 3 300 characters) -- no matter how long the run is. With the
+defaults a run of 50 model calls is checked four times (steps 10,
+20, 30 and 40); a check inside a call adds
+one per 20 000 characters of thinking.
+
+@{h2}Known gaps
+
+@{bullet}No intervention: the verdicts are logged, not acted on.
+@{bullet}@{tt}expected_result@{utt} is the end of the system prompt, not a
+located "deliverable" section; a prompt that describes its output
+elsewhere gives the judge the wrong part.
+@{bullet}Refusals are not counted on their own: they are
+@{tt}judge_error@{utt} lines with the provider's text.
+@{bullet}A step that falls due while the previous check still runs is
+skipped, not caught up.
+@{bullet}Beyond 32 runs remembering their task at the same time, the oldest
+one's checks inside a call become @{tt}task_not_visible@{utt}.
+@{bullet}The log is not split by user and never trimmed.
+@{bullet}Shutdown waits the server entry's
+@{tt}judge_timeout_seconds@{utt}, even when an agent set a longer one.
+@endnode

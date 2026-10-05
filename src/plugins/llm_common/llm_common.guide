@@ -1,0 +1,239 @@
+@database "llm_common"
+@author "Enrico Ehrich"
+@$VER: llm_common.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Shared code of the LLM providers"
+@{h1}Shared code of the LLM providers
+
+This plugin is the code the LLM provider plugins share: which API key may
+go to which host, which HTTP statuses are worth a retry, how a cancel
+reaches a running call, and the OpenAI and Gemini wire shapes more than one
+route speaks. Keeping one copy is the point -- a rule like "the OpenAI key
+never goes to a host the entry merely names" must be the same rule on every
+route, and two copies drift.
+
+It is a @{b}library@{ub}: no provider name, no tools, no hooks, no panel.
+Nothing in @{tt}config/llm.yaml@{utt} names it; the provider plugins import
+it. For an operator it matters in one place: an OpenAI-compatible entry
+without @{tt}api_key:@{utt} gets its key by the rules in
+@{" API keys and endpoints " link apikeys}.
+
+The providers themselves are described in their own manuals:
+@{" OpenAI-compatible routes " link llm_openai_compat/main},
+@{" OpenAI SDK " link llm_openai/main},
+@{" Anthropic " link llm_anthropic/main},
+@{" Gemini " link llm_gemini/main},
+@{" Ollama " link llm_ollama/main},
+@{" OpenRouter SDK " link llm_openrouter/main} and
+@{" Decision models " link llm_decisions/main}. Models and profiles in
+general: @{" LLM models and profiles " link scarabhive/llm}.
+
+@{code}
+For users (the operator writing llm.yaml)
+  @{"  API keys and endpoints  " link apikeys}
+  @{"  What a misconfiguration looks like  " link errors}
+
+For agents and developers
+  @{"  What the modules provide, and who uses them  " link modules}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node apikeys "API keys and endpoints"
+@{h1}API keys and endpoints
+
+Every OpenAI-compatible provider can be pointed at another host with
+@{tt}base_url@{utt}. If a missing key simply fell back to
+@{tt}OPENAI_API_KEY@{utt}, a gateway entry without a key would send the
+OpenAI secret to that gateway in its Authorization header. So the key
+follows the @{b}endpoint@{ub}, never the provider name.
+
+@{h2}The order
+
+@{bullet}The endpoint is the entry's @{tt}base_url@{utt}, or the provider's
+default when it has none.
+@{bullet}An @{tt}api_key@{utt} in the entry wins, whatever the host. It is
+trimmed; one that is empty or only whitespace counts as not set. An unset
+@{tt}${VAR}@{utt} expands to an empty string, so it counts as not set too.
+@{bullet}Otherwise the host of the endpoint picks the environment variable:
+
+@{table}
+Host of the endpoint | Key taken from
+openrouter.ai and its subdomains | OPENROUTER_API_KEY
+api.openai.com and its subdomains | OPENAI_API_KEY
+api.typesafe.ai and its subdomains | TYPESAFE_API_KEY
+a local host (below) | OPENAI_API_KEY
+anything else | nothing: building the client fails
+@{body}
+
+@{bullet}The variable's value is trimmed too; empty or whitespace is
+"missing", and building the client fails.
+
+The host is compared as the parsed host name, case-blind, never as text in
+the URL: @{tt}https://gw.example.com/openrouter.ai/v1@{utt} is
+gw.example.com, @{tt}https://api.openai.com\@evil.example/@{utt} is
+evil.example, and @{tt}api.openai.com.evil.example@{utt} is not
+api.openai.com.
+
+@{h2}What counts as local
+
+A local OpenAI-compatible server (LM Studio, vLLM, llama.cpp, Ollama's
+/v1) usually accepts any key, and the secret does not leave the network, so
+it gets OPENAI_API_KEY:
+
+@{bullet}an IPv4 loopback or private address (10/8, 172.16/12, 192.168/16,
+169.254/16 and the other ranges Python calls private);
+@{bullet}an IPv6 loopback (::1), unique-local (fc00::/7) or link-local
+(fe80::/10) address, or an IPv4-mapped one of a local IPv4 address;
+@{bullet}a name without a dot (localhost, a docker-compose or Kubernetes
+service like @{tt}ollama@{utt}), @{tt}host.docker.internal@{utt}, or a
+name ending in @{tt}.local@{utt}.
+
+Not local: 100.64.0.0/10 (carrier NAT, also Tailscale), 6to4 and Teredo
+IPv6 addresses (they carry a public IPv4 address), and a dotless host that
+the resolver reads as an address -- @{tt}134744072@{utt} or
+@{tt}0x08080808@{utt} are 8.8.8.8. Such an endpoint needs
+@{tt}api_key:@{utt} in the entry.
+
+@{h2}Which providers follow these rules
+
+@{table}
+Provider | Plugin | Default endpoint
+openai | llm_openai | https://api.openai.com/v1
+openai_httpx | llm_openai_compat | https://api.openai.com/v1
+openai_responses | llm_openai_compat | https://openrouter.ai/api/v1
+openai_speech (TTS) | llm_openai_compat | https://openrouter.ai/api/v1
+openrouter_sdk | llm_openrouter | https://openrouter.ai/api/v1
+openrouter_decisions | llm_decisions | https://openrouter.ai/api/alpha/decisions
+systemone_decisions | llm_decisions | https://api.typesafe.ai/v1/systemone
+ollama_decisions | llm_decisions | http://127.0.0.1:11434/v1/systemone
+@{body}
+
+The decision providers speak their own wire, not OpenAI's: a
+@{b}local@{ub} endpoint without @{tt}api_key@{utt} gets no key at all
+instead of OPENAI_API_KEY, and the request goes out without
+Authorization.
+
+Not covered here: @{tt}anthropic@{utt} reads ANTHROPIC_API_KEY, the Gemini
+providers GEMINI_API_KEY or GOOGLE_API_KEY, Ollama needs none (see their
+manuals), and the OpenAI batch backend always talks to api.openai.com (see
+@{" API keys and endpoints " link llm_openai_compat/apikeys}).
+
+@{h2}Example
+
+@{code yaml}
+llm_system:
+  models:
+    deepseek-direct:
+      provider: openai_httpx
+      model: deepseek-chat
+      base_url: https://api.deepseek.com/v1
+      api_key: ${DEEPSEEK_API_KEY}   # required: api.deepseek.com is in no table
+    local-qwen:
+      provider: openai_httpx
+      model: qwen3
+      base_url: http://vllm:8000/v1  # dotless: local, OPENAI_API_KEY if set
+@{body}
+@endnode
+
+@node errors "What a misconfiguration looks like"
+@{h1}What a misconfiguration looks like
+
+Both failures are a @{tt}ValueError@{utt} when the client is built -- the
+first turn with that model fails, before anything is sent. What the chat
+and the fallback chain do with it is the provider's and the core's
+business; the text is this plugin's.
+
+@{h2}A host with no variable
+
+The entry names a host the table does not know and sets no
+@{tt}api_key@{utt}:
+
+@{code}
+provider=openai_httpx targets https://api.deepseek.com/v1, and no
+environment variable is configured for that host — set `api_key:` on the
+model entry (e.g. api_key: ${YOUR_PROVIDER_API_KEY}). Falling back to
+OPENAI_API_KEY would send that secret there.
+@{body}
+
+Fix: @{tt}api_key: ${DEEPSEEK_API_KEY}@{utt} on the entry. If that variable
+is unset, the key expands to an empty string and you get this message
+again.
+
+@{h2}The host's variable is missing
+
+@{code}
+OPENROUTER_API_KEY is required when provider=openai_responses targets
+https://openrouter.ai/api/v1
+@{body}
+
+The variable is unset, empty or only whitespace. Set it, or set
+@{tt}api_key:@{utt} on the entry.
+
+@{h2}What the messages never contain
+
+No key and no part of one: they name the variable, never its value. A
+password in the URL's user part (@{tt}https://user:secret\@host/v1@{utt}) is
+cut from the URL in the message; the host and path stay.
+@endnode
+
+@node modules "What the modules provide, and who uses them"
+@{h1}What the modules provide, and who uses them
+
+Something belongs here when two or more provider plugins would otherwise
+copy it. Code only one provider needs stays in that provider.
+
+@{table}
+Module | Provides | Used by
+api_keys | @{tt}resolve_api_key(api_key, base_url, *, default_base_url, provider, local_fallback=True)@{utt} returns @{tt}(key, effective_url)@{utt}; @{tt}key_var_for(url)@{utt} names the variable for a URL or None | llm_openai, llm_openai_compat (chat, Responses, speech), llm_openrouter, llm_decisions
+http_status | @{tt}RETRYABLE_STATUS@{utt}: 429, 500, 502, 503, 504, Cloudflare's 520-524, 529 | llm_openai_compat (speech), llm_decisions
+cancellation | @{tt}await_call(task, token)@{utt}: awaits a provider call while watching the cancel token; a cancel arrives as @{tt}asyncio.CancelledError@{utt}, and the call is stopped and awaited when the caller is cancelled | llm_openai, llm_anthropic, llm_ollama, llm_decisions
+model_dialects | the per-model dialect keys (@{tt}tool_schema_dialect@{utt}, @{tt}reasoning_details_mode@{utt}, @{tt}thinking_request_shape@{utt}, @{tt}assistant_reasoning_field@{utt}, @{tt}prompt_cache_marker_style@{utt}): allowed values, validation at construction, @{tt}warn_unwired@{utt} for a key a route ignores, @{tt}reasoning_replay_flags@{utt} | all six provider plugins
+openai_utils | message and content normalisation for the OpenAI wire: images, text files, audio to @{tt}input_audio@{utt}, API fields only | llm_openai, llm_openai_compat
+structured_output | the Chat Completions @{tt}response_format@{utt} and the Responses @{tt}text.format@{utt} of a structured-output request | llm_openai, llm_openai_compat
+schema_sanitize | @{tt}sanitize_schema_for_gemini@{utt}: strips JSON Schema keywords Gemini's function declarations refuse, keeps limits as text in the description | llm_gemini, and llm_openai_compat through the @{tt}gemini_function_declarations@{utt} dialect
+@{body}
+
+@{h2}Using resolve_api_key in a new provider
+
+@{code}
+from plugins.llm_common.api_keys import resolve_api_key
+
+api_key, base_url = resolve_api_key(
+    cfg.api_key, cfg.base_url,
+    default_base_url="https://api.example.com/v1",
+    provider="example")
+@{body}
+
+Pass @{tt}local_fallback=False@{utt} when the wire is not OpenAI's: a local
+endpoint then gets @{tt}""@{utt}, and the client must send no
+Authorization header for an empty key. A new host with its own variable is
+one line in @{tt}_HOST_KEYS@{utt} in @{tt}api_keys.py@{utt}.
+
+An unknown dialect value raises at construction:
+@{tt}tool_schema_dialect='x' is not a declared value for model 'm' —
+expected one of [...]@{utt}. A new value is added in
+@{tt}model_dialects.py@{utt} only; the config literal must follow (a test
+compares them).
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing to enable. @{tt}plugin.toml@{utt} declares
+@{tt}type = ["library"]@{utt} and no @{tt}provides@{utt}, so the LLM
+registry skips it; the manifest exists so the dependency aggregation and
+the import-declaration guard cover the package. No
+@{tt}config/plugins.yaml@{utt} entry, no allowlist line, no dependencies
+beyond the core.
+
+The environment variables it reads are the three in
+@{" API keys and endpoints " link apikeys}; put them in the environment or
+the secrets file the server loads. Nothing on disk.
+
+@{h2}Tests
+
+@{tt}src/plugins/llm_common/tests/@{utt}; @{tt}test_api_keys.py@{utt} uses
+fake keys only and sends nothing.
+@endnode

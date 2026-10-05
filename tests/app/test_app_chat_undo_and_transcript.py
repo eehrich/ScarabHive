@@ -312,6 +312,20 @@ class TestUndo:
         assert dropped["had_attachments"] is True
         assert dropped["text"] == "was ist das? [image_url]"
 
+    async def test_a_note_a_hook_wrote_in_front_does_not_go_back_into_the_input(self, api):
+        """simple_prompt_inject task_start writes in front of the task; /retry
+        sends the text again, and the hook writes the note anew."""
+        await _stored(api, messages=[
+            {"role": "user", "content": "Oft gelesen: Akten.\n\n---\n\nschreib die routine",
+             "prefixed_by": {"hint": "Oft gelesen: Akten.\n\n---\n\n"}},
+            {"role": "assistant", "content": "hier ist sie"}])
+
+        async with _client(api.app) as client:
+            response = await client.post("/chat/undo", json={"session_id": "s1"},
+                                         timeout=30.0)
+
+        assert response.json()["dropped"]["text"] == "schreib die routine"
+
 
 class TestContext:
     """What fills the window -- the measurement and the estimate, apart."""
@@ -429,9 +443,12 @@ class TestContext:
 
         asked = []
 
-        async def describe(self, session_id=None):
+        async def describe(self, session_id=None, messages=None):
             asked.append(session_id)
+            handed.append(messages)
             return "ein prompt", []
+
+        handed = []
 
         monkeypatch.setattr(Agent, "describe_context_inputs", describe)
         await _stored(api, messages=[{"role": "user", "content": "frage"}])
@@ -441,6 +458,9 @@ class TestContext:
                              timeout=30.0)
 
         assert asked == ["s1"]
+        # The stored messages go along: the deferred tools they loaded count
+        # although this process's tracker never held the session.
+        assert [m["content"] for m in handed[0]] == ["frage"]
 
     async def test_a_session_with_no_record_gets_no_measurement(self, api):
         """The tracker is keyed by session id ALONE, and a session that is not

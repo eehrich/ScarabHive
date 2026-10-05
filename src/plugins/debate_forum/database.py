@@ -378,17 +378,17 @@ class DebateForumDB:
         messages = self.get_messages(channel_id, limit=max_messages)
 
         parts = [
-            f"FORUM-DEBATTE: {channel['name']}",
+            f"FORUM DEBATE: {channel['name']}",
             f"TOPIC: {channel['topic']}",
         ]
         if channel.get("context"):
-            parts.append(f"\nKONTEXT:\n{channel['context']}")
+            parts.append(f"\nCONTEXT:\n{channel['context']}")
         parts.append("\n" + "═" * 60 + "\n")
 
         for msg in messages:
             role_upper = msg["agent_role"].upper()
             parts.append(
-                f'[{role_upper} "{msg["agent_name"]}" | Runde {msg["round"]}]\n'
+                f'[{role_upper} "{msg["agent_name"]}" | Round {msg["round"]}]\n'
                 f'{msg["content"]}\n'
             )
 

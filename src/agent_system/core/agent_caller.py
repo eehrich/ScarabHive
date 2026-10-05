@@ -410,13 +410,14 @@ def parse_json_value(text: str) -> Any:
     except json.JSONDecodeError:
         pass
 
-    # HTML guard. An agent that inherits a Markdown->HTML output hook returns
+    # HTML guard. An answer rendered to HTML (the Markdown->HTML output hook did
+    # that until it was removed on 2026-09-30) reads
     # ``<p>{<br> "a": 1</p>`` or ``<pre><code>{&quot;a&quot;: 1}``. That is
     # NOT a parse error: repair_json happily returns a dict whose keys are
     # ``quot;a&quot;`` or whose entries are cut at every <br> — no exception,
     # a clean-looking empty result. Measured on B57 (2026-08-05): twelve
-    # findings silently lost, book passed the gate. The fix belongs in the
-    # agent config; this guard makes the next misconfiguration loud. It sits
+    # findings silently lost, book passed the gate. The guard stays for JSON that
+    # still arrives that way (a model writing HTML itself), and says so. It sits
     # AFTER the fast path (valid JSON carrying <p> in a text field is never
     # touched) and BEFORE repair_json (the step that makes the damage silent).
     if "&quot;" in text or _HTML_TAG_RE.search(text):
@@ -433,9 +434,7 @@ def parse_json_value(text: str) -> Any:
                     pass
         if isinstance(healed, (dict, list)):
             logger.warning(
-                "JSON arrived HTML-encoded (Markdown->HTML hook active?) — "
-                "unescaped and parsed. The sending agent should disable "
-                "`markdown_formatter.format_markdown_output`.",
+                "JSON arrived HTML-encoded — unescaped and parsed.",
             )
             return healed
 

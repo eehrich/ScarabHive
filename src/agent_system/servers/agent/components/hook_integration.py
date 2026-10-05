@@ -632,60 +632,6 @@ class HookIntegrationManager:
             return tool_result
         return modified_context.tool_result.get("result", tool_result)
     
-    async def execute_format_output_hooks(
-        self,
-        output: str,
-        request_id: str,
-        session_id: str,
-        output_format: str = "html"
-    ) -> tuple[str, str]:
-        """
-        Execute format-output hooks.
-        
-        Args:
-            output: Final output string
-            request_id: Request identifier
-            session_id: Session identifier
-            output_format: Target format ('html', 'ansi', 'text', 'markdown')
-            
-        Returns:
-            Tuple of (formatted_output, content_format)
-            content_format indicates actual format of returned content
-        """
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"execute_format_output_hooks called: output_format={output_format}, output_length={len(output)}")
-        
-        if not self.is_enabled():
-            return output, 'text'
-        
-        context = HookContext(
-            hook_type=HookType.FORMAT_OUTPUT,
-            request_id=request_id,
-            session_id=session_id,
-            user_id=self.user_of(session_id, request_id),
-            agent=self.agent,
-            agent_name=self.agent.name,
-            output=output,
-            output_format=output_format,
-        )
-        
-        logger.info(f"HookContext created: output_format={context.output_format}")
-        
-        modified_context = await self.registry.execute_hooks(
-            HookType.FORMAT_OUTPUT, 
-            context,
-            hook_filter=self.is_hook_enabled
-        )
-        
-        # Check if any hook indicated HTML format in metadata
-        content_format = modified_context.metadata.get('content_format', 'text')
-        
-        # Return modified output if hooks changed it
-        if modified_context.output is not None:
-            return modified_context.output, content_format
-        return output, content_format
-    
     async def execute_session_start_hooks(
         self,
         session_id: str,

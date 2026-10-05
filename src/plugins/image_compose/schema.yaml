@@ -131,12 +131,11 @@ config:
   properties:
     fonts_dir:
       type: string
-      default: "src/plugins/image_compose/fonts"
       description: >
         Directory containing TTF/OTF files. Aliases resolve here first; system
-        fonts are tried as fallback. Default points to the plugin-bundled font
-        directory so fonts ship with the plugin. Override with an absolute path
-        or a project-relative path (e.g. "data/fonts") to use external fonts.
+        fonts are tried as fallback. Unset, it is the data directory's fonts
+        folder; the shipped config points it at the plugin's fonts/ folder.
+        Absolute or project-relative.
     font_aliases:
       type: object
       description: >

@@ -32,7 +32,7 @@ python-multipart>=0.0.9
 email-validator>=2.0.0
 typer>=0.9.0
 markdown>=3.5.0
-rich>=13.0.0
+rich>=13.4.0
 pygments>=2.15.0
 websockets>=15.0.0
 # >=1.5: earlier versions have no Client.close(), so every VectorStore
@@ -41,7 +41,6 @@ websockets>=15.0.0
 chromadb>=1.5.0,<2.0
 # (posthog<3.2 was pinned here for chromadb 1.4's telemetry; 1.5 no longer
 # imports posthog at all, and the pin only downgraded what is installed.)
-chroma-hnswlib>=0.7.6
 sqlite-vec>=0.1.0
 # The core's embedding model (all-MiniLM-L6-v2) runs on chromadb's ONNX export:
 # no torch here. A plugin that names another model declares

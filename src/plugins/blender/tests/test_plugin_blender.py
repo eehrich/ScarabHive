@@ -392,7 +392,7 @@ async def test_unreachable_blender_says_what_to_click(tmp_path):
     result, line = await run_tool(server, "blender_status", {})
     assert result["status"] == "error"
     assert result["error_type"] == "BlenderNotReachable"
-    assert "Start MCP Server" in result["error"]
+    assert "Connect to MCP server" in result["error"]
     assert str(port) in line
 
 
@@ -453,3 +453,83 @@ async def test_long_inputs_do_not_blow_the_status_row(server, action, params):
     above only ever sees short names, so it cannot catch this."""
     _, line = await run_tool(server, action, params)
     assert len(line) <= 140, f"{action}: {len(line)} chars — {line}"
+
+
+# ── found while writing the guide ────────────────────────────────────────
+
+@pytest.mark.parametrize("remote", [
+    "//evil-host/share/x.glb",
+    "//?/C:/x.glb",
+    "//./pipe/x",
+])
+async def test_a_host_path_is_refused_before_it_is_touched(server, monkeypatch, remote):
+    """Resolving //host/share on Windows signs in to that host with the
+    user's credentials, so the refusal must come from the text alone --
+    the containment check after resolve() refused it too late."""
+    touched = []
+    real_resolve = Path.resolve
+
+    def spy(self, *args, **kwargs):
+        if str(self).replace("/", "\\").startswith("\\\\"):
+            touched.append(str(self))
+            return self  # never let the probe itself reach a host
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", spy)
+    result, _ = await run_tool(server, "blender_export",
+                               {"format": "glb", "filename": remote})
+    assert result["status"] == "error", f"{remote} was accepted"
+    assert "outside the output directory" in result["error"]
+    assert touched == [], f"{remote} reached resolve(): {touched}"
+
+
+@pytest.mark.parametrize("name", [".", "sub/.."])
+async def test_the_output_directory_itself_is_no_file_name(server, addon, tmp_path, name):
+    """'.' resolved to the root, passed containment, and the screenshot's
+    .png suffix then turned <root> into <root>.png -- a file beside the
+    output directory, not in it."""
+    result, _ = await run_tool(server, "blender_screenshot", {"filename": name})
+    assert result["status"] == "error", result
+    assert not tmp_path.with_suffix(".png").exists()
+    assert not [c for c in addon.calls if c[0] == "get_viewport_screenshot"]
+
+
+@pytest.mark.parametrize("asked,sent", [(100_000, 4096), (1, 128), (640, 640)])
+async def test_screenshot_size_is_held_to_the_schema_range(server, addon, asked, sent):
+    """The schema promises 128-4096 but the framework does not enforce it."""
+    await run_tool(server, "blender_screenshot", {"filename": "s.png", "max_size": asked})
+    params = [p for c, p in addon.calls if c == "get_viewport_screenshot"][-1]
+    assert params["max_size"] == sent
+
+
+async def test_selected_only_as_the_string_false_exports_the_whole_scene(server, addon):
+    """bool("false") is True; unvalidated arguments arrive as strings too."""
+    await run_tool(server, "blender_export",
+                   {"format": "obj", "filename": "s.obj", "selected_only": "false"})
+    code = [p["code"] for c, p in addon.calls if c == "execute_code"][-1]
+    assert "export_selected_objects" not in code, code
+
+
+async def test_selected_only_as_the_string_true_in_any_case_is_honoured(server, addon):
+    await run_tool(server, "blender_export",
+                   {"format": "obj", "filename": "t.obj", "selected_only": "TRUE"})
+    code = [p["code"] for c, p in addon.calls if c == "execute_code"][-1]
+    assert "'export_selected_objects': True" in code, code
+
+
+@pytest.mark.parametrize("value", [1, "1", "yes", 0])
+async def test_selected_only_that_is_no_boolean_is_refused(server, addon, value):
+    """Guessing turns a garbled flag into a silent whole-scene export."""
+    result, line = await run_tool(server, "blender_export",
+                                  {"format": "obj", "filename": "n.obj", "selected_only": value})
+    assert result["status"] == "error", result
+    assert "selected_only" in result["error"]
+    assert not [c for c in addon.calls if c[0] == "execute_code"]
+
+
+async def test_a_blend_export_never_claims_to_be_a_selection(server):
+    result, line = await run_tool(server, "blender_export",
+                                  {"format": "blend", "filename": "w.blend",
+                                   "selected_only": True})
+    assert result["status"] == "success", result
+    assert line.startswith("whole scene"), line

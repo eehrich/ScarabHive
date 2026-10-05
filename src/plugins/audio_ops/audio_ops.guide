@@ -1,0 +1,498 @@
+@database "audio_ops"
+@author "Enrico Ehrich"
+@$VER: audio_ops.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Audio operations"
+@{h1}Audio operations
+
+Lets an agent edit sound files: cut a piece out or remove it, join files
+one after another, lay one over another, make a file louder or quieter,
+find and shorten pauses, and make a file of silence. It can also play a
+file, or a piece of it, to its model, so a model that takes audio input
+can listen to what it made. The plugin works in one storage folder; every
+file name an agent gives is taken inside it. FLAC, MP3 and WAV are
+supported.
+
+The plugin has no panel and no hooks. It also brings a command-line tool,
+@{tt}audio-ops@{utt}.
+
+@{code}
+For agents and developers
+  @{"  Looking at files: info, list, load  " link look}
+  @{"  Editing: cut, merge, mix, volume, create  " link edit}
+  @{"  Pauses: detect_silence, compress_silence  " link silence}
+  @{"  The storage folder and its paths  " link storage}
+  @{"  What the model sees  " link model}
+  @{"  Limits  " link limits}
+  @{"  The audio-ops command line  " link cli}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node look "Looking at files: info, list, load"
+@{h1}Looking at files
+
+The tool names are the instance name followed by the operation:
+@{tt}audio_ops_info@{utt}, @{tt}audio_ops_list@{utt},
+@{tt}audio_ops_load@{utt}. File names count inside the storage folder
+(@{" The storage folder and its paths " link storage}).
+
+@{h2}info
+
+@{table}
+Parameter | Meaning
+file | the file to inspect
+@{body}
+
+The file is decoded in full. The answer: @{tt}file@{utt},
+@{tt}duration_seconds@{utt} (two places), @{tt}format@{utt} (from the
+extension), @{tt}channels@{utt}, @{tt}sample_rate@{utt},
+@{tt}sample_width_bytes@{utt} and @{tt}size_bytes@{utt}.
+
+@{h2}list
+
+@{table}
+Parameter | Meaning
+pattern | a glob inside the storage folder, e.g. *.wav or voices/*.flac; without it, the .flac, .mp3 and .wav files directly in the folder
+@{body}
+
+Only files with one of the three extensions are listed, sorted by path.
+Each is decoded in full to measure its length, so a folder of long files
+takes a while. An entry has @{tt}name@{utt}, @{tt}size_bytes@{utt},
+@{tt}duration_seconds@{utt} and @{tt}format@{utt}, or @{tt}error@{utt}
+("Cannot read: ...") instead of the last two when it cannot be decoded.
+The answer adds @{tt}storage_path@{utt} and @{tt}total_count@{utt}. A
+pattern with a @{tt}..@{utt} part is refused (@{tt}SecurityError@{utt}),
+an absolute one ends in "Non-relative patterns are unsupported".
+
+@{h2}load
+
+Attaches the file, or a piece of it, to the answer, for the model to
+listen to.
+
+@{table}
+Parameter | Meaning
+file | the file to play
+start_time | seconds; with end_time or alone, loads only a piece
+end_time | seconds; beyond the end it is cut to the file's length
+@{body}
+
+Without a time the file itself is attached. With one, the piece is
+written as a WAV file into the storage folder
+(@{tt}_temp_segment_<name>_<start ms>_<end ms>_<random>.wav@{utt}) and
+that is attached. A negative start or an end not after the start is a
+@{tt}ValidationError@{utt}, a start past the end a
+@{tt}TimeRangeError@{utt}.
+
+A file longer than @{tt}max_duration_seconds@{utt} is refused, also
+for a piece of it (@{" Limits " link limits}).
+
+What is attached may be at most 25 MB -- the limit of the request that
+carries it. A larger file or piece is refused as @{tt}FileTooLarge@{utt}
+("Load a shorter segment."), and a piece that was already written is
+deleted again. As WAV, CD-quality stereo reaches 25 MB after about two and
+a half minutes; 24 kHz mono after about nine.
+
+The answer: @{tt}file@{utt}, @{tt}duration_seconds@{utt} (of the whole
+file), @{tt}format@{utt}, @{tt}mime_type@{utt}, and for a piece
+@{tt}segment@{utt} with @{tt}start_time@{utt}, @{tt}end_time@{utt} and
+@{tt}segment_duration_seconds@{utt}.
+
+@{code json}
+{"file": "chapter_03.flac", "start_time": 60, "end_time": 90}
+@{body}
+@endnode
+
+@node edit "Editing: cut, merge, mix, volume, create"
+@{h1}Editing
+
+Every tool here reads whole files into memory, works on them there and
+writes @{tt}dest_file@{utt}, whose extension (.flac, .mp3 or .wav) picks
+the format; anything else is a @{tt}FormatError@{utt}. An existing
+destination is overwritten without asking, and it may be the source
+itself. Missing folders on the way to it are created.
+
+Three limits apply (@{" Limits " link limits}): an input above
+@{tt}max_input_mb@{utt} is refused before it is decoded; an input or a
+result longer than @{tt}max_duration_seconds@{utt} is refused
+(@{tt}TooLong@{utt}, nothing written) -- so a piece cannot be cut out of
+a longer file either; and ffmpeg gets @{tt}ffmpeg_timeout_seconds@{utt}.
+
+The destination is replaced only by a finished file: the result is
+written as WAV to a temp file next to it (@{tt}.audio_ops_...@{utt}),
+encoded by ffmpeg into a second one for MP3 (192 kbit/s) or FLAC, and
+then moved into place. A failed or timed-out encode leaves the old file
+as it was and removes both temp files.
+
+@{h2}cut
+
+@{table}
+Parameter | Meaning
+source_file | the file to cut
+dest_file | the result
+start_time, end_time | seconds; start at least 0, end after start and not past the file's end
+mode | extract (default): keep the piece; remove: keep everything else
+@{body}
+
+A start or end past the file's end is a @{tt}TimeRangeError@{utt}; here
+the end is not shortened to fit. The answer: @{tt}mode@{utt},
+@{tt}source@{utt}, @{tt}destination@{utt}, the two times,
+@{tt}source_duration_seconds@{utt}, @{tt}result_duration_seconds@{utt},
+@{tt}format@{utt} and @{tt}operation@{utt} ("Extracted 10.0s-30.0s").
+
+@{h2}merge
+
+@{table}
+Parameter | Meaning
+source_files | two or more files, joined in this order
+dest_file | the result
+crossfade_ms | overlap between neighbours in milliseconds, default 0; never longer than the shorter of the two
+@{body}
+
+Files of different rate or channel count are brought to the highest of
+them. The answer: @{tt}source_files@{utt}, @{tt}source_count@{utt},
+@{tt}destination@{utt}, @{tt}total_source_duration_seconds@{utt},
+@{tt}result_duration_seconds@{utt}, @{tt}crossfade_ms@{utt},
+@{tt}format@{utt}. A missing file names its index.
+
+@{h2}mix
+
+Lays @{tt}file2@{utt} over @{tt}file1@{utt}. The shorter one is padded
+with silence, so the result is as long as the longer. It takes the
+highest rate, channel count and sample width of the two.
+
+@{table}
+Parameter | Meaning
+file1, file2 | the two files
+dest_file | the result
+mix_factor | 0.0 only file1, 1.0 only file2, default 0.5
+envelope | instead of mix_factor: two or more points {"time": seconds, "factor": 0.0-1.0}
+@{body}
+
+A fixed factor turns each file down by its share (0.5 is -6 dB for both)
+and adds them. An envelope is sorted by time, drawn as straight lines
+between the points and held flat before the first and after the last.
+Both together, a factor outside 0 to 1 or an envelope with fewer than two
+points is a @{tt}ValidationError@{utt}. The answer adds the two lengths
+and either @{tt}mix_factor@{utt} or @{tt}envelope@{utt} and
+@{tt}envelope_points@{utt}.
+
+@{code json}
+{"file1": "voice.wav", "file2": "music.flac", "dest_file": "scene.flac",
+ "envelope": [{"time": 0, "factor": 0.8}, {"time": 3, "factor": 0.2}]}
+@{body}
+
+@{h2}volume
+
+@{table}
+Parameter | Meaning
+source_file, dest_file | input and result
+gain_db | a fixed change, -60 to +24 dB
+envelope | instead of gain_db: two or more points {"time": seconds, "gain_db": -60 to +24}
+normalize | true: afterwards raise the loudest peak to 0 dB
+@{body}
+
+At least one of the three is needed; gain_db and envelope exclude each
+other. The envelope works like mix's. Normalizing only raises: a file
+that already peaks at 0 dB stays as it is. Samples beyond full scale are
+clipped. The answer: @{tt}source@{utt}, @{tt}destination@{utt},
+@{tt}duration_seconds@{utt}, @{tt}format@{utt}, @{tt}normalized@{utt},
+and @{tt}gain_db@{utt} or the envelope.
+
+@{h2}create
+
+Writes a file of silence, 16 bit.
+
+@{table}
+Parameter | Meaning
+dest_file | the result
+duration_ms | length in milliseconds, above 0
+sample_rate | 8000, 16000, 22050, 24000, 44100 (default), 48000 or 96000
+channels | 1 or 2 (default)
+@{body}
+
+A length above @{tt}max_duration_seconds@{utt} is refused
+(@{tt}TooLong@{utt}); the silence is built in memory.
+@endnode
+
+@node silence "Pauses: detect_silence, compress_silence"
+@{h1}Pauses
+
+Both tools run ffmpeg's @{tt}silencedetect@{utt} filter on the file.
+ffmpeg and ffprobe must be on the path; any file ffmpeg can read is
+taken.
+
+@{h2}detect_silence
+
+@{table}
+Parameter | Meaning
+source_file | the file
+threshold_db | quieter than this is silence, default -40
+min_duration | shortest pause reported, seconds, default 0.3
+@{body}
+
+The answer: @{tt}silence_count@{utt}, @{tt}silences@{utt} (each
+@{tt}start@{utt}, @{tt}end@{utt}, @{tt}duration@{utt} in seconds), the
+two settings and @{tt}source_file@{utt}. A pause that runs to the end of
+the file ends at the length ffprobe measures. If ffmpeg fails, the answer
+is a @{tt}ProcessingError@{utt} with its message, not an empty list.
+
+@{h2}compress_silence
+
+Shortens every pause longer than @{tt}max_silence@{utt} to
+@{tt}max_silence@{utt}, keeping half of it at each end; pauses are looked
+for from 0.3 seconds on.
+
+@{table}
+Parameter | Meaning
+source_file, dest_file | input and result (.flac, .mp3 or .wav)
+max_silence | seconds, above 0, default 1.0
+threshold_db | as above, default -40
+mp3_bitrate | kbit/s for an .mp3 result, default 192
+@{body}
+
+The result is always encoded anew, also when nothing had to be shortened.
+The answer: @{tt}compressed_count@{utt}, @{tt}time_saved@{utt},
+@{tt}original_duration@{utt}, @{tt}new_duration@{utt},
+@{tt}source_file@{utt}, @{tt}dest_file@{utt}; with nothing shortened only
+the count (0), @{tt}time_saved@{utt} (0.0) and the two names.
+
+The numbers go into ffmpeg's filter text, so both tools turn them into
+numbers first; anything else is refused
+(@{tt}error_type: ValueError@{utt}) before ffmpeg runs.
+@endnode
+
+@node storage "The storage folder and its paths"
+@{h1}The storage folder and its paths
+
+All files live in @{tt}storage_path@{utt}
+(@{" Setting it up " link setup}). A name from the model is read like
+this:
+
+@{bullet}Backslashes count as slashes. A leading storage path, as
+configured, is dropped, so a path another tool reported
+(@{tt}data/audio_ops/take1.wav@{utt}) names the same file; so is a
+leading part that repeats the storage path's first folders.
+@{bullet}A @{tt}..@{utt} part is refused (@{tt}SecurityError@{utt}); two
+dots inside a name (@{tt}take..2.wav@{utt}) are not.
+@{bullet}The name is then resolved -- links followed -- and must still lie
+inside the storage folder. An absolute path elsewhere, or a link that
+points out, is refused: "File must be within storage directory".
+@{bullet}A network or device path (@{tt}\\\\host\\share\\x.wav@{utt},
+@{tt}//host/share/x.wav@{utt}, @{tt}\\\\?\\UNC\\...@{utt}) is refused on
+its text alone, before anything is opened -- resolving it would make
+Windows sign in to that host with your credentials.
+
+@{h2}Who sees which files
+
+With a plain @{tt}storage_path@{utt} there is one folder for everyone:
+every agent with the tools, in every session and of every user, can list,
+play and overwrite every file in it.
+
+With @{tt}{session_id}@{utt} in the path each session gets its own
+folder, created on the first write, and cannot reach another's: a path
+into another session's folder lands in its own. A sub-agent runs in a
+session of its own, so it does not see its caller's files. A call
+without a session works in the path with @{tt}{session_id}@{utt} left
+out -- the folder that holds all the session folders.
+
+@{h2}What is left behind
+
+The plugin deletes nothing, apart from a piece @{tt}load@{utt} had to
+refuse. The @{tt}_temp_segment_...wav@{utt} pieces of @{tt}load@{utt}
+stay, because every later request of the run reads them again
+(@{" What the model sees " link model}); @{tt}list@{utt} shows them like
+any other file. Clearing the folder is up to you.
+
+The writing tools are not recorded by
+@{" file checkpoints " link file_checkpoints/recorded}: a rewind counts
+them but cannot restore what they overwrote.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Ten tools, described in the plugin's @{tt}schema.yaml@{utt}. Every
+answer is JSON. A refusal is an answer, not an exception:
+@{tt}status: error@{utt}, @{tt}error@{utt}, @{tt}error_type@{utt} and
+@{tt}details@{utt}. Texts the model gets include:
+
+@{code}
+File must be within storage directory: <name>
+Invalid filename: <name>. Path traversal not allowed.
+Unsupported audio format: .ogg. Supported: <the three>
+end_time (95.0s) exceeds file duration (90.12s)
+Audio is too large for the context: 31.4 MB (limit 25 MB). Load a shorter segment.
+Cannot specify both mix_factor and envelope. Use one or the other.
+ffmpeg silencedetect failed: <ffmpeg's message>
+Result would be 5400 s long (limit 3600 s)
+Input is longer than 3600 s (limit): <name>
+Input file is too large: 312.0 MB (limit 200 MB): <name>
+ffmpeg timed out after 300 s
+@{body}
+
+The @{tt}error_type@{utt} values: ValidationError, SecurityError,
+FormatError, FileNotFoundError, AudioLoadError, DependencyError (pydub
+missing), TimeRangeError, FileTooLarge, TooLong, Timeout,
+ProcessingError, and in the two pause tools ValueError and
+UnexpectedError. The limits are not in the tool descriptions; the model
+learns them from the refusal, which names the limit.
+
+The chat's status line ends with what was done: "Created scene.flac
+(12.40s) - mixed with factor 0.5", "3 silence segment(s) -- take1.wav",
+"Loaded 30.0s segment 60.0s-90.0s of 312.4s, audio/wav -- chapter_03.flac".
+
+@{h2}The attached sound
+
+Only @{tt}load@{utt} attaches anything. The conversation keeps the file's
+path; each request to the model reads the file again and sends it along,
+so it must stay where it is. Whether the model hears it depends on the
+model and its provider, as for
+@{" media_ops " link media_ops/model}: a model without audio input gets a
+note instead.
+
+@{h2}Tokens and cache
+
+Answers are appended; nothing earlier changes. An answer costs tens of
+tokens, a list or a pause list more with every entry. A loaded sound costs
+by its length -- the core's context estimate counts 41 tokens per second
+-- on every later request of the run, since it stays in the conversation.
+Loading a piece instead of the whole file is the way to keep that down.
+The attachment is built the same way each time, so it does not break the
+prompt cache.
+
+@{h2}Known gaps
+
+@{bullet}Files are decoded whole into memory, up to
+@{tt}max_duration_seconds@{utt}: at the default an hour of CD-quality
+stereo, about 600 MB, per input (a mix holds two).
+@{bullet}A cancelled call returns at once, but the work in progress runs on
+in its thread -- at most until @{tt}ffmpeg_timeout_seconds@{utt} where
+ffmpeg does it.
+@endnode
+
+@node limits "Limits"
+@{h1}Limits
+
+Three server settings (@{" Setting it up " link setup}). A missing value,
+or one that is not a positive number, means the default.
+
+@{table}
+Setting | Default | What it refuses
+max_duration_seconds | 3600 | an input longer than this -- decoding stops there, so a small file of long silence cannot fill the memory; and a result longer than this before it is built: create, merge (checked after each input, crossfades counted), compress_silence
+max_input_mb | 200 | an input file larger than this, before it is decoded or handed to ffmpeg -- every tool that reads a file; list shows such a file with an error. It bounds the file, not the memory its decoding takes
+ffmpeg_timeout_seconds | 300 | every ffmpeg and ffprobe run that outlasts it; the process is killed and the tool answers Timeout
+@{body}
+
+@{h2}Where the length is not checked
+
+@{bullet}@{tt}detect_silence@{utt} and @{tt}compress_silence@{utt} hand the
+file to ffmpeg, which streams it: their input may be longer. With nothing
+to shorten, @{tt}compress_silence@{utt} copies it at its own length.
+
+@{h2}What the timeout covers
+
+The plugin's own ffmpeg and ffprobe runs (both pause tools and every MP3
+or FLAC it writes), and the ffmpeg and ffprobe that pydub starts to read
+MP3 and FLAC. pydub's calls are bounded only inside this plugin; other
+users of pydub in the same process are not affected. WAV is read and
+written without ffmpeg and needs no timeout. ffmpeg starts no processes
+of its own, so killing it ends the whole run (measured on Windows).
+@endnode
+
+@node cli "The audio-ops command line"
+@{h1}The audio-ops command line
+
+@{tt}audio-ops@{utt} does the same ten jobs from a terminal. It is its own
+program, not a client of the server: it reads @{tt}storage_path@{utt} of
+the @{tt}audio_ops@{utt} entry in @{tt}config/plugins.yaml@{utt} (a
+@{tt}{session_id}@{utt} in it is not filled in), or the folder given
+with @{tt}-w@{utt}.
+
+@{code}
+audio-ops info song.mp3
+audio-ops cut input.wav output.wav -s 10 -e 30 -m remove
+audio-ops merge output.mp3 part1.mp3 part2.mp3 --crossfade 500
+audio-ops mix voice.wav music.wav mixed.wav -f 0.7
+audio-ops volume input.wav louder.wav --gain 6 --normalize
+audio-ops create silence.wav -d 5000 -r 48000 -c 1
+audio-ops detect-silence podcast.flac -t -40 -d 0.5 --json
+audio-ops compress-silence input.flac output.mp3 -m 1.5 -b 192
+audio-ops list "*.wav"
+audio-ops load song.mp3 -s 10 -e 30
+audio-ops -w D:/recordings info take1.wav
+@{body}
+
+@{tt}audio-ops --help@{utt} and @{tt}audio-ops <command> --help@{utt} list
+the options.
+
+It writes files the same way as the tools -- a finished file replaces the
+old one, MP3 at 192 kbit/s. Otherwise it is meant for your own files and
+differs:
+
+@{bullet}No limits: no @{tt}max_duration_seconds@{utt},
+@{tt}max_input_mb@{utt} or ffmpeg timeout; Ctrl+C stops it.
+@{bullet}Paths are joined to the folder as given; a stored path prefix is
+not stripped, and network paths are not refused on their text.
+@{bullet}@{tt}mix@{utt} and @{tt}volume@{utt} take no envelope;
+@{tt}detect-silence@{utt} reports pauses from 0.5 seconds on by default.
+@{bullet}@{tt}load@{utt} plays nothing: it prints the file's data, and
+with @{tt}-s@{utt}/@{tt}-e@{utt} writes the piece to
+@{tt}_temp_segment_<name>.wav@{utt}.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    audio_ops:
+      type: audio_ops
+      enabled: true
+      description: "Audio file manipulation - cut segments from FLAC/MP3/WAV files"
+      storage_path: "data/audio_ops"
+@{body}
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+audio_ops/*"
+@{body}
+
+Dependencies: pydub and numpy (installed with the plugin) and ffmpeg with
+ffprobe on the path. Without ffmpeg, WAV still works for most tools, but
+MP3, FLAC and both pause tools do not.
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+storage_path | the data directory's audio_ops folder | the folder every file name counts in; {session_id} in it gives each session its own folder beneath
+max_duration_seconds | 3600 | longest input and result, see Limits
+max_input_mb | 200 | largest input file
+ffmpeg_timeout_seconds | 300 | longest ffmpeg or ffprobe run
+@{body}
+
+The keys are read from the entry itself (not from a @{tt}config:@{utt}
+block) when the server starts. A relative path counts from the folder the
+server started in; a @{tt}data/...@{utt} path follows the data directory
+when it is moved.
+
+A second instance with its own folder, for example one per session:
+
+@{code yaml}
+    session_audio:
+      type: audio_ops
+      enabled: true
+      storage_path: "data/audio/{session_id}"
+@{body}
+@endnode

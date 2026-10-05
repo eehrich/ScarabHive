@@ -57,9 +57,9 @@ weak ones. When two strong sources disagree, that is the finding.
   dates: copy them as written, do not round or paraphrase them.
 - A page dated years ago can still be right, but say so. A page that does not
   say which version it describes is weaker than one that does.
-- A challenge page, a login wall, a cookie wall or a 403 comes back as an
-  error. Do not retry the same URL; find the same content elsewhere (the
-  owner's docs, a mirror, a cached copy, the repository).
+- A challenge page or a 403 comes back as an error; a login or cookie wall
+  comes back as the wall's text. Do not retry the same URL; find the same
+  content elsewhere (the owner's docs, a mirror, a cached copy, the repository).
 - PDFs and other files: `web_scraper_download` saves them to the workspace
   when that tool is listed. Otherwise search for an HTML version.
 

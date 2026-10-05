@@ -24,7 +24,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 import time
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,9 +47,68 @@ _STREAMABLE_HTTP_ALIASES = {"streaming", "streamable_http", "streamable-http", "
 _SSE_ALIASES = {"sse", "http_sse", "http+sse"}
 _STDIO_ALIASES = {"stdio", "local"}
 
+#: Seconds a new connection gets for its handshake at least, whatever the
+#: server's answer timeout. Tests lower it.
+_HANDSHAKE_FLOOR = 60.0
+#: How long the tool list after the handshake may take before the connection goes on without it.
+_WARM_UP_SECONDS = 10.0
+
 
 class MCPConnectionError(RuntimeError):
     """Raised when a server cannot be reached or refuses the handshake."""
+
+
+class MCPServerGone(MCPConnectionError):
+    """The transport closed under a call: a stdio server's process ended (a crash), or the remote
+    hung up. ``unsent``: the request never left, so repeating it on a new connection is safe."""
+
+    def __init__(self, message: str, *, unsent: bool):
+        super().__init__(message)
+        self.unsent = unsent
+
+
+def _transport_closed(error: BaseException) -> Optional[bool]:
+    """None if *error* is not a closed transport; else whether the request stayed unsent.
+
+    anyio's stream errors carry no text at all -- the model saw "Tool invocation failed: " and
+    nothing else, call after call, while the connection still counted as connected (measured
+    2026-09-30: a stdio server crashed mid-render, every later call failed the same way)."""
+    import anyio
+
+    if isinstance(error, (anyio.ClosedResourceError, anyio.BrokenResourceError)):
+        return True                                      # the write stream was already gone
+    if isinstance(error, anyio.EndOfStream):
+        return False
+    from mcp.shared.exceptions import MCPError
+    from mcp.types import CONNECTION_CLOSED, INTERNAL_ERROR
+
+    if not isinstance(error, MCPError):
+        return None
+    if (error.code, error.message) in _SESSION_LOST:
+        # An HTTP server that restarted forgot our session and rejects every call
+        # before running it: only a new session is answered again. Before the code
+        # test below: the TypeScript texts come with -32000, CONNECTION_CLOSED's code.
+        return True
+    if error.code == CONNECTION_CLOSED:
+        return False                                     # sent, and the answer never came
+    if (error.code, error.message) == (INTERNAL_ERROR, "Server returned an error response"):
+        # The SDK's stand-in for an HTTP error without a JSON-RPC body -- also what a
+        # TypeScript server's "no valid session" 400 becomes (it carries no id). A 5xx
+        # may come after the tool ran: the call is not repeated, the next one reconnects.
+        return False
+    return None
+
+
+#: What an HTTP server's answer to an unknown session arrives as: the SDK's own
+#: 404 stand-in, the Python SDK's body, and the TypeScript SDK's (its transport,
+#: and the session-map pattern of its examples and server-everything).
+_SESSION_LOST = {
+    (-32600, "Session terminated"),
+    (-32600, "Session not found"),
+    (-32001, "Session not found"),
+    (-32000, "Bad Request: No valid session ID provided"),
+    (-32000, "Bad Request: Server not initialized"),
+}
 
 
 @dataclass
@@ -83,6 +144,9 @@ class ServerConnection:
 
         self._commands: asyncio.Queue[Optional[_Command]] = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
+        self._dispatcher: Any = None    # the session's; ours, to see whether its stream ended
+        self._closing = False           # the stop sentinel is queued: a new call would wait behind it
+        self._stopping = False          # ... by stop(): this client closes, the server did nothing wrong
         self._ready: Optional[asyncio.Future] = None
         self._server_info: Dict[str, Any] = {}
         self._capabilities: Dict[str, Any] = {}
@@ -92,7 +156,7 @@ class ServerConnection:
 
     @property
     def connected(self) -> bool:
-        return self._task is not None and not self._task.done()
+        return self._task is not None and not self._task.done() and not self._closing
 
     @property
     def server_info(self) -> Dict[str, Any]:
@@ -117,13 +181,41 @@ class ServerConnection:
         """
         if self.connected:
             return
+        if self._task is not None or self._closing:
+            # One connection, one worker: a restart on the same object raced the old worker's
+            # ending in every variant tried. ExternalServerPool.connect builds a new one.
+            raise MCPConnectionError(f"MCP server '{self.name}': this connection was used already; "
+                                     f"a new one starts the server again")
 
         loop = asyncio.get_running_loop()
         self._ready = loop.create_future()
         self._task = loop.create_task(self._run(), name=f"mcp-client:{self.name}")
 
         try:
-            await self._ready
+            # Bounded: a server that never answers initialize (a stdio
+            # process that reads and stays silent) held start() -- and the
+            # pool lock, and with it every other connect and close_all --
+            # forever. The HTTP transports were bounded by httpx2; stdio not.
+            # The floor: a stdio program has to start first (npx may download
+            # its package), and self.timeout is sized for answers, not that.
+            limit = max(self.timeout, _HANDSHAKE_FLOOR)
+            await asyncio.wait_for(self._ready, timeout=limit)
+        except asyncio.TimeoutError:
+            task, self._task = self._task, None
+            if task is not None:
+                task.cancel()
+                await asyncio.wait({task})
+            raise MCPConnectionError(
+                f"MCP server '{self.name}' did not complete the handshake within {limit}s"
+            ) from None
+        except asyncio.CancelledError:
+            # Not an Exception: without this branch a start cancelled
+            # mid-handshake left the task -- and a stdio child -- running.
+            task, self._task = self._task, None
+            if task is not None:
+                task.cancel()
+                await asyncio.wait({task})
+            raise
         except Exception:
             await self._reap_task()
             raise
@@ -139,6 +231,7 @@ class ServerConnection:
         if task is None:
             return
         if not task.done():
+            self._closing = self._stopping = True
             await self._commands.put(None)
         await self._reap_task()
 
@@ -146,22 +239,20 @@ class ServerConnection:
         task, self._task = self._task, None
         if task is None:
             return
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=self.timeout)
-        except asyncio.TimeoutError:
+        # The drain in _serve takes up to timeout/2 and the SDK's stdio shutdown up to 2 s more (on
+        # POSIX 2 s after closing stdin and 2 s after SIGTERM): a cancel inside that skips its next
+        # step, and the task then waits for the child to exit by itself -- a minute, or for ever.
+        limit = max(self.timeout, self.timeout / 2 + 5)
+        # asyncio.wait never raises the task's outcome: a cancel from elsewhere (a loop torn down)
+        # raised CancelledError into stop(), and close_all() then left the other servers running.
+        await asyncio.wait({task}, timeout=limit)
+        if not task.done():
             # The server never let go. Cancelling the task IS safe (anyio
             # unwinds the scopes inside that task); only __aexit__ from a
             # foreign task is not.
-            logger.warning("MCP server '%s' did not close within %ss, cancelling", self.name, self.timeout)
+            logger.warning("MCP server '%s' did not close within %ss, cancelling", self.name, limit)
             task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: B014 - shutdown must not raise
-                pass
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.debug("MCP server '%s' task ended with: %s", self.name, e)
+            await asyncio.wait({task})
 
     # ------------------------------------------------------------------ worker
 
@@ -170,14 +261,31 @@ class ServerConnection:
         try:
             async with self._open_streams() as (read_stream, write_stream):
                 from mcp import ClientSession
+                from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
 
-                async with ClientSession(read_stream, write_stream) as session:
+                self._dispatcher = JSONRPCDispatcher(read_stream, write_stream)
+                async with ClientSession(dispatcher=self._dispatcher) as session:
                     init = await session.initialize()
                     self._record_handshake(init)
+                    if init.capabilities.tools is not None:
+                        # The SDK lists the tools inside a call_tool whose tool it has not
+                        # seen yet: a session lost at that point would count as unsent,
+                        # and the pool would run the tool a second time. Failing or hanging
+                        # here is no failed connect -- the SDK lists lazily again.
+                        try:
+                            await asyncio.wait_for(session.list_tools(), _WARM_UP_SECONDS)
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("MCP server '%s': listing its tools failed: %s", self.name,
+                                           _describe(e) or type(e).__name__)
                     if self._ready is not None and not self._ready.done():
                         self._ready.set_result(None)
                     await self._serve(session)
         except asyncio.CancelledError:
+            # A stop() during the handshake cancels the worker: start() hears it now, not when
+            # its handshake deadline runs out.
+            if self._ready is not None and not self._ready.done():
+                self._ready.set_exception(MCPConnectionError(
+                    f"MCP server '{self.name}' was stopped during the handshake"))
             raise
         except BaseException as e:  # noqa: BLE001 - the failure has to reach start()
             if self._ready is not None and not self._ready.done():
@@ -189,6 +297,9 @@ class ServerConnection:
             else:
                 logger.warning("MCP server '%s' connection ended: %s", self.name, _describe(e))
             self._fail_pending(e)
+        finally:
+            self._closing = True
+            self._fail_pending(RuntimeError("the connection closed"))    # calls queued behind the sentinel
 
     async def _serve(self, session: Any) -> None:
         """Run queued commands against *session* until told to stop.
@@ -214,6 +325,11 @@ class ServerConnection:
                 if command.future.cancelled():
                     continue
                 task = asyncio.create_task(self._run_command(session, command))
+                # A caller that gave up (timeout, cancel) takes the call with
+                # it; otherwise every hung call stayed pinned to the session
+                # until stop().
+                command.future.add_done_callback(
+                    lambda future, task=task: task.cancel() if future.cancelled() else None)
                 in_flight.add(task)
                 task.add_done_callback(in_flight.discard)
         finally:
@@ -236,17 +352,48 @@ class ServerConnection:
                     for task in in_flight:
                         task.cancel()
 
-    @staticmethod
-    async def _run_command(session: Any, command: _Command) -> None:
+    async def _run_command(self, session: Any, command: _Command) -> None:
         try:
+            if getattr(self._dispatcher, "_closed", False):
+                # The server's stream ended (it died while idle). mcp 2 would fail this send
+                # as MCPError(CONNECTION_CLOSED) -- as if an answer got lost in flight -- but
+                # nothing left: said so, the pool starts the server again and sends it once more.
+                # ponytail: a private flag (mcp has no public one); if it goes, the idle-death
+                # test fails at the upgrade instead of calls silently not being repeated.
+                import anyio
+
+                raise anyio.ClosedResourceError
             result = await command.run(session)
             if not command.future.done():
                 command.future.set_result(result)
         except asyncio.CancelledError:
+            # The caller gave up (its future is cancelled already), or the session closes under
+            # the call: a crash in several calls at once ends up here, not in the branch below.
             if not command.future.done():
-                command.future.cancel()
+                if not self._stopping:
+                    # The session went down under a call that still waits for it (an HTTP
+                    # transport crashed): nothing gets through it any more.
+                    self._closing = True
+                command.future.set_exception(MCPConnectionError(
+                    f"The connection to MCP server '{self.name}' was closed by this client (stop, disconnect) "
+                    f"while the call ran; whether it took effect is unknown.") if self._stopping else MCPServerGone(
+                    f"MCP server '{self.name}' closed the connection while this call ran; whether it "
+                    f"took effect is unknown.", unsent=False))
             raise
         except BaseException as e:  # noqa: BLE001 - hand the error to the caller
+            unsent = _transport_closed(e)
+            if unsent is not None:
+                # The session is dead: end the worker -- `connected` turns false at once, so the pool
+                # starts the server again instead of queueing behind the sentinel -- and say what
+                # happened instead of an empty text.
+                self._closing = True
+                self._commands.put_nowait(None)
+                gone = MCPServerGone(
+                    f"MCP server '{self.name}' closed the connection -- its process ended or the remote "
+                    f"hung up ({_describe(e) or type(e).__name__}). The next call starts it again.",
+                    unsent=unsent)
+                gone.__cause__ = e
+                e = gone
             if not command.future.done():
                 command.future.set_exception(e)
 
@@ -259,7 +406,7 @@ class ServerConnection:
                 return
             if command is not None and not command.future.done():
                 command.future.set_exception(
-                    MCPConnectionError(f"MCP server '{self.name}' disconnected: {error}")
+                    MCPConnectionError(f"MCP server '{self.name}' disconnected: {_describe(error)}")
                 )
 
     async def _submit(self, run: Callable[[Any], Awaitable[Any]], *, timeout: Optional[float] = None) -> Any:
@@ -329,38 +476,38 @@ class ServerConnection:
                 yield streams[0], streams[1]
             return
 
-        from mcp.client.streamable_http import streamablehttp_client
+        import httpx2
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT
 
-        # httpx_client_factory is how the SDK lets us keep the ssl_verify
-        # switch the old client had; without it the setting would silently
-        # stop working.
-        async with streamablehttp_client(
-            url,
-            headers=headers or None,
-            timeout=self.timeout,
-            httpx_client_factory=self._httpx_factory(),
-        ) as (read_stream, write_stream, _get_session_id):
-            yield read_stream, write_stream
+        # The SDK takes a ready client here (mcp 2) and leaves closing it to
+        # us. Ours carries the headers, the timeout and the ssl_verify switch;
+        # without it the setting would silently stop working.
+        # read: a server answering with plain JSON sends nothing until the tool is
+        # done, so no shorter than the server's own timeout (scarab: 900 s)
+        client = self._httpx_factory()(headers=headers or None, timeout=httpx2.Timeout(
+            self.timeout, read=max(self.timeout, MCP_DEFAULT_SSE_READ_TIMEOUT)))
+        async with client, streamable_http_client(url, http_client=client) as streams:
+            yield streams[0], streams[1]
 
     def _httpx_factory(self):
-        import httpx
+        import httpx2
         from mcp.shared._httpx_utils import create_mcp_http_client
 
         ssl_verify = self.ssl_verify
 
-        def factory(headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
+        def factory(headers=None, timeout=None, auth=None) -> httpx2.AsyncClient:
             if ssl_verify is not False:
                 return create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
-            # Build instead of mutate: httpx resolves verify when it constructs
-            # the transport, so assigning it afterwards does nothing. Building
-            # it here rather than fixing up the SDK's client also avoids
-            # creating one just to throw it away.
-            return httpx.AsyncClient(
+            # Build instead of mutate: httpx2 resolves verify when it constructs
+            # the transport, so assigning it afterwards does nothing. Redirects
+            # stay off as in the SDK's own client: its transports follow them
+            # within the endpoint's origin themselves.
+            return httpx2.AsyncClient(
                 headers=headers,
-                timeout=timeout if timeout is not None else httpx.Timeout(self.timeout),
+                timeout=timeout if timeout is not None else httpx2.Timeout(self.timeout),
                 auth=auth,
                 verify=False,
-                follow_redirects=True,
             )
 
         return factory
@@ -382,14 +529,15 @@ class ServerConnection:
         return headers
 
     def _record_handshake(self, init: Any) -> None:
-        info = getattr(init, "serverInfo", None)
+        info = getattr(init, "server_info", None)
         self._server_info = {
             "name": getattr(info, "name", None),
             "version": getattr(info, "version", None),
         }
-        self._protocol_version = getattr(init, "protocolVersion", None)
+        self._protocol_version = getattr(init, "protocol_version", None)
         caps = getattr(init, "capabilities", None)
-        self._capabilities = caps.model_dump(exclude_none=True) if hasattr(caps, "model_dump") else {}
+        # by_alias: the protocol's own names (listChanged), as the status tools always showed them
+        self._capabilities = caps.model_dump(exclude_none=True, by_alias=True) if hasattr(caps, "model_dump") else {}
         logger.info(
             "MCP server '%s' connected (%s, protocol %s)",
             self.name, self._server_info.get("name") or "unknown", self._protocol_version,
@@ -405,7 +553,7 @@ class ServerConnection:
                 ToolDef(
                     name=t.name,
                     description=t.description or "",
-                    input_schema=t.inputSchema or {},
+                    input_schema=t.input_schema or {},
                 )
                 for t in (result.tools or [])
             ]
@@ -413,11 +561,11 @@ class ServerConnection:
         return await self._submit(run)
 
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
-        """Call *name* and return its first text block, or the raw payload.
+        """Call *name* and return its text blocks, or the raw payload.
 
-        The return shape is the one the agent core has always seen: the text of
-        the first text content item, falling back to the structured result.
-        Changing it here would ripple into every consumer of an external tool.
+        The return shape is the one the agent core has always seen: text,
+        falling back to the structured result. Changing the shape here would
+        ripple into every consumer of an external tool.
         """
         request_id = arguments.get("request_id") or arguments.get("requestId")
         await self._publish(
@@ -437,8 +585,8 @@ class ServerConnection:
             )
             raise
 
-        if getattr(result, "isError", False):
-            message = _first_text(result) or "unknown error"
+        if getattr(result, "is_error", False):
+            message = _text(result) or "unknown error"
             await self._publish(
                 f"Tool call failed: {name}", StatusPhase.ERROR, request_id,
                 {"tool": name, "server": self.name, "error": message},
@@ -470,7 +618,7 @@ class ServerConnection:
             )
             return payload
 
-        text = _first_text(result)
+        text = _text(result)
         if text is not None:
             await self._publish(
                 f"Tool call completed: {name}", StatusPhase.END, request_id,
@@ -547,7 +695,7 @@ def _persist_media_blocks(result: Any, server: str, tool: str) -> List[Dict[str,
         if btype not in _MEDIA_BLOCK_TYPES:
             continue
         data = getattr(block, "data", None)
-        mime = getattr(block, "mimeType", None) or (
+        mime = getattr(block, "mime_type", None) or (
             "image/png" if btype == "image" else "application/octet-stream")
         if not data:
             continue
@@ -555,7 +703,13 @@ def _persist_media_blocks(result: Any, server: str, tool: str) -> List[Dict[str,
             raw = base64.b64decode(data)
             target_dir = (_MEDIA_DIR or data_path("media", "external_mcp")) / server
             target_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{tool}-{int(time.time() * 1000)}-{index}{_MIME_EXT.get(mime, '.bin')}"
+            # The tool name is the foreign server's: "../../x" wrote outside
+            # the media directory.
+            safe_tool = re.sub(r"[^A-Za-z0-9_.-]", "_", tool)
+            # The random part: 'a/b' and 'a_b', or one tool twice in the same
+            # millisecond, wrote to one path and the later file replaced the first.
+            filename = (f"{safe_tool}-{int(time.time() * 1000)}-{index}-{uuid.uuid4().hex[:8]}"
+                        f"{_MIME_EXT.get(mime, '.bin')}")
             target = target_dir / filename
             target.write_bytes(raw)
         except Exception:
@@ -571,23 +725,38 @@ def _persist_media_blocks(result: Any, server: str, tool: str) -> List[Dict[str,
     return items
 
 
-def _first_text(result: Any) -> Optional[str]:
-    """Return the first text block of a CallToolResult, if there is one."""
-    for item in getattr(result, "content", None) or []:
-        if getattr(item, "type", None) == "text":
-            return getattr(item, "text", "") or ""
-    return None
+def _text(result: Any) -> Optional[str]:
+    """Every text block of a CallToolResult, in order, a blank line apart.
+
+    None when there is no text block. Only the first used to be kept -- a
+    rule carried over from the hand-written client, and every further
+    block was lost to the model.
+    """
+    texts = [getattr(item, "text", "") or ""
+             for item in getattr(result, "content", None) or []
+             if getattr(item, "type", None) == "text"]
+    return "\n\n".join(texts) if texts else None
 
 
 def _structured(result: Any) -> Any:
     """Fall back to whatever the server sent when there is no text block."""
-    structured = getattr(result, "structuredContent", None)
+    structured = getattr(result, "structured_content", None)
     if structured is not None:
+        # _multimodal_content is OUR key: tool_execution reads the files it
+        # names and sends them to the model provider. A server that sets it
+        # itself would have us upload any local file -- only
+        # _persist_media_blocks may produce it. Renamed, not dropped: what
+        # the server sent stays readable as data.
+        if isinstance(structured, dict) and "_multimodal_content" in structured:
+            structured = dict(structured)
+            structured["server_multimodal_content"] = structured.pop("_multimodal_content")
+            logger.warning("MCP server result carried the reserved key _multimodal_content; renamed")
         return structured
     if hasattr(result, "model_dump"):
-        # mode="json": a resource block carries its URL as a pydantic AnyUrl,
-        # which the tool message's json.dumps cannot serialize.
-        return result.model_dump(mode="json", exclude_none=True)
+        # mode="json": JSON-safe values for the tool message's json.dumps;
+        # by_alias: the protocol's field names (mimeType, isError) the model
+        # always saw, not the SDK's Python names (mcp 2).
+        return result.model_dump(mode="json", exclude_none=True, by_alias=True, exclude={"result_type"})
     return result
 
 

@@ -1,0 +1,380 @@
+@database "llm_decisions"
+@author "Enrico Ehrich"
+@$VER: llm_decisions.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Decision model provider"
+@{h1}Decision model provider
+
+This plugin is the client for decision models: TypeSafe's Jev, reached
+through OpenRouter or TypeSafe's own endpoint; Laya, an open model run
+locally with @{tt}laya-serve@{utt}; and the decision models a local Ollama
+runs (Nimble, Tev1). A decision model writes no text. It
+gets a piece of content and named questions, and answers each question with
+a number or an option: a probability for a yes/no question, one of several
+named options, or a position on an ordered scale. The
+@{" decision " link decision/main} plugin gives agents tools on top of it;
+this plugin has no tools, no hooks and no panel of its own.
+
+A decision model is not a chat model. Nothing here can answer a
+conversation, so this plugin serves no chat provider at all: its models live
+in their own section of the configuration, beside the chat models, and are
+reached by decision profile. Laya and Ollama speak the same wire as Jev, so
+one client serves all of them; what differs per host is its endpoint, whether it takes a
+session id, the provider name its calls are booked under, and whether it
+bills (Ollama does not: its calls cost 0).
+
+@{table}
+Provider name | Default endpoint | Key from the environment | Session id sent
+openrouter_decisions | https://openrouter.ai/api/alpha/decisions | OPENROUTER_API_KEY | yes
+systemone_decisions | https://api.typesafe.ai/v1/systemone | TYPESAFE_API_KEY | no
+ollama_decisions | http://127.0.0.1:11434/v1/systemone | (none, local) | no
+@{body}
+
+A local Laya is @{tt}systemone_decisions@{utt} with the url of the machine
+that runs it.
+
+@{code}
+For users (the operator writing llm.yaml)
+  @{"  Setting it up  " link setup}
+  @{"  Retries, timeouts and cancelling  " link retries}
+  @{"  Usage, cost and the hooks  " link usage}
+
+For agents and developers
+  @{"  Questions and answers  " link questions}
+  @{"  Errors  " link errors}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing to enable: the core finds the plugin by its @{tt}plugin.toml@{utt}
+(@{tt}type = ["llm-provider"]@{utt}, @{tt}provides_decisions =
+["openrouter_decisions", "systemone_decisions",
+"ollama_decisions"]@{utt}, no @{tt}provides@{utt}) and imports
+@{tt}provider.py@{utt} the first time a decision model entry names one of
+them. There is no entry in
+@{tt}config/plugins.yaml@{utt} and no allowlist line.
+
+@{h2}The entries
+
+Decision models sit under @{tt}llm_system.decision_models@{utt}, profiles
+under @{tt}llm_system.decision_profiles@{utt}, and
+@{tt}default_decision_profile@{utt} names the one used when a caller names
+none (see @{" LLM models and profiles " link scarabhive/llm}). The shipped
+entries, from @{tt}config/llm_openrouter.yaml@{utt}:
+
+@{code yaml}
+  decision_models:
+    jev:
+      provider: openrouter_decisions
+      model: ~typesafe/jev-latest
+
+  decision_profiles:
+    jev:
+      model_ref: jev
+      description: "TypeSafe Jev - decides, does not write"
+
+  default_decision_profile: jev
+@{body}
+
+and from @{tt}config/llm.yaml@{utt}, a local Laya:
+
+@{code yaml}
+  decision_models:
+    laya:
+      provider: systemone_decisions
+      model: laya-multilingual
+      url: http://127.0.0.1:8788/v1/systemone
+      # api_key: ${LAYA_API_KEY}
+
+  decision_profiles:
+    laya:
+      model_ref: laya
+@{body}
+
+@{table}
+Key | Default | Meaning
+provider | openrouter_decisions | which host (table in @{" the main page " link main})
+model | (required) | sent as @{tt}model@{utt}; also the name the usage tracker prices by
+url | the provider's endpoint | the WHOLE endpoint; nothing is appended to it
+api_key | (from the environment) | see below
+request_timeout | 60 | seconds; see @{" Retries " link retries}
+max_retries | 2 | further attempts after the first; not below 0
+@{body}
+
+An unknown key in an entry stops the configuration from loading -- a
+@{tt}base_url@{utt} written out of habit would otherwise be dropped and the
+request would go to the default host.
+
+@{h2}The key
+
+A configured @{tt}api_key@{utt} always wins. Without one, the key follows
+the host of the url actually called, not the provider name:
+@{tt}openrouter.ai@{utt} takes @{tt}OPENROUTER_API_KEY@{utt},
+@{tt}api.typesafe.ai@{utt} takes @{tt}TYPESAFE_API_KEY@{utt}. A local url (a
+loopback or private address, a host name without a dot, @{tt}.local@{utt})
+gets no key and no @{tt}Authorization@{utt} header. Any other host needs
+@{tt}api_key@{utt} in the entry; building the client fails otherwise,
+naming the host, and so does a missing environment variable. Nothing is
+sent in either case.
+
+@{h2}laya-serve
+
+Laya runs in its own environment (it brings torch and transformers):
+
+@{code}
+pip install "laya[serve]"
+LAYA_HOST=127.0.0.1 LAYA_PORT=8788 laya-serve
+@{body}
+
+Its default port is 8000, the port of this server's API, and it binds to
+all interfaces by default: set both. Started with @{tt}LAYA_API_KEY@{utt},
+it refuses every request (HTTP 401) until the entry names that key. It
+does not refuse an unknown @{tt}model@{utt} but picks a checkpoint itself,
+and its answer names @{tt}laya-rl-agent@{utt} whatever judged: name the
+checkpoint in the entry.
+
+@{h2}Ollama
+
+Ollama serves decision models from version 0.35 on, at
+@{tt}/v1/systemone@{utt} on its usual port. Pull one --
+@{tt}ollama pull nimble@{utt} (9B, Bespoke Labs), @{tt}tev1@{utt} (4B) or
+@{tt}tev1:0.8b@{utt} (Together AI) -- and name it:
+
+@{code yaml}
+  decision_models:
+    nimble:
+      provider: ollama_decisions
+      model: nimble
+      # url: http://192.168.1.10:11434/v1/systemone   # Ollama elsewhere
+
+  decision_profiles:
+    nimble:
+      model_ref: nimble
+@{body}
+
+No key is sent to this computer or the local network; an address that is
+not local (a Tailscale 100.64/10 address, a name with a dot other than
+@{tt}host.docker.internal@{utt} or one ending in @{tt}.local@{utt}) needs
+@{tt}api_key:@{utt} like every host (see "The key") -- any value: Ollama
+ignores it, a proxy in front of it may not. Ollama's own limits, from its
+documentation: a request
+body of at most 64 KiB (HTTP 413 beyond), at most 64 questions, 2 to 26
+options or levels, and the whole prompt within the model's context -- 8,192
+tokens for Nimble, about 2,000 for Tev1 -- with the state and every question
+in it. The @{" decision " link decision/main} tool lets an item run to
+50,000 characters by default: with these models keep items short. How long the model stays loaded after a call is Ollama's
+setting (@{tt}OLLAMA_KEEP_ALIVE@{utt}, 5 minutes by default); the client
+sends no @{tt}keep_alive@{utt}. A model name Ollama does not have is HTTP
+404 -- and so is every call to an Ollama older than 0.35, which has no
+@{tt}/v1/systemone@{utt} (@{tt}404 page not found@{utt}): update Ollama, not
+the model. A chat model is HTTP 400, as is a prompt beyond the loaded
+context window; the @{tt}error@{utt} in the answer names which. Neither is
+tried again.
+
+@{h2}Dependencies and data
+
+@{tt}httpx@{utt} only. The plugin is kept apart from the OpenRouter chat
+plugin on purpose: that one pulls in the OpenRouter SDK, and this client
+must not depend on it. Certificates are always checked. Nothing is stored;
+a changed entry reaches a caller when it builds its client again.
+@endnode
+
+@node questions "Questions and answers"
+@{h1}Questions and answers
+
+@{h2}Getting a client
+
+@{code python}
+from agent_system.llm.decisions import create_decisions_from_profile
+
+client = create_decisions_from_profile(settings, "jev")  # None: the default profile
+result = await client.decide(
+    "rm -rf /tmp/build",
+    {"safe": {"type": "noul", "instructions": "Is this safe to run?"}},
+    cancellation_token=token, session_id=session_id)
+result["safe"].value   # a probability from 0 to 1
+@{body}
+
+Outside a configuration (a script, a test) the client takes its arguments
+directly: @{tt}DecisionsClient(model=..., api_key=None, url=None,
+request_timeout=60, max_retries=2, host=OPENROUTER)@{utt} from
+@{tt}plugins.llm_decisions.system_one@{utt}; @{tt}SYSTEM_ONE@{utt} and
+@{tt}OLLAMA@{utt} are the other hosts.
+
+@{h2}decide(state, questions, *, cancellation_token=None, session_id=None)
+
+@{tt}state@{utt} is the content to judge: text, or a JSON object or array
+when its parts have names. It must not be empty; bytes, numbers and other
+types are refused. @{tt}session_id@{utt} groups the call in the hooks, and
+at OpenRouter also in their logs; it never reaches the model.
+
+@{tt}questions@{utt} maps a name to a question. The client checks them
+before anything is sent (@{tt}check_questions@{utt}, callable on its own):
+
+@{table}
+type | criteria | The answer's value
+noul | optional; when given, a mapping such as {"true": "...", "false": "..."} | a probability from 0 to 1
+choice | required; a mapping of at least two options to what each means | the chosen option's name
+score | required; a list of at least two levels, lowest first | a position on the scale, counted from 0
+@{body}
+
+Every question needs non-empty @{tt}instructions@{utt}. The minimum of two
+options or levels is this client's own rule, not the endpoint's.
+
+A score is a point, not a rung: on @{tt}["none", "low", "high"]@{utt}, 0 is
+none, 2 is high, and 0.58 lies between none and low.
+
+@{h2}The result
+
+@{table}
+Field | Meaning
+answers | per question name an Answer; @{tt}result[name]@{utt} reads it
+model | the model that answered, as the host names it; the configured name when the answer carries none
+provider | the backend the gateway routed to (OpenRouter sends it), else None
+id | the host's call id, else None
+input_tokens, output_tokens | from the answer's usage; 0 when absent
+cost | the cost the answer reports; 0 on Ollama; otherwise None when it reports none -- unknown, not free
+duration_ms | from the first attempt to the answer
+@{body}
+
+@{table}
+Answer field | Meaning
+name, type | the question's name and type
+value | the probability, the option, or the position
+confidence | when the model sends it, else None
+probabilities | a choice: per option; a score: per position, as text ({"0": 0.51, "1": 0.39}); else None
+legend | a score: position to level name ({"0": "none", ...}); else None
+@{body}
+
+Jev sends a noul answer as the probability alone; confidence and
+probabilities come with choice and score. Answers to names that were not
+asked are kept; fields a host adds of its own (laya-serve's
+@{tt}answer_confidence@{utt}, @{tt}action@{utt}, @{tt}routing@{utt}) are
+not read. The recorded answers of OpenRouter and laya-serve are in the
+plugin's tests; Ollama's answer there is the one of its documentation.
+@endnode
+
+@node retries "Retries, timeouts and cancelling"
+@{h1}Retries, timeouts and cancelling
+
+@{tt}request_timeout@{utt} is handed to httpx as the timeout of each
+attempt: connecting, sending, and each wait for data may take that many
+seconds.
+
+A call makes at most @{tt}max_retries@{utt} + 1 attempts. Another attempt
+follows a connection error, a timeout, and the statuses 429, 500, 502, 503,
+504, 520 to 524 and 529. Before it the client waits:
+
+@{bullet}the host's @{tt}Retry-After@{utt}, when it is a number of seconds
+from 0 to 60;
+@{bullet}otherwise 2 seconds times the attempt number (2, 4, ...) -- also
+when @{tt}Retry-After@{utt} is a date, negative or not a number.
+
+A @{tt}Retry-After@{utt} above 60 seconds ends the call at once with "Decisions
+API busy (HTTP <status>), asks to retry after <n>s": sitting out the wait
+inside a tool call helps nobody. Any other status from 400 up, and an answer
+this client cannot read, are not tried again.
+
+A cancel ends the call wherever it is: before an attempt (nothing is sent),
+while a request is in flight (the request is stopped), or during the wait
+between two attempts. It arrives as @{tt}asyncio.CancelledError("Request
+cancelled by user")@{utt}.
+@endnode
+
+@node usage "Usage, cost and the hooks"
+@{h1}Usage, cost and the hooks
+
+A decision call belongs to no agent, so the client reports to the global
+hook registry itself (@{" Hooks " link scarabhive/hooks}). Every context
+carries @{tt}agent@{utt} empty, the provider name as
+@{tt}llm_provider@{utt} and @{tt}agent_name@{utt}, the configured model as
+@{tt}llm_model@{utt}, the url, the session id and the id of the run the
+call is made in.
+
+@{table}
+When | Hook | What it carries
+the call starts (after the questions are checked) | pre_llm_request | the request body
+an attempt failed and another follows | post_llm_response | error "[RETRY <n>/<total>] <reason>", finish reason retry, no usage
+an answer | post_llm_response | usage {input_tokens, output_tokens, cost}, the answer values, finish reason stop, the served model as metadata served_by
+any other end (error, cancel) | post_llm_response | error "<type>: <message>", finish reason error; the usage only when an answer came back and was refused
+@{body}
+
+So each call ends with exactly one report that is not a retry. A hook that
+raises never breaks the call; the first such failure per provider and phase
+is logged as a warning, later ones only at debug level.
+
+The usage tracker books agent-less reports that carry a usage
+(@{" What it records " link context_usage_tracker/hooks}), under the
+provider name. The cost the answer reports wins. An Ollama call costs 0:
+Ollama bills nothing, so no model needs a price row. A call of another host
+that reports none -- a local Laya, TypeSafe's own endpoint -- the tracker prices from
+@{tt}config/llm_pricing.yaml@{utt} by the entry's @{tt}model@{utt}; without
+a row there, the cost stays unknown. The message debugger records every
+report (@{" The capture hooks " link message_debugger/hooks}), the served
+model included.
+@endnode
+
+@node errors "Errors"
+@{h1}Errors
+
+Refused before anything is sent, as @{tt}ValueError@{utt} (no hook fires):
+
+@{table}
+Message begins | When
+A decisions request needs at least one question | no questions
+Question '<name>' must be a mapping | a question is not an object
+Question '<name>' has type ... | a type other than noul, choice, score
+Question '<name>' has no instructions | instructions missing or empty
+Question '<name>' is a score: criteria must be an ordered list ... | score criteria not a list of two or more
+Question '<name>' is a choice: criteria must be a mapping ... | choice criteria not a mapping of two or more
+Question '<name>' is a noul: criteria is optional, but ... | noul criteria that is not a mapping
+A decisions state is text, an object or an array | bytes, a number, ...
+A decisions request needs a state | an empty state
+@{body}
+
+Everything the endpoint does wrong is a @{tt}DecisionsError@{utt}. Its
+@{tt}usage@{utt} is set when an answer came back with a usage and was
+refused: the call was billed (its cost as in the result), and the
+@{" decision " link decision/main} tool counts it in its totals.
+
+@{table}
+Message begins | When | usage
+Decisions API error <status>: <body> | a status from 400 up that is not retried | none
+Decisions call failed: ... | the last attempt failed with a retryable status, a connection error or a timeout | none
+Decisions API busy (HTTP <status>), asks to retry after <n>s | a Retry-After above 60 seconds | none
+Decisions API answered <status> with no JSON | the body is not JSON | none
+Decisions API answered <status> with <type>, not an object | JSON, but not an object | none
+Decisions API answered a usage this client cannot read | usage figures that are not numbers | none
+Decisions API answered <type> where the answers object belongs | answers is not an object | when reported
+Decisions answer '<name>' has type ... with no usable value | an answer of an unknown type, not an object, or without its value | when reported
+Decisions API left <names> unanswered | a question got no answer | when reported
+@{body}
+
+Bodies quoted in a message are cut to a few hundred characters.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+Exactly the request body, and nothing about the run:
+
+@{code json}
+{"model": "~typesafe/jev-latest",
+ "state": "rm -rf /tmp/build",
+ "questions": {"safe": {"type": "noul", "instructions": "Is this safe to run?"}}}
+@{body}
+
+plus @{tt}session_id@{utt} at OpenRouter, which only groups their logs. The
+questionnaire is most of the input: a one-line state with three questions
+counts a few hundred input tokens, so the number of questions weighs more
+in the price than the length of the content. There is no conversation and
+no prompt cache.
+
+Jev is not deterministic -- the same question can come back a few
+hundredths apart -- and Jev, Laya and Nimble give different numbers for the
+same question: a threshold tuned on one does not carry over to another.
+@endnode

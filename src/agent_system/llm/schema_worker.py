@@ -593,7 +593,8 @@ def _any_of(validator: Any, branches: list, instance: Any, schema: dict) -> Iter
         key = (id(branch), id(instance))
         verdict = state.verdicts.get(key) if state is not None else None
         if verdict is None:
-            if state is not None and time.monotonic() > state.deadline:
+            # >=: Windows' clock moves in ~15 ms steps, and a budget of 0 must still be spent.
+            if state is not None and time.monotonic() >= state.deadline:
                 raise _CheckTooCostly()
             verdict = next(iter(validator.descend(instance, branch, schema_path=index)), None) is None
             if state is not None:
@@ -721,8 +722,22 @@ def _limit_memory() -> None:
 
 
 def _next_line(idle_seconds: float) -> str:
-    """The next request line; "" at EOF or after ``idle_seconds`` without one (POSIX)."""
-    if idle_seconds > 0 and sys.platform != "win32":
+    """The next request line; "" at EOF or after ``idle_seconds`` without one."""
+    if idle_seconds > 0 and sys.platform == "win32":
+        # select() takes sockets only there, so the line is read by a thread. Without an idle end a
+        # worker stayed for as long as its pool. One whose time ran out leaves with os._exit: the
+        # reader still blocks in readline, and every reply is flushed already.
+        import os
+        import threading
+
+        line: list[str] = []
+        reader = threading.Thread(target=lambda: line.append(sys.stdin.readline()), daemon=True)
+        reader.start()
+        reader.join(idle_seconds)
+        if not line:
+            os._exit(0)
+        return line[0]
+    if idle_seconds > 0:
         import select
 
         ready, _, _ = select.select([sys.stdin], [], [], idle_seconds)

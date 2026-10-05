@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent_system.hooks import HookContext
@@ -761,3 +762,281 @@ class TestAfterSystem:
 
         assert msgs[1].role == "system" and msgs[1].content == "Rules."
         assert caplog.text == "", "a legitimate configuration logs nothing"
+
+
+# ============================================================================
+# Through the real dispatcher (HookRegistry)
+# ============================================================================
+
+async def _registry(*instances):
+    """A HookRegistry with one inject_prompt hook per (name, config) pair."""
+    from agent_system.hooks import HookRegistry
+    from plugins.simple_prompt_inject.plugin import PLUGIN_FACTORY
+
+    registry = HookRegistry()
+    for name, config in instances:
+        plugin = PLUGIN_FACTORY(name=name, server_config=SimpleNamespace(config=config))
+        await registry.register_hook(HookType.PRE_LLM_CALL, f"{name}.inject_prompt", plugin)
+    return registry
+
+
+async def _call(registry, messages, agent=None):
+    ctx = HookContext(hook_type=HookType.PRE_LLM_CALL, request_id="r1", session_id="s1",
+                      agent_name="test_agent", agent=agent, messages=messages)
+    return (await registry.execute_hooks(HookType.PRE_LLM_CALL, ctx)).messages
+
+
+class TestThroughTheDispatcher:
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("position", ["before_last_user", "end", "after_system"])
+    async def test_two_instances_keep_their_own_notes(self, position):
+        """A second instance used to take the first one's message for its own
+        previous copy (one marker for both) and delete or skip it."""
+        registry = await _registry(
+            ("reminder_a", {"prompt_text": "A", "injection_position": position}),
+            ("reminder_b", {"prompt_text": "B", "injection_position": position}))
+
+        msgs = _conversation()
+        for _ in range(2):
+            msgs = await _call(registry, msgs)
+
+        notes = sorted((m.injected_by, m.content) for m in msgs if m.injected_by)
+        assert notes == [("reminder_a", "A"), ("reminder_b", "B")]
+
+    @pytest.mark.asyncio
+    async def test_an_agent_variable_survives_a_session_variable(self):
+        """Session vars override the agent's key by key, as in the system
+        prompt. Taking them INSTEAD lost every agent var as soon as the session
+        held any variable -- another plugin's included."""
+        agent = MagicMock()
+        agent.agent_config.template_vars = {"lang": "German"}
+        agent._session_tracker.get_session_template_vars.return_value = {"other": "x"}
+        registry = await _registry(
+            ("simple_prompt_inject", {"prompt_text": "Answer in {{ lang }}."}))
+
+        msgs = await _call(registry, _conversation(), agent=agent)
+
+        assert [m.content for m in msgs if m.injected_by] == ["Answer in German."]
+
+    def test_an_unknown_position_or_role_falls_back_to_the_default(self, make_plugin, caplog):
+        """Nothing checks the config against the schema's enums: an unknown role
+        went to the provider on every call, an unknown position silently acted
+        as before_last_user."""
+        with caplog.at_level("ERROR"):
+            p = make_plugin("Rules.", position="after-system", role="Developer")
+
+        assert (p.injection_position, p.role) == ("before_last_user", "developer")
+        assert "after-system" in caplog.text and "Developer" in caplog.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("position,role", [
+        ("after_system", "developer"), ("after_system", "user"),
+        ("after_system", "system"), ("end", "user")])
+    async def test_every_request_is_a_prefix_of_the_next(self, position, role):
+        """Two turns with a tool round each; between the turns the session is
+        saved the way the agent saves it (system prompt rebuilt, volatile notes
+        dropped). These placements must never rewrite an earlier request."""
+        from agent_system.servers.agent.components.session_tracking import is_volatile_note
+
+        registry = await _registry(("simple_prompt_inject", {
+            "prompt_text": "Rules.", "injection_position": position, "role": role}))
+        system = ChatMessage(role="system", content="sys")
+        msgs = [system, ChatMessage(role="user", content="u1")]
+        requests = []
+        for turn in (1, 2):
+            for step in ("tool", "answer"):
+                msgs = await _call(registry, msgs)
+                requests.append([(m.role, m.content) for m in msgs])
+                msgs = msgs + [ChatMessage(role="assistant", content=f"{step} {turn}")]
+            kept = [m for m in msgs if m.role != "system" and not is_volatile_note(m)]
+            msgs = [system] + kept + [ChatMessage(role="user", content=f"u{turn + 1}")]
+
+        for earlier, later in zip(requests, requests[1:]):
+            assert later[:len(earlier)] == earlier, (earlier, later)
+        assert [c for _, c in requests[-1]].count("Rules.") == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("position", ["before_last_user", "end", "after_system"])
+    async def test_an_empty_rendering_withdraws_the_note(self, position):
+        """A text that renders empty from now on used to leave the copy of the
+        call before in the list, and the stale note went on speaking."""
+        agent = MagicMock()
+        agent.agent_config.template_vars = {}
+        registry = await _registry(("simple_prompt_inject", {
+            "prompt_text": "{% if flag %}Hurry.{% endif %}", "injection_position": position}))
+
+        agent._session_tracker.get_session_template_vars.return_value = {"flag": True}
+        msgs = await _call(registry, _conversation(), agent=agent)
+        assert [m.content for m in msgs if m.injected_by] == ["Hurry."]
+
+        agent._session_tracker.get_session_template_vars.return_value = {"flag": False}
+        msgs = await _call(registry, msgs, agent=agent)
+        assert [m.content for m in msgs if m.injected_by] == []
+
+
+# ============================================================================
+# task_start: in front of the task, inside the user's own message
+# ============================================================================
+
+def _task_start(text="Oft gelesen: Akten."):
+    return {"prompt_text": text, "injection_position": "task_start", "role": "user"}
+
+
+def _task(content="Schreibe Beat B01"):
+    return [ChatMessage(role="system", content="sys"), ChatMessage(role="user", content=content)]
+
+
+def _agent(**session_vars):
+    agent = MagicMock()
+    agent.agent_config.template_vars = {}
+    agent._session_tracker.get_session_template_vars.return_value = session_vars
+    return agent
+
+
+class TestTaskStart:
+
+    @pytest.mark.asyncio
+    async def test_the_text_stands_in_front_of_the_task_which_stays_the_users(self):
+        registry = await _registry(("hint", _task_start()))
+        msgs = await _call(registry, _task())
+
+        assert [m.role for m in msgs] == ["system", "user"]
+        assert msgs[1].content == "Oft gelesen: Akten.\n\n---\n\nSchreibe Beat B01"
+        assert msgs[1].injected_by is None, "a marked task is skipped by every turn counter"
+
+    @pytest.mark.asyncio
+    async def test_across_a_save_every_request_is_a_prefix_of_the_next(self):
+        registry = await _registry(("hint", _task_start()))
+        msgs, requests = _task(), []
+        for turn in (1, 2):
+            msgs = await _call(registry, msgs)
+            requests.append([(m.role, m.content) for m in msgs])
+            # Saved and read back the way the session does it.
+            msgs = [ChatMessage(**m.model_dump(mode="json")) for m in msgs] + [
+                ChatMessage(role="assistant", content=f"answer {turn}"),
+                ChatMessage(role="user", content=f"turn {turn + 1}")]
+
+        assert requests[1][:len(requests[0])] == requests[0]
+        assert sum(c.count("Oft gelesen") for _, c in requests[-1]) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_text_leaves_the_list_alone(self, make_plugin):
+        # A new list would be synced into the session for nothing on every call.
+        p = make_plugin("H.", position="task_start", role="user")
+        first = await p.inject_prompt(_ctx(_task()))
+        again = await p.inject_prompt(_ctx(first.context.messages))
+
+        assert first.modified and again.modified is False
+
+    @pytest.mark.asyncio
+    async def test_a_changed_text_replaces_the_old_and_an_empty_one_takes_it_out(self):
+        registry = await _registry(("hint", _task_start("{{ note }}")))
+        msgs = await _call(registry, _task("Task"), agent=_agent(note="Alt."))
+        msgs = await _call(registry, msgs, agent=_agent(note="Neu."))
+        assert msgs[1].content == "Neu.\n\n---\n\nTask"
+
+        msgs = await _call(registry, msgs, agent=_agent(note=""))
+        assert msgs[1].content == "Task" and not msgs[1].prefixed_by
+
+    @pytest.mark.asyncio
+    async def test_a_note_injected_before_it_is_not_the_task(self):
+        registry = await _registry(("hint", _task_start("H.")))
+        msgs = await _call(registry, [ChatMessage(role="system", content="sys"),
+                                      ChatMessage(role="user", content="note", injected_by="other"),
+                                      ChatMessage(role="user", content="Task")])
+
+        assert [m.content for m in msgs[1:]] == ["note", "H.\n\n---\n\nTask"]
+
+    @pytest.mark.asyncio
+    async def test_two_instances_keep_their_own_prefix(self):
+        from plugins.simple_prompt_inject.plugin import PLUGIN_FACTORY
+
+        a, b = (PLUGIN_FACTORY(name=name, server_config=SimpleNamespace(config=_task_start(text)))
+                for name, text in (("hint_a", "A."), ("hint_b", "B.")))
+        msgs = _task("Task")
+        for p in (a, b):
+            msgs = (await p.inject_prompt(_ctx(msgs))).context.messages
+
+        # The next call: each finds its text behind the other's and leaves it.
+        assert [(await p.inject_prompt(_ctx(msgs))).modified for p in (a, b)] == [False, False]
+        assert msgs[1].content.count("A.") == msgs[1].content.count("B.") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_list_task_gets_it_in_its_first_text_part(self):
+        registry = await _registry(("hint", _task_start("H.")))
+        msgs = await _call(registry, [ChatMessage(role="system", content="sys"), ChatMessage(
+            role="user", content=[{"type": "text", "text": "Task"},
+                                  {"type": "image_url", "image_url": {"url": "u"}}])])
+
+        parts = msgs[1].content
+        assert parts[0].text == "H.\n\n---\n\nTask" and len(parts) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_copy_left_from_another_position_goes(self):
+        """The position changed over a restart; the saved session still held the
+        note after the system prompt, and the model read the text twice."""
+        registry = await _registry(("hint", _task_start("H.")))
+        msgs = await _call(registry, [ChatMessage(role="system", content="sys"),
+                                      ChatMessage(role="user", content="H.", injected_by="hint"),
+                                      ChatMessage(role="user", content="Task")])
+
+        assert [(m.role, m.content) for m in msgs] == [("system", "sys"),
+                                                       ("user", "H.\n\n---\n\nTask")]
+
+    @pytest.mark.asyncio
+    async def test_a_task_sent_back_with_the_text_is_taken_over(self):
+        """A retry from the web chat sends the first message again as the text
+        it showed -- with the note, without the record."""
+        registry = await _registry(("hint", _task_start("H.")))
+        msgs = await _call(registry, _task("H.\n\n---\n\nTask"))
+
+        assert msgs[1].content == "H.\n\n---\n\nTask"
+        assert msgs[1].prefixed_by == {"hint": "H.\n\n---\n\n"}
+
+    @pytest.mark.asyncio
+    async def test_the_text_inside_the_task_is_the_tasks_own(self):
+        """The v4 tasks join their parts with this very separator: a part that
+        reads like the note is not the note, and a new text leaves it."""
+        registry = await _registry(("hint", _task_start("{{ note }}")))
+        task = "Teil 1\n\n---\n\nAlt.\n\n---\n\nTeil 2"
+        msgs = await _call(registry, _task(task), agent=_agent(note="Alt."))
+        assert msgs[1].content == "Alt.\n\n---\n\n" + task
+
+        msgs = await _call(registry, msgs, agent=_agent(note="Neu."))
+        assert msgs[1].content == "Neu.\n\n---\n\n" + task
+
+    @pytest.mark.asyncio
+    async def test_an_empty_task_is_left_alone(self):
+        # Written in front, the message would be the note and a separator.
+        registry = await _registry(("hint", _task_start("H.")))
+        msgs = await _call(registry, _task("  "))
+
+        assert msgs[1].content == "  " and not msgs[1].prefixed_by
+
+    @pytest.mark.asyncio
+    async def test_an_archive_placeholder_is_not_the_task(self):
+        import json
+
+        registry = await _registry(("hint", _task_start("H.")))
+        ref = json.dumps({"type": "archived_ref", "ref_id": "a1", "summary": "s"})
+        msgs = await _call(registry, [ChatMessage(role="system", content="sys"),
+                                      ChatMessage(role="user", content=ref),
+                                      ChatMessage(role="user", content="Task")])
+
+        assert [m.content for m in msgs[1:]] == [ref, "H.\n\n---\n\nTask"]
+
+    @pytest.mark.asyncio
+    async def test_without_a_task_nothing_happens(self):
+        registry = await _registry(("hint", _task_start()))
+        msgs = await _call(registry, [ChatMessage(role="system", content="sys")])
+
+        assert [(m.role, m.content) for m in msgs] == [("system", "sys")]
+
+    @pytest.mark.parametrize("role", ["developer", "system"])
+    def test_another_role_is_logged_and_the_task_stays_the_users(self, make_plugin, caplog, role):
+        with caplog.at_level("ERROR"):
+            p = make_plugin("H.", position="task_start", role=role)
+
+        assert (p.injection_position, p.role) == ("task_start", "user")
+        assert "task_start" in caplog.text

@@ -1,0 +1,437 @@
+@database "blender"
+@author "Enrico Ehrich"
+@$VER: blender.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Blender"
+@{h1}Blender
+
+Lets an agent work in a Blender that is running on this machine: read the
+scene and single objects, run Python (bpy) inside Blender, take a picture
+of the 3D viewport and export the scene or the selected objects as glb,
+gltf, fbx, obj, stl, ply, usd, abc or a .blend copy. The plugin talks
+directly to the BlenderMCP addon inside Blender over a local socket; it
+needs no second process and no Python package of its own.
+
+The plugin also brings @{tt}blender_agent@{utt}, a sub-agent that models
+and edits scenes: it changes something, looks at a screenshot, and exports
+the result into the workspace.
+
+The plugin has no panel and no hooks.
+
+@{code}
+For users
+  @{"  Getting Blender ready  " link blenderside}
+  @{"  The Blender agent  " link agent}
+
+For agents and developers
+  @{"  Looking: status, scene, object  " link inspect}
+  @{"  Running bpy: execute  " link execute}
+  @{"  Pictures: screenshot  " link screenshot}
+  @{"  Files: export  " link export}
+  @{"  Paths, the socket and what it may reach  " link safety}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node blenderside "Getting Blender ready"
+@{h1}Getting Blender ready
+
+The tools work only while Blender is open and its addon is listening.
+
+@{number}Install the BlenderMCP addon once. It ships with the
+@{tt}blender-mcp@{utt} package (version 1.9.0 here); its installer puts it
+into Blender: @{tt}blender-mcp install-addon@{utt}.
+@{number}In Blender, enable the addon @{b}Interface: Blender MCP@{ub}.
+@{number}In the 3D viewport press @{b}N@{ub}, open the tab
+@{b}BlenderMCP@{ub} and click @{b}Connect to MCP server@{ub}. It listens on
+port 9876.
+
+Blender has to stay open while an agent works: when it is closed or its
+server is stopped, every tool answers with the instruction above. A
+screenshot needs a 3D viewport in the open window.
+
+Then talk to @{tt}blender_agent@{utt} (@{tt}/agent blender_agent@{utt},
+see @{" Choosing an agent " link scarabhive/agents}) or give another agent
+the tools (@{" Setting it up " link setup}).
+@endnode
+
+@node inspect "Looking: status, scene, object"
+@{h1}Looking: status, scene, object
+
+The tools are the instance name followed by the operation --
+@{tt}blender_status@{utt}, @{tt}blender_scene@{utt},
+@{tt}blender_object@{utt} for the shipped instance @{tt}blender@{utt}.
+The framework does not check arguments against the schema; what follows
+is what the code does.
+
+@{h2}status
+
+No parameters. Asks the addon for its version and command list, then
+whether each asset provider (PolyHaven, Sketchfab, Hyper3D, PolyPizza,
+Hunyuan3D) is switched on in that Blender -- one call each, at most 10
+seconds each; a provider that does not answer counts as off.
+
+@{table}
+Field | Meaning
+addon_version | e.g. "1.6"
+protocol_version | the addon's protocol number
+capabilities | the commands the addon offers
+asset_providers | provider name to true/false
+output_directory | where screenshots and exports go, as an absolute path
+@{body}
+
+@{h2}scene
+
+No parameters. Answers @{tt}scene@{utt}: the addon's world snapshot --
+scene name, @{tt}object_count@{utt}, @{tt}selected@{utt} names and
+@{tt}selected_count@{utt}, @{tt}frame_current@{utt},
+@{tt}frame_start@{utt}, @{tt}frame_end@{utt}, @{tt}fps@{utt}, the active
+camera, lights, and @{tt}objects@{utt}: per object its name, type,
+location, rotation and scale (rounded to three places), visibility,
+materials and, for meshes, vertex and polygon counts. The addon itself
+lists at most 4000 objects and 1000 selected names (flags
+@{tt}objects_truncated@{utt}, @{tt}selected_truncated@{utt}).
+
+@{h2}object
+
+@{table}
+Parameter | Meaning
+name | required; the object name exactly as the scene lists it
+@{body}
+
+Answers @{tt}object@{utt}: name, type, location, rotation, scale
+(unrounded), visibility, materials, and for a mesh its world bounding box
+and vertex, edge and polygon counts. An unknown name is an error from
+Blender: "Object not found: <name>".
+
+@{h2}Big answers
+
+An answer above 60,000 characters is cut, and @{tt}truncated@{utt} is
+true. The answer stays an object: its longest list (normally
+@{tt}objects@{utt}) is halved until it fits, and
+@{tt}objects_omitted@{utt} says how many entries were dropped. A scene of
+a few hundred objects reaches the limit.
+@endnode
+
+@node execute "Running bpy: execute"
+@{h1}Running bpy: execute
+
+@{tt}blender_execute@{utt} runs Python inside Blender and returns what the
+code printed. Everything without a tool of its own goes this way:
+creating objects, modifiers, materials, animation, rendering, selecting
+objects before an export.
+
+@{table}
+Parameter | Meaning
+code | required; the Python source. @{tt}bpy@{utt} is already imported
+@{body}
+
+The answer is @{tt}output@{utt} (the printed text, stripped) and
+@{tt}truncated@{utt}; output above 60,000 characters is cut and ends with
+"...[truncated at 60000 characters]". A script that raises answers an
+error "Code execution error: <message>" -- without a traceback, so short
+scripts are easier to repair.
+
+@{code}
+blender_execute {"code": "bpy.ops.mesh.primitive_cube_add(size=2)\nprint(bpy.context.active_object.name)"}
+-> {"status": "success", "output": "Cube.001", "truncated": false}
+@{body}
+
+The call waits up to @{tt}long_timeout@{utt} (600 seconds). Blender runs
+the script in its own main thread; while it runs, Blender does not
+respond. A timeout or a cancelled agent run ends the call, not the script
+-- Blender finishes it anyway. The code runs with all the rights of the
+Blender process (see @{" Paths, the socket and what it may reach " link safety}).
+@endnode
+
+@node screenshot "Pictures: screenshot"
+@{h1}Pictures: screenshot
+
+@{tt}blender_screenshot@{utt} has Blender draw the 3D viewport into a PNG
+file in the output directory and returns its path -- not the picture. To
+look at it, an agent loads the path with @{tt}media_ops_load@{utt} (see
+@{" media_ops " link media_ops/load}).
+
+@{table}
+Parameter | Meaning
+filename | file name or path below the output directory; default viewport.png. Any other suffix is replaced by .png
+max_size | longest edge in pixels; default 1000, held to 128-4096
+@{body}
+
+Answer: @{tt}path@{utt} (absolute) and @{tt}bytes@{utt}. The same name is
+overwritten on the next call.
+
+The file is checked after the call: if it is missing or unchanged since
+before the call, the answer is an error (@{tt}MissingOutput@{utt}) even
+when Blender said success -- so an agent never looks at an old frame. An
+empty file is @{tt}EmptyRender@{utt}. Without a 3D viewport in the window
+the addon answers "No 3D viewport found".
+@endnode
+
+@node export "Files: export"
+@{h1}Files: export
+
+@{tt}blender_export@{utt} writes the scene, or only the selected objects,
+to a file in the output directory. It exists because a hand-written export
+fails silently: glTF and FBX live in @{tt}bpy.ops.export_scene@{utt}, the
+others in @{tt}bpy.ops.wm@{utt}, and "only the selected" is spelled
+differently in each -- a wrong keyword exports the whole scene and reports
+success.
+
+@{table}
+Parameter | Meaning
+format | required; glb, gltf, fbx, obj, stl, ply, usd, abc or blend (upper case is taken)
+filename | file name or path below the output directory; default export.<format>
+selected_only | true: only the selected objects; default false. Select them first with execute. Anything but true or false (also as text) is refused
+@{body}
+
+@{table}
+Format | Operator | "Selected only" keyword
+glb | export_scene.gltf, export_format GLB | use_selection
+gltf | export_scene.gltf, export_format GLTF_SEPARATE (a .gltf plus .bin) | use_selection
+fbx | export_scene.fbx | use_selection
+obj | wm.obj_export | export_selected_objects
+stl | wm.stl_export | export_selected_objects
+ply | wm.ply_export | export_selected_objects
+usd | wm.usd_export | selected_objects_only
+abc | wm.alembic_export | selected
+blend | wm.save_as_mainfile, copy=True | none: always the whole file
+@{body}
+
+@{tt}blend@{utt} writes a copy: the session in Blender keeps its own file
+name, so the user's next save goes where it always went. It ignores
+@{tt}selected_only@{utt}.
+
+Answer: @{tt}path@{utt}, @{tt}bytes@{utt}, @{tt}format@{utt}. As with
+screenshots, a file that is missing or unchanged after the call is an
+error (@{tt}MissingOutput@{utt}). An unknown format answers
+@{tt}supported@{utt} with the list. The export waits up to
+@{tt}long_timeout@{utt}.
+
+@{code}
+blender_export {"format": "glb", "filename": "props/crate.glb", "selected_only": true}
+-> {"status": "success", "path": ".../data/workspace/blender/props/crate.glb", "bytes": 48213, "format": "glb"}
+@{body}
+@endnode
+
+@node safety "Paths, the socket and what it may reach"
+@{h1}Paths, the socket and what it may reach
+
+@{h2}Where files go
+
+Blender writes screenshots and exports itself; the plugin only hands it
+an absolute path. That path must lie below the output directory
+(default @{tt}data/workspace/blender@{utt}). Refused, before Blender is
+asked:
+
+@{bullet}@{tt}..@{utt} that leads out, absolute paths outside it, drive letters
+(@{tt}C:x@{utt} too);
+@{bullet}network and device paths (@{tt}//host/share/...@{utt},
+@{tt}//?/...@{utt}, @{tt}//./...@{utt}) -- judged on the text alone,
+before anything touches the file system, because merely resolving such a
+path makes Windows sign in to that host with your credentials;
+@{bullet}the output directory itself (@{tt}.@{utt}): it is no file name.
+
+Subfolders below it are created as needed.
+
+@{h2}The socket
+
+Every call opens one connection to @{tt}host:port@{utt}, sends one JSON
+command and reads one JSON answer; nothing is kept between calls. The
+addon listens on @{tt}localhost@{utt} and asks for no password: every
+program on this machine that reaches port 9876 can run Python in Blender
+while its server runs. Click @{b}Disconnect from MCP server@{ub} in the
+N-panel when you do not need it.
+
+@{h2}What execute may reach
+
+@{tt}execute@{utt} is not sandboxed. The code runs with the rights of the
+Blender process: files anywhere, @{tt}os@{utt}, @{tt}subprocess@{utt},
+the network. Only screenshot and export are held to the output directory.
+That is why @{tt}blender_agent@{utt} is open to admins only
+(@{tt}min_role: admin@{utt}); give @{tt}blender/*@{utt} to another agent
+only if you would let it run Python on this machine.
+
+@{h2}A Blender on another machine
+
+@{tt}host@{utt} may point elsewhere, and the scene tools and execute then
+work there -- over a plain, unauthenticated TCP connection. Screenshots
+and exports are written on @{i}that@{ui} machine, so the check that the
+file was written looks at a local path and answers
+@{tt}MissingOutput@{utt}, unless the output directory is a folder both
+machines see under the same path.
+
+@{h2}Timeouts
+
+@{table}
+Calls | Setting | Default
+status, scene, object | timeout | 60 seconds
+asset provider checks in status | fixed | 10 seconds each
+execute, screenshot, export | long_timeout | 600 seconds
+@{body}
+
+The limit applies to connecting and to each wait for data, not to the
+whole answer. A timeout answers an error of type @{tt}TimeoutError@{utt};
+Blender keeps working on the command.
+@endnode
+
+@node agent "The Blender agent"
+@{h1}The Blender agent
+
+@{tt}blender_agent@{utt} builds and changes 3D scenes in the running
+Blender and exports the result. You can chat with it
+(@{tt}/agent blender_agent@{utt}), another agent can call it as a tool
+(@{tt}blender_agent_execute_task@{utt}), and the @{tt}gamedev@{utt} agent
+of the godot plugin starts it as a sub-agent through its sub-agent manager
+@{tt}gamedev_sam@{utt}. As a sub-agent it runs in a session of its own, so
+the screenshots it looks at stay out of its caller's context; what comes
+back is a file path.
+
+Its way of working, from its prompt:
+
+@{bullet}Look, change, look again: the scene before an edit, a screenshot
+or a fresh scene query after.
+@{bullet}One step at a time instead of one long script.
+@{bullet}@{tt}bpy.data@{utt} over @{tt}bpy.ops@{utt} where both exist.
+@{bullet}Destroy nothing unasked: no deleting objects it did not create,
+no overwriting files it did not write.
+@{bullet}Exports only through @{tt}blender_export@{utt}.
+@{bullet}If nothing answers, @{tt}blender_status@{utt} once, then ask you
+to start the server -- no retry loop.
+@{bullet}It reports what it built, the object names, the paths of its
+exports, and what a screenshot showed.
+
+Its tools: @{tt}blender/*@{utt}, @{tt}media_ops/*@{utt} (to look at a
+screenshot), @{tt}datetime/*@{utt} and, from the
+@{tt}multi_turn_agent@{utt} it inherits from,
+@{tt}context_engineer/*@{utt}. The context engineer hook is on, since
+screenshots and scene dumps are large (see
+@{" Context Engineer " link context_engineer/hook}). Models: Gemini Flash,
+then Gemini Pro, then Claude Sonnet (profiles @{tt}or-gemini-flash@{utt},
+@{tt}or-gemini-pro@{utt}, @{tt}or-claude-sonnet@{utt}); at most 60
+steps. Only users with the admin role may use it.
+
+Both the agent and the @{tt}blender@{utt} instance are defined in
+@{tt}agents/blender_agent.yaml@{utt} in the plugin folder and are loaded
+with the plugin; the prompt is @{tt}agents/prompts/blender_agent.md@{utt}.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Six tools, described in the plugin's @{tt}schema.yaml@{utt}. Anything
+without its own tool is left to execute, so the schema stays small -- the
+upstream bridge offered 28 tools, 23 of them asset shops. For
+@{tt}blender_agent@{utt} its two tools read "Model, modify or inspect a 3D
+scene in the running Blender and export the result into the workspace"
+and "List this agent's tools" (@{tt}self_tool_descriptions@{utt}).
+
+Every error answers @{tt}status: error@{utt}, @{tt}error@{utt} and
+@{tt}error_type@{utt}. Texts the model gets include:
+
+@{code}
+nothing is listening on 127.0.0.1:9876 (ConnectionRefusedError). Start Blender, open the N-panel in the 3D viewport, tab 'BlenderMCP', and click 'Connect to MCP server'.
+Blender accepted the connection but closed it without answering — the addon is loaded but its server is likely stopped.
+'name' is required
+'code' is required
+format 'dae' is not supported
+'selected_only' must be true or false
+'../x.glb' resolves outside the output directory (<folder>); pass a plain name or a path below it
+'//host/share/x.glb' is a network or device path outside the output directory; pass a plain name or a path below it
+Blender reported success but did not write <path>
+<path> is empty
+Object not found: Chair
+Code execution error: name 'cube' is not defined
+No 3D viewport found
+timed out
+@{body}
+
+The first two have @{tt}error_type: BlenderNotReachable@{utt}.
+
+@{h2}The status line
+
+The chat's status line ends with, for example:
+
+@{code}
+Blender addon 1.6 on 127.0.0.1:9876, 9 commands, assets: polyhaven
+Scene 'Scene': 3 objects, 1 selected, frame 1/250
+'Cube' is a MESH at [0.0, 0.0, 1.0], 2 materials
+bpy ran, 8 chars out: Cube.001
+viewport -> viewport.png, 312 KB
+selection -> crate.glb (glb), 47 KB
+@{body}
+
+A line longer than 140 characters is shortened in the middle, so the end
+-- where the reason is -- stays.
+
+@{h2}Tokens and cache
+
+Answers are appended; nothing earlier changes, and the prompt cache stays
+intact. A scene answer grows with the scene, up to 60,000 characters
+(about 15,000 tokens); a screenshot costs only its path until the model
+loads it with media_ops, and then what an image costs, on every later
+request of the run.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin needs no entry in @{tt}config/plugins.yaml@{utt}: the
+@{tt}blender@{utt} instance is defined next to the agent in the plugin's
+@{tt}agents/blender_agent.yaml@{utt} and loaded with it:
+
+@{code yaml}
+plugins:
+  servers:
+    blender:
+      type: blender
+      enabled: true
+      description: "Locally running Blender: scene, bpy, viewport, export"
+@{body}
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+blender/*"
+      - "+media_ops/*"   # to look at a screenshot
+@{body}
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+host | 127.0.0.1 | where the addon listens (@{" another machine " link safety})
+port | 9876 | the addon's port, as set in its N-panel
+timeout | 60 | seconds for status, scene, object
+long_timeout | 600 | seconds for execute, screenshot, export
+output_directory | the data directory's workspace/blender | where screenshots and exports go; a relative path counts from the folder the server started in
+@{body}
+
+The keys are read from the instance entry when the server starts; the
+@{tt}config:@{utt} block in @{tt}schema.yaml@{utt} only documents them.
+A different Blender port or folder is set on that entry, or on a second
+instance with @{tt}type: blender@{utt}.
+
+@{h2}Dependencies
+
+None in Python -- the socket speaks JSON, the standard library covers it.
+Blender with the BlenderMCP addon (@{" Getting Blender ready " link blenderside}).
+
+The older way, the external @{tt}blender-mcp@{utt} bridge, is still
+declared in @{tt}config/mcp_servers.yaml@{utt} and switched off. Switched
+on, its tools are @{tt}blender.*@{utt} (with a dot) and do not collide
+with this plugin's @{tt}blender/*@{utt}; see
+@{" External MCP servers " link scarabhive/mcp}.
+
+@{h2}Data
+
+Only the files in the output directory. The plugin keeps no state
+between calls.
+@endnode

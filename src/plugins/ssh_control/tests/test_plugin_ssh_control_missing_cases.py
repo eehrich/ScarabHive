@@ -110,9 +110,10 @@ async def test_execute_basic(mock_system_config, empty_server_config):
 
 
 @pytest.mark.asyncio
-async def test_upload_download_skeletons(mock_system_config, empty_server_config):
+async def test_upload_download_skeletons(mock_system_config, empty_server_config, tmp_path):
     """Basic skeleton tests for upload/download - use mocks to verify branch behavior."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
+    empty_server_config.local_root = str(tmp_path)
     plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_server_config)
 
     # Upload: create a simple FileTransfer-like object
@@ -126,11 +127,11 @@ async def test_upload_download_skeletons(mock_system_config, empty_server_config
             self.success = success
 
     with patch.object(plugin.tool_server.connection_manager, 'upload_file', AsyncMock(return_value=FileResult('none','/tmp/a','/tmp/b', 100, 0.02))):
-        res = await plugin.tool_server.upload_file({'machine':'none','local_path':'/tmp/a','remote_path':'/tmp/b'})
+        res = await plugin.tool_server.upload_file({'machine':'none','local_path':'a','remote_path':'/tmp/b'})
     assert res['total_machines'] == 1
     assert res['successful'] == 1
 
     # Download: mock to return FileResult
     with patch.object(plugin.tool_server.connection_manager, 'download_file', AsyncMock(return_value=FileResult('none','/tmp/a','/tmp/b', 100, 0.02))):
-        res2 = await plugin.tool_server.download_file({'machine':'none','remote_path':'/tmp/b','local_path':'/tmp/a'})
+        res2 = await plugin.tool_server.download_file({'machine':'none','remote_path':'/tmp/b','local_path':'a'})
     assert res2['success'] is True or res2.get('total_machines',1) >= 0

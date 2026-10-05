@@ -187,20 +187,18 @@ hooks:
       after: ["begin"]  # Run after initialization hooks
       before: ["end"]   # Run before finalization hooks
 
+# The code's defaults, for reference: the server reads each key from its server entry
+# (top level), never from this block.
 config:
   max_sub_agents_per_session: 10
   max_nesting_depth: 5  # levels below the calling session; sub-sessions inherit the rest of the budget
-  max_message_history: 100
   max_sub_agents_per_type: 3
   default_wait_timeout: 3600  # Default timeout in seconds for wait/wait_all operations (1 hour)
   auto_archive_on_limit: false  # If true, auto-archive oldest sub-agent when limit is reached
   allow_advanced_model: true  # false = the caller's use_advanced_model is ignored (logged) for every spawn/continue
   advanced_create_only_agents: []  # agent types whose use_advanced_model counts on `create` only; a continue on them runs the normal chain
-  allowed_agents:
-    - basic_agent
-    - research_agent
-    - financial_analyst_agent
-  blocked_agents:
+  allowed_agents: ["*"]  # instance names or fnmatch patterns
+  blocked_agents: []  # exact names, checked first
   hook_config:
     enabled: true
     inject_sub_agent_context:
@@ -209,7 +207,7 @@ config:
       enabled: true
       # Limits number of sub-agents shown to prevent system prompt bloat
       # Shows N: the open ones first, then the most recently created
-      max_sub_agents_shown: 5
+      max_sub_agents_shown: 10
       show_completed: false  # true = archived ones too (failed and cancelled are always shown)
       format: markdown
   # Phase-based agent filtering (optional, top-level key of the server entry)

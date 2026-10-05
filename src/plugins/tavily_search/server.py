@@ -14,6 +14,49 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MAX_CONTENT_CHARS = 20000
+
+
+def _content_cap(value: Any) -> int:
+    """`max_content_chars` as configured; anything but a positive int is the default."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return DEFAULT_MAX_CONTENT_CHARS
+
+
+def _cut_pages(data: dict[str, Any], cap: int) -> dict[str, Any]:
+    """`data` with every result's raw_content cut to `cap` characters.
+
+    A cut item gets "truncated": <original length>. The cache holds the uncut
+    answer, so a changed cap applies to cached answers too; this builds new
+    dicts and never touches `data`.
+    """
+    results = []
+    for item in data.get("results", []):
+        raw = item.get("raw_content")
+        if isinstance(raw, str) and len(raw) > cap:
+            item = {**item, "raw_content": raw[:cap], "truncated": len(raw)}
+        results.append(item)
+    return {**data, "results": results}
+
+
+def _error_text(exc: Exception) -> str:
+    """What the model is told about a failed Tavily call.
+
+    tavily-python raises one class per HTTP status and carries only the API's
+    detail text -- no status code, and None or "" when the body had none. So
+    the class decides, not the words: 403/432/433 (forbidden, plan or credit
+    limit) are ForbiddenError, and retrying them later does not help.
+    """
+    kind = type(exc).__name__
+    if kind == "InvalidAPIKeyError":
+        return "Invalid Tavily API key. Please check your configuration."
+    if kind == "UsageLimitExceededError":
+        return "Tavily API rate limit exceeded. Please try again later."
+    # httpx's 5xx text adds a second line with a docs link: keep the first, bounded
+    detail = (str(exc).splitlines() or [""])[0][:300]
+    return f"{kind}: {detail}" if detail not in ("", "None") else kind
+
 
 class TavilySearchServer(SchemaBasedToolServer):
     """Tavily search server with caching and async support.
@@ -50,6 +93,7 @@ class TavilySearchServer(SchemaBasedToolServer):
         # Default settings
         self.default_max_results = getattr(server_config, 'default_max_results', 5)
         self.default_search_depth = getattr(server_config, 'default_search_depth', 'basic')
+        self.max_content_chars = _content_cap(getattr(server_config, 'max_content_chars', None))
         
         # Lazy-loaded client
         self._client: Any = None
@@ -154,7 +198,7 @@ class TavilySearchServer(SchemaBasedToolServer):
                     f"{hits} results (cached) -- {query[:60]}",
                     meta={"cache_hit": True, "results": hits})
                 logger.debug(f"Cache hit for Tavily search: {query[:50]}...")
-                return cached
+                return _cut_pages(cached, self.max_content_chars)
         
         # Check cancellation
         if cancellation_token and cancellation_token.is_cancelled:
@@ -199,22 +243,15 @@ class TavilySearchServer(SchemaBasedToolServer):
                 logger.debug(f"Cached Tavily search results: {query[:50]}...")
             
             await status.end(
-                f"Search completed: {len(results)} results",
+                f"{len(results)} results -- {query[:60]}",
                 meta={"results": len(results)}
             )
             
-            return result_data
+            return _cut_pages(result_data, self.max_content_chars)
             
         except Exception as e:
-            error_msg = str(e)
+            error_msg = _error_text(e)
             logger.warning(f"Tavily search failed for '{query}': {error_msg}")
-            
-            # Handle specific error types
-            if "401" in error_msg or "Invalid API key" in error_msg.lower():
-                error_msg = "Invalid Tavily API key. Please check your configuration."
-            elif "429" in error_msg or "limit" in error_msg.lower():
-                error_msg = "Tavily API rate limit exceeded. Please try again later."
-            
             await status.error(f"Search failed: {error_msg}")
             
             return {
@@ -230,6 +267,10 @@ class TavilySearchServer(SchemaBasedToolServer):
         rate than traditional scraping.
         """
         urls = params.get("urls", [])
+        if isinstance(urls, str):
+            # One URL sent as a string: len() and sorted() would count and
+            # sort its characters ("Too many URLs (34)" for a single page).
+            urls = [urls]
         status = params["_status"]
         cancellation_token = params.get("_cancellation_token")
         ignore_cache = params.get("ignore_cache", False)
@@ -271,7 +312,7 @@ class TavilySearchServer(SchemaBasedToolServer):
                     f"{got} page(s) (cached)" + (f", {missed} failed" if missed else ""),
                     meta={"cache_hit": True, "success": got, "failed": missed})
                 logger.debug(f"Cache hit for Tavily extract: {len(urls)} URLs")
-                return cached
+                return _cut_pages(cached, self.max_content_chars)
         
         # Check cancellation
         if cancellation_token and cancellation_token.is_cancelled:
@@ -321,18 +362,11 @@ class TavilySearchServer(SchemaBasedToolServer):
             
             await status.end(status_msg, meta={"success": len(results), "failed": len(failed_results)})
             
-            return result_data
+            return _cut_pages(result_data, self.max_content_chars)
             
         except Exception as e:
-            error_msg = str(e)
+            error_msg = _error_text(e)
             logger.warning(f"Tavily extract failed: {error_msg}")
-            
-            # Handle specific error types
-            if "401" in error_msg or "Invalid API key" in error_msg.lower():
-                error_msg = "Invalid Tavily API key. Please check your configuration."
-            elif "429" in error_msg or "limit" in error_msg.lower():
-                error_msg = "Tavily API rate limit exceeded. Please try again later."
-            
             await status.error(f"Extraction failed: {error_msg}")
             
             return {

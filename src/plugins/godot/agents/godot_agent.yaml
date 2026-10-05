@@ -39,8 +39,8 @@ plugins:
           allowed:
             - "+godot/*"
             - "+media_ops/*"       # LOOK at a screenshot it just took
-            # The coder's read/write sandbox: it is rooted at data/workspace,
-            # which is exactly projects_root. Without it the agent can read
+            # The coder's read/write sandbox: data/workspace (= projects_root)
+            # and, as shipped, the whole checkout. Without it the agent can read
             # a scene but not edit the .tscn -- and the addon cannot create
             # nodes, so files are the only way to add one.
             - "+coder_fs/*"

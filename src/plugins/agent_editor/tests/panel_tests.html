@@ -119,18 +119,18 @@
     await signIn('root');
     await go('/plugins/agent_editor/');
     watchNative();
-    await until('the list', () => row('writer') && row('demo'));
+    await until('the list', () => row('worker') && row('demo'));
     const groups = all('#list details').map((one) => `${one.dataset.group}=${one.querySelector('[data-count]').dataset.count}`).join();
-    // writer runs unbuilt with other max_steps: only a restart applies that
-    const marked = badges('scout') === 'off' && badges('demo') === 'new,restart' && badges('writer') === 'restart'
+    // worker runs unbuilt with other max_steps: only a restart applies that; demo ships with a plugin: read-only
+    const marked = badges('scout') === 'off' && badges('demo') === 'new,restart,read-only' && badges('worker') === 'restart'
       && badges('twin') === 'read-only' && badges('editor') === '';
     const search = (value) => { type($('#search'), value); return listed(); };
     const filter = (value) => { $('#filter').value = value; $('#filter').dispatchEvent(new Event('change')); return listed(); };
-    const searched = search('look') === 'scout' && search('WRITES') === 'writer' && search('zzz') === ''
+    const searched = search('look') === 'scout' && search('WRITES') === 'worker' && search('zzz') === ''
       && text('#list').includes('No agent matches');
     search('');
-    const filtered = filter('enabled') === 'editor,twin,writer,demo' && filter('disabled') === 'scout'
-      && filter('restart') === 'writer,demo' && filter('readonly') === 'twin' && filter('problems') === '';
+    const filtered = filter('enabled') === 'editor,twin,worker,demo' && filter('disabled') === 'scout'
+      && filter('restart') === 'worker,demo' && filter('readonly') === 'twin,demo' && filter('problems') === '';
     filter('all');
     const demo = () => $('#list details[data-group="demo"]');
     demo().querySelector('summary').click();
@@ -142,7 +142,7 @@
     await until('demo open', () => demo().open);
     await sleep(50);
     const quiet = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'false';
-    return groups === 'config=4,demo=1' && listed() === 'editor,scout,twin,writer,demo' && Boolean(marked)
+    return groups === 'config=4,demo=1' && listed() === 'editor,scout,twin,worker,demo' && Boolean(marked)
       && searched && filtered && kept && quiet && $('#editor').hidden;
   });
 
@@ -184,7 +184,7 @@
       await replace(path, broken, old);
     }
     await refreshUntil('the problems gone', () => row('scout') && !badge());
-    return marked && judged && filter('problems') === '' && filter('all') === 'editor,scout,twin,writer,demo';
+    return marked && judged && filter('problems') === '' && filter('all') === 'editor,scout,twin,worker,demo';
   });
 
   await check('the agent list keeps the width it was dragged to across a reload, and a narrow panel stacks it full width', async () => {
@@ -200,7 +200,7 @@
     const resized = width() === 360 && before !== 360 && getComputedStyle(side()).resize === 'horizontal';
     await go('/plugins/agent_editor/');
     watchNative();
-    await until('the list again', () => row('writer') && row('demo'));
+    await until('the list again', () => row('worker') && row('demo'));
     const kept = width() === 360;
     frame.style.width = '600px';
     try {
@@ -219,22 +219,22 @@
 
   await check('a selected agent shows its own values apart from the inherited ones', async () => {
     await choose('editor');
-    const head = Boolean($('#head [data-goto="writer"]')) && text('#head .ae-file') === 'config/agents/team.yaml'
+    const head = Boolean($('#head [data-goto="worker"]')) && text('#head .ae-file') === 'config/agents/team.yaml'
       && Boolean($('#head [data-state="in_sync"]')) && text('#head').includes('Active') && !text('#head').includes('Running') && row('editor').getAttribute('aria-current') === 'true';
     const description = control(DESCRIPTION).value === MARKUP && isSet(DESCRIPTION) && !doc().querySelector('img');
     const steps = !isSet(MAX_STEPS) && control(MAX_STEPS).value === '' && control(MAX_STEPS).placeholder === '30';
-    const metadata = !isSet(['metadata', 'category']) && control(['metadata', 'category']).placeholder === 'writing'
+    const metadata = !isSet(['metadata', 'category']) && control(['metadata', 'category']).placeholder === 'working'
       && !isSet(['metadata', 'visibility']) && control(['metadata', 'visibility']).value === 'ui';
     const chainText = fieldOf(CHAIN).textContent;
     const chain = !isSet(CHAIN) && chainOf(CHAIN) === 'smart,fast' && chainText.includes('openai · large-2')
       && chainText.includes('#1 Primary') && chainText.includes('Fallback 1');
     const clean = $('#save').disabled && !dirtyShown() && text('#banners') === '';
-    $('#head [data-goto="writer"]').click();
-    await until('writer shown', () => heading() === 'writer');
-    const writer = isSet(MAX_STEPS) && control(MAX_STEPS).value === '30' && control(MAX_STEPS).placeholder === '20'
+    $('#head [data-goto="worker"]').click();
+    await until('worker shown', () => heading() === 'worker');
+    const worker = isSet(MAX_STEPS) && control(MAX_STEPS).value === '30' && control(MAX_STEPS).placeholder === '20'
       && text('#banners').includes('Needs a restart: max_steps') && !text('#banners').includes('Reload config applies')
-      && row('writer').getAttribute('aria-current') === 'true';
-    return head && description && steps && metadata && chain && clean && writer;
+      && row('worker').getAttribute('aria-current') === 'true';
+    return head && description && steps && metadata && chain && clean && worker;
   });
 
   await check('an edited field marks the form dirty, and Save writes the diff it showed into the file', async () => {
@@ -261,7 +261,7 @@
   });
 
   await check('resetting a field to the inherited value removes its key from the file', async () => {
-    await choose('writer');
+    await choose('worker');
     openTab('run');
     fieldOf(MAX_STEPS).querySelector('[data-reset]').click();
     const reset = !isSet(MAX_STEPS) && control(MAX_STEPS).value === '' && control(MAX_STEPS).placeholder === '20'
@@ -270,11 +270,11 @@
     await diffShown();
     const shown = diffLines('del').some((line) => line.includes('max_steps: 30'));
     await writeDiff();
-    await toasted('ok', 'writer saved');
+    await toasted('ok', 'worker saved');
     await saved();
     const written = (await file('config/agents/team.yaml')).text;
     return reset && shown && !written.includes('max_steps') && written.includes('llm_profile: [smart, fast]')
-      && written.includes('# The base writer: everything the team shares.') && !isSet(MAX_STEPS);
+      && written.includes('# The base worker: everything the team shares.') && !isSet(MAX_STEPS);
   });
 
   await check('the model chain adds, reorders and removes profiles', async () => {
@@ -300,7 +300,7 @@
         body.inherited = null;
         return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
       };
-      if (shownName === 'editor') await choose('writer');  // a shown agent is not loaded again
+      if (shownName === 'editor') await choose('worker');  // a shown agent is not loaded again
       await choose('editor');
       const unknownText = text(`#editor [data-field='${JSON.stringify(['agent_config', 'llm_profile_advanced'])}']`);
       unknownSaid = unknownText.includes('the inherited chain is unknown') && !unknownText.includes('stays off');
@@ -321,7 +321,7 @@
     button('smart', 'remove').click();
     const removed = chainOf(CHAIN) === 'deep,fast' && position('deep') === '#1 Primary' && button('deep', 'up').disabled
       && button('fast', 'down').disabled && isSet(CHAIN) && doc().activeElement === button('deep', 'remove');
-    await saveAll('writer saved');
+    await saveAll('worker saved');
     const written = (await file('config/agents/team.yaml')).text;
     return noAdvanced && unknownSaid && byProvider && notTwice && added && moved && removed && written.includes('llm_profile: [deep, fast]')
       && chainOf(CHAIN) === 'deep,fast';
@@ -331,21 +331,21 @@
     const INHERIT = ['agent_config', 'inherit_parent_llm'];
     const path = 'config/agents/team.yaml';
     const before = (await file(path)).text;
-    await choose('writer');
+    await choose('worker');
     openTab('model');
     const off = !isSet(INHERIT) && !control(INHERIT).checked;
     control(INHERIT).click();
     const on = isSet(INHERIT) && control(INHERIT).checked;
-    await saveAll('writer saved');
+    await saveAll('worker saved');
     const written = (await file(path)).text;
-    // editor is writer's child: it follows too, without a key of its own
+    // editor is worker's child: it follows too, without a key of its own
     await choose('editor');
     openTab('model');
     const childFollows = control(INHERIT).checked && !isSet(INHERIT);
-    await choose('writer');
+    await choose('worker');
     openTab('model');
     fieldOf(INHERIT).querySelector('[data-reset]').click();
-    await saveAll('writer saved');
+    await saveAll('worker saved');
     const back = (await file(path)).text;
     return off && on && /inherit_parent_llm: true/.test(written) && childFollows && back === before;
   });
@@ -379,7 +379,7 @@
     } finally {
       panelWindow.fetch = realFetch;
     }
-    await choose('writer');
+    await choose('worker');
     openTab('run');
     // a number the runtime cannot use, typed into a clean form, counts as unsaved: a refresh leaves it
     type(control(HISTORY), '-1');
@@ -417,7 +417,7 @@
     const noSteps = note().includes('at 0');
     type(control(ROUNDS), '');
     const stepsBack = note() === '' && !isSet(ROUNDS);
-    await saveAll('writer saved');
+    await saveAll('worker saved');
     const written = (await file(path)).text;
     const wrote = written.includes('auto_escalate_on_stuck: true') && /llm_profile_advanced:\s+- smart\n/.test(written)
       && /loop_detection:\s+enabled: false/.test(written)
@@ -427,7 +427,7 @@
     openTab('run');
     for (const one of [LOOPS_ON, REASONING_ON, THRESHOLD, ESCALATE, ADVANCED]) fieldOf(one).querySelector('[data-reset]').click();
     const cleared = note().startsWith('No advanced chain') && control(LOOPS_ON).checked && control(THRESHOLD).value === '';
-    await saveAll('writer saved');
+    await saveAll('worker saved');
     const back = (await file(path)).text;
     openTab('model');
     return unknownSaid && keptTyped && real && inherited && noChain && set && refused && allowed && same && other && noSteps && stepsBack
@@ -525,7 +525,7 @@
     section('blocked').querySelector('[data-list-mode][value="inherited"]').click();
     await until('three tools again', () => count() === '3');
     $('#toolTab-allowed').click();
-    await saveAll('writer saved');
+    await saveAll('worker saved');
     const written = (await file('config/agents/team.yaml')).text;
     const persisted = written.includes('allowed: [web/web_search, files/*]') && !written.includes('blocked');
     // the child extends what it inherits: the inherited server is locked, the inherited list shown
@@ -540,7 +540,7 @@
   });
 
   await check('the prompt tab previews the template file and flags a missing one', async () => {
-    await choose('writer');
+    await choose('worker');
     openTab('prompt');
     const template = $('#tab-prompt [data-prompt-mode][value="template"]').checked
       && control(TEMPLATE).value === '' && control(TEMPLATE).placeholder === 'config/prompts/base.md';
@@ -560,7 +560,7 @@
   await check('the YAML tab applies typed text by its button or on leaving, and keeps text that does not parse', async () => {
     await choose('editor');
     openTab('yaml');
-    await until('the YAML', () => $('#yamlText').value.includes('type: writer'));
+    await until('the YAML', () => $('#yamlText').value.includes('type: worker'));
     // the text is coloured beneath the textarea, and the copy follows every change
     const view = () => $('#tab-yaml .ae-code-view');
     const coloured = (value) => view().textContent.trimEnd() === value.trimEnd();
@@ -602,7 +602,7 @@
     const repainted = coloured($('#yamlText').value) && view().textContent.includes('type: basic_agent');
     $('#revert').click();
     await until('reverted', () => control(ENABLED).checked === true && !dirtyShown() && chainOf(CHAIN) === 'deep,fast'
-      && Boolean($('#head [data-goto="writer"]')));
+      && Boolean($('#head [data-goto="worker"]')));
     // scrolled to the far corner, the copy is where the text is: its scrollbars take the textarea's room only
     const area = $('#yamlText');
     type(area, Array.from({ length: 80 }, (_, i) => `key_${i}: ${'x'.repeat(i === 40 ? 400 : 3)}`).join('\n'));
@@ -611,7 +611,7 @@
     await until('the corner', () => area.scrollTop > 0 && area.scrollLeft > 0
       && view().scrollTop === area.scrollTop && view().scrollLeft === area.scrollLeft);
     $('#yamlReload').click();
-    await until('the entry again', () => $('#yamlText').value.includes('type: writer') && !dirtyShown());
+    await until('the entry again', () => $('#yamlText').value.includes('type: worker') && !dirtyShown());
     openTab('general');
     return painted && typedDirty && applied && onLeaving && stayed && keptTyped && repainted && !$('#tab-general').hidden;
   });
@@ -698,7 +698,7 @@
   });
 
   await check('the skill lists filter what they show, and a click keeps its row', async () => {
-    await choose('writer');  // always: none of its own or inherited; on demand: beta
+    await choose('worker');  // always: none of its own or inherited; on demand: beta
     openTab('prompt');
     const shown = (kind) => all(`#skillLists [data-kind="${kind}"]`).map((box) => box.dataset.skill).join();
     const count = (kind) => text(`#skillLists [data-skills-shown="${kind}"]`);
@@ -715,7 +715,7 @@
     const stays = shown('on_demand') === 'beta' && !$('#skillLists [data-kind="on_demand"][data-skill="beta"]').checked && dirtyShown();
     const refiltered = filter('on') === '|';
     $('#revert').click();
-    await until('writer reverted', () => !dirtyShown());
+    await until('worker reverted', () => !dirtyShown());
     filter('all');
     const search = $('#tab-prompt [data-skill-search]');
     type(search, 'second');
@@ -744,12 +744,12 @@
       && text('#head').includes('basic_agent') && !files().checked && !files().disabled
       && text('#tools-allowed').includes('Nothing.') && dirtyShown();
     $('#revert').click();
-    await until('the parent again', () => count() === '3' && Boolean($('#head [data-goto="writer"]')) && !dirtyShown());
+    await until('the parent again', () => count() === '3' && Boolean($('#head [data-goto="worker"]')) && !dirtyShown());
     return followed;
   });
 
   await check('the hooks tab writes an override for one agent', async () => {
-    await choose('writer');
+    await choose('worker');
     openTab('hooks');
     const select = () => $('#tab-hooks [data-hook-enabled="probe.mark"]');
     const before = Boolean(select()) && select().value === '' && select().options[0].textContent === 'Default (on)'
@@ -757,10 +757,10 @@
     select().value = 'false';
     select().dispatchEvent(new Event('change', { bubbles: true }));
     const marked = dirtyShown() && !$('#save').disabled;
-    await saveAll('writer saved');
+    await saveAll('worker saved');
     const written = (await file('config/agents/team.yaml')).text;
-    const writerPart = written.slice(written.indexOf('    writer:'), written.indexOf('    editor:'));
-    return before && marked && writerPart.includes('probe.mark') && writerPart.includes('enabled: false')
+    const workerPart = written.slice(written.indexOf('    worker:'), written.indexOf('    editor:'));
+    return before && marked && workerPart.includes('probe.mark') && workerPart.includes('enabled: false')
       && select().value === 'false';
   });
 
@@ -845,8 +845,8 @@
     $('#revert').click();
     await until('editor reverted', () => !dirtyShown());
     treeFilter('all');
-    // hooks: writer turned probe.mark off for itself; probe.trace runs by default
-    await choose('writer');
+    // hooks: worker turned probe.mark off for itself; probe.trace runs by default
+    await choose('worker');
     openTab('hooks');
     const hooks = () => all('#hookTable [data-hook-enabled]').map((box) => box.dataset.hookEnabled).join();
     const hookFilter = (value) => { pick('#tab-hooks [data-hook-filter]', value); return hooks(); };
@@ -898,7 +898,7 @@
     const shownAgain = $('#tab-hooks [data-hook-filter]').value === 'all' && traceArea().value === 'depth: [' && !diff().open
       && $('#tab-general').hidden;
     $('#revert').click();
-    await until('writer reverted', () => !dirtyShown());
+    await until('worker reverted', () => !dirtyShown());
     // a read-only agent: the lists are locked, the filters are not
     await choose('twin');
     openTab('hooks');
@@ -921,14 +921,14 @@
       prompt().scrollTop = 150;
       await until('the prompt tab scrolled', () => prompt().scrollTop > 0);
     };
-    await choose('writer');
+    await choose('worker');
     openTab('prompt');
     await scrollDown();
     await choose('editor');  // the tab in sight
     const visible = prompt().scrollTop === 0;
     await scrollDown();
     openTab('general');
-    await choose('writer');  // a tab out of sight keeps its offset while hidden: reset when it shows
+    await choose('worker');  // a tab out of sight keeps its offset while hidden: reset when it shows
     openTab('prompt');
     const shown = prompt().scrollTop === 0;
     await scrollDown();
@@ -959,21 +959,21 @@
   });
 
   await check('switching to another agent with unsaved changes asks first', async () => {
-    await choose('writer');
+    await choose('worker');
     openTab('general');
     type(control(DESCRIPTION), 'Unsaved words');
     row('scout').click();
     const asked = await until('the question', question);
-    const says = asked.textContent.includes('Discard the unsaved changes to “writer”');
+    const says = asked.textContent.includes('Discard the unsaved changes to “worker”');
     await answer('Cancel');
     await sleep(200);
-    const stayed = heading() === 'writer' && control(DESCRIPTION).value === 'Unsaved words' && dirtyShown()
-      && row('writer').getAttribute('aria-current') === 'true';
+    const stayed = heading() === 'worker' && control(DESCRIPTION).value === 'Unsaved words' && dirtyShown()
+      && row('worker').getAttribute('aria-current') === 'true';
     row('scout').click();
     await answer('Discard');
     await until('scout shown', () => heading() === 'scout');
     const switched = !dirtyShown();
-    await choose('writer');
+    await choose('worker');
     const discarded = control(DESCRIPTION).value === 'Writes things' && !dirtyShown();
     return says && stayed && switched && discarded;
   });
@@ -1009,12 +1009,12 @@
     await writeDiff();
     await toasted('ok', 'manager: scout is allowed');
     await until('the switch on', () => box()?.checked && box().matches(':enabled') && doc().activeElement === box());
-    const written = (await file('config/plugins.yaml')).text.includes('allowed_agents: [writer, scout]');
+    const written = (await file('config/plugins.yaml')).text.includes('allowed_agents: [worker, scout]');
     return before && shown && untouched && written && doc().activeElement === box();
   });
 
   await check('the sub-agents tab grants a manager, configures it, and creates a new one', async () => {
-    // scout: no manager in its tools; `manager` (not running) starts writer and scout
+    // scout: no manager in its tools; `manager` (not running) starts worker and scout
     const tab = () => $('#tab-subagents');
     const use = (name) => tab().querySelector(`[data-use-manager="${name}"]`);
     const editor = () => $('#managerEditor');
@@ -1041,21 +1041,21 @@
     await until('scout reverted', () => !dirtyShown() && use('manager').checked);
     // the manager's own entry: its agents and a setting, one diff for both
     tab().querySelector('[data-configure="manager"]').click();
-    await until('the manager editor', () => !editor().hidden && agentBox('writer'));
-    const listed = agentBox('writer').checked && agentBox('scout').checked && !agentBox('editor').checked
-      && pick('[data-manager-filter]', 'in') === 'scout,writer' && pick('[data-manager-filter]', 'out').split(',').includes('editor');
+    await until('the manager editor', () => !editor().hidden && agentBox('worker'));
+    const listed = agentBox('worker').checked && agentBox('scout').checked && !agentBox('editor').checked
+      && pick('[data-manager-filter]', 'in') === 'scout,worker' && pick('[data-manager-filter]', 'out').split(',').includes('editor');
     // a limit below 0 is not taken
     type(editor().querySelector('[data-manager-setting="max_nesting_depth"]'), '-1');
     const noNegative = editor().querySelector('[data-manager-dirty]').hidden;
     type(editor().querySelector('[data-manager-setting="max_nesting_depth"]'), '');
     pick('[data-manager-filter]', 'in');
-    agentBox('writer').click();
-    const kept = listedAgents() === 'scout,writer' && !agentBox('writer').checked
+    agentBox('worker').click();
+    const kept = listedAgents() === 'scout,worker' && !agentBox('worker').checked
       && !editor().querySelector('[data-manager-dirty]').hidden && !dirtyShown() && keepsPage();
     // a reload draws the list anew and keeps the row as well
     doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
     await sleep(300);
-    const keptOnReload = listedAgents() === 'scout,writer' && !agentBox('writer').checked;
+    const keptOnReload = listedAgents() === 'scout,worker' && !agentBox('worker').checked;
     const depth = editor().querySelector('[data-manager-setting="max_nesting_depth"]');
     type(depth, '3');
     type(control(DESCRIPTION), 'Edited meanwhile');  // the agent's reload keeps the form, the tab follows anyway
@@ -1067,7 +1067,7 @@
     await until('the rows follow', () => text('#tab-subagents [data-spawn-count="manager"]') === '1 agent'
       && editor().querySelector('[data-manager-dirty]').hidden);
     const plugins = (await file('config/plugins.yaml')).text;
-    const saved = plugins.includes('max_nesting_depth: 3') && !plugins.includes('allowed_agents: [writer, scout]');
+    const saved = plugins.includes('max_nesting_depth: 3') && !plugins.includes('allowed_agents: [worker, scout]');
     // an agent write to the same file moves the manager's version: its edits still save
     type(editor().querySelector('[data-manager-setting="max_nesting_depth"]'), '5');
     agentBox('scout').click();  // this agent's own switch below follows the save
@@ -1098,11 +1098,11 @@
     // unsaved edits of both are named before another agent
     type(editor().querySelector('[data-manager-setting="max_nesting_depth"]'), '4');
     type(control(DESCRIPTION), 'Edited too');
-    row('writer').click();
+    row('worker').click();
     const asked = await until('a question', question);
     const askedText = asked.textContent.includes('“scout” and the manager “manager”');
     await answer('Discard');
-    await until('writer shown', () => heading() === 'writer' && editor().hidden);
+    await until('worker shown', () => heading() === 'worker' && editor().hidden);
     // a manager edit alone is asked about as well
     openTab('subagents');
     tab().querySelector('[data-configure="manager"]').click();
@@ -1112,29 +1112,29 @@
     row('scout').click();
     const askedAlone = (await until('a question', question)).textContent.includes('the manager “manager”');
     await answer('Cancel');
-    const stayedWriter = heading() === 'writer' && !editor().hidden;
+    const stayedWorker = heading() === 'worker' && !editor().hidden;
     editor().querySelector('[data-revert-manager]').click();
-    // a manager of its own: created after its diff, granted to writer, then configured
+    // a manager of its own: created after its diff, granted to worker, then configured
     openTab('subagents');
     const name = tab().querySelector('[data-new-manager]');
-    type(name, 'writer_sam');
+    type(name, 'worker_sam');
     tab().querySelector('[data-create-manager]').click();
     await diffShown();
-    const createPreview = text('#diffNotes').includes('config/agents/writer_sam.yaml') && diffLines('add').some((line) => line.includes('sub_agent_manager'));
+    const createPreview = text('#diffNotes').includes('config/agents/worker_sam.yaml') && diffLines('add').some((line) => line.includes('sub_agent_manager'));
     await writeDiff();
-    await toasted('ok', 'writer_sam created');
-    await until('the new manager open', () => use('writer_sam')?.checked && !editor().hidden && agentBox('scout'));
-    const created = dirtyShown() && text('#tools-allowed').includes('writer_sam/*') && listedAgents().split(',').length > 3
+    await toasted('ok', 'worker_sam created');
+    await until('the new manager open', () => use('worker_sam')?.checked && !editor().hidden && agentBox('scout'));
+    const created = dirtyShown() && text('#tools-allowed').includes('worker_sam/*') && listedAgents().split(',').length > 3
       && !agentBox('scout').checked && tab().querySelector('[data-new-manager]').value === '';
     agentBox('scout').click();
     editor().querySelector('[data-save-manager]').click();
     await diffShown();
     await writeDiff();
-    await toasted('ok', 'writer_sam saved');
-    const samFile = (await file('config/agents/writer_sam.yaml')).text;
+    await toasted('ok', 'worker_sam saved');
+    const samFile = (await file('config/agents/worker_sam.yaml')).text;
     const configured = samFile.includes('type: sub_agent_manager') && samFile.includes('scout');
     // a list with a pattern: pick the agents instead (and back)
-    await replace('config/agents/writer_sam.yaml', 'scout', "'*'");
+    await replace('config/agents/worker_sam.yaml', 'scout', "'*'");
     await until('the pattern shown', async () => {
       doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
       await sleep(150);
@@ -1144,16 +1144,16 @@
     const picked = agentBox('scout') && !agentBox('scout').checked && !editor().querySelector('[data-manager-dirty]').hidden;
     editor().querySelector('[data-revert-manager]').click();
     const reverted = Boolean(editor().querySelector('[data-manager-patterns]')) && editor().querySelector('[data-manager-dirty]').hidden;
-    await saveAll('writer saved');
+    await saveAll('worker saved');
     const cleanAgain = !keepsPage();
-    // editor inherits writer's tools: switching the manager off there writes a removal
+    // editor inherits worker's tools: switching the manager off there writes a removal
     await choose('editor');
     openTab('subagents');
-    const inheritedOn = use('writer_sam').checked && use('writer_sam').closest('label').title === 'inherited';
-    use('writer_sam').click();
-    const removal = !use('writer_sam').checked && text('#tools-allowed').includes('!writer_sam/*') && dirtyShown();
+    const inheritedOn = use('worker_sam').checked && use('worker_sam').closest('label').title === 'inherited';
+    use('worker_sam').click();
+    const removal = !use('worker_sam').checked && text('#tools-allowed').includes('!worker_sam/*') && dirtyShown();
     $('#revert').click();
-    await until('editor reverted', () => !dirtyShown() && use('writer_sam').checked);
+    await until('editor reverted', () => !dirtyShown() && use('worker_sam').checked);
     await sleep(500);
     await until('the tools answer', () => text('#toolTabCount') !== '');
     type(control(DESCRIPTION), 'Still editing');  // no reload of the form: the tools answer is asked again anyway
@@ -1168,34 +1168,34 @@
         if (/\/plugins\/agent_editor\/(tools\/effective|managers)$/.test(String(url))) await held;
         return realFetch(url, options);
       };
-      await post('/__stub/register?name=writer_sam');
-      await until('writer_sam running', async () => {
+      await post('/__stub/register?name=worker_sam');
+      await until('worker_sam running', async () => {
         doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
         await sleep(150);
-        return !text('#managerRows [data-manager="writer_sam"]').includes('not active yet');
+        return !text('#managerRows [data-manager="worker_sam"]').includes('not active yet');
       });
-      waiting = use('writer_sam').matches(':disabled') && use('writer_sam').closest('label').title.startsWith('Waiting')
+      waiting = use('worker_sam').matches(':disabled') && use('worker_sam').closest('label').title.startsWith('Waiting')
         && text('#toolTabCount') === '';
     } finally {
       release();
       panelWindow.fetch = realFetch;
     }
-    await until('the tree answer', () => use('writer_sam').checked && use('writer_sam').matches(':enabled'));
+    await until('the tree answer', () => use('worker_sam').checked && use('worker_sam').matches(':enabled'));
     const patternField = $('#tools-allowed [data-pattern-add]');
-    type(patternField, 'writer_*');
+    type(patternField, 'worker_*');
     enter(patternField);
-    await until('the switch locked', () => use('writer_sam').matches(':disabled')
-      && use('writer_sam').closest('label').title === 'Granted by writer_*');
+    await until('the switch locked', () => use('worker_sam').matches(':disabled')
+      && use('worker_sam').closest('label').title === 'Granted by worker_*');
     $('#revert').click();
-    await until('editor reverted again', () => !dirtyShown() && use('writer_sam').matches(':enabled'));
+    await until('editor reverted again', () => !dirtyShown() && use('worker_sam').matches(':enabled'));
     openTab('general');
     return Boolean(before) && granted && inFile && taken && listed && kept && preview && saved && askedText && createPreview
       && created && configured && picked && reverted && cleanAgain && inheritedOn && removal && movedSaved
-      && noNegative && keptOnReload && minusKept && waiting && onlyManager && askedAlone && stayedWriter;
+      && noNegative && keptOnReload && minusKept && waiting && onlyManager && askedAlone && stayedWorker;
   });
 
   await check('without the manager plugin the sub-agents tab is gone, from the arrow keys too', async () => {
-    await choose('writer');
+    await choose('worker');
     openTab('subagents');
     type(control(DESCRIPTION), 'Edited while the app restarts');  // an edited form is not drawn anew
     const panelWindow = frame.contentWindow;
@@ -1225,7 +1225,7 @@
     openTab('subagents');
     const back = !$('#tab-subagents').hidden && Boolean($('#tab-subagents [data-use-manager]'));
     $('#revert').click();
-    await until('writer reverted', () => !dirtyShown());
+    await until('worker reverted', () => !dirtyShown());
     openTab('general');
     return Boolean(gone) && skipped && back;
   });
@@ -1247,7 +1247,7 @@
     await create({ name: 'Bad Name' });
     await sleep(150);
     const badName = $('#createDialog').open && $('#createError').hidden && heading() === 'scout';
-    await create({ name: 'writer' });
+    await create({ name: 'worker' });
     await until('the refusal', () => !$('#createError').hidden);
     const taken = text('#createError').includes('exists already') && $('#createDialog').open;
     await create({ name: 'fresh' });
@@ -1272,18 +1272,18 @@
     frame.style.height = '';
     openTab('general');
 
-    await choose('writer');
+    await choose('worker');
     $('#moreMenu [data-menu="child"]').click();
     await until('the dialog', () => $('#createDialog').open);
-    const preset = inputs().start.value === 'inherit' && inputs().source.value === 'writer' && !inputs().source.disabled
-      && inputs().name.value === 'writer_child';
+    const preset = inputs().start.value === 'inherit' && inputs().source.value === 'worker' && !inputs().source.disabled
+      && inputs().name.value === 'worker_child';
     await create({});
-    await until('the child draft', () => heading() === 'writer_child');
-    const inherits = control(TYPE).value === 'writer' && !isSet(CHAIN) && chainOf(CHAIN) === 'deep,fast';
-    await saveAll('writer_child created');
-    await until('the child listed', () => row('writer_child') && !$('#head [data-draft]'));
-    const child = await file('config/agents/writer_child.yaml');
-    const childFile = child.exists && child.text.includes('type: writer');
+    await until('the child draft', () => heading() === 'worker_child');
+    const inherits = control(TYPE).value === 'worker' && !isSet(CHAIN) && chainOf(CHAIN) === 'deep,fast';
+    await saveAll('worker_child created');
+    await until('the child listed', () => row('worker_child') && !$('#head [data-draft]'));
+    const child = await file('config/agents/worker_child.yaml');
+    const childFile = child.exists && child.text.includes('type: worker');
 
     $('#create').click();
     // a copy of an agent whose inheritance is unknown keeps it unknown
@@ -1364,7 +1364,7 @@
       && text('#placeholder').includes('No agent selected')
       && toasts('ok').some((one) => one.includes('config/agents/fresh.yaml removed')) && !keepsPage();
     openTab('general');
-    await choose('writer');  // a parent is not deleted: its children are named
+    await choose('worker');  // a parent is not deleted: its children are named
     const guard = $('#moreMenu [data-menu="delete"]');
     return preview && kept && askedFirst && gone && guard.disabled && guard.title.includes('editor');
   });
@@ -1376,27 +1376,27 @@
       && $('#tab-model fieldset').disabled && $('#save').disabled && $('#moreMenu [data-menu="delete"]').disabled
       && $('#tab-general [data-reset]').matches(':disabled');
     // a date in an entry: the form is locked, delete is not
-    await replace('config/agents/writer_child.yaml', '    writer_child:\n', '    writer_child:\n      since: 2026-09-17\n');
-    await choose('writer_child');
+    await replace('config/agents/worker_child.yaml', '    worker_child:\n', '    worker_child:\n      since: 2026-09-17\n');
+    await choose('worker_child');
     const formLocked = async () => {
       doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
       await sleep(100);
-      return text('#banners').includes('writer_child.since: a date') && text('#banners').includes('the form cannot carry');
+      return text('#banners').includes('worker_child.since: a date') && text('#banners').includes('the form cannot carry');
     };
     await until('the form locked', formLocked);
     const carried = $('#tab-general fieldset').disabled && $('#save').disabled
-      && !$('#moreMenu [data-menu="delete"]').disabled && badges('writer_child').includes('read-only')
+      && !$('#moreMenu [data-menu="delete"]').disabled && badges('worker_child').includes('read-only')
       && $('#moreMenu [data-menu="duplicate"]').disabled;
     $('#create').click();
-    await create({ start: 'copy', source: 'writer_child', name: 'child_copy' });
+    await create({ start: 'copy', source: 'worker_child', name: 'child_copy' });
     await until('the copy refused', () => !$('#createError').hidden && text('#createError').includes('cannot be copied'));
     $('#createCancel').click();
-    await replace('config/agents/writer_child.yaml', '      since: 2026-09-17\n', '');
+    await replace('config/agents/worker_child.yaml', '      since: 2026-09-17\n', '');
     return says && locked && carried;
   });
 
   await check('Reload config refreshes what the running app has, and keeps unsaved edits', async () => {
-    await choose('writer');
+    await choose('worker');
     const before = text('#banners').includes('Needs a restart') && Boolean($('#head [data-state="changed"]'));
     type(control(DESCRIPTION), 'Typed before the reload');
     clearToasts();

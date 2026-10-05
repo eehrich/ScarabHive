@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import inspect
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -57,6 +58,9 @@ _STREAM_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 #: Seconds between two looks at the connection while a JSON answer is being worked on.
 DISCONNECT_POLL = 1.0
 
+#: The largest request body read (bytes); a larger one is a 413 before it is held in memory whole.
+MAX_BODY_BYTES = 16 * 1024 * 1024
+
 
 class _ClientGone(Exception):
     """The client closed the connection before its JSON answer was ready."""
@@ -66,6 +70,20 @@ def _gone() -> ApiError:
     """A continued conversation that is not stored any more (deleted in the web UI, archived, unreadable)."""
     return ApiError(404, "the conversation of this response is no longer stored", param="previous_response_id",
                     code="previous_response_not_found")
+
+
+def _too_large() -> ApiError:
+    return ApiError(413, f"The request body is larger than {MAX_BODY_BYTES} bytes")
+
+
+def _stream_error(exc: BaseException) -> str:
+    """The message a stream's failure carries: the API's and the run's own words, but of anything else only its
+    type -- as the JSON answer (_failed) has it; its text can hold paths and internals."""
+    if isinstance(exc, ApiError):
+        return exc.message
+    if isinstance(exc, (TurnError, ConversationBusy)):
+        return str(exc) or type(exc).__name__
+    return f"internal error: {type(exc).__name__}"
 
 
 def _plugin_stopped() -> ApiError:
@@ -349,7 +367,7 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                         return
                     if not isinstance(exc, (ApiError, TurnError)):
                         logger.exception("openai_api: the streamed response failed")
-                    message = exc.message if isinstance(exc, ApiError) else str(exc) or type(exc).__name__
+                    message = _stream_error(exc)
                     failed = response_object(response_id, model, status="failed", output=[],
                                              error={"code": "server_error", "message": message}, **common)
                     yield event("response.failed", response=failed)
@@ -419,7 +437,7 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                     if refused is not None:  # the agent refused the run before it started: not a server error
                         yield sse(refused.body())
                     else:
-                        message = exc.message if isinstance(exc, ApiError) else str(exc) or type(exc).__name__
+                        message = _stream_error(exc)
                         # The code as the JSON answer has it (_failed): after the 200 no header can stop a
                         # retry, but a client can still tell a format verdict from a failed run.
                         code = (exc.error_type if isinstance(exc, TurnError) and exc.error_type
@@ -487,9 +505,14 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
         kind = request.headers.get("content-type", "").split(";")[0].strip().lower()
         if kind != "application/json":
             raise ApiError(415, "Content-Type must be application/json")
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw += chunk
+            if len(raw) > MAX_BODY_BYTES:
+                raise _too_large()
         try:
-            body = await request.json()
-        except ValueError:
+            body = json.loads(raw)
+        except (ValueError, RecursionError):  # RecursionError: nesting deeper than the parser's stack
             raise ApiError(400, "The body is not valid JSON") from None
         if not isinstance(body, dict):
             raise ApiError(400, "The body must be a JSON object")

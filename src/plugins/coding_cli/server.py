@@ -3,8 +3,9 @@
 A run is one headless Claude Code process in a fresh git worktree of an
 operator-listed repository (docs/coding_cli_plugin_konzept.md §3-§6):
 
-* locked down: --restricted, no MCP servers, an explicit tool list, file tools
-  confined to the worktree, a shell only for the operator's commands (run.py),
+* locked down: --restricted, no MCP servers but those the operator names per
+  workdir, an explicit tool list, file tools confined to the worktree, a shell
+  only for the operator's commands (run.py),
 * on the operator's subscription: only listed users may start runs, and none
   starts while a subscription window is past the limit,
 * its result is a branch: what the run changed is committed there, nothing is
@@ -26,14 +27,20 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from agent_system.core.session_presence import alive, presence_for, wake_blocked, wake_depth, wake_session
 from agent_system.paths import PROJECT_ROOT, data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from plugins.mcp_client.auth import build_auth_headers
+# The transport names the MCP client dials by ("streaming" is HTTP, "http+sse" SSE); stdio and a typo are not
+# among them.
+from plugins.mcp_client.connection import _SSE_ALIASES, _STREAMABLE_HTTP_ALIASES
 
 from . import run as cli
 from .live import LiveRun
@@ -51,6 +58,10 @@ logger = logging.getLogger(__name__)
 DATA_ROOT: Optional[Path] = None
 DATA_ROOT_ENV = "CODING_CLI_DATA_ROOT"
 MAX_TASK_CHARS = 20_000
+# A json_schema as it stands on the command line, Windows quoting included (an
+# escaped quote counts up to four times): the rest of the line stays far below
+# Windows' 32,767 characters.
+MAX_SCHEMA_CHARS = 20_000
 CAP_RESULT = 12_000
 CAP_STDERR = 600
 CAP_HIDDEN = 50
@@ -93,6 +104,36 @@ def _untrusted(content: Any) -> dict:
     return {"untrusted": True, "content": content}
 
 
+def _transport(cfg: Any) -> str:
+    return str(getattr(cfg, "transport", None) or "streaming").lower()
+
+
+def _usable_mcp(name: str, cfg: Any) -> bool:
+    """An operator's MCP server a run may load: one Claude Code dials, over a
+    transport the MCP client knows. A stdio server would be started instead,
+    its command and env written to disk; a misspelt transport the client
+    refuses. The name goes into --allowedTools, a comma or space there would
+    allow more. The url goes into the run's MCP file as it is: one carrying a
+    user, a password or a query (a key) would put it on disk -- Claude Code's
+    docs expand ${VAR} in a url too, unmeasured, so such a server is refused."""
+    url = str(getattr(cfg, "url", "") or "")
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    return (bool(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name)) and cfg is not None
+            and bool(getattr(cfg, "enabled", False) and url) and not (parts.username or parts.password or parts.query)
+            and _transport(cfg) in _STREAMABLE_HTTP_ALIASES | _SSE_ALIASES)
+
+
+def _schema_ok(schema: Any) -> bool:
+    try:
+        return (isinstance(schema, dict) and cli.nesting(schema) <= cli.MAX_NESTING
+                and len(subprocess.list2cmdline([json.dumps(schema, allow_nan=False)])) <= MAX_SCHEMA_CHARS)
+    except (TypeError, ValueError):
+        return False
+
+
 def _bounded(value: Any, default: float, low: float, high: float) -> Optional[float]:
     try:
         return max(low, min(float(value if value not in (None, "") else default), high))
@@ -129,6 +170,7 @@ class CodingCliServer(SchemaBasedToolServer):
     def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         super().__init__(name, system_config, server_config)
         self.command = cli.find_claude(str(getattr(server_config, "command", "") or "claude"))
+        remote = getattr(getattr(system_config, "external_servers", None), "remote_servers", None) or {}
         self.workdirs: dict[str, dict] = {}
         for wname, entry in (getattr(server_config, "workdirs", None) or {}).items():
             entry = entry if isinstance(entry, dict) else {"path": entry}
@@ -137,10 +179,29 @@ class CodingCliServer(SchemaBasedToolServer):
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", str(wname)) or not (path / ".git").exists():
                 logger.warning("coding_cli: workdir %r skipped -- a plain name and a git repository are needed", wname)
                 continue
-            self.workdirs[str(wname)] = {"path": path, "exclude": [str(e) for e in entry.get("exclude") or []]}
+            names = entry.get("mcp_servers") or []
+            # `mcp_servers: scarab4` is one server, not seven letters.
+            names = [str(n) for n in ([names] if isinstance(names, str) else names)]
+            if names and entry.get("web") is True:
+                # A page can tell the model what to do; a server's tools would do it with its token.
+                logger.warning("coding_cli: workdir %r skipped -- web and mcp_servers together: a page the run "
+                               "reads could steer the servers' tools; give research a workdir of its own", wname)
+                continue
+            unusable = [n for n in names if not _usable_mcp(n, remote.get(n))]
+            if unusable:
+                logger.warning("coding_cli: workdir %r skipped -- MCP server(s) %s unknown, disabled, stdio, without "
+                               "a url or not a plain name (external_servers.remote_servers)", wname, unusable)
+                continue
+            self.workdirs[str(wname)] = {"path": path, "exclude": [str(e) for e in entry.get("exclude") or []],
+                                         "mcp_servers": {n: remote[n] for n in names}, "web": entry.get("web") is True}
         # The subscription belongs to one person (concept §7).
-        self.allowed_users = frozenset(str(u) for u in getattr(server_config, "allowed_users", None) or ())
+        users = getattr(server_config, "allowed_users", None) or ()
+        # `allowed_users: admin` is one user, not five letters.
+        self.allowed_users = frozenset([users] if isinstance(users, str) else map(str, users))
         self.allowed_commands = [str(c) for c in getattr(server_config, "allowed_commands", None) or ()]
+        if self.allowed_commands and any(w["mcp_servers"] for w in self.workdirs.values()):
+            logger.warning("coding_cli: %s allows shell commands and gives runs MCP servers -- every allowed "
+                           "command inherits the environment that holds the servers' tokens", name)
         self.pass_env = [str(v) for v in getattr(server_config, "pass_env", None) or ()]
         self.model = str(getattr(server_config, "model", "") or "")
         self.max_utilization = _bounded(getattr(server_config, "max_window_utilization", None), 0.8, 0.05, 1.0) or 0.8
@@ -148,6 +209,10 @@ class CodingCliServer(SchemaBasedToolServer):
         self.wait_s = 300.0 if self.wait_s is None else self.wait_s
         self.max_run_s = 60 * (_bounded(getattr(server_config, "max_run_minutes", None), 60, 1, 24 * 60) or 60)
         self.max_parallel = int(_bounded(getattr(server_config, "max_parallel", None), 1, 1, 8) or 1)
+        self.max_task_chars = int(_bounded(getattr(server_config, "max_task_chars", None), MAX_TASK_CHARS, 1_000,
+                                           100_000) or MAX_TASK_CHARS)
+        self.max_output_chars = int(_bounded(getattr(server_config, "max_output_chars", None), CAP_RESULT, 1_000,
+                                             100_000) or CAP_RESULT)
         self._monitors: dict[str, asyncio.Task] = {}
         self._listeners: dict[str, Any] = {}
         # run id -> its live view (live.py), for the life of the run, not only
@@ -156,6 +221,7 @@ class CodingCliServer(SchemaBasedToolServer):
         self._rings: dict[str, asyncio.Task] = {}
         self._starting: set[str] = set()
         self._sweeper: Optional[asyncio.Task] = None
+        self._stopped = False
         self._start_lock = asyncio.Lock()
         self._instance = secrets.token_hex(6)
         self._me = {"pid": os.getpid(), "started": cli.process_start(os.getpid()), "instance": self._instance}
@@ -174,22 +240,30 @@ class CodingCliServer(SchemaBasedToolServer):
     async def start_plugin(self) -> None:
         """Takes over the runs whose owner is gone, now and every SWEEP_S:
         without it their time limit, their end and their ring would wait for
-        somebody to look."""
+        somebody to look. A plugin stopped before starts again (the registry
+        keeps it startable): its calls hold their runs again."""
+        self._stopped = False
         await self._sweep_guarded()
         self._sweeper = asyncio.create_task(self._sweep_loop())
 
     async def stop_plugin(self) -> None:
         """Ends the watching, not the runs: they finish on their own, and
         another instance takes them over -- its process may live on, so the
-        runs are released on disk. A ring not delivered to the end gives its
-        lease up, so it is rung again."""
+        runs are released on disk. A run whose starting call still waits is
+        stopped (its caller has no run id yet) and that call answers how it
+        ended; a run whose call still answers is released by that call
+        (run_task). A ring not delivered to the end gives its lease
+        up, so it is rung again."""
         watched = list(self._monitors)
         tasks = [*self._monitors.values(), *self._rings.values(), *([self._sweeper] if self._sweeper else [])]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        self._stopped = True
         for run_id in watched:
-            self._file(run_id, f"released-{self._instance}").touch()
+            # A run whose starting call still answers for it is released by that call (run_task).
+            if run_id not in self._starting:
+                self._release(run_id)
 
     async def _sweep_loop(self) -> None:
         while True:
@@ -219,18 +293,55 @@ class CodingCliServer(SchemaBasedToolServer):
         gone = (record.get("owner") or {}).get("instance") or "none"
         # The claim settles who takes over a foreign owner's run. A run of its
         # own that nothing watches (its finalize failed) is this instance's
-        # already: a claim here would be used up, and the next sweep skip it.
-        if gone != self._instance and not _claim(self._file(run_id, f"adopt-{gone}")):
+        # already: a claim here would be used up, and the next sweep skip it --
+        # unless it released the run (a plugin stopped and started again): then
+        # the others may take it too, and the claim settles it as for theirs.
+        # A release names its own claim (its nonce): a run released, taken back
+        # and released again is up for taking again.
+        released = self._file(run_id, f"released-{gone}")
+        try:
+            nonce = released.read_text(encoding="utf-8").strip()
+        except OSError:
+            nonce = None
+        claim = f"adopt-{gone}" + (f"-{nonce}" if nonce else "")
+        if nonce is None and gone != self._instance and _instance_alive(record.get("owner")):
+            return                                # its release was taken back since the sweep looked
+        if (gone != self._instance or nonce is not None) and not _claim(self._file(run_id, claim)):
             return
         record = self._load(run_id) or record
-        if record.get("state") != "running":
-            return
+        if record.get("state") != "running" or ((record.get("owner") or {}).get("instance") or "none") != gone:
+            return                                # ended, or somebody took it meanwhile
         record["owner"] = self._me
         self._save(record)
-        if alive(record.get("pid"), record.get("pid_started")):
+        for stale in (self._root() / "runs").glob(f"{run_id}.released-*"):
+            stale.unlink(missing_ok=True)         # it has an owner again: no release of an earlier one counts
+        if alive(record.get("pid"), record.get("pid_started")) and not self._orphan_stop(record):
             self._watch(record, None)
         else:
             await self._settle(run_id)
+
+    def _orphan_stop(self, record: dict) -> str:
+        """Why a running run whose owner is gone is stopped now, or "" while it
+        may go on. One whose starting call never answered goes like one whose
+        turn was stopped: its caller got no run id and went on without it -- a
+        stategraph hands the job to an agent on the same Scarab server. A
+        record from before the answer was marked keeps the old rule."""
+        if "instance_name" in record and not self._file(record["run_id"], "answered").exists():
+            return "stopped: the call that started it never answered, its process ended"
+        if time.time() - float(record.get("started_at") or 0) > self._limit_s(record):
+            return f"stopped after the time limit of {self._limit_s(record) / 60:.0f} min"
+        return ""
+
+    def _limit_s(self, record: dict) -> float:
+        """The run's time limit: its starting instance's, whoever takes it over."""
+        try:
+            return float(record.get("max_run_s") or self.max_run_s)
+        except (TypeError, ValueError):
+            return self.max_run_s
+
+    def _release(self, run_id: str) -> None:
+        """Lets the run go: whoever sweeps may take it over, through the claim this release names."""
+        self._file(run_id, f"released-{self._instance}").write_text(secrets.token_hex(4), encoding="utf-8")
 
     def _owner_alive(self, record: dict) -> bool:
         """Whether somebody watches the run. This instance does while it
@@ -274,7 +385,8 @@ class CodingCliServer(SchemaBasedToolServer):
     def _save(self, record: dict) -> None:
         path = self._file(record["run_id"], "json")
         tmp = path.with_name(f"{path.stem}.{os.getpid()}-{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
+        # ASCII: a lone surrogate from the stream (a broken escape in a result) is escaped, not a failed save.
+        tmp.write_text(json.dumps(record, indent=1), encoding="utf-8")
         for attempt in range(SAVE_ATTEMPTS):
             try:
                 os.replace(tmp, path)
@@ -291,17 +403,24 @@ class CodingCliServer(SchemaBasedToolServer):
         records = [self._load(p.stem) for p in folder.glob("*.json")] if folder.is_dir() else []
         return [r for r in records if r and _RUN_ID.fullmatch(str(r.get("run_id")))]
 
+    def _mine(self, record: dict) -> bool:
+        """Whether a run is this instance's: every instance of the plugin shares
+        the data folder, but its runs, its max_parallel and its tools are its own.
+        A record from before the name was kept counts for every instance. The
+        subscription guard and the taking over of orphans stay shared."""
+        return record.get("instance_name", self.name) == self.name
+
     def _own(self, run_id: Any, user_id: str) -> Optional[dict]:
-        """The user's run, or None -- another user's run is no run to them."""
+        """The user's run of this instance, or None -- another user's run is no run to them."""
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
             return None
         record = self._load(run_id)
-        return record if record and record.get("user_id") == user_id else None
+        return record if record and record.get("user_id") == user_id and self._mine(record) else None
 
     async def _running(self) -> list[dict]:
-        """The runs going now, and those another instance is starting. One
-        nobody watches is settled first: it may have ended, or be past its
-        time limit."""
+        """The runs going now, of every instance, and those another process is
+        starting. One nobody watches is settled first: it may have ended, or
+        be past its time limit."""
         found = []
         for record in await asyncio.to_thread(self._records):
             if record.get("state") != "running":
@@ -342,8 +461,8 @@ class CodingCliServer(SchemaBasedToolServer):
         task = params.get("task")
         if not isinstance(task, str) or not task.strip():
             return await self._fail(status, "task: the complete task as text")
-        if len(task) > MAX_TASK_CHARS:
-            return await self._fail(status, f"task: at most {MAX_TASK_CHARS} characters")
+        if len(task) > self.max_task_chars:
+            return await self._fail(status, f"task: at most {self.max_task_chars} characters")
         try:
             # Before anything is made: a lone surrogate (a broken escape) fails the task file only after the worktree.
             task.encode("utf-8")
@@ -352,6 +471,7 @@ class CodingCliServer(SchemaBasedToolServer):
         mode = params.get("mode") or "edit"
         if mode not in ("edit", "plan"):
             return await self._fail(status, "mode: edit (change the code) or plan (read and answer with a plan)")
+        schema = params.get("json_schema")
         prior = None
         if params.get("resume"):
             prior = self._own(params["resume"], user_id)
@@ -365,27 +485,40 @@ class CodingCliServer(SchemaBasedToolServer):
                 return await self._fail(status, f"resume: run {prior['run_id']} left no conversation or "
                                                 f"worktree to continue -- start a new run")
             workdir = prior["workdir"]
+            if schema is None:
+                schema = prior.get("json_schema")
         else:
             workdir = params.get("workdir") or (next(iter(self.workdirs)) if len(self.workdirs) == 1 else None)
         if workdir not in self.workdirs:
             return await self._fail(status, f"workdir: one of {', '.join(sorted(self.workdirs))}")
+        # The given one or the one a resume inherits, before anything is made.
+        if schema is not None and not _schema_ok(schema):
+            return await self._fail(status, f"json_schema: a JSON schema as an object, at most {MAX_SCHEMA_CHARS} "
+                                            f"characters as JSON on the command line, its quotes escaped, "
+                                            f"nested at most {cli.MAX_NESTING} deep")
         blocked = cli.quota_block(self._quota(), self.max_utilization, time.time())
         if blocked:
             return await self._fail(status, f"not started: {blocked}")
         # Held until the process runs: a run being prepared is not on disk as running yet.
         async with self._start_lock:
             running = await self._running()
-            if len(running) >= self.max_parallel:
-                return await self._fail(status, f"not started: {len(running)} run(s) still going ("
-                                                f"{', '.join(r['run_id'] for r in running)}) -- wait for them or cancel one")
+            # max_parallel counts this instance's runs; a worktree is busy whichever instance works in it -- two
+            # instances may resume a record from before instances were told apart.
+            mine = [r for r in running if self._mine(r)]
+            if len(mine) >= self.max_parallel:
+                return await self._fail(status, f"not started: {len(mine)} run(s) still going ("
+                                                f"{', '.join(r['run_id'] for r in mine)}) -- wait for them or cancel one")
             if prior and any(r.get("worktree") == prior["worktree"] for r in running):
                 return await self._fail(status, "resume: another run works in that worktree")
             run_id = secrets.token_hex(6)
+            # Held until the call has answered: while it is in flight this instance answers for the run, its
+            # watch dead or not -- a sweep would stop it as one whose call never answered (_orphan_stop).
             self._starting.add(run_id)
+            started = False
             # A plain executor future, not a task: a sweep that cancels every
             # task at the loop's end does not reach it.
             prepare = asyncio.get_running_loop().run_in_executor(None, functools.partial(
-                self._prepare, run_id, task, mode, workdir, prior, user_id, session_id))
+                self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema))
             try:
                 try:
                     record = await asyncio.shield(prepare)
@@ -403,9 +536,26 @@ class CodingCliServer(SchemaBasedToolServer):
                 except (cli.GitError, OSError) as exc:
                     return await self._fail(status, f"not started: {exc}")
                 monitor = self._watch(record, record.pop("_proc"))
+                started = True
             finally:
-                self._starting.discard(run_id)
-        live = await LiveRun.open(params.get("_request_id"), task, Path(record.get("worktree") or "."))
+                if not started:
+                    self._starting.discard(run_id)
+        try:
+            return await self._answer(status, record, monitor, task, mode, params.get("_request_id"),
+                                      session_id, user_id)
+        finally:
+            self._starting.discard(run_id)
+            if self._stopped:
+                # The plugin stopped while this call answered for the run: released now, for whoever takes over.
+                with contextlib.suppress(OSError):
+                    self._release(run_id)
+
+    async def _answer(self, status, record: dict, monitor: asyncio.Task, task: str, mode: str,
+                      request_id: Any, session_id: str, user_id: str) -> dict[str, Any]:
+        """run_task once the run is going: waits for its end up to wait_s, then answers in full or with the
+        run id and a wake."""
+        run_id = record["run_id"]
+        live = await LiveRun.open(request_id, task, Path(record.get("worktree") or "."))
         if live is not None:
             self._live[run_id] = live
         self._listeners[run_id] = status
@@ -418,22 +568,56 @@ class CodingCliServer(SchemaBasedToolServer):
                 pass
             finally:
                 self._listeners.pop(run_id, None)
-            if not monitor.done():
+            if not self._ended(run_id):
                 sub_agent = await self._is_sub_agent(session_id, user_id)
         except asyncio.CancelledError:
-            # The turn was stopped before the call answered: the run goes with
-            # it. Once the call has answered with a run id, the run is on its own.
-            await self._stop_run(record, "stopped with the turn that started it")
-            raise
-        if monitor.done():
+            if asyncio.current_task().cancelling():
+                # The turn was stopped before the call answered: the run goes with
+                # it. Once the call has answered with a run id, the run is on its own.
+                await self._stop_run(record, "stopped with the turn that started it")
+                raise
+            # No turn was stopped: the plugin was, and its watch with it. The run goes as well -- its caller has
+            # no run id yet -- unless its process has ended: a late stop would make its own failure a cancel.
+            # The call answers how it ended instead of passing the cancel on.
+            if alive(record.get("pid"), record.get("pid_started")):
+                await self._stop_run(record, "stopped with the plugin, while the call that started it waited")
+            if await asyncio.to_thread(self._finalize, run_id) is None:
+                # The cancelled watch's finalize still runs in its thread: wait for that end, as _monitor does.
+                for _ in range(int(CLAIM_WAIT_S / 0.5)):
+                    if self._ended(run_id):
+                        break
+                    await asyncio.sleep(0.5)
+            if live is not None and self._ended(run_id):
+                await live.close(self._load(run_id) or {})      # the cancelled watch did not
+            if not self._ended(run_id):
+                sub_agent = await self._is_sub_agent(session_id, user_id)
+        # Only an end on disk is answered in full: a watch that ended early (a broken status channel, the plugin
+        # stopped, a finalize still under way) leaves the run going -- it is answered as going, with its wake.
+        if self._ended(run_id):
             return await self._finished(status, run_id, session_id)
-        # No await from the look above to the armed wake: the monitor, which
-        # rings when the run ends, cannot end in between.
+        # No await from the look above to the armed wake: a monitor still
+        # watching rings when the run ends, after the wake is there.
         answer = self._running_report(self._load(run_id) or record)
         answer.update(self._arm_wake(run_id, session_id, user_id, sub_agent))
-        await status.end(f"run {run_id} still going after {self.wait_s:.0f} s"
-                         + (", wake armed" if answer["wake"] else ", no wake"))
+        try:
+            await status.end(f"run {run_id} still going after {self.wait_s:.0f} s"
+                             + (", wake armed" if answer["wake"] else ", no wake"))
+        except BaseException as e:
+            # Stopped before the answer went out, or the status channel broke: the caller never got
+            # the run id. As while waiting, the run goes, and no wake rings for it.
+            self._drop_wake(run_id)
+            if alive(record.get("pid"), record.get("pid_started")):     # an ended run keeps its own end
+                await self._stop_run(record, "stopped with the turn that started it" if isinstance(e, asyncio.CancelledError)
+                                     else f"its answer could not be sent ({type(e).__name__})")
+            raise
+        # The caller gets the run id now: a process taking the run over lets it go on (_orphan_stop). Not
+        # marked, the run is stopped should its owner die.
+        with contextlib.suppress(OSError):
+            self._file(run_id, "answered").touch()
         return answer
+
+    def _ended(self, run_id: str) -> bool:
+        return (self._load(run_id) or {}).get("state") in FINAL_STATES
 
     async def get_run(self, params: dict[str, Any]) -> dict[str, Any]:
         status = params.get("_status") or _NoStatus()
@@ -482,7 +666,7 @@ class CodingCliServer(SchemaBasedToolServer):
             await asyncio.sleep(0.5)
         if record.get("state") not in FINAL_STATES:
             answer = self._running_report(record)
-            answer["note"] = "the stop is sent and the run is still ending -- look again with coding_cli_get_run"
+            answer["note"] = f"the stop is sent and the run is still ending -- look again with {self.name}_get_run"
             await status.error(f"run {run_id}: stop sent, still ending")
             return answer
         return await self._finished(status, run_id, session_id)
@@ -498,37 +682,75 @@ class CodingCliServer(SchemaBasedToolServer):
         await asyncio.to_thread(cli.kill_tree, record.get("pid"), record.get("pid_started"))
 
     def _prepare(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict],
-                 user_id: str, session_id: str) -> dict:
+                 user_id: str, session_id: str, schema: Optional[dict] = None) -> dict:
         """Worktree, command line and record, then the process (sync, off the loop)."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
-        mcp = self._root() / "no_mcp.json"
-        if not mcp.exists():
-            mcp.write_text('{"mcpServers": {}}', encoding="utf-8")
+        spec = self.workdirs[workdir]
         if prior:
             worktree, branch = Path(prior["worktree"]), prior["branch"]
-            made = cli.Worktree(prior["base"], prior.get("git_dir") or "", prior.get("hidden") or [])
         else:
             worktree, branch = self._root() / "worktrees" / run_id, f"coding_cli/{run_id}"
-            spec = self.workdirs[workdir]
-            made = cli.make_worktree(spec["path"], worktree, branch, spec["exclude"])
-        rules = worktree / "CLAUDE.md"
+        try:
+            made = (cli.Worktree(prior["base"], prior.get("git_dir") or "", prior.get("hidden") or []) if prior
+                    else cli.make_worktree(spec["path"], worktree, branch, spec["exclude"]))
+            return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema)
+        except BaseException:
+            # Answered "not started": no MCP file is left (a url may hold a key in its path), and for a fresh
+            # run no worktree or branch that no answer names.
+            with contextlib.suppress(OSError):
+                self._file(run_id, "mcp.json").unlink(missing_ok=True)
+            if not prior:
+                cli.remove_worktree(spec["path"], worktree, branch)
+            raise
+
+    def _start(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict], user_id: str,
+               session_id: str, worktree: Path, branch: str, made: cli.Worktree, schema: Optional[dict] = None) -> dict:
         resume = prior["claude_session"] if prior else ""
         if resume and not _SESSION.fullmatch(resume):
             raise OSError(f"run {prior['run_id']} holds no usable session id")
+        # Plan mode only reads: no server whose tools could write.
+        servers = self.workdirs[workdir]["mcp_servers"] if mode != "plan" else {}
+        env, values = cli.child_env(self.pass_env), {}
+        if servers:
+            mcp, config = self._file(run_id, "mcp.json"), {}
+            for name, cfg in servers.items():
+                headers = {}
+                # Built now, so a rotated token applies. The file names a variable, the value is only in the
+                # child's environment: Claude Code expands ${VAR} in a header (M-CC-10).
+                for header, value in build_auth_headers(getattr(cfg, "auth", None)).items():
+                    var = f"CODING_CLI_MCP_{len(values)}"
+                    values[var], headers[header] = value, f"${{{var}}}"
+                config[name] = {"type": "sse" if _transport(cfg) in _SSE_ALIASES else "http", "url": cfg.url,
+                                "headers": headers}
+            mcp.write_text(json.dumps({"mcpServers": config}, indent=1), encoding="utf-8")
+            env.update(values)
+        else:
+            mcp = self._root() / "no_mcp.json"
+            if not mcp.exists():
+                mcp.write_text('{"mcpServers": {}}', encoding="utf-8")
+        rules = worktree / "CLAUDE.md"
         cmd = cli.build_command(self.command, mode=mode, mcp_config=mcp, allowed_commands=self.allowed_commands,
-                                model=self.model, resume=resume, rules=rules if rules.is_file() else None)
-        record = {"run_id": run_id, "user_id": user_id, "session_id": session_id, "workdir": workdir,
+                                mcp_servers={n: (getattr(c, "tools", None) and c.tools.blocked) or []
+                                             for n, c in servers.items()}, model=self.model, resume=resume,
+                                rules=rules if rules.is_file() else None, json_schema=schema,
+                                web=self.workdirs[workdir]["web"])
+        record = {"run_id": run_id, "instance_name": self.name, "max_run_s": self.max_run_s, "user_id": user_id,
+                  "session_id": session_id, "workdir": workdir,
                   "mode": mode, "task": task[:300], "worktree": str(worktree), "branch": branch, "base": made.base,
-                  "git_dir": made.git_dir, "hidden": made.hidden,
+                  "git_dir": made.git_dir, "hidden": made.hidden, "json_schema": schema,
                   "prior": prior["run_id"] if prior else None, "state": "running", "started_at": time.time(),
                   "owner": self._me}
         self._file(run_id, "task").write_text(task, encoding="utf-8")
         self._save(record)
         try:
-            proc = cli.launch(cmd, worktree, cli.child_env(self.pass_env), self._file(run_id, "task"),
+            proc = cli.launch(cmd, worktree, env, self._file(run_id, "task"),
                               self._file(run_id, "jsonl"), self._file(run_id, "err"))
         except OSError as exc:
             record.update(state="failed", ended_at=time.time(), note=f"Claude Code did not start: {exc}")
+            if prior is None:
+                # _prepare removes the worktree and branch: the record must not name them.
+                for key in ("worktree", "branch", "base", "git_dir", "hidden"):
+                    record.pop(key, None)
             self._save(record)
             raise
         record.update(pid=proc.pid, pid_started=cli.process_start(proc.pid))
@@ -553,7 +775,7 @@ class CodingCliServer(SchemaBasedToolServer):
         run_id, root = record["run_id"], Path(record.get("worktree") or ".")
         going = ((lambda: proc.poll() is None) if proc is not None
                  else (lambda: alive(record.get("pid"), record.get("pid_started"))))
-        offset, deadline = 0, float(record.get("started_at") or time.time()) + self.max_run_s
+        offset, deadline = 0, float(record.get("started_at") or time.time()) + self._limit_s(record)
         stopped = False
         try:
             while going():
@@ -563,7 +785,8 @@ class CodingCliServer(SchemaBasedToolServer):
                     await asyncio.to_thread(cli.kill_tree, record.get("pid"), record.get("pid_started"))
                     stopped = True
                 elif time.time() > deadline:
-                    await self._stop_run(record, f"stopped after the time limit of {self.max_run_s / 60:.0f} min")
+                    limit = self._limit_s(record) / 60
+                    await self._stop_run(record, f"stopped after the time limit of {limit:.0f} min")
                     deadline, stopped = float("inf"), True
                 listener, live = self._listeners.get(run_id), self._live.get(run_id)
                 if listener is None and live is None:
@@ -605,9 +828,10 @@ class CodingCliServer(SchemaBasedToolServer):
         record = self._load(run_id) or {"run_id": run_id, "state": "failed", "note": "the record is gone"}
         if record.get("state") == "running" and not self._owner_alive(record):
             if alive(record.get("pid"), record.get("pid_started")):
-                if time.time() - float(record.get("started_at") or 0) <= self.max_run_s:
+                reason = self._orphan_stop(record)
+                if not reason:
                     return record
-                await self._stop_run(record, f"stopped after the time limit of {self.max_run_s / 60:.0f} min")
+                await self._stop_run(record, reason)
             record = await asyncio.to_thread(self._finalize, run_id) or self._load(run_id) or record
         if record.get("state") in FINAL_STATES:
             if reader:
@@ -694,6 +918,9 @@ class CodingCliServer(SchemaBasedToolServer):
             if not (stale and (self._load(run_id) or {}).get("state") == "running"):
                 return None
             claim_path.touch()
+        # Read once, at the start: a url (its path may hold a key) need not lie on disk any longer.
+        with contextlib.suppress(OSError):
+            self._file(run_id, "mcp.json").unlink(missing_ok=True)
         record = self._load(run_id) or {"run_id": run_id}
         try:
             found = cli.outcome(cli.events(self._file(run_id, "jsonl")))
@@ -743,11 +970,25 @@ class CodingCliServer(SchemaBasedToolServer):
                     if err:
                         details.append(err[-CAP_STDERR:])
             if result:
+                # cost_usd: on the subscription a notional amount, the measure the stream reports (M-CC-7).
                 text = str(result.get("result") or "")
                 record.update(result=text[:CAP_RESULT], result_cut=len(text) > CAP_RESULT,
                               subtype=result.get("subtype"), turns=result.get("num_turns"),
                               duration_s=round(float(result.get("duration_ms") or 0) / 1000),
-                              denials=[_denial(d) for d in result.get("permission_denials") or []][:20])
+                              denials=[_denial(d) for d in result.get("permission_denials") or []][:20],
+                              cost_usd=result.get("total_cost_usd"))
+                output = result.get("structured_output")
+                if output is not None:
+                    size = len(json.dumps(output, ensure_ascii=False))
+                    if size > self.max_output_chars:
+                        # Cut, it would be no object of the schema any more.
+                        notes.append(f"the structured output ({size} characters as JSON) is over "
+                                     f"{self.max_output_chars} and "
+                                     f"was dropped")
+                    elif cli.nesting(output) > cli.MAX_NESTING:
+                        notes.append(f"the structured output nests deeper than {cli.MAX_NESTING} and was dropped")
+                    else:
+                        record["output"] = output
             record.update(ended_at=time.time(), abo=cli.windows(found["rate_limit"]), note="; ".join(notes),
                           details=details)
         except Exception as exc:  # noqa: BLE001 - a run must end in a state, whatever broke
@@ -765,7 +1006,8 @@ class CodingCliServer(SchemaBasedToolServer):
         # File names, denied paths and git's or Claude Code's messages are the run's words too.
         answer = {"status": "success", **{k: record.get(k) for k in (
             "run_id", "state", "mode", "workdir", "branch", "base", "commit", "worktree", "turns",
-            "duration_s", "abo")}, "changes": _untrusted(changes), "denials": _untrusted(record.get("denials") or [])}
+            "duration_s", "abo", "cost_usd")}, "changes": _untrusted(changes),
+            "denials": _untrusted(record.get("denials") or [])}
         hidden = record.get("hidden") or []
         if hidden:
             answer["hidden"] = hidden[:CAP_HIDDEN] + ([f"... {len(hidden) - CAP_HIDDEN} more"]
@@ -774,6 +1016,9 @@ class CodingCliServer(SchemaBasedToolServer):
             answer["result"] = _untrusted(record["result"])
             if record.get("result_cut"):
                 answer["result_cut"] = True
+        if record.get("output") is not None:
+            # An object matching json_schema, filled from what the run read: data as much as the result.
+            answer["output"] = _untrusted(record["output"])
         if record.get("note"):
             answer["note"] = record["note"]
         if record.get("details"):
@@ -809,12 +1054,12 @@ class CodingCliServer(SchemaBasedToolServer):
             blocked = "this session cannot be watched"
         if blocked:
             return {"wake": False, "wake_note": f"{blocked}; you are not woken -- give run id {run_id} to whoever "
-                                                f"asked; coding_cli_get_run with wait_s waits for its end"}
+                                                f"asked; {self.name}_get_run with wait_s waits for its end"}
         self._file(run_id, "wake").write_text(json.dumps({"session_id": session_id, "user_id": user_id}),
                                               encoding="utf-8")
         return {"wake": True, "wake_note": f"you are woken when the run ends: give the user run id {run_id} and "
-                                           f"end your turn, then read it with coding_cli_get_run. A one-shot "
-                                           f"agent-cli run is never woken -- there, wait with coding_cli_get_run wait_s"}
+                                           f"end your turn, then read it with {self.name}_get_run. A one-shot "
+                                           f"agent-cli run is never woken -- there, wait with {self.name}_get_run wait_s"}
 
     async def _is_sub_agent(self, session_id: str, user_id: str) -> bool:
         """wake_blocked leaves this out (core/session_presence.py): a sub-agent's

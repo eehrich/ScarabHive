@@ -79,9 +79,10 @@ class TestRegistryDispatch:
         assert client.url == "https://proxy.internal/decisions"
 
     @pytest.mark.parametrize("provider, host", [("openrouter_decisions", "OPENROUTER"),
-                                                ("systemone_decisions", "SYSTEM_ONE")])
+                                                ("systemone_decisions", "SYSTEM_ONE"),
+                                                ("ollama_decisions", "OLLAMA")])
     def test_no_url_means_the_providers_own_endpoint(self, provider, host):
-        """Both providers build one client; the host each hands it is the
+        """Every provider builds one client; the host each hands it is the
         difference -- its endpoint, and the name its calls are booked under."""
         from plugins.llm_decisions import system_one
         config = _config(jev=DecisionModelConfig(provider=provider, model="jev", api_key="sk-test"))

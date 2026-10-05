@@ -19,12 +19,15 @@ class ScriptInterpreterConfig:
     max_loop_iterations: int = 100000  # safety cap for loops/range()
     loop_timeout_seconds: float = 2.0  # timeout for individual loops
 
+    # Per-session sandboxes held by the server. The server read both with
+    # getattr() defaults, but from_dict() drops keys that are not fields --
+    # a configured value never arrived.
+    session_ttl_seconds: float = 3600.0  # idle sandbox dropped after this
+    max_tracked_sessions: int = 100  # least recently used dropped beyond this
+
     # Security settings
     allowed_functions: Optional[List[str]] = None
-    allowed_modules: Optional[List[str]] = None
     enable_variables: bool = True
-    enable_loops: bool = True  # Enable loops for Task 9063
-    enable_functions: bool = True  # Enable function definitions for Task 9063
 
     def __post_init__(self):
         """Set default allowed functions if not specified."""
@@ -50,9 +53,6 @@ class ScriptInterpreterConfig:
                 # Math operations are handled by operators, not functions
             ]
 
-        if self.allowed_modules is None:
-            self.allowed_modules = []  # No modules allowed by default
-
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "ScriptInterpreterConfig":
         """Create config from dictionary."""
@@ -62,18 +62,3 @@ class ScriptInterpreterConfig:
         allowed = {f.name for f in dataclass_fields(cls)}
         filtered = {k: v for k, v in config_dict.items() if k in allowed}
         return cls(**filtered)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary."""
-        return {
-            "max_execution_time": self.max_execution_time,
-            "max_memory_mb": self.max_memory_mb,
-            "max_output_length": self.max_output_length,
-            "max_loop_iterations": self.max_loop_iterations,
-            "loop_timeout_seconds": self.loop_timeout_seconds,
-            "allowed_functions": self.allowed_functions,
-            "allowed_modules": self.allowed_modules,
-            "enable_variables": self.enable_variables,
-            "enable_loops": self.enable_loops,
-            "enable_functions": self.enable_functions,
-        }

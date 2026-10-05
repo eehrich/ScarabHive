@@ -560,3 +560,59 @@ async def test_cancellation_during_batch():
 
     with pytest.raises(asyncio.CancelledError):
         await server.call_with_status("decision_evaluate_probabilities", params)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("given", [{"criteria_true": "it deletes data"},
+                                   {"criteria_false": "it only reads"}])
+async def test_one_sided_question_criteria_are_refused_not_dropped(given):
+    """criteria_true alone used to vanish before the call: the caller thought it
+    steered the answer, and the model never saw it."""
+    server = _make_server()
+    server._client = MagicMock(decide=AsyncMock(return_value=DecisionsResult(
+        answers={"q1": Answer(name="q1", type="noul", value=0.9)}, model="m", provider=None,
+        id=None, input_tokens=1, output_tokens=1, cost=0.0, duration_ms=1.0)))
+    server._cached_profile = None
+    res, closing = await _run_tool(server, "decision_evaluate_probabilities", {
+        "items": ["rm -rf /tmp/x"], "questions": [{"question": "Risky?", **given}]})
+    assert res["status"] == "error" and "criteria_true and criteria_false" in res["error"], res
+    assert closing.phase is StatusPhase.ERROR
+    server._client.decide.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_both_question_criteria_reach_the_model():
+    """Control for the refusal above: both sides given, both are sent."""
+    server = _make_server()
+    server._client = MagicMock(decide=AsyncMock(return_value=DecisionsResult(
+        answers={"q1": Answer(name="q1", type="noul", value=0.9)}, model="m", provider=None,
+        id=None, input_tokens=1, output_tokens=1, cost=0.0, duration_ms=1.0)))
+    server._cached_profile = None
+    res, _ = await _run_tool(server, "decision_evaluate_probabilities", {
+        "items": ["rm -rf /tmp/x"],
+        "questions": [{"question": "Risky?", "criteria_true": "deletes", "criteria_false": "reads"}]})
+    assert res["status"] == "success", res
+    sent = server._client.decide.call_args.kwargs["questions"]
+    assert sent["q1"]["criteria"] == {"true": "deletes", "false": "reads"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool, params", [
+    ("decision_evaluate_probabilities", {"items": TWO_ITEMS, "questions": ["Is it valid?"]}),
+    ("decision_evaluate_scores",
+     {"items": TWO_ITEMS, "criteria": [{"id": "q1", "question": "How good?", "scale": ["low", "high"]}]}),
+])
+async def test_a_batch_where_every_answer_was_refused_still_reports_its_spend(tool, params):
+    """Every item failed, but the refused answers were billed: the error answer
+    carries the summary, so the agent sees what the failed batch cost."""
+    from plugins.llm_decisions.system_one import DecisionsError
+
+    server = _make_server()
+    server._client = MagicMock(decide=AsyncMock(side_effect=DecisionsError(
+        "left q1 unanswered", usage={"input_tokens": 30, "output_tokens": 0, "cost": 0.00001})))
+    server._cached_profile = None
+    res, closing = await _run_tool(server, tool, params)
+    assert res["status"] == "error" and closing.phase is StatusPhase.ERROR
+    summary = res["summary"]
+    assert (summary["failed_items"], summary["total_input_tokens"]) == (2, 60), summary
+    assert summary["total_cost"] == pytest.approx(0.00002)

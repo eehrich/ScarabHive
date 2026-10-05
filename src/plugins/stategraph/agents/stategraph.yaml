@@ -5,7 +5,11 @@
 # Authorization boundaries (docs/stategraph_design.md §8.3):
 #   agent activities -> the agents the machine file names (any configured
 #                       agent; machines are admin work), run directly
-#   tool activities  -> stategraph_runner's tools.allowed
+#   tool activities  -> the tools.allowed of the machine's runner: the runner
+#                       whose runs_machines_in holds its folder, else
+#                       stategraph_runner. A plugin that ships machines ships
+#                       their runner in its own agents/*.yaml (stategraph.guide,
+#                       "Runners"); nothing of it belongs in this file.
 # Both are checked when a machine is validated (SG007) and again at run time.
 plugins:
   servers:
@@ -26,19 +30,22 @@ plugins:
       # control machines. Machines contain Python -- list only people you would
       # let change plugin code.
       allowed_users: []
-      # Params added to tool activities after rendering, by fnmatch pattern on
-      # the flat tool name (as in tool_script), so secrets never live in machine
-      # files. The config value wins over a value the machine passes. Example
-      # for a writer machine:
+      # Params added to every tool activity after rendering, by fnmatch pattern
+      # on the flat tool name (as in tool_script), so secrets never live in
+      # machine files. The config value wins over a value the machine passes;
+      # a runner's own inject_params win over these. Params for one plugin's
+      # tools belong in that plugin's runner. Example:
       #   inject_params:
-      #     "writer_content_*": {write_key: "${WRITER_WRITE_KEY}"}
+      #     "my_store_*": {api_key: "${MY_STORE_KEY}"}
       inject_params: {}
       default_max_wait: 600                # seconds run_machine waits with wait: finish
 
-    # Host of machine runs and the boundary for tool activities: a tool
-    # activity is dispatched through this agent's dispatch_tool_call, so only
-    # tools in its allowlist can be called from a machine. Never add a
-    # stategraph tool here (SG007 refuses them): a machine must not save,
+    # The default runner: host of the runs of every machine whose folder no
+    # runner claims (runs_machines_in), and the boundary for their tool
+    # activities -- dispatched through this agent's dispatch_tool_call, so
+    # only tools in its allowlist can be called. Other runners inherit from it
+    # (type: stategraph_runner) and add their tools with "+" entries. Never add
+    # a stategraph tool here (SG007 refuses them): a machine must not save,
     # start or control machines. Nobody chats with this agent.
     stategraph_runner:
       type: basic_agent
@@ -52,14 +59,12 @@ plugins:
         tools:
           allowed:
             - "stategraph_json/*"           # the machines' own JSON documents
-            - "debate_forum/*"              # the coordination log
       metadata:
         visibility: private                # not a chat partner
 
     # The agent of the example machines (machines/*.yaml): plain text in, plain
     # text out, no tools. Shipped with the plugin so the examples validate on
-    # every installation. Not chat_agent: its markdown formatter turns answers
-    # into HTML, and a machine reads the answer as data.
+    # every installation.
     stategraph_example_agent:
       type: basic_agent
       enabled: true
@@ -70,11 +75,6 @@ plugins:
         max_steps: 10
         hooks:
           enabled: true
-          overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: false
-            markdown_formatter.inject_markdown_system_prompt:
-              enabled: false
       metadata:
         visibility: private                # runs from machines, not a chat partner
 

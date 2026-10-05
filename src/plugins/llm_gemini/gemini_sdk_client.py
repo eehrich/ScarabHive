@@ -30,14 +30,17 @@ import logging
 import os
 import random
 import uuid
+from contextlib import aclosing
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+import httpx
 from agent_system.utils.json_utils import repair_json
 
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
+    RequestEnd,
     adjust_thinking_for_retry,
     build_thinking_config,
     compact_contents_for_byte_limit,
@@ -46,6 +49,8 @@ from .gemini_utils import (
     extract_available_tool_names,
     extract_usage_from_metadata,
     filter_unavailable_tool_calls,
+    is_refusal,
+    raise_after_retries,
     response_format_fields,
     StreamingLoopDetector,
     ThinkingProgressTracker,
@@ -101,7 +106,7 @@ class GeminiSDKClient(LLMClient):
         context_window: int = 200000,
         request_timeout: int = 180,
         ssl_verify: bool | str = True,  # Ignored by SDK, kept for compatibility
-        httpx_timeouts: dict | None = None,  # Ignored by SDK, kept for compatibility
+        httpx_timeouts: dict | None = None,  # only "read" is used, see read_timeout
         max_retries: int = 3,
         rate_limit_max_retries: int = 2,
         parallel_tool_calls: bool = True,  # Ignored, kept for compatibility
@@ -119,9 +124,9 @@ class GeminiSDKClient(LLMClient):
             api_key: Google AI API key
             base_url: Ignored (SDK handles endpoint)
             context_window: Maximum context window size
-            request_timeout: Request timeout in seconds
+            request_timeout: Read timeout in seconds unless httpx_timeouts names one
             ssl_verify: Ignored by SDK
-            httpx_timeouts: Ignored by SDK
+            httpx_timeouts: Only "read" is used; the SDK's connections are its own
             max_retries: Maximum retry attempts
             parallel_tool_calls: Ignored (SDK handles this)
             include_thoughts: Enable thought/reasoning output
@@ -138,6 +143,10 @@ class GeminiSDKClient(LLMClient):
         self.api_key = api_key
         self.context_window = context_window
         self.request_timeout = request_timeout
+        # The longest wait for the answer (not streamed) or between two
+        # pieces of a stream. The SDK is built without a timeout, so without
+        # this a silent endpoint held the call until someone cancelled it.
+        self.read_timeout = float((httpx_timeouts or {}).get("read") or request_timeout)
         self.max_retries = max_retries
         self.rate_limit_max_retries = rate_limit_max_retries
         self.extra_params = extra_params
@@ -498,7 +507,7 @@ class GeminiSDKClient(LLMClient):
             Chunks from the underlying stream
         """
         try:
-            stream = await stream_coro
+            stream = await self._cancellable_request(stream_coro, cancellation_token)
         except Exception as e:
             # Log detailed error info for debugging 400 Bad Request errors
             error_type = type(e).__name__
@@ -534,6 +543,8 @@ class GeminiSDKClient(LLMClient):
         producer_task = asyncio.create_task(producer())
         
         chunk_num = 0
+        loop = asyncio.get_running_loop()
+        last_chunk_at = loop.time()
         try:
             while True:
                 # Check cancellation before waiting for chunk
@@ -545,9 +556,11 @@ class GeminiSDKClient(LLMClient):
                 try:
                     is_done, value = await asyncio.wait_for(queue.get(), timeout=check_interval)
                 except asyncio.TimeoutError:
-                    # Just check cancellation and continue
+                    if loop.time() - last_chunk_at > self.read_timeout:
+                        raise TimeoutError(f"Stream stalled - no data for {self.read_timeout:g}s")
                     continue
-                
+                last_chunk_at = loop.time()
+
                 if is_done:
                     if value is not None:
                         # Error from producer
@@ -589,14 +602,20 @@ class GeminiSDKClient(LLMClient):
             Result from the coroutine
         """
         if not cancellation_token:
-            # No cancellation token, just await normally
-            return await coro
-        
+            try:
+                return await asyncio.wait_for(coro, self.read_timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"No answer within {self.read_timeout:g}s") from None
+
         # Create task for the request
         task = asyncio.create_task(coro)
-        
+        deadline = asyncio.get_running_loop().time() + self.read_timeout
+
         try:
             while not task.done():
+                if asyncio.get_running_loop().time() > deadline:
+                    task.cancel()
+                    raise TimeoutError(f"No answer within {self.read_timeout:g}s")
                 # Check cancellation
                 if cancellation_token.is_cancelled:
                     task.cancel()
@@ -636,6 +655,19 @@ class GeminiSDKClient(LLMClient):
         - final: Final accumulated result
         """
         self._require_response_format(response_format)
+        end = RequestEnd(self, "gemini_sdk", is_streaming=True)
+        # aclosing: a caller that stops reading closes the request with it.
+        async with aclosing(self._stream(messages, tools, cancellation_token, status_scope,
+                                         response_format, end)) as stream:
+            try:
+                async for chunk in stream:
+                    yield chunk
+            except BaseException as error:
+                await end.fail(error)
+                raise
+
+    async def _stream(self, messages, tools, cancellation_token, status_scope,
+                      response_format, end: RequestEnd) -> AsyncGenerator[Dict[str, Any], None]:
         # Extract available tool names to filter out unavailable tool calls from history
         # This prevents UNEXPECTED_TOOL_CALL when switching agents
         available_tool_names = extract_available_tool_names(tools)
@@ -650,17 +682,12 @@ class GeminiSDKClient(LLMClient):
         # in gemini_utils.py. The _convert_messages_to_sdk method will always return at least
         # one content item due to the centralized fallback.
         
-        # Accumulators
-        accumulated_content = []  # Only non-thought content
-        accumulated_thoughts = []  # Thought summaries
-        accumulated_tool_calls = {}  # id -> tool call
-        accumulated_usage = None
-        # For parallel function calls: store the first thought_signature to propagate to all calls
-        first_thought_signature = None
         # Track MALFORMED_FUNCTION_CALL for auto-retry
         got_malformed_function_call = False
-        # Track MAX_TOKENS for logging purposes
-        hit_max_tokens = False
+        # Whether the caller has seen a delta of an attempt that did not
+        # finish: a retry starts from scratch, so it is told to drop what it
+        # has (stream_restart) -- otherwise it shows the text twice.
+        yielded_delta = False
         # Loop detection utilities
         loop_detector = StreamingLoopDetector()
         progress_tracker = ThinkingProgressTracker()
@@ -674,28 +701,31 @@ class GeminiSDKClient(LLMClient):
             except Exception as e:
                 logger.debug(f"Failed to report LLM status: {e}")
         
-        # Notify pre-request hook (LLM-client level)
-        import time as _time
-        await self._notify_pre_request({
-            "provider": "gemini_sdk",
-            "model": self.model,
-            "url": "",
-            "payload": {
-                "contents_count": len(contents),
-                "has_tools": sdk_tools is not None,
-                "has_system": system_instruction is not None,
-            },
-            "is_streaming": True,
-            "timestamp_ms": _time.time() * 1000,
+        await end.start("", {
+            "contents_count": len(contents),
+            "has_tools": sdk_tools is not None,
+            "has_system": system_instruction is not None,
         })
-        _request_start = _time.time()
-        
+
         last_exception = None
         _effective_max = max(self.max_retries, self.rate_limit_max_retries)
         for attempt in range(_effective_max + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
-            
+            if yielded_delta:
+                yielded_delta = False
+                yield {"type": "stream_restart"}
+
+            # Every attempt starts from scratch.
+            accumulated_content = []  # Only non-thought content
+            accumulated_thoughts = []  # Thought summaries
+            accumulated_tool_calls = {}  # id -> tool call
+            accumulated_usage = end.usage = None
+            # For parallel function calls: the first thought_signature, propagated to all calls
+            first_thought_signature = None
+            loop_detector.reset()
+            progress_tracker.reset()
+
             # Per-attempt flag: a stale True from an earlier attempt made the
             # MAX_TOKENS check throw away good follow-up answers and re-request.
             # (got_malformed_function_call stays sticky on purpose -- mode=ANY.)
@@ -759,228 +789,225 @@ class GeminiSDKClient(LLMClient):
                     config=generation_config,
                 )
                 chunk_count = 0
-                async for chunk in self._cancellable_stream(stream_coro, cancellation_token):
-                    chunk_count += 1
-                    # Process chunk
-                    if not chunk.candidates:
-                        logger.debug(f"[GeminiSDK] Chunk {chunk_count} with no candidates: {type(chunk)}")
-                        continue
+                async with aclosing(self._cancellable_stream(stream_coro, cancellation_token)) as chunks:
+                    async for chunk in chunks:
+                        chunk_count += 1
+                        # Usage first: a chunk without candidates or content
+                        # may carry it (the last one often does), and those
+                        # are skipped below.
+                        if getattr(chunk, 'usage_metadata', None):
+                            accumulated_usage = end.usage = self._extract_usage(chunk.usage_metadata)
+
+                        # Process chunk
+                        if not chunk.candidates:
+                            logger.debug(f"[GeminiSDK] Chunk {chunk_count} with no candidates: {type(chunk)}")
+                            continue
                     
-                    candidate = chunk.candidates[0]
+                        candidate = chunk.candidates[0]
                     
-                    # Debug: log raw candidate info
-                    raw_fr = getattr(candidate, 'finish_reason', None)
-                    has_content = bool(candidate.content and candidate.content.parts)
-                    num_parts = len(candidate.content.parts) if candidate.content and candidate.content.parts else 0
-                    logger.debug(f"[GeminiSDK] Chunk {chunk_count}: finish_reason={raw_fr}, has_content={has_content}, parts={num_parts}")
+                        # Debug: log raw candidate info
+                        raw_fr = getattr(candidate, 'finish_reason', None)
+                        has_content = bool(candidate.content and candidate.content.parts)
+                        num_parts = len(candidate.content.parts) if candidate.content and candidate.content.parts else 0
+                        logger.debug(f"[GeminiSDK] Chunk {chunk_count}: finish_reason={raw_fr}, has_content={has_content}, parts={num_parts}")
                     
-                    # Always log finish_reason (critical for debugging MALFORMED_FUNCTION_CALL)
-                    has_finish_reason = False
-                    if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
-                        has_finish_reason = True
-                        loop_detector.reset()  # Reset on finish_reason
-                        progress_tracker.reset()  # Reset on finish_reason
-                        finish_reason_str = str(candidate.finish_reason)
-                        finish_msg = getattr(candidate, 'finish_message', None)
+                        # Always log finish_reason (critical for debugging MALFORMED_FUNCTION_CALL)
+                        has_finish_reason = False
+                        if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                            has_finish_reason = True
+                            loop_detector.reset()  # Reset on finish_reason
+                            progress_tracker.reset()  # Reset on finish_reason
+                            finish_reason_str = str(candidate.finish_reason)
+                            finish_msg = getattr(candidate, 'finish_message', None)
                         
-                        # Detect MALFORMED_FUNCTION_CALL for auto-retry
-                        if 'MALFORMED' in finish_reason_str:
-                            got_malformed_function_call = True
-                            # Log contents to debug what was sent (including inline_data)
-                            contents_json = json.dumps([
-                                {
-                                    "role": c.role,
-                                    "parts": [
-                                        {
-                                            "text": p.text if hasattr(p, 'text') and p.text else None,
-                                            "function_call": {
-                                                "name": p.function_call.name,
-                                                "args": dict(p.function_call.args) if p.function_call.args else {}
-                                            } if hasattr(p, 'function_call') and p.function_call else None,
-                                            "function_response": {
-                                                "name": p.function_response.name if hasattr(p.function_response, 'name') else None,
-                                                "response": p.function_response.response if hasattr(p.function_response, 'response') else None
-                                            } if hasattr(p, 'function_response') and p.function_response else None,
-                                            "inline_data": {
-                                                "mime_type": p.inline_data.mime_type,
-                                                "data_len": len(p.inline_data.data) if p.inline_data.data else 0
-                                            } if hasattr(p, 'inline_data') and p.inline_data else None
-                                        }
-                                        for p in c.parts
-                                    ]
-                                }
-                                for c in contents
-                            ], indent=2, default=str)
-                            logger.warning(f"[GeminiSDK] MALFORMED_FUNCTION_CALL detected. Contents sent:\n{contents_json}")
+                            # Detect MALFORMED_FUNCTION_CALL for auto-retry
+                            if 'MALFORMED' in finish_reason_str:
+                                got_malformed_function_call = True
+                                # Log contents to debug what was sent (including inline_data)
+                                contents_json = json.dumps([
+                                    {
+                                        "role": c.role,
+                                        "parts": [
+                                            {
+                                                "text": p.text if hasattr(p, 'text') and p.text else None,
+                                                "function_call": {
+                                                    "name": p.function_call.name,
+                                                    "args": dict(p.function_call.args) if p.function_call.args else {}
+                                                } if hasattr(p, 'function_call') and p.function_call else None,
+                                                "function_response": {
+                                                    "name": p.function_response.name if hasattr(p.function_response, 'name') else None,
+                                                    "response": p.function_response.response if hasattr(p.function_response, 'response') else None
+                                                } if hasattr(p, 'function_response') and p.function_response else None,
+                                                "inline_data": {
+                                                    "mime_type": p.inline_data.mime_type,
+                                                    "data_len": len(p.inline_data.data) if p.inline_data.data else 0
+                                                } if hasattr(p, 'inline_data') and p.inline_data else None
+                                            }
+                                            for p in c.parts
+                                        ]
+                                    }
+                                    for c in contents
+                                ], indent=2, default=str)
+                                logger.warning(f"[GeminiSDK] MALFORMED_FUNCTION_CALL detected. Contents sent:\n{contents_json}")
                         
-                        # Detect UNEXPECTED_TOOL_CALL - Gemini tried to call a tool that doesn't exist
-                        # or conversation history contains tool calls/responses that don't match current tools
-                        if 'UNEXPECTED_TOOL_CALL' in finish_reason_str:
-                            # Log contents to help debug what caused this
-                            contents_json = json.dumps([
-                                {
-                                    "role": c.role,
-                                    "parts": [
-                                        {
-                                            "text": (p.text[:100] + "...") if hasattr(p, 'text') and p.text and len(p.text) > 100 else (p.text if hasattr(p, 'text') else None),
-                                            "function_call": {
-                                                "name": p.function_call.name,
-                                                "args": dict(p.function_call.args) if p.function_call.args else {}
-                                            } if hasattr(p, 'function_call') and p.function_call else None,
-                                            "function_response": {
-                                                "name": p.function_response.name if hasattr(p.function_response, 'name') else None,
-                                                "response_type": type(p.function_response.response).__name__ if hasattr(p.function_response, 'response') else None,
-                                                "response_len": len(str(p.function_response.response)) if hasattr(p.function_response, 'response') and p.function_response.response else 0
-                                            } if hasattr(p, 'function_response') and p.function_response else None,
-                                        }
-                                        for p in c.parts
-                                    ]
-                                }
-                                for c in contents
-                            ], indent=2, default=str)
-                            logger.warning(
-                                f"[GeminiSDK] UNEXPECTED_TOOL_CALL detected. This usually means:\n"
-                                f"  1. Gemini tried to call a tool not in the current tool list, OR\n"
-                                f"  2. Conversation history has tool calls/responses that don't match current tools.\n"
-                                f"Contents sent:\n{contents_json}"
-                            )
+                            # Detect UNEXPECTED_TOOL_CALL - Gemini tried to call a tool that doesn't exist
+                            # or conversation history contains tool calls/responses that don't match current tools
+                            if 'UNEXPECTED_TOOL_CALL' in finish_reason_str:
+                                # Log contents to help debug what caused this
+                                contents_json = json.dumps([
+                                    {
+                                        "role": c.role,
+                                        "parts": [
+                                            {
+                                                "text": (p.text[:100] + "...") if hasattr(p, 'text') and p.text and len(p.text) > 100 else (p.text if hasattr(p, 'text') else None),
+                                                "function_call": {
+                                                    "name": p.function_call.name,
+                                                    "args": dict(p.function_call.args) if p.function_call.args else {}
+                                                } if hasattr(p, 'function_call') and p.function_call else None,
+                                                "function_response": {
+                                                    "name": p.function_response.name if hasattr(p.function_response, 'name') else None,
+                                                    "response_type": type(p.function_response.response).__name__ if hasattr(p.function_response, 'response') else None,
+                                                    "response_len": len(str(p.function_response.response)) if hasattr(p.function_response, 'response') and p.function_response.response else 0
+                                                } if hasattr(p, 'function_response') and p.function_response else None,
+                                            }
+                                            for p in c.parts
+                                        ]
+                                    }
+                                    for c in contents
+                                ], indent=2, default=str)
+                                logger.warning(
+                                    f"[GeminiSDK] UNEXPECTED_TOOL_CALL detected. This usually means:\n"
+                                    f"  1. Gemini tried to call a tool not in the current tool list, OR\n"
+                                    f"  2. Conversation history has tool calls/responses that don't match current tools.\n"
+                                    f"Contents sent:\n{contents_json}"
+                                )
                         
-                        # Detect MAX_TOKENS - output token limit reached
-                        # This is often caused by infinite thinking loops
-                        if 'MAX_TOKENS' in finish_reason_str:
-                            hit_max_tokens = True
-                            logger.warning(
-                                "[GeminiSDK] MAX_TOKENS detected - output token limit reached. "
-                                "Will retry with thinking disabled."
-                            )
+                            # Detect MAX_TOKENS - output token limit reached
+                            # This is often caused by infinite thinking loops
+                            if 'MAX_TOKENS' in finish_reason_str:
+                                hit_max_tokens = True
+                                logger.warning(
+                                    "[GeminiSDK] MAX_TOKENS detected - output token limit reached. "
+                                    "Will retry with thinking disabled."
+                                )
                         
-                        # Log at WARNING level if there's a message or if it's a problematic finish_reason
-                        if finish_msg or 'MALFORMED' in finish_reason_str or 'ERROR' in finish_reason_str or 'UNEXPECTED' in finish_reason_str or 'MAX_TOKENS' in finish_reason_str:
-                            msg = f"[GeminiSDK] finish_reason: {candidate.finish_reason}"
-                            if finish_msg:
-                                msg += f", finish_message: {finish_msg}"
-                            logger.warning(msg)
-                        else:
-                            # Normal STOP etc at DEBUG level
-                            logger.debug(f"[GeminiSDK] finish_reason: {candidate.finish_reason}")
+                            # Log at WARNING level if there's a message or if it's a problematic finish_reason
+                            if finish_msg or 'MALFORMED' in finish_reason_str or 'ERROR' in finish_reason_str or 'UNEXPECTED' in finish_reason_str or 'MAX_TOKENS' in finish_reason_str:
+                                msg = f"[GeminiSDK] finish_reason: {candidate.finish_reason}"
+                                if finish_msg:
+                                    msg += f", finish_message: {finish_msg}"
+                                logger.warning(msg)
+                            else:
+                                # Normal STOP etc at DEBUG level
+                                logger.debug(f"[GeminiSDK] finish_reason: {candidate.finish_reason}")
                     
-                    if not candidate.content or not candidate.content.parts:
-                        continue
+                        if not candidate.content or not candidate.content.parts:
+                            continue
                     
-                    # Track if this chunk has any non-thought content
-                    chunk_has_progress = False
+                        # Track if this chunk has any non-thought content
+                        chunk_has_progress = False
                     
-                    for part in candidate.content.parts:
-                        # Handle thought parts
-                        if hasattr(part, 'thought') and part.thought:
-                            text = part.text if hasattr(part, 'text') else ""
-                            if text:
-                                accumulated_thoughts.append(text)
+                        for part in candidate.content.parts:
+                            # Handle thought parts
+                            if hasattr(part, 'thought') and part.thought:
+                                text = part.text if hasattr(part, 'text') else ""
+                                if text:
+                                    accumulated_thoughts.append(text)
                                 
-                                # Check for repetitive loop pattern in thoughts
-                                loop_result = loop_detector.check_for_loop(text)
-                                if loop_result:
-                                    repeated_text, count = loop_result
-                                    logger.error(
-                                        f"[GeminiSDK] Repetitive thinking loop detected: "
-                                        f"'{repeated_text}' repeated {count} times"
-                                    )
-                                    raise RuntimeError(
-                                        f"Gemini repetitive thinking loop: same text repeated {count} times"
-                                    )
+                                    # Check for repetitive loop pattern in thoughts
+                                    loop_result = loop_detector.check_for_loop(text)
+                                    if loop_result:
+                                        repeated_text, count = loop_result
+                                        logger.error(
+                                            f"[GeminiSDK] Repetitive thinking loop detected: "
+                                            f"'{repeated_text}' repeated {count} times"
+                                        )
+                                        raise httpx.RemoteProtocolError(
+                                            f"Gemini repetitive thinking loop: same text repeated {count} times"
+                                        )
                                 
-                                # Stream thoughts as content_delta (like HTTP Gemini client)
-                                # Thoughts appear before regular content in the accumulated text
-                                all_text = "".join(accumulated_thoughts) + "".join(accumulated_content)
+                                    # Thinking as thinking_delta: the agent server shows
+                                    # it as thinking and watches it for loops.
+                                    yielded_delta = True
+                                    yield {"type": "thinking_delta", "delta": text,
+                                           "accumulated": "".join(accumulated_thoughts)}
+                        
+                            # Handle function calls
+                            elif hasattr(part, 'function_call') and part.function_call:
+                                func_call = part.function_call
+                                tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
+                                chunk_has_progress = True  # Tool call = progress
+                            
+                                # Extract thought signature if present on this part
+                                thought_signature = None
+                                if hasattr(part, 'thought_signature') and part.thought_signature:
+                                    # Convert bytes to base64 for JSON serialization
+                                    thought_signature = base64.b64encode(part.thought_signature).decode('utf-8')
+                                    # Store as the first thought_signature for this turn
+                                    # (parallel FC: only first functionCall has the signature)
+                                    if first_thought_signature is None:
+                                        first_thought_signature = thought_signature
+                                        logger.debug(f"[GeminiSDK] Captured first thoughtSignature from {func_call.name}")
+                            
+                                # For parallel function calls: use first_thought_signature if this part has none
+                                effective_signature = thought_signature or first_thought_signature
+                            
+                                tool_call = {
+                                    "id": tool_call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": func_call.name,
+                                        "arguments": json.dumps(dict(func_call.args) if func_call.args else {})
+                                    }
+                                }
+                            
+                                # Store thought signature for round-trip (Gemini 3 Pro requirement)
+                                # Use effective_signature to ensure all parallel calls get the signature
+                                if effective_signature:
+                                    tool_call["extra_content"] = {
+                                        "google": {"thought_signature": effective_signature}
+                                    }
+                                    if thought_signature:
+                                        logger.debug(f"[GeminiSDK] Including thoughtSignature for {func_call.name} (original)")
+                                    else:
+                                        logger.debug(f"[GeminiSDK] Including thoughtSignature for {func_call.name} (propagated from first)")
+                            
+                                accumulated_tool_calls[tool_call_id] = tool_call
+                            
+                                logger.debug(f"[GeminiSDK] Function call: {func_call.name}")
+                                yielded_delta = True
                                 yield {
-                                    "type": "content_delta",
-                                    "delta": text,
-                                    "accumulated": all_text
+                                    "type": "tool_call_delta",
+                                    "index": len(accumulated_tool_calls) - 1,
+                                    "delta": {"function": {"name": func_call.name}},
+                                    "accumulated": tool_call
                                 }
                         
-                        # Handle function calls
-                        elif hasattr(part, 'function_call') and part.function_call:
-                            func_call = part.function_call
-                            tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
-                            chunk_has_progress = True  # Tool call = progress
+                            # Handle text parts (non-thought)
+                            elif hasattr(part, 'text') and part.text:
+                                text_delta = part.text
+                                accumulated_content.append(text_delta)
+                                chunk_has_progress = True  # Non-thought content = progress
                             
-                            # Extract thought signature if present on this part
-                            thought_signature = None
-                            if hasattr(part, 'thought_signature') and part.thought_signature:
-                                # Convert bytes to base64 for JSON serialization
-                                thought_signature = base64.b64encode(part.thought_signature).decode('utf-8')
-                                # Store as the first thought_signature for this turn
-                                # (parallel FC: only first functionCall has the signature)
-                                if first_thought_signature is None:
-                                    first_thought_signature = thought_signature
-                                    logger.debug(f"[GeminiSDK] Captured first thoughtSignature from {func_call.name}")
+                                logger.debug(f"[GeminiSDK] Text delta: {len(text_delta)} chars")
                             
-                            # For parallel function calls: use first_thought_signature if this part has none
-                            effective_signature = thought_signature or first_thought_signature
-                            
-                            tool_call = {
-                                "id": tool_call_id,
-                                "type": "function",
-                                "function": {
-                                    "name": func_call.name,
-                                    "arguments": json.dumps(dict(func_call.args) if func_call.args else {})
-                                }
-                            }
-                            
-                            # Store thought signature for round-trip (Gemini 3 Pro requirement)
-                            # Use effective_signature to ensure all parallel calls get the signature
-                            if effective_signature:
-                                tool_call["extra_content"] = {
-                                    "google": {"thought_signature": effective_signature}
-                                }
-                                if thought_signature:
-                                    logger.debug(f"[GeminiSDK] Including thoughtSignature for {func_call.name} (original)")
-                                else:
-                                    logger.debug(f"[GeminiSDK] Including thoughtSignature for {func_call.name} (propagated from first)")
-                            
-                            accumulated_tool_calls[tool_call_id] = tool_call
-                            
-                            logger.debug(f"[GeminiSDK] Function call: {func_call.name}")
-                            yield {
-                                "type": "tool_call_delta",
-                                "index": len(accumulated_tool_calls) - 1,
-                                "delta": {"function": {"name": func_call.name}},
-                                "accumulated": tool_call
-                            }
-                        
-                        # Handle text parts (non-thought)
-                        elif hasattr(part, 'text') and part.text:
-                            text_delta = part.text
-                            accumulated_content.append(text_delta)
-                            chunk_has_progress = True  # Non-thought content = progress
-                            
-                            logger.debug(f"[GeminiSDK] Text delta: {len(text_delta)} chars")
-                            
-                            # Stream with thoughts + content combined for display
-                            all_text = "".join(accumulated_thoughts) + "".join(accumulated_content)
-                            yield {
-                                "type": "content_delta",
-                                "delta": text_delta,
-                                "accumulated": all_text
-                            }
+                                yielded_delta = True
+                                yield {"type": "content_delta", "delta": text_delta,
+                                       "accumulated": "".join(accumulated_content)}
                     
-                    # Track consecutive thinking-only chunks to detect infinite loop
-                    if progress_tracker.check_stuck(chunk_has_progress, has_finish_reason):
-                        logger.error(
-                            "[GeminiSDK] Infinite thinking loop detected: "
-                            "too many consecutive thought-only chunks without progress. Breaking stream."
-                        )
-                        raise RuntimeError(
-                            "Gemini infinite thinking loop: too many chunks without progress"
-                        )
+                        # Track consecutive thinking-only chunks to detect infinite loop
+                        if progress_tracker.check_stuck(chunk_has_progress, has_finish_reason):
+                            logger.error(
+                                "[GeminiSDK] Infinite thinking loop detected: "
+                                "too many consecutive thought-only chunks without progress. Breaking stream."
+                            )
+                            raise httpx.RemoteProtocolError(
+                                "Gemini infinite thinking loop: too many chunks without progress"
+                            )
                     
-                    # Reset loop detector on progress/finish
-                    if chunk_has_progress or has_finish_reason:
-                        loop_detector.reset()
-                    
-                    # Extract usage from chunks
-                    if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
-                        accumulated_usage = self._extract_usage(chunk.usage_metadata)
+                        # Reset loop detector on progress/finish
+                        if chunk_has_progress or has_finish_reason:
+                            loop_detector.reset()
                 
                 # Stream finished successfully
                 logger.debug(
@@ -1005,14 +1032,6 @@ class GeminiSDKClient(LLMClient):
                         )
                         await self._notify_retry("gemini_sdk", self.model, "", True, "MALFORMED_FUNCTION_CALL (no tool calls)", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
-                        # Reset ALL accumulators for full retry
-                        accumulated_content = []
-                        accumulated_thoughts = []
-                        accumulated_tool_calls = {}
-                        accumulated_usage = None
-                        first_thought_signature = None
-                        loop_detector.reset()
-                        progress_tracker.reset()
                         # Keep got_malformed_function_call=True for mode=ANY in retry
                         continue
                     else:
@@ -1047,14 +1066,6 @@ class GeminiSDKClient(LLMClient):
                         )
                         await self._notify_retry("gemini_sdk", self.model, "", True, f"MALFORMED_FUNCTION_CALL (empty args: {empty_args_calls})", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
-                        # Reset ALL accumulators for full retry
-                        accumulated_content = []
-                        accumulated_thoughts = []
-                        accumulated_tool_calls = {}
-                        accumulated_usage = None
-                        first_thought_signature = None
-                        loop_detector.reset()
-                        progress_tracker.reset()
                         continue
                     elif empty_args_calls:
                         # Retries exhausted, log error and use what we have
@@ -1082,14 +1093,6 @@ class GeminiSDKClient(LLMClient):
                         )
                         await self._notify_retry("gemini_sdk", self.model, "", True, "MAX_TOKENS (stuck in thinking)", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
-                        # Reset accumulators for retry
-                        accumulated_content = []
-                        accumulated_thoughts = []
-                        accumulated_tool_calls = {}
-                        accumulated_usage = None
-                        first_thought_signature = None
-                        loop_detector.reset()
-                        progress_tracker.reset()
                         continue
                     else:
                         logger.error(
@@ -1124,19 +1127,12 @@ class GeminiSDKClient(LLMClient):
                     final_result["usage"] = accumulated_usage
                 
                 logger.debug("[GeminiSDK] Yielding final result")
-                # Notify post-response hook with successful result
-                _duration_ms = (_time.time() - _request_start) * 1000
                 _finish = None
                 if accumulated_tool_calls:
                     _finish = "tool_calls"
                 elif accumulated_content:
                     _finish = "stop"
-                await self._notify_post_response({
-                    "provider": "gemini_sdk", "model": self.model, "url": "",
-                    "is_streaming": True, "duration_ms": _duration_ms,
-                    "usage": accumulated_usage, "finish_reason": _finish,
-                    "timestamp_ms": _time.time() * 1000,
-                })
+                await end.report(usage=accumulated_usage, finish_reason=_finish)
                 yield {"type": "final", **final_result}
                 return  # Success
                 
@@ -1170,14 +1166,6 @@ class GeminiSDKClient(LLMClient):
                         await report_status(f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {wait_time:.0f}s)")
                         await self._notify_retry("gemini_sdk", self.model, "", True, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
-                        # Reset accumulators for retry
-                        accumulated_content = []
-                        accumulated_thoughts = []
-                        accumulated_tool_calls = {}
-                        accumulated_usage = None
-                        first_thought_signature = None
-                        loop_detector.reset()
-                        progress_tracker.reset()
                         # Keep got_malformed_function_call for mode=ANY if it was set
                         continue
                     
@@ -1203,14 +1191,6 @@ class GeminiSDKClient(LLMClient):
                     await report_status(f"Schema error, retry {attempt + 1}/{self.max_retries}: {self.model}")
                     await self._notify_retry("gemini_sdk", self.model, "", True, "Schema 'too many states' error", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
-                    # Reset accumulators for retry
-                    accumulated_content = []
-                    accumulated_thoughts = []
-                    accumulated_tool_calls = {}
-                    accumulated_usage = None
-                    first_thought_signature = None
-                    loop_detector.reset()
-                    progress_tracker.reset()
                     continue
                 
                 # Handle 500 INTERNAL errors (transient Google infrastructure issues)
@@ -1223,14 +1203,6 @@ class GeminiSDKClient(LLMClient):
                     await report_status(f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
                     await self._notify_retry("gemini_sdk", self.model, "", True, "Server error (500 INTERNAL)", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
-                    # Reset accumulators for retry
-                    accumulated_content = []
-                    accumulated_thoughts = []
-                    accumulated_tool_calls = {}
-                    accumulated_usage = None
-                    first_thought_signature = None
-                    loop_detector.reset()
-                    progress_tracker.reset()
                     continue
                 
                 # Handle 400 INVALID_ARGUMENT that may be caused by mode=ANY after MALFORMED_FUNCTION_CALL
@@ -1258,17 +1230,14 @@ class GeminiSDKClient(LLMClient):
                     await report_status(f"Mode=ANY failed, retry without: {self.model}")
                     await self._notify_retry("gemini_sdk", self.model, "", True, "400 INVALID_ARGUMENT (mode=ANY)", attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
-                    # Reset accumulators AND disable mode=ANY for next retry
-                    accumulated_content = []
-                    accumulated_thoughts = []
-                    accumulated_tool_calls = {}
-                    accumulated_usage = None
-                    first_thought_signature = None
-                    loop_detector.reset()
-                    progress_tracker.reset()
                     got_malformed_function_call = False  # Disable mode=ANY for next retry
                     continue
                 
+                if is_refusal(e):
+                    # A refusal a retry does not change: at once to the fallback.
+                    await report_status(f"Refused: {self.model}")
+                    raise_after_retries(e, "gemini_sdk", self.model, f"Gemini SDK streaming failed: {e}")
+
                 logger.error(f"[GeminiSDK] Streaming error: {e}", exc_info=True)
                 
                 if attempt < self.max_retries:
@@ -1280,18 +1249,10 @@ class GeminiSDKClient(LLMClient):
                     await report_status(f"Error, retry {attempt + 1}/{self.max_retries}: {self.model}")
                     await self._notify_retry("gemini_sdk", self.model, "", True, str(e), attempt, self.max_retries + 1)
                     await self._cancellable_sleep(wait_time, cancellation_token)
-                    # Reset accumulators for retry
-                    accumulated_content = []
-                    accumulated_thoughts = []
-                    accumulated_tool_calls = {}
-                    accumulated_usage = None
-                    first_thought_signature = None
-                    loop_detector.reset()
-                    progress_tracker.reset()
                     continue
                 else:
                     await report_status(f"Failed after retries: {self.model}")
-                    raise Exception(f"Gemini SDK streaming failed: {str(e)}") from e
+                    raise_after_retries(e, "gemini_sdk", self.model, f"Gemini SDK streaming failed: {e}")
         
         # If we get here, all retries failed
         if last_exception:
@@ -1315,7 +1276,17 @@ class GeminiSDKClient(LLMClient):
         {"assistant": {...}, "usage": {...}}
         """
         self._require_response_format(response_format)
-        # Status reporting helper
+        end = RequestEnd(self, "gemini_sdk", is_streaming=False)
+        try:
+            return await self._request(messages, tools, cancellation_token, status_scope,
+                                       response_format, end)
+        except BaseException as error:
+            await end.fail(error)
+            raise
+
+    async def _request(self, messages, tools, cancellation_token, status_scope,
+                       response_format, end: RequestEnd) -> Dict[str, Any]:
+# Status reporting helper
         async def report_status(message: str) -> None:
             if status_scope is None:
                 return
@@ -1332,22 +1303,12 @@ class GeminiSDKClient(LLMClient):
         system_instruction, contents = self._convert_messages_to_sdk(filtered_messages)
         sdk_tools = self._convert_tools_to_sdk(tools)
         
-        # Notify pre-request hook (LLM-client level)
-        import time as _time
-        await self._notify_pre_request({
-            "provider": "gemini_sdk",
-            "model": self.model,
-            "url": "",
-            "payload": {
-                "contents_count": len(contents),
-                "has_tools": sdk_tools is not None,
-                "has_system": system_instruction is not None,
-            },
-            "is_streaming": False,
-            "timestamp_ms": _time.time() * 1000,
+        await end.start("", {
+            "contents_count": len(contents),
+            "has_tools": sdk_tools is not None,
+            "has_system": system_instruction is not None,
         })
-        _request_start = _time.time()
-        
+
         last_exception = None
         _effective_max = max(self.max_retries, self.rate_limit_max_retries)
         for attempt in range(_effective_max + 1):
@@ -1388,20 +1349,17 @@ class GeminiSDKClient(LLMClient):
                     cancellation_token
                 )
                 
-                # Extract response
-                if not response.candidates:
-                    return {
-                        "assistant": {"role": "assistant", "content": ""},
-                        "usage": {}
-                    }
-                
+                usage = self._extract_usage(getattr(response, 'usage_metadata', None))
+                # An answer without content (a blocked prompt, an empty
+                # candidate) is reported too, or the debugger shows a request
+                # without one.
+                if not response.candidates or not response.candidates[0].content \
+                        or not response.candidates[0].content.parts:
+                    await end.report(usage=usage, finish_reason=None)
+                    return {"assistant": {"role": "assistant", "content": ""}, "usage": usage}
+
                 candidate = response.candidates[0]
-                if not candidate.content or not candidate.content.parts:
-                    return {
-                        "assistant": {"role": "assistant", "content": ""},
-                        "usage": self._extract_usage(getattr(response, 'usage_metadata', None))
-                    }
-                
+
                 # Build assistant message
                 assistant = {"role": "assistant", "content": ""}
                 tool_calls = []
@@ -1466,19 +1424,8 @@ class GeminiSDKClient(LLMClient):
                 if tool_calls:
                     assistant["tool_calls"] = tool_calls
                 
-                # Extract usage
-                usage = self._extract_usage(getattr(response, 'usage_metadata', None))
-                
-                # Notify post-response hook with successful result
-                _duration_ms = (_time.time() - _request_start) * 1000
-                _finish = "tool_calls" if tool_calls else "stop"
-                await self._notify_post_response({
-                    "provider": "gemini_sdk", "model": self.model, "url": "",
-                    "is_streaming": False, "duration_ms": _duration_ms,
-                    "usage": usage, "finish_reason": _finish,
-                    "timestamp_ms": _time.time() * 1000,
-                })
-                
+                await end.report(usage=usage, finish_reason="tool_calls" if tool_calls else "stop")
+
                 return {"assistant": assistant, "usage": usage}
                 
             except asyncio.CancelledError:
@@ -1537,6 +1484,11 @@ class GeminiSDKClient(LLMClient):
                     await self._cancellable_sleep(wait_time, cancellation_token)
                     continue
                 
+                if is_refusal(e):
+                    # A refusal a retry does not change: at once to the fallback.
+                    await report_status(f"Refused: {self.model}")
+                    raise_after_retries(e, "gemini_sdk", self.model, f"Gemini SDK request failed: {e}")
+
                 logger.error(f"[GeminiSDK] Request error: {e}", exc_info=True)
                 
                 if attempt < self.max_retries:
@@ -1551,7 +1503,7 @@ class GeminiSDKClient(LLMClient):
                     continue
                 else:
                     await report_status(f"Request failed after {self.max_retries + 1} attempts: {self.model}")
-                    raise Exception(f"Gemini SDK request failed: {str(e)}") from e
+                    raise_after_retries(e, "gemini_sdk", self.model, f"Gemini SDK request failed: {e}")
         
         # If we get here, all retries failed
         await report_status(f"Failed after {self.max_retries + 1} attempts: {self.model}")

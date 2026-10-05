@@ -162,7 +162,9 @@ class Skill:
     def list_files(self) -> List[str]:
         """Bundled files as skill-relative POSIX paths, sorted.
 
-        A leftover legacy manifest is omitted — it is plumbing, not knowledge.
+        A leftover legacy manifest is omitted — it is plumbing, not knowledge —
+        and so are hidden and ``__pycache__`` folders and files: bytecode is no
+        text to read.
         """
         root = self.path.resolve()
         out = []
@@ -170,9 +172,12 @@ class Skill:
             if not p.is_file() or p.name == LEGACY_MANIFEST_NAME:
                 continue
             try:
-                out.append(p.resolve().relative_to(root).as_posix())
+                rel = p.resolve().relative_to(root)
             except ValueError:  # pragma: no cover - symlink escaping the bundle
                 continue
+            if any(part.startswith(".") or part == "__pycache__" for part in rel.parts):
+                continue
+            out.append(rel.as_posix())
         # Sort the resulting strings, not the Path objects: Path ordering is
         # case-insensitive on Windows and case-sensitive elsewhere, which would
         # make this list platform-dependent.

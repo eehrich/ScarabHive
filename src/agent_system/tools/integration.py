@@ -191,13 +191,15 @@ class ToolServerIntegration:
             # The instance's own hook default lives in its MERGED server
             # config (raw and merged differ; agents get the merged form).
             # Guarded: one server whose merge does not validate must not
-            # take down startup -- it just registers on schema defaults.
+            # take down startup -- it registers on the default it was built with.
             try:
                 server_cfg = get_tool_server_config(server_name, config)
-                instance_hook_config = getattr(server_cfg, 'hook_config', None) if server_cfg else None
             except Exception:
                 logger.debug("No merged config for '%s'", server_name, exc_info=True)
-                instance_hook_config = None
+                server_cfg = None
+            # Not in this config: the one the instance was built with (PluginToolRegistry keeps its hook_config).
+            instance_hook_config = (getattr(server_cfg, 'hook_config', None) if server_cfg
+                                    else getattr(server, 'instance_hook_config', None))
 
             try:
                 registered_hooks = await register_plugin_hooks(
@@ -279,6 +281,11 @@ class ToolServerIntegration:
                 }
                 for name, server in self.configured_external_servers.items()
             },
+            # The connected set, taken BEFORE the listing: a server connected
+            # while this listing runs (connect: on_demand, from another run)
+            # would otherwise be frozen out -- this cache has no TTL, and the
+            # listing's set() would land after the connect's invalidate().
+            "connected": sorted(self.list_external_clients()),
             "plugins": self.plugin_registry.list_servers()
         }
         config_hash = self._tool_cache.compute_config_hash(cache_config)
@@ -309,9 +316,9 @@ class ToolServerIntegration:
                 for tool in tools
             ]
 
-        # Get tools from external servers. The client plugin already marks
-        # blocked tools (marked, not removed -- the permission layer above
-        # decides), so this half is a straight hand-through now.
+        # Get tools from external servers. The client plugin leaves blocked
+        # tools out (its management tool still lists them), so this half is a
+        # straight hand-through.
         provider = self.external_provider
         if provider is not None:
             try:

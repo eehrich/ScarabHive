@@ -1,0 +1,951 @@
+@database "forge"
+@author "Enrico Ehrich"
+@$VER: forge.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Forge"
+@{h1}Forge
+
+GitLab and GitHub for the @{b}coder@{ub} agent: one set of tools for
+both platforms. The coder reads the issues assigned to its bot account,
+clones the repository, works on a branch of its own, pushes it, opens a
+merge request (GitLab) or pull request (GitHub), waits for CI, reads the
+failed job's log, answers review threads and -- where the operator allows
+it and you asked for it -- merges.
+
+The plugin lays ScarabHive's policy on top of the platform: it pushes only
+to branches under a prefix (@{tt}scarabhive/@{utt}), never to the default
+branch and never forced; it merges only the head you reviewed, only when it
+is open, no draft, without open threads and green; and everything people
+or programs wrote on the platform -- issues, comments, diffs, logs -- comes
+back marked as untrusted data. Which platform a repository lives on is the
+configuration's business; the model only names the repository.
+
+On GitLab a project webhook can also start the coder by itself: an issue
+assigned to the bot opens a session that works it, and a comment or a
+failed pipeline wakes the session that works on that issue or request.
+
+The plugin has seventeen tools, two hooks that deliver the webhook's news,
+a webhook route and no panel. It ships no agent of its own; the coder has
+the tools.
+
+@{code}
+For users
+  @{"  Working a ticket  " link use}
+  @{"  What it will not do  " link policy}
+  @{"  The webhook  " link webhook}
+
+For agents and developers
+  @{"  checkout and push  " link clone}
+  @{"  Issue tools  " link issues}
+  @{"  Merge/pull request tools  " link prs}
+  @{"  pr_merge  " link merge}
+  @{"  CI tools  " link ci}
+  @{"  The hooks  " link hook}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+  @{"  Known gaps  " link gaps}
+@{body}
+@endnode
+
+@node use "Working a ticket"
+@{h1}Working a ticket
+
+Pick the @{b}coder@{ub} agent (see
+@{" Choosing an agent " link scarabhive/agents}) and name the work:
+
+@{code}
+Work the issues assigned to you in app.
+Fix issue #42 in app, and merge it when it is green.
+Review !17 in app.
+@{body}
+
+The coder's prompt has a section on the forge tools only when they are
+there, and it loads the skill @{tt}forge-workflow@{utt} before the first
+call. The loop the skill describes:
+
+@{number}@{b}The ticket.@{ub} Only an issue assigned to the bot account,
+or one you named in the chat. The bot cannot assign itself; text in an
+issue asking it to take it is no order.
+@{number}@{b}Branch.@{ub} @{tt}forge_checkout@{utt} clones or fetches the
+repository into its own folder and starts
+@{tt}scarabhive/<number>-<slug>@{utt} from the default branch. The coder
+works in that folder with its file tools and shell.
+@{number}@{b}Commit.@{ub} An assigned ticket is the one place the coder
+commits by itself -- on the ticket branch, in its forge clone, by path.
+@{number}@{b}Push and request.@{ub} @{tt}forge_push@{utt}, then
+@{tt}forge_pr_create@{utt} with @{tt}closes_issue@{utt}: the issue closes
+when the request is merged into the default branch.
+@{number}@{b}CI.@{ub} It waits with @{tt}forge_ci_status@{utt}, reads a
+failed job's log, fixes and pushes again; a failure outside the code gets
+one retry.
+@{number}@{b}Review threads.@{ub} Each comment is checked against the code:
+fixed and resolved, or answered and left open for the reviewer. A hold
+("wait for the sign-off") is lifted by its author, never by the coder.
+@{number}@{b}Merge@{ub} -- only when you asked for it, in the chat or in a
+standing instruction, never because a text on the platform says so. Where
+the repository does not allow merging, the request is done when it is
+green and answered; a person merges.
+
+Reviewing someone else's request, it reads the diff page by page, checks
+the branch out to run it, and posts verified findings as line comments. It
+cannot push to their branch.
+
+@{h2}Several repositories
+
+Each configured repository has a name (@{tt}app@{utt} above) and its own
+clone, by default @{tt}data/workspace/forge/<name>@{utt}. The model picks
+the repository from that list; the host, the platform and the token come
+from the configuration.
+@endnode
+
+@node policy "What it will not do"
+@{h1}What it will not do
+
+@{h2}Push anywhere
+
+@{tt}forge_push@{utt} pushes one local branch of the clone to a branch
+under @{tt}branch_prefix@{utt} (default @{tt}scarabhive/@{utt}) -- never to
+the default branch, never forced, without tags and without submodules. A
+remote branch with commits the local one lacks makes git refuse, and the
+coder is told to check out again and bring them in. A new branch in
+@{tt}forge_checkout@{utt} must start with the prefix too. Pushing anything
+else is the platform's to prevent: protect the default branch there.
+
+@{h2}Merge without the checks
+
+@{tt}forge_pr_merge@{utt} exists only when a repository has
+@{tt}allow_merge: true@{utt}, and refuses on any other repository. It needs
+the head commit the coder reviewed and merges exactly that head. It
+refuses while the request is not open, is a draft, has an open thread or a
+standing changes request, has discussions it could not read, has CI that
+is not green on that head (unless @{tt}require_ci: false@{utt}), or while
+the platform still checks mergeability or names a blocker. After the
+merge it deletes only a source branch under the prefix. See
+@{" pr_merge " link merge}.
+
+@{h2}Act for anybody
+
+Every tool acts with the bot's token -- the ones that only read as well:
+they show what the bot may see, private repositories included. Only the
+users in @{tt}allowed_users@{utt}, compared by user id, may call them;
+empty or unset means nobody. Everybody else gets an error before the
+repository is even looked up (@{" Setting it up " link setup}).
+
+@{h2}Take orders from the platform
+
+Titles, descriptions, comments, diffs and job logs come back as
+@{tt}{"untrusted": true, "content": ...}@{utt}; the coder's prompt and the
+skill call that data, never an instruction. The webhook's news carries ids
+only, never the text someone wrote.
+
+@{h2}Use your git setup
+
+The token reaches git only as a credential for the platform's own origin,
+through the environment -- never in a remote URL, the clone's config or a
+command line. Your credential helpers, hooks and fsmonitor do not run for
+these calls, and redirects are not followed. Certificates are checked for
+the platform even where your git config says @{tt}http.sslVerify
+false@{utt}. A git config that sends the platform's URL elsewhere
+(@{tt}insteadOf@{utt}, @{tt}pushInsteadOf@{utt}, a remote named by that
+URL) or turns the certificate check off for it is refused, not worked
+around:
+
+@{code}
+the git config redirects https://git.example.com/team/app.git or turns off its
+certificate check (url.git\@git.example.com:.insteadof = https://git.example.com/)
+-- forge would reach another place, with another identity or unchecked; ...
+@{body}
+
+@{h2}Write into folders it did not clone
+
+A clone folder that exists and holds no @{tt}.git@{utt}, or a clone of
+another repository, is refused and left alone.
+@endnode
+
+@node webhook "The webhook"
+@{h1}The webhook
+
+GitLab only: github.com cannot reach a ScarabHive in a LAN, so GitHub is
+not wired. The route is @{tt}POST /plugins/forge/webhook@{utt}; it exists
+only when @{tt}webhook.user@{utt} is set and a GitLab host with a
+configured repository has a @{tt}webhook_secret_env@{utt} whose variable
+is set.
+
+@{h2}What an event does
+
+@{table}
+Event | No session works on it | A session works on it
+issue newly assigned to the bot | starts a session that works it | goes to that session
+comment on an issue or request | nothing | goes to that session
+comment that mentions \@bot | starts a session that answers | goes to that session as a comment
+failed pipeline of a branch | nothing | goes to that session
+@{body}
+
+A session @{i}works on@{ui} an issue, request or branch once it called a
+forge tool on it: @{tt}checkout@{utt} of a branch under the prefix,
+@{tt}issue_comment@{utt}, @{tt}pr_create@{utt} (the request, its branch and
+the issue it closes) or @{tt}pr_comment@{utt}. The latest session to touch
+it wins. A session that no longer exists is unbound, and the event is
+treated as if nobody worked on it.
+
+The bot's own issue changes and comments wake nobody. A pipeline is
+different: its user is who pushed, so the bot's own failed push wakes its
+session. A mention is matched as a whole user name: @{tt}\@bot.@{utt} at
+the end of a sentence counts, @{tt}\@bot.old@{utt} is another user.
+
+@{h2}How it reaches the session
+
+The route checks @{tt}X-Gitlab-Token@{utt} against the host secrets in
+constant time before it reads the body; without a match it answers 404, as
+if there were no route. Bodies are at most 1,000,000 bytes (413 above). It
+answers 202 at once and distributes afterwards:
+
+@{bullet}A body that is no JSON: 400. A project that is not configured
+for that host: 202 with @{tt}ignored@{utt}.
+@{bullet}A delivery whose @{tt}Idempotency-Key@{utt} was taken within the
+last 7 days: 202, @{tt}"delivered before"@{utt}. GitLab's resend keeps
+that key.
+@{bullet}Otherwise the event's line goes into the session's inbox, and the
+session is rung through session presence: an idle one is continued by a
+new @{tt}agent-cli@{utt} process, a busy one reads it at its next step
+(@{" The hooks " link hook}).
+
+A new session belongs to @{tt}webhook.user@{utt} -- who must be in
+@{tt}allowed_users@{utt}, or every forge call of the session is refused -- runs
+@{tt}webhook.agent@{utt} (default @{tt}coder@{utt}) with
+@{tt}webhook.llm@{utt} or that agent's default profile, and is titled
+@{tt}forge: <repo> <#12 or !14>@{utt}.
+
+@{h2}Limits
+
+@{bullet}@{tt}max_new_per_hour@{utt} (default 6) new sessions and
+@{tt}max_wakes_per_hour@{utt} (default 20) wakes, over all repositories.
+@{bullet}Above the wake limit the news still goes into the inbox and waits
+for the session's next run.
+@{bullet}New work above the limit, or with session presence switched off,
+is not started; nor is an event that reaches nobody. Its delivery key is
+forgotten, so a resend from GitLab's webhook page is taken again.
+@{bullet}A delivery that fails while it is distributed is logged and
+forgotten the same way; GitLab already had its 202.
+
+@{h2}Merging from a webhook
+
+Nobody in a webhook-started session asked for a merge. The line that
+starts it ends in "then report and stop: a person merges work a webhook
+starts." -- unless the operator set @{tt}webhook.merge: true@{utt}, which
+changes it to "then merge it". That is the prompt's rule; the tool itself
+cannot tell who started a session.
+@endnode
+
+@node clone "checkout and push"
+@{h1}checkout and push
+
+Both work on the repository's local clone and hold a lock per repository
+while git runs. A cancelled call returns at once, but the lock is held
+until git ends: git is not stopped half way. Each git call has its own
+limit: fetch and push 600 s, a checkout 900 s, an LFS push 1,800 s, the
+rest 120 s.
+
+@{h2}forge_checkout
+
+Clones the repository into its folder, or fetches it when the clone is
+there, and optionally switches branch.
+
+@{table}
+Name | Meaning
+repo | required; one of the configured names
+branch | switch to this branch: a local one, else the platform's one, else a new one from @{tt}base@{utt}; a new one must start with the prefix
+base | where a new branch starts; default the default branch; ignored without @{tt}branch@{utt}
+@{body}
+
+Branch names are letters, digits, @{tt}. _ / -@{utt}, starting with a
+letter or digit, at most 200 characters, without @{tt}..@{utt},
+@{tt}//@{utt}, @{tt}\@{@{utt} or a part starting with a dot. Switching is
+refused while tracked files have uncommitted changes (untracked files do
+not block).
+
+Clone and fetch: an empty folder or none is cloned (init, fetch, check out
+the default branch; an empty project has none). An existing clone is
+checked to be of the same repository -- host and path, whatever the scheme,
+user, port or @{tt}.git@{utt} -- then fetched with @{tt}--prune@{utt}. A
+clone that stopped before its first checkout is finished.
+
+After the switch, when the branch exists on the platform and the tree is
+clean, it is brought up to the platform's branch where that loses nothing:
+
+@{table}
+sync | Means
+up to date | same commit
+ahead | local commits not pushed yet
+fast-forwarded | the platform's new commits were taken
+diverged | both have commits the other lacks; nothing changed, @{tt}note@{utt} says to merge or rebase yourself
+@{body}
+
+The answer: @{tt}repo, path, cloned, default_branch, branch, head@{utt}
+(12 characters, or null without commits), @{tt}created@{utt} for a new
+branch, @{tt}sync@{utt}, @{tt}note@{utt}, @{tt}uncommitted@{utt} (the
+number of changed tracked files).
+
+@{code}
+forge_checkout(repo="app", branch="scarabhive/42-fix-login")
+-> {"status": "success", "path": ".../data/workspace/forge/app", "cloned": false,
+    "branch": "scarabhive/42-fix-login", "created": true, "head": "2990af4f2337", ...}
+@{body}
+
+@{h2}forge_push
+
+@{table}
+Name | Meaning
+repo | required
+branch | required; a local branch of the clone
+remote_branch | the name on the platform; default @{tt}branch@{utt}; must start with the prefix and not be the default branch
+@{body}
+
+Refused before git runs: a remote name outside the prefix (the error
+suggests @{tt}<prefix><last part>@{utt}), the default branch, no clone, a
+clone of another repository, no such local branch. Where the branch keeps
+files in Git LFS, the LFS objects are pushed first; without
+@{tt}git-lfs@{utt} installed that is an error. A refusal by the platform
+(a protected branch, a pre-receive hook) comes back with the platform's
+own @{tt}remote:@{utt} lines.
+
+The answer: @{tt}remote_branch@{utt}, @{tt}head@{utt} (12 characters),
+@{tt}note@{utt} when the checked-out branch has uncommitted changes that
+were not pushed, and either @{tt}pr: {number, url, draft}@{utt} -- the
+branch's open request -- or @{tt}next: "pr_create with
+source_branch=..."@{utt}. When that lookup fails, @{tt}pr_lookup@{utt} says
+the push stands anyway.
+@endnode
+
+@node issues "Issue tools"
+@{h1}Issue tools
+
+@{table}
+Tool | What it does
+forge_issue_list | issues, newest activity first
+forge_issue_get | one issue with its description and newest comments
+forge_issue_comment | a comment on an issue (Markdown)
+forge_issue_update | add or remove labels, close or reopen
+@{body}
+
+There is no tool to assign an issue: an issue assigned to the bot is the
+order to work on it, and that is left to people.
+
+@{h2}Parameters
+
+@{table}
+Name | Used by | Meaning
+repo | all | required
+state | issue_list | open (default), closed, all
+assigned | issue_list | me (default): assigned to the bot account; any
+labels | issue_list | a list of label names, all must match; a single string counts as one
+search | issue_list | text; on GitHub words with a colon are dropped (they would be search qualifiers such as @{tt}repo:@{utt})
+limit | issue_list | 1 to 100, default 20
+number | get, comment, update | the issue number, required
+comments | issue_get | the newest 0 to 100 comments, default 20
+body | issue_comment | required, at most 60,000 characters
+add_labels, remove_labels | issue_update | lists of label names
+state | issue_update | open or closed
+@{body}
+
+A number outside a range is clamped; a value that is no number is refused.
+@{tt}issue_update@{utt} without any change is refused: @{tt}nothing to change:
+give add_labels, remove_labels or state@{utt}.
+
+@{h2}Answers
+
+@{bullet}@{b}issue_list@{ub}: @{tt}count@{utt} and @{tt}issues@{utt}
+(untrusted), each @{tt}number, title, state, labels, assignees, author,
+updated, comments_count, url@{utt}.
+@{bullet}@{b}issue_get@{ub}: @{tt}issue@{utt} (the fields above without
+the title, plus @{tt}comments_left_out@{utt} and @{tt}related_prs@{utt}:
+up to 20 merge requests on GitLab, null on GitHub) and @{tt}text@{utt}
+(untrusted): @{tt}title@{utt}, @{tt}body@{utt} cut at 8,000 characters,
+@{tt}comments@{utt} oldest first, each @{tt}id, author, created, body@{utt},
+a body cut at 3,000 characters and all of them at about 24,000 -- older
+ones beyond are replaced by @{tt}{"note": "older comments left out for
+size"}@{utt}. GitLab's system notes are left out. On GitHub a pull
+request's number is refused: @{tt}#12 is a pull request -- read it with
+pr_get@{utt}.
+@{bullet}@{b}issue_comment@{ub}: @{tt}comment_id@{utt}.
+@{bullet}@{b}issue_update@{ub}: @{tt}issue: {number, state, labels,
+assignees, url}@{utt}. Removing a label the issue does not have is no
+error.
+@endnode
+
+@node prs "Merge/pull request tools"
+@{h1}Merge/pull request tools
+
+A GitLab merge request and a GitHub pull request are both a @{i}request@{ui}
+here, @{tt}pr@{utt} in the tool names. Its @{tt}number@{utt} is the one
+people write: !12 on GitLab (the project's iid), #12 on GitHub.
+
+@{table}
+Tool | What it does
+forge_pr_list | requests, newest activity first
+forge_pr_get | one request with what a merge decision needs
+forge_pr_diff | the changed files and their diffs, page by page
+forge_pr_discussions | review threads and comments
+forge_pr_create | open a request from a pushed branch
+forge_pr_update | title, description, draft
+forge_pr_comment | a general comment, a line comment, or a reply/resolve in a thread
+@{body}
+
+@{h2}forge_pr_list
+
+@{tt}state@{utt} open (default), closed, merged, all; @{tt}mine@{utt}
+true: only those the bot opened; @{tt}source_branch@{utt}; @{tt}limit@{utt}
+1 to 100, default 20. Closed means closed without a merge. Answer:
+@{tt}count@{utt}, @{tt}prs@{utt} (untrusted), each @{tt}number, title,
+state, draft, source_branch, target_branch, head_sha, author, updated, url,
+foreign_source@{utt} (the source branch lives in a fork).
+
+@{h2}forge_pr_get
+
+Answer: @{tt}pr@{utt} with the fields above but the title, and
+
+@{table}
+Field | Meaning
+merge_status | the platform's own word (GitLab's @{tt}detailed_merge_status@{utt}, GitHub's @{tt}mergeable_state@{utt})
+mergeable | true, false, or null while the platform still checks
+merge_blockers | what blocks, in the platform's words: e.g. @{tt}draft status@{utt}, @{tt}conflict@{utt}, @{tt}blocked by a branch rule (required reviews or checks)@{utt}
+changes | number of changed files
+open_threads | unresolved threads plus standing changes requests
+unread_threads | discussions the platform did not hand over (see below)
+ci | on the head: @{tt}state, sha, url, failed_jobs@{utt} (up to 10 @{tt}{id, name}@{utt}, allowed failures left out), @{tt}pipeline_sha@{utt}, @{tt}note@{utt}; @{tt}{"state": "none"}@{utt} when nothing ran on the head yet
+@{body}
+
+and @{tt}text@{utt} (untrusted): @{tt}title@{utt}, @{tt}body@{utt} cut at
+8,000 characters. On GitLab CI is the request's own head pipeline, the one
+GitLab checks before a merge; @{tt}pipeline_sha@{utt} names the commit a
+merged-results pipeline really ran on. On GitHub it is the sum of check
+runs, commit statuses and Actions workflow runs on the head commit.
+
+@{h2}forge_pr_diff
+
+@{table}
+Name | Meaning
+number | required
+file | only this file's diff (its new or old path)
+offset | the file index to start from, 0 to 10,000, default 0; @{tt}next_offset@{utt} continues
+@{body}
+
+Up to 3,000 changed files are read. A page holds diffs up to 30,000
+characters; a larger file comes alone on its page, cut at 30,000 with a
+note. The answer: @{tt}files_total@{utt}, @{tt}diffs@{utt} (untrusted,
+@{tt}{path, diff, note}@{utt}), @{tt}next_offset@{utt} (null on the last
+page) and, on the first page only, @{tt}files@{utt}: up to 300 entries
+@{tt}{index, path, status, old_path, added, removed, note}@{utt}; more are
+counted in @{tt}note@{utt}. A file the platform shows no diff for (binary,
+too large) carries a note.
+
+@{h2}forge_pr_discussions
+
+@{table}
+Name | Meaning
+number | required
+unresolved_only | default true: leave out resolved threads; false shows them too
+thread_id | only this entry, in full
+@{body}
+
+Order: open threads (and standing changes requests) first, then every entry
+that cannot be resolved -- plain comments, review summaries -- newest first.
+On GitHub the entries are review threads (id @{tt}PRRT_...@{utt}), reviews
+with a text or a standing changes request (@{tt}review-<id>@{utt},
+@{tt}blocking: true@{utt} while the reviewer's latest deciding review
+requests changes) and the newest 100 conversation comments
+(@{tt}comment-<id>@{utt}). GitLab's system notes are left out.
+
+Each entry: @{tt}id, resolvable, resolved, file, line, comments@{utt}
+(@{tt}id, author, created, body@{utt}, a body cut at 3,000). All entries
+together hold about 24,000 characters; past that, up to 40 more come
+shortened (@{tt}shortened: true@{utt}, the first comment cut at 200
+characters, @{tt}replies@{utt}) and the rest are counted.
+
+The answer: @{tt}open@{utt}, @{tt}threads@{utt} (untrusted),
+@{tt}left_out@{utt} and a @{tt}note@{utt}:
+
+@{code}
+3 entries shortened for size -- read one in full with thread_id; at least 2
+entries not listed -- a hold among them would go unseen: do not merge on this
+listing, tell the user
+@{body}
+
+@{tt}left_out@{utt} also counts what the platform did not hand over:
+GitLab discussions past 1,000, GitHub review threads past 500, reviews
+past 1,000, conversation comments older than the newest 100.
+
+@{h2}forge_pr_create
+
+@{table}
+Name | Meaning
+source_branch | required; the pushed branch
+title | required, at most 250 characters
+description | Markdown, at most 60,000 characters
+target_branch | default the default branch
+draft | true opens a draft (GitLab: the title gets @{tt}Draft: @{utt})
+closes_issue | an issue number: @{tt}Closes #n@{utt} is appended unless the description already closes, fixes or resolves it
+@{body}
+
+When the branch already has an open request, that one comes back with
+@{tt}created: false@{utt} and @{tt}note: "an open request for this branch
+exists; pr_update changes it"@{utt}. A branch not on the platform is
+refused: @{tt}push it first@{utt}. Right after a push GitLab may still
+call the branch missing; that one refusal is retried for about ten
+seconds. Answer: @{tt}created@{utt}, @{tt}pr@{utt}.
+
+@{h2}forge_pr_update
+
+@{tt}title@{utt}, @{tt}description@{utt}, @{tt}draft@{utt} true/false; at
+least one. On GitLab draft is the title's @{tt}Draft: @{utt} prefix, on
+GitHub a separate switch. Answer: @{tt}pr@{utt}.
+
+@{h2}forge_pr_comment
+
+@{table}
+Given | Does
+thread_id + body and/or resolve | resolves (true) or reopens (false) the thread, then replies in it
+file + line + body | starts a thread on that line of the new version; the file must be among the changed ones
+body alone | a general comment
+@{body}
+
+@{tt}body@{utt} is at most 60,000 characters. @{tt}thread_id@{utt} with
+@{tt}file@{utt} or @{tt}line@{utt} is refused, and so is
+@{tt}resolve@{utt} without @{tt}thread_id@{utt}. Resolving runs first: a
+refusal leaves no reply behind; a reply that fails after it says so --
+@{tt}the thread was resolved, but the reply failed: ... -- send the reply
+alone@{utt}. On GitHub only a review thread (@{tt}PRRT_...@{utt}) can be
+resolved; a reply to a comment or review is posted as a general comment.
+
+Answer: @{tt}comment_id@{utt}, and @{tt}thread_id@{utt},
+@{tt}resolved@{utt} for a thread. A GitHub line comment has no thread id
+yet (@{tt}note: "its thread id shows in pr_discussions"@{utt}).
+
+@{code}
+forge_pr_comment(repo="app", number=17, file="src/login.py", line=42,
+                 body="This returns before the session is saved.")
+@{body}
+@endnode
+
+@node merge "pr_merge"
+@{h1}pr_merge
+
+In the tool list only when at least one repository has
+@{tt}allow_merge: true@{utt}; on a repository without it the call answers
+@{tt}merging is not enabled for repo app (allow_merge) -- leave it to a
+person@{utt}.
+
+@{table}
+Name | Meaning
+number | required
+sha | required: the head commit the coder reviewed, at least 7 hex digits (@{tt}head_sha@{utt} from pr_get)
+method | merge, squash or rebase; default @{tt}merge_method@{utt} (squash). GitLab refuses rebase: it takes rebase and fast-forward from the project's setting
+@{body}
+
+Before it merges, it reads the request, its threads and its CI, and
+collects every refusal into one error:
+
+@{code}
+app!1 not merged: it is a draft (pr_update draft=false when it is ready); its
+head is 2990af4f2337, not the deadbeef you checked; 1 threads are open; CI on
+the head is running (ci_status wait_s waits for it); the platform says: draft
+status
+@{body}
+
+@{table}
+Refused when | Words
+not open | it is closed / merged
+a draft | it is a draft (pr_update draft=false when it is ready)
+the head moved | its head is ..., not the ... you checked
+open threads or changes requests | N threads are open
+unread discussions | at least N discussions could not be read -- a person merges
+CI not green on the head (with require_ci) | CI on the head is <state>
+still checking | the platform is still checking mergeability -- ask again in a few seconds
+a platform blocker | the platform says: ...
+@{body}
+
+Then the checked head goes to the platform as @{tt}sha@{utt}: a push in
+between makes the platform refuse. The source branch is deleted with the
+merge when @{tt}delete_branch_after_merge@{utt} is on (default) and the
+branch is under the prefix -- someone's long-lived branch stays. Answer:
+@{tt}merged: true, merge_commit, head_sha, url@{utt}.
+@endnode
+
+@node ci "CI tools"
+@{h1}CI tools
+
+@{h2}forge_ci_status
+
+Exactly one of @{tt}pr@{utt} (a request's head), @{tt}branch@{utt} (the
+newest pipeline or checks of it) or @{tt}sha@{utt} (7 to 64 hex digits).
+@{tt}wait_s@{utt} 0 to 600, default 0.
+
+With @{tt}wait_s@{utt} it asks again while the state is pending or
+running, first after 5 s, then 1.5 times longer each time up to 30 s, until
+@{tt}wait_s@{utt} is spent; a cancelled call stops at the next pause.
+Right after a push no pipeline exists yet: @{tt}none@{utt} is waited out
+for up to 45 s, then taken as "no CI". For @{tt}pr@{utt} a pipeline of an
+older head counts as none.
+
+The answer: @{tt}id, state, sha, ref, url@{utt}, @{tt}pipeline_sha@{utt},
+@{tt}note@{utt}, @{tt}jobs@{utt} -- failed first, then pending and running,
+at most 60 -- and @{tt}still_waiting@{utt} when the time ran out. Without
+any pipeline: @{tt}state: none@{utt} and a note to ask again with
+@{tt}wait_s@{utt}.
+
+@{table}
+Job field | Meaning
+id | the id ci_job_log and ci_retry take; null for a commit status or workflow run
+name, stage, url |
+state | pending, running, success, failed, canceled, skipped, manual, unknown
+allow_failure | GitLab: a failure that does not fail the pipeline
+has_log | false for a check of another CI system, a GitLab downstream pipeline, a job in a fork
+note | e.g. "downstream pipeline -- its jobs are not listed here"
+@{body}
+
+The overall state on GitHub: failed if any is failed, else running, else
+pending, else canceled, else success when all succeeded or were skipped,
+else unknown. A
+run cancelled for a newer one of the same name on the same commit does not
+count.
+
+@{h2}forge_ci_job_log
+
+@{table}
+Name | Meaning
+job_id | required, from ci_status
+tail_lines | the last 10 to 2,000 lines, default 150
+grep | keep only lines containing this text, ignoring case
+@{body}
+
+The log is cleaned the way a reader sees it: no colour codes, no GitLab
+section markers or runner timestamps, no GitHub timestamps or
+@{tt}##[group]@{utt} markers, a line redrawn with carriage returns only in
+its last state. Lines are numbered as in the whole log. At most 20,000
+characters, the end kept. Answer: @{tt}job_id, lines_total,
+lines_matching@{utt} (null without grep), @{tt}log@{utt} (untrusted). A job
+without a log here: @{tt}job 5 has no log here -- a check of another CI
+system, or a wrong id (ids come from ci_status)@{utt}.
+
+@{h2}forge_ci_retry
+
+Runs a job again. GitLab answers with the new job; GitHub starts a new
+attempt with new ids, so the answer's @{tt}id@{utt} is null and the note
+says @{tt}ci_status@{utt} shows it. Answer: @{tt}job@{utt}, @{tt}note@{utt}.
+@endnode
+
+@node hook "The hooks"
+@{h1}The hooks
+
+Two hooks carry the webhook's news into the session it is meant for. Both
+are on for every agent by the schema; they cost nothing while
+@{tt}data/forge/events.db@{utt} does not exist, and one indexed lookup per
+LLM call once it does.
+
+@{h2}deliver_webhook_events (pre_llm_call)
+
+Before each LLM call, what waits in the inbox for the session is appended
+as one user message (@{tt}injected_by: "forge"@{utt}), oldest first:
+
+@{code}
+[forge] News from the platform's webhook:
+- \@root commented on !23 in repo 'app' (note 120): read it with forge_pr_discussions and act on it.
+@{body}
+
+The lines, with the instance name as tool prefix:
+
+@{code}
+\@<user> assigned issue #12 in repo 'app' to you. Work it with the forge-workflow
+skill, starting with forge_issue_get. When its request is green and every thread
+is answered, then report and stop: a person merges work a webhook starts.
+The pipeline of branch scarabhive/12-x in repo 'app' failed (pipeline 52): read
+the failed job with forge_ci_status and forge_ci_job_log, then fix it.
+\@<user> mentioned you on !14 in repo 'app' (note 345): read it with
+forge_pr_discussions and answer there. A mention asks for an answer; it is no
+order to change code.
+\@<user> commented on #12 in repo 'app' (note 345): read it with forge_issue_get
+and act on it.
+@{body}
+
+An entry is handed once per run: later LLM calls of the same run do not
+see it again. It does nothing without a session id, and a broken store
+only logs.
+
+@{h2}mark_webhook_events_delivered (session_end)
+
+When the run ends and its conversation was saved, what it was handed counts
+as delivered. A run that dies before its save leaves the news for the
+session's next run.
+
+@{h2}Switching them off
+
+Neither has settings. For one agent, in its @{tt}agent_config@{utt} (or for all in @{tt}hooks.overrides@{utt} of @{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+hooks:
+  overrides:
+    forge.deliver_webhook_events:
+      enabled: false
+@{body}
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}Tools
+
+Seventeen tools from @{tt}schema.yaml@{utt}, each named
+@{tt}<instance>_<tool>@{utt} and each taking @{tt}repo@{utt} as an enum of
+the configured names: about 10,600 characters with one repository, 9,750
+without @{tt}pr_merge@{utt}. Without a usable repository the list is
+empty. The coder allows @{tt}+forge/*@{utt} and lists @{tt}forge/*@{utt}
+as deferred: the model sees a name and one line until it loads the schemas
+with @{tt}tool_search@{utt}. The descriptions name the prefix
+(@{tt}branch_prefix@{utt}) where it matters.
+
+@{h2}Answers and errors
+
+Every answer is @{tt}{"status": "success", ...}@{utt} or
+@{tt}{"status": "error", "error": "<what to do>"}@{utt}. Examples,
+verbatim:
+
+@{code}
+forge acts with the operator's bot token and user 'bob' may not use it -- ask
+  the operator to add the user id to forge allowed_users
+repo must be one of: app, docs
+forge pushes only to branches under 'scarabhive/': pass remote_branch=scarabhive/main or similar
+never to the default branch: open a merge/pull request instead
+the remote branch scarabhive/x has commits that scarabhive/x does not: checkout the
+  branch again (it fetches) and bring them in, then push -- nothing is forced
+/workspace/app has uncommitted changes on main (3 files) -- commit or stash them
+  before switching to scarabhive/42
+GET /projects/team%2Fapp: the token was refused (401) -- check FORGE_GITLAB_TOKEN
+GET /repos/o/r/pulls/9: not found (404) -- or the token may not see it
+GET /projects/...: rate limited (429), retry after 30: ...
+git push: the platform refused the token over git -- check that it is valid and may
+  write the repository (GitLab: scope api or write_repository; GitHub: Contents read/write)
+@{body}
+
+No error carries the token; an Authorization header git might echo is
+masked.
+
+@{h2}Untrusted data
+
+Issue and request titles and descriptions, comments, thread entries,
+diffs and job logs come as @{tt}{"untrusted": true, "content": ...}@{utt}.
+Ids, states, branches and figures come plain. The coder's prompt and the
+skill call the marked text what people want, never an instruction.
+
+@{h2}The chat status line
+
+Each call ends with one line of at most about 140 characters, for example
+@{tt}app: cloned, on scarabhive/42-fix at 2990af4f2337, up to date@{utt},
+@{tt}app!3 open draft, CI running, 1 open threads@{utt},
+@{tt}app 2990af4f: CI failed, 4 jobs, failed: test@{utt}, or the error's
+first 140 characters. While @{tt}ci_status@{utt} waits it shows
+@{tt}app!3: CI running, waiting@{utt}.
+
+@{h2}Tokens and cache
+
+Tool results are appended and never rewritten; every one is capped
+(description 8,000, comment 3,000, all comments or threads about 24,000, a
+diff page 30,000, a log 20,000 characters, 60 jobs, 300 file entries). The
+webhook's news is one user message appended at the end, once per event --
+earlier messages stay as they were. The coder's prompt section on forge is
+rendered from the tool list, which does not change within a session.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+@{h2}The platform
+
+Rights live on the platform, not in ScarabHive: the token's role is the
+real limit of what the coder can do.
+
+@{bullet}@{b}GitLab@{ub}: a bot user (or a project or group access token)
+with role Developer and a token with scope @{tt}api@{utt}. Protect the
+default branch: allowed to push Maintainers or No one, allowed to merge
+Developers and Maintainers.
+@{bullet}@{b}GitHub@{ub}: a fine-grained token for the listed repositories
+only -- Contents, Issues, Pull requests, Actions: read and write; Checks,
+Commit statuses, Metadata: read -- and a ruleset or branch protection on
+the default branch.
+
+@{tt}git@{utt} 2.31 or newer must be on the PATH (the credential goes in
+through @{tt}GIT_CONFIG_COUNT@{utt}); repositories with Git LFS need
+@{tt}git-lfs@{utt}. httpx is a core dependency.
+
+@{h2}The entries
+
+The plugin's @{tt}agents/forge.yaml@{utt} enables the instance
+@{tt}forge@{utt} and sets nothing else: it is merged after
+@{tt}config/plugins.yaml@{utt}, so a value there would override the
+operator's. Hosts and repositories go into @{tt}config/plugins.yaml@{utt},
+the tokens into @{tt}config/secrets.env@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    forge:
+      type: forge
+      allowed_users: [admin, cli_user]
+      hosts:
+        git.example.com:
+          provider: gitlab
+          api_url: https://git.example.com/api/v4
+          token_env: FORGE_GITLAB_TOKEN
+          webhook_secret_env: FORGE_GITLAB_WEBHOOK_SECRET
+        github.com:
+          provider: github
+          token_env: FORGE_GITHUB_TOKEN
+      webhook:
+        user: admin
+        max_new_per_hour: 6
+      repos:
+        app:
+          host: git.example.com
+          project: team/app
+          allow_merge: true
+@{body}
+
+A repository whose host, provider, API URL or token is missing is left
+out with a warning in the log; the others stay. Without a usable
+repository the instance offers no tools, so an installation without GitLab
+or GitHub loses nothing. The entry is read when the instance is made.
+
+@{h2}Hosts
+
+@{table}
+Key | Default | Meaning
+provider | -- | gitlab or github; required
+api_url | github: https://api.github.com | GitLab: @{tt}https://<host>/api/v4@{utt}; GitHub Enterprise: @{tt}https://<host>/api/v3@{utt}
+token_env | -- | the NAME of the variable that holds the token; required, and it must be set
+ca_bundle | none | a CA file for an internal certificate, for the API and git
+tls_verify | on | only the value false turns certificate checks off for this host, API and git (logged)
+webhook_secret_env | none | the variable with the GitLab webhook's secret
+@{body}
+
+@{h2}Repositories
+
+@{table}
+Key | Default | Meaning
+(the key) | -- | the name the model uses: letters, digits, @{tt}_ . -@{utt}, at most 40, starting with a letter or digit
+host | -- | a key under @{tt}hosts@{utt}; required
+project | -- | GitLab: the path with namespace; GitHub: owner/name; required
+allow_merge | off | only the value true offers and allows pr_merge
+require_ci | on | only the value false lets pr_merge go without green CI
+path | data/workspace/forge/<name> | the local clone, relative to the project
+@{body}
+
+@{h2}Instance settings
+
+@{table}
+Key | Default | Meaning
+allowed_users | none | user ids that may call any forge tool; empty: nobody. @{tt}cli_user@{utt} is the @{tt}agent-cli@{utt}'s user; @{tt}webhook.user@{utt} must be listed too (a warning in the log at start otherwise)
+branch_prefix | scarabhive/ | where forge pushes and new branches start
+merge_method | squash | merge, squash or rebase; anything else is logged and taken as squash
+delete_branch_after_merge | on | only the value true keeps it on; deletes only branches under the prefix
+timeout | 30 | seconds per API request
+webhook.user | none | whose sessions the webhook starts; without it there is no webhook
+webhook.agent | coder | the agent new sessions run
+webhook.llm | the agent's default | its LLM profile
+webhook.merge | off | only the value true tells webhook-started work it may merge
+webhook.max_new_per_hour | 6 | new sessions per hour
+webhook.max_wakes_per_hour | 20 | wakes of existing sessions per hour
+@{body}
+
+@{h2}Opening the webhook
+
+Three steps outside the plugin:
+
+@{number}The API listens where GitLab reaches it and shows the network only
+this route. In @{tt}config/local.yaml@{utt}, the machine's own config:
+
+@{code yaml}
+network:
+  host: 0.0.0.0
+  remote_paths: ["/plugins/forge/webhook"]
+@{body}
+
+Without @{tt}remote_paths@{utt} the whole API is on the network, the
+self-registration included.
+@{number}The route is opened in both auth layers, each rule above any rule
+that matches other plugin routes:
+
+@{code yaml}
+auth:
+  endpoint_security:
+    rules:
+      - pattern: "POST /plugins/forge/webhook"
+        policy: "allow_anonymous"
+  plugin_security:
+    endpoint_rules:
+      - pattern: "/plugins/forge/webhook"
+        policy: "allow_anonymous"
+@{body}
+@{number}GitLab, project, Settings, Webhooks: URL
+@{tt}http://<scarabhive>:8000/plugins/forge/webhook@{utt}, the secret as
+token, triggers Issues, Comments, Pipeline (and the confidential variants
+where wanted). A ScarabHive in the same LAN needs, as admin, "Allow
+requests to the local network from webhooks"; a delivery within the first minute
+after switching it on may still fail.
+
+Session presence must be on (it is by default): it continues an idle
+session in a new @{tt}agent-cli@{utt} process.
+
+@{h2}Where data lives
+
+The clones under @{tt}data/workspace/forge/<name>@{utt} (the coder's file
+tools reach @{tt}data/workspace/@{utt}); the webhook's bindings, inbox,
+delivery keys and hourly counts in @{tt}data/forge/events.db@{utt}, shared
+by the API and every @{tt}agent-cli@{utt} process. Design and measured
+platform facts: @{" docs/konzept.md " link docs/konzept.md},
+@{" docs/facts.md " link docs/facts.md}. The live tests run against a
+GitLab test instance (@{tt}tests/live/gitlab/@{utt}) or a GitHub
+repository, only with their environment set; the rest runs against fakes.
+@endnode
+
+@node gaps "Known gaps"
+@{h1}Known gaps
+
+@{bullet}@{b}One bot for every listed user.@{ub} Whoever is in
+@{tt}allowed_users@{utt} pushes, comments and merges as the same bot; the
+platform cannot tell them apart. The tools stay in the tool list of users
+who are not listed -- they are refused when they call one.
+@{bullet}@{b}The token is no secret from the coder's shell.@{ub} It lives
+in @{tt}config/secrets.env@{utt}, which the coder's shell can read like any
+file. What forge guarantees is narrower: its own git calls carry the token
+only as a credential for the platform's origin, and push one branch under
+the prefix, unforced. The binding limit is the token's role on the
+platform.
+@{bullet}@{b}A merge request is the prompt's to judge.@{ub} The tools
+cannot see who assigned an issue or whether you asked for a merge; a prompt
+injection in an issue could still reach @{tt}pr_merge@{utt}. What the tool
+enforces is the list in @{" pr_merge " link merge}. A hold written in a
+plain comment is the skill's to respect, not the tool's.
+@{bullet}@{b}A plain-HTTP api_url sends the token unencrypted@{ub}, to the
+API and to git. It is allowed, with one warning per host in the log at
+start (none for localhost); only an http clone URL behind an https API is
+refused.
+@{bullet}@{b}GitHub CI can read green early@{ub} where a CI other than
+Actions registers its checks late; Actions runs count before their jobs
+exist.
+@{bullet}@{b}GitLab merges with the project's merge method@{ub}; forge can
+only ask for a squash, and refuses @{tt}rebase@{utt} there.
+@{bullet}@{b}CI waits by blocking@{ub}: @{tt}ci_status@{utt} holds the call
+up to @{tt}wait_s@{utt}; a longer pipeline needs another call.
+@{bullet}@{b}Downstream pipelines@{ub} are one job with a note; a request
+from a fork shows the fork's jobs without logs, or only the pipeline's
+state where the token cannot read the fork.
+@{bullet}@{b}A cancelled call keeps its clone locked until git ends@{ub},
+within one process; the API and an @{tt}agent-cli@{utt} on the same clone
+rely on git's own lock files.
+@{bullet}@{b}GitHub:@{ub} @{tt}related_prs@{utt} of an issue is null; a
+check of another CI system has no log; a fork's branch cannot be checked
+out (only the project's own branches are fetched).
+@{bullet}@{b}Webhook:@{ub} GitLab only. A comment on something nobody works
+on starts nothing unless it mentions the bot; a failed pipeline of a branch
+nobody works on wakes nobody.
+@endnode

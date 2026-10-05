@@ -285,17 +285,6 @@ class SchemaBasedPluginHook(PluginHook):
 
         return self._merge_results(results, context)
 
-    async def on_format_output(self, context: HookContext) -> HookResult:
-        results = []
-        for hook in self._hooks:
-            if self._should_dispatch(hook, "FORMAT_OUTPUT", context):
-                result = await self._dispatch_hook(hook["name"], context)
-                results.append(result)
-                if result.modified and result.context:
-                    context = result.context
-
-        return self._merge_results(results, context)
-
     async def on_session_start(self, context: HookContext) -> HookResult:
         results = []
         for hook in self._hooks:

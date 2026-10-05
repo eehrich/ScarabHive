@@ -142,16 +142,22 @@ body.app {
 }
 .app-dock-bar { display: flex; align-items: stretch; background: var(--surface-1); border-bottom: 1px solid var(--border-subtle); }
 .app-back { display: none; align-self: center; margin: 0 var(--space-1); }
-/* As the kit's tabs: each as wide as its title while they all fit, then down to a few characters of it, then the bar
-   scrolls (workspace.js: the wheel turns it, a tab coming to the front is brought into sight) */
+/* As the kit's tabs: each as wide as its title while they all fit, then down to five characters of it, then the bar
+   scrolls (workspace.js: the wheel turns it, a tab coming to the front is brought into sight). The least width:
+   padding, icon, two gaps, three 22px buttons, the border and 4.5em of title for its five (as kit.css); a shorter
+   title keeps its own width where the browser has calc-size(). */
 .app-dock-tabs {
   display: flex; align-items: stretch; gap: 1px; min-height: 36px; min-width: 0;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
 }
 .dock-tab {
-  display: inline-flex; align-items: center; gap: var(--space-1); flex: 0 1 auto; min-width: var(--dock-tab-min, 150px);
+  --dock-tab-least: calc(var(--space-3) + 3 * var(--space-1) + 14px + 3 * 22px + 1px + 4.5em);
+  display: inline-flex; align-items: center; gap: var(--space-1); flex: 0 1 auto; min-width: var(--dock-tab-least);
   padding: 0 var(--space-1) 0 var(--space-3); font-size: var(--text-sm); color: var(--text-secondary);
   background: transparent; border: 0; border-right: 1px solid var(--border-subtle); cursor: pointer; white-space: nowrap;
+}
+@supports (min-width: calc-size(max-content, size)) {
+  .dock-tab { min-width: calc-size(max-content, min(size, var(--dock-tab-least))); }
 }
 .dock-tab[aria-selected="true"] { color: var(--text-primary); background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--accent); }
 .dock-tab[data-dragging] { opacity: 0.5; }

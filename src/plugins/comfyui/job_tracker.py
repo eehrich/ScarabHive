@@ -148,10 +148,20 @@ class ComfyUIJobTracker:
                 # Calculate duration from started_at (actual run time);
                 # fall back to submitted_at if the job never reached 'running'.
                 cursor = conn.execute(
-                    "SELECT COALESCE(started_at, submitted_at) FROM jobs WHERE prompt_id = ?",
+                    "SELECT COALESCE(started_at, submitted_at), status, completed_at FROM jobs WHERE prompt_id = ?",
                     (prompt_id,)
                 )
                 row = cursor.fetchone()
+                if row and row[1] == status and row[2]:
+                    # the same outcome reported again (every status or result call on a finished job does): its end
+                    # was recorded the first time, a later stamp would move the job in the list and stretch its duration;
+                    # a new error text still counts (a job first taken for lost may turn out to have failed on the server)
+                    conn.execute(
+                        "UPDATE jobs SET error_message = COALESCE(?, error_message) WHERE prompt_id = ?",
+                        (error_message, prompt_id),
+                    )
+                    conn.commit()
+                    return
                 duration = None
                 if row and row[0]:
                     try:
@@ -220,7 +230,7 @@ class ComfyUIJobTracker:
             prompt_id: Job identifier
 
         Returns:
-            Server URL string (e.g. ``http://192.0.2.5:8188``) or None.
+            Server URL string (e.g. ``http://comfy.example:8188``) or None.
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(

@@ -57,8 +57,8 @@ plugins:
         hooks:
           enabled: true
           overrides:
-            # Off: it rewrites the cached prompt prefix on every call, and
-            # what it injects are this agent's own thoughts -- already in the
+            # Off: it appends a turn with every new thought, and what it
+            # injects are this agent's own thoughts -- already in the
             # transcript, and re-readable through its own tool.
             sequential_thinking.inject_active_sessions:
               enabled: false
