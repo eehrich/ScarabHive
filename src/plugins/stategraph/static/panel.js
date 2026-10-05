@@ -8,7 +8,7 @@ import {
   trusted, update, withBusy, yamlCode,
 } from '/static/kit/panel-kit.js';
 import {
-  autoOf, Canvas, fragmentLock, groupedSpots, keepingChoices, LINE_STYLES, lineKeys, NOTE, noteKey, outermost, posixPath,
+  autoOf, Canvas, fragmentLock, groupedSpots, isRoute, keepingChoices, LINE_STYLES, lineKeys, NOTE, noteKey, outermost, posixPath,
   problemIndex, putTyped, renamedLines, runOverlay, sameSelection, selectionOf, shorten, stateFragment, typedIn,
   foldTrace,
 } from './graph.js';
@@ -117,6 +117,7 @@ const canvas = new Canvas($('canvas'), {
   onMove: (spots) => savePositions(spots),
   onOpen: (target) => (target.kind === 'state' ? renameState(target.id) : target.kind === 'note' ? openNote(target.id) : choose(target)),
   onReparent: (name, into, spot, here) => moveState(name, into, { spot, here }),
+  onRoute: (way, line) => saveLayout({ lines: { ...lineStyles(), [way]: line } }),
 });
 
 function positions() {
@@ -275,6 +276,7 @@ async function drawGraph({ fit = false } = {}) {
   const drawn = await canvas.setGraph(S.machine.graph, S.machine.layout);
   if (!drawn) return;
   canvas.select(S.selection);
+  drawLineTools();  // which lines it can bend is the canvas's to say
   redrawOverlay();
   if (fit || fitPending) {
     fitPending = !$('canvas').getBoundingClientRect().width;  // hidden now: fit once the graph tab shows
@@ -283,7 +285,7 @@ async function drawGraph({ fit = false } = {}) {
   const parses = !S.machine.problems.some((p) => p.level === 'error' && !p.path);
   render($('sgStates'), S.machine.graph.states.map((s) => html`<option value="${s.name}">${s.label || ''}</option>`));
   $('canvasHint').textContent = S.machine.graph.states.length
-    ? 'Drag a state to move it, from its handle to another state to connect; double-click to rename. Wheel scrolls, Ctrl+wheel zooms.'
+    ? 'Drag a state to move it, from its handle to another state to connect; double-click to rename. Select a line to bend it by its handles. Wheel scrolls, Ctrl+wheel zooms.'
     : parses ? 'No states yet: add one from the bar above.' : 'The file does not parse: fix it in the YAML tab.';
 }
 
@@ -297,6 +299,7 @@ async function saveLayout(changes) {
   const layout = { ...S.machine.layout, version: 1, auto: autoOf(S.machine.layout), ...changes };
   S.machine.layout = layout;
   canvas.setLayout(layout);
+  drawLineTools();
   if (!S.machine.writable) return;  // kept for this view only: the sidecar sits next to a read-only file
   if (!S.autosave) {  // written by Save
     S.layoutDirty = true;
@@ -311,12 +314,16 @@ async function saveLayout(changes) {
   }
 }
 
-/** A stored line style as the canvas draws it: one no longer offered is right-angled, like anything but 'straight'. */
+/** A stored line style as the canvas draws it: one no longer offered is right-angled, like anything but 'straight';
+ * a line drawn by hand (isRoute) stays one. */
 function lineStyle(style) {
-  return style && !LINE_STYLES.includes(style) ? 'orthogonal' : style;
+  return style && !LINE_STYLES.includes(style) && !isRoute(style) ? 'orthogonal' : style;
 }
 
-/** The line styles the layout gives single transitions: {key (lineKeys): style}. */
+/** The style a line has, as the style choices name it: one drawn by hand is right-angled. */
+const styleName = (style) => (isRoute(style) ? 'orthogonal' : style);
+
+/** The line styles the layout gives single transitions: {key (lineKeys): style, or a line drawn by hand}. */
 function lineStyles() {
   return Object.fromEntries(Object.entries(S.machine?.layout?.lines || {}).map(([key, style]) => [key, lineStyle(style)]));
 }
@@ -324,8 +331,41 @@ function lineStyles() {
 /** The one line style these transitions share ('' for the machine's), undefined when they differ. */
 function styleOfAll(transitions) {
   const keys = lineKeys(S.machine.graph.transitions);
-  const styles = new Set(transitions.map((t) => lineStyles()[keys[t.id]] || ''));
+  const styles = new Set(transitions.map((t) => styleName(lineStyles()[keys[t.id]]) || ''));
   return styles.size === 1 ? [...styles][0] : undefined;
+}
+
+/** Below the transition's line style: a bend more, and back to the line the canvas draws -- for a line it can bend. */
+function lineTools(t) {
+  if (!canvas.canBend(t.id)) return '';
+  const drawn = isRoute(lineStyles()[lineKeys(S.machine.graph.transitions)[t.id]]);
+  return html`<div class="pk-row sg-actions">
+      <button type="button" class="pk-btn pk-btn--sm" data-act="add-bend" data-key="add-bend:${t.id}" title="Split the line's longest segment: two handles more to drag">${icon('plus', { size: 'sm' })} Add bend</button>
+      ${drawn ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="reset-line" data-key="reset-line:${t.id}" title="Let the canvas draw the line again">${icon('rotate-ccw', { size: 'sm' })} Reset line</button>` : ''}
+    </div>
+    <p class="pk-help">Select the line on the canvas and drag a handle on it to move its segment; the arrow keys move a focused one.</p>`;
+}
+
+/** The line styles and tools of the transitions shown (one, or a state's), after a line changed or the canvas drew
+ * them anew (the rest of the inspector keeps what was typed). */
+function drawLineTools() {
+  const keys = lineKeys(S.machine.graph.transitions);
+  for (const t of S.machine.graph.transitions) {
+    const style = t.target && $(`tr-line-${t.id}`);
+    if (!style) continue;
+    update(style, lineChoices(styleName(lineStyles()[keys[t.id]]), { inherit: true }));
+    const box = $(`line-tools-${t.id}`);
+    if (box) update(box, lineTools(t));
+  }
+}
+
+/** The transition's line back to the one the canvas draws by itself: still right-angled when the machine's are not. */
+function resetLine(id) {
+  const key = lineKeys(S.machine.graph.transitions)[id];
+  const lines = { ...lineStyles() };
+  if (lineStyle(S.machine.layout?.line) === 'straight') lines[key] = 'orthogonal';
+  else delete lines[key];
+  return saveLayout({ lines });
 }
 
 /** Set the line style of these transitions ('' for the machine's). */
@@ -333,7 +373,7 @@ function setLines(ids, style) {
   const keys = lineKeys(S.machine.graph.transitions);
   const lines = { ...lineStyles() };
   for (const id of ids) {
-    if (!keys[id]) continue;
+    if (!keys[id] || (style === 'orthogonal' && isRoute(lines[keys[id]]))) continue;  // drawn by hand: right-angled
     if (style) lines[keys[id]] = style;
     else delete lines[keys[id]];
   }
@@ -1158,6 +1198,7 @@ function transitionEditor(t) {
   const siblings = S.machine.graph.transitions.filter((other) => other.source === t.source);
   const pinned = S.problems.transitions[t.id];
   const current = S.selection?.kind === 'transition' && S.selection.id === t.id;
+  const line = styleName(lineStyles()[lineKeys(S.machine.graph.transitions)[t.id]]);
   return html`<form class="sg-transition" data-transition="${t.id}" aria-current="${String(current)}">
     <div class="sg-transition-head">
       <span class="pk-mono">#${t.index}</span>
@@ -1184,7 +1225,8 @@ ${t.guard}</textarea>`
       <textarea class="pk-textarea pk-input--mono" id="tr-effect-${t.id}" name="effect" rows="2" data-shape="code" data-orig="${t.effect ?? ''}" placeholder="Python statements">
 ${t.effect ?? ''}</textarea>
       ${t.target ? html`<label for="tr-line-${t.id}">Line</label>
-      <select class="pk-select pk-select--sm" id="tr-line-${t.id}" data-line="${t.id}" title="How the canvas draws every transition from ${t.source} to ${t.target}: kept in the layout, not in the YAML, and set at once">${lineChoices(lineStyles()[lineKeys(S.machine.graph.transitions)[t.id]], { inherit: true })}</select>` : ''}
+      <select class="pk-select pk-select--sm" id="tr-line-${t.id}" data-line="${t.id}" title="How the canvas draws every transition from ${t.source} to ${t.target}: kept in the layout, not in the YAML, and set at once">${lineChoices(line, { inherit: true })}</select>` : ''}
+      ${t.target ? html`<span></span><div class="pk-stack" id="line-tools-${t.id}">${lineTools(t)}</div>` : ''}
     </div>
     ${problemList(pinned?.problems)}
     <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
@@ -1656,6 +1698,13 @@ $('side-inspect').addEventListener('click', async (event) => {
   const t = transitionOf(form.dataset.transition);
   if (!t) return;
   if (act === 'remove-transition') return removeTransition(t.id);
+  // a line's shape: layout, set at once (no Apply, no undo -- like a drag)
+  if (act === 'add-bend') return canvas.addBend(t.id);
+  if (act === 'reset-line') {
+    const done = resetLine(t.id);  // the tools drawn anew without it: the keyboard goes to Add bend beside it
+    $(`line-tools-${t.id}`)?.querySelector('[data-act="add-bend"]')?.focus();
+    return done;
+  }
   if (act === 'move-up' || act === 'move-down') {
     const siblings = S.machine.graph.transitions.filter((other) => other.source === t.source).map((other) => other.index);
     const at = siblings.indexOf(t.index);

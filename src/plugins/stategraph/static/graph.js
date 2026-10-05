@@ -449,7 +449,8 @@ function rightAngle(source, target, lane) {
 }
 
 /** A transition drawn in its line `style` (LINE_STYLES): straight, or right-angled -- ELK's route while both ends
- * are where ELK put them, else ours (straight where no right angle fits). Anything but 'straight' is right-angled. */
+ * are where ELK put them, else ours (straight where no right angle fits). Anything but 'straight' is right-angled;
+ * a line drawn by hand (isRoute) goes as it was drawn. */
 export function transitionRoute(style, route, source, target, moved, lane) {
   // straight: centre to centre -- but between a composite and a state inside it, that line would leave through the
   // state and end on the far border: the right angle's line to the nearest border is a straight one too
@@ -457,9 +458,199 @@ export function transitionRoute(style, route, source, target, moved, lane) {
     return ((inside(source, target) || inside(target, source)) && orthogonalRoute(source, target, lane))
       || edgeRoute(null, source, target, true, lane);
   }
+  if (isRoute(style) && bendable(source, target)) return customRoute(style, source, target, lane);
   if (route?.points.length && !moved) return edgeRoute(route, source, target, false, lane);
   // a self-transition fits no right angle: edgeRoute draws its loop
   return orthogonalRoute(source, target, lane) || edgeRoute(null, source, target, true, lane);
+}
+
+/*
+ * A right-angled line drawn by hand: the value of its way in the layout's `lines`, in place of a style. `start`: the
+ * axis it leaves its source along ('x' sideways, 'y' up or down); its segments alternate axes from there, so each lies
+ * at one number across its own direction: `at`, one per segment. The first is counted from the source's centre and
+ * the last from the target's -- the line leaves and enters where it was put on their sides, and follows them when
+ * they move; the ones between from the middle of the two centres -- a bend keeps its place between them.
+ */
+export const isRoute = (value) => Boolean(value) && typeof value === 'object' && (value.start === 'x' || value.start === 'y')
+  && Array.isArray(value.at) && value.at.length >= 2 && value.at.every(Number.isFinite);
+
+/** A line between these two boxes can be bent by hand: not a loop, not one between a composite and a state in it. */
+export const bendable = (source, target) => source !== target && !inside(source, target) && !inside(target, source);
+
+const crossAxis = (axis) => (axis === 'x' ? 'y' : 'x');
+const segmentAxis = (start, i) => (i % 2 ? crossAxis(start) : start);
+const centreOf = (box) => ({ x: box.x + box.w / 2, y: box.y + box.h / 2 });
+/** A line leaves a box no closer to its corner than this: the rounding. */
+const SIDE_MARGIN = 10;
+
+/** `value` (along `axis`) moved onto the box's side, clear of its corners. */
+function onSide(box, axis, value) {
+  const [low, size] = axis === 'x' ? [box.x, box.w] : [box.y, box.h];
+  const margin = Math.min(SIDE_MARGIN, size / 2);
+  return clamp(value, low + margin, low + size - margin);
+}
+
+/** Where each segment of a hand-drawn line lies across its own direction, in canvas units, as the way's line: no
+ * lane's, the ends not yet put on their boxes. */
+export function storedLines(route, source, target) {
+  const [s, t] = [centreOf(source), centreOf(target)];
+  const middle = { x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 };
+  const last = route.at.length - 1;
+  return route.at.map((value, i) => (i === 0 ? s : i === last ? t : middle)[crossAxis(segmentAxis(route.start, i))] + value);
+}
+
+/** How far each segment of a line at `lines` lies from the way's line in lane `offset`: to the right of its way,
+ * below a segment going right, left of one going down. */
+function laneShifts(start, lines, source, target, offset) {
+  if (!offset) return lines.map(() => 0);
+  const points = linePoints(start, lines, source, target);
+  return lines.map((_, i) => {
+    const u = segmentAxis(start, i) === 'x' ? 0 : 1;
+    const way = Math.sign(points[i + 1][u] - points[i][u]) || 1;
+    return u === 0 ? offset * way : -offset * way;
+  });
+}
+
+/** Where each segment of a hand-drawn line is drawn across its own direction, in canvas units: in its `lane`
+ * (lanes), the ends on their boxes -- a crowd's lanes wider than a side meet at its end. */
+export function routeLines(route, source, target, lane = null) {
+  const stored = storedLines(route, source, target);
+  const shifts = laneShifts(route.start, stored, source, target, lane?.offset);
+  const last = stored.length - 1;
+  return stored.map((value, i) => {
+    const a = crossAxis(segmentAxis(route.start, i));  // the coordinate the segment's line sits at
+    if (i === 0) return onSide(source, a, value + shifts[i]);
+    if (i === last) return onSide(target, a, value + shifts[i]);
+    return value + shifts[i];
+  });
+}
+
+/** The hand-drawn line whose segments lie at `lines` (storedLines turned round), in whole units; lines drawn in a
+ * `lane` are taken out of it first. */
+export function routeOf(start, lines, source, target, lane = null) {
+  const [s, t] = [centreOf(source), centreOf(target)];
+  const middle = { x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 };
+  const last = lines.length - 1;
+  const shifts = laneShifts(start, lines, source, target, lane?.offset);
+  return { start, at: lines.map((value, i) => {
+    const a = crossAxis(segmentAxis(start, i));
+    return Math.round(value - shifts[i] - (i === 0 ? s : i === last ? t : middle)[a]);
+  }) };
+}
+
+/** The points of a line whose segments lie at `lines`: out of the source's side that faces its first bend, in through
+ * the target's side that faces its last. */
+function linePoints(start, lines, source, target) {
+  const corners = [];
+  for (let i = 0; i + 1 < lines.length; i += 1) {
+    corners.push(segmentAxis(start, i) === 'x' ? [lines[i + 1], lines[i]] : [lines[i], lines[i + 1]]);
+  }
+  const side = (box, axis, toward) => {
+    const [low, size] = axis === 'x' ? [box.x, box.w] : [box.y, box.h];
+    return toward >= low + size / 2 ? low + size : low;
+  };
+  const end = (box, i, corner) => {
+    const axis = segmentAxis(start, i);
+    const along = side(box, axis, corner[axis === 'x' ? 0 : 1]);
+    return axis === 'x' ? [along, lines[i]] : [lines[i], along];
+  };
+  return [end(source, 0, corners[0]), ...corners, end(target, lines.length - 1, corners[corners.length - 1])];
+}
+
+/** A hand-drawn line (isRoute) between two boxes; its `lane` (lanes) to the right of its way, every segment alike.
+ * Its label on its longest level segment (a crowd's at its place along it), else beside its longest upright one. */
+export function customRoute(route, source, target, lane = null) {
+  const points = linePoints(route.start, routeLines(route, source, target, lane), source, target);
+  const offset = lane?.offset || 0;
+  const level = (i) => segmentAxis(route.start, i) === 'x';
+  const way = (i, u) => Math.sign(points[i + 1][u] - points[i][u]) || 1;
+  const segments = points.slice(1).map((b, i) => ({ i, a: points[i], b, length: Math.abs(b[0] - points[i][0]) + Math.abs(b[1] - points[i][1]) }));
+  const longest = (list) => list.reduce((best, s) => (s.length > best.length ? s : best));
+  const levels = segments.filter((s) => level(s.i) && s.length);
+  const span = levels.length ? longest(levels) : longest(segments);
+  const drawn = { points, label: null, span: [span.a, span.b], straight: false };
+  if (lane?.crowd) return { ...drawn, at: lane.at };
+  if (level(span.i)) return offset ? { ...drawn, side: [0, way(span.i, 0) * Math.sign(offset)] } : drawn;
+  return { ...drawn, side: offset ? [-way(span.i, 1) * Math.sign(offset), 0] : [1, 0] };
+}
+
+/** The hand-drawn line a drawn one is, to go on from: its segments where they are, out of the `lane` it is drawn in --
+ * or, where it is no right-angled line (one across), a Z with its bend half way. */
+export function routeFrom(points, source, target, lane = null) {
+  const kept = points.filter((p, i) => !i || Math.abs(p[0] - points[i - 1][0]) + Math.abs(p[1] - points[i - 1][1]) > 0.5);
+  const segments = [];
+  for (let i = 0; i + 1 < kept.length; i += 1) {
+    const [a, b] = [kept[i], kept[i + 1]];
+    const axis = Math.abs(a[1] - b[1]) < 0.5 ? 'x' : Math.abs(a[0] - b[0]) < 0.5 ? 'y' : null;
+    if (!axis) {
+      segments.length = 0;
+      break;
+    }
+    if (segments[segments.length - 1]?.axis !== axis) segments.push({ axis, line: axis === 'x' ? a[1] : a[0] });
+  }
+  if (segments.length >= 2) return routeOf(segments[0].axis, segments.map((s) => s.line), source, target, lane);
+  const [s, t] = [centreOf(source), centreOf(target)];
+  const start = segments[0]?.axis || (Math.abs(t.x - s.x) >= Math.abs(t.y - s.y) ? 'x' : 'y');
+  const across = crossAxis(start);
+  const [from, to] = segments.length ? [segments[0].line, segments[0].line] : [s[across], t[across]];
+  // a straight line keeps its place in its lane; the Z in place of one across is the way's line
+  return routeOf(start, [from, (s[start] + t[start]) / 2, to], source, target, segments.length ? lane : null);
+}
+
+/** The line with a bend more: its longest segment split in the middle, the second half `jog` up or left of it --
+ * the first half, for the last segment: the line still enters its target where it did. */
+export function withBend(route, source, target, jog = 24) {
+  const lines = storedLines(route, source, target);
+  const points = linePoints(route.start, lines, source, target);
+  const length = (k) => Math.abs(points[k + 1][0] - points[k][0]) + Math.abs(points[k + 1][1] - points[k][1]);
+  let longest = 0;
+  for (let i = 1; i + 1 < points.length; i += 1) if (length(i) > length(longest)) longest = i;
+  const u = segmentAxis(route.start, longest) === 'x' ? 0 : 1;
+  const middle = (points[longest][u] + points[longest + 1][u]) / 2;
+  const split = longest === lines.length - 1 ? [lines[longest] - jog, middle, lines[longest]] : [lines[longest], middle, lines[longest] - jog];
+  return routeOf(route.start, [...lines.slice(0, longest), ...split, ...lines.slice(longest + 1)], source, target);
+}
+
+/** The way's line (storedLines) with segment `i` of the line in `lane` moved `by` across from where it is seen, as
+ * draggedLines moves it there: onto the others where they are drawn. The way's line moves with it, the other lanes
+ * beside it. `done`: without the bends the move left without length (withoutEmpty) -- dropped on the segment beyond a
+ * neighbour, it is in line with it on the way's line too, though in a lane segments going opposite ways are drawn
+ * apart; the segment left is drawn where it was dropped, in its lane for the way it goes now. `i`: the segment the
+ * moved one is now. */
+export function bentLines(route, i, by, source, target, lane, reach, done = false) {
+  const stored = storedLines(route, source, target);
+  const shown = routeLines(route, source, target, lane);
+  const shifts = (lines) => laneShifts(route.start, lines, source, target, lane?.offset);
+  const moved = draggedLines(route.start, shown, i, shown[i] + by, source, target, reach)[i];
+  const onto = done ? [i - 2, i + 2].find((j) => shown[j] === moved) : undefined;
+  const lines = stored.map((line, j) => (j !== i ? line : onto === undefined ? moved - shifts(stored)[i] : stored[onto]));
+  if (!done) return { lines, i };
+  const kept = withoutEmpty(lines, i);
+  kept.lines[kept.i] = moved - shifts(kept.lines)[kept.i];
+  return kept;
+}
+
+/** Segment `i` of a hand-drawn line dragged to `value`: an end stays on its box's side; within `reach` of a box's
+ * centre line or in line with another segment it snaps there -- a straight run, or two bends to take out. */
+export function draggedLines(start, lines, i, value, source, target, reach) {
+  const a = crossAxis(segmentAxis(start, i));
+  const marks = [centreOf(source)[a], centreOf(target)[a], ...lines.filter((_, j) => j !== i && j % 2 === i % 2)];
+  const near = marks.reduce((best, mark) => (Math.abs(mark - value) < Math.abs(best - value) ? mark : best), Infinity);
+  let next = Math.abs(near - value) <= reach ? near : value;
+  if (i === 0) next = onSide(source, a, next);
+  if (i === lines.length - 1) next = onSide(target, a, next);
+  return lines.map((line, j) => (j === i ? next : line));
+}
+
+/** The line without the bend a drag of segment `i` left without length: a neighbour of it whose own neighbours lie in
+ * one line goes, with one of them -- the line keeps two segments at least. `i`: the segment the dragged one is now. */
+export function withoutEmpty(lines, i) {
+  for (const j of [i - 1, i + 1]) {
+    if (lines.length >= 4 && j >= 1 && j <= lines.length - 2 && Math.abs(lines[j - 1] - lines[j + 1]) < 0.5) {
+      return { lines: [...lines.slice(0, j), ...lines.slice(j + 2)], i: j - 1 };
+    }
+  }
+  return { lines, i };
 }
 
 /** The key of each transition's line style in the layout: the way it goes, "source→target". A style belongs to the
@@ -825,12 +1016,13 @@ function spriteIcon(parent, name, x, y, size, cls = 'sg-icon') {
  * onMove({name: {x, y}}) with every position the drag changed (a note's under noteKey), onOpen({kind, id}) on a
  * double click (kind state, transition or note),
  * onReparent(name, into, spot, here) when one state is dropped on a composite it is not in: `spot` its position in
- * that one, `here` in the one it is in.
+ * that one, `here` in the one it is in, onRoute(way, line) when a line was bent by hand (isRoute; way: lineKeys) --
+ * without it the selected line has no handles.
  */
 export class Canvas {
-  constructor(svg, { onSelect, onConnect, onMove, onOpen, onReparent } = {}) {
+  constructor(svg, { onSelect, onConnect, onMove, onOpen, onReparent, onRoute } = {}) {
     this.svg = svg;
-    this.handlers = { onSelect, onConnect, onMove, onOpen, onReparent };
+    this.handlers = { onSelect, onConnect, onMove, onOpen, onReparent, onRoute };
     this.graph = { states: [], transitions: [] };
     this.takeLayout({});
     this.auto = { nodes: {}, edges: {} };
@@ -854,6 +1046,7 @@ export class Canvas {
     this.noteLayer = el('g', { class: 'sg-notes' }, this.viewport);
     this.edgeLayer = el('g', { class: 'sg-edges' }, this.viewport);
     this.nodeLayer = el('g', { class: 'sg-nodes' }, this.viewport);
+    this.bendLayer = el('g', { class: 'sg-bends' }, this.viewport);  // over the states: a line may run across one
     this.dragLayer = el('g', { class: 'sg-drag' }, this.viewport);
     this.bindPointer();
   }
@@ -898,6 +1091,7 @@ export class Canvas {
   select(selection, { quiet = true } = {}) {
     this.selected = selection;
     this.decorate();
+    this.drawBends();
     if (!quiet) this.handlers.onSelect?.(selection);
   }
 
@@ -937,17 +1131,94 @@ export class Canvas {
     }
     const lanesOf = lanes(this.graph.transitions);
     const keys = lineKeys(this.graph.transitions);
+    this.routes = {};
     for (const transition of this.graph.transitions) {
       const source = nodes[stateId(transition.source)];
       const target = transition.target ? nodes[stateId(transition.target)] : null;
       if (!source || !target) continue;
+      const key = keys[transition.id];
       const route = this.auto.edges[edgeId(transition.id)];
-      const style = this.lines.lines?.[keys[transition.id]] || this.lines.line || 'orthogonal';
-      const drawn = transitionRoute(style, route, source, target,
-        moved.has(stateId(transition.source)) || moved.has(stateId(transition.target)), lanesOf[transition.id]);
+      // a line being bent goes as the pointer has it, the others of its way with it
+      const style = (this.bending?.key === key ? this.bending.route : this.lines.lines?.[key]) || this.lines.line || 'orthogonal';
+      const ends = moved.has(stateId(transition.source)) || moved.has(stateId(transition.target));
+      const lane = lanesOf[transition.id];
+      const drawn = transitionRoute(style, route, source, target, ends, lane);
+      if (style !== 'straight' && bendable(source, target)) {
+        // the line to bend from: the one drawn by hand, or the drawn one as it lies, out of its lane
+        const base = () => (isRoute(style) ? style : routeFrom(drawn.points, source, target, lane));
+        this.routes[transition.id] = { key, source, target, lane, base };
+      }
       this.drawEdge(transition, drawn);
     }
     this.decorate();
+    this.drawBends();
+  }
+
+  /** The transition's line can be bent by hand: right-angled, and neither a loop nor inside a composite of its own. */
+  canBend(id) {
+    return Boolean(this.routes?.[id]);
+  }
+
+  /** A bend more on the transition's line (withBend), handed to onRoute. */
+  addBend(id) {
+    const one = this.routes?.[id];
+    if (one) this.handlers.onRoute?.(one.key, withBend(one.base(), one.source, one.target));
+  }
+
+  /** The handles of the selected transition's line: one in the middle of each segment, moved across it. */
+  drawBends() {
+    const focused = document.activeElement;
+    // drawn anew (a move, a file changed), the handle with the keyboard keeps it -- the keyboard in the shell or another
+    // panel leaves none here to keep
+    const had = this.bendLayer.contains(focused) ? [focused.dataset.bendOf, focused.dataset.bend] : null;
+    this.bendLayer.replaceChildren();
+    const id = this.selected?.kind === 'transition' ? this.selected.id : null;
+    const one = id && this.routes?.[id];
+    if (!one || !this.handlers.onRoute) return;
+    const base = this.bending?.key === one.key ? this.bending.route : one.base();
+    const { points } = customRoute(base, one.source, one.target, one.lane);
+    points.slice(1).forEach((b, i) => {
+      const a = points[i];
+      const level = segmentAxis(base.start, i) === 'x';
+      el('rect', { x: (a[0] + b[0]) / 2 - 5, y: (a[1] + b[1]) / 2 - 5, width: 10, height: 10, rx: 2,
+        class: `sg-bend sg-bend--${level ? 'level' : 'upright'}`, 'data-bend': i, 'data-bend-of': id, tabindex: 0, role: 'button',
+        'aria-label': `Segment ${i + 1} of the line: drag, or arrow keys, to move it ${level ? 'up or down' : 'left or right'}` },
+      this.bendLayer);
+    });
+    if (had?.[0] === id) this.focusBend(had[1]);
+  }
+
+  focusBend(i) {
+    [...this.bendLayer.querySelectorAll('[data-bend]')].find((h) => h.dataset.bend === String(i))?.focus({ preventScroll: true });
+  }
+
+  /** Segment `i` of transition `id`'s line `by` units across, from the line its way had (`from`: key, base) when the
+   * move began, as it is seen, in its lane; `done`: the end of the move -- handed to onRoute, without the bends it left
+   * without length. It snaps within `reach` (draggedLines): 6 screen pixels. */
+  bend(id, i, by, from, done, reach = 6 / this.view.k) {
+    const one = this.routes?.[id];
+    if (one?.key !== from.key) {  // the machine changed under the pointer: that line went, none is drawn as it had it
+      if (this.bending) {
+        this.bending = null;
+        this.draw();
+      }
+      return;
+    }
+    const { key, source, target, lane } = one;
+    const { base } = from;
+    const kept = bentLines(base, i, by, source, target, lane, reach, done);
+    const route = routeOf(base.start, kept.lines, source, target);
+    if (!done) {
+      this.bending = { key, route };
+      this.draw();
+      return;
+    }
+    this.bending = null;
+    const typed = this.bendLayer.contains(document.activeElement);
+    this.lines = { ...this.lines, lines: { ...this.lines.lines, [key]: route } };  // drawn so until the layout comes back
+    this.draw();
+    if (typed) this.focusBend(kept.i);  // the segment it became, where it went with a neighbour
+    this.handlers.onRoute?.(key, route);
   }
 
   drawState(state, box) {
@@ -1163,6 +1434,15 @@ export class Canvas {
     }, { passive: false });
     svg.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
+      const bend = event.target.closest?.('[data-bend]');
+      const one = bend && this.routes?.[bend.dataset.bendOf];
+      if (one) {  // a segment of the selected line, moved across it
+        const [x, y] = this.toCanvas(event);
+        gesture = { type: 'bend', id: bend.dataset.bendOf, i: Number(bend.dataset.bend), level: bend.classList.contains('sg-bend--level'),
+          from: { key: one.key, base: one.base() }, x, y, moved: false };
+        svg.setPointerCapture(event.pointerId);
+        return;
+      }
       const handle = event.target.closest?.('[data-handle]');
       const node = event.target.closest?.('.sg-node');
       const note = event.target.closest?.('.sg-note');
@@ -1208,6 +1488,12 @@ export class Canvas {
         return;
       }
       const [x, y] = this.toCanvas(event);
+      if (gesture.type === 'bend') {
+        const by = gesture.level ? y - gesture.y : x - gesture.x;
+        gesture.moved ||= Math.abs(by) * this.view.k > 3;
+        if (gesture.moved) this.bend(gesture.id, gesture.i, by, gesture.from, false);
+        return;
+      }
       if (gesture.type === 'band') {
         gesture.moved ||= (Math.abs(x - gesture.x) + Math.abs(y - gesture.y)) * this.view.k > 4;
         if (!gesture.moved) return;
@@ -1251,7 +1537,15 @@ export class Canvas {
       const done = gesture;
       gesture = null;
       this.dragLayer.replaceChildren();
-      if (done.type === 'pan') {
+      if (done.type === 'bend') {
+        if (done.moved && event.type === 'pointerup') {
+          const [x, y] = this.toCanvas(event);
+          this.bend(done.id, done.i, done.level ? y - done.y : x - done.x, done.from, true);
+        } else if (this.bending) {  // a cancelled bend leaves the line as it was
+          this.bending = null;
+          this.draw();
+        }
+      } else if (done.type === 'pan') {
         if (!done.moved) this.select(null, { quiet: false });
       } else if (done.type === 'connect') {
         // a click on the handle is no connection: a self-transition takes a drag out and back
@@ -1301,6 +1595,17 @@ export class Canvas {
       else if (link) this.handlers.onOpen?.({ kind: 'transition', id: link.dataset.transition });
     });
     svg.addEventListener('keydown', (event) => {
+      const bend = event.target.closest?.('[data-bend]');
+      const one = bend && this.routes?.[bend.dataset.bendOf];
+      if (one) {  // the arrows across the segment move it: 8 units, 1 with Shift
+        const level = bend.classList.contains('sg-bend--level');
+        const by = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1 }[event.key];
+        if (!by || level !== ['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        event.preventDefault();
+        const [id, i] = [bend.dataset.bendOf, Number(bend.dataset.bend)];
+        this.bend(id, i, by * (event.shiftKey ? 1 : 8), { key: one.key, base: one.base() }, true, 0);
+        return;
+      }
       const note = event.target.closest?.('.sg-note');
       if (note && (event.key === 'Enter' || event.key === ' ')) {
         event.preventDefault();

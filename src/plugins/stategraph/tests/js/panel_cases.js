@@ -318,6 +318,174 @@ const CASES = {
     await release();
   },
 
+  async a_selected_line_is_bent_by_its_handles_and_kept_in_the_layout_for_its_way() {
+    await boot('?machine=review');
+    const handles = () => $('canvas').querySelectorAll('.sg-bend');
+    check(!handles().length, 'handles with no line selected');
+    const link = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'write#0');
+    await $('canvas').fire('pointerdown', { button: 0, target: link, clientX: 10, clientY: 10, pointerId: 1 });
+    await settle();
+    check(handles().length >= 2 && handles().every((h) => h.dataset.bendOf === 'write#0'), `handles: ${handles().length}`);
+    const shown = $('side-inspect').innerHTML;
+    check(shown.includes('data-act="add-bend"') && !shown.includes('reset-line'), 'the inspector offers no Add bend');
+    const { k } = canvasGeometry();
+    const puts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout'));
+    const lineOf = () => puts().pop()?.[2].layout.lines?.['write→review'];
+    const spot = (h) => [Number(h.getAttribute('x')), Number(h.getAttribute('y'))];
+    // the middle handle, dragged across its segment: a pointercancel first leaves the line as it was
+    const i = Math.floor(handles().length / 2);
+    const handle = handles()[i];
+    const level = handle.classList.contains('sg-bend--level');
+    const before = spot(handle);
+    const along = (d) => (level ? { clientX: 10, clientY: 10 + d } : { clientX: 10 + d, clientY: 10 });
+    await $('canvas').fire('pointerdown', { button: 0, target: handle, pointerId: 1, ...along(0) });
+    await $('canvas').fire('pointermove', { target: handle, ...along(40) });
+    await $('canvas').fire('pointercancel', { target: handle, ...along(40) });
+    await settle();
+    check(!puts().length && JSON.stringify(spot(handles()[i])) === JSON.stringify(before), 'a cancelled bend changed the line');
+    await $('canvas').fire('pointerdown', { button: 0, target: handles()[i], pointerId: 1, ...along(0) });
+    await $('canvas').fire('pointermove', { target: handles()[i], ...along(20) });
+    await $('canvas').fire('pointermove', { target: handles()[i], ...along(40) });
+    await $('canvas').fire('pointerup', { target: handles()[i], ...along(40) });
+    await settle();
+    const bent = lineOf();
+    check(bent && ['x', 'y'].includes(bent.start) && bent.at.length === handles().length, `stored: ${JSON.stringify(bent)}`);
+    const after = spot(handles()[i]);
+    const moved = level ? after[1] - before[1] : after[0] - before[0];
+    check(Math.abs(moved - 40 / k) < 0.6 && (level ? after[0] === before[0] : after[1] === before[1]),
+      `moved ${moved}, the pointer ${40 / k}: ${before} -> ${after}`);
+    check($('line-tools-write#0').innerHTML.includes('reset-line'), 'no Reset line for a line drawn by hand');
+    // a focused handle: the arrows across it move it by 8
+    await $('canvas').fire('keydown', { target: handles()[i], key: level ? 'ArrowDown' : 'ArrowRight', preventDefault() {} });
+    await settle();
+    const stepped = lineOf();
+    check(stepped.at[i] - bent.at[i] === 8, `an arrow moved it by ${stepped.at[i] - bent.at[i]}`);
+    await $('canvas').fire('keydown', { target: handles()[i], key: level ? 'ArrowLeft' : 'ArrowUp', preventDefault() {} });
+    check(puts().length === 2, 'an arrow along the segment moved it');
+    // the inspector's buttons, in the transition's form
+    const formButton = (act) => element('form', { 'data-transition': 'write#0' }).appendChild(element('button', { 'data-act': act }));
+    await $('side-inspect').fire('click', { target: formButton('add-bend') });
+    await settle();
+    check(lineOf().at.length === stepped.at.length + 2 && handles().length === stepped.at.length + 2, `a bend more: ${JSON.stringify(lineOf())}`);
+    // its button goes with it: the keyboard goes to Add bend beside it (the fake DOM draws no buttons: one stands in)
+    let keyboard = null;
+    $('line-tools-write#0').querySelector = (selector) => ({ focus: () => { keyboard = selector; } });
+    await $('side-inspect').fire('click', { target: formButton('reset-line') });
+    await settle();
+    check(!('write→review' in (puts().pop()[2].layout.lines || {})) && !$('line-tools-write#0').innerHTML.includes('reset-line'),
+      'Reset line kept the line drawn by hand');
+    check(keyboard === '[data-act="add-bend"]', `the keyboard after Reset line: ${keyboard}`);
+  },
+
+  async a_line_in_a_lane_is_bent_where_it_is_drawn_and_a_states_forms_show_its_tools() {
+    const write = MACHINE.graph.transitions.find((t) => t.id === 'write#0');
+    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, transitions: [...MACHINE.graph.transitions,  // a pair: two lanes
+      { ...write, id: 'review#9', source: 'review', index: 9, target: 'write', path: 'states.review.transitions[9]' }] } };
+    await boot('?machine=review');
+    const link = () => $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'write#0');
+    const path = () => link().querySelector('.sg-edge').getAttribute('d').match(/-?[\d.]+/g).map(Number)
+      .reduce((points, v, k, all) => (k % 2 ? points : [...points, [v, all[k + 1]]]), []);
+    const near = (p, q) => Math.abs(p - q) < 0.6;
+    const onPath = ([x, y]) => path().slice(1).some(([bx, by], k) => {
+      const [ax, ay] = path()[k];
+      return near(ax, bx) ? near(x, ax) && y > Math.min(ay, by) - 0.6 && y < Math.max(ay, by) + 0.6
+        : near(y, ay) && x > Math.min(ax, bx) - 0.6 && x < Math.max(ax, bx) + 0.6;
+    });
+    const handles = () => $('canvas').querySelectorAll('.sg-bend');
+    const centre = (h) => [Number(h.getAttribute('x')) + 5, Number(h.getAttribute('y')) + 5];
+    await $('canvas').fire('pointerdown', { button: 0, target: link(), clientX: 10, clientY: 10, pointerId: 1 });
+    await settle();
+    check(handles().length >= 2 && handles().every((h) => onPath(centre(h))),
+      `handles off the line in its lane: ${handles().map(centre)} on ${path()}`);
+    const i = Math.floor(handles().length / 2);
+    const level = handles()[i].classList.contains('sg-bend--level');
+    const along = (d) => (level ? { clientX: 10, clientY: 10 + d } : { clientX: 10 + d, clientY: 10 });
+    const drawn = path();
+    await $('canvas').fire('pointerdown', { button: 0, target: handles()[i], pointerId: 1, ...along(0) });
+    await $('canvas').fire('pointermove', { target: handles()[i], ...along(10) });
+    await $('canvas').fire('pointerup', { target: handles()[i], ...along(10) });
+    await settle();
+    const puts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout'));
+    const lineOf = () => puts().pop()?.[2].layout.lines?.['write→review'];
+    const ends = (points) => JSON.stringify([points[0], points[points.length - 1]]);
+    check(String(path()) !== String(drawn) && handles().every((h) => onPath(centre(h))) && ends(path()) === ends(drawn),
+      `the bent line left its lane: ${drawn} -> ${path()}`);
+    // a state's inspector shows its transitions' line tools: a bend added there shows its Reset line
+    await choose('write');
+    await settle();
+    const other = element('form', { 'data-transition': 'write#1' }).appendChild(element('button', { 'data-act': 'add-bend' }));
+    await $('side-inspect').fire('click', { target: other });
+    await settle();
+    check(puts().pop()?.[2].layout.lines?.['write→failed']?.at?.length >= 5, 'Add bend in the state\'s form bent nothing');
+    const tools = $('line-tools-write#1').innerHTML;
+    // keyed per transition: redrawn with Reset line, the button clicked keeps the keyboard -- not another form's
+    check(tools.includes('data-act="reset-line" data-key="reset-line:write#1"') && tools.includes('data-act="add-bend" data-key="add-bend:write#1"')
+      && tools.includes('Select the line'), `the state's form of write#0: ${tools}`);
+    // right-angled for a line drawn by hand: it is one already, its bends stay
+    const bent = lineOf();
+    const select = element('select', { 'data-line': 'write#0' });
+    element('form', { 'data-transition': 'write#0' }).appendChild(select);
+    select.value = 'orthogonal';
+    await $('side-inspect').fire('change', { target: select });
+    await settle();
+    check(JSON.stringify(lineOf()) === JSON.stringify(bent), `Right-angled undid the bends: ${JSON.stringify(lineOf())}`);
+    select.value = 'straight';
+    await $('side-inspect').fire('change', { target: select });
+    await settle();
+    check(lineOf() === 'straight', `Straight kept the bends: ${JSON.stringify(lineOf())}`);
+  },
+
+  async a_bump_in_a_lane_dropped_in_line_with_its_far_side_goes() {
+    const write = MACHINE.graph.transitions.find((t) => t.id === 'write#0');
+    // up, across, down: in a lane the two upright segments go opposite ways, drawn apart from where they lie as one
+    reviewAnswer = { ...MACHINE, layout: { ...MACHINE.layout, lines: { 'write→review': { start: 'x', at: [0, -60, -300, 60, 0] } } },
+      graph: { ...MACHINE.graph, transitions: [...MACHINE.graph.transitions,
+        { ...write, id: 'review#9', source: 'review', index: 9, target: 'write', path: 'states.review.transitions[9]' }] } };
+    await boot('?machine=review');
+    const link = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'write#0');
+    await $('canvas').fire('pointerdown', { button: 0, target: link, clientX: 10, clientY: 10, pointerId: 1 });
+    await settle();
+    const handles = () => $('canvas').querySelectorAll('.sg-bend');
+    check(handles().length === 5, `handles: ${handles().length}`);
+    const { k } = canvasGeometry();
+    const x = (h) => Number(h.getAttribute('x'));
+    const by = (x(handles()[3]) - x(handles()[1])) * k;  // the second upright segment onto the fourth, as drawn
+    await $('canvas').fire('pointerdown', { button: 0, target: handles()[1], pointerId: 1, clientX: 10, clientY: 10 });
+    await $('canvas').fire('pointermove', { target: handles()[1], clientX: 10 + by, clientY: 10 });
+    await $('canvas').fire('pointerup', { target: handles()[1], clientX: 10 + by, clientY: 10 });
+    await settle();
+    const line = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop()?.[2].layout.lines?.['write→review'];
+    check(line?.at.length === 3 && handles().length === 3, `the bump stayed: ${JSON.stringify(line)}`);
+  },
+
+  async a_line_whose_transition_changed_under_the_pointer_is_neither_bent_nor_kept_as_the_pointer_had_it() {
+    await boot('?machine=review');
+    const link = (id) => $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id);
+    const path = (id) => link(id).querySelector('.sg-edge').getAttribute('d');
+    await $('canvas').fire('pointerdown', { button: 0, target: link('write#0'), clientX: 10, clientY: 10, pointerId: 1 });
+    await settle();
+    const handles = () => $('canvas').querySelectorAll('.sg-bend');
+    const handle = handles()[Math.floor(handles().length / 2)];
+    const along = (d) => (handle.classList.contains('sg-bend--level') ? { clientX: 10, clientY: 10 + d } : { clientX: 10 + d, clientY: 10 });
+    const before = path('write#0');
+    await $('canvas').fire('pointerdown', { button: 0, target: handle, pointerId: 1, ...along(0) });
+    await $('canvas').fire('pointermove', { target: handle, ...along(40) });
+    check(path('write#0') !== before, 'the drag did not bend the line');
+    // the file changed meanwhile: write#0 goes to failed now, write#1 the way write#0 went
+    const [first, second] = ['write#0', 'write#1'].map((id) => MACHINE.graph.transitions.find((t) => t.id === id));
+    const swapped = (t, other) => ({ ...other, id: t.id, index: t.index, path: t.path });
+    reviewAnswer = { ...MACHINE, versions: { ...MACHINE.versions, 'review.yaml': 'v2' }, graph: { ...MACHINE.graph,
+      transitions: MACHINE.graph.transitions.map((t) => (t.id === first.id ? swapped(t, second) : t.id === second.id ? swapped(t, first) : t)) } };
+    await Promise.all(DOC_LISTENERS.refresh.map((fn) => fn({ detail: { auto: true } })));
+    await settle();
+    check(link('write#1') && link('write#0'), 'the changed machine is not drawn');
+    const bentMeanwhile = path('write#1');
+    await $('canvas').fire('pointerup', { target: handle, ...along(40) });
+    await settle();
+    check(!CALLS.some(([method, p]) => method === 'PUT' && p.endsWith('/layout')), 'the drag bent the line of another way');
+    check(path('write#1') !== bentMeanwhile, 'the way is still drawn as the pointer had it');
+  },
+
   async runs_live_at_once_are_all_offered_in_the_bar_and_picked_there() {
     let r1 = 'paused';
     runsAnswer = () => [{ ...RUNS[0], id: 'r3', status: 'running' }, { ...RUNS[0], id: 'r2', status: 'succeeded', final_state: 'done' },

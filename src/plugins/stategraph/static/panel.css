@@ -187,6 +187,10 @@
 .sg-edge--draft { stroke: var(--accent); stroke-dasharray: 4 3; }
 .sg-band { fill: var(--accent-subtle); fill-opacity: 0.5; stroke: var(--accent); stroke-dasharray: 4 3; }
 .sg-hit { fill: none; stroke: transparent; stroke-width: 12; }
+/* the selected line's segment handles: dragged across their segment */
+.sg-bend { fill: var(--surface-0); stroke: var(--accent); stroke-width: 1.5; cursor: ns-resize; }
+.sg-bend--upright { cursor: ew-resize; }
+.sg-bend:hover, .sg-bend:focus-visible { fill: var(--accent); outline: none; }
 .sg-link--event > .sg-edge { stroke: var(--info); }
 .sg-link--error > .sg-edge { stroke: var(--danger); stroke-dasharray: 5 3; }
 .sg-link--else > .sg-edge { stroke-dasharray: 2 3; }
