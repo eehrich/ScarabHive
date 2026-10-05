@@ -37,6 +37,25 @@ export const ROOT_OPTIONS = {
   'elk.padding': '[top=24,left=24,bottom=24,right=24]',
 };
 
+/** The automatic layout 'flow': top down, in the file's order -- the YAML decides which state comes first and which
+ * transition goes back (a loop), not ELK's guess --, long transitions straight and the graph narrow (LINEAR_SEGMENTS;
+ * NETWORK_SIMPLEX is wider and takes 0.5 s for 30 states, on the page's thread). 'classic' (ROOT_OPTIONS) is left to
+ * right in ELK's own order: the layouts dragged before 'flow' came keep it, their positions were made against it. */
+export const FLOW_OPTIONS = {
+  ...ROOT_OPTIONS,
+  'elk.direction': 'DOWN',
+  'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER',
+  'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+  'elk.layered.nodePlacement.strategy': 'LINEAR_SEGMENTS',
+};
+
+/** A layout's automatic layout: its `auto`; without one 'flow', but 'classic' where it holds positions (dragged
+ * before `auto` was written). */
+export function autoOf(layout) {
+  if (layout?.auto === 'flow' || layout?.auto === 'classic') return layout.auto;
+  return Object.keys(layout?.positions || {}).length ? 'classic' : 'flow';
+}
+
 export const stateId = (name) => `s:${name}`;
 export const initialId = (region) => `i:${region || ''}`;
 export const edgeId = (transitionIdValue) => `t:${transitionIdValue}`;
@@ -94,8 +113,9 @@ function childrenOf(graph) {
   return byParent;
 }
 
-/** The ELK graph: composites as compound nodes, an initial dot per region, transitions with their labels. */
-export function elkInput(graph) {
+/** The ELK graph: composites as compound nodes, an initial dot per region, transitions with their labels; laid out
+ * 'classic' or 'flow' (autoOf). */
+export function elkInput(graph, auto = 'classic') {
   const byParent = childrenOf(graph);
   const known = new Set((graph.states || []).map((state) => state.name));
   const edges = [];
@@ -116,6 +136,9 @@ export function elkInput(graph) {
           // ELK sizes a composite from its children: the title band needs room of its own
           'elk.nodeSize.constraints': 'MINIMUM_SIZE',
           'elk.nodeSize.minimum': `(${compositeTitleWidth(state)}, ${PAD.top + PAD.bottom})`,
+          // the file's order does not reach into a composite (and ELK fails where a composite asks for it): a
+          // depth-first search finds the transitions that go back
+          ...(auto === 'flow' && { 'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST' }),
         },
         children: region(state.name, state.initial),
       };
@@ -134,7 +157,7 @@ export function elkInput(graph) {
       labels: text ? [{ text, width: textWidth(text, 11, true) + 8, height: 16 }] : [],
     });
   }
-  return { id: 'root', layoutOptions: { ...ROOT_OPTIONS }, children, edges };
+  return { id: 'root', layoutOptions: { ...(auto === 'flow' ? FLOW_OPTIONS : ROOT_OPTIONS) }, children, edges };
 }
 
 /** ELK's answer as flat boxes (absolute, with their parent), edge routes, and the state each initial dot points to. */
@@ -843,7 +866,7 @@ export class Canvas {
     let auto = { nodes: {}, edges: {} };
     if (this.graph.states.length && this.elk) {
       try {
-        auto = layoutFrom(await this.elk.layout(elkInput(this.graph)));
+        auto = layoutFrom(await this.elk.layout(elkInput(this.graph, autoOf(layout))));
       } catch (error) {
         console.error('stategraph: layout failed', error);  // eslint-disable-line no-console
         auto = gridLayout(this.graph);

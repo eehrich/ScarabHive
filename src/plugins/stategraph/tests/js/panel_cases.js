@@ -610,7 +610,21 @@ const CASES = {
     const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop();
     const moved = saved && Object.keys(saved[2].layout.positions).sort();
     check(JSON.stringify(moved) === JSON.stringify(['done', 'failed', 'write']), `positions saved: ${JSON.stringify(moved)}`);
+    check(saved[2].layout.auto === 'classic', `dragged against the classic layout, it stays: ${JSON.stringify(saved[2].layout)}`);
     check($('side-inspect').innerHTML.includes('2 states'), 'the drag lost the selection');
+  },
+
+  async the_first_drag_keeps_a_machine_laid_out_flow() {
+    reviewAnswer = { ...MACHINE, layout: { version: 1, positions: {} } };
+    await boot('?machine=review');
+    const node = (name) => $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointermove', { target: node('write'), clientX: 60, clientY: 30 });
+    await $('canvas').fire('pointerup', { target: node('write'), clientX: 60, clientY: 30 });
+    await settle();
+    const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop()?.[2].layout;
+    check(saved?.auto === 'flow' && Object.keys(saved.positions).join() === 'write',
+      `the first position turned the layout classic: ${JSON.stringify(saved)}`);
   },
 
   async a_shift_drag_on_the_empty_canvas_selects_the_states_inside_the_band() {
@@ -1020,6 +1034,25 @@ const CASES = {
     check(straight.some((d) => !square(d)), `the start lines do not follow the machine's straight line: ${JSON.stringify(straight)}`);
   },
 
+  async a_machine_without_positions_is_drawn_top_down() {
+    load((await import('./paths.js')).ELK_PATH);  // the direction is ELK's: the grid has none
+    reviewAnswer = { ...MACHINE, layout: { version: 1, positions: {} } };
+    await boot('?machine=review');
+    await settle();
+    const [write, review] = ['write', 'review'].map(canvasGeometry().boxOf);
+    // above it, not beside it: left to right puts it left of review, and higher up than review's top as well
+    check(write.y + write.h <= review.y && write.x < review.x + review.w && review.x < write.x + write.w,
+      `write is not above review: ${JSON.stringify([write, review])}`);
+  },
+
+  async a_machine_dragged_before_flow_came_stays_left_to_right() {
+    load((await import('./paths.js')).ELK_PATH);
+    await boot('?machine=review');  // MACHINE's layout: done placed by hand, no auto
+    await settle();
+    const [write, review] = ['write', 'review'].map(canvasGeometry().boxOf);
+    check(write.x + write.w <= review.x, `write is not left of review: ${JSON.stringify([write, review])}`);
+  },
+
   async a_stored_line_style_no_longer_offered_is_named_right_angled_as_drawn() {
     reviewAnswer = { ...MACHINE, layout: { ...MACHINE.layout, line: 'auto', lines: { 'review→done': 'auto', 'write→review': 'orthogonal' } } };
     await boot('?machine=review');
@@ -1065,6 +1098,7 @@ const CASES = {
     const laid = layouts().pop();
     check(JSON.stringify(laid?.positions) === '{}' && laid.line === 'straight' && Object.keys(laid.lines || {}).length === 2,
       `auto layout dropped the line styles: ${JSON.stringify(laid)}`);
+    check(laid.auto === 'flow', `auto layout lays the classic machine out flow: ${JSON.stringify(laid)}`);
   },
 
   async a_renamed_state_takes_its_line_styles_along_and_an_undo_puts_them_back() {

@@ -4,7 +4,7 @@
 // The layout test loads the vendored ELK the way the panel does (a classic script defining the global ELK).
 
 import {
-  applyPositions, clipToBox, compositeTitleWidth, dropInto, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
+  applyPositions, autoOf, clipToBox, compositeTitleWidth, dropInto, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
   groupedSpots, labelSpot, lanes, lineKeys, orthogonalRoute, renamedLines, selectedTransitions, transitionRoute, selectionOf, statesWithin, toggled,
   NOTE, noteKey, noteLines, notePlaces, foldTrace,
@@ -100,6 +100,36 @@ test('ELK lays the graph out: children inside their composite, every edge routed
   }
   assert(layout.nodes['s:write'].x < layout.nodes['s:route'].x, 'left to right');
   equal(Object.entries(layout.initials).sort(), [['i:', 's:write'], ['i:review', 's:read']], 'each initial dot knows the state it points to');
+});
+
+test('autoOf: a layout without positions is laid out flow, one dragged before flow came classic, its auto wins', () => {
+  equal(autoOf(undefined), 'flow', 'no layout');
+  equal(autoOf({ version: 1, line: 'straight', positions: {} }), 'flow', 'no positions');
+  equal(autoOf({ version: 1, positions: { a: { x: 1, y: 2 } } }), 'classic', 'dragged against the classic layout');
+  equal(autoOf({ version: 1, auto: 'flow', positions: { a: { x: 1, y: 2 } } }), 'flow', 'dragged against flow');
+  equal(autoOf({ version: 1, auto: 'classic' }), 'classic', 'kept classic');
+  equal(elkInput(GRAPH).layoutOptions['elk.direction'], 'RIGHT', 'classic unless asked');
+});
+
+test('flow lays the states out top down in the order of the file: the loops go back up', async () => {
+  const state = (name, type = 'state') => ({ name, parent: null, type, composite: false, kind: null, label: '', icon: null });
+  const go = (source, index, target, trigger = 'done') => ({ id: `${source}#${index}`, source, index, target, trigger, guard: null, effect: null });
+  // fix sends the work back to write twice and once to check: by its edges ELK would take it for a source, at the top
+  const graph = { initial: 'write', states: [state('write'), state('check'), state('fix'), state('done', 'final')],
+    transitions: [go('write', 0, 'check'), go('check', 0, 'done'), go('check', 1, 'write'), go('check', 2, 'fix'),
+      go('fix', 0, 'write'), go('fix', 1, 'write', 'error'), go('fix', 2, 'check')] };
+  const { nodes } = layoutFrom(await new ELK().layout(elkInput(graph, 'flow')));
+  const y = (name) => nodes[stateId(name)].y;
+  assert(y('write') < y('check') && y('check') < y('fix'), `top down as listed: ${JSON.stringify(nodes)}`);
+  // the same loops inside a composite
+  const inside = { initial: 'start',
+    states: [state('start'), { ...state('work'), composite: true, initial: 'write' },
+      ...graph.states.filter((s) => s.name !== 'done').map((s) => ({ ...s, parent: 'work' })), state('done', 'final')],
+    transitions: [go('start', 0, 'work'), ...graph.transitions] };
+  const nested = layoutFrom(await new ELK().layout(elkInput(inside, 'flow'))).nodes;
+  const at = (name) => nested[stateId(name)].y;
+  assert(at('start') < at('work') && at('write') < at('check') && at('check') < at('fix'),
+    `top down from the composite's initial state: ${JSON.stringify(nested)}`);
 });
 
 // ------------------------------------------------------------------ positions

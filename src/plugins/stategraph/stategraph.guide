@@ -97,7 +97,11 @@ the composite. @{b}Find a state@{ub} selects a state by name.
 after an edit (the last 20 edits): the unsaved text, or with auto-save the
 file. @{b}Fit@{ub}, the zoom buttons and
 @{b}Auto layout@{ub} (it asks before it drops positions you dragged)
-arrange the view.
+arrange the view. The automatic layout runs top down in the order of the
+file: the states as the YAML lists them (inside a composite, along its
+transitions from its start), so a transition up the canvas is a loop going
+back. A machine whose positions were dragged before this layout
+came keeps the older one, left to right, until Auto layout.
 
 @{table}
 On the graph | Does

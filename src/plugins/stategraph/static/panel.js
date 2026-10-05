@@ -8,7 +8,7 @@ import {
   trusted, update, withBusy, yamlCode,
 } from '/static/kit/panel-kit.js';
 import {
-  Canvas, fragmentLock, groupedSpots, keepingChoices, LINE_STYLES, lineKeys, NOTE, noteKey, outermost, posixPath,
+  autoOf, Canvas, fragmentLock, groupedSpots, keepingChoices, LINE_STYLES, lineKeys, NOTE, noteKey, outermost, posixPath,
   problemIndex, putTyped, renamedLines, runOverlay, sameSelection, selectionOf, shorten, stateFragment, typedIn,
   foldTrace,
 } from './graph.js';
@@ -293,7 +293,8 @@ function savePositions(spots) {
 
 /** The layout with `changes` (positions, line, lines) over it: drawn at once and stored in the sidecar. */
 async function saveLayout(changes) {
-  const layout = { ...S.machine.layout, version: 1, ...changes };
+  // its automatic layout written down: the first position dragged must not turn a 'flow' layout 'classic' (autoOf)
+  const layout = { ...S.machine.layout, version: 1, auto: autoOf(S.machine.layout), ...changes };
   S.machine.layout = layout;
   canvas.setLayout(layout);
   if (!S.machine.writable) return;  // kept for this view only: the sidecar sits next to a read-only file
@@ -730,7 +731,8 @@ async function travel(back) {
     ...(step.spots && { spots: spotsOf(Object.keys(step.spots)) }),
     ...(step.styles && { styles: stylesOf(Object.keys(step.styles)) }) }].slice(-UNDO_DEPTH);
   if (step.spots || step.styles) {  // the edit changed the layout as well: that part goes back with its text, the rest stays
-    const layout = { ...m.layout, version: 1, positions: patched(positions(), step.spots), lines: patched(lineStyles(), step.styles) };
+    const layout = { ...m.layout, version: 1, auto: autoOf(m.layout), positions: patched(positions(), step.spots),
+      lines: patched(lineStyles(), step.styles) };
     try {
       await api(`${API}/machines/${enc(m.id)}/layout`, { method: 'PUT', json: { layout }, quiet: true });
     } catch (error) {
@@ -3138,7 +3140,7 @@ $('autoLayout').addEventListener('click', async () => {
   if (!S.machine) return;
   if (Object.keys(positions()).length && !await confirm('Forget the positions dragged by hand and lay the machine out anew?',
     { title: 'Auto layout', confirmLabel: 'Lay out' })) return;
-  await saveLayout({ positions: {} });  // the line styles stay: they are no positions
+  await saveLayout({ positions: {}, auto: 'flow' });  // the line styles stay: they are no positions
   await drawGraph({ fit: true });
 });
 
