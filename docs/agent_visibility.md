@@ -87,76 +87,72 @@ when merging). Whoever wants a lower value sets it explicitly (`guest` or
 
 ## Configuration
 
-### YAML Configuration (agents.yaml)
+### YAML configuration
+
+Agents are server entries under `plugins: servers:`, in `config/plugins.yaml`,
+any `config/agents*/*.yaml` or a plugin's `agents/*.yaml` (see
+[Configuration-Based Agents](config_based_agents.md)):
 
 ```yaml
-agents:
-  # UI-only agent (default)
-  financial_analyst:
-    enabled: true
-    description: "Financial analyst for stock market analysis"
-    base_type: agent
-    agent_config:
-      llm_profile: turbo
-      max_steps: 20
-      system_template: "config/prompts/financial_analyst_prompt.md"
-      tools:
-        allowed:
-          - "yahoo_finance/*"
-          - "web_scraper/*"
-    metadata:
-      author: "AgentSystem"
-      version: "1.0.0"
-      visibility: "ui"  # Show in UI dropdown, NOT as tool
-      category: "financial"
+plugins:
+  servers:
+    # UI-only agent
+    support_chat:
+      type: basic_agent
+      enabled: true
+      description: "Answers questions about the product"
+      agent_config:
+        llm_profile: [normal, think]
+        max_steps: 20
+        system_template: "./prompts/support_chat.md"
+        tools:
+          allowed: ["web_scraper/*"]
+      metadata:
+        visibility: "ui"       # in the UI dropdown, NOT as a tool
+        category: "support"
 
-  # Tool-only agent (backend service)
-  text_summarizer:
-    enabled: true
-    description: "Text summarization service for other agents"
-    base_type: agent
-    agent_config:
-      llm_profile: normal
-      max_steps: 5
-      system_prompt: "You are a text summarizer. Provide concise summaries."
-    metadata:
-      visibility: "tool"  # Available as tool, NOT in UI
-      category: "support"
+    # Tool-only agent (backend service)
+    text_summarizer:
+      type: basic_agent
+      enabled: true
+      description: "Text summarization service for other agents"
+      agent_config:
+        llm_profile: normal
+        max_steps: 5
+        system_prompt: "You are a text summarizer. Provide concise summaries."
+      metadata:
+        visibility: "tool"     # callable by other agents, NOT in the UI
 
-  # Dual-purpose agent
-  research_agent:
-    enabled: true
-    description: "Web research agent with search capabilities"
-    base_type: agent
-    agent_config:
-      llm_profile: normal
-      max_steps: 15
-      tools:
-        allowed:
-          - "duckduckgo_search/*"
-          - "web_scraper/*"
-    metadata:
-      visibility: "both"  # UI + Tool
-      category: "research"
+    # Dual-purpose agent
+    research_agent:
+      type: basic_agent
+      enabled: true
+      description: "Web research agent with search capabilities"
+      agent_config:
+        llm_profile: normal
+        max_steps: 15
+        tools:
+          allowed: ["duckduckgo_search/*", "web_scraper/*"]
+      metadata:
+        visibility: "both"     # UI + tool
 
-  # Private/experimental agent
-  experimental_rag:
-    enabled: true
-    description: "Experimental RAG agent for testing"
-    base_type: agent
-    agent_config:
-      llm_profile: deepseek
-      max_steps: 10
-    metadata:
-      visibility: "private"  # Neither UI nor tool
-      category: "development"
+    # Private/experimental agent
+    experimental_rag:
+      type: basic_agent
+      enabled: true
+      description: "Experimental RAG agent for testing"
+      agent_config:
+        llm_profile: think
+        max_steps: 10
+      metadata:
+        visibility: "private"  # neither UI nor tool (the default)
 ```
 
 ### Plugin-Agents (plugin.toml)
 
 For a plugin, `visibility` is in the `[plugin]` table of its
 manifest — that is the table `load_plugin_metadata` returns and from
-which `ServerDecl.visibility` reads ([runtime.py:129](../src/agent_system/runtime.py#L129)):
+which `ServerDecl.visibility` reads (`src/agent_system/runtime.py`):
 
 ```toml
 # src/plugins/<name>/plugin.toml
@@ -171,19 +167,19 @@ category = "tools"
 visibility = "both"  # "ui", "tool", "both" or "private"
 ```
 
-**Order** ([runtime.py:120-132](../src/agent_system/runtime.py#L120-L132)) —
-the first source that says something wins:
+**Order** (`ServerDecl.visibility` in `src/agent_system/runtime.py`) —
+the first source that names a visibility wins:
 
-1. the instance metadata (`metadata.visibility` on the entry in
-   `config/plugins.yaml`),
+1. the instance metadata, when it names one (`metadata.visibility` on the
+   entry -- a `metadata` block with only `min_role` or `author` names none),
 2. the manifest,
 3. otherwise **`private`** — not visible, safe by default. A
    plugin agent that declares no visibility anywhere therefore appears
    neither in the UI nor as a tool.
 
-⚠️ Measured on 06.09.2026: **no** shipped `plugin.toml` declares
-a visibility, and in `config/plugins.yaml` exactly one entry does. Anyone
-relying on a generous default is relying on nothing.
+⚠️ **No** shipped `plugin.toml` declares a visibility, and no entry in
+`config/plugins.yaml` does: every agent that shows somewhere says so in its own
+YAML. Anyone relying on a generous default is relying on nothing.
 
 ## Internal Implementation
 
@@ -222,7 +218,7 @@ This ensures that UI-only agents (`visibility: "ui"`) do **not** appear in tool 
 
 ### 1. User-Facing Agents (UI-only)
 
-**Example:** `financial_analyst`, `code_reviewer`, `research_assistant`
+**Example:** `support_chat`, `code_reviewer`, `research_assistant`
 
 These agents are designed for direct user interaction:
 - Visible in UI agent dropdown
@@ -296,7 +292,7 @@ metadata:
 **UI-only** for:
 - User-facing conversational agents
 - Agents with complex workflows requiring human oversight
-- Specialized analysts (financial, code review, etc.)
+- Specialized analysts (research, code review, etc.)
 
 **Tool-only** for:
 - Simple, focused utility functions
@@ -353,16 +349,18 @@ When changing visibility, increment the version:
 metadata:
   version: "1.1.0"  # Incremented after changing visibility
   visibility: "both"  # Changed from "ui" to "both"
-  changelog: "v1.1.0: Now available as tool for other agents"
 ```
+
+`metadata` keeps `visibility`, `min_role`, `author`, `version`, `tags` and
+`category`; other keys (a `changelog`) are dropped when the config loads.
 
 ## Migration Guide
 
 ### Updating Existing Agents
 
-**Before** (implicit UI-only):
+**Before** (no visibility -- private, shown nowhere):
 ```yaml
-financial_analyst:
+support_chat:
   enabled: true
   description: "..."
   agent_config:
@@ -374,7 +372,7 @@ financial_analyst:
 
 **After** (explicit visibility):
 ```yaml
-financial_analyst:
+support_chat:
   enabled: true
   description: "..."
   agent_config:
@@ -394,17 +392,19 @@ the order above: instance metadata, then the plugin manifest, else private):
 
 ## Schema Validation
 
-The JSON schema (`schemas/config-agents.schema.json`) validates visibility values:
+The config model (`AgentMetadata` in `src/agent_system/config/models.py`) and the
+JSON schemas generated from it (`schemas/plugins-config.schema.json`,
+`schemas/main-config.schema.json`, `schemas/config-part.schema.json`) accept
+these values:
 
 ```json
 "visibility": {
-  "type": "string",
-  "enum": ["ui", "tool", "both", "private"],
-  "default": "ui"
+  "default": "private",
+  "enum": ["ui", "tool", "both", "private"]
 }
 ```
 
-Invalid values will be rejected during config validation.
+Invalid values are rejected when the config loads.
 
 ## API Endpoints
 
@@ -417,15 +417,15 @@ Returns list of agents with `_tool_public=True` (visibility: "ui" or "both")
 ## Future Enhancements
 
 Planned improvements:
-1. **Call Depth Tracking** - Prevent infinite recursion in agent-to-agent calls
-2. **Permission Inheritance** - Control tool scope in nested calls
-3. **Resource Limits** - Max concurrent agent calls, timeout controls
-4. **Audit Logging** - Track agent-to-agent call chains
-5. **Dynamic Visibility** - Change visibility at runtime via API
+1. **Permission Inheritance** - Control tool scope in nested calls
+2. **Resource Limits** - Max concurrent agent calls, timeout controls
+3. **Audit Logging** - Track agent-to-agent call chains
+4. **Dynamic Visibility** - Change visibility at runtime via API
+
+(A call to an agent that already runs above it is refused today:
+`error_type: "recursive_call"`.)
 
 ## See Also
 
-- [Agent Configuration Guide](./agent_configuration.md)
+- [Configuration-Based Agents](./config_based_agents.md)
 - [Plugin Authoring Guide](./plugin_authoring.md)
-- [Tool System Documentation](./tool_system.md)
-- [Epic 0043: Configuration-Based Agents](./epic_0043_completion_summary.md)
