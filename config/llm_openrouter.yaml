@@ -1,9 +1,8 @@
 # =============================================================================
 # OPENROUTER MODELS
 # =============================================================================
-# Entries inherit from each other via `extends:` — see
-# docs/llm_model_inheritance_konzept.md. Why a value is what it is (backend
-# pins, fp8, cache keys): docs/llm_catalog.md
+# Entries inherit from each other via `extends:`. Why a value is what it is
+# (backend pins, fp8, cache keys): docs/llm_catalog.md
 # =============================================================================
 
 llm_system:
@@ -14,7 +13,7 @@ llm_system:
       provider: openai_responses
       api_key: ${OPENROUTER_API_KEY}
       base_url: https://openrouter.ai/api/v1
-      context_window: 272000      # independend of more conext size limit by default to 272K to avoid long context costs
+      context_window: 272000      # capped at 272K even where a model has more, to avoid long-context pricing
       request_timeout: 600        # some models are really slow
       stream_silence_timeout: 900 # seconds of keep-alives only, then a retry
       max_tokens: 16384           # default limit to 16k
@@ -40,23 +39,20 @@ llm_system:
       extends: openrouter-base
       prompt_cache_ttl_minutes: 5   # implicit cache, about 3-5 min, set by Google (not configurable); from 4096 prompt tokens
       context_window: 1048576     # Flash and Lite: full window, no long-context tier (Pro: below)
-      tool_schema_dialect: gemini_function_declarations   # sonst MALFORMED_FUNCTION_CALL
+      tool_schema_dialect: gemini_function_declarations   # otherwise MALFORMED_FUNCTION_CALL
       provider_routing: # make a defined order to avoid reasoning breaks
-        # AI Studio first: measured 2026-10-01 replaying 30 calls of one agent
-        # run, 2 runs each (docs/llm_catalog.md, "AI Studio vor Vertex").
+        # AI Studio first (docs/llm_catalog.md).
         order:
         - google-ai-studio
         - google-vertex
-        # Ohne diesen Riegel darf OpenRouter ueber die Liste hinaus ausweichen
-        # — dann greift die definierte Reihenfolge nicht mehr, und der
-        # Prompt-Cache des vorherigen Anbieters ist verloren. Faellt die Liste
-        # aus, uebernimmt die llm_profile-Kette mit einem anderen Modell.
+        # Without this, OpenRouter may route beyond the list, which breaks the
+        # defined order and loses the previous provider's prompt cache. If the
+        # list is exhausted, the llm_profile chain falls over to another model.
         allow_fallbacks: false
 
-      # Kein safety_settings: OpenRouter laesst das Feld auf /responses fallen.
-      # Wer eigene Schwellen braucht, nimmt die nativen gemini-3-*-Eintraege
-      # (provider: gemini_sdk), die direkt mit Google reden. Warum das hier
-      # nichts kostet: docs/llm_catalog.md
+      # No safety_settings: OpenRouter drops the field on /responses. For custom
+      # thresholds use the native gemini-3-* entries (provider: gemini_sdk),
+      # which talk to Google directly. Details: docs/llm_catalog.md
 
       capabilities:
         json_mode: true
@@ -117,7 +113,6 @@ llm_system:
       extends: openrouter-gpt-astra
       max_tokens: 0
 
-    # Terra is gone since GPT-6 (its alias stays on gpt-5.6-terra); Sol took its place.
     openrouter-gpt-sol:
       extends: openrouter-gpt
       model: ~openai/gpt-sol-latest
@@ -158,14 +153,14 @@ llm_system:
       # renews it. 1 h (2x input per write) is not wired -- and on the Responses
       # route OpenRouter drops a cache_control that carries a ttl.
       prompt_cache_ttl_minutes: 5
-      # Claude spricht cache_control, nicht die OpenAI-Breakpoints — und
-      # OpenRouter reicht die nur ueber Chat Completions durch, nicht ueber
-      # die Responses-API der Basis. Ohne beides laeuft Claude ohne Cache.
+      # Claude uses cache_control, not OpenAI-style breakpoints, and OpenRouter
+      # passes it through only on Chat Completions, not on the base's Responses
+      # API. Without both, Claude runs without a cache.
       provider: openai_httpx
       context_window: 1000000     # Claude 5.x: 1M at one price, no long-context tier
       prompt_cache_marker_style: anthropic
-      reasoning_details_mode: keep_all   # sonst bricht das Cache-Praefix jede Runde
-      include_thoughts: false     # Chat Completions liefert keine Thoughts
+      reasoning_details_mode: keep_all   # otherwise the cache prefix breaks every round
+      include_thoughts: false     # Chat Completions returns no thoughts
       capabilities:
         streaming: false
         image_input: true
@@ -220,10 +215,8 @@ llm_system:
       extends: openrouter-deepseek
       model: ~deepseek/deepseek-v4-flash-latest
       provider_routing:
-        # deepinfra zuerst: bei unseren Cache-Raten rund halb so teuer wie
-        # streamlake (0,080 vs 0,220 $/M Input). streamlake als Zwilling —
-        # hoeherer Durchsatz und der guenstigste cache-read. baidu antwortet
-        # mit 429. Beide fp8.
+        # deepinfra first (cheapest at typical cache hit rates), streamlake as
+        # twin (higher throughput). Both fp8.
         order:
         - deepinfra
         - streamlake
@@ -250,22 +243,9 @@ llm_system:
         - deepinfra
         allow_fallbacks: false
 
-    # V4.1 Flash (alias_target 24.09.2026: deepseek/deepseek-v4.1-flash).
-    # Teurer als V4-Flash, billiger als Pro -- und seit 24.09. laeuft keine
-    # Kette mehr auf Pro: dieses Modell traegt jetzt auch `think`,
-    # `llm_writer_thinking`, den amiga_coder und die debate_forum-Panels.
-    # Die Pro-Knoten und -Profile stehen weiter da, benutzt sie nur niemand.
-    #
-    # Gepinnt auf die zwei guenstigsten fp8-Anbieter, $/M in/out/cache-read
-    # (OpenRouter-Endpunkte 24.09.2026):
-    #   deepinfra  0.140 / 0.420 / 0.0042
-    #   streamlake 0.199 / 0.794 / 0.0040
-    # Billiger sind nur fp4 (openinference/relace 0.100/0.500) und Anbieter
-    # ohne genannte Quantisierung (morph 0.128/0.510, wafer 0.099/0.600 --
-    # dessen cache-read 0.06 frisst den Vorteil bei unserem wiederholten
-    # Kontext wieder auf). fireworks (0.220/0.660) war der alte Zwilling und
-    # ist teurer als streamlake; der quantizations-Filter, der ihn frueher
-    # herausgehalten haette, kann damit wieder stehen.
+    # Newest DeepSeek Flash (alias). Used by the `think` profile and the
+    # writer thinking profile.
+    # Pinned to the two cheapest fp8 providers (docs/llm_catalog.md).
     openrouter-deepseek-latest-flash:
       extends: openrouter-deepseek
       model: ~deepseek/deepseek-flash-latest
@@ -334,13 +314,11 @@ llm_system:
       extends: openrouter-glm
       max_tokens: 0
 
-    # Benchmark-Kandidaten fuer den Kapitel-Scorer (13.09.2026, siehe
-    # writer_pipeline_v4/docs/v4_issue_codes_uebersicht.md).
     openrouter-glm-flash:
       extends: openrouter-base
       model: ~z-ai/glm-flash-latest
       context_window: 1000000     # no price tier, as glm
-      # openrouter-base setzt 16384 — die laengsten Scorer-Laeufe kamen auf 15.3k
+      # no cap: the longest scorer outputs come close to the base default of 16384
       max_tokens: 0
 
     openrouter-kimi-k3:

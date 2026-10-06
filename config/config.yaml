@@ -95,7 +95,7 @@ skills:
 
 # Multi-user authentication and authorization (optional)
 auth:
-  enabled: true  # Disabled for development - set to true for production
+  enabled: true  # false disables authentication (development only)
   secret_key: "published-signing-key-replace-with-your-own-0000000000"
   algorithm: "HS256"
   # The key above is published (it is in the repository): anyone can sign an
@@ -153,7 +153,7 @@ auth:
     default_role: "user"
 
   # ============================================================
-  # Anonymous Access Configuration (NEW)
+  # Anonymous Access Configuration
   # ============================================================
   # When auth.enabled=true but anonymous_access.enabled=true,
   # unauthenticated users can access certain endpoints with limited permissions.

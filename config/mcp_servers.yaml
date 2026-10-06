@@ -4,10 +4,7 @@
 # Configuration for remote/external MCP servers
 #
 # Reach: tools from external servers arrive at agents through the API AND
-# through `agent-cli run`. The latter did not work until 2026-09-02 -- the CLI
-# connected inside its own asyncio.run() and closed that loop before the agent
-# ever asked. It now runs ONE loop; the explanation sits at run_async() in
-# agent_system/agent_cli.py.
+# through `agent-cli run`.
 
 external_servers:
   # Connection settings
@@ -26,9 +23,8 @@ external_servers:
   # CAREFUL when adding these from another file: a config included AFTER this
   # one that declares `external_servers.remote_servers` REPLACES this whole
   # block rather than merging into it -- its siblings `connection` and `cache`
-  # do merge. Measured 2026-09-04: one entry added from config/agents/*.yaml
-  # left `remote_servers` holding only that entry, and the three below were
-  # gone without a word. Declare external servers here, in this file.
+  # do merge. The servers below would silently disappear. Declare external
+  # servers here, in this file.
   remote_servers:
     # --- A local server over stdio --------------------------------------
     # The only stdio entry here, hence the detail: with transport stdio the
@@ -41,12 +37,8 @@ external_servers:
     # servers on disk (offline, pinned, a host without npm), put them under
     # external/ -- that is what it is for, and it is in .gitignore.
     #
-    # Verified live on 2026-09-01 across the whole chain: bootstrap connects
-    # ("1 connected, 0 failed", protocol 2025-06-18), the agent
-    # mcp_external_test_agent sees 13 tools and actually called two of them --
-    # the log holds the server's answers, not the LLM's. It stays off all the
-    # same: a reference test server does not belong in a production start, and
-    # `npx` assumes node on the host.
+    # It is off by default: a reference test server does not belong in a
+    # production start, and `npx` assumes node on the host.
     everything:
       enabled: false
       transport: stdio
@@ -77,10 +69,8 @@ external_servers:
     # symlink on Linux, while the path to dist/index.js is the same on both.
     # Relative to the repo root, which is where API and CLI start.
     #
-    # When it pays off against npx: measured 2026-09-01, median of three
-    # connections each -- npx 1.11s, local 0.18s. Factor six, and the start no
-    # longer depends on the network. The price is that someone has to trigger
-    # the update.
+    # Versus npx: connects much faster and the start does not depend on the
+    # network. The price is that someone has to trigger the update.
     everything_local:
       enabled: false
       transport: stdio
@@ -99,13 +89,12 @@ external_servers:
     # host without Edge (the Linux server) use --browser chromium and run
     # `npx playwright install chromium` once. --isolated keeps the profile in
     # memory, --idle-timeout closes a forgotten browser after 10 minutes (the
-    # value is MILLISECONDS: 600 closed it between two steps of a run).
+    # value is in MILLISECONDS).
     # Screenshots and traces land in --output-dir.
     playwright:
       enabled: true
       # Started only in a process that runs an agent naming `playwright.*`
-      # in tools.allowed. At startup every process -- API, each agent-cli,
-      # every task worker -- started its own copy, for nobody.
+      # in tools.allowed, not by every process at startup.
       connect: on_demand
       transport: stdio
       # A page load or a click that waits for navigation outlasts the global
@@ -128,10 +117,9 @@ external_servers:
     # server translates MCP into a socket on localhost:9876, where the Blender
     # addon listens.
     #
-    # OFF since the native `blender` plugin (src/plugins/blender) exists: that
-    # speaks the addon socket directly, so nobody needs this bridge -- and an
-    # enabled external server is started for EVERY agent run, which meant a
-    # whole process spawned for nobody.
+    # OFF: the native `blender` plugin (src/plugins/blender) speaks the addon
+    # socket directly, so this bridge is not needed -- and an enabled external
+    # server is started for EVERY agent run.
     #
     # It stays declared because it is the only thing that delivers the
     # PolyHaven/Sketchfab/Hyper3D marketplace tools. To get those: set
@@ -149,8 +137,8 @@ external_servers:
     blender:
       enabled: false
       transport: stdio
-      # Renders take minutes; the global connection.timeout (5s) killed every
-      # execute_blender_code call. The bridge itself cuts off towards Blender
+      # Renders take minutes; the global connection.timeout (5s) is far too
+      # short for execute_blender_code. The bridge itself cuts off towards Blender
       # at 180s -- 300 here means its error arrives first and carries the
       # better message.
       timeout: 300

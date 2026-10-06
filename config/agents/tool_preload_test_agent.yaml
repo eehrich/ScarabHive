@@ -1,15 +1,13 @@
-# Live-Testagent für tool_preload: die vorhersagbare Eröffnung — "arbeite an
-# Dokument X" ⇒ store lesen — läuft VOR dem ersten LLM-Call, per Code.
+# Live test agent for tool_preload: the predictable opening ("work on document X" =>
+# read the store) runs BEFORE the first LLM call, in code.
 #
-# Der Beweis gelingt, wenn der Agent den Inhalt nennt, ohne dass in seiner
-# Session ein von IHM ausgelöster Read steht: nur der preload_-Aufruf darf da
-# sein.
+# Passes if the agent names the content without any Read triggered BY IT in its session:
+# only the preload_ call may be there.
 #
-# Zum Nachfahren BEIDE enabled-Flags unten auf true setzen (Store UND Agent),
-# die API neu starten und ein Dokument anlegen:
+# To rerun, set BOTH enabled flags below to true (store AND agent), restart the API and
+# create a document:
 #   data/json_store/preload_store/preload-demo/mein-plan.json
 #   {"namespace":"preload-demo","doc":"mein-plan","owner":"x","data":{...}}
-# Rezept für den API-Start: .claude/skills/verify.
 plugins:
   servers:
     preload_store:
@@ -19,9 +17,8 @@ plugins:
 
     tool_preload_test_agent:
       type: basic_agent
-      # Aus, damit er nicht in der Agentenliste steht. Zum Nachfahren des
-      # Live-Tests auf true setzen und die API neu starten; Rezept in
-      # .claude/skills/verify.
+      # Off so it does not appear in the agent list. Set to true and restart the API to rerun
+      # the live test.
       enabled: false
       description: "Test agent: preloading the predictable opening tool call"
 
@@ -40,9 +37,8 @@ plugins:
             tool_preload.preload:
               enabled: true
               rules:
-                # "… Dokument mein-plan …" -> read auf den Store. namespace
-                # fest, damit Vorbereitung und Agenten-Session dasselbe
-                # Dokument sehen (sonst session-gescoped).
+                # "... Dokument mein-plan ..." -> read on the store. namespace is fixed so that
+                # preparation and agent session see the same document (otherwise session-scoped).
                 - match: "Dokument\\s+(?P<doc>[\\w-]+)"
                   tool: "preload_store_manage_json"
                   params:

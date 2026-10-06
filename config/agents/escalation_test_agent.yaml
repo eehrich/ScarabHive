@@ -7,7 +7,7 @@ plugins:
       description: "escalation test store"
 
     # Dev harness for auto_escalate_on_stuck. Standard profile = turbo
-    # (gemini-3.5-flash-lite via OpenRouter), advanced = or-deepseek-flash, dahinter chat. This validates the
+    # (gemini-3.5-flash-lite via OpenRouter), advanced = or-deepseek-flash, then chat. This validates the
     # ESCALATION MECHANISM (the model swap fires on stuck signals), not that the
     # advanced model is stronger. Run explicitly with `agent-cli run --agent
     # escalation_test_agent` and a deliberately repetitive task.

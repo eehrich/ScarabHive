@@ -1,13 +1,13 @@
-# Live-Testagent für agent_continuation.required_spawns: ein Moderator, der
-# angewiesen ist, die Aufgabe ohne Reviewer zu beantworten. Die Prüfung muss
-# ihn zurückschicken; danach spawnt er den Reviewer und antwortet erneut.
+# Live test agent for agent_continuation.required_spawns: a moderator told to answer the
+# task without a reviewer. The check must send it back; it then spawns the reviewer and
+# answers again.
 #
-# Der Beweis gelingt, wenn in seiner Session erst eine Antwort ohne Spawn steht,
-# dann die Nachricht mit injected_by "agent_continuation.required_spawns",
-# dann ein create auf required_spawns_test_reviewer und die zweite Antwort.
+# Passes if its session shows first an answer without a spawn, then the message with
+# injected_by "agent_continuation.required_spawns", then a create on
+# required_spawns_test_reviewer and the second answer.
 #
-# Zum Nachfahren alle drei enabled-Flags auf true setzen, dann:
-#   .venv/Scripts/python.exe -m agent_system.agent_run --agent required_spawns_test_agent "Nenne eine Farbe."
+# To rerun, set all three enabled flags to true, then:
+#   .venv/Scripts/python.exe -m agent_system.agent_run --agent required_spawns_test_agent "Name a color."
 plugins:
   servers:
     required_spawns_test_sam:
