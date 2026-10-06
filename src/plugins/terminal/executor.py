@@ -35,7 +35,16 @@ def _restore_console_mode() -> None:
 #: it starts. It also takes the command off the terminal the server runs in:
 #: a Ctrl+C there no longer reaches it directly (the cancelled tool call kills
 #: it), and it cannot read that terminal (/dev/tty) any more.
-_SPAWN_OPTIONS = {} if os.name == "nt" else {"start_new_session": True}
+#: Everywhere: nothing to read on stdin (a background command: an input that
+#: stays open, see execute_background). A command that asks reads the end of
+#: its input at once instead of prompting in the terminal agent-cli runs in,
+#: where it took the person's keys, Ctrl+C included (measured: PowerShell's
+#: "Path[0]:" waited there). Most then end with their error; Read-Host, `read`
+#: and `set /p` answer empty, and a [Y/n] prompt takes its default. Not a
+#: console of its own on Windows: its codepage is the OEM one (850, not the
+#: terminal's 65001), and a native tool's output would change with it.
+_SPAWN_OPTIONS = {"stdin": asyncio.subprocess.DEVNULL,
+                  **({} if os.name == "nt" else {"start_new_session": True})}
 
 
 def _join_windows_job(process) -> None:
@@ -100,16 +109,21 @@ def signal_tree(process, sig: int) -> None:
 
 
 def release_job(process) -> None:
-    """Close the job handle of a process whose shell has ended.
+    """Close the job handle and the input of a process whose shell has ended.
 
     A finished background entry stays in the registry, and so did its handle
     (measured: one more per entry). What the shell left running is not ended
-    by this -- it was not before the job object either.
+    by this -- it was not before the job object either; it reads the end of
+    its input from now on.
     """
     job = getattr(process, "_terminal_job", None)
     if job is not None:
         del process._terminal_job
         job[2]()  # the finalizer: closes once, never again at collection
+    held = getattr(process, "_terminal_input", None)
+    if held is not None:
+        del process._terminal_input
+        held()  # the write end of its input, closed once
 
 
 async def kill_tree(process) -> None:
@@ -431,14 +445,26 @@ class CommandExecutor:
             confined = await asyncio.to_thread(
                 self.sandbox.confine,
                 [self.bash_path, "-c", command], cwd=cwd)
-            process = await asyncio.create_subprocess_exec(
-                *confined.argv,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=exec_env,
-                **_SPAWN_OPTIONS,
-            )
+            # An input that stays open and that nobody writes to: a watcher
+            # that stops once its input closes (esbuild, tailwind --watch)
+            # keeps running, and what the person types reaches it no more than
+            # a foreground command. Closed when the shell has ended (release_job).
+            reading, writing = os.pipe()
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *confined.argv,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                    env=exec_env,
+                    **{**_SPAWN_OPTIONS, "stdin": reading},
+                )
+            except BaseException:
+                os.close(writing)
+                raise
+            finally:
+                os.close(reading)
+            process._terminal_input = weakref.finalize(process, os.close, writing)
             _join_windows_job(process)
 
             # Best effort -- the child may reset the console mode a moment
