@@ -377,3 +377,77 @@ async def test_the_guard_is_read_fresh_before_each_ring(config, monkeypatch):
 
     await wake_session(config, "sess-1", "someone", still_needed=lambda: not delivered)
     assert len(rung) == 1, f"rang again after the news had been delivered: {rung}"
+
+
+@pytest.fixture
+def held_chat(config, monkeypatch):
+    """A session an ``agent-cli chat`` holds, and the chat's own way of taking a wake at its prompt.
+
+    Real holds, real notify: on a held session it rings and starts nothing. spawn_wake is replaced all
+    the same -- a ring after the hold is gone would start an agent-cli process.
+    """
+    from agent_system.cli_utils import chat
+
+    spawned = []
+    monkeypatch.setattr(presence_module, "spawn_wake",
+                        lambda *args: spawned.append(args) or (0, 0.0))
+    presence = presence_module.presence_for(config)
+    assert presence.hold("sess-1", "someone", "agent"), "the fixture holds nothing"
+    ctx = SimpleNamespace(agent=SimpleNamespace(system_config=config),
+                          session_id="sess-1", session_user="someone")
+    yield presence, (lambda: chat._take_wake_mark(ctx))
+    presence.take_pending("sess-1", "someone")
+    presence.release("sess-1", "someone")
+    assert not spawned, "a test started a woken run"
+
+
+@pytest.mark.asyncio
+async def test_a_held_chat_gets_one_turn_for_the_news_not_one_per_ring(config, held_chat, monkeypatch,
+                                                                       instant_retry):
+    """agent-cli chat holds its session for the whole REPL, and its prompt turns the wake mark into a turn
+    (_watch_for_wake). The ring is repeated while the session is held -- so every repeat became a turn of
+    its own: a finished wait started a "you were woken" turn every ten seconds (session m7dkazgsge)."""
+    monkeypatch.setattr(presence_module, "WAKE_RETRIES", 5)
+    presence, take_at_the_prompt = held_chat
+    turns = []
+
+    async def the_prompt():
+        while True:
+            if presence.pending("sess-1", "someone"):
+                take_at_the_prompt()
+                turns.append("woken")
+            await asyncio.sleep(0)
+
+    prompt = asyncio.create_task(the_prompt())
+    try:
+        state = await wake_session(config, "sess-1", "someone", what="a wait")
+    finally:
+        prompt.cancel()
+    assert state == "delivered_next_step", "the session was not held: the fixture rang an idle one"
+    assert turns == ["woken"], turns
+
+
+@pytest.mark.asyncio
+async def test_only_a_turn_woken_after_the_first_ring_ends_the_ringing(config, held_chat, monkeypatch,
+                                                                       instant_retry):
+    """A stamp from an earlier wake is no delivery of this news, and neither is a mark a running turn takes
+    on its next LLM step (_presence_step): nothing there tells the model. The ringing goes on until the
+    chat is back at its prompt and a turn is woken for it."""
+    monkeypatch.setattr(presence_module, "WAKE_RETRIES", 5)
+    presence, take_at_the_prompt = held_chat
+    take_at_the_prompt()                      # a turn woken an hour ago left its stamp
+    real_notify = SessionPresence.notify
+    rings = []
+
+    def notify(self, session_id, user_id):
+        answer = real_notify(self, session_id, user_id)
+        rings.append(answer[0])
+        if len(rings) < 3:
+            self.take_pending(session_id, user_id)    # a typed turn's step takes it and hands nothing over
+        else:
+            take_at_the_prompt()                      # back at the prompt: a turn is woken for it
+        return answer
+
+    monkeypatch.setattr(SessionPresence, "notify", notify)
+    await wake_session(config, "sess-1", "someone", what="a background command")
+    assert rings == ["delivered_next_step"] * 3, rings

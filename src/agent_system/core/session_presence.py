@@ -17,7 +17,10 @@ held session reads it on its next step; input that arrives after its last
 LLM call leaves <session>.pending, and letting go of the session wakes it. A
 session nobody holds is woken right away: agent-cli continues it from its
 file, on its stored agent and profile. The marker stays until that run takes
-it, so a run that finds none knows somebody else got there first.
+it, so a run that finds none knows somebody else got there first. A turn
+started BECAUSE input waits -- a woken run, a woken agent-cli chat prompt --
+takes it and changes <session>.woken: that turn is told, so whoever still
+rings for news that was there before it stops (wake_session).
 
 A woken run carries its depth in HIVE_WAKE_DEPTH; at max_wake_depth nobody is
 woken, so sessions that answer each other cannot start each other forever.
@@ -641,6 +644,34 @@ class SessionPresence:
         if path is not None:
             _unlink(path.with_suffix(".pending"))
 
+    def take_for_wake(self, session_id: str, user_id: str) -> None:
+        """A turn starts now BECAUSE input is waiting: a woken run (agent_cli), a chat's woken prompt.
+
+        The chat's is cli_utils/chat.py. Takes the mark and changes <session>.woken. Such a turn is told that input waits, as a woken
+        process is, so whatever waited when it began counts as delivered: wake_session stops ringing
+        when it sees the stamp change. A held chat turns every ring into a turn of its own -- without
+        the stamp one finished command cost a turn per ring, up to WAKE_RETRIES of them.
+        """
+        path = self._lock_path(session_id, user_id)
+        if path is None:
+            return
+        try:
+            # A value of its own each time: a clock can repeat itself within its tick.
+            path.with_suffix(".woken").write_text(os.urandom(8).hex(), encoding="ascii")
+        except OSError as exc:
+            logger.warning("Session presence: stamping the wake of %s: %s -- its ringers ring on", session_id, exc)
+        _unlink(path.with_suffix(".pending"))
+
+    def wake_stamp(self, session_id: str, user_id: str) -> str:
+        """<session>.woken as it stands, "" without one: a change means a turn started for the waiting input."""
+        path = self._lock_path(session_id, user_id)
+        if path is None:
+            return ""
+        try:
+            return path.with_suffix(".woken").read_text(encoding="ascii")
+        except (OSError, ValueError):
+            return ""
+
     def pending(self, session_id: str, user_id: str) -> bool:
         """Whether input is waiting for the session. A woken run asks before it
         starts: whoever held the session meanwhile may have taken it over. Not
@@ -934,7 +965,10 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
     may return an awaitable, for a caller that has to look the answer up -- the
     reader can be a run of another process, whose reading only its stored state
     shows. One that raises is logged and counts as still needed: ringing on costs
-    at most a woken run, stopping would lose the news.
+    at most a woken run, stopping would lose the news. The ringing also ends
+    once a turn was woken for the waiting input (<session>.woken changed, see
+    take_for_wake): an agent-cli chat holds its session for the whole REPL and
+    starts a turn per ring, and a woken run holds it like any run.
 
     A wake only reaches a session whose work still runs somewhere, and
     background work lives in the process that started it: the API, or an
@@ -977,6 +1011,9 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
         # loop this runs on serves every other request of the process, so it
         # does not wait for that here.
         state, note = "", ""
+        # Read before the first ring, after the caller recorded its news: a turn that changes the stamp from
+        # here on started once the news was there, and was told that input waits.
+        stamp = await asyncio.to_thread(presence.wake_stamp, session_id, user_id)
         # One bound, the range: two would make neither of them measurable.
         for ring in range(WAKE_RETRIES + 1):
             if ring:
@@ -992,6 +1029,12 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
                     # registry (pruned, stopped). Naming only the first would be
                     # a reason this cannot know.
                     logger.debug("Stopped ringing %s for %s: nobody waits for it any more",
+                                 session_id, what or "finished work")
+                    return state
+                # A turn was woken for the waiting input since the first ring -- a held chat's prompt, a woken
+                # run (take_for_wake): that turn is the delivery. Ringing on gave the session a turn per ring.
+                if await asyncio.to_thread(presence.wake_stamp, session_id, user_id) not in ("", stamp):
+                    logger.debug("Stopped ringing %s for %s: a turn was woken for it",
                                  session_id, what or "finished work")
                     return state
             # Before every ring, the first included: the user may start a run

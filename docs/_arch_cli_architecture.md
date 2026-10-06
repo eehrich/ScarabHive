@@ -132,7 +132,12 @@ In this order, all in `main`:
    `cli_utils/chat.py`) therefore polls `presence.pending(...)` every half second and
    cuts off the input; the REPL takes the marker (so that a turn that never
    reaches an LLM call does not trigger an endless loop) and starts a
-   turn with `WAKE_TASK`, just as an input would. What has already been typed is
+   turn with `WAKE_TASK`, just as an input would. It takes it with
+   `take_for_wake`, which also changes `<session>.woken`: `wake_session`
+   repeats its ring while the session is held, and the chat holds it for the
+   whole REPL — without the stamp every repeat was a woken turn of its own
+   (up to 30, ten seconds apart). A woken `agent-cli run --woken` takes the
+   marker the same way. What has already been typed is
    **not** cut off — `exit()` discards the buffer — and neither is it
    without a line editor: `input()` cannot be interrupted by any thread, and
    that is the redirected case anyway, in which nobody sits at the prompt.

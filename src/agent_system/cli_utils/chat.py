@@ -1535,13 +1535,15 @@ def _take_wake_mark(ctx: "_ChatContext") -> None:
     (servers/agent/server.py), so this is not what makes the mark go away --
     it is what keeps a turn that never GETS to an LLM call (a config error, a
     refused hold) from leaving the mark set: the watcher would see it again a
-    tick later and start another billed turn, and another.
+    tick later and start another billed turn, and another. And it stamps the
+    wake: a ringer that still rings for news this turn is told about stops
+    (session_presence.take_for_wake) instead of starting a turn per ring.
     """
     presence = presence_for(getattr(ctx.agent, "system_config", None))
     if presence is None:
         return
     try:
-        presence.take_pending(ctx.session_id, ctx.session_user)
+        presence.take_for_wake(ctx.session_id, ctx.session_user)
     except OSError:
         logger.debug("Could not take the wake mark", exc_info=True)
 
