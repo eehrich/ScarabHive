@@ -77,6 +77,8 @@ STALE_LEASE_S = 10
 # How often a started instance looks for runs whose owner is gone and for rings that were lost.
 SWEEP_S = 30
 SAVE_ATTEMPTS = 40
+# Claude Code's --effort levels.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Run ids are made here; anything else the model passes never becomes a path.
 _RUN_ID = re.compile(r"[0-9a-f]{12}")
 _SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -204,6 +206,12 @@ class CodingCliServer(SchemaBasedToolServer):
                            "command inherits the environment that holds the servers' tokens", name)
         self.pass_env = [str(v) for v in getattr(server_config, "pass_env", None) or ()]
         self.model = str(getattr(server_config, "model", "") or "")
+        # --restricted leaves the user's settings unread, their effortLevel too: the instance names its own.
+        self.effort = str(getattr(server_config, "effort", "") or "")
+        if self.effort and self.effort not in EFFORTS:
+            logger.warning("coding_cli: %s: effort %r is none of %s -- Claude Code's default instead",
+                           name, self.effort, ", ".join(EFFORTS))
+            self.effort = ""
         self.max_utilization = _bounded(getattr(server_config, "max_window_utilization", None), 0.8, 0.05, 1.0) or 0.8
         self.wait_s = _bounded(getattr(server_config, "wait_s", None), 300, 0, 3600)
         self.wait_s = 300.0 if self.wait_s is None else self.wait_s
@@ -752,7 +760,7 @@ class CodingCliServer(SchemaBasedToolServer):
         rules = worktree / "CLAUDE.md"
         cmd = cli.build_command(self.command, mode=mode, mcp_config=mcp, allowed_commands=self.allowed_commands,
                                 mcp_servers={n: (getattr(c, "tools", None) and c.tools.blocked) or []
-                                             for n, c in servers.items()}, model=self.model, resume=resume,
+                                             for n, c in servers.items()}, model=self.model, effort=self.effort, resume=resume,
                                 rules=rules if rules.is_file() else None, json_schema=schema,
                                 web=self.workdirs[workdir]["web"])
         record = {"run_id": run_id, "instance_name": self.name, "max_run_s": self.max_run_s, "user_id": user_id,

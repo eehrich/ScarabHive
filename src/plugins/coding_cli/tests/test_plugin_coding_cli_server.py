@@ -270,6 +270,16 @@ async def test_the_command_line_locks_claude_code_down(repo, log):
     assert log()["task"] == "WRITE b.txt x" and "WRITE" not in " ".join(argv) and "--json-schema" not in argv
 
 
+@pytest.mark.parametrize("effort, passed", [("medium", "medium"), ("", None), ("fast", None)])
+async def test_an_instance_names_claude_code_s_effort(repo, log, caplog, effort, passed):
+    """--restricted leaves the user's settings unread, their effortLevel too: the instance names its own."""
+    server = make_server(repo, effort=effort)
+    await call(server, "run_task", task="WRITE b.txt x")
+    argv = log()["argv"]
+    assert (argv[argv.index("--effort") + 1] if "--effort" in argv else None) == passed, argv
+    assert ("is none of low, medium" in caplog.text) == (effort == "fast"), caplog.text
+
+
 async def test_plan_mode_only_reads(repo, log):
     server = make_server(repo, allowed_commands=["pytest:*"])
     result, _ = await call(server, "run_task", task="look", mode="plan")

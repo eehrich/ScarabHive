@@ -77,7 +77,8 @@ def shell_tool() -> str:
 
 def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_commands: Iterable[str] = (),
                   mcp_servers: Optional[Mapping[str, Iterable[str]]] = None, model: str = "", resume: str = "",
-                  rules: Optional[Path] = None, json_schema: Optional[dict] = None, web: bool = False) -> list[str]:
+                  rules: Optional[Path] = None, json_schema: Optional[dict] = None, web: bool = False,
+                  effort: str = "") -> list[str]:
     """The whole command line. The task goes in on stdin, so nothing the model
     wrote becomes an argument but json_schema; resume is a session id this
     plugin read, mcp_servers the operator's names, each with the tools its
@@ -115,6 +116,8 @@ def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_comman
         cmd += ["--json-schema", json.dumps(json_schema, allow_nan=False)]
     if model:
         cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
     if resume:
         cmd += ["--resume", resume]
     if rules is not None:
