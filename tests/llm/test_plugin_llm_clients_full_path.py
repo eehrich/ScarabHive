@@ -16,6 +16,7 @@ carrying has to match what the profile resolves to.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -52,6 +53,9 @@ def real_clients(monkeypatch):
     """
     from agent_system.llm import registry
 
+    # A real client refuses to be built without its key; a checkout without
+    # config/secrets.env (a fresh clone, CI) has none. Nothing is sent.
+    monkeypatch.setenv("OPENROUTER_API_KEY", os.environ.get("OPENROUTER_API_KEY") or "test-key-not-sent")
     original = getattr(registry, "_orig_build_client", None)
     if original is None:
         return

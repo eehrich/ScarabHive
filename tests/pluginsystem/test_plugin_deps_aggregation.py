@@ -9,6 +9,8 @@ script, the install metadata silently goes stale — these tests catch that.
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -31,6 +33,32 @@ def test_all_txt_is_not_stale():
         "requirements/all.txt is stale — re-run:\n"
         "    python scripts/aggregate_plugin_deps.py"
     )
+
+
+def test_the_aggregator_knows_every_plugin_root_of_the_checkout():
+    """A root the aggregator misses would skip the test below instead of failing it."""
+    agg = _load_aggregator()
+    on_disk = {d.name for d in (ROOT / "src").iterdir() if d.is_dir() and d.name.startswith("plugins") and d.name.isidentifier()}
+    assert {d.name for d in (*agg.PLUGIN_DIRS, *agg.PRIVATE_PLUGIN_DIRS)} == on_disk
+
+
+def test_private_txt_is_not_stale():
+    """requirements/private.txt must equal the aggregator's output wherever the
+    private roots exist; the open-source checkout has neither."""
+    agg = _load_aggregator()
+    if not agg.has_private_roots():
+        pytest.skip("no private plugin roots in this checkout")
+    actual = (ROOT / "requirements" / "private.txt").read_text(encoding="utf-8")
+    assert actual == agg.render_private(), (
+        "requirements/private.txt is stale — re-run:\n"
+        "    python scripts/aggregate_plugin_deps.py"
+    )
+
+
+def test_private_txt_repeats_nothing_all_txt_has():
+    agg = _load_aggregator()
+    public = {r.lower().replace(" ", "") for r in agg.collect_requirements()}
+    assert not public & {r.lower().replace(" ", "") for r in agg.collect_private_requirements()}
 
 
 def test_migrated_plugin_dep_is_aggregated():

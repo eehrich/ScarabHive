@@ -142,7 +142,8 @@ class TestShippedConfigArrives:
                 # Plugin-level keys are known to plugins.yaml but dropped per agent.
                 dead += [f"{path}: {key}" for key in unknown_config_keys(keys) + sorted(keys & PLUGIN_LEVEL_KEYS)]
 
-        assert "sub_agent_cover_artist.yaml" in found, f"fixture: the scan found only {found}"
+        # One anchor per scanned root (config/, src/), both public, so they hold with and without the writer.
+        assert {"context_browse_test_agent.yaml", "coder.yaml"} <= set(found), f"fixture: the scan found only {found}"
         assert not dead, f"override keys that reach no setting: {dead}"
 
     def test_a_misspelled_agent_override_is_logged(self, caplog):

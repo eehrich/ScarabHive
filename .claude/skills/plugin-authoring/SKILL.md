@@ -76,8 +76,8 @@ PLUGIN_FACTORY = MyServer   # called as (name, system_config, server_config)
 
 Every link must hold; almost every one fails **silently**:
 
-1. The folder is in `plugins.plugin_dirs` (`src/plugins`, `src/plugins_writer`,
-   `src/plugins_trading`; `config/plugins.yaml`).
+1. The folder is in `plugins.plugin_dirs` (`src/plugins*` in `config/plugins.yaml`:
+   `src/plugins` and every further `src/plugins_<name>` root).
 2. An entry `plugins: servers: <instance>: {type: <folder name>, enabled: true}` —
    `enabled` defaults to **false** and is checked on the **raw** entry, not the
    inherited one. The entry may live in any included file (`config.yaml` includes

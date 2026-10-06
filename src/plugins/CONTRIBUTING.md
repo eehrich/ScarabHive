@@ -6,12 +6,6 @@ The checklist for a plugin in `src/plugins/`. The full guide is
 commit messages) in the [root CONTRIBUTING.md](../../CONTRIBUTING.md).
 [example/](example/) is a small plugin written the way this list asks.
 
-Working with Claude Code (or another agent that reads skills)? Load the skills first -- they
-are checked against the code and carry the rules that have already caused damage:
-[plugin-authoring](../../.claude/skills/plugin-authoring/SKILL.md) for plugins, tools, hooks,
-agents and the guide ([references/](../../.claude/skills/plugin-authoring/references/)), and
-[panel-authoring](../../.claude/skills/panel-authoring/SKILL.md) for a panel in the UI.
-
 ## Layout
 
 - One folder per plugin: `src/plugins/<name>/`. The folder name is the plugin type that a

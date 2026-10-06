@@ -235,7 +235,7 @@ def test_the_predecessors_are_gone_from_every_config_and_agent_prompt():
         return text.splitlines()
 
     hits = []
-    for root in (Path("config"), Path("src/plugins"), Path("src/plugins_writer"), Path("src/agent_system")):
+    for root in (Path("config"), *sorted(Path("src").glob("plugins*")), Path("src/agent_system")):
         for path in root.rglob("*"):
             if path.suffix in (".yaml", ".yml", ".md", ".py") and path.is_file() and "tests" not in path.parts:
                 if any(stale.search(line) for line in live_lines(path)):

@@ -27,7 +27,7 @@ from agent_system.chat_commands import is_typeable_command_name
 from agent_system.plugins.schema_loader import load_schema_from_dir
 
 REPO = Path(__file__).parents[2]
-PLUGIN_ROOTS = [REPO / "src" / "plugins", REPO / "src" / "plugins_writer"]
+PLUGIN_ROOTS = sorted(d for d in (REPO / "src").glob("plugins*") if d.is_dir())
 
 
 def _functions(schema: dict) -> dict:

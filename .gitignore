@@ -88,8 +88,8 @@ nul
 
 tmp_backlog.md
 
-# v5b/v4 batch test outputs (per-run logs + scene-draft JSON dumps)
-src/plugins_writer/**/batch_logs/
+# batch test outputs of plugin packages (per-run logs + JSON dumps)
+src/plugins*/**/batch_logs/
 
 # ignore all data files -- the top-level folder only. Unanchored, `data/`
 # matched at any depth and hid new files in package data folders
@@ -97,5 +97,3 @@ src/plugins_writer/**/batch_logs/
 /data/
 tests/data/
 
-# #673 Blind-Reader Test-Driver Scratch
-src/plugins_writer/writer_pipeline_v4/test_suite/_blind_task.md
