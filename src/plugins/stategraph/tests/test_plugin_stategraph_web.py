@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from agent_system.auth.models import UserRole
+from http_routes import http_routes
 from plugins.stategraph import web_endpoints
 from plugins.stategraph.service import ServiceError
 from plugins.stategraph.tests.stategraph_testkit import FASTAPI_PY314
@@ -59,7 +60,7 @@ def client(*, auth: bool = False) -> tuple[TestClient, RecordingService]:
 
 def test_every_endpoint_in_the_schema_has_its_route():
     test_client, _ = client()
-    paths = {(route.path, method) for route in test_client.app.routes for method in getattr(route, "methods", ())}
+    paths = {(path, method) for method, path in http_routes(test_client.app)}
 
     for endpoint in SCHEMA["web_ui"]["endpoints"]:
         assert (f"/plugins/stategraph{endpoint['path']}".rstrip("/") or "/", endpoint["method"]) in \

@@ -6,7 +6,8 @@ published key -- the AuthConfig default, the development key the repository's
 config/config.yaml ships -- lets anyone who read the repository sign an admin
 token: that logs an error, and auth.reject_default_secret_key: true makes it a
 startup error too. The shipped key stays a warning so that an existing
-installation still starts after its next restart.
+installation still starts after its next restart; the AuthConfig default, which
+an auth section without a key gets, stops the start in every case.
 """
 from __future__ import annotations
 
@@ -66,13 +67,26 @@ def test_the_api_does_not_start_on_an_unset_key_variable(monkeypatch, tmp_path):
         app_mod.build_app(str(_auth_config(tmp_path, '  secret_key: "${AUTH_SECRET_KEY}"\n')))
 
 
-def test_the_api_refuses_the_default_key_only_when_the_config_asks(monkeypatch, tmp_path):
+def _shipped_key_line() -> str:
+    return f'  secret_key: "{_shipped_key()}"\n'
+
+
+def test_the_api_refuses_the_shipped_key_only_when_the_config_asks(monkeypatch, tmp_path):
     from agent_system import app as app_mod
 
     monkeypatch.chdir(tmp_path)
-    app_mod.build_app(str(_auth_config(tmp_path, "")))  # the AuthConfig default: an error in the log, and it starts
+    app_mod.build_app(str(_auth_config(tmp_path, _shipped_key_line())))  # an error in the log, and it starts
     with pytest.raises(WeakSecretKeyError, match="published default"):
-        app_mod.build_app(str(_auth_config(tmp_path, "  reject_default_secret_key: true\n")))
+        app_mod.build_app(str(_auth_config(tmp_path, _shipped_key_line() + "  reject_default_secret_key: true\n")))
+
+
+def test_an_auth_section_without_a_key_does_not_start(monkeypatch, tmp_path):
+    # Without the line the AuthConfig default applies, and it stands in this repository.
+    from agent_system import app as app_mod
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(WeakSecretKeyError, match="published default"):
+        app_mod.build_app(str(_auth_config(tmp_path, "")))
 
 
 def test_the_key_is_checked_before_any_tool_server_starts(monkeypatch, tmp_path):
@@ -97,7 +111,7 @@ def test_a_published_key_is_reported_in_the_api_log(monkeypatch, tmp_path):
     from agent_system import app as app_mod
 
     monkeypatch.chdir(tmp_path)
-    config = _auth_config(tmp_path, "")
+    config = _auth_config(tmp_path, _shipped_key_line())
     config.write_text(config.read_text(encoding="utf-8").replace(
         "logging:\n  enabled: false\n",
         "logging:\n  enabled: true\n  level: INFO\n  file_api: logs/api-probe.log\n  rotation_enabled: false\n"),

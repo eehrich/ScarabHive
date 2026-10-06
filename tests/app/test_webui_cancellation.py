@@ -208,22 +208,11 @@ class TestAPIEndpoints:
         # Real integration testing would require a running server
         
         from agent_system.app import build_app
-        
+        from http_routes import http_routes
+
         app = build_app()
-        
-        # Check that cancel endpoint is registered
-        cancel_routes = [route for route in app.routes if hasattr(route, 'path') and 'cancel' in route.path]
-        assert len(cancel_routes) > 0
-        
-        # Find the cancel route (actual path is /api/requests/{request_id}/cancel)
-        cancel_route = None
-        for route in cancel_routes:
-            if hasattr(route, 'path') and route.path == '/api/requests/{request_id}/cancel':
-                cancel_route = route
-                break
-        
-        assert cancel_route is not None
-        assert 'POST' in cancel_route.methods
+
+        assert ("POST", "/api/requests/{request_id}/cancel") in http_routes(app)
     
     @pytest.mark.asyncio
     async def test_mock_api_cancellation(self):

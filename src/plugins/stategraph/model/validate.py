@@ -536,13 +536,13 @@ def _check_references(fc: _FileContext, kind: ActivityKind, spec: KindSpec, path
                                      "enum -- a computed name would bypass the configuration check", path + [kind.key])
         return
     refs = kind.references(spec)
-    for key, field in (("agent_param", kind.key), ("tool_param", kind.key), ("llm_profile_param", "llm_profile")):
+    for key, field_name in (("agent_param", kind.key), ("tool_param", kind.key), ("llm_profile_param", "llm_profile")):
         if key in refs:
             param = fc.spec.params.get(refs[key])
             if param is None or not param.enum:
-                fc.problem("error", "SG005", f"{field}: {{{{ params.{refs[key]} }}}} needs a parameter "
+                fc.problem("error", "SG005", f"{field_name}: {{{{ params.{refs[key]} }}}} needs a parameter "
                                              f"{refs[key]!r} with an enum (so the configuration check can see every "
-                                             "value)", path + [field])
+                                             "value)", path + [field_name])
     if fc.config_check is None:
         return
     checks: list[tuple[str, str, dict[str, Any]]] = []

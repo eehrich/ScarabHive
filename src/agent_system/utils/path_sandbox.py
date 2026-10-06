@@ -152,6 +152,12 @@ class PathSandbox:
             raise PathSandboxDenied(
                 f"Path is outside the allowed directories: {path}. "
                 f"Allowed: {self.describe_roots()}")
+        # On Python 3.12 resolve() raises ValueError on an embedded null byte
+        # and the except branch below refused it. On 3.14 (measured on
+        # Windows) resolve() returns the path unchanged and containment passes
+        # it; the refusal has to be explicit.
+        if "\x00" in str(path):
+            raise PathSandboxDenied(f"Path contains a null byte: {path!r}")
         try:
             candidate = Path(path)
             # A leading "~" is a home-directory intent that nothing here
@@ -171,11 +177,7 @@ class PathSandbox:
             candidate = resolve_data_path(candidate)
             full = (candidate if candidate.is_absolute() else self.base / candidate).resolve()
         except (OSError, ValueError) as exc:
-            # Embedded null bytes (ValueError on every platform) and
-            # over-long paths on Windows. A separate null-byte check used to
-            # live here and was measurably dead — the mutation "check removed"
-            # stayed green because this branch produces the same refusal. Do
-            # not add it back.
+            # Over-long paths on Windows (null bytes are refused above).
             #
             # NOT the Windows device names: measured 05.09.2026, `Path("CON")`
             # and its siblings (PRN, AUX, COM1-9, LPT1-9) resolve without an
