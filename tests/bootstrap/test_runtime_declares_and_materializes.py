@@ -97,6 +97,48 @@ def test_visibility_defaults_to_private():
     assert agent._tool_visible is False
 
 
+def _plugin_declaring_ui(tmp_path) -> Path:
+    """A plugin whose manifest says ``visibility = "ui"`` -- no shipped one does."""
+    root = tmp_path / "plugins"
+    plugin = root / "visible_probe"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.toml").write_text(
+        '[plugin]\nname = "visible_probe"\nvisibility = "ui"\n', encoding="utf-8")
+    (plugin / "plugin.py").write_text(
+        "from agent_system.plugins.factory_utils import make_agent_plugin_factory\n"
+        "from agent_system.servers.agent.server import Agent\n"
+        "PLUGIN_FACTORY = make_agent_plugin_factory(Agent)\n",
+        encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize("metadata, shown", [
+    (AgentMetadata(author="probe", min_role="admin"), "ui"),   # metadata that names no visibility
+    (AgentMetadata(visibility="private"), "private"),          # one that names it
+], ids=["metadata without visibility", "explicit private"])
+def test_the_manifest_counts_unless_the_instance_names_a_visibility(tmp_path, metadata, shown):
+    """A metadata block is not a visibility: its field defaults to private, and
+    reading that default made every instance with a metadata block -- a
+    min_role, an author -- private whatever its manifest said."""
+    config = _config({"probe_manifest": ToolServerConfig(
+        type="visible_probe", enabled=True, metadata=metadata,
+        agent_config=AgentConfig(llm_profile="normal"))},
+        plugin_dirs=[str(_plugin_declaring_ui(tmp_path))])
+
+    assert Runtime(config).describe("probe_manifest").visibility == shown
+
+
+def test_a_metadata_block_in_default_config_names_no_visibility(tmp_path):
+    """default_config is merged with its defaults; its metadata was too, so a
+    global `min_role` made visibility "private" a NAMED field on every server."""
+    config = _config({"probe_manifest": ToolServerConfig(
+        type="visible_probe", enabled=True, agent_config=AgentConfig(llm_profile="normal"))},
+        plugin_dirs=[str(_plugin_declaring_ui(tmp_path))])
+    config.plugins.default_config.metadata = AgentMetadata(min_role="user")
+
+    assert Runtime(config).describe("probe_manifest").visibility == "ui"
+
+
 def test_the_manifest_supplies_the_visibility_when_the_instance_does_not(tmp_path):
     """Priority: instance metadata first, then the plugin manifest, then
     private. No shipped manifest declares one today, so the middle rung needs

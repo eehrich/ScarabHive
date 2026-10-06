@@ -129,7 +129,9 @@ class ServerDecl:
         the instance's own ToolServerConfig metadata first, then the plugin manifest,
         else private (not visible; secure by default)."""
         metadata = self.server_config.metadata
-        if metadata and metadata.visibility:
+        # named, not merely defaulted: the field defaults to private, so any
+        # metadata block (a min_role, an author) would otherwise hide the manifest's
+        if metadata and "visibility" in metadata.model_fields_set:
             return metadata.visibility
         if self.plugin_metadata:
             declared = self.plugin_metadata.get("visibility")

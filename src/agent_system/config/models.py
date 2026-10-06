@@ -647,6 +647,11 @@ class SkillsConfig(BaseModel):
         return v
 
 
+def _merges_into_inherited(entries: Any) -> bool:
+    """Whether a list merges into the inherited one (``+``/``!`` entries) instead of replacing it."""
+    return isinstance(entries, list) and any(str(e)[:1] in ("+", "!") for e in entries)
+
+
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
 
@@ -774,47 +779,44 @@ class AgentConfig(BaseModel):
             protected = set(params) & LLM_PARAMS_PROTECTED_FIELDS
             if protected:
                 raise ValueError(
-                    f"llm_params{where}: Identitaets-Felder {sorted(protected)} sind "
-                    f"gesperrt (nicht erlaubte Keys — dafuer gibt es llm_profile/llm.yaml)"
+                    f"llm_params{where}: identity fields {sorted(protected)} are locked "
+                    f"(choose the model with llm_profile / llm.yaml)"
                 )
             unknown = set(params) - allowed
             if unknown:
                 raise ValueError(
-                    f"llm_params{where}: nicht erlaubte Keys {sorted(unknown)} — "
-                    f"erlaubt sind: {sorted(allowed)}"
+                    f"llm_params{where}: keys not allowed {sorted(unknown)} -- "
+                    f"allowed: {sorted(allowed)}"
                 )
-            # Typ-/Wert-Validierung gegen das echte Modell-Schema (fail fast
-            # beim Config-Load statt erst beim ersten LLM-Call).
+            # types and values against the real model schema: fail at config load,
+            # not at the first LLM call
             LLMModelConfig.model_validate({"model": "_llm_params_probe_", **params})
 
-        # Form-Erkennung: Param-Namen (LLMModelConfig-Felder) = Flat-Eintrag,
-        # alles andere ("*", Profilnamen) = Profil-Key. Mischformen ungueltig.
+        # the shape: parameter names (LLMModelConfig fields) are a flat entry,
+        # anything else ("*", profile names) a profile key; both at once is invalid
         flat_keys = [k for k in v if k in model_fields]
         profile_keys = [k for k in v if k not in model_fields]
         if flat_keys and profile_keys:
-            # Skalare Werte unter Nicht-Feld-Keys koennen keine Profil-
-            # Eintraege sein → das ist ein Tippfehler in flat-Params, keine
-            # Mischform. Praezise Meldung mit erlaubten Keys statt Form-Rüge.
+            # a scalar under a non-field key cannot be a profile entry: a typo in
+            # flat params, not a mixed shape -- say which keys are allowed
             typo_keys = [k for k in profile_keys if not isinstance(v[k], dict)]
             if typo_keys:
                 raise ValueError(
-                    f"llm_params: nicht erlaubte Keys {sorted(typo_keys)} — "
-                    f"erlaubt sind: {sorted(allowed)}"
+                    f"llm_params: keys not allowed {sorted(typo_keys)} -- "
+                    f"allowed: {sorted(allowed)}"
                 )
             raise ValueError(
-                f"llm_params: Mischform aus Params {sorted(flat_keys)} und "
-                f"Profil-Keys {sorted(profile_keys)} — entweder flat "
-                f"({{param: wert}}) ODER profil-gekeyt ({{profil: {{param: wert}}}}). "
-                f"Entsteht auch durch Typ-Vererbung (Parent flat + Kind gekeyt): "
-                f"dann im Parent die flat-Params semantikgleich unter '*' legen."
+                f"llm_params: mixes params {sorted(flat_keys)} with profile keys "
+                f"{sorted(profile_keys)} -- either flat ({{param: value}}) OR keyed by "
+                f"profile ({{profile: {{param: value}}}}). Type inheritance causes it "
+                f"too (parent flat, child keyed): put the parent's flat params under '*'."
             )
         if profile_keys:
             for pk, sub in v.items():
                 if not isinstance(sub, dict):
                     raise ValueError(
-                        f"llm_params: nicht erlaubte Keys ['{pk}'] — weder "
-                        f"LLM-Param (erlaubt: {sorted(allowed)}) noch "
-                        f"Profil-Key mit Param-Dict als Wert"
+                        f"llm_params: keys not allowed ['{pk}'] -- neither an LLM param "
+                        f"(allowed: {sorted(allowed)}) nor a profile key with a dict of params"
                     )
                 _check_flat(sub, f"['{pk}']")
             return v
@@ -837,28 +839,30 @@ class AgentConfig(BaseModel):
 
     @model_validator(mode="after")
     def _reject_legacy_fallbacks(self) -> "AgentConfig":
-        # Alte [std, adv]-Positions-Semantik ist entfernt. Ein gesetztes
-        # llm_profile_fallbacks bedeutet: yaml wurde nicht migriert — laut
-        # scheitern statt still falsch laufen (llm_profile[1] wäre sonst
-        # plötzlich Fallback statt Advanced).
+        # The old positional [standard, advanced] reading is gone. A set
+        # llm_profile_fallbacks means an unmigrated YAML: fail loudly rather than
+        # run with llm_profile[1] silently meaning a fallback instead of advanced.
         if self.llm_profile_fallbacks:
             raise ValueError(
-                "llm_profile_fallbacks wurde entfernt. Neue Semantik: "
-                "llm_profile = [primär, fallback1, ...] (Kette) und "
-                "llm_profile_advanced = [primär_adv, fallback1_adv, ...]. "
+                "llm_profile_fallbacks was removed. Now: "
+                "llm_profile = [primary, fallback1, ...] (a chain) and "
+                "llm_profile_advanced = [primary_adv, fallback1_adv, ...]. "
                 "Migration: python scripts/migrate_llm_profiles.py"
             )
         return self
 
     @model_validator(mode="after")
     def _validate_llm_params_profile_keys(self, info: ValidationInfo) -> "AgentConfig":
-        # Profil-gekeyte llm_params: gueltige Keys sind "*" plus ALLE
-        # Mitglieder beider Ketten (Primaer + Fallbacks) — die Params wirken
-        # einheitlich auf jedes Ketten-Mitglied ("*"/flat ueberall, exakter
-        # Eintrag gewinnt). Unbekannte Keys (Tippfehler, verwaiste Eintraege
-        # nach Ketten-Umbau) waeren stille No-Ops und sollen beim
-        # Config-Load knallen.
+        # Keyed llm_params: valid keys are "*" plus EVERY member of both chains
+        # (primary and fallbacks) -- the params apply to each member ("*"/flat
+        # everywhere, the exact entry wins). An unknown key (a typo, an entry
+        # left over after a chain changed) would be a silent no-op and fails at
+        # load. A chain that merges into the inherited one ("+turbo") is whole
+        # only after inheritance: get_tool_server_config validates the merged
+        # entry again, and the keys are judged there.
         p = self.llm_params
+        if _merges_into_inherited(self.llm_profile) or _merges_into_inherited(self.llm_profile_advanced):
+            return self
         if p and not any(k in LLMModelConfig.model_fields for k in p):
             valid = {"*"}
             chain = self.llm_profile if isinstance(self.llm_profile, list) else [self.llm_profile]

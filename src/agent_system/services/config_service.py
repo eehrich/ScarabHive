@@ -198,44 +198,6 @@ class ConfigService:
         
         return servers
 
-    def get_agent_config(
-        self,
-        agent_name: str,
-        config: Optional[AgentSystemConfig] = None
-    ) -> Optional[dict]:
-        """Get configuration-based agent definition.
-        
-        Args:
-            agent_name: Name of the config-based agent.
-            config: Optional config instance. If None, uses cached config.
-        
-        Returns:
-            Agent definition dict if found, None otherwise.
-        """
-        cfg = config or self._config
-        if not cfg or not cfg.agents:
-            return None
-        
-        return cfg.agents.get(agent_name)
-
-    def list_agents(
-        self,
-        config: Optional[AgentSystemConfig] = None
-    ) -> dict[str, dict]:
-        """List all configuration-based agents.
-        
-        Args:
-            config: Optional config instance. If None, uses cached config.
-        
-        Returns:
-            Dictionary mapping agent names to agent definitions.
-        """
-        cfg = config or self._config
-        if not cfg or not cfg.agents:
-            return {}
-        
-        return dict(cfg.agents)
-
     def get_default_server_config(
         self,
         config: Optional[AgentSystemConfig] = None

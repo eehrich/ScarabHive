@@ -482,8 +482,35 @@ class TestListMergeSyntax:
             "tools": ["!plugin_a/*"]  # Remove all plugin_a tools
         }
         result = _deep_merge_dict(base, override)
-        
+
         assert result["tools"] == ["plugin_b/tool1"]
+
+    def test_an_inherited_string_is_a_list_of_one(self):
+        """`llm_profile: a` inherited, `["+c"]` added: the chain is [a, c]. The
+        string counted as an empty list, and c became the primary alone."""
+        assert _deep_merge_dict({"llm_profile": "a"}, {"llm_profile": ["+c"]})["llm_profile"] == ["a", "c"]
+
+    def test_a_nested_list_loses_its_prefix_under_an_absent_or_none_parent(self):
+        """A dict the parent lacks, or leaves None (default_config without an
+        agent_config), was taken over raw: its "+c" survived as a literal name."""
+        child = {"agent_config": {"llm_profile": ["+c"], "tools": {"allowed": ["+x/*"]}, "system_prompt": None}}
+        for parent in ({}, {"agent_config": None}):
+            merged = _deep_merge_dict(parent, child)["agent_config"]
+            assert merged["llm_profile"] == ["c"] and merged["tools"]["allowed"] == ["x/*"], (parent, merged)
+            # taken over whole otherwise: a None it carries stays (terminal's `initial_cwd: null`)
+            assert "system_prompt" in merged and merged["system_prompt"] is None, merged
+
+    def test_a_wildcard_anywhere_removes(self):
+        """`!*_sam/*` removed nothing, silently: only a trailing or a leading `*`
+        was understood. A `!` pattern is an fnmatch pattern, as the tool patterns
+        are, and `x/*` still takes the bare `x` with it."""
+        base = {"tools": ["coder_sam/*", "project_sam/*", "web_scraper/*", "file_ops"]}
+
+        assert _deep_merge_dict(base, {"tools": ["!*_sam/*"]})["tools"] == ["web_scraper/*", "file_ops"]
+        assert _deep_merge_dict(base, {"tools": ["!*scraper*"]})["tools"] == [
+            "coder_sam/*", "project_sam/*", "file_ops"]
+        assert _deep_merge_dict(base, {"tools": ["!file_ops/*"]})["tools"] == [
+            "coder_sam/*", "project_sam/*", "web_scraper/*"]
 
     def test_deduplication_on_add(self):
         """Test that duplicate items are not added twice."""

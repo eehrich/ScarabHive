@@ -105,12 +105,12 @@ class TestResolveAppliesLlmParams:
 
 class TestAgentConfigValidation:
     def test_unknown_key_rejected(self):
-        with pytest.raises(ValidationError, match="nicht erlaubte Keys"):
+        with pytest.raises(ValidationError, match="keys not allowed"):
             AgentConfig(llm_profile="x", llm_params={"totally_unknown": 1})
 
     def test_identity_fields_protected(self):
         for key in ("provider", "model", "api_key", "base_url", "batch_provider", "ollama_mode"):
-            with pytest.raises(ValidationError, match="nicht erlaubte Keys"):
+            with pytest.raises(ValidationError, match="identity fields .* are locked"):
                 AgentConfig(llm_profile="x", llm_params={key: "hijack"})
 
     def test_value_validated_against_model_schema(self):
@@ -301,7 +301,7 @@ class TestKeyedLlmParams:
 
 class TestKeyedLlmParamsValidation:
     def test_mixed_form_rejected(self):
-        with pytest.raises(ValidationError, match="Mischform"):
+        with pytest.raises(ValidationError, match="mixes params"):
             AgentConfig(
                 llm_profile="x",
                 llm_params={"thinking_level": "low", "x": {"max_tokens": 1}},
@@ -358,7 +358,7 @@ class TestKeyedLlmParamsValidation:
         assert set(a.llm_params) == {"*", "test-profile", "advanced-profile"}
 
     def test_keyed_subdict_protected_field_rejected(self):
-        with pytest.raises(ValidationError, match="gesperrt"):
+        with pytest.raises(ValidationError, match="identity fields"):
             AgentConfig(
                 llm_profile=["test-profile"],
                 llm_params={"*": {"provider": "hijack"}},
@@ -372,13 +372,13 @@ class TestKeyedLlmParamsValidation:
             )
 
     def test_keyed_scalar_value_rejected(self):
-        with pytest.raises(ValidationError, match="nicht erlaubte Keys"):
+        with pytest.raises(ValidationError, match="keys not allowed"):
             AgentConfig(llm_profile="x", llm_params={"totally_unknown": 1})
 
     def test_flat_typo_next_to_valid_param_gets_precise_message(self):
         # Tippfehler neben gültigem Param darf NICHT als "Mischform"
         # fehldiagnostiziert werden — präzise Unknown-Key-Meldung
-        with pytest.raises(ValidationError, match="nicht erlaubte Keys.*max_toknes"):
+        with pytest.raises(ValidationError, match="keys not allowed.*max_toknes"):
             AgentConfig(
                 llm_profile="x",
                 llm_params={"thinking_level": "low", "max_toknes": 8000},
