@@ -87,7 +87,8 @@ streaming; it is not stored -- after a reload, read the run with
 A run that ends in time is answered in full. One still going is answered
 with its run id, its latest actions and a @{tt}wake@{utt}: when the run
 ends, the session that started it is woken and reads it with
-@{tt}get_run@{utt} -- unless it read the end itself already. A run whose
+@{tt}get_run@{utt} -- unless it read the end itself already, or the call
+passed @{tt}wake: false@{utt}. A run whose
 watch ended early (a broken status channel) is answered as still going too:
 only an end on disk is answered in full. Stopping the turn before the call
 has answered -- while it waits or while its answer goes out -- stops the run
@@ -97,7 +98,9 @@ plugin stopped while the call waits stops the run as well -- unless its
 process has ended already, whose own end stands -- and that call answers
 with the run as it ended (waiting for a finalize already under way) instead
 of failing. Once the
-call has answered, only @{tt}cancel_run@{utt} or the time limit stops it.
+call has answered, only @{tt}cancel_run@{utt}, the time limit or a
+@{tt}get_run@{utt} with @{tt}stop_if_cancelled: true@{utt} cancelled while
+it waits stops it.
 
 @{h2}The end
 
@@ -112,7 +115,7 @@ the state:
 @{table}
 State | When
 done | Claude Code ended with a success result -- even if a stop came too late
-cancelled | stopped (cancel, time limit, stopped turn, a starting call that never answered, the plugin stopped while its call waited) before a success result
+cancelled | stopped (cancel, time limit, stopped turn, a starting call that never answered, the plugin stopped while its call waited, a @{tt}get_run@{utt} with @{tt}stop_if_cancelled@{utt} cancelled while it waited) before a success result
 failed | an error result, or no result at all (its stderr goes into @{tt}details@{utt})
 @{body}
 
@@ -323,6 +326,7 @@ workdir | one of the configured workdirs; may be left out when there is only one
 mode | @{tt}edit@{utt} (default): change the code; @{tt}plan@{utt}: only read (Read, Glob, Grep, Claude Code's plan mode) and answer with a plan
 resume | run id of an ended run of the user's: continue its Claude Code conversation in its worktree and branch
 json_schema | a JSON schema, an object of at most 20,000 characters as JSON on the command line -- quotes escaped as Windows needs them, so a quote counts two to four times; the rest of the line stays far below Windows' 32,767 -- nested at most 100 deep. Claude Code also answers with an object matching it (@{tt}output@{utt}). A resume without one keeps its run's
+wake | @{tt}true@{utt} (default): a run still going when the call answers wakes the session at its end, where a wake can be armed (the answer's @{tt}wake@{utt} and @{tt}wake_note@{utt} say whether); @{tt}false@{utt}: it wakes nobody -- the caller waits with @{" get_run " link get_run} itself (see @{" What the model sees " link model})
 @{body}
 
 @{h2}The answer of an ended run
@@ -370,6 +374,7 @@ task: the complete task as text | task empty or not a string
 task: at most <max_task_chars> characters | too long
 task: not valid text (a broken character escape) -- send it again | a lone surrogate in the text
 mode: edit (change the code) or plan (read and answer with a plan) | another mode
+wake: true (woken at the end) or false (you wait with get_run) | not true or false
 json_schema: a JSON schema as an object, at most 20000 characters as JSON on the command line, its quotes escaped | not an object, too long, nested deeper than 100, or holding NaN or Infinity -- also the one a resume would inherit
 resume: no run <id> of yours | unknown run, or another user's
 resume: run <id> has not ended yet | still running
@@ -399,10 +404,11 @@ read for this session, so it is not woken for it any more.
 Parameter | Meaning
 run_id | required; a run of the calling user
 wait_s | 0 to 600 seconds (default 0; values outside are clamped): wait that long for the end, checking about every 2 seconds
+stop_if_cancelled | @{tt}false@{utt} (default); @{tt}true@{utt}: should this call be cancelled while it waits -- its caller terminated or timed out, a graceful stop of the API -- the run is stopped with it ("stopped with the caller that waited for it"), as a cancelled @{tt}run_task@{utt} call's run is. For a caller that started the run with @{tt}wake: false@{utt}
 @{body}
 
 Errors: "no run <id> of yours", "wait_s: seconds, a number from 0 to 600"
-(not a number).
+(not a number), "stop_if_cancelled: true or false".
 
 @{code json}
 {"run_id": "3f9a1c0b7e21", "wait_s": 300}
@@ -556,7 +562,7 @@ allowed_users | none | user ids that may start runs; empty: nobody
 allowed_commands | none | shell commands as Claude Code permission patterns; empty: no shell
 pass_env | none | environment variable names Claude Code gets beyond its allowlist
 model | "" | Claude Code's @{tt}--model@{utt}; empty: the subscription's default
-effort | "" | Claude Code's @{tt}--effort@{utt} (low, medium, high, xhigh, max); empty: its default -- @{tt}--restricted@{utt} leaves the user's settings, their effortLevel too, unread
+effort | "" | Claude Code's @{tt}--effort@{utt} (low, medium, high, xhigh, max); empty: its default -- @{tt}--restricted@{utt} leaves the user's settings, their effortLevel too, unread; any other value: a warning in the log, and its default
 max_window_utilization | 0.8 | no run starts while a window is at or past this share (0.05 to 1)
 wait_s | 300 | how long @{tt}run_task@{utt} waits before answering with a run id (0 to 3600)
 max_run_minutes | 60 | a run still going after this is stopped (1 to 1440)
