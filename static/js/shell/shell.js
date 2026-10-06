@@ -322,6 +322,8 @@ async function start() {
     if (requestId) contextMenu(requestId, 'request', { request_id: requestId.querySelector('span')?.textContent || '' });
   });
   window.addEventListener('session:new', () => showWelcome(sessions.sessions));
+  // the chat's /help <topic>: the Help panel on the search for it
+  window.addEventListener('help:search', (event) => workspace.open('help', { path: `?${new URLSearchParams({ q: event.detail.query })}` }));
 
   const selectors = window.selectorModule.init();  // a restored sub-session checks its agent against the list
   new Picker();

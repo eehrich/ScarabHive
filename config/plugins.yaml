@@ -1170,7 +1170,7 @@ plugins:
         deny: []
 
     # The model asks the person watching the run: a question with 2-4
-    # options or free text, answered in the web chat. A run nobody watches
+    # options or free text, answered in the web chat or agent-cli chat. A run nobody watches
     # gets an error at once ("decide yourself"). Agents get it through their
     # allowlist ("ask_user/*"). Manual: src/plugins/ask_user/ask_user.guide.
     ask_user:

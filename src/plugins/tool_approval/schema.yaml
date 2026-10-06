@@ -73,7 +73,7 @@ config:
     default: "block"
     description: >
       What happens to a call that would be asked about while nobody can answer:
-      a run of the openai_api plugin, agent-run, agent-cli, a writer dispatch,
+      a run of the openai_api plugin, agent-run, a one-shot agent-cli, a writer dispatch,
       an async sub-agent after its caller's run ended. block: the call does not
       run and the model is told to go on without it. allow: it runs.
 

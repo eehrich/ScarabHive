@@ -1444,6 +1444,13 @@ def _main() -> None:
                 presence.release(actual_session_id, session_user)
                 shut_down_runtime()
                 return
+            if woken:
+                # This run is told that input waits: what rang for it is
+                # delivered. Taken with the stamp here, not on the first LLM
+                # step: a ringer that saw the session held rang on into a
+                # wake run per ring, up to max_wake_depth, and a run that
+                # never reaches an LLM call left the mark and woke itself.
+                presence.take_for_wake(actual_session_id, session_user)
 
     # Run session operations
     try:

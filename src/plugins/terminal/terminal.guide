@@ -265,9 +265,19 @@ This keeps keys out of @{tt}env@{utt} output, out of a build log that
 prints its environment and out of the model's context by accident. It is
 not a boundary: reads are not confined, so @{tt}cat config/secrets.env@{utt}
 still shows them, confined or not. Only a whitelist that names no program
-able to read that file keeps an agent from it. Commands get no input of their own: they inherit the server's
-standard input, so give them what they need as arguments or files, and use
-non-interactive flags.
+able to read that file keeps an agent from it.
+
+Commands get no input: a command reads the end of its input at once, a
+background command an input that stays open but brings nothing. Nothing
+the person types reaches either. A command that asks does not wait: most
+end with their error (PowerShell missing a mandatory parameter,
+@{tt}input()@{utt}), but @{tt}Read-Host@{utt}, @{tt}read@{utt} and
+@{tt}set /p@{utt} answer empty and go on, and a [Y/n] prompt takes its
+default. Give a command what it needs as arguments or files, and use
+non-interactive flags (@{tt}-y@{utt}, @{tt}--yes@{utt},
+@{tt}-NonInteractive@{utt}). A program that opens the console itself (an
+ssh password prompt) can still ask in the terminal agent-cli runs in on
+Windows.
 
 @{h2}The pattern lists
 

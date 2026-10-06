@@ -4,16 +4,19 @@ One tool, named like its instance. The question goes where tool_approval's
 questions go (``core.run_questions``): a status line of the call's own row,
 with ``meta.ask_user``; the web chat draws the question with its options and
 an answer field on that row and posts the answer to this plugin's route
-(web.py). The call waits for that answer, the run's cancellation,
+(web.py), agent-cli chat prints it from its ``form`` and answers in its own
+process (``run_questions.answer_question``). The call waits for that answer, the run's cancellation,
 ``ask_timeout``, or until nobody reads the run any more -- whichever comes
 first -- and the row's last line says which. A message the person types into
-the chat meanwhile ends the wait too: written to the call's own run, the model
+the chat meanwhile ends the wait too (in agent-cli chat: a line begun before the
+question showed; one begun after is its answer): written to the call's own run, the model
 reads it as their next message; written to a run above it (a sub-agent asks,
 the person writes to the conversation they watch), the sub-agent is told to
 finish with what it has, so the run above can read the message.
 
-Nobody to ask -- a run no person watches (openai_api, agent-run, a JSON /run,
-a job, a writer dispatch, an async sub-agent whose caller's stream ended) --
+Nobody to ask -- a run no person watches (openai_api, agent-run, a one-shot
+agent-cli, a JSON /run, a job, a writer dispatch, an async sub-agent whose
+caller's stream ended) --
 and the call returns at once with an error that tells the model to decide
 itself. So does a call that is not the model's own turn (a script, a state
 machine, a slash command): it has no cancellation token of a run nor a status

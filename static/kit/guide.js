@@ -223,9 +223,15 @@ class GuideViewer extends HTMLElement {
       this.shown = { query };
       notice(this.stale, '');
       notice(this.problems, '');
-      const more = result.total > result.hits.length ? `, the first ${result.hits.length} shown` : '';
-      render(this.page, result.hits.length
-        ? html`<p class="pk-guide-line pk-guide-fg-shadow">${result.total} ${result.total === 1 ? 'node contains' : 'nodes contain'} “${query}”${more}.</p>${result.hits.map(hit)}`
+      // ranked by meaning (agent_system/ui/help_index.py); without its model, the nodes holding every word
+      const count = result.hits.length;
+      const total = result.total ?? count;  // the words' fallback finds more than it shows
+      const head = result.fallback
+        ? `${total} ${total === 1 ? 'node contains' : 'nodes contain'} “${query}”${total > count ? `, the first ${count} shown` : ''} (the search by meaning is not available).`
+        : `Closest in meaning to “${query}”:`;
+      const exact = result.exact && html`<p class="pk-guide-line pk-guide-exact">Named exactly: ${nodeLink(result.exact, ` ${result.exact.title} `)}</p>`;
+      render(this.page, count || exact
+        ? html`${exact}<p class="pk-guide-line pk-guide-fg-shadow">${head}</p>${result.hits.map(hit)}`
         : emptyState('search', 'Nothing found', `No guide contains “${query}”.`));
       this.anchor();
       this.showing({ browse: false, focused }, `Search: ${query}`, { q: query }, { query });

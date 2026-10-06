@@ -164,6 +164,11 @@ Takes the same options as `run`: `--agent`, `--llm`, `--llm-params`,
 `--force`, `--list-sessions` and `--vars`, plus the global `--color` and
 `--no-status`. In the chat this means:
 
+- `--no-status`, `--color never`/`text` (also `NO_COLOR`, `TERM=dumb`) or
+  input that is not a terminal: nobody is asked what a run would ask the
+  person (`ask_user`, `tool_approval`) -- the run decides without asking, as
+  under agent-run.
+
 - `--attach` attaches the files to the first message, as `/attach` does,
   including a check whether the model can read them. Without a first
   message passed along, they wait for the first one typed.
@@ -199,7 +204,7 @@ Takes the same options as `run`: `--agent`, `--llm`, `--llm-params`,
 | `/rewind [n]` | Only the files, the conversation stays: without an argument the **checkpoints** of this session (one per turn that changed something via the file tools, with the files; the number is the fixed sequence number of the entry, it does not shift when old checkpoints drop out, and therefore has gaps), `/rewind <n>` restores every file the agent has changed since checkpoint n to how it was before — created files are deleted, deleted and moved ones come back. A turn that `/undo` without `files` took out appears as "dropped turn" between its neighbours and is reverted with a checkpoint before it. `/rewind <n> overwrite` also for files that have been changed outside the agent since. Shell commands are **not** recorded, only mentioned with a count |
 | `/export [path]` | Write the conversation as Markdown: questions, answers, the tool calls and their results truncated (`/last` shows them in full). Without a path `chat-<session>.md` in the current directory; an existing file is never overwritten |
 | `/edit [text]` | Write the next message in `$VISUAL`/`$EDITOR` (without either: `notepad` or `vi`), the argument is already in it. For what a prompt line is the wrong shape for — a specification, a pasted diff with a paragraph around it. An empty file sends nothing, and neither does an editor that ends with an error: whoever aborts does not want to pay for the turn |
-| `/help`, `/h`, `/?` | List the commands |
+| `/help`, `/h`, `/?` | List the commands. `/help manual` opens the manual, `/help plugins` the plugin list, `/help <guide>/<node>` that node, anything else searches every guide (an exact match opens directly, otherwise the hits are numbered). In the viewer: a number opens that link, `b` goes back, `n`/`p` browse, `c` contents, `i` index, `h` help, `/text` searches, `q` or Enter returns to the chat. Long pages pause a screen at a time. Nothing of it reaches the agent; without a terminal the page is printed and nothing is asked |
 | ↑ / ↓ | Walk the input history; Ctrl-R searches it |
 | Tab | Completes what fits the line: at the `/` the commands, plugin commands and skills, after `/model` the profiles, after `/agent` the agents, after `/vars` the variables of this session, after `/attach` paths (also with backslash). After `/resume` the sessions the process has already seen — `/sessions` or an empty `/resume` fill the list. Within a message nothing is offered |
 | Ctrl-C | Cancel the **running turn**; twice at the prompt exits. Also aborts a running command (`/sessions`, `/resume`, `/vars`, `/tools`, a plugin command) without ending the chat; a running save is finished first, a second Ctrl-C drops it. After Ctrl-C, queued lines never run as new turns — not even if the answer was faster |
@@ -359,7 +364,10 @@ a known command — a path like `/etc/nginx/nginx.conf`, for instance — is sen
 as an ordinary message. The escape only fires where it is needed: a pasted
 `// TODO: fix` or `//192.168.1.1/share` keeps both slashes.
 
-While a turn is running, a typed line goes to the agent at the next step.
+While a turn is running, a typed line goes to the agent at the next step --
+unless a question of the run (`ask_user`, `tool_approval`) was shown when you
+began typing it: then the line is its answer, see
+`src/plugins/ask_user/ask_user.guide`.
 The same rule as at the prompt applies, from the same function: a
 **single** line that is a known command word is rejected
 (commands exist only at the prompt), everything else is a message — a

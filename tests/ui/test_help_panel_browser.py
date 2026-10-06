@@ -20,6 +20,7 @@ from agent_system.ui.resources import STATIC_DIR
 from agent_system.ui.routes import router
 from tests.ui.browser import find_browser, run_app_test_page
 from tests.ui.test_help import PNG
+from tests.ui.test_help_index import use_fake_model
 
 BROWSER = find_browser()
 PAGE_TIMEOUT = 120
@@ -121,6 +122,7 @@ def results(tmp_path_factory):
     (plugin / "docs" / "notes.md").write_text(NOTES, encoding="utf-8")
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(help_module, "GUIDES_DIR", manual)
+        use_fake_model(patch, base / "search_index.json")  # the ranking by shared words, the index kept here
         return run_app_test_page(BROWSER, stub_app(base / "plugins"), "tests/ui/help_panel_tests.html",
                                  timeout=PAGE_TIMEOUT)
 
@@ -135,6 +137,7 @@ EXPECTED = [
     'a dead link is crossed out and named below the page',
     'a web link opens in a new tab and nothing else',
     'a search lists its hits, a hit opens, Retrace returns to the hits',
+    'a search naming a node shows it exactly above the ranking',
     'a node that does not exist says so and offers the manual',
     'a search as the first page still offers the manual',
     'a failed load of the colours is tried again on the next page',

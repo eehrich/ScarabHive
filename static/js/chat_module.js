@@ -1428,7 +1428,13 @@
   async function runChatCommand(name, payload) {
     const container = chatContainer;
     if (name === 'help') {
-      addNote(container, window.slashCommands.helpLines().join('\n'));
+      const topic = (payload || '').trim();
+      if (!topic) {
+        addNote(container, window.slashCommands.helpLines().join('\n'));
+        return;
+      }
+      // the shell (shell/shell.js) opens the Help panel on the search for it; the panel shows an exact hit first
+      window.dispatchEvent(new CustomEvent('help:search', { detail: { query: topic } }));
       return;
     }
     if (name === 'skills') {

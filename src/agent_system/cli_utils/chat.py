@@ -501,6 +501,10 @@ async def run_chat_turn(
                 event = await queue.get()
                 try:
                     renderer.handle_status(event)
+                    # what the run asks the person at the terminal (_execute_turn says whether it may)
+                    questions = state.get("questions")
+                    if questions is not None:
+                        questions.see(event)
                 except Exception:
                     logger.debug("Renderer failed on status event", exc_info=True)
 
@@ -691,6 +695,8 @@ def _help_text(skills: Sequence[str] = (),
         "  //text             send a message that starts with a command word",
         "",
         "  Ctrl-C             cancel the running turn; twice at the prompt exits",
+        "",
+        "Manual: /help manual -- or /help <question or topic>",
     ]
     return "\n".join(lines)
 
@@ -1529,13 +1535,15 @@ def _take_wake_mark(ctx: "_ChatContext") -> None:
     (servers/agent/server.py), so this is not what makes the mark go away --
     it is what keeps a turn that never GETS to an LLM call (a config error, a
     refused hold) from leaving the mark set: the watcher would see it again a
-    tick later and start another billed turn, and another.
+    tick later and start another billed turn, and another. And it stamps the
+    wake: a ringer that still rings for news this turn is told about stops
+    (session_presence.take_for_wake) instead of starting a turn per ring.
     """
     presence = presence_for(getattr(ctx.agent, "system_config", None))
     if presence is None:
         return
     try:
-        presence.take_pending(ctx.session_id, ctx.session_user)
+        presence.take_for_wake(ctx.session_id, ctx.session_user)
     except OSError:
         logger.debug("Could not take the wake mark", exc_info=True)
 
@@ -3055,11 +3063,24 @@ async def _poll_typed_input(reader: _KeyReader, renderer: ChatRenderer,
     lands in the conversation at the next step -- it does not interrupt the
     running one. That is the same contract the WebUI has.
     """
+    from .questions import NOT_AN_ANSWER
+
     prompt = "» "
     last_shown = None
+    # Whether a line is being typed, and the question shown when it was begun:
+    # the one it answers -- not one that came while it was typed, unread.
+    typing, begun_for = False, None
+    # The question shown at the last tick: the keys of this one came after it
+    # was drawn. One drawn since -- while the poller slept -- may have come
+    # after the keys, so it counts from the next tick on.
+    readable = None
     try:
         while reader.enabled:
+            questions = state.get("questions")
+            shown, readable = readable, questions.current if questions is not None else None
             for submitted in reader.poll():
+                meant_for = begun_for if typing else shown   # else begun and ended this tick
+                typing = False
                 # Slash commands are REPL-level, not messages. Sending "/exit"
                 # to the LLM because it was typed a second earlier would give
                 # identical keystrokes two different meanings.
@@ -3083,6 +3104,15 @@ async def _poll_typed_input(reader: _KeyReader, renderer: ChatRenderer,
                 # would from the prompt. The RAW line is what gets queued
                 # below: that one passes the prompt again and is unescaped
                 # there -- unescaping twice would hand it a command.
+                # A question of the run open: the line is its answer. Into the run it
+                # would end the question unanswered (ask_user: the person wrote instead).
+                taken = questions.answer(submitted, meant_for) if questions is not None else None
+                if taken is not None:
+                    if taken == NOT_AN_ANSWER and not reader.buffer and "\n" not in submitted:
+                        reader.buffer = submitted   # back on the input line, to make it one
+                        typing, begun_for = True, meant_for
+                    last_shown = None
+                    continue
                 message = resolution.payload
                 request_id = state.get("request_id")
                 delivered = False
@@ -3110,14 +3140,25 @@ async def _poll_typed_input(reader: _KeyReader, renderer: ChatRenderer,
                     renderer.println(f"» {submitted}  (kept for the next turn)",
                                      color="36")
                 last_shown = None
+            if not reader.buffer:
+                typing = False
+            elif not typing:
+                typing, begun_for = True, shown
             if reader.buffer != last_shown:
                 renderer.set_input_row(prompt + reader.buffer if reader.buffer else None)
                 last_shown = reader.buffer
+            if state.get("questions") is not None:
+                state["questions"].refresh()
             await asyncio.sleep(_KEY_POLL_S)
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.debug("Type-ahead poller stopped", exc_info=True)
+    # Ended without being stopped -- the reader failed (it disables itself, or
+    # raised): nothing typed reaches the run any more, so nobody can answer what
+    # it asks. A question waiting ends now (nobody reads), none waits for the timeout.
+    from ..core.request_context import set_run_attended
+    set_run_attended(state.get("request_id") or "", False)
 
 
 async def _handle_vars(ctx: _ChatContext, renderer: ChatRenderer, payload: str) -> None:
@@ -3261,9 +3302,21 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     # Named and claimed before it starts: a Ctrl-C before its run takes the
     # session stops it all the same.
     from ..utils.id import short_id
+    from ..core.request_context import release_run_attended, set_run_attended
+    from .questions import TurnQuestions
     state: dict[str, Any] = {"editor": editor, "request_id": short_id()}
     named = state["request_id"]
     claimed = _claim_turn(ctx, state["request_id"])
+    # Type-ahead needs the live region to place its input line, so it rides
+    # along with ANSI mode.
+    reader = _KeyReader(active=renderer.ansi)
+    # A person at the terminal: what the run asks them (ask_user, tool_approval)
+    # is shown on a status line and answered with the next line typed -- so the
+    # run is attended where both work, as the web chat's runs are.
+    attended = reader.enabled and ctx.show_status
+    if attended:
+        state["questions"] = TurnQuestions(named, ctx.session_user, renderer.println, agent=ctx.entry_name)
+    set_run_attended(named, attended)
     turn = loop.create_task(run_chat_turn(
         ctx.agent, task, ctx.session_id, renderer,
         show_status=ctx.show_status,
@@ -3271,9 +3324,6 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         llm_profile_info=ctx.llm_profile_info,
         state=state,
     ))
-    # Type-ahead needs the live region to place its input line, so it rides
-    # along with ANSI mode.
-    reader = _KeyReader(active=renderer.ansi)
     poller = (loop.create_task(_poll_typed_input(reader, renderer, ctx, state))
               if reader.enabled else None)
     try:
@@ -3292,6 +3342,7 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         # The reader owns terminal state on POSIX -- it has to be restored on
         # every exit, including Ctrl-C, or the shell stays in cbreak.
         _stop_typing(loop, reader, poller, renderer, state)
+        release_run_attended(named)
         if claimed is not None:
             claimed.release(ctx.session_id, ctx.session_user)
         # What the turn registered under its request id (a tool call, a
@@ -3351,6 +3402,9 @@ def _stop_typing(loop: asyncio.AbstractEventLoop, reader: _KeyReader,
 def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
                  turn: "asyncio.Task", state: dict, renderer: ChatRenderer) -> dict:
     """Ctrl-C during a turn: graceful cancel first, hard cancel as fallback."""
+    # The type-ahead still runs while the turn unwinds: a line typed now must not
+    # answer a question of the run its person just stopped (an Allow beats the cancel).
+    state.pop("questions", None)
     renderer.close()
     print("\nCancelling turn... (Ctrl-C again to force)", file=sys.stderr)
     request_id = state.get("request_id")
@@ -3789,7 +3843,15 @@ def run_chat_loop(
                         editor.remember(task)
                     print(f"{prompt}{_one_line(task, 200)}")
                 if command == "help":
-                    print(_help_text(skill_names, plugin_commands))
+                    if not payload:
+                        print(_help_text(skill_names, plugin_commands))
+                        continue
+                    # The guides, browsed right here: nothing of it reaches the agent or the session.
+                    from .help_viewer import open_help
+                    open_help(payload, getattr(ctx.agent, "system_config", None),
+                              read=read_cont or (lambda text: input(text)),
+                              run=lambda coro: _run_interruptible(loop, coro, "/help"),
+                              ansi=ansi, interactive=interactive)
                     continue
                 if command == "unknown":
                     hint = suggest_command(

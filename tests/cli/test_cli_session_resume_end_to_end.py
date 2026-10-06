@@ -409,20 +409,38 @@ class TestSessionPresence:
 
     def test_a_woken_run_with_input_waiting_continues_the_session(
             self, cli_env, monkeypatch, tmp_path):
+        sessions = self._presence_on(cli_env, monkeypatch, tmp_path)
+        (sessions / "cli_user").mkdir(parents=True, exist_ok=True)
+        (sessions / "cli_user" / "s1.pending").touch()
+        # spawn_wake stays the suite's guard: the run takes the input, so
+        # letting go wakes nobody, and a wake here fails the test.
+
+        self._wake(monkeypatch)
+
+        assert cli_env.saved.get("session_id") == "s1"
+
+    def test_a_woken_run_takes_the_input_with_its_stamp_and_does_not_wake_itself(
+            self, cli_env, monkeypatch, tmp_path):
+        """A woken run is told that input waits, so what rang for it is
+        delivered: it takes the marker at once, with the stamp that ends a
+        ringer still ringing (wake_session). Left to its first LLM call, a
+        ringer that found the session held rang on into a woken run per ring,
+        up to max_wake_depth -- three woken turns in a row in session
+        gx953bf9y3 -- and a run that never got to a call (this dummy agent)
+        left the marker and woke itself again as it let go."""
         from agent_system.core import session_presence as sp
 
         sessions = self._presence_on(cli_env, monkeypatch, tmp_path)
         (sessions / "cli_user").mkdir(parents=True, exist_ok=True)
         (sessions / "cli_user" / "s1.pending").touch()
-        # The dummy agent never reaches an LLM call, so the marker is still
-        # there when this run lets go -- and letting go with input waiting wakes
-        # the session. A test that means to wake replaces spawn_wake itself;
-        # the suite-wide guard would otherwise start a real agent-cli.
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: (0, 0.0))
+        spawned = []
+        monkeypatch.setattr(sp, "spawn_wake", lambda *args: spawned.append(args) or (0, 0.0))
 
         self._wake(monkeypatch)
 
-        assert cli_env.saved.get("session_id") == "s1"
+        assert cli_env.saved.get("session_id") == "s1", "the woken run did not run"
+        assert sp.presence_for(cli_env.config).wake_stamp("s1", "cli_user"), "it took the input without a stamp"
+        assert spawned == [], "the woken run woke its session again"
 
 
 class TestChatStart:

@@ -26,6 +26,11 @@ DECISIONS = (ALLOW_ONCE, ALLOW_SESSION, DENY)
 #: Longest reason a person can hand the model, in characters.
 MAX_REASON_CHARS = 1000
 
+#: The decisions as the person reads them.
+DECISION_LABELS = {ALLOW_ONCE: "Allow once", ALLOW_SESSION: "Allow for this session", DENY: "Deny"}
+#: Said where the preview left out part of a long value.
+CUT_NOTE = "Long values are shortened in the middle -- check what the call writes before you allow it."
+
 #: Sessions whose grants are kept; the oldest one is forgotten beyond this.
 MAX_SESSIONS_WITH_GRANTS = 1000
 
@@ -68,6 +73,15 @@ class ApprovalQuestion(Question):
             "decisions": list(self.decisions),
         }
 
+    def form(self) -> Dict[str, Any]:
+        """The call as any client draws it: its arguments, the decisions offered, a reason for Deny."""
+        warnings = [note for note in (self.warning, CUT_NOTE if self.arguments_cut else None) if note]
+        return {"prompt": f"Approve {self.tool}?", "detail": self.arguments_preview or None,
+                "warning": "\n".join(warnings) or None,
+                "choices": [{"value": decision, "label": DECISION_LABELS[decision]} for decision in self.decisions],
+                "multi_select": False,
+                "text": {"label": "Why not (sent to the agent with Deny)", "alone": False}}
+
 
 class ApprovalBroker(QuestionBroker):
     """Open approvals by id, and the tools a person allowed per session."""
@@ -102,6 +116,16 @@ class ApprovalBroker(QuestionBroker):
             raise AnswerRejected(422, f"this question takes {', '.join(question.decisions)}")
         answer = Answer(decision=decision, reason=reason.strip()[:MAX_REASON_CHARS], answered_by=answered_by)
         return self.resolve(question_id, answer)
+
+    def take(self, question_id: str, choices: Sequence[str], text: str,
+             answered_by: Optional[str] = None) -> Question:
+        """An answer in the form any client sends: one decision, and a reason for Deny."""
+        if len(choices) != 1:
+            raise AnswerRejected(422, f"pick one decision: {', '.join(DECISIONS)}")
+        # words with an Allow are a line misread as one ("2 files left, stop"): they allow nothing
+        if text.strip() and choices[0] != DENY:
+            raise AnswerRejected(422, "a reason goes with Deny only")
+        return self.answer(question_id, choices[0], text, answered_by=answered_by)
 
     # --- what was allowed for a session ------------------------------------
 

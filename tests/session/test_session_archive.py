@@ -975,21 +975,27 @@ async def test_a_lock_nobody_holds_any_more_stops_nothing(sm, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_an_archived_session_leaves_no_lock_file_behind(sm, archive):
-    """Without presence, nothing else would clear it.
+async def test_an_archived_session_leaves_no_presence_file_behind_but_its_stop(sm, archive):
+    """Without presence, nothing else would clear them: the lock, the wake
+    mark and the wake stamp of a session that is gone. Its stop mark stays:
+    a restored session would otherwise be woken by the next message for it,
+    a run its user's stop said only they may start.
 
     SessionPresence._probe removes a lock nobody holds ("which goes"), so a
     test that has presence in it proves nothing about this code.
     """
+    sessions = ("root_lk", "kid_lk1")
     await _make_tree(sm, "root_lk", ["kid_lk1"])
-    _age(sm, ["root_lk", "kid_lk1"], days=60)
-    for session_id in ("root_lk", "kid_lk1"):
-        (_user_dir(sm) / f"{session_id}.lock").write_text("", encoding="utf-8")
+    _age(sm, list(sessions), days=60)
+    for session_id in sessions:
+        for suffix in (".lock", ".pending", ".stopped", ".woken"):
+            (_user_dir(sm) / f"{session_id}{suffix}").write_text("", encoding="utf-8")
 
     assert archive._presence is None
     await archive.archive_user(USER)
 
-    assert list(_user_dir(sm).glob("*.lock")) == []
+    left = sorted(p.name for p in _user_dir(sm).iterdir() if p.suffix in (".lock", ".pending", ".stopped", ".woken"))
+    assert left == sorted(f"{s}.stopped" for s in sessions)
 
 
 @pytest.mark.asyncio

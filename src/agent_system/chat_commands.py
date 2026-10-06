@@ -133,7 +133,7 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
                 "write the next message in $EDITOR -- in the browser, in the input "
                 "(argument pre-fills it)",
                 usage="/edit [text]"),
-    ChatCommand("help", ("/help", "/h", "/?"), "this help", usage="/help, /h"),
+    ChatCommand("help", ("/help", "/h", "/?"), "this help; a topic searches the guides", usage="/help [topic], /h, /?"),
 )
 
 #: alias -> canonical name, built once from the catalogue above.

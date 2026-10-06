@@ -16,6 +16,8 @@ to Markdown (a `@markdown` mode was briefly built and has been removed again). O
 | The manual | `docs/guides/scarabhive.guide` (every `*.guide` there belongs to it; id = file name; found like `templates/` and `static/`) |
 | The viewer (kit element `<pk-guide>`) | `static/kit/guide.js`, styles at the end of `static/kit/kit.css` |
 | The panel | `templates/panels/help.html` (only `<pk-guide address search>`), core panel `help` in `ui/catalog.py` |
+| Search by meaning (index of every node, all-MiniLM-L6-v2; kept in `data/help/search_index.json`) | `src/agent_system/ui/help_index.py`, tests `tests/ui/test_help_index.py` |
+| The terminal viewer (`/help <topic>` in `agent-cli chat`) | `src/agent_system/cli_utils/help_viewer.py`, tests `tests/cli/test_cli_help_viewer.py` |
 | Tests | `tests/ui/test_help.py`, `tests/ui/test_help_panel_browser.py` (+ `help_panel_tests.html`, `help_embed_probe.html`) |
 
 ## Where the guides come from
@@ -165,5 +167,6 @@ height) or the nearest scrolling box -- never anything outside its document.
 - Plugin guides and READMEs are seen by every logged-in user, even those of a plugin
   whose panel only admins open -- docs count as readable; whoever wants it otherwise attaches
   the guides to the plugin's panel roles.
-- No CLI viewer and no agent tool for reading the help (user 2026-09-28: an
-  agent tool is not needed) -- both could be built on `Library.page()`/`search()`.
+- No agent tool for reading the help (user 2026-09-28: an agent tool is not needed).
+- The search by meaning is English only (user 2026-10-06): all-MiniLM-L6-v2 found the right
+  guide for 3 of 8 German questions; two multilingual models measured worse overall.

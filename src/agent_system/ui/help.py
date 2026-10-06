@@ -15,6 +15,7 @@ edit with the next click and nobody restarts anything.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -39,7 +40,6 @@ MANUAL = "scarabhive"
 PLUGIN_INDEX = "plugins"
 #: Where the Help button leads when a guide names no help node of its own.
 VIEWER_HELP = (MANUAL, "help")
-SEARCH_LIMIT = 50
 
 #: What a guide may show with @{image}, and how it is served.
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
@@ -161,6 +161,8 @@ class Library:
 
     def __init__(self, plugin_dirs: Iterable[str | Path]):
         self.guides: dict[str, Guide] = {}
+        #: Per guide read from a file: the file and the stamps it was parsed at -- changes when the guide does.
+        self.sources: dict[str, str] = {}
         for path in sorted(GUIDES_DIR.glob("*.guide")):
             self._load(guide_id(path.name), path, lambda text: text, path.parent)
         plugins = list(plugin_docs(plugin_dirs))
@@ -179,6 +181,7 @@ class Library:
               also: tuple[Path, ...] = ()) -> None:
         try:
             self.guides[key] = _cached(path, key, build, folder, also)
+            self.sources[key] = repr((str(path), _cache[(path, key)][0]))
         except OSError as error:  # an editor's save in between, a lock: this guide is missing, not every one
             logger.warning("Help: cannot read %s: %s", path, error)
 
@@ -264,9 +267,7 @@ class Library:
             for key, node in guide.nodes.items():
                 if node.generated:
                     continue
-                if node.search_text is None:  # rendering Markdown for every search costs 0.7 s over all READMEs
-                    node.search_text = plain_text(layout(node, guide, lambda _target: None))
-                text = node.search_text
+                text = node_text(guide, node)
                 haystack = f"{node.title}\n{text}".lower()
                 if not all(term in haystack for term in terms):
                     continue
@@ -277,6 +278,13 @@ class Library:
                 }))
         hits.sort(key=lambda hit: hit[0])  # stable: the manual before the plugins, file order within
         return [hit for _, hit in hits]
+
+
+def node_text(guide: Guide, node: Node) -> str:
+    """A node as plain text, laid out once: rendering Markdown for every search costs 0.7 s over all READMEs."""
+    if node.search_text is None:
+        node.search_text = plain_text(layout(node, guide, lambda _target: None))
+    return node.search_text
 
 
 def _snippet(text: str, term: str, width: int = 140) -> str:
@@ -314,7 +322,9 @@ def help_asset(request: Request, guide: str, path: str) -> FileResponse:
 
 
 @router.get("/api/help/search")
-def help_search(request: Request, q: str = "") -> dict[str, Any]:
-    """Nodes in every guide that contain all words of ``q``."""
-    hits = _library(request).search(q)
-    return {"query": q, "hits": hits[:SEARCH_LIMIT], "total": len(hits)}
+async def help_search(request: Request, q: str = "") -> dict[str, Any]:
+    """The nodes of every guide closest in meaning to ``q``, and the one it names exactly (help_index.find_help)."""
+    from .help_index import find_help  # it builds on this module
+    library = await asyncio.to_thread(_library, request)  # reading the guides is file work
+    result = await find_help(library, q)
+    return {"total": len(result["hits"]), **result}  # the words' fallback brings its own total

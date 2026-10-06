@@ -167,7 +167,9 @@ the machine fails | an error, never a final answer
 Every call is a request of its own: the request id gets a suffix, the
 session is a new one (else a second call would get the first call's
 answer), and a run that waits for an event blocks the call whatever
-@{tt}on_wait@{utt} says -- a tool call has no conversation to ask in.
+@{tt}on_wait@{utt} says -- a tool call has no conversation to ask in. A
+person who watches the caller is asked for the event instead
+(@{" While a person watches " link waits}).
 
 @{h2}Input
 
@@ -194,6 +196,35 @@ State Graph panel, @{tt}stategraph_send_event@{utt}
 (@{" Tools: debugging a run " link stategraph/tools_debug}), a
 @{" callback URL " link stategraph/callbacks}. This is the config entry's
 default; a caller that takes every answer for the result needs it.
+
+@{h2}While a person watches
+
+A run that blocks its request -- @{tt}on_wait: block@{utt}, or any
+machine called as another agent's tool -- has its wait put to the person
+who watches that request: in @{tt}agent-cli chat@{utt} under the status
+lines, where the next line typed answers it. Nobody watches agent-run, a
+one-shot @{tt}agent-cli "task"@{utt}, a writer job or a schedule: nothing
+is asked there. The web chat shows the question's status line; its event
+comes from the panel there.
+
+The question names the waiting state with its description and offers the
+events the run takes now -- an event several frames take once for each
+frame. In agent-cli chat the event's number answers, or its name alone
+(an event several frames take: its number); where an event takes data,
+the data follows the number:
+@{tt}2 {"why": "too long"}@{utt} -- JSON is sent as JSON, anything else
+as text.
+
+@{table}
+What happens | The question
+the answer is sent | the event goes to the run at once; the line says who sent it
+the frame moved on before the answer came | refused as out of date; the next wait is a question of its own
+the run refuses it (data of the wrong type, the run ended) | stays; the refusal is said to whoever answered
+its guards discard the event | comes again, headed @{tt}Not taken: ...@{utt} with the guards and their results
+an event comes from elsewhere (panel, callback URL, a tool) | ends: the run moved on
+nobody answers within a day | ends; the run waits on, nobody asks again
+the person stops reading the run | ends; asked again once somebody reads it
+@{body}
 
 @{h2}on_wait: ask
 

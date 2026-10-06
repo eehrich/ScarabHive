@@ -49,13 +49,46 @@ class RecordingService:
         return call
 
 
-def client(*, auth: bool = False) -> tuple[TestClient, RecordingService]:
+def client(*, auth: bool = False, waits: Any = None) -> tuple[TestClient, RecordingService]:
+    from plugins.stategraph.wait_questions import WaitBroker
+
     service = RecordingService()
-    server = SimpleNamespace(name="stategraph", get_schema_data=lambda: SCHEMA, service=service)
+    server = SimpleNamespace(name="stategraph", get_schema_data=lambda: SCHEMA, service=service,
+                             wait_questions=waits or WaitBroker(lambda *sent: {"accepted": True}, lambda run: None),
+                             wait_answer_url="/plugins/stategraph/answer")
     app = FastAPI()
     app.state.config = SimpleNamespace(auth=SimpleNamespace(enabled=auth))
     app.include_router(StateGraphWebEndpoints(server).get_web_router())
     return TestClient(app), service
+
+
+async def test_a_wait_question_is_listed_and_answered_through_the_plugin_s_routes():
+    """A client's way to a wait question over HTTP (wait_questions.py): /pending shows its form, /answer sends
+    the event."""
+    import httpx
+
+    from plugins.stategraph.wait_questions import Offer, WaitBroker, WaitQuestion
+
+    sent: list = []
+    waits = WaitBroker(lambda *event: sent.append(event) or {"accepted": True},
+                       lambda run_id: {"status": "waiting", "view": {"frames": [{"prefix": "", "accepts": ["approve"]}]}})
+    question = waits.open_question(WaitQuestion, owner=None, session_id="s", request_id="r", agent_name="a",
+                                   timeout=60, machine="m", run_id="run1",
+                                   offers=(Offer("approve", "approve", "", "approve", "", None),),
+                                   waits=frozenset({("", 0)}))
+    test_client, _ = client(waits=waits)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=test_client.app), base_url="http://t") as http:
+        pending = (await http.get("/plugins/stategraph/pending")).json()["questions"]
+        assert [(q["id"], q["answer_url"], q["form"]["choices"]) for q in pending] == [
+            (question.id, "/plugins/stategraph/answer", [{"value": "approve", "label": "approve"}])], pending
+        refused = await http.post("/plugins/stategraph/answer", json={"question_id": question.id, "choices": ["no"]})
+        assert refused.status_code == 422 and "pick one event: approve" in refused.json()["detail"], refused.text
+        taken = await http.post("/plugins/stategraph/answer",
+                                json={"question_id": question.id, "choices": ["approve"], "text": '{"n": 1}'})
+
+    assert taken.status_code == 200, taken.text
+    assert sent == [("run1", "approve", {"n": 1}, "", None)]
+    assert (await question.answer).event == "approve"
 
 
 def test_every_endpoint_in_the_schema_has_its_route():

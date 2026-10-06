@@ -16,9 +16,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from agent_system.auth.database import get_db
 from agent_system.auth.dependencies import bearer_scheme, get_optional_user
+from agent_system.api.question_routes import question_router
 from agent_system.auth.models import UserRole
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
@@ -42,14 +44,35 @@ def _field(body: dict[str, Any], key: str, kind: type | tuple[type, ...], *, req
     return value
 
 
+class WaitAnswerBody(BaseModel):
+    """An answer to a wait question, as every client sends one: the event picked, the data written."""
+
+    question_id: str = Field(min_length=1, max_length=64)
+    choices: list[str] = Field(default_factory=list, max_length=64)
+    text: str = Field(default="", max_length=100_000)
+
+
 class StateGraphWebEndpoints:
     def __init__(self, server: Any):
         self.server = server
         self.templates = ui_templates(Path(__file__).parent / "templates")
 
     def get_web_router(self) -> APIRouter:
-        return create_schema_router(plugin_name=self.server.name, schema=self.server.get_schema_data(),
-                                    handler_class=self)
+        router = create_schema_router(plugin_name=self.server.name, schema=self.server.get_schema_data(),
+                                      handler_class=self)
+        router.include_router(self._wait_answers())
+        return router
+
+    def _wait_answers(self) -> APIRouter:
+        """``/answer`` and ``/pending`` of the wait questions: the person whose request waits answers, or an admin
+        (question_routes) -- as a reply in the conversation answers an ``on_wait: ask`` wait, not the admins' panel."""
+        broker = self.server.wait_questions
+
+        def take(question: Any, body: WaitAnswerBody, answered_by: str) -> dict[str, Any]:
+            broker.take(body.question_id, body.choices, body.text, answered_by=answered_by)
+            return {"status": "ok", "question_id": question.id}
+
+        return question_router("", broker, self.server.wait_answer_url, WaitAnswerBody, take)
 
     # ------------------------------------------------------------------ plumbing
 

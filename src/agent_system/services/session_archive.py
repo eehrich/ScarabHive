@@ -693,10 +693,13 @@ class SessionArchive:
             except Exception as exc:  # noqa: BLE001 - the archive already has it
                 failures.append(f"{session_id}: {exc}")
                 continue
-            try:
-                (user_dir / f"{session_id}.lock").unlink(missing_ok=True)
-            except OSError as exc:
-                logger.debug("session archive: stale lock %s (%s)", session_id, exc)
+            # Its presence files (core/session_presence.py) went nowhere else. Not .stopped: the user's stop
+            # outlives the archive, and a restored session still waits for them to start it.
+            for suffix in (".lock", ".pending", ".woken"):
+                try:
+                    (user_dir / f"{session_id}{suffix}").unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.debug("session archive: stale %s of %s (%s)", suffix, session_id, exc)
         if failures:
             # The partitions went first, for the churn. With a session left
             # behind, its row went with them and nothing lists it as a child
