@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
@@ -135,16 +135,28 @@ def test_request_stats_are_counted_per_route_never_per_url(monkeypatch, tmp_path
     async def run(run_id: str):
         return {}
 
+    # Nested like api/debug_endpoints.py: newer fastapi leaves the inner route, without /debug, in the scope.
+    outer, inner = APIRouter(prefix="/debug"), APIRouter(prefix="/memory")
+
+    @inner.get("/objects/{kind}")
+    async def objects(kind: str):
+        return {}
+
+    outer.include_router(inner)
+    app.include_router(outer)
     app.mount("/static", StaticFiles(directory=tmp_path), name="static")
     app.mount("/sub", sub)
     profiling.add_profiling_middleware(app)
     client = TestClient(app, follow_redirects=False)
     answers = {path: client.get(path).status_code for path in (
         "/sessions/1", "/sessions/2", "/sessions/1/", "/sessions/2/", "/nope/1", "/nope/2",
-        "/static/js/f.js", "/static//js/f.js", "/static/js//f.js", "/static/JS/f.js", "/sub/runs/7")}
+        "/static/js/f.js", "/static//js/f.js", "/static/js//f.js", "/static/JS/f.js", "/sub/runs/7",
+        "/debug/memory/objects/a", "/debug/memory/objects/b")}
 
     stats = profiling.get_profiler().get_stats()
     assert answers["/sessions/1/"] == 307 and answers["/static//js/f.js"] == 200
+    assert answers["/debug/memory/objects/a"] == 200
     assert {path: row["count"] for path, row in stats.items()} == {
-        "/sessions/{session_id}": 2, "(no route)": 4, "/static/{path}": 4, "/sub/runs/{run_id}": 1}
+        "/sessions/{session_id}": 2, "(no route)": 4, "/static/{path}": 4, "/sub/runs/{run_id}": 1,
+        "/debug/memory/objects/{kind}": 2}
     assert [r.path for r in profiling.get_profiler()._completed_requests][:2] == ["/sessions/1", "/sessions/2"]

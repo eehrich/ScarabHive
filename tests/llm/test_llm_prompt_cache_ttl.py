@@ -29,10 +29,10 @@ def test_the_config_names_a_cache_life_somewhere():
 
 @pytest.mark.parametrize("name, cfg", _entries_on_a_pinning_route(), ids=lambda value: value
                          if isinstance(value, str) else "")
-def test_the_pin_lasts_as_long_as_the_cache_unless_the_entry_says_otherwise(name, cfg, monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+def test_the_pin_lasts_as_long_as_the_cache_unless_the_entry_says_otherwise(name, cfg):
+    # The entries' ${...} keys were expanded when the config loaded, at collection: a checkout
+    # without secrets has none, and the pin does not depend on them.
+    cfg = cfg.model_copy(update={"api_key": cfg.api_key or "sk-test"})
     expected = (cfg.provider_affinity_minutes if cfg.provider_affinity_minutes is not None
                 else cfg.prompt_cache_ttl_minutes)
     assert ROUTES_WITH_THE_PIN[cfg.provider](cfg).provider_affinity_minutes == expected, name

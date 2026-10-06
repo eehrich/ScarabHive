@@ -394,15 +394,13 @@ class PluginWebRegistry:
         # Include plugin routers with security dependency
         for name, router in self.active_routers.items():
             try:
-                # Add security dependency to all routes in this router
+                # The check goes on the include, not on each route: it then covers a router the
+                # plugin nested into its own as well (newer fastapi keeps one of those as a single
+                # entry in router.routes, which has no dependencies of its own), and mounting the
+                # same router twice does not stack it.
                 if auth_config and auth_config.enabled:
-                    # Apply security dependency to each route individually
-                    for route in router.routes:
-                        # Add dependency to existing route dependencies
-                        if not hasattr(route, 'dependencies') or route.dependencies is None:
-                            route.dependencies = []
-                        route.dependencies.append(Depends(plugin_security_dependency))
-                    app.include_router(router, tags=[f"plugin-{name}"])
+                    app.include_router(router, tags=[f"plugin-{name}"],
+                                       dependencies=[Depends(plugin_security_dependency)])
                     logger.info(f"Mounted secured web router for plugin {name}")
                 else:
                     app.include_router(router, tags=[f"plugin-{name}"])

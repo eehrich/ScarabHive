@@ -10,4 +10,5 @@ entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["tool-server"]
 category = "integration"
 requires = { agent_system = ">=0.6.0" }
-dependencies = ["mcp>=2.2,<3"]
+# anyio and httpx2 arrive with mcp, but connection.py imports them directly.
+dependencies = ["mcp>=2.2,<3", "anyio>=4.0", "httpx2>=2.10"]

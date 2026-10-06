@@ -8,7 +8,6 @@ import sys
 import time
 import atexit
 from pathlib import Path
-import shutil
 import gc
 import tempfile
 

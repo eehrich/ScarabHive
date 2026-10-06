@@ -15,6 +15,7 @@ import asyncio
 import gc
 import logging
 import os
+import re
 import threading
 import time
 from collections import defaultdict
@@ -346,6 +347,23 @@ def get_loop_monitor() -> EventLoopMonitor:
     return _loop_monitor
 
 
+def _include_prefix(scope: dict[str, Any], route: Any) -> str:
+    """The prefix of the routers a route was included through, which its own template lacks.
+
+    fastapi 0.115 copied an included route under its full path; newer versions leave the
+    original route in the scope, so debug_endpoints' /memory nested under /debug reports
+    /memory/... . The route's regex still matches the end of the path: what stands before
+    the match is that prefix ("" when nothing is nested).
+    """
+    path = scope.get("path", "")
+    root_path = scope.get("root_path", "")
+    if root_path and path.startswith(root_path):
+        path = path[len(root_path):]
+    pattern = getattr(getattr(route, "path_regex", None), "pattern", "")
+    match = re.search(pattern.removeprefix("^"), path) if pattern else None
+    return path[:match.start()] if match else ""
+
+
 def _stats_key(scope: dict[str, Any]) -> str:
     """The row a finished request is counted under -- never its raw path, so the rows stay a bounded set.
 
@@ -357,7 +375,7 @@ def _stats_key(scope: dict[str, Any]) -> str:
     root_path = scope.get("root_path", "")
     route = scope.get("route")
     if route is not None and getattr(route, "path_format", None):
-        return f"{root_path}{route.path_format}"
+        return f"{root_path}{_include_prefix(scope, route)}{route.path_format}"
     if "app_root_path" in scope and root_path != scope["app_root_path"]:
         return f"{root_path}/{{path}}"
     return "(no route)"

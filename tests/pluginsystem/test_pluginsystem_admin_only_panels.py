@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from agent_system.config.models import AgentConfig, AgentSystemConfig, AuthConfig, ToolServerConfig
 from agent_system.config.settings import load_settings
 from agent_system.plugins.web_adapter import PluginWebRegistry
+from http_routes import http_routes
 
 SHIPPED_CONFIG = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
 PANELS = ("log_viewer", "ssh_control")
@@ -72,14 +73,8 @@ def panels(tmp_path, monkeypatch):
 
 def _routes(app):
     """(method, path) of every API route the two panels mount, path parameters filled in."""
-    found = []
-    for route in app.routes:
-        path = getattr(route, "path", "")
-        if not any(path.startswith(f"/plugins/{name}/") for name in PANELS):
-            continue
-        for method in sorted(getattr(route, "methods", None) or ()):
-            found.append((method, re.sub(r"\{[^}]+\}", "x", path)))
-    return found
+    return sorted((method, re.sub(r"\{[^}]+\}", "x", path)) for method, path in http_routes(app)
+                  if any(path.startswith(f"/plugins/{name}/") for name in PANELS))
 
 
 def test_a_user_reaches_no_route_of_either_panel(panels):
