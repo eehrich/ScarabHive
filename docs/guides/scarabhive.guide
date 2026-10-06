@@ -348,7 +348,7 @@ Command | What it does
 @{tt}/undo@{utt} | drop the last exchange from the session
 @{tt}/retry@{utt} | drop the last exchange and ask it again
 @{tt}/export [path]@{utt} | write the conversation to a Markdown file
-@{tt}/help@{utt} (@{tt}/h@{utt}, @{tt}/?@{utt}) | the list
+@{tt}/help [topic]@{utt} (@{tt}/h@{utt}, @{tt}/?@{utt}) | the list; with a topic, the help on it
 @{body}
 
 @{b}Terminal only@{ub} (@{tt}agent-cli chat@{utt}):
@@ -1951,8 +1951,23 @@ does nothing.
 @{h2}Search
 
 The search field looks through every guide at once: this manual, the
-plugin guides and the plugin READMEs. A node matches when it contains all
-the words you typed; nodes whose title matches come first.
+plugin guides and the plugin READMEs. It searches by meaning, not by the
+exact words: "how do I start a sub-agent" finds the Sub-Agent Manager
+although no page puts it that way. The closest nodes come first. A query
+that names a guide (@{tt}sub_agent_manager@{utt}) or a node
+(@{tt}scarabhive/help@{utt}) shows that node above the list.
+
+The search understands English best; ask in English.
+
+The very first search builds an index of every guide, which takes a few
+seconds. It is kept on disk, and later only a guide that changed is
+indexed again. Where the model behind it cannot be loaded (no network on
+that first use), the search falls back on the words: a node then matches
+when it contains all of them.
+
+In the web chat, @{tt}/help <topic>@{utt} opens this search for the topic.
+In the terminal chat it lists the hits to choose from, and a guide or node
+named exactly opens straight away.
 
 @{h2}Addresses
 

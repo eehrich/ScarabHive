@@ -211,7 +211,7 @@ function load(sessions, options) {
       getCurrentLLMProfile: () => profile,
       setLLMProfile: (name) => { acted.push('setLLMProfile:' + name); profile = name; return true; },
     },
-    slashCommands: { helpLines() { return []; }, catalogue: {}, attach() {}, close() {} },
+    slashCommands: { helpLines() { return ['  /help [topic]   this help']; }, catalogue: {}, attach() {}, close() {} },
     // A file waiting to go out with the next message, when a test asks for one.
     // A list: the real module, holding the files a test attached (/attach lists and clears them).
     fileUploadModule: Array.isArray(settings.files) ? realUpload(document, settings.files) : settings.files ? {
@@ -231,6 +231,8 @@ function load(sessions, options) {
     // context has no web globals, so without this every test here failed to
     // load the module -- red since 2a0fe5a28 (19.09.2026).
     AbortController, AbortSignal, TextDecoder, FormData,
+    // what /help <topic> hands the shell; a vm context has no web globals
+    CustomEvent: class { constructor(type, init) { this.type = type; this.detail = (init || {}).detail; } },
     // The chat keeps its end in view with one once it scrolls (a5b1b35f7): every
     // note scrolls, so without it every command here threw on its first note.
     ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
@@ -1434,6 +1436,26 @@ test('a failed export is not reported as written', async () => {
   // this tells the two apart.
   assert.ok(!note.includes('/export failed'),
     'it fell through into the download: ' + note);
+});
+
+test('a bare /help lists the commands and opens nothing', async () => {
+  const { chatModule, container, window, calls } = load([]);
+  const searched = [];
+  window.addEventListener('help:search', (event) => searched.push(event.detail.query));
+  await chatModule.runCommand('help', '  ');
+  assert.deepStrictEqual(notesOf(container), ['  /help [topic]   this help']);
+  assert.deepStrictEqual(searched, []);
+  assert.deepStrictEqual(calls, []);
+});
+
+test('/help with a topic asks the shell for the Help panel on its search', async () => {
+  const { chatModule, container, window, calls } = load([]);
+  const searched = [];
+  window.addEventListener('help:search', (event) => searched.push(event.detail.query));
+  await chatModule.runCommand('help', ' start a sub agent ');
+  assert.deepStrictEqual(searched, ['start a sub agent']);
+  assert.deepStrictEqual(notesOf(container), []);  // the panel answers, not a note
+  assert.deepStrictEqual(calls, []);
 });
 
 (async () => {

@@ -775,7 +775,9 @@ def client(plugins):
     return TestClient(app)
 
 
-def test_the_routes_serve_a_node_a_file_a_search_and_the_panel(client):
+def test_the_routes_serve_a_node_a_file_a_search_and_the_panel(client, monkeypatch, tmp_path):
+    from tests.ui.test_help_index import use_fake_model
+    use_fake_model(monkeypatch, tmp_path / "index.json")  # not the real model, not the real data directory
     assert client.get("/api/help/node").json()["guide"] == "scarabhive"
     assert client.get("/api/help/node", params={"guide": "guided", "node": "nope"}).status_code == 404
     assert client.get("/api/help/node", params={"guide": "nope"}).status_code == 404
@@ -786,7 +788,7 @@ def test_the_routes_serve_a_node_a_file_a_search_and_the_panel(client):
     assert client.get("/api/help/node", params={"guide": "guided", "file": "a" + chr(0) + "b.md"}).status_code == 404
     assert client.get("/api/help/node", params={"guide": "guided", "file": "plugin.toml"}).status_code == 404
     found = client.get("/api/help/search", params={"q": "quokka"}).json()
-    assert found["total"] == 1 and found["hits"][0]["node"] == "main"
+    assert (found["hits"][0]["guide"], found["hits"][0]["node"]) == ("guided", "main")
     page = client.get("/ui/panels/help")
     assert page.status_code == 200 and "/static/kit/guide.js" in page.text
 

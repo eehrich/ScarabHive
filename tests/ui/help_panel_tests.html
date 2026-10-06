@@ -132,14 +132,21 @@
     const form = $('.pk-guide-search');
     form.q.value = 'this is the second';
     form.requestSubmit();
+    // ranked by meaning: the closest node first, the others after it
     const hit = await until('the hits', () => $('.pk-guide-hit a[data-node="second"]'));
-    const listed = doc().querySelectorAll('.pk-guide-hit').length === 1 && button('next').disabled;
+    const listed = $('.pk-guide-hit a') === hit && !$('.pk-guide-exact') && button('next').disabled;
     hit.click();
     // not its text: the hit's snippet carries that too, and the check would go on before the node is open
     await until('the second node', () => !$('.pk-guide-hit') && $('.pk-guide-line.pk-guide-pre'));
     button('retrace').click();
     await until('the hits again', () => $('.pk-guide-hit'));
     return listed && frame.contentWindow.location.search.includes('q=this');
+  });
+
+  await check('a search naming a node shows it exactly above the ranking', async () => {
+    await open('/ui/panels/help?q=scarabhive%2Fsecond');  // an address; a title only ranks
+    const exact = await until('the exact node', () => $('.pk-guide-exact a[data-node="second"]'));
+    return exact.textContent.trim() === 'Second page' && $('.pk-guide-hit') !== null;
   });
 
   await check('a node that does not exist says so and offers the manual', async () => {
@@ -151,7 +158,7 @@
 
   await check('a search as the first page still offers the manual', async () => {
     await open('/ui/panels/help?q=zzz-nowhere-zzz');
-    await until('the empty search', () => $('.pk-guide-page .pk-empty'));
+    await until('the search', () => $('.pk-guide-page .pk-guide-hit, .pk-guide-page .pk-empty'));
     const offered = !button('contents').disabled && !button('index').disabled && !button('help').disabled;
     button('contents').click();
     await until('the main node', () => pageText().includes('Welcome to the probe.'));

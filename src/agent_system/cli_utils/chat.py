@@ -691,6 +691,8 @@ def _help_text(skills: Sequence[str] = (),
         "  //text             send a message that starts with a command word",
         "",
         "  Ctrl-C             cancel the running turn; twice at the prompt exits",
+        "",
+        "Manual: /help manual -- or /help <question or topic>",
     ]
     return "\n".join(lines)
 
@@ -3789,7 +3791,15 @@ def run_chat_loop(
                         editor.remember(task)
                     print(f"{prompt}{_one_line(task, 200)}")
                 if command == "help":
-                    print(_help_text(skill_names, plugin_commands))
+                    if not payload:
+                        print(_help_text(skill_names, plugin_commands))
+                        continue
+                    # The guides, browsed right here: nothing of it reaches the agent or the session.
+                    from .help_viewer import open_help
+                    open_help(payload, getattr(ctx.agent, "system_config", None),
+                              read=read_cont or (lambda text: input(text)),
+                              run=lambda coro: _run_interruptible(loop, coro, "/help"),
+                              ansi=ansi, interactive=interactive)
                     continue
                 if command == "unknown":
                     hint = suggest_command(
