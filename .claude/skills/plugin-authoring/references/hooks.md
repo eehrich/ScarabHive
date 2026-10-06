@@ -26,8 +26,9 @@ unless its schema entry says `on_error: block` (pre_tool_call only): then the
 call is blocked. While a pre hook waits, the run's status events keep flowing
 (a question asked via StatusScope reaches the viewer). Ask only where someone can
 answer: `status_forwarding.attended_stream_of(request_id)` names the live stream of
-a run whose client said a person reads it (the web chat, `attended` on /events) --
-None for openai_api, the CLIs and background dispatches. The question itself
+a run whose client said a person reads it (the web chat, `attended` on /events;
+`agent-cli chat` with its status shown) -- None for openai_api, agent-run, a one-shot
+agent-cli and background dispatches. The question itself
 (open questions, status row, wait, answer route, who may answer, the chat's box)
 is shared: `core/run_questions.py` (`QuestionBroker`, `put_to_person`) and
 `api/question_routes.py` -- `tool_approval` and the `ask_user` tool use both. A hook that changes

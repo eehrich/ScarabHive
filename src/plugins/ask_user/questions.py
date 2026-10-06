@@ -48,6 +48,13 @@ class UserQuestion(Question):
         return {**super().to_public(), "question": self.question, "options": list(self.options),
                 "multi_select": self.multi_select}
 
+    def form(self) -> Dict[str, Any]:
+        """The question as any client draws it: the options, and an answer in one's own words."""
+        return {"prompt": self.question, "detail": None, "warning": None,
+                "choices": [{"value": option, "label": option} for option in self.options],
+                "multi_select": self.multi_select,
+                "text": {"label": "Or answer in your own words" if self.options else "Your answer", "alone": True}}
+
 
 def parse_arguments(params: Dict[str, Any]) -> Tuple[str, Tuple[str, ...], bool]:
     """(question, options, multi_select) from the model's arguments, or an
@@ -122,3 +129,8 @@ class AskUserBroker(QuestionBroker):
         else:
             picked, typed = (), ""   # nothing waits under this id: resolve says so
         return self.resolve(question_id, UserAnswer(choices=picked, text=typed, answered_by=answered_by))
+
+    def take(self, question_id: str, choices: Sequence[str], text: str,
+             answered_by: Optional[str] = None) -> Question:
+        """An answer in the form any client sends: the options picked and the words written."""
+        return self.answer(question_id, list(choices), text, answered_by=answered_by)

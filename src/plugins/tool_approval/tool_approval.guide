@@ -10,7 +10,8 @@ Tool Approval decides every tool call of an agent before it runs. Deny rules
 block a call, allow rules let it through, and in @{tt}ask@{utt} mode every
 other call is put to the person watching the run in the web chat: the call
 and its arguments appear under the run, with the buttons
-@{b}Allow once@{ub}, @{b}Allow for this session@{ub} and @{b}Deny@{ub}. A
+@{b}Allow once@{ub}, @{b}Allow for this session@{ub} and @{b}Deny@{ub} --
+in @{tt}agent-cli chat@{utt} numbered, answered by the next line typed. A
 call nobody answers does not run. The plugin is loaded in the default
 configuration, but it is off for every agent until the agent switches it on.
 It has no tools and no panel of its own.
@@ -62,6 +63,28 @@ state machine: @{i}agent 'x' runs WITHOUT tool approvals: the rules of this
 run do not apply to its calls.@{ui}
 
 The text is shown as text, never as markup.
+
+@{h2}In agent-cli chat
+
+The call is printed below the run's status rows: @{tt}? Approve <tool>?@{utt},
+the arguments as the box shows them, a warning where there is one, the
+decisions numbered as the box offers them. The next line you type answers
+it: the number of a decision, the number and a reason for Deny
+(@{tt}3 too wide@{utt} where Deny is 3 -- a script's call offers only Allow
+once and Deny, so Deny is 2 there), or the decision's name
+(@{tt}Deny@{utt}). Words go with Deny only: @{tt}2 files left@{utt} allows
+nothing (@{tt}Not taken: a reason goes with Deny only@{utt}). The chat
+repeats what it took: @{tt}» Deny: too wide@{utt}. A line that answers
+nothing is not sent: the chat says what would, puts the line back on the
+input line, and the call keeps waiting. Several calls at once come one after
+the other, oldest first: only the one your next line answers is shown in
+full, with its arguments.
+
+A line answers the call that was shown when you began typing it. If that
+call ends before you press Enter, the line answers nothing -- not the next
+call, whose arguments you have not read. A bare number (@{tt}1@{utt}) is
+dropped; anything else goes to the agent as a message. A line you began before any call appeared is such a
+message too, and the call keeps waiting.
 
 @{h2}The buttons
 
@@ -121,7 +144,8 @@ authentication on.
 
 A question is put only where a person can answer it: a run the web chat
 started for a signed-in user (or with authentication off), while a tab reads
-it. Everything else is @{i}unattended@{ui}, and the call gets the
+it, or a turn of @{tt}agent-cli chat@{utt} that shows its status. Everything
+else is @{i}unattended@{ui}, and the call gets the
 @{tt}unattended@{utt} answer: @{tt}block@{utt} (the default) or
 @{tt}allow@{utt}.
 
@@ -129,16 +153,20 @@ it. Everything else is @{i}unattended@{ui}, and the call gets the
 Started by | Asked?
 the web chat, signed in or authentication off, while a tab reads the run | yes
 the web chat, an anonymous visitor; or the tab was closed for gone_after_seconds | no
+agent-cli chat, its status shown in colour, typed into a terminal | yes, in the terminal
+agent-cli chat with @{tt}--no-status@{utt}, without colour (@{tt}--color never@{utt} or @{tt}text@{utt}, @{tt}NO_COLOR@{utt}, @{tt}TERM=dumb@{utt}), or with input that is not a terminal | no
 a sub-agent, an agent called as a tool, a state machine activity under such a run | yes, in the run above it
 an async sub-agent after the run above it ended | no
-the OpenAI-compatible API, agent-run, agent-cli, a JSON @{tt}/run@{utt} | no
+the OpenAI-compatible API, agent-run, a one-shot agent-cli, a run woken in a process of its own (@{tt}--woken@{utt}), a JSON @{tt}/run@{utt} | no
 a call inside a tool_script script | never -- see @{" Sub-agents, spawns and scripts " link subruns}
 @{body}
 
 The web chat marks the runs it starts (@{tt}"attended": true@{utt} on
 @{tt}POST /events@{utt}, form field @{tt}attended@{utt} on @{tt}/run@{utt}
-with files). Another client that shows its user the stream must send the mark
-itself and draw @{tt}meta.tool_approval@{utt}; see @{" Setting it up " link setup}.
+with files), and so does @{tt}agent-cli chat@{utt} for a turn whose status
+it shows in colour and whose keys it reads. Another client that shows its user the stream
+must send the mark itself and draw the question from
+@{tt}meta.tool_approval.form@{utt}; see @{" Setting it up " link setup}.
 
 "Nobody reads" counts from the moment the last tab left the run, so a reload
 -- which reads again within moments -- keeps the question. A spawn without
@@ -452,8 +480,15 @@ script, answers 422; a question that no longer waits, 404; someone else's,
 The question travels as a status line of the run, with
 @{tt}meta.tool_approval@{utt}: @{tt}id, tool, server, arguments,
 arguments_cut, warning, decisions, request_id, session_id, agent, asked_at,
-expires_at, answer_url@{utt}. A client other than the web chat draws its box
-from that, and sends @{tt}attended@{utt} when it starts a run.
+expires_at, answer_url@{utt}, and @{tt}form@{utt} -- the question as every client draws it:
+@{tt}prompt, detail, warning, choices@{utt} (each @{tt}value, label@{utt}),
+@{tt}multi_select, text@{utt} (@{tt}label, alone@{utt}: whether words answer
+without a choice, or null). A client other than the web chat draws the
+question from @{tt}form@{utt}, posts the @{tt}value@{utt} of what was picked,
+and sends @{tt}attended@{utt} when it starts a run; agent-cli chat does
+exactly that, in its own process. For tool_approval the
+choices are the decisions offered, the detail is the arguments, and the
+words -- a reason -- go along with Deny only.
 
 @{h2}Where data lives
 

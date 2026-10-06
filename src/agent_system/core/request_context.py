@@ -76,10 +76,12 @@ def release_request_user_tree(request_id: str) -> None:
 
 #: Runs whose client shows a person what the run asks while it runs, and lets
 #: that person answer: the web chat says so when it starts a run (``attended``
-#: on POST /events and on /run with files). Nothing else is: the openai_api
-#: plugin, agent-run, agent-cli and the writer's dispatches read the stream as
-#: programs. A hook that would ask a person (tool_approval) asks only under
-#: such a run, see ``status_forwarding.attended_stream_of``. Insertion-ordered
+#: on POST /events and on /run with files), and ``agent-cli chat`` for a turn
+#: whose status and typed lines it shows (cli_utils/chat.py ``_execute_turn``).
+#: Nothing else is: the openai_api plugin, agent-run, a one-shot agent-cli, a
+#: run woken in a process of its own (--woken) and the writer's dispatches read
+#: the stream as programs. A hook that would ask a person (tool_approval) asks
+#: only under such a run, see ``status_forwarding.attended_stream_of``. Insertion-ordered
 #: and capped like the user map; a start sets the entry either way, so an id
 #: a client reuses never inherits an old run's answer.
 _attended_runs: dict[str, None] = {}

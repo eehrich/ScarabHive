@@ -100,8 +100,12 @@ hook that must ask a person itself uses the shared pieces -- a
 `put_to_person(broker, question, scope, meta_key=..., ...)` for the status row and
 the wait (answer, `TIMEOUT`, `CANCELLED`, `GONE`, or what your `interrupt=` check returns), `api.question_routes.question_router`
 for `/answer` + `/pending` with the owner-or-admin rule. Ask only where
-`is_read(request_id, grace)` is true; the chat draws a box only for the meta keys
-`syncQuestionActions` knows. Worked examples: `src/plugins/ask_user`, `src/plugins/tool_approval`.
+`is_read(request_id, grace)` is true. Your `Question` subclass implements `form()` (the
+question as every client draws it) and your broker `take()` (the answer as every client
+sends it, onto your own check) -- without them asking fails, because a question only one
+client can draw is one the person at the other cannot answer: `agent-cli chat` draws every
+kind from `form`, the web chat its own box per meta key in `syncQuestionActions`.
+Worked examples: `src/plugins/ask_user`, `src/plugins/tool_approval`.
 
 ## Multimodal
 

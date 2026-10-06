@@ -164,6 +164,11 @@ Takes the same options as `run`: `--agent`, `--llm`, `--llm-params`,
 `--force`, `--list-sessions` and `--vars`, plus the global `--color` and
 `--no-status`. In the chat this means:
 
+- `--no-status`, `--color never`/`text` (also `NO_COLOR`, `TERM=dumb`) or
+  input that is not a terminal: nobody is asked what a run would ask the
+  person (`ask_user`, `tool_approval`) -- the run decides without asking, as
+  under agent-run.
+
 - `--attach` attaches the files to the first message, as `/attach` does,
   including a check whether the model can read them. Without a first
   message passed along, they wait for the first one typed.
@@ -359,7 +364,10 @@ a known command — a path like `/etc/nginx/nginx.conf`, for instance — is sen
 as an ordinary message. The escape only fires where it is needed: a pasted
 `// TODO: fix` or `//192.168.1.1/share` keeps both slashes.
 
-While a turn is running, a typed line goes to the agent at the next step.
+While a turn is running, a typed line goes to the agent at the next step --
+unless a question of the run (`ask_user`, `tool_approval`) was shown when you
+began typing it: then the line is its answer, see
+`src/plugins/ask_user/ask_user.guide`.
 The same rule as at the prompt applies, from the same function: a
 **single** line that is a known command word is rejected
 (commands exist only at the prompt), everything else is a message — a

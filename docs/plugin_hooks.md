@@ -243,12 +243,14 @@ call reach (the run itself or one above it, for example for a sub-agent).
 A run counts as followed if its client says so at start
 (`"attended": true` on `POST /events`, form field `attended` on `/run` with
 files; `request_context.set_run_attended`), as long as it is running and a
-logged-in person started it (or auth is off). Only the
-web chat does this. Once the stream is over, for example for an asynchronous sub-agent after the
+logged-in person started it (or auth is off). The web chat does this, and
+`agent-cli chat` for a turn whose status it shows in colour and whose keys it
+reads (not with `--no-status`, `--color never`/`text`, `NO_COLOR`,
+`TERM=dumb`, or input that is not a terminal). Once the stream is over, for example for an asynchronous sub-agent after the
 end of its caller, or if nobody reads the run's job any more (tab
 closed), nobody is asked any more. A sub-run asks in the stream of the run above
-it; a call inside a `tool_script` script never asks. Everything else (openai_api, agent-run, agent-cli,
-JSON `/run`) is unattended, and the
+it; a call inside a `tool_script` script never asks. Everything else (openai_api, agent-run, a one-shot
+agent-cli, a run woken in a process of its own, JSON `/run`) is unattended, and the
 hook decides without asking. The question itself is a status line under its
 own child ID with `meta.tool_approval`. The chat draws buttons for it, and
 the last line of the series (end/error) removes them again. The machinery
@@ -257,6 +259,14 @@ status line, waiting for the answer, timeout, cancellation and "nobody reads any
 `agent_system/core/run_questions.py` (`QuestionBroker`, `put_to_person`), the
 answer route including "who may answer" in `agent_system/api/question_routes.py`,
 the answer box in the chat in `syncQuestionActions` (`static/js/chat_module.js`).
+Every kind of question describes itself in one form any client can draw
+(`Question.form`: prompt, detail, warning, choices, multi_select, text) and
+takes an answer in one form any client can send (`QuestionBroker.take`: the
+values picked and the text); `agent-cli chat` prints every kind from the form
+and answers through `run_questions.answer_question` in its own process
+(`cli_utils/questions.py`). The web chat does not yet: it draws its own box per
+meta key and posts the body of that kind's route. A kind without them fails
+when it asks (`QuestionBroker.open_question`).
 
 **Pitfalls for policy and approval hooks:**
 

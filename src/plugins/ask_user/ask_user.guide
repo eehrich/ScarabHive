@@ -10,11 +10,12 @@ Ask User lets an agent stop and ask the person watching the run a question
 -- which of two readings of the request is meant, which option they prefer,
 whether to go ahead with a step that is hard to undo. The question appears
 in the web chat under the run, with up to four options to click and a field
-for an answer in one's own words; the answer goes back to the model as the
-tool's result. A run nobody watches -- an API call, a job, agent-cli, a
-closed tab -- is never asked: the tool answers at once that nobody can
-answer, and the model decides itself and says what it assumed. The plugin
-has one tool and no panel.
+for an answer in one's own words -- or in @{tt}agent-cli chat@{utt}, the
+options numbered, answered by the next line typed; the answer goes back to
+the model as the tool's result. A run nobody watches -- an API call, a job,
+agent-run, a one-shot agent-cli, a closed tab -- is never asked: the tool
+answers at once that nobody can answer, and the model decides itself and
+says what it assumed. The plugin has one tool and no panel.
 
 @{code}
 For users
@@ -57,9 +58,48 @@ authentication off the name is @{tt}anonymous@{utt}.
 The question, the options and your answer are shown as text, never as
 markup, both in the box and in the call's result.
 
+@{h2}In agent-cli chat
+
+The question is printed below the run's status rows: @{tt}? <question>@{utt},
+the options numbered, and how to answer. The next line you type answers it:
+
+@{table}
+You type | It answers
+a number: @{tt}2@{utt} | that option
+numbers with commas or spaces: @{tt}1,3@{utt} | those options, where several may be picked
+a number, a colon, words: @{tt}2: for now@{utt} | that option, with the words
+an option's text: @{tt}SQLite@{utt} | that option
+anything else, @{tt}2 days@{utt} too | in your own words
+@{body}
+
+Words after a number go with that option only after a colon: without one,
+@{tt}2 days@{utt} is your answer, not the second option. Where an option
+begins with a number (@{tt}4@{utt}, @{tt}2024@{utt}, @{tt}3 days@{utt}), the
+options are lettered instead -- @{tt}a)@{utt}, @{tt}b)@{utt} -- so that
+@{tt}4@{utt} is the option 4, never the fourth. A number alone that picks
+nothing is taken for a slip; to answer with a number, add a word
+(@{tt}5 people@{utt}). The chat repeats what it took:
+@{tt}» SQLite: for now@{utt}.
+
+A line that answers nothing -- a number no option has -- is not sent: the
+chat says what would answer, puts the line back on the input line, and the
+question keeps waiting. Several questions at once (parallel calls,
+sub-agents) come one after the other, oldest first: only the one your next
+line answers is shown in full, the others are named below it
+(@{tt}… then: <question>@{utt}) until their turn. A question that ends
+without your answer -- timed out, or the run gave it up -- says so.
+
+A line answers the question that was shown when you began typing it. If that
+one ends before you press Enter, the line answers nothing
+-- not the next question, which you have not read. A bare number or letter
+(@{tt}2@{utt}, @{tt}b@{utt}) means nothing without its question and is
+dropped (@{tt}Not taken: <question> -- it no longer waits.@{utt}); anything
+else -- an option's text, your words -- goes to the agent as a message. A line you began before any question appeared is such a message
+too, as in the web chat below: it ends the question.
+
 @{h2}Writing in the chat instead
 
-You do not have to use the box. A message typed into the chat's normal field
+In the web chat, you do not have to use the box. A message typed into the chat's normal field
 while a question waits ends the question within about a second (the row:
 @{tt}not answered here: the user wrote in the chat instead@{utt}), and the
 model reads your message as your next one. For a sub-agent's question, see
@@ -104,27 +144,35 @@ the agent itself too, through an HTTP tool or @{tt}curl@{utt} in a shell.
 
 A question is put only where a person can answer it: a run the web chat
 started for a signed-in user (or with authentication off), while a tab reads
-it. Everything else gets the @{tt}unattended@{utt} error at once, without
-waiting.
+it, or a turn of @{tt}agent-cli chat@{utt} that shows its status. Everything
+else gets the @{tt}unattended@{utt} error at once, without waiting.
 
 @{table}
 Started by | Asked?
 the web chat, signed in or authentication off, while a tab reads the run | yes
 a sub-agent or an agent called as a tool, under such a run | yes, in the stream of the run above it
 the web chat, an anonymous visitor with authentication on | no
+agent-cli chat, its status shown in colour, typed into a terminal | yes, in the terminal
+agent-cli chat with @{tt}--no-status@{utt}, without colour (@{tt}--color never@{utt} or @{tt}text@{utt}, @{tt}NO_COLOR@{utt}, @{tt}TERM=dumb@{utt}), or with input that is not a terminal | no
 the tab was closed for gone_after_seconds | no; a waiting question stops
-agent-cli, agent-run, the OpenAI-compatible API, a JSON @{tt}/run@{utt}, a job | no
+agent-run, a one-shot agent-cli, a run woken in a process of its own (@{tt}--woken@{utt}), the OpenAI-compatible API, a JSON @{tt}/run@{utt}, a job | no
 an async sub-agent after the run above it ended | no
 a call from a tool_script script, a state machine or a slash command | never -- see @{" Sub-agents and scripts " link subruns}
 @{body}
 
-agent-cli shows the run to a person in the terminal, but it neither draws the
-question nor posts answers, so its runs count as unattended.
+agent-cli chat marks a turn as watched when it shows the run's status lines
+and takes the lines typed while the turn runs -- both need a colour terminal
+it reads the keys of. Without that, nobody would see the question. A
+one-shot @{tt}agent-cli "task"@{utt} is a command, like agent-run: it is not
+asked. A turn the chat starts by itself when a run it waited for wakes it is
+shown in the same terminal, and is asked like any other -- as a run in an
+open tab is.
 
 The web chat marks the runs it starts (@{tt}"attended": true@{utt} on
 @{tt}POST /events@{utt}, form field @{tt}attended@{utt} on @{tt}/run@{utt}
 with files). Another client that shows its user the stream must send the mark
-itself and draw @{tt}meta.ask_user@{utt}; see @{" Setting it up " link setup}.
+itself and draw the question from @{tt}meta.ask_user.form@{utt}; see
+@{" Setting it up " link setup}.
 
 An agent that has the tool is offered it in every run, watched or not: the
 tool list is built per agent, not per run, and a list that changed between
@@ -365,9 +413,15 @@ tools, at every level.
 
 The question travels as a status line of the call's row, with
 @{tt}meta.ask_user@{utt}: @{tt}id, question, options, multi_select,
-request_id, session_id, agent, asked_at, expires_at, answer_url@{utt}. A
-client other than the web chat draws its box from that and sends
-@{tt}attended@{utt} when it starts a run.
+request_id, session_id, agent, asked_at, expires_at, answer_url@{utt}, and
+@{tt}form@{utt} -- the question as every client draws it:
+@{tt}prompt, detail, warning, choices@{utt} (each @{tt}value, label@{utt}),
+@{tt}multi_select, text@{utt} (@{tt}label, alone@{utt}: whether words answer
+without a choice, or null). A client other than the web chat draws the
+question from @{tt}form@{utt}, posts the @{tt}value@{utt} of what was picked,
+and sends @{tt}attended@{utt} when it starts a run; agent-cli chat does
+exactly that, in its own process. For ask_user the choices are the options (value = label),
+and words alone answer.
 
 @{h2}Where data lives
 

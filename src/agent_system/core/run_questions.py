@@ -21,16 +21,24 @@ here:
 
 Who can be asked at all: ``status_forwarding.attended_stream_of`` -- a run
 whose client shows its questions to the person who started it (the web chat
-says so, ``request_context.set_run_attended``), or a run above it, while a tab
-reads it.
+and ``agent-cli chat`` say so, ``request_context.set_run_attended``), or a run
+above it, while a tab reads it.
+
+A question describes itself in one form any client can draw
+(``Question.form``), and takes an answer in one form any client can send
+(``QuestionBroker.take``): ``agent-cli chat`` draws every kind from it and
+hands the answer to ``answer_question`` in its own process. The web chat does
+not yet: it draws the two kinds it knows (ask_user, tool_approval) with boxes
+of their own and posts to their own routes -- a new kind needs a box there.
 """
 from __future__ import annotations
 
 import asyncio
 import secrets
 import time
+import weakref
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, TypeVar
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Type, TypeVar
 
 #: A status row is cut at this width (tests/plugins/test_status_end_lines.py).
 STATUS_WIDTH = 140
@@ -80,7 +88,7 @@ class Question:
     answer: "asyncio.Future[Any]" = field(repr=False)
 
     def to_public(self) -> Dict[str, Any]:
-        """What the page shows about the question."""
+        """What a client shows about the question: ``form`` for any client."""
         return {
             "id": self.id,
             "session_id": self.session_id,
@@ -88,7 +96,22 @@ class Question:
             "agent": self.agent_name,
             "asked_at": self.asked_at,
             "expires_at": self.asked_at + self.timeout,
+            "form": self.form(),
         }
+
+    def form(self) -> Dict[str, Any]:
+        """The question as any client draws it, and what it takes back (``QuestionBroker.take``):
+
+        ``prompt`` what is asked; ``detail`` text shown as it is (a call's arguments), or None;
+        ``warning`` what answering gives up, or None; ``choices`` ``[{"value", "label"}]`` to pick
+        from (``value`` is what the answer names); ``multi_select`` whether several may be picked;
+        ``text`` ``{"label", "alone"}`` when the person may write something -- ``alone``: the
+        text answers without a choice -- or None.
+
+        Every kind of question has one: a question only one client can draw is one the
+        person at the other cannot answer.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no form: no client could draw it")
 
 
 Q = TypeVar("Q", bound=Question)
@@ -99,14 +122,25 @@ def _resolve(future: "asyncio.Future[Any]", answer: Any) -> None:
         future.set_result(answer)
 
 
+#: Every broker in the process: ``answer_question`` finds the one a question waits in.
+_brokers: "weakref.WeakSet[QuestionBroker]" = weakref.WeakSet()
+
+
 class QuestionBroker:
     """The open questions of one asker, by id."""
 
     def __init__(self) -> None:
         self._questions: Dict[str, Question] = {}
+        _brokers.add(self)
 
     def open_question(self, question_type: Type[Q], **fields: Any) -> Q:
-        """A new question whose answer the caller awaits on ``question.answer``."""
+        """A new question whose answer the caller awaits on ``question.answer``.
+
+        A kind without a form or a broker without ``take`` fails here, before
+        anyone is asked: one client could show it, the other not answer it."""
+        if question_type.form is Question.form or type(self).take is QuestionBroker.take:
+            raise NotImplementedError(f"{question_type.__name__} asked through {type(self).__name__}: "
+                                      "a question needs Question.form and its broker QuestionBroker.take")
         question = question_type(
             # hex: the id can end up in a status line's request id, where a `_` or a
             # trailing `_nnn` would read as a level of the run tree
@@ -133,6 +167,13 @@ class QuestionBroker:
         """Every open question, oldest first."""
         return sorted(self._questions.values(), key=lambda q: q.asked_at)
 
+    def take(self, question_id: str, choices: Sequence[str], text: str,
+             answered_by: Optional[str] = None) -> Question:
+        """Hand the waiting asker an answer in the form any client sends
+        (``Question.form``): the ``value`` of each choice picked, and the text
+        written. The kind's own check decides whether it fits (AnswerRejected)."""
+        raise NotImplementedError(f"{type(self).__name__} takes no answer: no client could answer it")
+
     def resolve(self, question_id: str, answer: Any) -> Question:
         """Hand the waiting asker ``answer``. Whether the answer fits the
         question is the caller's check; this one only takes it once."""
@@ -152,6 +193,28 @@ class QuestionBroker:
             # does not must not touch the future from another thread.
             loop.call_soon_threadsafe(_resolve, question.answer, answer)
         return question
+
+
+def waiting_question(question_id: str) -> Optional[Question]:
+    """The question waiting under ``question_id`` in any broker of the process, or None."""
+    for broker in list(_brokers):
+        question = broker.get(question_id)
+        if question is not None:
+            return question
+    return None
+
+
+def answer_question(question_id: str, choices: Sequence[str], text: str,
+                    answered_by: Optional[str] = None) -> Question:
+    """Answer the question waiting under ``question_id``, whichever asker
+    waits for it (``QuestionBroker.take``); AnswerRejected when none does or
+    the answer does not fit. Who may answer is the caller's check: the routes'
+    ``may_answer``, or -- for ``agent-cli chat`` -- the person at the terminal
+    that started the run."""
+    for broker in list(_brokers):
+        if broker.get(question_id) is not None:
+            return broker.take(question_id, choices, text, answered_by=answered_by)
+    raise AnswerRejected(404, NOT_WAITING)
 
 
 def is_read(request_id: str, gone_after_seconds: float) -> bool:
