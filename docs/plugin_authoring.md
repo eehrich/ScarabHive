@@ -380,8 +380,7 @@ Other single-capability examples: `type = ["web"]` (web UI/endpoints only),
 - `web`: Plugin provides web UI/endpoints
 - `hooks`: Plugin provides lifecycle event hooks
 - `library`: Config only — agents, skills, prompts, no code. Such a plugin has
-  **no `entrypoint` and no `plugin.py`** (`coder`, `amiga`,
-  `research`)
+  **no `entrypoint` and no `plugin.py`** (`coder`, `research`)
 - `llm-provider`: An LLM/TTS/batch/decisions backend under `src/plugins/`.
   Found by `agent_system.llm.registry` through its `provides` /
   `provides_batch` / `provides_tts` / `provides_decisions` manifest keys and
