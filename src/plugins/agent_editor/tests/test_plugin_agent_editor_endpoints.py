@@ -132,6 +132,7 @@ def make_client(tree: Path, state: SimpleState | None = None, auth_enabled: bool
     app.include_router(plugin.get_web_router())
     for key, value in (state.__dict__ if state else {}).items():
         setattr(app.state, key, value)
+    app.state.editor_under_test = plugin  # for forget_snapshots: app.routes lists no included route since fastapi 0.13x
     return TestClient(app)
 
 
@@ -145,9 +146,8 @@ def started_app_or_none(tree: Path) -> SimpleState | None:
 
 def forget_snapshots(web: TestClient) -> None:
     """An edit made outside the API shows up within a second; the tests do not wait for it."""
-    for route in cast(FastAPI, web.app).routes:
-        for store in getattr(getattr(getattr(route, "endpoint", None), "__self__", None), "_stores", {}).values():
-            store._key = None
+    for store in cast(FastAPI, web.app).state.editor_under_test.web_endpoints._stores.values():
+        store._key = None
 
 
 def as_user(name: str) -> dict:
