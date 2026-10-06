@@ -740,6 +740,9 @@ class CodingCliServer(SchemaBasedToolServer):
         # Plan mode only reads: no server whose tools could write.
         servers = self.workdirs[workdir]["mcp_servers"] if mode != "plan" else {}
         env, values = cli.child_env(self.pass_env), {}
+        # Claude Code gives up on an MCP tool that says nothing for 5 min (its default): a tool that works
+        # longer without a word was given up on and called again. The run's own limit bounds a call.
+        env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] = str(round(self.max_run_s * 1000))
         if servers:
             mcp, config = self._file(run_id, "mcp.json"), {}
             for name, cfg in servers.items():
