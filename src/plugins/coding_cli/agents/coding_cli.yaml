@@ -50,6 +50,9 @@ plugins:
       max_task_chars: 20000
       # Claude Code's model; empty: the subscription's default.
       model: ""
+      # Claude Code's --effort (low, medium, high, xhigh, max); empty: its default. --restricted leaves the
+      # user's settings, their effortLevel too, unread.
+      effort: ""
       # Environment variables the child gets beyond what Claude Code needs to
       # start and log in. No key from config/secrets.env reaches it otherwise.
       pass_env: []

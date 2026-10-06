@@ -2061,7 +2061,7 @@ the full guide is `.claude/skills/panel-authoring/SKILL.md`.
 ### CLI Support (Optional)
 
 A CLI is optional — some plugins have one (`cli.py` or `__main__.py`, registered
-under `[project.scripts]` in `pyproject.toml`). It helps
+in `console_scripts.cfg`, which `pyproject.toml` reads). It helps
 for development, testing, and standalone use:
 
 #### CLI Structure
@@ -2128,26 +2128,20 @@ if __name__ == "__main__":
     main()
 ```
 
-#### pyproject.toml Entry Point
+#### Console script
 
-Register your CLI in the project's `pyproject.toml`:
+Register your CLI in `console_scripts.cfg` (`pyproject.toml` reads it; `pip install -e .`
+creates the command):
 
-```toml
-[project.scripts]
-# Add your plugin CLI executable
-my-plugin-cli = "plugins.my_plugin.cli:main"
-
-# Or in the existing plugin CLIs section:
-tool-my-plugin = "plugins.my_plugin.cli:main"
+```ini
+[console_scripts]
+my-plugin-cli = plugins.my_plugin.cli:main
 ```
 
 This creates an executable that users can run:
 ```bash
 # After installation, users can run:
 my-plugin-cli tool my_tool --input "test data"
-
-# Or with the mcp prefix:
-tool-my-plugin tool my_tool --input "test data"
 ```
 
 #### CLI Best Practices

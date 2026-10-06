@@ -169,7 +169,7 @@ claude -p --output-format stream-json --verbose --restricted
        [--disallowedTools <Shell>(git push:*) ... mcp__<server>__<blocked tool> ...]
        --tools Read,Edit,Write,Glob,Grep[,WebSearch,WebFetch][,<Shell>]
                                        (plan mode: Read,Glob,Grep[,WebSearch,WebFetch])
-       [--json-schema <schema>] [--model <model>] [--resume <session>]
+       [--json-schema <schema>] [--model <model>] [--effort <level>] [--resume <session>]
        [--append-system-prompt-file CLAUDE.md]
 @{body}
 
@@ -464,6 +464,13 @@ run id <id> to whoever asked; coding_cli_get_run with wait_s waits for its
 end". The reasons: "this run was itself woken and ends with its turn", "a
 sub-agent's session is never woken", "this session cannot be watched", or
 the core's own (session presence off, no session, waking switched off).
+A caller that waits with @{tt}get_run@{utt} itself -- a state machine, whose
+session has nobody to wake -- passes @{tt}wake: false@{utt}; its note is "no
+wake asked; coding_cli_get_run with wait_s waits for the end of run <id>".
+Such a caller waits with @{tt}stop_if_cancelled: true@{utt}: cancelled while
+it waits (its run terminated, a timeout, a graceful stop of the API that
+ends its runs), the call stops the run, as a cancelled @{tt}run_task@{utt}
+call does. A process killed outright cancels nothing: the run goes on.
 
 @{h2}The chat status line
 
@@ -549,6 +556,7 @@ allowed_users | none | user ids that may start runs; empty: nobody
 allowed_commands | none | shell commands as Claude Code permission patterns; empty: no shell
 pass_env | none | environment variable names Claude Code gets beyond its allowlist
 model | "" | Claude Code's @{tt}--model@{utt}; empty: the subscription's default
+effort | "" | Claude Code's @{tt}--effort@{utt} (low, medium, high, xhigh, max); empty: its default -- @{tt}--restricted@{utt} leaves the user's settings, their effortLevel too, unread
 max_window_utilization | 0.8 | no run starts while a window is at or past this share (0.05 to 1)
 wait_s | 300 | how long @{tt}run_task@{utt} waits before answering with a run id (0 to 3600)
 max_run_minutes | 60 | a run still going after this is stopped (1 to 1440)

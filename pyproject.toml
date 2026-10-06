@@ -18,29 +18,12 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
-dynamic = ["dependencies"]
+dynamic = ["dependencies", "scripts"]
 
 [project.urls]
 Homepage = "https://github.com/eehrich/ScarabHive"
 Repository = "https://github.com/eehrich/ScarabHive"
 Documentation = "https://github.com/eehrich/ScarabHive/tree/main/docs"
-
-[project.scripts]
-agent-cli = "agent_system.agent_cli:main"
-agent-run = "agent_system.agent_run:main"
-agent-api = "agent_system.app:run"
-validate-agents = "scripts.validate_agent_configs:main"
-tool-duckduckgo-search = "plugins.duckduckgo_search.__main__:cli_main"
-tool-twitter-search = "plugins.twitter_search.__main__:cli_main"
-tool-llm-router = "plugins.llm_router.__main__:cli_main"
-tool-weather = "plugins.weather.__main__:cli_main"
-tool-datetime = "plugins.datetime.__main__:cli_main"
-tool-web-scraper = "plugins.web_scraper.__main__:cli_main"
-tool-http-server = "plugins.http_server.__main__:cli_main"
-tool-basic-operations = "plugins.basic_operations.__main__:cli_main"
-tool-file-ops = "plugins.file_ops.__main__:main"
-tool-sqlite-query = "plugins.sqlite_query.__main__:cli_main"
-audio-ops = "plugins.audio_ops.__main__:main"
 
 # Dependencies are aggregated per-plugin: each plugin declares its pip
 # requirements in its own plugin.toml; scripts/aggregate_plugin_deps.py
@@ -48,9 +31,12 @@ audio-ops = "plugins.audio_ops.__main__:main"
 # setuptools reads here. Keeps plugin-owned deps out of this file.
 # requirements/private.txt holds what further plugin roots (src/plugins_<name>/)
 # need on top; it is not part of the open-source release, and setuptools skips
-# it where it does not exist.
+# it where it does not exist. The commands are in console_scripts.cfg;
+# console_scripts.private.cfg adds those of the further plugin roots the same
+# way (setuptools joins the two files).
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements/all.txt"] }
+entry-points = { file = ["console_scripts.cfg"] }
 
 [tool.setuptools.packages.find]
 where = ["src"]

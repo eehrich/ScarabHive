@@ -160,7 +160,18 @@ kept in the layout file, and the engine never reads them. A note emptied
 and applied is removed, after asking.
 @{bullet}A transition: trigger (with @{b}New event...@{ub}, which declares
 a new event and picks it), target, guard, effect, and how its line is
-drawn; move it up or down in the order, or remove it.
+drawn; move it up or down in the order, or remove it. A right-angled line
+shows a handle in the middle of each of its segments: drag one (or focus
+it and press the arrow keys) to move that segment across -- the middle
+one of a Z moves its bend, the first and the last where the line leaves
+and enters its states. A segment dragged in line with another one, or onto
+a state's centre line, snaps there, and two bends that no longer bend go.
+@{b}Add bend@{ub} splits the longest segment into two with a step between,
+to lead the line around a state; @{b}Reset line@{ub} lets the canvas draw
+it again. The line is kept in the layout for every transition of that way
+(they lie side by side); its ends follow their states when they move, its
+bends keep their place between the two. Right-angled, chosen for such a
+line, keeps its bends; Straight or the machine's style replaces them.
 @{bullet}Several states and transitions: how their lines are drawn,
 @{b}Group@{ub} (puts the states into a new composite) and
 @{b}Remove@{ub}.

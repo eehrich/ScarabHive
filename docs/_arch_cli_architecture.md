@@ -16,7 +16,7 @@ Doppel-Implementierungen entfernt).
 | `agent-cli` | `src/agent_system/agent_cli.py:main` | Agent-Läufe (`run`, `chat`) und Inspektion (`plugins`, `mcp`, `hooks`), Benutzer (`users`), `reload` des Servers |
 | `agent-run` | `src/agent_system/agent_run.py:main` | schlanker Einmal-Lauf mit dem Default-Agenten; teilt Session-Logik und Anhänge mit `agent-cli` |
 
-Beide sind in `pyproject.toml` unter `[project.scripts]` eingetragen.
+Beide stehen in `console_scripts.cfg`, das `pyproject.toml` liest.
 
 **Grundsatz: Die CLI schreibt keine Konfiguration.** Ein Plugin oder Tool-Server
 wird eingeschaltet, indem man die YAML bearbeitet — `enabled` allein reicht

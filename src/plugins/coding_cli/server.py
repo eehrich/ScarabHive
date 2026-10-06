@@ -77,6 +77,8 @@ STALE_LEASE_S = 10
 # How often a started instance looks for runs whose owner is gone and for rings that were lost.
 SWEEP_S = 30
 SAVE_ATTEMPTS = 40
+# Claude Code's --effort levels.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Run ids are made here; anything else the model passes never becomes a path.
 _RUN_ID = re.compile(r"[0-9a-f]{12}")
 _SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -204,6 +206,12 @@ class CodingCliServer(SchemaBasedToolServer):
                            "command inherits the environment that holds the servers' tokens", name)
         self.pass_env = [str(v) for v in getattr(server_config, "pass_env", None) or ()]
         self.model = str(getattr(server_config, "model", "") or "")
+        # --restricted leaves the user's settings unread, their effortLevel too: the instance names its own.
+        self.effort = str(getattr(server_config, "effort", "") or "")
+        if self.effort and self.effort not in EFFORTS:
+            logger.warning("coding_cli: %s: effort %r is none of %s -- Claude Code's default instead",
+                           name, self.effort, ", ".join(EFFORTS))
+            self.effort = ""
         self.max_utilization = _bounded(getattr(server_config, "max_window_utilization", None), 0.8, 0.05, 1.0) or 0.8
         self.wait_s = _bounded(getattr(server_config, "wait_s", None), 300, 0, 3600)
         self.wait_s = 300.0 if self.wait_s is None else self.wait_s
@@ -471,6 +479,9 @@ class CodingCliServer(SchemaBasedToolServer):
         mode = params.get("mode") or "edit"
         if mode not in ("edit", "plan"):
             return await self._fail(status, "mode: edit (change the code) or plan (read and answer with a plan)")
+        wake = params.get("wake", True)
+        if not isinstance(wake, bool):
+            return await self._fail(status, "wake: true (woken at the end) or false (you wait with get_run)")
         schema = params.get("json_schema")
         prior = None
         if params.get("resume"):
@@ -542,7 +553,7 @@ class CodingCliServer(SchemaBasedToolServer):
                     self._starting.discard(run_id)
         try:
             return await self._answer(status, record, monitor, task, mode, params.get("_request_id"),
-                                      session_id, user_id)
+                                      session_id, user_id, wake)
         finally:
             self._starting.discard(run_id)
             if self._stopped:
@@ -551,9 +562,10 @@ class CodingCliServer(SchemaBasedToolServer):
                     self._release(run_id)
 
     async def _answer(self, status, record: dict, monitor: asyncio.Task, task: str, mode: str,
-                      request_id: Any, session_id: str, user_id: str) -> dict[str, Any]:
+                      request_id: Any, session_id: str, user_id: str, wake: bool = True) -> dict[str, Any]:
         """run_task once the run is going: waits for its end up to wait_s, then answers in full or with the
-        run id and a wake."""
+        run id and a wake -- none when the caller waits with get_run itself (wake false: a state machine, whose
+        session has nobody to wake)."""
         run_id = record["run_id"]
         live = await LiveRun.open(request_id, task, Path(record.get("worktree") or "."))
         if live is not None:
@@ -598,7 +610,8 @@ class CodingCliServer(SchemaBasedToolServer):
         # No await from the look above to the armed wake: a monitor still
         # watching rings when the run ends, after the wake is there.
         answer = self._running_report(self._load(run_id) or record)
-        answer.update(self._arm_wake(run_id, session_id, user_id, sub_agent))
+        answer.update(self._arm_wake(run_id, session_id, user_id, sub_agent) if wake else {
+            "wake": False, "wake_note": f"no wake asked; {self.name}_get_run with wait_s waits for the end of run {run_id}"})
         try:
             await status.end(f"run {run_id} still going after {self.wait_s:.0f} s"
                              + (", wake armed" if answer["wake"] else ", no wake"))
@@ -629,12 +642,28 @@ class CodingCliServer(SchemaBasedToolServer):
         wait_s = _bounded(params.get("wait_s"), 0, 0, 600)
         if wait_s is None:
             return await self._fail(status, "wait_s: seconds, a number from 0 to 600")
+        stop = params.get("stop_if_cancelled", False)
+        if not isinstance(stop, bool):
+            return await self._fail(status, "stop_if_cancelled: true or false")
         deadline = time.monotonic() + wait_s
-        while True:
-            record = await self._settle(run_id, session_id)
-            if record.get("state") in FINAL_STATES or time.monotonic() >= deadline:
-                break
-            await asyncio.sleep(min(POLL_S * 2, max(0.0, deadline - time.monotonic())))
+        try:
+            while True:
+                record = await self._settle(run_id, session_id)
+                if record.get("state") in FINAL_STATES or time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(min(POLL_S * 2, max(0.0, deadline - time.monotonic())))
+        except asyncio.CancelledError:
+            # A caller that waits here for the run's whole length (a state machine, wake false) asks for run_task's
+            # rule: its stop -- a terminate, a timeout, the hive shutting down its runs -- stops the run, which would
+            # go on building where its slot is given to the next. The cancel stays what is raised.
+            if stop and asyncio.current_task().cancelling():
+                record = self._load(run_id) or record
+                if record.get("state") == "running" and alive(record.get("pid"), record.get("pid_started")):
+                    try:
+                        await self._stop_run(record, "stopped with the caller that waited for it")
+                    except OSError as exc:
+                        logger.warning("coding_cli: run %s not stopped with its caller: %s", run_id, exc)
+            raise
         if record.get("state") in FINAL_STATES:
             return await self._finished(status, run_id, session_id)
         answer = self._running_report(record)
@@ -731,7 +760,7 @@ class CodingCliServer(SchemaBasedToolServer):
         rules = worktree / "CLAUDE.md"
         cmd = cli.build_command(self.command, mode=mode, mcp_config=mcp, allowed_commands=self.allowed_commands,
                                 mcp_servers={n: (getattr(c, "tools", None) and c.tools.blocked) or []
-                                             for n, c in servers.items()}, model=self.model, resume=resume,
+                                             for n, c in servers.items()}, model=self.model, effort=self.effort, resume=resume,
                                 rules=rules if rules.is_file() else None, json_schema=schema,
                                 web=self.workdirs[workdir]["web"])
         record = {"run_id": run_id, "instance_name": self.name, "max_run_s": self.max_run_s, "user_id": user_id,

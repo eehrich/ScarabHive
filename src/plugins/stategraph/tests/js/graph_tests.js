@@ -8,6 +8,7 @@ import {
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
   groupedSpots, labelSpot, lanes, lineKeys, orthogonalRoute, renamedLines, selectedTransitions, transitionRoute, selectionOf, statesWithin, toggled,
   NOTE, noteKey, noteLines, notePlaces, foldTrace,
+  bentLines, customRoute, draggedLines, isRoute, routeFrom, routeLines, routeOf, withBend, withoutEmpty,
 } from '../../static/graph.js';
 
 const results = [];
@@ -262,6 +263,107 @@ test('orthogonalRoute: out of the facing side, one bend half way, in through the
   const beside = orthogonalRoute(a, facing, { offset: 6 });
   equal([beside.points, beside.side], [[[54, 40], [54, 70]], [-1, 0]], 'a lane of it: right of its way');
   equal(orthogonalRoute(a, { x: 105, y: 45, w: 10, h: 10 }), null, 'all but meeting at a corner: no right angle fits');
+});
+
+test('a line drawn by hand: taken from the drawn one as it lies, its ends on their states, its bends between them', () => {
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  const b = { x: 300, y: 200, w: 100, h: 40 };
+  const z = routeFrom(orthogonalRoute(a, b).points, a, b);
+  equal(z, { start: 'x', at: [0, 0, 0] }, 'a Z: out at the centre, the bend half way, in at the centre');
+  equal(customRoute(z, a, b).points, orthogonalRoute(a, b).points, 'drawn as it was');
+  const bent = { start: 'x', at: [8, 30, -6] };
+  equal(customRoute(bent, a, b).points, [[100, 28], [230, 28], [230, 214], [300, 214]], 'each segment where it was put');
+  equal(routeOf('x', routeLines(bent, a, b), a, b), bent, 'routeOf turns routeLines round');
+  equal(customRoute(bent, { ...a, y: 40 }, b).points, [[100, 68], [230, 68], [230, 214], [300, 214]],
+    'the source moved down: the line leaves it where it did, the bend moves half the way');
+  equal(customRoute(bent, a, { ...b, x: 500 }).points, [[100, 28], [330, 28], [330, 214], [500, 214]],
+    'the target moved right: the bend half the way, the line into its near side');
+  equal(customRoute({ start: 'x', at: [100, 0, 0] }, a, b).points[0], [100, 30], 'an end off its state: back on its side, clear of the corner');
+  equal(routeFrom([[100, 20], [300, 220]], a, b), { start: 'x', at: [0, 0, 0] }, 'a line across: a Z sideways, bent half way');
+  equal(routeFrom([[100, 20], [300, 20]], a, { ...b, y: 0 }), { start: 'x', at: [0, 0, 0] }, 'a straight one: a Z of no height');
+  equal(routeFrom([[100, 20], [150, 20], [200, 20], [200, 220], [300, 220]], a, b), { start: 'x', at: [0, 0, 0] },
+    'a point on the way, not a bend: one segment');
+  const lane = customRoute(z, a, b, { offset: 6 });
+  equal([lane.points, lane.side], [[[100, 26], [194, 26], [194, 226], [300, 226]], [0, 1]],
+    'a lane: every segment to the right of its way, the label on its side of the longest level one');
+  equal(customRoute(z, a, b, { offset: 0, crowd: true, at: 0.25 }).at, 0.25, 'one of a crowd: at its place along it');
+  equal(customRoute(z, a, b, { offset: 30, crowd: true, at: 0.75 }).points.map(([, y]) => y), [30, 30, 230, 230],
+    "a crowd's lane wider than the sides: its ends at theirs, not off the states");
+});
+
+test('a line drawn in a lane is bent where it is drawn: taken out of its lane, it is drawn back on the same spot', () => {
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  const b = { x: 300, y: 200, w: 100, h: 40 };
+  const pair = { offset: 6, spread: 6 };
+  const drawn = orthogonalRoute(a, b, pair).points;
+  const route = routeFrom(drawn, a, b, pair);
+  equal(route, { start: 'x', at: [0, 0, 0] }, "the right angle of a pair: the way's line");
+  equal(customRoute(route, a, b, pair).points, drawn, 'drawn back in its lane on the same spot');
+  const elk = [[100, 10], [200, 10], [200, 210], [300, 210]];  // apart already: ELK puts lanes apart by itself
+  equal(customRoute(routeFrom(elk, a, b, pair), a, b, pair).points, elk, 'a line ELK drew, on its spot');
+  equal(routeLines(route, a, b, pair), [26, 194, 226], 'its segments as drawn: to the right of the way');
+  equal(routeOf('x', [26, 194, 226], a, b, pair), route, 'routeOf takes them out of the lane');
+  equal(routeFrom([[100, 26], [300, 26]], a, { ...b, y: 0 }, pair), { start: 'x', at: [0, 6, 0] },
+    "a straight one in its lane: the way's line, a Z of no height");
+});
+
+test('a line drawn by hand: a segment dragged snaps, an end stays on its state, bends without length go, a bend more', () => {
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  const b = { x: 300, y: 200, w: 100, h: 40 };
+  equal(draggedLines('x', [20, 200, 220], 1, 254, a, b, 6), [20, 254, 220], 'the bend where it was put');
+  equal(draggedLines('x', [20, 200, 220], 1, 346, a, b, 6), [20, 350, 220], 'near the target\'s centre line: on it');
+  equal(draggedLines('x', [20, 200, 220], 0, 33, a, b, 6), [30, 200, 220], 'the first segment stays on its state\'s side');
+  equal(draggedLines('x', [20, 200, 220], 2, 210, a, b, 0), [20, 200, 210], 'no reach: no snap');
+  const five = [20, 150, 80, 250, 220];
+  const inLine = draggedLines('x', five, 2, 24, a, b, 6);
+  equal(inLine, [20, 150, 20, 250, 220], 'in line with the first segment: snapped onto it');
+  equal(withoutEmpty(inLine, 2), { lines: [20, 250, 220], i: 0 }, 'the step between the two went, and a bend with it');
+  equal(withoutEmpty([20, 150, 220, 250, 220], 2), { lines: [20, 150, 220], i: 2 }, 'in line with the last: the two after it go');
+  equal(withoutEmpty([20, 200, 20], 0), { lines: [20, 200, 20], i: 0 }, 'a Z keeps its three segments');
+  equal(withoutEmpty(five, 2), { lines: five, i: 2 }, 'segments with length all stay');
+  const more = withBend({ start: 'x', at: [0, 0, 0] }, a, b);
+  equal(more, { start: 'x', at: [0, 0, 0, -24, 0] }, 'the longest segment split, its second half a step to the left');
+  equal(customRoute(more, a, b).points, [[100, 20], [200, 20], [200, 120], [176, 120], [176, 220], [300, 220]], 'still right-angled');
+  const far = { ...b, x: 700 };
+  equal(withBend({ start: 'x', at: [0, -300, 0] }, a, far), { start: 'x', at: [0, -300, 76, 0, 0] },
+    'the last segment the longest: its first half steps aside, the line enters its target where it did');
+});
+
+test('a segment of a line in a lane is moved where it is seen, and the way\'s line with it', () => {
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  const b = { x: 300, y: 200, w: 100, h: 40 };
+  const high = { start: 'x', at: [-14, 0, 0] };  // the way's line leaves 6 below the top: the lane left of it is held at 10
+  equal(routeLines(high, a, b, { offset: -6 })[0], 10, 'fixture: the lane left of the way held on the side');
+  equal(bentLines(high, 0, 8, a, b, { offset: -6 }, 0), { lines: [24, 200, 220], i: 0 }, 'its end moved 8 is 8 lower: 18, the way\'s 24');
+  // a bump: up, across, down -- the two upright segments go opposite ways, so in a lane they lie 12 apart
+  const bump = { start: 'x', at: [0, -50, -160, 50, 0] };
+  equal(routeLines(bump, a, b, { offset: 6 }), [26, 156, -34, 244, 226], 'fixture: the bump in its lane');
+  equal(bentLines(bump, 1, 84, a, b, { offset: 6 }, 6).lines, [20, 238, -40, 250, 220], 'dragged near the other one: drawn on it');
+  equal(bentLines(bump, 1, 84, a, b, { offset: 6 }, 6, true), { lines: [20, 250, 220], i: 1 },
+    'dropped there: in line with it on the way\'s line, and the bump goes');
+  equal(routeLines({ start: 'x', at: [0, 50, 0] }, a, b, { offset: 6 }), [26, 244, 226], 'drawn where the two lay as one');
+  equal(bentLines(bump, 1, 98, a, b, { offset: 6 }, 6, true).lines, [20, 248, -40, 250, 220], 'dropped past it: where it was put');
+  // a step back left, and the last segment dropped on it: the segment left goes right now, its lane on the other side
+  const tall = { ...b, h: 60 };
+  const back = { start: 'x', at: [0, 50, 95, -50, 0] };
+  equal(routeLines(back, a, tall, { offset: 8 }), [28, 242, 212, 142, 238], 'fixture: the step back in its lane');
+  const dropped = bentLines(back, 4, -26, a, tall, { offset: 8 }, 6, true);
+  equal(dropped, { lines: [20, 250, 204], i: 2 }, 'the last two go, the step back is the last segment');
+  equal(routeLines(routeOf('x', dropped.lines, a, tall), a, tall, { offset: 8 })[2], 212, 'drawn where it was dropped');
+});
+
+test('isRoute and transitionRoute: a line drawn by hand goes as drawn, but not between a composite and a state in it', () => {
+  equal([{ start: 'x', at: [0, 0] }, { start: 'y', at: [1, 2, 3] }, { start: 'z', at: [0, 0] }, { start: 'x', at: [0] },
+    { start: 'x', at: [0, '1'] }, null, 'orthogonal', { start: 'x' }].map(isRoute),
+  [true, true, false, false, false, false, false, false], 'a start axis and two numbers or more');
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  const b = { x: 300, y: 200, w: 100, h: 40 };
+  const drawn = { start: 'x', at: [8, 30, -6] };
+  equal(transitionRoute(drawn, null, a, b, false, null).points, customRoute(drawn, a, b).points, 'as drawn');
+  const box = { x: 0, y: 0, w: 300, h: 200 };
+  const kid = { x: 150, y: 150, w: 96, h: 34 };
+  equal(transitionRoute(drawn, null, kid, box, true, null).points, transitionRoute('orthogonal', null, kid, box, true, null).points,
+    'a composite and a state in it: the line the canvas draws');
 });
 
 test('a straight line between a composite and a state inside it goes to the nearest border, not through the state', () => {
