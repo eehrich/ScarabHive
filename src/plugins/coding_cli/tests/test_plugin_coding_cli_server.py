@@ -436,6 +436,42 @@ async def test_a_woken_run_or_a_sub_agent_is_not_promised_a_wake(repo, monkeypat
     await call(server, "cancel_run", run_id=result["run_id"])
 
 
+async def test_a_caller_that_waits_itself_asks_for_no_wake(repo, monkeypatch):
+    """A state machine reads the end with get_run: a wake would start a turn on its run's session."""
+    rings = ring_recorder(monkeypatch)
+    server = make_server(repo, wait_s=0.3)
+    result, status = await call(server, "run_task", task="SLEEP 1.5\nWRITE b.txt x", wake=False)
+    assert result["wake"] is False and "no wake asked" in result["wake_note"] and result["run_id"] in result["wake_note"]
+    assert not server._file(result["run_id"], "wake").exists() and status.closing[0][1].endswith(", no wake")
+    await ended(server, result["run_id"])
+    assert rings == [], "nobody rung"
+    final, _ = await call(server, "get_run", run_id=result["run_id"])
+    assert final["state"] == "done"
+    refused, _ = await call(server, "run_task", task="x", wake="no")
+    assert "wake: true" in refused["error"]
+
+
+@pytest.mark.parametrize("stop", [True, False])
+async def test_a_caller_that_stops_waiting_stops_the_run_when_it_asked_to(repo, stop):
+    """A state machine terminated while it waits in get_run: its run goes too, as with run_task -- else Claude
+    Code builds on where the slot is given to the next. Without the flag a chat's poll stopped leaves it going."""
+    server = make_server(repo, wait_s=0.3)
+    result, _ = await call(server, "run_task", task="SLEEP 30", wake=False)
+    poll = asyncio.create_task(call(server, "get_run", run_id=result["run_id"], wait_s=30, stop_if_cancelled=stop))
+    await asyncio.sleep(0.5)
+    poll.cancel()
+    await asyncio.gather(poll, return_exceptions=True)
+    if stop:
+        await ended(server, result["run_id"])
+        assert server._load(result["run_id"])["note"] == "stopped with the caller that waited for it"
+    else:
+        assert not server._file(result["run_id"], "cancel").exists(), "no stop asked"
+        assert server._load(result["run_id"])["state"] == "running"
+        await call(server, "cancel_run", run_id=result["run_id"])
+    refused, _ = await call(server, "get_run", run_id=result["run_id"], stop_if_cancelled="ja")
+    assert "stop_if_cancelled: true or false" in refused["error"]
+
+
 async def test_without_a_wake_the_note_says_how_to_wait(repo):
     """No session presence in a bare config: nobody can be woken."""
     server = make_server(repo, wait_s=0.2)

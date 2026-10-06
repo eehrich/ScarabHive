@@ -471,6 +471,9 @@ class CodingCliServer(SchemaBasedToolServer):
         mode = params.get("mode") or "edit"
         if mode not in ("edit", "plan"):
             return await self._fail(status, "mode: edit (change the code) or plan (read and answer with a plan)")
+        wake = params.get("wake", True)
+        if not isinstance(wake, bool):
+            return await self._fail(status, "wake: true (woken at the end) or false (you wait with get_run)")
         schema = params.get("json_schema")
         prior = None
         if params.get("resume"):
@@ -542,7 +545,7 @@ class CodingCliServer(SchemaBasedToolServer):
                     self._starting.discard(run_id)
         try:
             return await self._answer(status, record, monitor, task, mode, params.get("_request_id"),
-                                      session_id, user_id)
+                                      session_id, user_id, wake)
         finally:
             self._starting.discard(run_id)
             if self._stopped:
@@ -551,9 +554,10 @@ class CodingCliServer(SchemaBasedToolServer):
                     self._release(run_id)
 
     async def _answer(self, status, record: dict, monitor: asyncio.Task, task: str, mode: str,
-                      request_id: Any, session_id: str, user_id: str) -> dict[str, Any]:
+                      request_id: Any, session_id: str, user_id: str, wake: bool = True) -> dict[str, Any]:
         """run_task once the run is going: waits for its end up to wait_s, then answers in full or with the
-        run id and a wake."""
+        run id and a wake -- none when the caller waits with get_run itself (wake false: a state machine, whose
+        session has nobody to wake)."""
         run_id = record["run_id"]
         live = await LiveRun.open(request_id, task, Path(record.get("worktree") or "."))
         if live is not None:
@@ -598,7 +602,8 @@ class CodingCliServer(SchemaBasedToolServer):
         # No await from the look above to the armed wake: a monitor still
         # watching rings when the run ends, after the wake is there.
         answer = self._running_report(self._load(run_id) or record)
-        answer.update(self._arm_wake(run_id, session_id, user_id, sub_agent))
+        answer.update(self._arm_wake(run_id, session_id, user_id, sub_agent) if wake else {
+            "wake": False, "wake_note": f"no wake asked; {self.name}_get_run with wait_s waits for the end of run {run_id}"})
         try:
             await status.end(f"run {run_id} still going after {self.wait_s:.0f} s"
                              + (", wake armed" if answer["wake"] else ", no wake"))
@@ -629,12 +634,28 @@ class CodingCliServer(SchemaBasedToolServer):
         wait_s = _bounded(params.get("wait_s"), 0, 0, 600)
         if wait_s is None:
             return await self._fail(status, "wait_s: seconds, a number from 0 to 600")
+        stop = params.get("stop_if_cancelled", False)
+        if not isinstance(stop, bool):
+            return await self._fail(status, "stop_if_cancelled: true or false")
         deadline = time.monotonic() + wait_s
-        while True:
-            record = await self._settle(run_id, session_id)
-            if record.get("state") in FINAL_STATES or time.monotonic() >= deadline:
-                break
-            await asyncio.sleep(min(POLL_S * 2, max(0.0, deadline - time.monotonic())))
+        try:
+            while True:
+                record = await self._settle(run_id, session_id)
+                if record.get("state") in FINAL_STATES or time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(min(POLL_S * 2, max(0.0, deadline - time.monotonic())))
+        except asyncio.CancelledError:
+            # A caller that waits here for the run's whole length (a state machine, wake false) asks for run_task's
+            # rule: its stop -- a terminate, a timeout, the hive shutting down its runs -- stops the run, which would
+            # go on building where its slot is given to the next. The cancel stays what is raised.
+            if stop and asyncio.current_task().cancelling():
+                record = self._load(run_id) or record
+                if record.get("state") == "running" and alive(record.get("pid"), record.get("pid_started")):
+                    try:
+                        await self._stop_run(record, "stopped with the caller that waited for it")
+                    except OSError as exc:
+                        logger.warning("coding_cli: run %s not stopped with its caller: %s", run_id, exc)
+            raise
         if record.get("state") in FINAL_STATES:
             return await self._finished(status, run_id, session_id)
         answer = self._running_report(record)

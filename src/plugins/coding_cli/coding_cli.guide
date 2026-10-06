@@ -464,6 +464,13 @@ run id <id> to whoever asked; coding_cli_get_run with wait_s waits for its
 end". The reasons: "this run was itself woken and ends with its turn", "a
 sub-agent's session is never woken", "this session cannot be watched", or
 the core's own (session presence off, no session, waking switched off).
+A caller that waits with @{tt}get_run@{utt} itself -- a state machine, whose
+session has nobody to wake -- passes @{tt}wake: false@{utt}; its note is "no
+wake asked; coding_cli_get_run with wait_s waits for the end of run <id>".
+Such a caller waits with @{tt}stop_if_cancelled: true@{utt}: cancelled while
+it waits (its run terminated, a timeout, a graceful stop of the API that
+ends its runs), the call stops the run, as a cancelled @{tt}run_task@{utt}
+call does. A process killed outright cancels nothing: the run goes on.
 
 @{h2}The chat status line
 

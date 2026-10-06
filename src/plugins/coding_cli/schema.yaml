@@ -29,6 +29,10 @@ tools:
           json_schema:
             type: object
             description: "A JSON schema (an object, at most 20000 characters as JSON) for a structured answer: the run then also returns output, an object matching it. A resume without one keeps the prior run's"
+          wake:
+            type: boolean
+            default: true
+            description: "false: a run still going when this answers wakes nobody -- the caller waits for its end with get_run itself"
         required: [task]
         additionalProperties: false
 
@@ -41,6 +45,10 @@ tools:
         properties:
           run_id: {type: string}
           wait_s: {type: integer, minimum: 0, maximum: 600, default: 0}
+          stop_if_cancelled:
+            type: boolean
+            default: false
+            description: "true: should this call be cancelled while it waits (its caller stopped), the run is stopped with it -- as a run_task call's run is"
         required: [run_id]
         additionalProperties: false
 
