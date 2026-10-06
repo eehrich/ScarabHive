@@ -1082,7 +1082,8 @@ class TestUnreadFor:
             await job_manager.decrement_sse_client("unread1")
             assert job_manager.unread_for("unread1") < 0.1, "the clock ran while the job was read"
             await asyncio.sleep(0.2)
-            assert job_manager.unread_for("unread1") >= 0.2
+            # Not 0.2: asyncio.sleep may wake a clock tick early (15.6 ms on Windows).
+            assert job_manager.unread_for("unread1") >= 0.15
         finally:
             done.set()
 
@@ -1108,7 +1109,8 @@ class TestUnreadFor:
             await job_manager.decrement_sse_client("unread3")
             await asyncio.sleep(0.2)
             await job_manager.decrement_sse_client("unread3")
-            assert job_manager.unread_for("unread3") >= 0.2
+            # Not 0.2: asyncio.sleep may wake a clock tick early (15.6 ms on Windows). A restart reads ~0.
+            assert job_manager.unread_for("unread3") >= 0.15
         finally:
             done.set()
 
