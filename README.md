@@ -117,8 +117,7 @@ and the [example plugin](src/plugins/example/).
 - Knowledge: memory, a todo list, lessons an agent learns from its runs, knowledge bundles in
   Markdown with a link graph (OKF), skills (packaged instructions with reference files).
 - Development: a coding agent with explorer, reviewer and test-runner sub-agents; GitLab and
-  GitHub (issues, merge requests, CI); Claude Code as a delegate; Godot, Blender and Amiga
-  (68k) agents.
+  GitHub (issues, merge requests, CI); Claude Code as a delegate; Godot and Blender agents.
 - Media: images, audio and video into and out of the context, image composition, ComfyUI.
 - Integrations: external MCP servers as tools, n8n workflows, an OpenAI-compatible API where
   every agent is a model.
