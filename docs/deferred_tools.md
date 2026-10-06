@@ -1,15 +1,15 @@
-# Tools nachladen (`tools.deferred`)
+# Loading tools on demand (`tools.deferred`)
 
-Ein Agent schickt mit **jedem** LLM-Aufruf die Schemas aller Tools mit, die
-seine Allowlist freigibt. Beim coder waren das 51 Tools mit rund 49 KB, bei
-jedem Schritt. Die meisten davon braucht ein Lauf nie: forge nur bei Tickets,
-das OKF-Schreiben nur am Ende einer Arbeit.
+With **every** LLM call, an agent sends the schemas of all tools its allowlist
+permits. For the coder that was 51 tools with about 49 KB, on every step. A run
+never needs most of them: forge only for tickets, OKF writing only at the end of
+a piece of work.
 
-Mit `tools.deferred` schickt der Agent seltene Tools nur noch als Name und
-Einzeiler mit. Das volle Schema kommt erst dazu, wenn das Modell danach fragt.
-Claude Code macht es genauso (Deferred Tools plus `ToolSearch`).
+With `tools.deferred`, the agent sends rare tools only as a name and a one-line
+description. The full schema is added only when the model asks for it. Claude
+Code does the same (deferred tools plus `ToolSearch`).
 
-## Konfiguration
+## Configuration
 
 ```yaml
 tools:
@@ -17,123 +17,119 @@ tools:
     - "coder_fs/*"
     - "forge/*"
   deferred:
-    - "forge/*"      # dieselben Muster wie allowed/blocked
+    - "forge/*"      # same patterns as allowed/blocked
 ```
 
-- `deferred` ändert nichts daran, **was** der Agent darf. Die Allowlist bleibt
-  die einzige Instanz. Ein zurückgestelltes Tool bleibt erlaubt, nur sein
-  Schema wird zurückgehalten.
-- Die Muster gleicht derselbe Matcher ab wie allowed/blocked
+- `deferred` changes nothing about **what** the agent may do. The allowlist
+  remains the only authority. A deferred tool stays permitted, only its schema
+  is held back.
+- The patterns are matched by the same matcher as allowed/blocked
   (`tool_matches_patterns`).
-- Leer oder nicht gesetzt: Alles bleibt wie bisher, und `tool_search` gibt es
-  dann nicht.
-- Die Merge-Syntax (`+`/`!`) gilt auch hier.
+- Empty or unset: everything stays as before, and `tool_search` does not exist
+  then.
+- The merge syntax (`+`/`!`) applies here too.
 
-## Ablauf
+## Flow
 
-1. **Laufstart:** Die zurückgestellten Schemas werden aus der Tool-Liste
-   genommen. An ihre Stelle tritt das Kern-Tool `tool_search`. Dessen
-   Beschreibung listet sie mit Namen und erstem Satz.
-2. **Laden:**
-   - `tool_search(query="select:a,b")` lädt genau diese Tools.
-   - Jede andere `query` lädt die besten Stichwort-Treffer, höchstens fünf.
-     Ein Treffer im Namen wiegt schwerer als einer in der Beschreibung.
-   - Die Schemas werden **hinten** an die Tool-Liste angehängt und gelten für
-     den Rest des Laufs.
-3. **Aufruf ohne Laden:** Das Tool läuft **nicht**, denn seine Argumente wären
-   geraten. Stattdessen wird sein Schema geladen, und das Modell bekommt einen
-   Fehler (`ToolNotLoaded`) mit der Bitte, den Aufruf zu wiederholen.
-   - Abgewiesen wird jeder Aufruf eines Tools, das **in diesem Schritt** geladen
-     wurde. Das gilt für einen zweiten Aufruf ebenso wie für einen Aufruf direkt
-     hinter dem `tool_search`, das das Tool geladen hat. Das Schema bekommt das
-     Modell erst im nächsten Schritt zu sehen.
-   - Ein solcher Aufruf ist nie gelaufen. Deshalb zählt er wie ein von einem
-     Hook blockierter Aufruf nicht zur Fehlerserie der Auto-Eskalation.
-4. **Nächster Lauf derselben Session:** Was die Historie schon geladen hatte,
-   ist sofort wieder da (`restore`), und zwar in der Reihenfolge, in der der
-   Lauf es geladen hat. Gemeint sind Tools, die eine `tool_search`-Antwort
-   nennt oder die schon aufgerufen wurden. So beginnt der Lauf mit der
-   Tool-Liste (und dem Cache-Prefix), mit der der vorige endete.
+1. **Run start:** The deferred schemas are taken out of the tool list. The core
+   tool `tool_search` takes their place. Its description lists them with name
+   and first sentence.
+2. **Loading:**
+   - `tool_search(query="select:a,b")` loads exactly these tools.
+   - Any other `query` loads the best keyword matches, at most five. A match in
+     the name weighs more than one in the description.
+   - The schemas are appended **at the end** of the tool list and apply for the
+     rest of the run.
+3. **Call without loading:** The tool does **not** run, because its arguments
+   would be guesses. Instead its schema is loaded, and the model gets an error
+   (`ToolNotLoaded`) asking it to repeat the call.
+   - Every call to a tool that was loaded **in this step** is rejected. That
+     applies to a second call as well as to a call directly after the
+     `tool_search` that loaded the tool. The model only gets to see the schema
+     in the next step.
+   - Such a call never ran. Therefore, like a call blocked by a hook, it does
+     not count toward the error streak of auto-escalation.
+4. **Next run of the same session:** What the history had already loaded is
+   immediately back (`restore`), in the order in which the run loaded it. This
+   means tools named by a `tool_search` answer or that were already called. That
+   way the run starts with the tool list (and the cache prefix) with which the
+   previous one ended.
 
-Code: `src/agent_system/servers/agent/deferred_tools.py`. Verdrahtet in
-`Agent._initialize_request_and_conversation` (Aufteilen und `restore`), vor
-jedem LLM-Aufruf im Schritt-Loop (`restore`) und in
-`ToolExecutionManager.execute_tools_streaming` (Parameter `intercept`). Pre-
-und Post-Tool-Hooks sehen `tool_search` nicht, ebenso wenig wie einen
-abgewiesenen Aufruf.
+Code: `src/agent_system/servers/agent/deferred_tools.py`. Wired into
+`Agent._initialize_request_and_conversation` (splitting and `restore`), before
+every LLM call in the step loop (`restore`) and in
+`ToolExecutionManager.execute_tools_streaming` (parameter `intercept`). Pre-
+and post-tool hooks do not see `tool_search`, nor a rejected call.
 
-`/context` zählt, was ein Lauf der Session tatsächlich schickt. Die API reicht
-dafür die gespeicherten Nachrichten durch, deshalb stimmt die Zahl auch für
-eine Session, die in einem anderen Prozess lief. `/tools` und
-`list_available_tools` zeigen alle Tools, die der Agent aufrufen darf,
-zurückgestellte eingeschlossen.
+`/context` counts what a run of the session actually sends. For this the API
+passes the stored messages through, so the number is also right for a session
+that ran in another process. `/tools` and `list_available_tools` show all tools
+the agent may call, deferred ones included.
 
-Ein `deferred`-Muster, das kein erlaubtes Tool trifft, bewirkt nichts. Der
-Kern schreibt dazu einmal pro Prozess eine Warnung ins Log, und der
-agent_editor zeigt es als Problem „Deferred matches no allowed tool“. Bei
-einem externen MCP-Server-Eintrag (`mcp_servers`) wird das Feld ignoriert.
+A `deferred` pattern that matches no permitted tool has no effect. The core
+writes a warning to the log once per process, and the agent_editor shows it as
+the problem "Deferred matches no allowed tool". For an external MCP server entry
+(`mcp_servers`) the field is ignored.
 
-**Vor jedem LLM-Aufruf** läuft `restore` erneut über den Verlauf. Er lädt
-nichts, wenn nichts neu ist. Er fängt aber Tool-Aufrufe ab, die andere in den
-Verlauf geschrieben haben, etwa `tool_preload` in den Pre-LLM-Hooks oder
-angehängte Nachrichten. Das Modell liest so nie einen Aufruf eines Tools, dessen
-Schema es nicht hat. Das `restore` beim Laufstart bleibt trotzdem nötig: Die
-Pre-LLM-Hooks des ersten Schritts messen die Größe über
-`get_live_tools_schema`.
+**Before every LLM call**, `restore` runs again over the history. It loads
+nothing if nothing is new. But it catches tool calls that others wrote into the
+history, such as `tool_preload` in the pre-LLM hooks or appended messages. That
+way the model never reads a call to a tool whose schema it does not have. The
+`restore` at run start is still needed: the pre-LLM hooks of the first step
+measure the size through `get_live_tools_schema`.
 
-**Grenze, bewusst so gelassen:** Schreibt ein Pre-LLM-Hook einen Tool-Aufruf in
-den Verlauf, geht das Schema dazu zwar mit hinaus, aber die Hooks derselben
-Kette haben die Größe schon ohne es gemessen (context_engineer,
-context_summarizer). Die Abweichung ist ein Tool-Schema für einen Aufruf. Um sie
-zu schließen, müsste die gemeinsame Hook-Kette (`hooks/registry.py`) nach
-jedem Hook zurückrufen, und zwar für jedes Plugin.
+**Limit, deliberately left as is:** If a pre-LLM hook writes a tool call into
+the history, the schema for it does go out, but the hooks of the same chain have
+already measured the size without it (context_engineer, context_summarizer). The
+deviation is one tool schema for one call. To close it, the shared hook chain
+(`hooks/registry.py`) would have to call back after every hook, for every
+plugin.
 
-Ein Aufruf mit kaputtem JSON bekommt den Parse-Fehler. Ist das Tool noch nicht
-geladen, lädt er es trotzdem sofort, in der Reihenfolge der Aufrufe. Das ist
-dieselbe Reihenfolge, die ein späteres `restore` aus dem Verlauf nachbaut.
+A call with broken JSON gets the parse error. If the tool is not yet loaded, it
+loads it anyway immediately, in the order of the calls. That is the same order
+that a later `restore` rebuilds from the history.
 
-**Skripte (`tool_script`):** Ein Skript darf ein zurückgestelltes Tool
-aufrufen, das das Modell nie geladen hat. Die Erlaubnis kommt weiter allein aus
-der Allowlist. Für die Parameterprüfung und für den Hinweis „externes MCP-Tool“
-liest `tool_script` `Agent.get_run_tool_schemas(session_id)`: die Live-Liste
-plus alle zurückgestellten Schemas des laufenden Laufs dieser Session.
+**Scripts (`tool_script`):** A script may call a deferred tool that the model
+never loaded. The permission still comes solely from the allowlist. For the
+parameter check and for the "external MCP tool" hint, `tool_script` reads
+`Agent.get_run_tool_schemas(session_id)`: the live list plus all deferred
+schemas of this session's running run.
 
-## Prompt-Cache
+## Prompt cache
 
-Die Tool-Liste steht vorn im gecachten Prefix. Ein Nachladen verwirft den
-Cache deshalb ab der Tool-Liste, einmal pro Nachladen. Danach trifft der Cache
-wieder. Das ist billiger, als bei jedem Schritt alles mitzuschicken. Das
-Nachladen im Folgelauf (Punkt 4) hält den Prefix über Läufe hinweg stabil.
+The tool list sits at the front of the cached prefix. Loading therefore
+discards the cache from the tool list onward, once per load. After that the
+cache hits again. That is cheaper than sending everything on every step. Loading
+in the follow-up run (point 4) keeps the prefix stable across runs.
 
-## Gemessen (30.09.2026, coder, `or-deepseek-flash`)
+## Measured (30.09.2026, coder, `or-deepseek-flash`)
 
-Gepaart, gleiche Aufgabe, lokal:
+Paired, same task, local:
 
-| | Tools | Schema | Prompt 1. Aufruf |
+| | Tools | Schema | Prompt 1st call |
 |---|---|---|---|
-| ohne `deferred` | 52 | 46,8 KB | 16.793 Token |
-| mit `deferred` (forge, coder_okf, coding_cli, datetime, sequential_thinking) | 20 | 27,0 KB | 11.581 Token |
+| without `deferred` | 52 | 46.8 KB | 16,793 tokens |
+| with `deferred` (forge, coder_okf, coding_cli, datetime, sequential_thinking) | 20 | 27.0 KB | 11,581 tokens |
 
-Das sind rund 5.200 Token weniger **pro Aufruf** (−31 % des ersten Prompts).
-Die Einsparung wiederholt sich mit jedem Schritt des Laufs.
+That is about 5,200 tokens less **per call** (−31 % of the first prompt). The
+saving repeats with every step of the run.
 
-Verhalten in drei Läufen:
-- Eine Aufgabe, die ein zurückgestelltes Tool braucht (OKF durchsuchen): Das
-  Modell rief `tool_search` auf, lud zwei Tools und benutzte sie. Das Nachladen
-  kostete einen Cache-Miss, danach lag die Cache-Trefferquote bei 96 %.
-- Eine Aufgabe ohne Bedarf: Es wurde nichts nachgeladen, richtige Antwort in
-  zwei Schritten.
-- Fortsetzung der ersten Session: Die geladenen Tools waren ab dem ersten
-  Aufruf da, ohne `tool_search`, Antwort in einem Schritt.
+Behavior in three runs:
+- A task that needs a deferred tool (searching OKF): The model called
+  `tool_search`, loaded two tools and used them. Loading cost one cache miss,
+  after which the cache hit rate was 96 %.
+- A task without need: nothing was loaded, correct answer in two steps.
+- Continuation of the first session: The loaded tools were there from the first
+  call, without `tool_search`, answer in one step.
 
-Nicht gemessen ist die Fehlerquote bei der Tool-Wahl über viele Läufe. Offen
-ist auch, ob stärkere oder schwächere Modelle ein zurückgestelltes Tool
-übersehen, das sie brauchen würden. Beides zeigt sich erst im Betrieb.
+Not measured is the error rate of tool selection over many runs. It is also
+open whether stronger or weaker models overlook a deferred tool they would
+need. Both will only show in operation.
 
-## Wann zurückstellen
+## When to defer
 
-Zurückstellen lohnt sich für Tools, die ein typischer Lauf **nicht** braucht
-und die viel Schema mitbringen. Nicht zurückstellen sollte man, was fast jeder
-Lauf braucht (Dateien lesen, Shell): Das kostet sonst bei jedem Lauf einen
-Aufruf und einen Cache-Miss. Die Größen pro Tool liefert eine Abfrage auf
-`data/message_debugger/debugger.db` (`llm_requests.payload_json` → `tools`).
+Deferring pays off for tools that a typical run does **not** need and that bring
+a lot of schema with them. One should not defer what almost every run needs
+(reading files, shell): otherwise it costs a call and a cache miss on every run.
+The sizes per tool come from a query on `data/message_debugger/debugger.db`
+(`llm_requests.payload_json` → `tools`).

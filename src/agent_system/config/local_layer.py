@@ -1,7 +1,7 @@
 """This machine's own layer, written: a credential into config/local.env, the signing key named in config/local.yaml.
 
 Neither file is in the repository (.gitignore), so a `git pull` never meets what is written here. The Setup panel
-and the install scripts write through this module (docs/einrichtung_konzept.md); the loader reads both
+and the install scripts write through this module; the loader reads both
 (settings.LOCAL_SECRETS, settings.LOCAL_CONFIG).
 
 The install scripts run it as a module:  python -m agent_system.config.local_layer signing-key [config/config.yaml]

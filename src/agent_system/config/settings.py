@@ -736,7 +736,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
 
         try:
             _resolve_dir_list("plugins", "plugin_dirs", expand=True)   # plugins.plugin_dirs
-            _resolve_dir_list("skills", "skill_dirs")     # skills.skill_dirs (docs/skills_design.md)
+            _resolve_dir_list("skills", "skill_dirs")     # skills.skill_dirs
         except Exception:
             # Conservative: if resolution fails for any reason, keep original values --
             # but say so: an unexpanded "src/plugins*" discovers no plugin at all.

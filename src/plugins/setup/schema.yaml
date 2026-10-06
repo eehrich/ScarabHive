@@ -1,5 +1,5 @@
 # Setup: what an installation still lacks, and one real request to see whether the chat answers.
-# Keys are never passed through a tool: the Setup panel writes them into config/local.env (docs/einrichtung_konzept.md).
+# Keys are never passed through a tool: the Setup panel writes them into config/local.env.
 
 tools:
   - type: function

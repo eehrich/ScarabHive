@@ -111,8 +111,8 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 |-------|------|----------|---------|-------------|
 | `llm_profile` | list[string] | Yes | - | Profile CHAIN from `config/llm.yaml`: `[primary, fallback1, ...]` |
 | `llm_profile_advanced` | list[string] | No | [] | Same chain shape for the advanced model |
-| `inherit_parent_llm` | boolean | No | false | Als Sub-Agent auf dem LLM laufen, auf das der aufrufende Lauf umgestellt wurde (siehe unten) |
-| `fallback_recovery_seconds` | integer | No | 3600 | Längste Sperre, die der Agent auf ein LLM setzt (siehe unten) |
+| `inherit_parent_llm` | boolean | No | false | Run as a sub-agent on the LLM that the calling run was switched to (see below) |
+| `fallback_recovery_seconds` | integer | No | 3600 | Longest block the agent places on an LLM (see below) |
 | `max_steps` | integer | Yes | 20 | Maximum reasoning steps |
 | `system_prompt` | string | No* | - | Inline system prompt text |
 | `system_template` | string | No* | - | Path to prompt template file |
@@ -122,12 +122,12 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 
 \* Either `system_prompt` or `system_template` must be provided, but not both.
 
-### Das LLM des Aufrufers erben (`inherit_parent_llm`)
+### Inheriting the caller's LLM (`inherit_parent_llm`)
 
-Ein Sub-Agent läuft normalerweise auf seiner eigenen Kette — dafür hat er
-eine. Manche erledigen aber die Arbeit ihres Aufrufers und sollen auf dessen
-Modell laufen: ein Skills- oder Coding-Helfer, der sonst als einziger Teil
-des Jobs auf dem schwächeren Modell bliebe. Die schalten das ein:
+A sub-agent normally runs on its own chain — that is what it has one for. Some,
+however, do the work of their caller and should run on its model: a skills or
+coding helper that would otherwise be the only part of the job left on the
+weaker model. They switch this on:
 
 ```yaml
 skills_agent:
@@ -135,71 +135,71 @@ skills_agent:
     inherit_parent_llm: true
 ```
 
-Was dann gilt:
+What applies then:
 
-1. **Nur ein Umschalten wird weitergegeben.** Wurde der aufrufende Lauf auf
-   ein anderes Profil als das eigene gestellt — `llm_profile` der API, der
-   Modell-Wähler im Web-Chat (er schickt immer ein Profil), `--llm` der CLI,
-   `/model` im Chat, `use_advanced_model` —, läuft der Sub-Agent auf diesem
-   Profil. Läuft der Aufrufer auf seiner eigenen Kette oder nur mit anderen
-   Parametern auf seinem eigenen Primär-Profil (`--llm-params` allein),
-   läuft der Sub-Agent auf seiner.
-2. **Er bleibt er selbst.** Seine `llm_params` für dieses Profil gelten
-   (Denkstufe, Kontextfenster …); seine Kette bleibt der Fallback, ihr
-   Primär-Profil zuerst.
-3. **Eine Wahl für genau diesen Lauf gewinnt.** Ein Override, das der
-   Sub-Agent-Start selbst mitgibt, oder `use_advanced_model` bei einem Agenten
-   mit Advanced-Kette. Ohne Advanced-Kette ist `use_advanced_model` keine Wahl,
-   dann erbt er.
-4. **Weiter nach unten nur, wenn jede Ebene will.** Ein Enkel erbt vom
-   Sub-Agenten, nicht vom Großeltern-Lauf. Läuft der Sub-Agent auf seiner
-   eigenen Kette, hat der Enkel nichts zu erben.
-5. **Ein Profil, das die Config nicht kennt**, lässt den Sub-Agenten auf
-   seiner Kette (mit Warnung im Log) statt den Aufruf scheitern zu lassen.
+1. **Only a switch is passed on.** If the calling run was set to a
+   profile other than its own — `llm_profile` of the API, the
+   model picker in the web chat (it always sends a profile), `--llm` of the CLI,
+   `/model` in the chat, `use_advanced_model` — the sub-agent runs on that
+   profile. If the caller runs on its own chain or only with different
+   parameters on its own primary profile (`--llm-params` alone),
+   the sub-agent runs on its own.
+2. **It stays itself.** Its `llm_params` for that profile apply
+   (thinking level, context window ...); its chain remains the fallback, its
+   primary profile first.
+3. **A choice made for exactly this run wins.** An override that the
+   sub-agent start itself passes along, or `use_advanced_model` for an agent
+   with an advanced chain. Without an advanced chain, `use_advanced_model` is not a choice;
+   it then inherits.
+4. **Further down only if every level wants it.** A grandchild inherits from the
+   sub-agent, not from the grandparent run. If the sub-agent runs on its
+   own chain, the grandchild has nothing to inherit.
+5. **A profile the config does not know** leaves the sub-agent on
+   its chain (with a warning in the log) instead of letting the call fail.
 
-**Unabhängig davon, wer den Sub-Agenten startet.** Das Profil steckt nicht in
-einer Schnittstelle des `sub_agent_manager`, sondern im Lauf selbst
-(`agent_system/llm/caller_llm.py`): der Agent-Loop führt jeden Tool-Aufruf in
-einem eigenen Kontext aus, der das Profil des Laufs trägt. Jedes Plugin, das
-in einem Tool-Aufruf einen Agenten startet — abgewartet oder als eigener
-Task —, gibt es damit weiter, ohne davon zu wissen.
+**Independent of who starts the sub-agent.** The profile does not live in
+an interface of the `sub_agent_manager`, but in the run itself
+(`agent_system/llm/caller_llm.py`): the agent loop executes each tool call in
+its own context that carries the profile of the run. Every plugin that
+starts an agent within a tool call — awaited or as a separate
+task — thereby passes it on without knowing about it.
 
-**Grenzen:**
+**Limits:**
 
-- Ein Lauf, der später in einem **anderen Prozess** startet (ein Weckruf, ein
-  Job-Worker), bekommt nichts mit und läuft auf seiner Kette.
-- Der Sub-Agent baut das Profil aus der Config, mit der er gestartet wurde —
-  wie seine Fallback-Kette und sein Advanced-Modell. Ein Profil, das erst ein
-  Config-Reload hinzugefügt hat, kennt er bis zum Neustart nicht; dann gilt
-  Punkt 5.
-- Die Advanced-Sperren des `sub_agent_manager` (`allow_advanced_model`,
-  `advanced_create_only_agents`) filtern nur das Argument
-  `use_advanced_model`. Ein erbender Sub-Agent folgt einem Aufrufer, der auf
-  ein teures Profil umgestellt wurde, trotzdem dorthin.
-- Tools, die ein Hook oder ein Befehl außerhalb der Tool-Aufrufe des Loops
-  startet (`tool_preload`), sehen, womit der Lauf selbst gestartet wurde (das
-  Profil seines Aufrufers), nicht das, was er seinen Tool-Aufrufen mitgibt.
+- A run that starts later in a **different process** (a wake-up call, a
+  job worker) gets nothing of this and runs on its chain.
+- The sub-agent builds the profile from the config it was started with —
+  like its fallback chain and its advanced model. A profile that was only added by a
+  config reload is unknown to it until restart; then
+  point 5 applies.
+- The advanced blocks of the `sub_agent_manager` (`allow_advanced_model`,
+  `advanced_create_only_agents`) filter only the argument
+  `use_advanced_model`. An inheriting sub-agent follows a caller that was switched to
+  an expensive profile there regardless.
+- Tools that a hook or a command starts outside the tool calls of the loop
+  (`tool_preload`) see what the run itself was started with (the
+  profile of its caller), not what it passes on to its tool calls.
 
-**Vererbung der Config beachten:** Ein Agent mit `type: <anderer Agent>` erbt
-den Schalter mit. `skills_agent_multimodal` setzt ihn deshalb ausdrücklich auf
-`false` — er braucht ein Modell, das Medien liest, egal was der Aufrufer fährt.
+**Mind config inheritance:** An agent with `type: <other agent>` inherits
+the switch. `skills_agent_multimodal` therefore explicitly sets it to
+`false` — it needs a model that reads media, no matter what the caller runs on.
 
 ### LLM Profile Fallbacks
 
-Fällt das LLM eines Schritts aus, läuft der Agent auf dem nächsten Profil der
-Kette weiter:
+If the LLM of a step fails, the agent continues on the next profile of the
+chain:
 
 ```yaml
 my_agent:
   type: basic_agent
   agent_config:
-    llm_profile: ["gemini", "openai", "anthropic"]   # Kette: primär, dann Fallbacks
-    fallback_recovery_seconds: 1800                  # längste Sperre (Default: 3600)
+    llm_profile: ["gemini", "openai", "anthropic"]   # chain: primary, then fallbacks
+    fallback_recovery_seconds: 1800                  # longest block (default: 3600)
 ```
 
-Läuft der Lauf auf einem anderen Profil als dem eigenen (API-`llm_profile`,
-`/model`, geerbt vom Aufrufer), ist das Primär-Profil der eigenen Kette sein
-erster Fallback, danach der Rest der Kette.
+If the run is on a profile other than its own (API `llm_profile`,
+`/model`, inherited from the caller), the primary profile of its own chain is its
+first fallback, followed by the rest of the chain.
 
 > `llm_profile_fallbacks` was **removed**. The positional `[standard, advanced]`
 > reading is gone; a chain lives in `llm_profile` itself, and the advanced model
@@ -207,25 +207,25 @@ erster Fallback, danach der Rest der Kette.
 > `llm_profile_fallbacks` is rejected at load with a migration hint rather than
 > run with `llm_profile[1]` silently meaning something else.
 
-**Sperren gehören dem LLM, nicht dem Agenten.** Ein 429, ein erschöpftes
-Kontingent oder ein abgelehnter Key (401/402/403/404) sperrt das LLM für
-**jeden** Agenten im Prozess:
+**Blocks belong to the LLM, not to the agent.** A 429, an exhausted
+quota or a rejected key (401/402/403/404) blocks the LLM for
+**every** agent in the process:
 
-1. Ein 429 sperrt 60 s, jede weitere Ablehnung verdoppelt die Pause bis
-   `fallback_recovery_seconds`; Kontingent und abgelehnter Key sperren sofort
-   so lange.
-2. Jeder Schritt nimmt das gewünschte LLM (Eskalation, Auswahl im Chat,
-   Config), wenn es frei ist, sonst das erste freie Profil der Kette, sonst
-   trotzdem das gewünschte.
-3. Eine ausdrückliche Wahl eines gesperrten LLM ist keine Ausnahme; ein
-   anderes, freies LLM läuft sofort.
-4. Die erste Antwort des LLM hebt die Sperre für alle auf.
-5. 5xx, Verbindungsfehler und request-förmige Fehler (400/413/422) sperren
-   nichts — sie retten nur den laufenden Request über die Kette.
-6. Ist die Kette aufgebraucht, geht der Fehler des letzten Versuchs an den Aufrufer.
+1. A 429 blocks for 60 s, each further rejection doubles the pause up to
+   `fallback_recovery_seconds`; an exhausted quota and a rejected key block
+   immediately for that long.
+2. Each step takes the desired LLM (escalation, selection in the chat,
+   config) if it is free, otherwise the first free profile of the chain, otherwise
+   the desired one anyway.
+3. An explicit choice of a blocked LLM is no exception; another, free LLM
+   runs immediately.
+4. The first response from the LLM lifts the block for everyone.
+5. 5xx, connection errors and request-shaped errors (400/413/422) block
+   nothing — they only rescue the current request via the chain.
+6. If the chain is exhausted, the error of the last attempt goes to the caller.
 
-Details, Probe nach Ablauf und Grenzen: `docs/_arch_agent_architecture.md`,
-Abschnitt „LLM-Fallback und Sperren".
+Details, the probe after expiry and limits: `docs/_arch_agent_architecture.md`,
+section "LLM fallback and blocks".
 
 ### Tools Configuration
 
@@ -453,37 +453,37 @@ The following variables are automatically available in all templates:
 
 Custom `template_vars` are merged with these built-in variables. **Custom variables take precedence** if there's a name conflict.
 
-#### Was installiert ist: `tools`, `has_tool()`, `plugins`, `mcp_servers`
+#### What is installed: `tools`, `has_tool()`, `plugins`, `mcp_servers`
 
-Ein Prompt kann danach verzweigen, was vorhanden ist:
+A prompt can branch on what is present:
 
-| Variable | Inhalt |
-|----------|--------|
-| `tools` | Was **dieser Agent** aufrufen darf, nach Allow- und Block-Mustern: Server-Namen, Tool-Namen und `server.tool` für Tools externer MCP-Server |
-| `has_tool(muster)` | `tools` per fnmatch-Muster gefragt, Groß-/Kleinschreibung zählt. Tool-Namen tragen den Instanznamen (`coder_sam_manage_sub_agent`), darum Muster: `has_tool('*_manage_sub_agent')`, `has_tool('github.*')` |
-| `plugins` | Plugin-Typen, die installiert **und** eingeschaltet sind (mindestens eine Instanz mit `enabled: true`) — unabhängig davon, ob dieser Agent sie benutzen darf |
-| `mcp_servers` | Externe MCP-Server mit `enabled: true` in `config/mcp_servers.yaml` (nur, wenn das `mcp_client`-Plugin läuft) |
+| Variable | Content |
+|----------|---------|
+| `tools` | What **this agent** may call, by allow and block patterns: server names, tool names and `server.tool` for tools of external MCP servers |
+| `has_tool(pattern)` | Queries `tools` with an fnmatch pattern, case-sensitive. Tool names carry the instance name (`coder_sam_manage_sub_agent`), hence patterns: `has_tool('*_manage_sub_agent')`, `has_tool('github.*')` |
+| `plugins` | Plugin types that are installed **and** enabled (at least one instance with `enabled: true`) — regardless of whether this agent may use them |
+| `mcp_servers` | External MCP servers with `enabled: true` in `config/mcp_servers.yaml` (only if the `mcp_client` plugin is running) |
 
 ```jinja
 {% if has_tool('*_manage_sub_agent') %}
-Große Teilaufgaben gibst du an Sub-Agents ab.
+You hand large subtasks off to sub-agents.
 {% else %}
-Du arbeitest allein; teile große Aufgaben in Schritte.
+You work alone; split large tasks into steps.
 {% endif %}
-{% if 'writer_pipeline_v4' in plugins %}Das Buch-System ist installiert.{% endif %}
+{% if 'some_plugin' in plugins %}The some_plugin plugin is installed.{% endif %}
 ```
 
-Die **Plugin-ID ist der Plugin-Typ** — der Ordnername, derselbe, der in
-`plugins.yaml` unter `type:` steht. Kommt ein Typ in zwei Plugin-Verzeichnissen
-vor, gewinnt der erste, und der Start meldet es.
+The **plugin ID is the plugin type** — the folder name, the same one that appears
+in `plugins.yaml` under `type:`. If a type occurs in two plugin directories, the
+first one wins, and startup reports it.
 
-`plugins` und `mcp_servers` kommen aus der Konfiguration, nie aus einem
-Live-Zustand: ein MCP-Server, der gerade nicht verbunden ist, steht trotzdem in
-`mcp_servers`. Sonst änderte sich der System-Prompt zwischen zwei Schritten und
-mit ihm der Cache-Prefix. `tools` wird einmal pro Lauf ermittelt und hält
-innerhalb des Laufs still; die Tools eines MCP-Servers, der beim Start des Laufs
-nicht verbunden war, fehlen darin — `has_tool('github.*')` fragt also, ob der
-Agent sie **jetzt** hat, `'github' in mcp_servers`, ob sie vorgesehen sind.
+`plugins` and `mcp_servers` come from the configuration, never from a live
+state: an MCP server that is currently not connected is still listed in
+`mcp_servers`. Otherwise the system prompt would change between two steps, and
+the cache prefix with it. `tools` is determined once per run and stays fixed
+within the run; the tools of an MCP server that was not connected when the run
+started are missing from it — so `has_tool('github.*')` asks whether the agent
+has them **now**, `'github' in mcp_servers` whether they are intended.
 
 **Keep the system prompt stable.** It is re-rendered before every step and is the
 start of the prompt the provider caches; a value that differs from one call to

@@ -15,8 +15,7 @@ Gemini CLI and the rest of the ecosystem -- and theirs work here.
 The body is used VERBATIM. The standard says nothing about templating, and our
 Jinja environment renders unknown variables as empty: rendering a foreign body
 would silently delete every literal ``{{ ... }}`` its author wrote. For our own
-prompts the answer is ``{% include %}`` in the prompt TEMPLATES, not in skills
-(docs/skills_design.md §8).
+prompts the answer is ``{% include %}`` in the prompt TEMPLATES, not in skills.
 
 An earlier layout kept the metadata in a ``skill.toml`` beside the body. It is
 gone -- a directory that still has one is reported, not silently skipped.

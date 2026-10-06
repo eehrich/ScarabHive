@@ -46,12 +46,12 @@ This mirrors the steering behavior of CLI coding agents.
 | Run finished, `fallback=session` (default) | message appended to the persisted session (stored, but only answered by the next run): `200 {"status": "appended", "session_id": ...}` |
 | Run finished, `fallback=none` | `404` — caller should start a new request with the message as task |
 | `?session_id=...` query | append directly to a session (ownership-checked), ignores `fallback` |
-| Session, die ein Lauf dieses Prozesses gerade hat (`?session_id=`, `fallback=session`, `POST /sessions/{id}/append`) | die Nachricht geht an diesen Lauf, auf dem Agenten, auf dem er läuft, auch ohne Job (`200`); nimmt er keine mehr an, weil er gerade abschließt, `409`. Neben den Lauf in die Session geschrieben, war sie „appended“ und beim nächsten Speichern des Laufs weg. |
-| Session, die ein Lauf erst nach dieser Frage nimmt | der Append hält vom Lesen bis zum Speichern das Session-Lock des Agenten, dem die Session gehört (eine abschließende API-Runde vor dem Record, dann `agent_name` im Record, sonst der Einstiegs-Agent) — ein Lauf, der es hat, bekommt die Nachricht (`200`), sonst `409`. Es ist ein Schreiber-Lock: ein zweiter Append, ein startender Lauf, das Öffnen der Session (`open_for_run` liest und setzt selbst unter diesem Lock), eine öffnende oder zurücksetzende API-Runde warten den Augenblick ab (bis 5 s), statt abgewiesen zu werden; übernimmt danach ein Lauf, wird wer noch wartet sofort abgewiesen. Ohne das Lock schrieb der Append neben den Lauf, und eine abschließende API-Runde (openai_api) setzte die Konversation darüber zurück oder warf sie vor dem Speichern des Appends aus dem Speicher. |
-| Session, die dieser Prozess gespeichert und losgelassen hat (eine abgeschlossene API-Runde tut das) | wird von der Platte gelesen und angehängt (`200`); vorher `404` für eine Konversation, die sichtbar da ist |
-| Speichern schlägt fehl | `500`, und die Nachricht ist wieder heraus — im Speicher gelassen, schrieb sie der nächste Save doch, neben der Kopie, die ein Client nach dem Fehler erneut schickt |
-| Request eines anderen Nutzers | `403` (Admins ausgenommen); ebenso Status und Cancel |
-| Session, die der Lauf eines anderen Nutzers gerade hat | `403` — auch solange sie noch nicht gespeichert ist: den Besitzer nennt dann nur der Lauf |
+| Session that a run of this process currently holds (`?session_id=`, `fallback=session`, `POST /sessions/{id}/append`) | the message goes to that run, on the agent it runs on, even without a job (`200`); if the run accepts no more because it is just finalizing, `409`. Written into the session alongside the run, it was "appended" and gone at the run's next save. |
+| Session that a run only takes after this check | the append holds, from reading to saving, the session lock of the agent that owns the session (a finalizing API round before the record, then `agent_name` in the record, otherwise the entry agent) — a run that has the lock receives the message (`200`), otherwise `409`. It is a writer lock: a second append, a starting run, opening the session (`open_for_run` reads and sets under this lock itself), an opening or resetting API round wait out the moment (up to 5 s) instead of being rejected; if a run takes over afterwards, whoever is still waiting is rejected immediately. Without the lock the append wrote alongside the run, and a finalizing API round (openai_api) reset the conversation over it or evicted it from memory before the append was saved. |
+| Session that this process has saved and released (a completed API round does this) | is read from disk and appended to (`200`); previously `404` for a conversation that is visibly there |
+| Saving fails | `500`, and the message is removed again — left in memory, the next save would write it after all, alongside the copy that a client sends again after the error |
+| Request of another user | `403` (admins excepted); likewise status and cancel |
+| Session that another user's run currently holds | `403` — even while it is not yet saved: only the run then names the owner |
 
 The web frontend uses `fallback=none`: on 404 the message goes back into the
 input, and sending it again starts a new request -- it is never stored unanswered,
@@ -59,14 +59,14 @@ and never stored twice.
 
 ## Frontend rendering
 
-Nach einem angenommenen Append zieht `chat_module.js` den Lauf beim **nächsten
-Schritt** in einen neuen Block unter der Nachricht um (`pendingAppendRebind`,
-`rebindLiveBlock`: dasselbe Block-Objekt, das `handleSSEEvent` hält) — nicht sofort,
-sonst risse der Schritt, der gerade streamt, in zwei Teile. Antwortet der Lauf ohne
-weiteren Schritt, kam die Nachricht zu spät: die Antwort bleibt, wo sie ist, und
-eine Notiz sagt, dass die Nachricht in der Session liegt und der nächste Lauf sie
-beantwortet. Eine Notiz, die der Chat selbst schreibt (ein Befehl mitten im Lauf),
-setzt denselben Umzug in Gang (`'note'` statt `'message'`), aber nie bei `final`.
+After an accepted append, `chat_module.js` moves the run into a new block under
+the message at the **next step** (`pendingAppendRebind`, `rebindLiveBlock`: the
+same block object that `handleSSEEvent` holds) — not immediately, since that
+would tear the step that is currently streaming into two parts. If the run
+answers without another step, the message came too late: the answer stays where
+it is, and a note says that the message is in the session and the next run will
+answer it. A note that the chat writes itself (a command in the middle of a run)
+triggers the same move (`'note'` instead of `'message'`), but never on `final`.
 
 ## Key code
 

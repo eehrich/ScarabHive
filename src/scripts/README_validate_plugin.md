@@ -264,5 +264,4 @@ def validate(self) -> bool:
 
 - [Plugin Authoring Guide](../../docs/plugin_authoring.md)
 - [Plugin Architecture](../../docs/_arch_plugin_architecture.md)
-- [Plugin System SRS](../../docs/_srs_pluginsystem.md)
 - [JSON Schemas](../../schemas/)

@@ -78,7 +78,11 @@ htmlcov/
 .*_cache/
 .backups/
 __pycache__/
+# logs/ at any depth; the top-level one ships empty (logs/.gitkeep)
 logs/
+!/logs/
+/logs/*
+!/logs/.gitkeep
 dist/
 build/
 external/
@@ -93,7 +97,9 @@ src/plugins*/**/batch_logs/
 
 # ignore all data files -- the top-level folder only. Unanchored, `data/`
 # matched at any depth and hid new files in package data folders
-# (writer_core/data/, pinescript_validator/data/).
-/data/
+# (writer_core/data/, pinescript_validator/data/). The folder itself ships
+# empty (data/.gitkeep).
+/data/*
+!/data/.gitkeep
 tests/data/
 

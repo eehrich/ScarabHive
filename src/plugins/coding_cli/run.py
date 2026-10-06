@@ -1,5 +1,5 @@
 """Claude Code as a child process: its command line, its environment, its
-stream, and the git worktree it works in (docs/coding_cli_plugin_konzept.md).
+stream, and the git worktree it works in.
 
 Every flag here was measured on Claude Code 2.1.257, the MCP servers and
 --json-schema on 2.1.285 (concept §2, M-CC-*). The

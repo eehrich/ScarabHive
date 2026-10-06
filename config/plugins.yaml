@@ -770,7 +770,7 @@ plugins:
       type: mcp_client
       enabled: true
 
-    # Read access to skill bundles (docs/skills_design.md). Agents that only use
+    # Read access to skill bundles. Agents that only use
     # `skills.always` do not need this — it is for reading a skill's bundled
     # reference files on demand.
     skills:
@@ -935,7 +935,7 @@ plugins:
       enabled: true
       config:
         # Token thresholds for layered compaction.
-        # Cache-Hysterese (docs/prompt_cache_design.md par. 3.5): JEDE Mutation
+        # Cache-Hysterese: JEDE Mutation
         # vor dem Prefix-Ende bricht das Provider-Prompt-Caching komplett.
         # Deshalb selten und TIEF kuerzen (High-Watermark -> Low-Watermark mit
         # grossem Hub, ~140k -> 70k), nie inkrementell. Die Schwellen liegen

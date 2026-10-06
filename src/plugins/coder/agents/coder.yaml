@@ -4,7 +4,7 @@
 # coder_explorer finds things, coder_reviewer attacks the finished change,
 # coder_tester runs the checks. Only this agent writes files.
 #
-# Knowledge lives in skills, not in this prompt (docs/skills_design.md):
+# Knowledge lives in skills, not in this prompt:
 #   always     coding-harness      — the loop it works by, and when to delegate
 #   on_demand  adversarial-review  — pulled before it reviews its own fix round
 #              tdd                 — pulled when it writes tests

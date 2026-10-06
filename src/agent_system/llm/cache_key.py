@@ -107,7 +107,7 @@ def strip_cache_breakpoints(text: str) -> str:
     return "".join(text.split(CACHE_BP_SENTINEL))
 
 
-# --- Segment-Leiter (Konzept v2, docs/prompt_cache_design.md §3.2) -----------
+# --- Segment-Leiter -----------
 #
 # Task-Sequenz-Agenten (viele Einzel-Calls, wachsender gemeinsamer Prefix)
 # deklarieren im Task: [static] S [append_only] S [volatile]. Der Client

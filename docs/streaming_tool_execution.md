@@ -111,7 +111,7 @@ async def execute_tools_streaming(
 ### Collected results (tests)
 
 The former `execute_tools()` legacy wrapper was removed (test-only production
-code — see docs/agent_package_architecture_review.md, G5). Tests that want the
+code). Tests that want the
 final tuple use the shared collector helper
 `tests/tool_execution_test_helpers.py::execute_tools_collect(manager, ...)`.
 
@@ -285,6 +285,5 @@ The `execute_tools()` wrapper ensures existing tests and code continue working w
 
 ## References
 
-- [Status Design](./status_design.md)
 - [Tool Execution](./tool_execution.md)
 - [MCP Client Plugin](../src/plugins/mcp_client/README.md)

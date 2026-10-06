@@ -180,7 +180,7 @@ class LLMModelConfig(BaseModel):
     thinking_request_shape: Optional[Literal["budget", "adaptive"]] = None  # How this model wants its thinking asked for on the native Anthropic API: "budget" (default) sends {"type": "enabled", "budget_tokens": N}, "adaptive" sends {"type": "adaptive"} — the newer models reject budget_tokens with a 400, and the older ones do not know adaptive.
     service_tier: Optional[str] = None  # Service tier for OpenAI-compatible APIs (e.g. "flex" = Google Flex Processing via OpenRouter — cheaper, slower)
     prompt_cache_key: Optional[str] = None  # OpenAI Cache-Routing-Key (Chat + Responses API). AB GPT-5.6 PFLICHT fuer zuverlaessiges Prompt-Cache-Matching (Doku: "you must set prompt_cache_key ... for both implicit and explicit caching"); ohne Key cached 5.6 praktisch nie (belegt 2026-07-21: byte-identischer 10k-Prefix, cached_tokens=0). Empfohlener Wert "auto": Key wird pro Request gehasht aus fuehrendem System-Prompt (voll — ein langer System-Prompt darf das Fenster nicht auffressen) + erster Task-Message bis ~4096 Zeichen (llm/cache_key.py) — gleicher stabiler Prefix <-> gleicher Key, stabil ueber Folge-Turns, kollisionsfrei bei parallelen Buechern/Stories (statischer Agent-Name-Key wuerde dann Shard + ~15 req/min-Limit teilen). Statischer String weiterhin als explizites Override moeglich. Nur fuer OpenAI/OpenRouter-GPT-Modelle setzen — Fremd-Provider koennten den Param ablehnen.
-    prompt_cache_mode: Optional[Literal["auto", "multi_turn", "task_sequence", "one_shot", "off"]] = None  # Cache-Verhalten des Agents (docs/prompt_cache_design.md §4). In Agent-yamls via llm_params "*" gesetzt (flache per-Agent-Form — es gibt keinen AgentConfig->Client-Pfad). "task_sequence" aktiviert die Segment-Leiter ueber deklarierten Sentinel-Grenzen; "multi_turn" dokumentiert Fortsetzungs-Caching (keine Marker); "off" strippt auch Sentinels. Default None ~ "auto" (nur deklarierte Grenzen markieren).
+    prompt_cache_mode: Optional[Literal["auto", "multi_turn", "task_sequence", "one_shot", "off"]] = None  # Cache-Verhalten des Agents. In Agent-yamls via llm_params "*" gesetzt (flache per-Agent-Form — es gibt keinen AgentConfig->Client-Pfad). "task_sequence" aktiviert die Segment-Leiter ueber deklarierten Sentinel-Grenzen; "multi_turn" dokumentiert Fortsetzungs-Caching (keine Marker); "off" strippt auch Sentinels. Default None ~ "auto" (nur deklarierte Grenzen markieren).
     prompt_cache_marker_style: Optional[Literal["openai", "anthropic", "none"]] = None  # Marker-Feld des Modells: "openai" = prompt_cache_breakpoint (GPT-5.6+), "anthropic" = cache_control ephemeral, "none" = Sentinels strippen. Default None = kein Marker ausser prompt_cache_key ist gesetzt (dann "openai", weil der Key Config-diszipliniert nur auf GPT-Eintraegen steht). Ein Modell, das cache_control spricht, sagt es HIER — der Client kennt keine Modellnamen.
     provider_routing: Optional[Dict[str, Any]] = None  # OpenRouter "provider" object: {order: [slugs], allow_fallbacks: bool, sort: "price", ...}. Order-only is enough to bias toward a sticky backend (improves implicit cache hit rate); allow_fallbacks: false would hard-pin. Systemweiter Default: llm_system.openrouter_routing (wird pro Schluessel von hier ueberstimmt). ⚠️ Nur die Pfade provider=openai_httpx und openai_responses reichen das Feld an den Request weiter — der SDK-Pfad provider=openai kennt es nicht und wuerde es STILL verwerfen (kein Modell im Katalog nutzt ihn; wer eines dorthin umstellt, verliert das Routing wortlos).
     provider_affinity_minutes: Optional[float] = Field(default=None, ge=0)  # How long after an agent type's last call a new run of it starts on the backend that answered that call (sent as provider.order [that one] with allow_fallbacks false; a refusal releases the pin for that call and the retry goes out as configured). None = prompt_cache_ttl_minutes, without that 30 min; 0 = off. The prompt a type's runs share is cached on that backend: measured 22.09.2026, a run's first call on it read 57.8 % from cache within 5 min of the previous call and 22.5 % within 30 min, on another backend 27.8 % and 9.0 %; past 30 min under 10 % either way. A run's own history (served_by) always wins. Only the OpenRouter routes (openai_httpx, openai_responses, openrouter_sdk) and only with provider_routing.order.
@@ -617,7 +617,7 @@ def resolve_llm_params(
 
 
 class SkillsConfig(BaseModel):
-    """Which packaged skills an agent gets (see docs/skills_design.md).
+    """Which packaged skills an agent gets.
 
     ``always`` skills are appended to the system prompt at render time — the
     agent HAS the knowledge, it does not have to ask for it. Deterministic and
@@ -720,7 +720,7 @@ class AgentConfig(BaseModel):
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)
     system_template: Optional[str] = None  # Path to system prompt template file
     system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
-    # Packaged knowledge appended to the system prompt (docs/skills_design.md).
+    # Packaged knowledge appended to the system prompt.
     # Bare list allowed: `skills: ["house-style"]`.
     skills: Optional[SkillsConfig] = None
     template_vars: Optional[Dict[str, Any]] = None  # Custom variables for Jinja2 template rendering
@@ -1510,7 +1510,7 @@ class AgentSystemConfig(BaseModel):
     default_agent: str = "basic_agent"
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
-    # Skill discovery roots (docs/skills_design.md). Per-agent selection is
+    # Skill discovery roots. Per-agent selection is
     # AgentConfig.skills; this is only WHERE skills are found.
     skills: SkillsSystemConfig = Field(default_factory=SkillsSystemConfig)
 

@@ -1,4 +1,4 @@
-"""Agent watchdog plugin — factory. See hooks.py and docs/agent_watchdog_konzept.md."""
+"""Agent watchdog plugin — factory. See hooks.py."""
 
 from pathlib import Path
 from typing import Any

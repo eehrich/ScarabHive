@@ -194,12 +194,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
 **File:** `src/agent_system/api/endpoints.py`
 
-**Fehler-Kontrakt für Body-Parsing (seit 2026-07):** Alle Endpoints, die einen
-JSON-Body lesen (`POST /run`, `POST /events`, Session-Appends), parsen über den
-gemeinsamen Helper `app._parse_json_body()` und antworten auf syntaktisch
-kaputtes JSON mit **HTTP 400** `{"detail": "Invalid JSON body: could not be
-parsed"}` (früher: unbehandelter 500). Kaputte multipart-Bodies an `/run`
-ebenso 400.
+**Error contract for body parsing (since 2026-07):** every endpoint that reads a
+JSON body (`POST /run`, `POST /events`, session appends) parses it through the
+shared helper `app._parse_json_body()` and answers syntactically broken JSON
+with **HTTP 400** `{"detail": "Invalid JSON body: could not be
+parsed"}` (formerly an unhandled 500). A broken multipart body sent to `/run`
+gets a 400 as well.
 
 **Responsibilities:**
 - RESTful API routes
@@ -1076,7 +1076,6 @@ async def agent_not_found_handler(request, exc):
 
 - [Authentication](multi_user_authentication.md) - Auth system
 - [Session Management](session_management.md) - Session handling
-- [Status System](status_design.md) - Real-time status
 - [Tool Execution](tool_execution.md) - Tool system
 
 ### 11.3 API Reference

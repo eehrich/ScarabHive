@@ -1,5 +1,5 @@
 """A stand-in for `claude -p --output-format stream-json`, replaying the event
-shapes measured on Claude Code 2.1.257 (docs/coding_cli_plugin_konzept.md §2).
+shapes measured on Claude Code 2.1.257.
 
 The task on stdin is a script, one command per line:
   WRITE <name> <text>   write a file in the working directory (a Write tool call)

@@ -95,7 +95,7 @@ async def on_pre_llm_call(self, context: HookContext) -> HookResult:
 ```
 
 **Example Plugins:**
-- `context_engineer`: Kompaktiert den Kontext in Schichten (Tool-Ergebnisse auslagern, archivieren)
+- `context_engineer`: Compacts the context in layers (offloads and archives tool results)
 - `context_summarizer`: Intelligently summarizes older messages
 - `message_validator`: Validates message format
 
@@ -128,161 +128,161 @@ async def on_post_llm_call(self, context: HookContext) -> HookResult:
 
 ### LLM_PROGRESS
 
-**Trigger:** Während eines streamenden LLM-Calls, alle 2000 Zeichen Denken
+**Trigger:** During a streaming LLM call, every 2000 characters of reasoning
 (`_REASONING_PROGRESS_TICK` in `server.py`)
-**Use Cases:** einen Call beobachten, der sich festdenkt
-**Can Modify:** nichts — der Call läuft schon
+**Use Cases:** Observing a call that is stuck thinking
+**Can Modify:** nothing — the call is already running
 
 ```python
 async def on_llm_progress(self, context: HookContext) -> HookResult:
-    """context.reasoning_text: das Denken dieses Calls bisher,
-    context.reasoning_chars / previous_reasoning_chars: Länge jetzt und beim
-    letzten Takt. KEINE messages."""
+    """context.reasoning_text: the reasoning of this call so far,
+    context.reasoning_chars / previous_reasoning_chars: length now and at the
+    previous tick. NO messages."""
 ```
 
-- **Der Stream wartet auf den Hook** — er muss sofort zurückkehren; alles
-  Langsame gehört in einen Hintergrund-Task. Fehler im Hook brechen den Call
-  nicht ab.
-- **Keine `messages`:** der Registry-Deep-Copy pro Takt blockiert den
-  streamenden Loop (gemessen: 72 ms bei 4691 Nachrichten). Wer den Auftrag
-  braucht, merkt ihn sich in einem `pre_llm_call`-Hook.
-- **Eigenes Intervall ohne Zustand:** fällig, wenn
+- **The stream waits for the hook** — it must return immediately; anything
+  slow belongs in a background task. Errors in the hook do not abort the
+  call.
+- **No `messages`:** the registry's deep copy on every tick blocks the
+  streaming loop (measured: 72 ms with 4691 messages). A hook that needs the
+  task remembers it in a `pre_llm_call` hook.
+- **Your own interval without state:** due when
   `reasoning_chars // n > previous_reasoning_chars // n`.
-- **Blind**, wo kein `thinking_delta` fließt: Gemini (Gedanken kommen als
-  `content_delta`), Batch, nicht-streamende Clients.
+- **Blind** where no `thinking_delta` flows: Gemini (thoughts arrive as
+  `content_delta`), batch, non-streaming clients.
 
 **Example Plugins:**
 - `agent_watchdog`: `observe_reasoning`
 
 ### PRE_TOOL_CALL
 
-**Trigger:** vor jedem Tool-Call des Modells, einzeln pro Call, und vor jedem
-Call eines `tool_script`-Skripts (siehe [Welche Calls zählen](#welche-calls-zählen))
-**Use Cases:** Freigaben (ask/auto/off, allow/deny — #091, gebaut als Plugin
-[`tool_approval`](../src/plugins/tool_approval/README.md)), Argumente prüfen
-oder korrigieren, Protokoll
-**Can Modify:** `tool_call["arguments"]`; außerdem kann der Hook den Call blockieren
+**Trigger:** before every tool call of the model, individually per call, and
+before every call of a `tool_script` script (see [Which Calls Count](#which-calls-count))
+**Use Cases:** Approvals (ask/auto/off, allow/deny — #091, built as the plugin
+[`tool_approval`](../src/plugins/tool_approval/README.md)), checking or
+correcting arguments, logging
+**Can Modify:** `tool_call["arguments"]`; the hook can also block the call
 
 `context.tool_call`:
 
 ```python
 {
-    "id": "call_abc",               # Call-ID des Providers; None bei tool_script
-    "name": "file_ops_read_file",   # das Tool, wie das Modell es aufrief
-    "server": "file_ops",           # der Server, der es ausführt ("<server>.<tool>" bei externen MCP-Tools)
-    "arguments": {"path": "..."},   # die Argumente, wie sie gesendet wurden
-    "source": "model",              # "model" oder "tool_script"
+    "id": "call_abc",               # call ID of the provider; None for tool_script
+    "name": "file_ops_read_file",   # the tool, as the model called it
+    "server": "file_ops",           # the server that executes it ("<server>.<tool>" for external MCP tools)
+    "arguments": {"path": "..."},   # the arguments, as they were sent
+    "source": "model",              # "model" or "tool_script"
 }
 ```
 
-Dazu `session_id`, `request_id`, `user_id`, `agent`, `step`, `tools_schema` und
-`cancellation_token`, der Token des Laufs. Ein Hook, der wartet (auf eine
-Person), hört damit auf, sobald der Lauf abgebrochen wird.
+Plus `session_id`, `request_id`, `user_id`, `agent`, `step`, `tools_schema` and
+`cancellation_token`, the run's token. A hook that waits (for a person) stops
+waiting as soon as the run is cancelled.
 
-**Blockieren:** `HookResult(success=True, metadata={"block": "<was das Modell tun soll>"})`.
-Der Call läuft nicht, und das Modell liest statt eines Ergebnisses:
+**Blocking:** `HookResult(success=True, metadata={"block": "<what the model should do>"})`.
+The call does not run, and instead of a result the model reads:
 
 ```json
-{"status": "error", "error": "<Text des Hooks>", "type": "ToolCallBlocked"}
+{"status": "error", "error": "<text of the hook>", "type": "ToolCallBlocked"}
 ```
 
-- `block: True` ohne Text bekommt einen Standardtext. Der Text ist für das
-  Modell geschrieben, also sagt er, was es stattdessen tun soll.
-- **Der erste Hook, der blockiert, beendet die Kette.** Spätere Hooks laufen für
-  diesen Call nicht mehr, können die Sperre also auch nicht aufheben. Ein
-  fragender Hook fragt deshalb nie nach einem Call, den ein anderer schon
-  gesperrt hat.
-- Der Lauf geht weiter: Ein blockierter Call ist ein Fehlerergebnis, keine
-  Exception. Die UI bekommt ein `tool_error`-Event mit `"blocked": true` und
-  zeigt es als eigene Zeile im Status des Schritts (ein gesperrter Call öffnet
-  keinen Status-Scope und sendet kein `tool_call`).
-- Unter `tool_script` wird aus der Sperre ein `ToolDispatchError`, der im
-  Skript als `ToolCallError` ankommt und dort fangbar ist.
+- `block: True` without text gets a default text. The text is written for the
+  model, so it says what to do instead.
+- **The first hook that blocks ends the chain.** Later hooks no longer run for
+  this call, so they cannot lift the block either. A hook that asks
+  therefore never asks about a call another hook has already
+  blocked.
+- The run continues: a blocked call is an error result, not an
+  exception. The UI receives a `tool_error` event with `"blocked": true` and
+  shows it as its own line in the step's status (a blocked call opens
+  no status scope and sends no `tool_call`).
+- Under `tool_script` the block becomes a `ToolDispatchError`, which arrives in
+  the script as `ToolCallError` and can be caught there.
 
-**Argumente ändern:** Der Hook schreibt `context.tool_call["arguments"] = {...}`
-(ein dict) und gibt `modified=True` zurück. `name`, `server` und `id` liest
-niemand zurück. Laufzeitparameter (`_session_id`, `_user_id`, …, `request_id`)
-werden aus den geänderten Argumenten entfernt, denn die setzt nur das Framework.
+**Changing arguments:** The hook writes `context.tool_call["arguments"] = {...}`
+(a dict) and returns `modified=True`. Nobody reads back `name`, `server` and
+`id`. Runtime parameters (`_session_id`, `_user_id`, …, `request_id`)
+are removed from the changed arguments, because only the framework sets them.
 
-**Die History behält, was das Modell gesendet hat.** Der Assistant-Turn mit dem
-Call wird nicht umgeschrieben (Cache-Präfix, siehe [Cache Safety](#cache-safety)),
-das Tool läuft aber mit den geänderten Argumenten. Muss das Modell von der
-Änderung wissen, sagt es ihm ein `post_tool_call`-Hook im Ergebnis.
+**The history keeps what the model sent.** The assistant turn containing the
+call is not rewritten (cache prefix, see [Cache Safety](#cache-safety)),
+but the tool runs with the changed arguments. If the model needs to know about
+the change, a `post_tool_call` hook tells it in the result.
 
-**Reihenfolge:** Bei parallelen Calls laufen die Pre-Hooks nacheinander, in der
-Reihenfolge der Calls, bevor der erste startet. Ein Hook, der eine Person
-fragt, stellt also eine Frage nach der anderen, und eine Sperre lässt die Calls
-daneben unberührt. Danach laufen die nicht gesperrten Calls parallel. Solange
-ein Hook wartet, fließen die Status-Events des Laufs weiter in den Stream: Eine
-Frage, die der Hook über `StatusScope` stellt, sieht die Person, während er
-auf ihre Antwort wartet.
+**Order:** With parallel calls the pre-hooks run one after another, in the
+order of the calls, before the first one starts. A hook that asks a person
+therefore asks one question after the other, and a block leaves the calls
+next to it untouched. After that the calls that are not blocked run in parallel. While
+a hook waits, the run's status events keep flowing into the stream: a
+question the hook asks via `StatusScope` is seen by the person while it
+waits for their answer.
 
-**Fehler:** Ein Hook, der wirft, in den Timeout läuft, ein ungültiges Ergebnis
-liefert oder `success=False` meldet, wird übersprungen (Registry-Regel, siehe
-[Error Handling](#error-handling)), und der Call läuft. Ein Policy-Hook, bei dem
-das nicht sein darf, setzt in `schema.yaml` `on_error: block`: Dann sperrt jeder
-dieser Fehler den Call, auch ein Timeout, den der Betreiber per
-`hooks.overrides` kürzer gestellt hat. Das Modell liest, welche Prüfung
-ausgefallen ist. `on_error` gilt nur für `pre_tool_call`; eine andere
-Schreibweise oder ein anderer Hook-Typ meldet der Validator als Fehler und die
-Registrierung als Warnung. Fällt die Hook-Maschinerie selbst aus (nicht ein
-einzelner Hook), läuft der Call ebenfalls nicht.
+**Errors:** A hook that raises, runs into the timeout, returns an invalid result
+or reports `success=False` is skipped (registry rule, see
+[Error Handling](#error-handling)), and the call runs. A policy hook for which
+this must not happen sets `on_error: block` in `schema.yaml`: then each
+of these errors blocks the call, including a timeout that the operator has
+shortened via `hooks.overrides`. The model reads which check
+failed. `on_error` applies only to `pre_tool_call`; a different
+spelling or a different hook type is reported by the validator as an error and by the
+registration as a warning. If the hook machinery itself fails (not a
+single hook), the call does not run either.
 
 ```yaml
 hooks:
   - name: check_policy
     type: pre_tool_call
-    timeout: 120          # so lange darf eine Rückfrage dauern
-    on_error: block       # Timeout oder Absturz sperren den Call
+    timeout: 120          # a follow-up question may take this long
+    on_error: block       # timeout or crash block the call
 ```
 
-**Eine Person fragen.** Gefragt wird nur, wo jemand antworten kann:
-`status_forwarding.attended_stream_of(context.request_id)` nennt den Stream
-eines laufenden Laufs, den eine Person verfolgt und den die Status-Zeilen des
-Calls erreichen (der Lauf selbst oder einer über ihm, etwa beim Sub-Agent).
-Als verfolgt gilt ein Lauf, dessen Client das beim Start sagt
-(`"attended": true` auf `POST /events`, Formularfeld `attended` auf `/run` mit
-Dateien; `request_context.set_run_attended`), solange er läuft und eine
-angemeldete Person ihn gestartet hat (oder Auth aus ist). Das tut nur der
-Web-Chat. Ist der Stream vorbei, etwa bei einem asynchronen Sub-Agent nach dem
-Ende seines Aufrufers, oder liest niemand mehr den Job des Laufs (Tab
-geschlossen), fragt niemand mehr. Ein Sub-Lauf fragt im Stream des Laufs über
-ihm; ein Call innerhalb eines `tool_script`-Skripts fragt nie. Alles andere (openai_api, agent-run, agent-cli,
-JSON-`/run`) ist unbeaufsichtigt, und der
-Hook entscheidet ohne Rückfrage. Die Frage selbst ist eine Status-Zeile unter
-eigener Kind-ID mit `meta.tool_approval`. Der Chat zeichnet dazu Knöpfe, und
-die letzte Zeile der Reihe (end/error) nimmt sie wieder weg. Die Maschinerie
-dafür teilen sich `tool_approval` und das Tool `ask_user`: offene Fragen,
-Status-Zeile, Warten auf Antwort, Timeout, Abbruch und "niemand liest mehr" in
-`agent_system/core/run_questions.py` (`QuestionBroker`, `put_to_person`), die
-Antwort-Route samt "wer darf antworten" in `agent_system/api/question_routes.py`,
-die Antwort-Box im Chat in `syncQuestionActions` (`static/js/chat_module.js`).
+**Asking a person.** Asking happens only where someone can answer:
+`status_forwarding.attended_stream_of(context.request_id)` names the stream
+of a running run that a person follows and that the status lines of the
+call reach (the run itself or one above it, for example for a sub-agent).
+A run counts as followed if its client says so at start
+(`"attended": true` on `POST /events`, form field `attended` on `/run` with
+files; `request_context.set_run_attended`), as long as it is running and a
+logged-in person started it (or auth is off). Only the
+web chat does this. Once the stream is over, for example for an asynchronous sub-agent after the
+end of its caller, or if nobody reads the run's job any more (tab
+closed), nobody is asked any more. A sub-run asks in the stream of the run above
+it; a call inside a `tool_script` script never asks. Everything else (openai_api, agent-run, agent-cli,
+JSON `/run`) is unattended, and the
+hook decides without asking. The question itself is a status line under its
+own child ID with `meta.tool_approval`. The chat draws buttons for it, and
+the last line of the series (end/error) removes them again. The machinery
+for this is shared by `tool_approval` and the tool `ask_user`: open questions,
+status line, waiting for the answer, timeout, cancellation and "nobody reads any more" in
+`agent_system/core/run_questions.py` (`QuestionBroker`, `put_to_person`), the
+answer route including "who may answer" in `agent_system/api/question_routes.py`,
+the answer box in the chat in `syncQuestionActions` (`static/js/chat_module.js`).
 
-**Fallen für Policy- und Freigabe-Hooks:**
+**Pitfalls for policy and approval hooks:**
 
-- Die Sperre gehört in `HookResult.metadata`. Ein `block`, das nur in
-  `context.metadata` steht und mit `modified=False` zurückkommt, verwirft die
-  Registry, und der Call läuft.
-- Ein Hook, der nach dem Freigabe-Hook läuft, kann die Argumente noch ändern,
-  und niemand prüft sie danach. Der Freigabe-Hook gehört deshalb ans Ende der
-  Kette (`order: {after: [...]}` auf die Kategorien, die Argumente ändern).
-  Ein `pre_tool_call`-Hook, der Argumente ändert, trägt dafür
-  `category: tool_arguments`; `tool_approval` steht mit
-  `after: ["begin", "tool_arguments"]` hinter allen diesen.
-- Den Kontext ändern, nicht neu bauen: Ein neu gebauter `HookContext` ohne
-  `tool_call` oder `cancellation_token` lässt die Hooks nach ihm scheitern.
-- Ein leerer Sperrtext (`block: ""`) sperrt ebenfalls; nur `None` oder `False`
-  lassen den Call durch.
-- Wird der Lauf abgebrochen, während ein Hook wartet, meldet der Call sich als
-  abgebrochen, nicht als gesperrt, auch wenn der Hook dabei scheitert. Er läuft
-  nicht und erreicht keinen Post-Hook. Unter `tool_script` bricht das Skript
-  dann ab, ohne dass es den Abbruch fangen kann.
-- Gesperrte Calls zählen nicht zur Fehlerserie, die ein Eskalationsfenster
-  öffnet (`auto_escalate_on_stuck`): Ein Schritt, dessen Calls alle gesperrt
-  waren, lässt die Serie stehen, wie sie ist. Schickt das Modell einen
-  gesperrten Call aber wörtlich wieder, sieht der Loop-Detektor darin eine
-  Schleife und greift ein wie bei jeder anderen, denn das Modell steckt dann
-  tatsächlich fest.
+- The block belongs in `HookResult.metadata`. A `block` that is only in
+  `context.metadata` and returns with `modified=False` is discarded by the
+  registry, and the call runs.
+- A hook that runs after the approval hook can still change the arguments,
+  and nobody checks them afterwards. The approval hook therefore belongs at the end of the
+  chain (`order: {after: [...]}` on the categories that change arguments).
+  A `pre_tool_call` hook that changes arguments carries
+  `category: tool_arguments` for this; `tool_approval` sits behind all of these with
+  `after: ["begin", "tool_arguments"]`.
+- Change the context, do not rebuild it: a newly built `HookContext` without
+  `tool_call` or `cancellation_token` makes the hooks after it fail.
+- An empty block text (`block: ""`) blocks as well; only `None` or `False`
+  let the call through.
+- If the run is cancelled while a hook waits, the call reports itself as
+  cancelled, not as blocked, even if the hook fails in the process. It does not run
+  and does not reach a post-hook. Under `tool_script` the script
+  then aborts without being able to catch the cancellation.
+- Blocked calls do not count towards the error streak that opens an
+  escalation window (`auto_escalate_on_stuck`): a step whose calls were all blocked
+  leaves the streak as it is. If the model sends a
+  blocked call again verbatim, however, the loop detector sees a
+  loop in it and intervenes as with any other, because the model is then
+  actually stuck.
 
 ```python
 async def on_pre_tool_call(self, context: HookContext) -> HookResult:
@@ -295,38 +295,38 @@ async def on_pre_tool_call(self, context: HookContext) -> HookResult:
 
 ### POST_TOOL_CALL
 
-**Trigger:** nach jedem Call, den die Pre-Hooks durchgelassen haben, auch wenn
-er fehlschlug oder abgebrochen wurde. Er kommt, bevor das Ergebnis in die
-History geht. Bei parallelen Calls laufen die Post-Hooks nacheinander in
-Call-Reihenfolge, sobald alle fertig sind.
-**Use Cases:** Ergebnisse kürzen, schwärzen oder ergänzen; Protokoll
+**Trigger:** after every call that the pre-hooks let through, even if
+it failed or was cancelled. It comes before the result goes into the
+history. With parallel calls the post-hooks run one after another in
+call order, once all are finished.
+**Use Cases:** Shortening, redacting or supplementing results; logging
 **Can Modify:** `tool_result["result"]`
 
-`context.tool_result = {"result": <Wert>, "is_error": <bool>, "started_at": <float|None>, "finished_at": <float|None>}`:
+`context.tool_result = {"result": <value>, "is_error": <bool>, "started_at": <float|None>, "finished_at": <float|None>}`:
 
-- `result` ist das, was der Aufrufer liest. Im Agent-Loop ist das der Inhalt
-  der Tool-Nachricht, dekodiert: das Ergebnis des Tools oder der Fehler, den
-  das Framework an seine Stelle gesetzt hat. Unter `tool_script` ist es der
-  Rückgabewert des Tools; wirft das Tool, macht das Framework daraus wie im
-  Loop ein Fehlerergebnis (`{"status": "error", ...}`), das die Post-Hooks
-  sehen, bevor das Skript es als `ToolCallError` bekommt.
-- `is_error` folgt der Konvention (`{"status": "error"}` oder ein bloßes
-  `{"error": ...}`) und wird nicht zurückgelesen.
-- `started_at` / `finished_at` (`time.time()`) sagen, wann der Call selbst lief.
-  Die eigene Uhr des Hooks taugt dafür nicht: Bei parallelen Calls laufen die
-  Post-Hooks erst, wenn alle fertig sind, sie sähe also für jeden Call das Ende
-  des langsamsten. Beide werden nicht zurückgelesen.
-- `context.tool_call` ist der Call, wie er lief, also mit den Argumenten nach
-  den Pre-Hooks.
+- `result` is what the caller reads. In the agent loop this is the content
+  of the tool message, decoded: the result of the tool or the error the
+  framework put in its place. Under `tool_script` it is the
+  return value of the tool; if the tool raises, the framework turns that, as in the
+  loop, into an error result (`{"status": "error", ...}`) that the post-hooks
+  see before the script receives it as `ToolCallError`.
+- `is_error` follows the convention (`{"status": "error"}` or a bare
+  `{"error": ...}`) and is not read back.
+- `started_at` / `finished_at` (`time.time()`) say when the call itself ran.
+  The hook's own clock is no use for this: with parallel calls the
+  post-hooks only run once all are finished, so it would see the end of the
+  slowest call for every call. Neither is read back.
+- `context.tool_call` is the call as it ran, that is, with the arguments after
+  the pre-hooks.
 
-Um das Ergebnis zu ändern, schreibt der Hook `context.tool_result["result"]` und
-gibt `modified=True` zurück. Die Änderung landet in der History und damit in der
-Session-Datei. Das Live-Event `tool_result` und die `calls`-Liste des Laufs
-zeigen weiter, was das Tool tatsächlich zurückgab. Multimodale Anhänge
-(`_multimodal_content`) bekommt ein Post-Hook nicht zu sehen.
+To change the result, the hook writes `context.tool_result["result"]` and
+returns `modified=True`. The change ends up in the history and thus in the
+session file. The live event `tool_result` and the run's `calls` list
+continue to show what the tool actually returned. Multimodal attachments
+(`_multimodal_content`) are not visible to a post-hook.
 
-Ein Hook, der fehlschlägt oder ein Ergebnis liefert, das sich nicht als JSON
-schreiben lässt, ändert nichts: Das Ergebnis bleibt, wie das Tool es lieferte.
+A hook that fails or returns a result that cannot be written as JSON
+changes nothing: the result stays as the tool delivered it.
 
 ```python
 async def on_post_tool_call(self, context: HookContext) -> HookResult:
@@ -337,32 +337,32 @@ async def on_post_tool_call(self, context: HookContext) -> HookResult:
     return HookResult(success=True, context=context)
 ```
 
-### Welche Calls zählen
+### Which Calls Count
 
-| Weg | Tool-Hooks |
+| Path | Tool hooks |
 |---|---|
-| Tool-Calls des Modells im Agent-Loop, auch parallele und externe MCP-Tools | ja, `source: "model"` |
-| Calls eines `tool_script`-Skripts (`Agent.dispatch_tool_call(..., hook_source="tool_script")`) | ja, `source: "tool_script"`, `id: None`, `step: 0`. Die Secrets aus `inject_params` sieht kein Hook: Sie kommen erst nach den Pre-Hooks dazu |
-| Sub-Agents | Der Spawn ist ein Call des Eltern-Agents und läuft durch dessen Hooks. Die Calls des Sub-Agents laufen durch seinen eigenen Loop, mit seiner Hook-Konfiguration. Ein Hook, der die Regeln des Eltern-Laufs mitgeben will, findet ihn über die Request-ID (`<lauf>_003_sub_…` verlängert die ID des Aufrufers); `tool_approval` tut das und behandelt einen Sub-Agent ohne den Hook als eigenen Fall |
-| Slash-Commands, Web-Buttons, `tool_preload`, Stategraph-Aktivitäten, `Agent.call_tool` | nein, denn der Aufrufer ist eine Person oder das Framework, nicht das Modell |
-| Calls, die das Framework vorher abweist (kaputtes JSON, unbekanntes Tool) | nein, denn sie laufen nie |
-| gesperrte Calls | nur die Pre-Hooks bis zur Sperre, kein Post-Hook |
-| Calls eines abgebrochenen Laufs, die nie gestartet sind | keine (bzw. nur die Pre-Hooks, die vor dem Abbruch liefen), kein Post-Hook |
+| Tool calls of the model in the agent loop, including parallel ones and external MCP tools | yes, `source: "model"` |
+| Calls of a `tool_script` script (`Agent.dispatch_tool_call(..., hook_source="tool_script")`) | yes, `source: "tool_script"`, `id: None`, `step: 0`. No hook sees the secrets from `inject_params`: they are only added after the pre-hooks |
+| Sub-agents | The spawn is a call of the parent agent and runs through its hooks. The sub-agent's calls run through its own loop, with its hook configuration. A hook that wants to pass on the rules of the parent run finds it via the request ID (`<run>_003_sub_…` extends the caller's ID); `tool_approval` does this and treats a sub-agent without the hook as a separate case |
+| Slash commands, web buttons, `tool_preload`, stategraph activities, `Agent.call_tool` | no, because the caller is a person or the framework, not the model |
+| Calls that the framework rejects beforehand (broken JSON, unknown tool) | no, because they never run |
+| blocked calls | only the pre-hooks up to the block, no post-hook |
+| Calls of a cancelled run that never started | none (or only the pre-hooks that ran before the cancellation), no post-hook |
 
-**Kosten:** Läuft für einen Agent kein Hook des Typs, weil keiner registriert
-ist oder alle für ihn aus sind, wird kein Kontext gebaut und nichts kopiert
-(`HookIntegrationManager.wants_hooks`). Sonst kopiert die Registry pro Hook den
-Call bzw. das Ergebnis (Deep Copy, wie `messages` bei `pre_llm_call`).
+**Cost:** If no hook of the type runs for an agent, because none is registered
+or all are off for it, no context is built and nothing is copied
+(`HookIntegrationManager.wants_hooks`). Otherwise the registry copies, per hook, the
+call or the result (deep copy, like `messages` for `pre_llm_call`).
 
-**Grenzen:**
+**Limits:**
 
-- Unter `tool_script` begrenzt dessen `per_call_timeout` auch die Hooks eines
-  Calls. Den `cancellation_token` bekommt ein Hook dort vom Skript. Ein Hook
-  sollte innerhalb eines Skripts nicht auf eine Person warten: Das Skript als
-  Ganzes war der Call des Modells und ist schon durch die Hooks gegangen.
-  `tool_approval` fragt darin deshalb nie, sondern sperrt nur, was Deny-Regeln
-  oder ein Spawn ohne Freigaben nicht erlauben. Ein Skript selbst gibt es nie
-  „für die Session“ frei: Jedes wird mit seinem Code gefragt.
+- Under `tool_script`, its `per_call_timeout` also limits the hooks of a
+  call. A hook there receives the `cancellation_token` from the script. A hook
+  should not wait for a person inside a script: the script as a
+  whole was the model's call and has already gone through the hooks.
+  `tool_approval` therefore never asks inside it, but only blocks what deny rules
+  or a spawn without approvals do not allow. It never approves a script itself
+  "for the session": each one is asked about with its code.
 
 ### SESSION_START
 
@@ -397,14 +397,14 @@ happened -- a hook that counts what the request carried as done (debate_forum
 marks direct messages delivered there) may only do so when it did: persisting
 never raises, so a failed or cancelled save is silent otherwise.
 
-Wie der Lauf endete, steht ebenfalls in den Metadaten, denn ein Hook sieht
-keines seiner Events: `cancelled` (der Cancellation-Token des Laufs wurde
-abgebrochen; ein Absturz zählt nicht dazu, obwohl er danach den Token mit
-abbricht), `errors` (die Fehlermeldungen des Laufs, ein Absturz eingeschlossen,
-festgehalten, bevor sie ausgegeben werden, sodass ein Konsument, der beim
-Fehler aufhört, sie nicht verliert) und `completed` (ob der Lauf eine
-endgültige Antwort erreichte). Das Plugin `otel` beendet seinen Lauf-Span
-danach.
+How the run ended is also in the metadata, because a hook sees
+none of its events: `cancelled` (the run's cancellation token was
+cancelled; a crash does not count, although it cancels the token
+afterwards), `errors` (the run's error messages, including a crash,
+recorded before they are emitted, so a consumer that stops at the
+error does not lose them) and `completed` (whether the run reached a
+final answer). The `otel` plugin ends its run span
+afterwards.
 
 ```python
 async def on_session_end(self, context: HookContext) -> HookResult:
@@ -755,18 +755,18 @@ hooks:
 no registered hook (or hook-owning instance) has no effect, and startup logs a
 warning for it.
 
-Ein globaler Override kennt genau diese drei Keys (`enabled`, `timeout`,
-`order`) — ein anderer Key (Tippfehler wie `timout`) lässt `load_settings`
-scheitern, statt still wirkungslos zu bleiben. Ein leerer Schlüssel (alle
-Zeilen darunter auskommentiert) heißt „nichts gesetzt“. Plugin-spezifische
-Parameter gehören in die Hook-Metadaten des Plugins bzw. die Agent-Overrides
-(`agent_config.hooks.overrides`), nicht hierher.
+A global override knows exactly these three keys (`enabled`, `timeout`,
+`order`) — any other key (a typo such as `timout`) makes `load_settings`
+fail instead of silently having no effect. An empty key (all
+lines below it commented out) means "nothing set". Plugin-specific
+parameters belong in the plugin's hook metadata or the agent overrides
+(`agent_config.hooks.overrides`), not here.
 
-Der `hooks:`-Abschnitt wird wie `plugins:` beim Laden der Config
-zusammengeführt (`AgentSystemConfig.hooks`) — aus `config/plugins.yaml` oder
-jeder anderen per `includes` geladenen Datei, und zwar der Config, mit der der
-Prozess läuft (`--config`, `AGENT_CONFIG_PATH`), unabhängig vom
-Arbeitsverzeichnis.
+The `hooks:` section is merged when the config is loaded, like `plugins:`
+(`AgentSystemConfig.hooks`) — from `config/plugins.yaml` or
+any other file loaded via `includes`, namely from the config the
+process runs with (`--config`, `AGENT_CONFIG_PATH`), independent of the
+working directory.
 
 ### Agent-Level Config
 
@@ -858,8 +858,8 @@ How the registry handles failures:
   be half done.
 - **Exception, invalid result, missing method**: logged, the hook counts as
   failed, the chain continues.
-- Ausnahme: Ein `pre_tool_call`-Hook mit `on_error: block` sperrt bei jedem
-  dieser Fehler den Call, und die Kette endet dort (siehe
+- Exception: a `pre_tool_call` hook with `on_error: block` blocks the call on each
+  of these errors, and the chain ends there (see
   [PRE_TOOL_CALL](#pre_tool_call)).
 - If the whole chain fails, the agent loop continues with the unchanged
   messages — a broken hook only shows up in the log.
@@ -909,7 +909,7 @@ Guards: `tests/agent/test_agent_step_budget_note.py`,
 
 See [Plugin Examples](../src/plugins/) for complete implementations:
 
-- **[context_engineer](../src/plugins/context_engineer/)**: Kontext-Kompaktierung in Schichten, schont den Prompt-Cache
+- **[context_engineer](../src/plugins/context_engineer/)**: Layered context compaction, preserves the prompt cache
 - **[context_summarizer](../src/plugins/context_summarizer/)**: Intelligent LLM-based summarization
 - **[message_validator](../src/plugins/message_validator/)**: Message format validation
 - **[request_logger](../src/plugins/request_logger/)**: Request/response logging
@@ -920,7 +920,7 @@ See [Plugin Examples](../src/plugins/) for complete implementations:
 
 1. Check that hook is enabled in configuration
 2. Verify the hook is registered (`GET /hooks` API endpoint, or `Registered hook` in the log)
-3. Check the call is one the hook type sees at all (tool hooks: [Welche Calls zählen](#welche-calls-zählen))
+3. Check the call is one the hook type sees at all (tool hooks: [Which Calls Count](#which-calls-count))
 4. Check `schema.yaml` has a `hooks:` key and the method name equals the hook name
 5. Review log files for errors
 

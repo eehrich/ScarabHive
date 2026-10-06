@@ -4,7 +4,6 @@ The one primitive for code-orchestrated workflows: Python owns the control
 flow, an agent is a leaf call ``task -> structured result``. Lifted from the
 v4 pipeline's ``SubAgentMixin`` (writer_pipeline_v4/pipeline_agent.py), which
 had been forked into v5b; this is the single copy both are meant to use.
-See docs/agent_workflow_orchestration_design.md.
 
 Transport is the ``sub_agent_manager`` plugin's tool
 ``<instance>_manage_sub_agent`` (operations ``create`` / ``continue``),

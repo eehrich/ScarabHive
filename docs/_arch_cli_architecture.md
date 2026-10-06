@@ -1,217 +1,217 @@
-# CLI-Architektur
+# CLI Architecture
 
-Wie `agent-cli` und `agent-run` gebaut sind. Die Befehle selbst stehen in der
-[CLI Reference](cli_reference.md); hier steht, was dahinter passiert und
-welche Fallen der Code bereits kennt.
+How `agent-cli` and `agent-run` are built. The commands themselves are in the
+[CLI Reference](cli_reference.md); this document covers what happens behind
+them and which pitfalls the code already knows.
 
-Stand: 2026-09-14 (Aufräumrunde: tote Befehle, Config-Schreiber und
-Doppel-Implementierungen entfernt).
+As of: 2026-09-14 (cleanup round: dead commands, config writers and
+duplicate implementations removed).
 
 ---
 
-## 1. Einstiegspunkte
+## 1. Entry Points
 
-| Befehl | Modul | Zweck |
+| Command | Module | Purpose |
 |--------|-------|-------|
-| `agent-cli` | `src/agent_system/agent_cli.py:main` | Agent-Läufe (`run`, `chat`) und Inspektion (`plugins`, `mcp`, `hooks`), Benutzer (`users`), `reload` des Servers |
-| `agent-run` | `src/agent_system/agent_run.py:main` | schlanker Einmal-Lauf mit dem Default-Agenten; teilt Session-Logik und Anhänge mit `agent-cli` |
+| `agent-cli` | `src/agent_system/agent_cli.py:main` | Agent runs (`run`, `chat`) and inspection (`plugins`, `mcp`, `hooks`), users (`users`), `reload` of the server |
+| `agent-run` | `src/agent_system/agent_run.py:main` | lean one-shot run with the default agent; shares session logic and attachments with `agent-cli` |
 
-Beide stehen in `console_scripts.cfg`, das `pyproject.toml` liest.
+Both are listed in `console_scripts.cfg`, which `pyproject.toml` reads.
 
-**Grundsatz: Die CLI schreibt keine Konfiguration.** Ein Plugin oder Tool-Server
-wird eingeschaltet, indem man die YAML bearbeitet — `enabled` allein reicht
-auch nicht, der Agent braucht die Tools in seiner Allowlist. Die früheren
-Schreib-Befehle (`plugins enable`, `mcp enable`, `mcp tool allow/block`,
-`mcp feature set`) sind entfernt; `allow/block` hatte `mcp_servers.yaml` per
-`yaml.safe_dump` neu geschrieben und dabei alle Kommentare verloren.
-
----
-
-## 2. Argumente parsen (`agent_cli.main`)
-
-Drei Stufen, jede aus einem gemessenen Grund:
-
-1. **Vorparser** (`parse_known_args`): holt die globalen Optionen (`--config`,
-   `-v`, `--color`, `--no-color`, `--show-tools`, `--no-status`, `--raw`) von
-   *überall* aus der Zeile und setzt sie vor das Subcommand. Ist das erste
-   übrige Wort kein Subcommand, wird `run` eingefügt — `agent-cli "Frage"`
-   funktioniert deshalb ohne `run`.
-2. **`users` geht an Typer**, bevor der Hauptparser läuft
-   (`cli_utils/users.py`) — mit den *ursprünglichen* Tokens hinter `users`,
-   denn der Vorparser liest auch Optionswerte (`-p -vS3cret` kam als
-   `-p -S3cret` an). Typer besitzt Argumente, Hilfe und Exit-Codes. Die
-   frühere argparse-Kopie war auseinandergelaufen: Optionen landeten bei
-   Befehlen, die sie nicht kennen (Traceback), `update USER EMAIL` verwarf die
-   E-Mail, jeder Fehler endete mit 0.
-3. **Hauptparser** mit Subparsern für den Rest.
-
-**Falle — ein Flag nur an einer Stelle definieren.** Definiert ein Subparser
-dieselbe `dest` wie der Elternparser, überschreibt sein *Default* den Wert des
-Elternparsers (Python 3.12, gemessen). So las `plugins info --raw` früher
-`False`, und ein `mcp --format json list` lieferte eine Tabelle. Deshalb:
-`--raw` nur global, `--format` nur an den Aktionen.
-
-**`--config` ohne Default.** Fehlt das Flag, bekommt `load_settings(None)` die
-Wahl: `AGENT_CONFIG_PATH`, sonst `config/config.yaml`. Ein Default
-`config/config.yaml` im Parser hatte die Umgebungsvariable für alle
-Subcommands verdeckt.
+**Principle: the CLI does not write configuration.** A plugin or tool server
+is enabled by editing the YAML — `enabled` alone is not enough either, the
+agent needs the tools in its allowlist. The former write commands
+(`plugins enable`, `mcp enable`, `mcp tool allow/block`, `mcp feature set`)
+have been removed; `allow/block` had rewritten `mcp_servers.yaml` via
+`yaml.safe_dump` and lost all comments in the process.
 
 ---
 
-## 3. Subcommands und was sie hochfahren
+## 2. Argument Parsing (`agent_cli.main`)
 
-| Subcommand | Bootstrap | Hinweis |
+Three stages, each for a measured reason:
+
+1. **Pre-parser** (`parse_known_args`): picks up the global options (`--config`,
+   `-v`, `--color`, `--no-color`, `--show-tools`, `--no-status`, `--raw`) from
+   *anywhere* in the line and places them before the subcommand. If the first
+   remaining word is not a subcommand, `run` is inserted — so `agent-cli "Question"`
+   works without `run`.
+2. **`users` goes to Typer** before the main parser runs
+   (`cli_utils/users.py`) — with the *original* tokens after `users`,
+   because the pre-parser also reads option values (`-p -vS3cret` arrived as
+   `-p -S3cret`). Typer owns arguments, help and exit codes. The
+   earlier argparse copy had drifted apart: options ended up at commands that
+   do not know them (traceback), `update USER EMAIL` discarded the
+   email, every error ended with 0.
+3. **Main parser** with subparsers for the rest.
+
+**Pitfall — define a flag in only one place.** If a subparser defines the same
+`dest` as the parent parser, its *default* overrides the parent parser's value
+(Python 3.12, measured). This is how `plugins info --raw` used to read
+`False`, and `mcp --format json list` produced a table. Hence:
+`--raw` only globally, `--format` only on the actions.
+
+**`--config` without a default.** If the flag is missing, `load_settings(None)`
+gets to choose: `AGENT_CONFIG_PATH`, otherwise `config/config.yaml`. A default
+`config/config.yaml` in the parser had masked the environment variable for all
+subcommands.
+
+---
+
+## 3. Subcommands and What They Start Up
+
+| Subcommand | Bootstrap | Note |
 |------------|-----------|---------|
-| `plugins` | nur `discover_all_plugins` über `plugins.plugin_dirs` | `enabled` roh aus `plugins.servers` — wie `ToolServerIntegration` beim Registrieren; der Typ folgt der `type:`-Kette bis zum Plugin. Ein Plugin gilt als eingeschaltet, wenn eine seiner Instanzen es ist |
-| `mcp` | `ToolServerIntegration.initialize` → Aktion → `shutdown` | nur lesend; eine Verbindung überlebt den Prozess nicht, darum kein `connect`/`disconnect` |
-| `hooks` | `ToolServerIntegration.initialize` → Registry lesen → `shutdown` (~2 s plus Verbindungsaufbau externer Server) | Hooks registrieren sich beim Laden der Plugins; ohne das war die Registry immer leer. Scheitert `initialize` als Ganzes → Exit 1; ein einzelnes kaputtes Plugin fehlt (Fehler auf stderr), wie im Server. Keine Statistik: die liegt im Speicher des ausführenden Prozesses |
-| `users` | nur die Benutzer-Datenbank (`auth.database_path`) | kein Login nötig, direkter DB-Zugriff |
-| `reload` | nichts; `POST /admin/reload-config` am laufenden Server | Admin-Schlüssel nötig |
-| `run`, `chat` | voll: Logging, `InitializationService.initialize_for_cli`, `initialize_tools`, `init_batch_system` | siehe 4 |
+| `plugins` | only `discover_all_plugins` over `plugins.plugin_dirs` | `enabled` raw from `plugins.servers` — as `ToolServerIntegration` does when registering; the type follows the `type:` chain down to the plugin. A plugin counts as enabled if one of its instances is |
+| `mcp` | `ToolServerIntegration.initialize` → action → `shutdown` | read-only; a connection does not survive the process, hence no `connect`/`disconnect` |
+| `hooks` | `ToolServerIntegration.initialize` → read registry → `shutdown` (~2 s plus connection setup of external servers) | Hooks register themselves when the plugins are loaded; without that the registry was always empty. If `initialize` fails as a whole → exit 1; a single broken plugin is missing (error on stderr), as on the server. No statistics: they live in the memory of the executing process |
+| `users` | only the user database (`auth.database_path`) | no login needed, direct DB access |
+| `reload` | nothing; `POST /admin/reload-config` on the running server | admin key required |
+| `run`, `chat` | full: logging, `InitializationService.initialize_for_cli`, `initialize_tools`, `init_batch_system` | see 4 |
 
-`mcp` nutzt `ToolServerService` (`list_servers`, `get_server_status`, `test_server`)
-und `ToolService.list_tools`; beide Services bedient auch die API.
+`mcp` uses `ToolServerService` (`list_servers`, `get_server_status`, `test_server`)
+and `ToolService.list_tools`; the API serves both services as well.
 
 ---
 
-## 4. Ablauf von `run` und `chat`
+## 4. Flow of `run` and `chat`
 
-In dieser Reihenfolge, alles in `main`:
+In this order, all in `main`:
 
-1. **Logging** in eine rollenspezifische Datei (`logging.file_cli`, sonst
-   `<logfile>-cli.log`), damit CLI und API nicht dieselbe Datei beschreiben.
-   Ohne `-v` sieht die Konsole nur Warnungen.
-2. **Bootstrap** (Registry, Session-Service, MCP, Batch-System).
-3. **Session-Defaults**: wird `--session` fortgesetzt, gelten Agent und
-   LLM-Profil, mit denen sie begonnen wurde — `--agent`/`--llm` schlagen sie
+1. **Logging** into a role-specific file (`logging.file_cli`, otherwise
+   `<logfile>-cli.log`), so that CLI and API do not write to the same file.
+   Without `-v` the console shows only warnings.
+2. **Bootstrap** (registry, session service, MCP, batch system).
+3. **Session defaults**: if `--session` is resumed, the agent and
+   LLM profile it was started with apply — `--agent`/`--llm` override them
    (`cli_utils/session_defaults.py`).
-4. **Einstiegs-Agent**: aus der Registry oder gebaut aus der *aufgelösten*
-   Config (`get_tool_server_config`); der rohe Eintrag trüge Pydantic-Defaults
-   statt geerbter Werte. Eine Fabrik für alle: `servers/agent/entry.py`
-   (`entry_agent`) — die API, `/agent` im Chat und `create_and_register_agent`
-   (agent-run, Writer-Audio) bauen dort. Ist der Name kein Agent → die Liste
-   der Agenten, Exit 1.
-5. `--max-steps` (Kopie der `agent_config`, nur dieser Prozess),
-   `--list-sessions` (listet und endet, noch vor dem LLM-Override).
-6. **LLM-Override** aus `--llm`/`--llm-params` — vor den Anhängen, damit die
-   Fähigkeitsprüfung das tatsächlich genutzte Modell sieht. `--llm-params`
-   selbst prüft schon der Parser (Exit 2, vor dem Bootstrap).
-7. **Anhänge** (`cli_utils/attachments.py`): die Art kommt aus der Datei, nicht
-   aus dem Flag. Nachricht und Fähigkeitsprüfung baut
-   `message_with_attachments` (`utils/multimodal_processor.py`), dieselbe
-   Stelle wie für API und Chat; Fehler → Exit 1.
-8. **Session-Presence** (`core/session_presence.py`): die Session wird
-   *gehalten, bevor* sie geladen wird. Belegt → Fehler (Exit 1), `--force`
-   übergeht einen verwaisten Halt, `--woken` (vom Weck-Befehl gesetzt) tritt
-   still zurück. Ctrl+C ist ein Stopp: Die Session wird markiert losgelassen, und
-   nichts weckt sie danach von selbst (`session_locking.md` §5).
+4. **Entry agent**: from the registry or built from the *resolved*
+   config (`get_tool_server_config`); the raw entry would carry Pydantic defaults
+   instead of inherited values. One factory for all: `servers/agent/entry.py`
+   (`entry_agent`) — the API, `/agent` in the chat and `create_and_register_agent`
+   (agent-run, audio in a further plugin root) build there. If the name is not an agent → the list
+   of agents, exit 1.
+5. `--max-steps` (copy of the `agent_config`, this process only),
+   `--list-sessions` (lists and ends, before the LLM override).
+6. **LLM override** from `--llm`/`--llm-params` — before the attachments, so that
+   the capability check sees the model actually used. `--llm-params`
+   itself is already validated by the parser (exit 2, before the bootstrap).
+7. **Attachments** (`cli_utils/attachments.py`): the kind comes from the file, not
+   from the flag. The message and the capability check are built by
+   `message_with_attachments` (`utils/multimodal_processor.py`), the same
+   place as for the API and the chat; error → exit 1.
+8. **Session presence** (`core/session_presence.py`): the session is
+   *held before* it is loaded. Occupied → error (exit 1), `--force`
+   overrides an orphaned hold, `--woken` (set by the wake command) steps back
+   silently. Ctrl+C is a stop: the session is marked released, and
+   nothing wakes it up by itself afterwards.
 
-   Zwei Dinge musste `chat` dafür lernen. Erstens: **der Prompt wartet auf dem
-   Event-Loop, nicht daneben.** `PromptSession.prompt()` ist synchron — es
-   startet einen eigenen Loop und blockiert den Thread bis Enter, und alles,
-   was auf dem Loop des REPL liegt, steht so lange still. Gemessen am
-   20.09.2026: der Ein-Schritt-LLM-Call eines Sub-Agenten lag **vier Minuten**
-   ungelesen da und wurde 0,3 s nach der ersten Nutzereingabe fertig — Tippen
-   war das, was den Loop wieder drehte. Damit konnte `wake_when_done` im Chat
-   gar nicht tragen: der Job, der die Marke setzt, war eingefroren, also
-   erschien die Marke nie. `_PromptEditor._ask` fährt deshalb
-   `prompt_async` unter `run_until_complete` (`cli_utils/chat.py`). Dasselbe
-   gilt für `/edit`: der Editor läuft über `run_in_executor`, denn eine
-   Nachricht in vim zu schreiben dauert Minuten, und genau dann hätte ein
-   Hintergrund-Job am meisten Zeit. Nicht betroffen und weiterhin blockierend
-   ist der Fallback-Leser `input()` — der umgeleitete Fall, in dem niemand vor
-   dem Prompt sitzt; und `/copy`, wo `clip`/`xclip` Millisekunden brauchen und
-   der Riegel teurer wäre als der Schaden.
+   `chat` had to learn two things for this. First: **the prompt waits on the
+   event loop, not beside it.** `PromptSession.prompt()` is synchronous — it
+   starts its own loop and blocks the thread until Enter, and everything
+   that sits on the REPL's loop stands still for that time. Measured on
+   2026-09-20: a sub-agent's one-step LLM call lay **four minutes**
+   unread and finished 0.3 s after the first user input — typing
+   was what turned the loop again. So `wake_when_done` could not work in the
+   chat at all: the job that sets the marker was frozen, so the marker
+   never appeared. `_PromptEditor._ask` therefore runs
+   `prompt_async` under `run_until_complete` (`cli_utils/chat.py`). The same
+   applies to `/edit`: the editor runs via `run_in_executor`, because writing
+   a message in vim takes minutes, and that is exactly when a
+   background job would have the most time. Not affected and still blocking
+   is the fallback reader `input()` — the redirected case, in which nobody sits
+   at the prompt; and `/copy`, where `clip`/`xclip` take milliseconds and
+   the lock would cost more than the damage.
 
-   Zweitens: `chat` hält seine Session über den **ganzen** REPL, und darum muss
-   er den Weckruf selbst abholen: die Marke (`<session>.pending`) wird sonst nur
-   *innerhalb* eines Requests genommen (`_presence_step` bei jedem LLM-Call),
-   und am Prompt läuft kein Call — ein mit `wake_when_done` fertig gewordener
-   Sub-Agent läge da, bis der Nutzer zufällig etwas tippt. Solange der Prompt
-   wartet, fragt deshalb ein Wächter-Thread (`_watch_for_wake` in
-   `cli_utils/chat.py`) im halben Sekundentakt `presence.pending(...)` und
-   schneidet die Eingabe ab; der REPL nimmt die Marke (damit ein Zug, der nie
-   zu einem LLM-Call kommt, keine Endlosschleife auslöst) und startet einen
-   Zug mit `WAKE_TASK`, so wie eine Eingabe es täte. **Nicht** abgeschnitten
-   wird, was schon getippt ist — `exit()` wirft den Puffer weg — und nicht
-   ohne Zeileneditor: `input()` lässt sich von keinem Thread unterbrechen, und
-   das ist ohnehin der umgeleitete Fall, in dem niemand vor dem Prompt sitzt.
-   Anhänge aus `/attach` gehen mit einem geweckten Zug nicht mit: sie gehören
-   der Nachricht, die der Nutzer gerade schreibt.
-9. **Session öffnen** über `SessionService.open_for_run`, wie `/run` und
-   agent-run: eine gespeicherte wird wiederhergestellt, eine neue beginnt mit
-   den `template_vars` der Agent-Config; darüber `--vars`.
-10. **Lauf**: `chat` übergibt an `cli_utils/chat.py:run_chat_loop`. `--raw` und
-    der Stream-Modus sammeln beide über `collect_final_result`. Der
-    Stream-Modus zeigt dabei über `on_event` Tool-Aufrufe (`--show-tools`),
-    das Denken (grau), Fehler (`ERROR:`) und die Antwort, sobald sie kommen —
-    ein Ctrl+C landet meist außerhalb der Event-Loop, und nach dem Lauf
-    erscheint dann nur noch die Abbruch-Zeile. Die Statuszeilen kommen über
+   Second: `chat` holds its session across the **whole** REPL, and therefore has
+   to pick up the wake call itself: the marker (`<session>.pending`) is otherwise taken only
+   *within* a request (`_presence_step` on every LLM call),
+   and no call runs at the prompt — a sub-agent finished with `wake_when_done`
+   would sit there until the user happens to type something. While the prompt
+   waits, a watcher thread (`_watch_for_wake` in
+   `cli_utils/chat.py`) therefore polls `presence.pending(...)` every half second and
+   cuts off the input; the REPL takes the marker (so that a turn that never
+   reaches an LLM call does not trigger an endless loop) and starts a
+   turn with `WAKE_TASK`, just as an input would. What has already been typed is
+   **not** cut off — `exit()` discards the buffer — and neither is it
+   without a line editor: `input()` cannot be interrupted by any thread, and
+   that is the redirected case anyway, in which nobody sits at the prompt.
+   Attachments from `/attach` do not go along with a woken turn: they belong to
+   the message the user is currently writing.
+9. **Open the session** via `SessionService.open_for_run`, like `/run` and
+   agent-run: a saved one is restored, a new one starts with
+   the `template_vars` of the agent config; `--vars` on top.
+10. **Run**: `chat` hands over to `cli_utils/chat.py:run_chat_loop`. `--raw` and
+    stream mode both collect via `collect_final_result`. In
+    stream mode, `on_event` shows tool calls (`--show-tools`),
+    the thinking (gray), errors (`ERROR:`) and the answer as soon as they arrive —
+    a Ctrl+C usually lands outside the event loop, and after the run
+    only the abort line appears. The status lines come via
     `status_bus`.
-11. Session speichern (nicht bei Abbruch), im `finally` Halt freigeben und
-    Batch-System und MCP herunterfahren.
+11. Save the session (not on abort), release the hold in the `finally` and
+    shut down the batch system and MCP.
 
-**Ein Event-Loop für den ganzen Prozess** (`run_async`, `get_cli_loop`).
-`asyncio.run` pro Schritt schloss den Loop danach — und mit ihm die Tasks der
-externen MCP-Verbindungen aus dem Bootstrap. Der Agent bekam still null
-externe Tools, während `mcp test` funktionierte (gemessen 2026-09-01). Der Chat
-leiht sich denselben Loop; `close_cli_loop` räumt ihn bei Prozessende ab.
+**One event loop for the whole process** (`run_async`, `get_cli_loop`).
+`asyncio.run` per step closed the loop afterwards — and with it the tasks of the
+external MCP connections from the bootstrap. The agent silently got zero
+external tools while `mcp test` worked (measured 2026-09-01). The chat
+borrows the same loop; `close_cli_loop` cleans it up at process end.
 
-**stdout trägt das Ergebnis.** Meta-Zeilen („Session saved“, Warnungen)
-gehen nach stderr. Statuszeilen und gestreamtes Denken stehen bei `agent-cli`
-auf stdout; `--no-status` hält stdout sauber. `agent-run` schreibt Status nach
+**stdout carries the result.** Meta lines ("Session saved", warnings)
+go to stderr. Status lines and streamed thinking are on stdout for `agent-cli`;
+`--no-status` keeps stdout clean. `agent-run` writes status to
 stderr.
 
 ---
 
 ## 5. `cli_utils/`
 
-| Modul | Inhalt |
+| Module | Contents |
 |-------|--------|
-| `common.py` | Farbmodus (`set_color_mode`, `supports_color`), Windows-VT-Modus, Statuszeilen, `show_answer` (Antwort als Markdown mit Farben, roh in eine Pipe), `render_with_rich` |
-| `chat.py` | die REPL: Renderer, Eingabe/Tastatur, Slash-Befehle, Usage-Summen |
-| `session_defaults.py` | Agent/LLM einer fortgesetzten Session |
+| `common.py` | color mode (`set_color_mode`, `supports_color`), Windows VT mode, status lines, `show_answer` (answer as Markdown with colors, raw into a pipe), `render_with_rich` |
+| `chat.py` | the REPL: renderer, input/keyboard, slash commands, usage totals |
+| `session_defaults.py` | agent/LLM of a resumed session |
 | `session_listing.py` | `--list-sessions` |
-| `attachments.py` | Anhänge nach Dateiart sortieren |
-| `agent_runner.py` | Agent-Erzeugung für `agent-run` |
-| `users.py` | Typer-App für `agent-cli users` |
+| `attachments.py` | sort attachments by file kind |
+| `agent_runner.py` | agent creation for `agent-run` |
+| `users.py` | Typer app for `agent-cli users` |
 | `commands/hooks.py` | `hooks list` / `hooks inspect` |
 
-Slash-Befehle des Chats liegen außerhalb: `agent_system/chat_commands.py`
-(eingebaut) und `agent_system/plugin_commands.py` (von Plugins deklariert,
-laufen immer über `dispatch_tool_call`).
+The chat's slash commands live elsewhere: `agent_system/chat_commands.py`
+(built in) and `agent_system/plugin_commands.py` (declared by plugins,
+always run via `dispatch_tool_call`).
 
 ---
 
-## 6. Ausgabe
+## 6. Output
 
-- `--color auto` (Default) schreibt ANSI nur, wo es gerendert wird;
-  `always`/`ansi` erzwingen es, `never`/`text` schalten es ab, `html` für
-  eingebettete Anzeige. Windows-Konsolen bekommen Encoding-Fehler ersetzt,
-  Pipes UTF-8.
-- `--format table|json` gibt es pro Subcommand (`plugins`, `mcp`-Aktionen,
+- `--color auto` (default) writes ANSI only where it is rendered;
+  `always`/`ansi` force it, `never`/`text` switch it off, `html` for
+  embedded display. Windows consoles get encoding errors replaced,
+  pipes get UTF-8.
+- `--format table|json` exists per subcommand (`plugins`, `mcp` actions,
   `hooks`, `reload`).
-- Exit-Codes: 0 Erfolg, 1 Fehler (auch fachliche von `plugins`, `mcp`,
-  `hooks`, `reload`, `users`), 2 falscher Aufruf. Fehler, die der Agent
-  während eines Laufs meldet (`error`-Events), ändern den Code nicht. Die `_mcp_*`-Helfer und
-  `handle_hooks_command` melden dafür Erfolg als `bool`.
+- Exit codes: 0 success, 1 error (including functional ones from `plugins`, `mcp`,
+  `hooks`, `reload`, `users`), 2 invalid invocation. Errors the agent
+  reports during a run (`error` events) do not change the code. The `_mcp_*` helpers and
+  `handle_hooks_command` report success as `bool` for this.
 
 ---
 
 ## 7. Tests
 
-`tests/cli/` — gezielt laufen lassen, die Gruppe dauert gut eine Minute.
-Einstiege: `test_cli_subcommands.py` (hooks, users, entfernte Befehle),
+`tests/cli/` — run them in a targeted way, the group takes a good minute.
+Entry points: `test_cli_subcommands.py` (hooks, users, removed commands),
 `test_cli_mcp.py`, `test_cli_plugins_*.py`, `test_cli_event_loop.py`
-(ein Loop), `test_cli_session_resume_end_to_end.py`, `test_cli_chat.py`.
+(one loop), `test_cli_session_resume_end_to_end.py`, `test_cli_chat.py`.
 
 ---
 
-## 8. Verwandte Dokumente
+## 8. Related Documents
 
-- [CLI Reference](cli_reference.md) — alle Befehle und Optionen
+- [CLI Reference](cli_reference.md) — all commands and options
 - [System Architecture](_arch_agent_system_architecture.md)
-- [App Architecture](_arch_app_architecture.md) — die API, die `reload` anspricht
+- [App Architecture](_arch_app_architecture.md) — the API that `reload` calls
 - [Plugin Architecture](_arch_plugin_architecture.md), [Plugin Hooks](plugin_hooks.md)
 - [Session Management](session_management.md)
 - [Tool server configuration](server_configuration.md)

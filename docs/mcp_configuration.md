@@ -87,8 +87,8 @@ owns a task, see `src/plugins/mcp_client/README.md`.
 
 ## CLI Management
 
-Die CLI liest nur. Jeder Aufruf verbindet die eingeschalteten Server und trennt
-danach wieder; eingeschaltet und gefiltert wird in dieser Datei.
+The CLI is read-only. Each call connects the enabled servers and disconnects
+afterwards; enabling and filtering happen in this file.
 
 ```bash
 # List all configured servers
@@ -169,9 +169,9 @@ tools:
   blocked: ["delete", "admin"]   # These tools blocked
 ```
 
-`blocked` ist die einzige Liste, die bei einem externen Server wirkt:
-`mcp_client` verweigert den Aufruf. Ein `allowed` am Server wertet niemand aus —
-welche Tools ein Agent aufrufen darf, regelt dessen `agent_config.tools.allowed`.
+`blocked` is the only list that takes effect on an external server:
+`mcp_client` refuses the call. Nobody evaluates an `allowed` on the server —
+which tools an agent may call is governed by its `agent_config.tools.allowed`.
 
 ### Resources Filtering
 

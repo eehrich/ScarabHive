@@ -5,9 +5,9 @@ description: How to build or extend a ScarabHive plugin — plugin types (tool s
 
 # Building plugins
 
-Talk to the user in German; everything in code, tool descriptions and commit
-messages is English. Agent prompts are English outside `src/plugins_writer/`,
-German inside it.
+Everything in code, tool descriptions and commit messages is English. Agent prompts
+are English too, unless a further plugin root (`src/plugins_<name>/`) documents an
+exception of its own.
 
 **Every statement here was checked against the code.** Long form: `docs/plugin_authoring.md`, `docs/plugin_hooks.md`,
 `docs/_arch_plugin_architecture.md`. **When anything disagrees, the code wins.**
@@ -113,11 +113,11 @@ cfg = getattr(server_config, "config", None) or {}              # nested config:
   restarts.**
 - If a config **model** changes (`src/agent_system/config/models.py`), update the
   JSON schema under `schemas/` too.
-- **Datenpfade nie selbst buchstabieren.** Das Datenverzeichnis ist verschiebbar
-  (`AGENT_DATA_DIR`, sonst `paths.data_dir`). Default: `data_path("plugin", "x.db")`
-  aus `agent_system.paths`, zur Laufzeit aufgerufen; ein Wert aus Umgebung, CLI oder
-  DB-Zeile: `resolve_data_path(wert)`. `plugins.yaml`-Werte und `schema.yaml`-Defaults
-  unter `data/` verschiebt der Loader. Wächter: `tests/config/test_no_hardcoded_data_dir.py`.
+- **Never spell out a data path yourself.** The data directory can move
+  (`AGENT_DATA_DIR`, else `paths.data_dir`). Default: `data_path("plugin", "x.db")`
+  from `agent_system.paths`, called at run time; a value from the environment, the CLI or
+  a DB row: `resolve_data_path(value)`. The loader moves `plugins.yaml` values and
+  `schema.yaml` defaults under `data/` along. Guard: `tests/config/test_no_hardcoded_data_dir.py`.
 
 ## Rules that have already caused damage
 
@@ -224,4 +224,4 @@ the repo (dead links, unknown commands).
 - CLI (`cli.py`, `__main__.py`, pyproject script) is **optional**, despite the docs.
 - Web UI/panel: skill `panel-authoring`. Slash commands: `commands:` in
   schema.yaml → [tools.md](references/tools.md).
-- Writer plugins (`src/plugins_writer/`): load the `writer` skill first.
+- A plugin in a further root (`src/plugins_<name>/`): load that root's own skill first, if it has one.

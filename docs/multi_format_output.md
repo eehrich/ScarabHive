@@ -1,77 +1,74 @@
-# Wie eine Antwort angezeigt wird
+# How an answer is displayed
 
-Agenten antworten in Markdown. Gespeichert, gestreamt und über die API
-ausgeliefert wird genau dieser Text; **dargestellt** wird er erst dort, wo ihn
-jemand liest. Ein Plugin oder Hook dafür gibt es nicht mehr: der
-`markdown_formatter` und der Hook-Punkt `format_output` sind am 30.09.2026
-entfallen. Bis dahin renderte der Hook im Server nach HTML — pro Agent
-eingeschaltet, sodass die meisten Agenten im Chat als Rohtext erschienen, und
-wo er lief, bekamen auch API-Clients und aufrufende Agenten HTML statt Markdown
-(B57, 05.08.2026: zwölf Befunde stumm verloren; der Schutz dafür steht noch in
-`core/agent_caller.py`).
+Agents answer in Markdown. Exactly this text is stored, streamed and delivered
+through the API; it is only **displayed** where someone reads it. A plugin or
+hook for this no longer exists: the `markdown_formatter` and the hook point
+`format_output` were removed on 30.09.2026. Until then the hook rendered to HTML
+in the server — enabled per agent, so most agents appeared in the chat as raw
+text, and wherever it ran, API clients and calling agents also got HTML instead
+of Markdown (B57, 05.08.2026: twelve findings silently lost; the protection for
+that is still in `core/agent_caller.py`).
 
-## Web-Chat
+## Web chat
 
-`static/js/chat_module.js` (`formatContent`) zeichnet jede Antwort mit
+`static/js/chat_module.js` (`formatContent`) draws every answer with
 markdown-it (`static/vendor/markdown-it/`):
 
-- **Roh-HTML bleibt Text** (`html: false`): eine Antwort trägt, was ein Tool
-  geholt hat. `<script>`, `<img onerror=…>`, `<b>` erscheinen als Zeichen.
-  Einzige Ausnahme ist `<br>`: in einer Tabellenzelle der einzige Zeilenumbruch,
-  den Markdown hat, und Modelle schreiben ihn dort (eigene Inline-Regel).
-- **Keine Bilder**: ein fremdes Bild ist eine Anfrage an eine Adresse, die der
-  Text gewählt hat — so leitet eine präparierte Seite Daten aus.
-- **Links** nur `http`, `https`, `mailto` oder relativ (ohne Schema, wie beim
-  Sanitizer im Server); sie öffnen in einem neuen Tab
-  (`rel="noopener noreferrer"`), nicht an der Stelle des Chats.
-- **Ein einfacher Zeilenumbruch bleibt einer** (`breaks: true`), wie das
-  Modell ihn gemeint hat.
-- **JSON** (strukturierte Ausgabe, oder ein Prompt verlangt JSON) erscheint
-  als Code-Block, so wie es ist.
-- Eine Antwort, die ganz in einem ```` ```markdown ````-Zaun steckt, ist die
-  Antwort, nicht ein Beispiel davon: der Zaun fällt weg.
-- Code-Blöcke färbt Prism (`language-<sprache>`).
+- **Raw HTML stays text** (`html: false`): an answer carries what a tool
+  fetched. `<script>`, `<img onerror=…>`, `<b>` appear as characters. The only
+  exception is `<br>`: in a table cell the only line break Markdown has, and
+  models write it there (own inline rule).
+- **No images**: a foreign image is a request to an address the text chose —
+  that is how a prepared page exfiltrates data.
+- **Links** only `http`, `https`, `mailto` or relative (without scheme, as with
+  the sanitizer in the server); they open in a new tab
+  (`rel="noopener noreferrer"`), not in place of the chat.
+- **A single line break stays one** (`breaks: true`), as the model meant it.
+- **JSON** (structured output, or a prompt demands JSON) appears as a code
+  block, as it is.
+- An answer that is entirely inside a ```` ```markdown ```` fence is the
+  answer, not an example of one: the fence is dropped.
+- Code blocks are colored by Prism (`language-<language>`).
 
-Während des Streamens zeigt der Chat den Text roh; die fertige Antwort
-(`thinking_complete`, `final`, Verlauf) wird gezeichnet.
+While streaming, the chat shows the text raw; the finished answer
+(`thinking_complete`, `final`, history) is drawn.
 
 ## Terminal
 
-`agent-cli`, `agent-run` und der Chat im Terminal geben die Antwort über
-`cli_utils/common.show_answer` aus, gesteuert von `--color`:
+`agent-cli`, `agent-run` and the chat in the terminal output the answer through
+`cli_utils/common.show_answer`, controlled by `--color`:
 
-| `--color` | Ausgabe |
+| `--color` | Output |
 |---|---|
-| `auto` (Standard) | Markdown mit Farben (Rich), wenn stdout ein Terminal ist; sonst wie `text` |
-| `always`, `ansi` | Markdown mit Farben, immer |
-| `html` | HTML aus `utils/markdown_render.markdown_to_html` |
-| `never`, `text` — und `auto` unter `NO_COLOR` oder `TERM=dumb` | der Text, wie das Modell ihn schrieb |
+| `auto` (default) | Markdown with colors (Rich) if stdout is a terminal; otherwise like `text` |
+| `always`, `ansi` | Markdown with colors, always |
+| `html` | HTML from `utils/markdown_render.markdown_to_html` |
+| `never`, `text` — and `auto` under `NO_COLOR` or `TERM=dumb` | the text as the model wrote it |
 
-`always`/`ansi` schreiben ANSI-Codes auch in eine Pipe (unter Windows auch dort,
-wo Rich sonst die Konsolen-API nähme) und auch unter `NO_COLOR` oder `TERM=dumb`:
-ein ausdrückliches `--color` gewinnt. JSON wird immer so gedruckt, wie es ist. Ein
-einfacher Zeilenumbruch bleibt auch hier einer, `<br>` ebenso (auch allein auf
-einer Zeile: HTML-Blöcke gibt es hier wie im Chat nicht), und anderes HTML bleibt
-als Text stehen — Rich allein würde es verschlucken, und mit ihm Platzhalter wie
-`--agent <name>`. Bilder und Links wie im Chat: kein Bild, Links nur `http`,
-`https`, `mailto` oder relativ (ein Terminal macht sie anklickbar); unter
-`TERM=dumb` steht ein Link als „Text (URL)", ein Autolink nur einmal, wenn sein
-Text seine Adresse ist.
+`always`/`ansi` write ANSI codes even into a pipe (on Windows also where Rich
+would otherwise take the console API) and even under `NO_COLOR` or `TERM=dumb`:
+an explicit `--color` wins. JSON is always printed as it is. A single line
+break stays one here too, `<br>` likewise (even alone on a line: there are no
+HTML blocks here, as in the chat), and other HTML remains as text — Rich alone
+would swallow it, and with it placeholders like `--agent <name>`. Images and
+links as in the chat: no image, links only `http`, `https`, `mailto` or
+relative (a terminal makes them clickable); under `TERM=dumb` a link appears as
+"text (URL)", an autolink only once if its text is its address.
 
-## Server-Renderer
+## Server renderer
 
-`utils/markdown_render.markdown_to_html` (Python-Markdown mit eigenem
-Allowlist-Sanitizer) bleibt für die Seiten, die auf dem Server rendern: das
-Debate-Forum-Panel, den Hilfe-Viewer (AmigaGuide-Markdown-Knoten) und
+`utils/markdown_render.markdown_to_html` (Python-Markdown with its own
+allowlist sanitizer) remains for the pages that render on the server: the
+debate forum panel, the help viewer (AmigaGuide Markdown nodes) and
 `--color html`.
 
 ## Tests
 
-- `tests/ui/shell_tests.html` — „an answer is drawn from its Markdown…“: was
-  das Modell schrieb, erscheint; Roh-HTML, Skripte, Bilder und
-  `javascript:`-Links nicht; JSON bleibt JSON.
-- `tests/app/test_app_sub_run_answers.py` — Stream und `POST /run` liefern jede
-  Antwort als den Text des Modells, auch die eines Sub-Agenten.
+- `tests/ui/shell_tests.html` — "an answer is drawn from its Markdown…": what
+  the model wrote appears; raw HTML, scripts, images and `javascript:` links do
+  not; JSON stays JSON.
+- `tests/app/test_app_sub_run_answers.py` — stream and `POST /run` deliver every
+  answer as the model's text, including that of a sub-agent.
 - `tests/agent/test_agent_structured_output.py` —
   `test_an_answer_leaves_the_run_as_the_model_wrote_it`.
-- `tests/cli/test_cli_show_answer.py` — die Ausgabe je `--color`.
+- `tests/cli/test_cli_show_answer.py` — the output per `--color`.

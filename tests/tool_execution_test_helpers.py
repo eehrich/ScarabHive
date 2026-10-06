@@ -1,8 +1,7 @@
 """Shared test helper: collect ToolExecutionManager.execute_tools_streaming output.
 
 Replaces the removed production convenience wrapper
-``ToolExecutionManager.execute_tools`` (test-only production code — Review G5,
-docs/agent_package_architecture_review.md). Production only ever consumes the
+``ToolExecutionManager.execute_tools`` (test-only production code). Production only ever consumes the
 streaming generator; tests that just want the final tuple use this collector.
 
 Importable from any test dir via ``pythonpath = src tests`` (pytest.ini).

@@ -1,7 +1,7 @@
 """coding_cli tool server: Claude Code as a coding tool for ScarabHive agents.
 
 A run is one headless Claude Code process in a fresh git worktree of an
-operator-listed repository (docs/coding_cli_plugin_konzept.md §3-§6):
+operator-listed repository:
 
 * locked down: --restricted, no MCP servers but those the operator names per
   workdir, an explicit tool list, file tools confined to the worktree, a shell

@@ -8,7 +8,7 @@
 # auftauchen kann, wenn P sie vorher archiviert hat.
 #
 # Nicht produktiv nutzen: max_messages=24 bricht den Prompt-Cache-Präfix
-# alle ~12 Nachrichten (docs/prompt_cache_design.md §3.5).
+# alle ~12 Nachrichten.
 plugins:
   servers:
     context_prune_test_agent:

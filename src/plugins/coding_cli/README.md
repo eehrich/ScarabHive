@@ -25,7 +25,7 @@ background and wakes the session that started it.
 
 Configured in the plugin's own `agents/coding_cli.yaml` (workdirs with `exclude`, `mcp_servers` and `web`,
 `allowed_users`, `allowed_commands`, limits such as `max_task_chars`); an agent gets the tools with
-`+coding_cli/*`. Concept and measurements: `docs/coding_cli_plugin_konzept.md`.
+`+coding_cli/*`.
 
 The full manual -- how a run goes, what a run may do, the tools and their answers, the settings and the known gaps --
 is the plugin's guide, `coding_cli.guide`, in the Help panel.

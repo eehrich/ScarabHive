@@ -115,8 +115,6 @@ Allowlist patterns are `instance/*`, `instance`, `instance/<full tool name>`
 (the rendered name including the instance prefix, e.g.
 `web_scraper/web_scraper_fetch`) and fnmatch globs.
 
-See [Configurable Agents Guide](configurable_agents.md) for complete documentation.
-
 ---
 
 ## Quick Start: Your First Plugin
@@ -807,8 +805,6 @@ Rules worth knowing before you add one:
   typo in `tool:` or `argument:` — without it, the command is filtered out by
   authorization and simply never appears.
 
-The full rationale (why these are actions, not prompt expansion like Claude
-Code's plugin commands) is in `docs/plugin_commands_design.md`.
 
 ### Schema Best Practices
 
@@ -831,7 +827,7 @@ The server is the core of your plugin. It handles tool routing, validation, and 
 3. **Tool Methods**: Tool `{name}_x` → method `x`; tool exactly `{name}` → `execute`; any other tool name → the method of the same name
 4. **Type Hints**: Use modern Python type hints (`| None` instead of `Optional[]`)
 5. **Configuration**: Extract from `server_config` (plugin-specific) and `system_config` (system-wide)
-6. **Datenpfade**: Das Datenverzeichnis ist konfigurierbar (`AGENT_DATA_DIR`, sonst `paths.data_dir` in `config/config.yaml`). Einen Default nie als `"data/..."` oder `ROOT / "data" / ...` schreiben, sondern `data_path("mein_plugin", "x.db")` aus `agent_system.paths` — erst zur Laufzeit aufrufen, nicht auf Modulebene. Einen Wert aus Umgebung, Kommandozeile oder einer Datenbankzeile mit `resolve_data_path(wert)` auflösen. Werte aus `plugins.yaml` und die Defaults aus `schema.yaml` verschiebt der Loader selbst. Der Wächter `tests/config/test_no_hardcoded_data_dir.py` schlägt bei einem neuen Literal an.
+6. **Data paths**: the data directory is configurable (`AGENT_DATA_DIR`, else `paths.data_dir` in `config/config.yaml`). Never write a default as `"data/..."` or `ROOT / "data" / ...`; use `data_path("my_plugin", "x.db")` from `agent_system.paths`, called at run time, not at module level. Resolve a value from the environment, the command line or a database row with `resolve_data_path(value)`. The loader moves values from `plugins.yaml` and the defaults from `schema.yaml` itself. The guard `tests/config/test_no_hardcoded_data_dir.py` fires on a new literal.
 
 ### Method 1: Schema-Based Server (Recommended)
 
@@ -1557,7 +1553,7 @@ An agent instance is a server entry (see the example under
   `config/`, to `data/` itself (the user store and every user's sessions live there;
   a folder of its own below it, such as `data/workspace`, is fine) or write access to
   `src/` (the code that runs). Details:
-  [agent_visibility.md](agent_visibility.md#wer-darf-einen-agent-ausführen-metadatamin_role).
+  [agent_visibility.md](agent_visibility.md#who-may-run-an-agent-metadatamin_role).
   - **No identity:** a run without a registered request owner or session user is
     judged as `anonymous` -- refused unless anonymous access is enabled with a
     sufficient role; the SAM and the agent's own tools refuse it outright. Unknown
@@ -2716,15 +2712,15 @@ PLUGIN_FACTORY = MyPluginServer
 - **Rate limiting**: Implement rate limiting for external APIs
 - **Secrets**: Use environment variables, never hardcode credentials
 - **Sandboxing**: Consider process isolation for untrusted plugins
-- **Schlüssel im Pfad**: Trägt eine Route einen Schlüssel in ihrem Pfad (wer die URL hat, darf sie
-  benutzen — die Callback-URLs von `stategraph`), steht er direkt hinter `callback/`:
-  `/plugins/<instanz>/callback/<schlüssel>`, oder im Parameter `token` derselben Route:
-  `/plugins/<instanz>/callback?token=<schlüssel>` — die Query-Form braucht, wer von einem anderen
-  Rechner erreichbar sein soll (`network.remote_paths` lässt nur exakte Pfade durch). Nur diese
-  beiden Stellen maskieren die Logs (App-Log, Access-Log, `security.log`, Security-Audit-Panel,
-  Profiling; die letzten drei führen die Query gar nicht), auch prozentkodiert und im Traceback
-  (`agent_system/utils/logging.py`, `loggable_path`). Ein Schlüssel an anderer Stelle steht im
-  Klartext darin.
+- **Keys in the path**: if a route carries a key in its path (whoever has the URL may use it --
+  the callback URLs of `stategraph`), the key stands directly after `callback/`:
+  `/plugins/<instance>/callback/<key>`, or in the `token` parameter of the same route:
+  `/plugins/<instance>/callback?token=<key>` -- the query form is needed by whoever has to be
+  reachable from another machine (`network.remote_paths` lets only exact paths through). Only these
+  two places are masked in the logs (app log, access log, `security.log`, security audit panel,
+  profiling; the last three do not record the query at all), percent-encoded and in tracebacks too
+  (`agent_system/utils/logging.py`, `loggable_path`). A key anywhere else appears there in
+  plain text.
 
 ## Troubleshooting
 
