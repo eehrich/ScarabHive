@@ -583,7 +583,7 @@ class TestTheByteLimit:
 
 
 class TestLayerThreeCutsDeep:
-    """docs/prompt_cache_design.md par. 3.5: rarely and deep, down to the target."""
+    """Rarely and deep, down to the target."""
 
     @pytest.mark.asyncio
     async def test_an_agent_run_is_cut_down_to_target(self, tmp_path):

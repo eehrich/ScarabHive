@@ -1,169 +1,169 @@
-# Hilfe im AmigaGuide-Format
+# Help in AmigaGuide format
 
-Stand 28.09.2026. Das Help-Panel zeigt das ScarabHive-Handbuch und die Doku
-jedes Plugins in einem AmigaGuide-Viewer. Das Format ist das Hypertext-Hilfe-
-format von AmigaOS, **erweitert** um das, was Markdown kann -- in AmigaGuides
-eigener Syntax. Nutzer-Entscheid 28.09.2026: das Format wächst, es wechselt nicht
-auf Markdown (ein `@markdown`-Modus war kurz gebaut und ist wieder raus). Markdown
-gerendert wird nur, was eine Markdown-Datei *ist*: README, `docs/*.md`, `@embed x.md`.
+As of 2026-09-28. The help panel shows the ScarabHive manual and the docs of
+each plugin in an AmigaGuide viewer. The format is AmigaOS's hypertext help
+format, **extended** by what Markdown can do -- in AmigaGuide's
+own syntax. User decision 2026-09-28: the format grows, it does not switch
+to Markdown (a `@markdown` mode was briefly built and has been removed again). Only what a Markdown file
+*is* is rendered as Markdown: README, `docs/*.md`, `@embed x.md`.
 
-## Wo was liegt
+## Where things are
 
-| Teil | Datei |
+| Part | File |
 |---|---|
-| Parser, Layout, Markdown-Umschreiben | `src/agent_system/ui/amigaguide.py` |
-| Bibliothek (welche Guides es gibt), Routen | `src/agent_system/ui/help.py` |
-| Das Handbuch | `docs/guides/scarabhive.guide` (jede `*.guide` dort gehört dazu; Id = Dateiname; gefunden wie `templates/` und `static/`) |
-| Der Viewer (Kit-Element `<pk-guide>`) | `static/kit/guide.js`, Stile am Ende von `static/kit/kit.css` |
-| Das Panel | `templates/panels/help.html` (nur `<pk-guide address search>`), Kern-Panel `help` in `ui/catalog.py` |
+| Parser, layout, Markdown rewriting | `src/agent_system/ui/amigaguide.py` |
+| Library (which guides exist), routes | `src/agent_system/ui/help.py` |
+| The manual | `docs/guides/scarabhive.guide` (every `*.guide` there belongs to it; id = file name; found like `templates/` and `static/`) |
+| The viewer (kit element `<pk-guide>`) | `static/kit/guide.js`, styles at the end of `static/kit/kit.css` |
+| The panel | `templates/panels/help.html` (only `<pk-guide address search>`), core panel `help` in `ui/catalog.py` |
 | Tests | `tests/ui/test_help.py`, `tests/ui/test_help_panel_browser.py` (+ `help_panel_tests.html`, `help_embed_probe.html`) |
 
-## Woher die Guides kommen
+## Where the guides come from
 
-1. Das Handbuch aus `docs/guides/`.
-2. Ein Plugin mit eigener Guide: `<plugin-ordner>/<ordnername>.guide`, Id = Ordnername
-   (= Plugin-Typ). Link von außen: `sub_agent_manager/main`.
-3. Ein Plugin ohne Guide, aber mit `README.md`: die README, als Markdown gerendert.
-   Ihre Links auf Doku-Dateien öffnen im Viewer als Datei-Seite (siehe Sicherheit).
-4. `plugins`: erzeugt, eine Tabelle aller Plugins aus `plugins.plugin_dirs`.
+1. The manual from `docs/guides/`.
+2. A plugin with its own guide: `<plugin-folder>/<folder-name>.guide`, id = folder name
+   (= plugin type). Link from outside: `sub_agent_manager/main`.
+3. A plugin without a guide but with a `README.md`: the README, rendered as Markdown.
+   Its links to doc files open in the viewer as a file page (see Security).
+4. `plugins`: generated, a table of all plugins from `plugins.plugin_dirs`.
 
-Eine Guide wird neu gelesen, sobald sie, eine mit `@embed` eingebettete Datei (auch
-eine, die beim Lesen noch fehlte) oder -- bei einer README-Seite -- die `plugin.toml`
-sich ändert (mtime + Größe, gestempelt vor dem Lesen). Kein Neustart.
+A guide is re-read as soon as it, a file embedded with `@embed` (even
+one that was still missing at read time) or -- for a README page -- the `plugin.toml`
+changes (mtime + size, stamped before reading). No restart.
 
 ## Format
 
-AmigaOS-3.1-Teilmenge: `@database @author @(c) @$VER: @node @endnode @title @toc
+AmigaOS 3.1 subset: `@database @author @(c) @$VER: @node @endnode @title @toc
 @prev @next @index @help @wordwrap @smartwrap @remark @embed`, inline `b ub i ui u uu
-plain fg bg jleft jcenter jright pard line par tab code body amigaguide`, Buttons
-`@{"label" link node [zeile]}` (auch `guide/node`, `x.guide/node`, `HELP:x.guide/node`).
-`system`, `rx`, `rxs`, `beep`, `close`, `quit` werden als tote Buttons gezeigt, nie
-ausgeführt. Escapes `\@`, `\\`.
+plain fg bg jleft jcenter jright pard line par tab code body amigaguide`, buttons
+`@{"label" link node [line]}` (also `guide/node`, `x.guide/node`, `HELP:x.guide/node`).
+`system`, `rx`, `rxs`, `beep`, `close`, `quit` are shown as dead buttons, never
+executed. Escapes `\@`, `\\`.
 
-Erweiterungen (was Markdown hat, in AmigaGuide-Syntax):
+Extensions (what Markdown has, in AmigaGuide syntax):
 
-| Schreibweise | Wirkung |
+| Notation | Effect |
 |---|---|
-| `@{h1}Titel`, `@{h2}`, `@{h3}` | Überschrift, endet mit ihrer Zeile |
-| `@{bullet [ebene]}`, `@{number [ebene]}` | Listenpunkt; Nummern zählen selbst -- über Leerzeilen, Code-Blöcke und Tabellen hinweg; ein normaler Absatz, eine Überschrift, ein Zitat, eine Linie oder ein Bullet derselben Ebene beginnt neu |
-| `@{quote}` | Zitat-Absatz |
-| `@{rule}` | Trennlinie |
-| `@{tt}`..`@{utt}`, `@{s}`..`@{us}` | Inline-Code, durchgestrichen (wie `b`/`ub`) |
-| `@{code sprache}` .. `@{body}` | Code-Block, eingefärbt (siehe unten); `@{code}` ohne Sprache bleibt AmigaOS (Zeilen wie geschrieben) |
-| `@{table}` .. `@{body}` | Tabelle: eine Zeile pro Reihe, Zellen mit `\|`, erste Reihe = Kopf; `\|` ist ein Pipe; eine Trennzeile (`---`, drei Striche je Zelle) einmal, direkt unter dem Kopf; Umbruch, Block oder Ausrichtung in einer Zelle ist ein Fehler, kein Verlust |
-| `@{"label" link https://…}` | Web-Link (nur http/https/mailto), neuer Tab |
-| `@{"label" link docs/x.md}` | Doku-Datei als Seite (wie auf dem Amiga: ein Link darf eine Datei nennen) |
-| `@{image datei.png "alt"}` | Bild aus dem Guide-Ordner |
-| `@embed datei` | Markdown gerendert, alles andere als Code-Block in der Sprache der Endung |
+| `@{h1}Title`, `@{h2}`, `@{h3}` | Heading, ends with its line |
+| `@{bullet [level]}`, `@{number [level]}` | List item; numbers count on their own -- across blank lines, code blocks and tables; a normal paragraph, a heading, a quote, a rule or a bullet of the same level starts over |
+| `@{quote}` | Quote paragraph |
+| `@{rule}` | Horizontal rule |
+| `@{tt}`..`@{utt}`, `@{s}`..`@{us}` | Inline code, strikethrough (like `b`/`ub`) |
+| `@{code language}` .. `@{body}` | Code block, syntax-highlighted (see below); `@{code}` without a language stays AmigaOS (lines as written) |
+| `@{table}` .. `@{body}` | Table: one line per row, cells separated by `\|`, first row = header; `\|` is a pipe; a separator line (`---`, three dashes per cell) once, directly under the header; a line break, block or alignment in a cell is an error, not a loss |
+| `@{"label" link https://…}` | Web link (only http/https/mailto), new tab |
+| `@{"label" link docs/x.md}` | Doc file as a page (as on the Amiga: a link may name a file) |
+| `@{image file.png "alt"}` | Image from the guide folder |
+| `@embed file` | Markdown rendered, everything else as a code block in the language of the extension |
 
-Was der Leser nicht einordnen kann, steht unter der Seite (`problems`), statt zu
-verschwinden: ein `@{` ohne schließendes `}` (als Text gezeigt; die Befehle danach
-wirken weiter), ein Block-Befehl in einem Code-Block, ein toter Link.
+What the reader cannot place is shown below the page (`problems`) instead of
+disappearing: a `@{` without a closing `}` (shown as text; the commands after it
+keep working), a block command inside a code block, a dead link.
 
-Syntaxfarben: `<pk-guide>` lädt beim ersten Code-Block das Prism des Chats
-(`static/vendor/prism/prism.js`, `data-manual`: es färbt nur, was es bekommt) und färbt
-jeden Block, dessen Sprache es kennt (python, yaml, json, toml, bash, sql, js/ts, css,
-html/xml, diff, markdown, c/cpp, java) -- in Guides wie in gerendertem Markdown. Ein
-Block mit einem Button, Bild oder Textattribut darin (auch einem, das von vorher noch
-eingeschaltet ist, etwa ein offenes `@{b}`) bleibt ungefärbt: Prism schreibt das Markup
-neu, der Button wäre weg. Gefärbt werden höchstens 100 000 Zeichen je Seite; ein Block,
-der nicht mehr hineinpasst, bleibt ungefärbt (512 KB JSON kosteten 230 ms und 4,5 MB
-Markup bei jedem Öffnen). Schlägt das Laden von Prism fehl, fragt die
-nächste Seite neu. Das `tabindex`, das Prism an den Block hängt, nimmt der Viewer wieder
-weg: sonst wäre nur jeder gefärbte Block ein Tab-Halt. Farben: Kit-Tokens, dieselbe
-Palette wie im Chat.
+Syntax colours: on the first code block `<pk-guide>` loads the chat's Prism
+(`static/vendor/prism/prism.js`, `data-manual`: it only colours what it is given) and colours
+every block whose language it knows (python, yaml, json, toml, bash, sql, js/ts, css,
+html/xml, diff, markdown, c/cpp, java) -- in guides as in rendered Markdown. A
+block with a button, image or text attribute inside it (even one that is still
+switched on from before, such as an open `@{b}`) stays uncoloured: Prism rewrites the markup,
+the button would be gone. At most 100,000 characters per page are coloured; a block
+that no longer fits stays uncoloured (512 KB of JSON cost 230 ms and 4.5 MB of
+markup on every open). If loading Prism fails, the
+next page asks again. The viewer removes the `tabindex` that Prism attaches to the block
+again: otherwise only every coloured block would be a tab stop. Colours: kit tokens, the same
+palette as in the chat.
 
-Markdown-Dateien rendert `markdown_to_html` (der sanitisierte Server-Renderer; der Chat
-zeichnet seine Antworten im Browser) mit `line_breaks=False`: ein Zeilenumbruch ist ein
-Leerzeichen, die Listen-Rettung für Antworten bleibt aus, und eine Liste direkt unter einer Absatzzeile bekommt die Leerzeile,
-die Python-Markdown braucht (wie GitHub).
+Markdown files are rendered by `markdown_to_html` (the sanitized server renderer; the chat
+draws its answers in the browser) with `line_breaks=False`: a line break is a
+space, the list rescue for answers stays off, and a list directly under a paragraph line gets the blank line
+that Python-Markdown needs (like GitHub).
 
-## Sicherheit (bewusste Entscheidungen)
+## Security (deliberate decisions)
 
-- Jeder Dateizugriff läuft über `inside(ordner, relativ)`: absolute, Laufwerks- und
-  UNC-Pfade werden abgelehnt, **bevor** das Dateisystem gefragt wird (`//host/x`
-  aufzulösen ist unter Windows schon ein SMB-Zugriff), danach `resolve()` +
-  `is_relative_to()`; NUL und überlange Pfade ergeben None statt eines 500ers.
-- Die Asset-Route liefert nur Bildtypen (`png jpg gif webp svg`), nur oben im Ordner
-  oder unter `docs/`, mit `Content-Security-Policy: default-src 'none'; …; sandbox` --
-  ein SVG, direkt geöffnet, führt nichts aus.
-- Datei-Seiten (`document()`) nur für `.md`/`.markdown`/`.txt`, und nur die `README.md`
-  oben im Ordner oder Dateien unter `docs/`. Das Review hat gemessen, was ohne diese
-  Grenze jeder angemeldete Nutzer las: Agent-Prompts (`agents/prompts/*.md`),
-  gitignorierte Arbeitsdateien, Doku admin-only Plugins. Ein Plugin-Ordner enthält
-  auch Konfiguration (n8n: eine getrackte `secrets.env`).
-- Und nur, was die Doku **verlinkt** (`linked_document()`): ein Button eines Knotens,
-  ein Link der README, ein Link einer so erreichten Datei-Seite. Das dritte Review fand
-  in `docs/` Unverlinktes, das nicht für jeden Leser ist (ein Betriebs-Runbook mit
-  Host-IP und `root@`-Befehl). Die Links kommen aus der gerenderten Seite selbst
-  (`data-file`): was der Viewer als Link zeigt, öffnet sich, sonst nichts -- ein Pfad
-  in einem Code-Block schließt nichts auf.
-- Eine Datei über 512 KB wird genannt, nicht gerendert: 2,8 MB Markdown hielten den
-  Lock des Renderers vier Sekunden (Debatten-Forum und Formatter-Hook warteten mit).
-- Eine unlesbare Datei (Speichern eines Editors genau dazwischen, Sperre) kostet ihre
-  eigene Guide, nicht alle Routen.
-- Entfernte Bilder werden nie geladen (der Alt-Text steht dafür) -- dieselbe Linie wie
-  der Chat-Sanitizer.
-- Markdown-HTML kommt sanitisiert vom Server; das Umschreiben von `a`/`img` baut jedes
-  Attribut neu und escapet es.
-- Routen: `/api/help/*` und `/ui/panels/help` fallen unter die Default-Policy
-  `require_auth`; eigene Regeln braucht es nicht.
+- Every file access goes through `inside(folder, relative)`: absolute, drive and
+  UNC paths are rejected **before** the file system is asked (resolving `//host/x`
+  is already an SMB access on Windows), then `resolve()` +
+  `is_relative_to()`; NUL and overlong paths yield None instead of a 500.
+- The asset route serves only image types (`png jpg gif webp svg`), only at the top of the folder
+  or under `docs/`, with `Content-Security-Policy: default-src 'none'; …; sandbox` --
+  an SVG opened directly executes nothing.
+- File pages (`document()`) only for `.md`/`.markdown`/`.txt`, and only the `README.md`
+  at the top of the folder or files under `docs/`. The review measured what every logged-in
+  user read without this limit: agent prompts (`agents/prompts/*.md`),
+  gitignored working files, docs of admin-only plugins. A plugin folder also contains
+  configuration (n8n: a tracked `secrets.env`).
+- And only what the docs **link** (`linked_document()`): a button of a node,
+  a link of the README, a link of a file page reached that way. The third review found
+  unlinked material in `docs/` that is not for every reader (an operations runbook with
+  host IP and a `root@` command). The links come from the rendered page itself
+  (`data-file`): what the viewer shows as a link opens, nothing else -- a path
+  in a code block unlocks nothing.
+- A file over 512 KB is named, not rendered: 2.8 MB of Markdown held the
+  renderer's lock for four seconds (debate forum and formatter hook waited along).
+- An unreadable file (an editor saving at exactly that moment, a lock) costs its
+  own guide, not all routes.
+- Remote images are never loaded (the alt text stands in for them) -- the same line as
+  the chat sanitizer.
+- Markdown HTML comes sanitized from the server; the rewriting of `a`/`img` rebuilds every
+  attribute and escapes it.
+- Routes: `/api/help/*` and `/ui/panels/help` fall under the default policy
+  `require_auth`; no rules of their own are needed.
 
-## Hilfe-Knöpfe in der Shell
+## Help buttons in the shell
 
-- Oben rechts im Kopf (`#helpButton`, `templates/index.html`): öffnet das Help-Panel
-  mit dem Handbuch. Zeigt es schon das Handbuch (eine Seite davon, eine Suche), holt der
-  Knopf es nur nach vorn -- Seite und Retrace bleiben; auf einer Plugin-Guide oder der
-  Plugin-Liste fängt es wieder beim Handbuch an (`workspace.openManual()`).
-- Ein Plugin-Panel mit Guide oder README: ein `?` am Ende der Dock-Leiste (für den Tab
-  vorn, `#dockHelp`) und in der Fensterleiste eines herausgelösten Panels. Es öffnet
-  das Help-Panel an `?guide=<typ>&node=main`; zeigt es diese Guide schon, bleibt es auf
-  der Seite, die der Leser gerade liest (`workspace.openHelp()`). Muss es dafür den Platz
-  wechseln (Dock ↔ Fenster, der Dock-Knopf holt ein Help-Fenster ins Dock), lädt der
-  Frame dort neu: die Seite bleibt, Retrace beginnt leer. Nicht in jedem Dock-Tab: die
-  haben schon drei Knöpfe bei 150 px Mindestbreite.
-- Die Quelle ist der Katalog: `Panel.help` trägt die Guide-Id, `panel_guides()` in
-  `ui/help.py` setzt sie über den Plugin-Typ, den der Loader für die Instanz auflöst
-  (`settings._resolve_server_inheritance`: der `type` des Eintrags, über andere Einträge
-  weiterverfolgt; ohne Eintrag der Instanzname; scheitert die Vererbung, wie beim Loader
-  der `type` des Eintrags selbst) -- `skills_sam` findet die README von
-  `sub_agent_manager`. Ein Plugin-Ordner, den die API nicht lesen kann, kostet nur seine
-  eigenen Plugins (`plugin_docs`), nicht den Katalog.
-- Der Knopf der Dock-Leiste wird bei einem Tab ohne Guide unsichtbar (`data-idle`), nicht
-  entfernt: sein Platz bleibt, sonst änderten die schrumpfenden Tabs bei jedem Wechsel
-  ihre Breite. Aus einem Fenster öffnet die Hilfe als Fenster darüber (angedockt lag sie
-  darunter). Das Help-Panel meldet jede gezeigte Seite als eigenen Pfad (`pk:navigate`);
-  daran sieht die Shell, ob es gerade das Handbuch zeigt.
-- Ein Panel im eigenen Browser-Tab hat keinen Knopf (dort gibt es keine Shell).
+- Top right in the header (`#helpButton`, `templates/index.html`): opens the help panel
+  with the manual. If it already shows the manual (a page of it, a search), the
+  button only brings it to the front -- page and retrace stay; on a plugin guide or the
+  plugin list it starts at the manual again (`workspace.openManual()`).
+- A plugin panel with a guide or README: a `?` at the end of the dock bar (for the tab
+  in front, `#dockHelp`) and in the window bar of a detached panel. It opens
+  the help panel at `?guide=<type>&node=main`; if it already shows this guide, it stays on
+  the page the reader is currently reading (`workspace.openHelp()`). If it has to
+  change place for that (dock ↔ window, the dock button brings a help window into the dock), the
+  frame reloads there: the page stays, retrace starts empty. Not in every dock tab: they
+  already have three buttons at a minimum width of 150 px.
+- The source is the catalogue: `Panel.help` carries the guide id, `panel_guides()` in
+  `ui/help.py` sets it via the plugin type that the loader resolves for the instance
+  (`settings._resolve_server_inheritance`: the `type` of the entry, followed through other entries;
+  without an entry the instance name; if inheritance fails, as with the loader
+  the entry's own `type`) -- `skills_sam` finds the README of
+  `sub_agent_manager`. A plugin folder the API cannot read costs only its
+  own plugins (`plugin_docs`), not the catalogue.
+- The dock bar button becomes invisible (`data-idle`) on a tab without a guide, not
+  removed: its space stays, otherwise the shrinking tabs would change
+  their width on every switch. From a window, the help opens as a window on top (docked it lay
+  below). The help panel reports every page shown as its own path (`pk:navigate`);
+  that is how the shell sees whether it is currently showing the manual.
+- A panel in its own browser tab has no button (there is no shell there).
 
-## `<pk-guide>` in einem Plugin-Panel
+## `<pk-guide>` in a plugin panel
 
 ```html
 <script type="module" src="/static/kit/guide.js"></script>
 <pk-guide guide="my_plugin" node="config"></pk-guide>
 ```
 
-Attribute: `guide`, `node`, `file` (nur eine Datei, die die Guide verlinkt) -- setzen öffnet die Seite, auch mit dem Wert, den
-das Attribut schon hat (der Leser kann inzwischen weitergeklickt haben); `search`
-(Suchfeld); `address` (das Element ist die Seite: Adresse und Titel gehören ihm -- nur
-einmal pro Seite, so im Help-Panel).
-Event `guidechange` nach jeder gezeigten Seite. Das Element scrollt sich selbst (mit
-Höhe) oder den nächsten scrollenden Kasten -- nie etwas außerhalb seines Dokuments.
-`scrollIntoView` war der Fehler, der die Shell mitscrollte.
+Attributes: `guide`, `node`, `file` (only a file that the guide links) -- setting opens the page, even with the value
+the attribute already has (the reader may have clicked on in the meantime); `search`
+(search field); `address` (the element is the page: address and title belong to it -- only
+once per page, as in the help panel).
+Event `guidechange` after every page shown. The element scrolls itself (with
+height) or the nearest scrolling box -- never anything outside its document.
+`scrollIntoView` was the bug that scrolled the shell along.
 
-## Prüfen
+## Checking
 
-- `pytest tests/ui/test_help.py -k repository`: jede Guide im Repo ohne Strukturfehler,
-  toten Link, unbekanntes Attribut. Nach jeder Änderung am Handbuch fahren.
-- Parser, Bibliothek und `guide.js` sind mutationsgeprüft (Mutanten nur im Speicher,
-  `guide.js` über eine vorgeschaltete Route ausgeliefert).
+- `pytest tests/ui/test_help.py -k repository`: every guide in the repo without structure errors,
+  dead links, unknown attributes. Run after every change to the manual.
+- Parser, library and `guide.js` are mutation-tested (mutants only in memory,
+  `guide.js` served through a route placed in front).
 
-## Grenzen (bewusst)
+## Limits (deliberate)
 
-- `MANIFEST.in` nimmt `docs/guides/*.guide` mit, wie `templates/` und `static/`; Bilder
-  für das Handbuch bräuchten einen eigenen Eintrag, sobald es welche gibt.
-- Plugin-Guides und READMEs sieht jeder angemeldete Nutzer, auch die eines Plugins,
-  dessen Panel nur Admins öffnen -- Doku gilt als lesbar; wer das anders will, hängt
-  die Guides an die Panel-Rollen des Plugins.
-- Kein CLI-Viewer und kein Agent-Tool zum Lesen der Hilfe (Nutzer 28.09.2026: ein
-  Agent-Tool braucht es nicht) -- beides ließe sich auf `Library.page()`/`search()` setzen.
+- `MANIFEST.in` includes `docs/guides/*.guide`, like `templates/` and `static/`; images
+  for the manual would need an entry of their own once there are any.
+- Plugin guides and READMEs are seen by every logged-in user, even those of a plugin
+  whose panel only admins open -- docs count as readable; whoever wants it otherwise attaches
+  the guides to the plugin's panel roles.
+- No CLI viewer and no agent tool for reading the help (user 2026-09-28: an
+  agent tool is not needed) -- both could be built on `Library.page()`/`search()`.

@@ -776,7 +776,6 @@ Continue Agent Loop
 
 - [Plugin Authoring](plugin_authoring.md) - How to create plugins
 - [Plugin Hooks](plugin_hooks.md) - Hook system details
-- [Configurable Agents](configurable_agents.md) - YAML-based agents
 
 ### 11.3 Design Documents
 

@@ -2,7 +2,7 @@
 
 Packaged, reusable agent knowledge. **Plugins distribute capabilities (tools an
 agent can call); skills distribute knowledge (how an agent should approach a
-task).** See `docs/skills_design.md` for the concept and trade-offs.
+task).**
 
 ## Layout
 
@@ -135,11 +135,11 @@ read bundled reference files.
 * No Jinja. `{{ current_date }}` stays literal text — a skill about templating
   survives intact, and nothing gets blanked by an unknown variable.
 * Shared prompt fragments belong in the prompt *templates* via `{% include %}`,
-  not in skills (see `docs/skills_design.md` §8).
+  not in skills.
 
 **Keep bodies byte-stable.** No timestamps, relative times or random IDs in the
 text: the system prompt is the cached prefix, and content that changes per call
-breaks that cache for everything after it (see `docs/prompt_cache_design.md`).
+breaks that cache for everything after it.
 
 ## Where skills are found
 

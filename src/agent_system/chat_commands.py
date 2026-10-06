@@ -20,7 +20,7 @@ keyboard with less reach than the model.
 Plugins are the third source: a plugin declares `commands:` in its schema.yaml
 and `/compact` runs context_engineer's compaction. They sit BETWEEN built-ins
 and skills — a skill folder someone drops in must not shadow shipped code, and
-neither may take over `/help`. See docs/plugin_commands_design.md.
+neither may take over `/help`.
 """
 from __future__ import annotations
 

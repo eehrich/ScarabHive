@@ -2246,7 +2246,7 @@ class LayeredCompactionStrategy:
         """More of the oldest messages, until what stays is at target_tokens.
 
         Age alone cut shallow, and shallow cuts are what the prompt cache cannot
-        afford (docs/prompt_cache_design.md par. 3.5: rarely and deep). An agent
+        afford (rarely and deep). An agent
         run is ONE user turn, so nothing was ever old enough: Layer 3 removed
         nothing and the context grew without bound above every threshold. A chat
         above the threshold lost the one or two turns that had just aged out —

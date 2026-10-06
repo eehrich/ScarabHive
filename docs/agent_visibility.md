@@ -17,73 +17,73 @@ The `metadata.visibility` field controls agent exposure:
 
 **Default:** `private` — an agent has to opt in to being listed.
 
-> ⚠️ **Sichtbarkeit ist Anzeige, keine Zugriffskontrolle.** `visibility` bestimmt nur,
-> wo ein Agent *auftaucht* (UI-Liste, Tool-Liste anderer Agents). Wer seinen Namen kennt,
-> konnte ihn trotzdem starten: `POST /run` und `/events` mit `agent_name`, `/chat/command`,
-> ein SAM mit `allowed_agents: ["*"]`. Auch `private` schützt nichts. Wer einen Agent
-> **ausführen** darf, regelt `metadata.min_role` (siehe unten).
+> ⚠️ **Visibility is display, not access control.** `visibility` only determines
+> where an agent *shows up* (UI list, tool list of other agents). Anyone who knows its name
+> could still start it: `POST /run` and `/events` with `agent_name`, `/chat/command`,
+> a SAM with `allowed_agents: ["*"]`. Even `private` protects nothing. Who may
+> **run** an agent is governed by `metadata.min_role` (see below).
 
-## Wer darf einen Agent ausführen: `metadata.min_role`
+## Who may run an agent: `metadata.min_role`
 
 ```yaml
 metadata:
   visibility: both
-  min_role: admin        # guest | user | admin; weglassen = kein Gate
+  min_role: admin        # guest | user | admin; omit = no gate
 ```
 
-`min_role` ist die niedrigste Konto-Rolle, die den Agent **laufen lassen** darf. Gefragt
-wird bei jedem Weg, auf dem ein Lauf beginnt (`src/agent_system/auth/agent_access.py`):
+`min_role` is the lowest account role that may **run** the agent. It is checked
+on every path on which a run starts (`src/agent_system/auth/agent_access.py`):
 
-- **HTTP:** `POST /run`, neue `/events`-Läufe, `/chat/command`, `POST /api/sessions`
-  (eine Session, deren Agent der Besitzer nicht ausführen darf, wird nicht angelegt).
-  `GET /agents` listet den Agent nur, wem er erlaubt ist; `default` ist `null`, wenn der
-  Einstiegs-Agent es nicht ist. `/agents/{name}/tools` und `/allowed-tools` sowie
-  `/chat/commands` zeigen ihn nur dann. Eine Ablehnung antwortet genau wie ein Agent,
-  den es nicht gibt (404 bzw. dieselbe Antwort; `/chat/command` auch für den
-  Einstiegs-Agent, wenn kein Name mitkommt); der Grund steht nur im Server-Log.
-  Ausnahmen: `/run` und `/events` ohne `agent_name` für den Einstiegs-Agent (403
-  „Permission denied“) und `POST /api/sessions` (403 mit dem Grund -- dort werden auch
-  Namen angenommen, die es nicht gibt, eine Antwort „unbekannt“ gibt es also nicht).
-- **OpenAI-API (`openai_api`):** ein Agent, den der Aufrufer nicht ausführen darf, ist
-  kein Modell für ihn -- `GET /models` listet ihn nicht, und `/models/{id}`,
-  `/responses` und `/chat/completions` antworten 404 `model_not_found` wie für ein
-  unbekanntes Modell.
-- **Ohne Endpoint:** der Lauf selbst (`Agent.run_events`, auch stategraph `MachineAgent`)
-  fragt vor allem anderen -- Sub-Agents über den SAM, Agents als Tool, stategraph,
-  geweckte agent-cli-Läufe. Jedes Tool eines gegateten Agents (`<name>_*`) ebenso. Seine
-  Ablehnung trägt `error_type` `agent_role_gate` (bzw. `foreign_session`, wenn die Session
-  einem anderen Nutzer gehört): nichts davon wird gespeichert, die OpenAI-API antwortet
-  404 bzw. 403, und SAM-`create` und -`continue` melden sie als Fehler statt als beendete
-  Instanz. Ein abgelehntes `create` hinterlässt keine Instanz; eine fortgesetzte bleibt, mit
-  `failed` und diesem `error_type`, und ein Hintergrund-Job endet ebenso -- auch im
-  gespeicherten Stand, den ein späteres `poll` oder `wait` liest.
-- **SAM:** `create` und `continue` lehnen vorher ab, als Tool-Fehler mit
-  `error_type: "agent_role_gate"`, bevor eine Sub-Session entsteht.
-- **Wecken:** eine Session, deren Agent ihr Besitzer nicht ausführen darf, wird nicht
-  geweckt; die wartende Eingabe bleibt liegen.
+- **HTTP:** `POST /run`, new `/events` runs, `/chat/command`, `POST /api/sessions`
+  (a session whose agent the owner may not run is not created).
+  `GET /agents` lists the agent only for those it is allowed for; `default` is `null` if the
+  entry agent is not allowed. `/agents/{name}/tools` and `/allowed-tools` as well as
+  `/chat/commands` show it only then. A rejection answers exactly like an agent
+  that does not exist (404 or the same response; `/chat/command` also for the
+  entry agent if no name is passed); the reason appears only in the server log.
+  Exceptions: `/run` and `/events` without `agent_name` for the entry agent (403
+  "Permission denied") and `POST /api/sessions` (403 with the reason -- names that do not
+  exist are accepted there too, so an "unknown" response does not exist).
+- **OpenAI API (`openai_api`):** an agent the caller may not run is
+  not a model for them -- `GET /models` does not list it, and `/models/{id}`,
+  `/responses` and `/chat/completions` answer 404 `model_not_found` as for an
+  unknown model.
+- **Without an endpoint:** the run itself (`Agent.run_events`, also stategraph `MachineAgent`)
+  checks before anything else -- sub-agents via the SAM, agents as tools, stategraph,
+  woken agent-cli runs. Every tool of a gated agent (`<name>_*`) likewise. Its
+  rejection carries `error_type` `agent_role_gate` (or `foreign_session` if the session
+  belongs to another user): none of it is stored, the OpenAI API answers
+  404 or 403, and SAM `create` and `continue` report it as an error instead of as a finished
+  instance. A rejected `create` leaves no instance behind; a continued one remains, with
+  `failed` and this `error_type`, and a background job ends the same way -- also in the
+  stored state that a later `poll` or `wait` reads.
+- **SAM:** `create` and `continue` reject beforehand, as a tool error with
+  `error_type: "agent_role_gate"`, before a sub-session is created.
+- **Waking:** a session whose agent its owner may not run is not
+  woken; the pending input stays in place.
 
-Wer ist der Aufrufer? Der vom Framework registrierte Besitzer der Request-ID (API,
-Tool-Ausführung, SAM, stategraph), sonst der Benutzer der Session (agent-cli), sonst
-`anonymous`. **Ein Lauf ohne jede Identität zählt als `anonymous`: abgelehnt, außer
-anonymer Zugang ist aktiv und seine Rolle reicht.** Der SAM und die Tools eines
-gegateten Agents lehnen einen Aufrufer ohne Identität ohne diese Ausnahme ab.
-Abgelehnt werden ebenso ein unbekanntes oder inaktives Konto, eine unbekannte Rolle
-und ein nicht lesbarer User-Store. Die Rolle wird bei jedem Lauf
-frisch aus dem User-Store gelesen.
+Who is the caller? The owner of the request ID registered by the framework (API,
+tool execution, SAM, stategraph), otherwise the user of the session (agent-cli), otherwise
+`anonymous`. **A run without any identity counts as `anonymous`: rejected, unless
+anonymous access is active and its role suffices.** The SAM and the tools of a
+gated agent reject a caller without identity without this exception.
+An unknown or inactive account, an unknown role
+and an unreadable user store are rejected as well. The role is read
+fresh from the user store on every run.
 
-`cli_user` (der Standard-Benutzer von `agent-cli`/`agent-run`) gilt **nur in diesen
-lokalen Prozessen** als lokaler Betreiber und passiert jedes Gate -- und auch dort nur,
-solange kein Konto dieses Namens existiert. Im API-Prozess ist `cli_user` ein Name ohne
-Konto und wird abgelehnt.
+`cli_user` (the default user of `agent-cli`/`agent-run`) counts as local operator
+**only in these local processes** and passes every gate -- and even there only
+as long as no account of that name exists. In the API process `cli_user` is a name without
+an account and is rejected.
 
-Ohne `auth.enabled` gibt es keine Rollen: das Gate greift nicht, und der Server warnt beim
-Start, welche Agents ein Gate tragen, das er nicht durchsetzen kann.
+Without `auth.enabled` there are no roles: the gate does not apply, and the server warns at
+startup which agents carry a gate that it cannot enforce.
 
-⚠️ **Vererbung:** `metadata` wird über die `type:`-Kette tief gemergt. Ein Agent, dessen
-`type:` auf einen gegateten Agent zeigt, erbt dessen `min_role`, auch wenn er selbst
-nichts setzt, und **`min_role: null` hebt einen geerbten Wert nicht auf** (null wird beim
-Mergen übergangen). Wer einen niedrigeren Wert will, setzt ihn ausdrücklich (`guest` oder
-`user`); gemessen mit `load_settings` + `get_tool_server_config`.
+⚠️ **Inheritance:** `metadata` is deep-merged along the `type:` chain. An agent whose
+`type:` points to a gated agent inherits its `min_role` even if it sets
+nothing itself, and **`min_role: null` does not clear an inherited value** (null is skipped
+when merging). Whoever wants a lower value sets it explicitly (`guest` or
+`user`); measured with `load_settings` + `get_tool_server_config`.
 
 ## Configuration
 
@@ -154,9 +154,9 @@ agents:
 
 ### Plugin-Agents (plugin.toml)
 
-Bei einem Plugin steht `visibility` in der `[plugin]`-Tabelle seines
-Manifests — das ist die Tabelle, die `load_plugin_metadata` liefert und aus
-der `ServerDecl.visibility` liest ([runtime.py:129](../src/agent_system/runtime.py#L129)):
+For a plugin, `visibility` is in the `[plugin]` table of its
+manifest — that is the table `load_plugin_metadata` returns and from
+which `ServerDecl.visibility` reads ([runtime.py:129](../src/agent_system/runtime.py#L129)):
 
 ```toml
 # src/plugins/<name>/plugin.toml
@@ -168,22 +168,22 @@ description = "Specialized web research agent"
 entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["tool-server"]
 category = "tools"
-visibility = "both"  # "ui", "tool", "both" oder "private"
+visibility = "both"  # "ui", "tool", "both" or "private"
 ```
 
-**Reihenfolge** ([runtime.py:120-132](../src/agent_system/runtime.py#L120-L132)) —
-die erste Quelle, die etwas sagt, gewinnt:
+**Order** ([runtime.py:120-132](../src/agent_system/runtime.py#L120-L132)) —
+the first source that says something wins:
 
-1. die Instanz-Metadaten (`metadata.visibility` beim Eintrag in
+1. the instance metadata (`metadata.visibility` on the entry in
    `config/plugins.yaml`),
-2. das Manifest,
-3. sonst **`private`** — nicht sichtbar, sicher per Default. Ein
-   Plugin-Agent, der nirgends eine Sichtbarkeit deklariert, taucht also
-   weder in der UI noch als Tool auf.
+2. the manifest,
+3. otherwise **`private`** — not visible, safe by default. A
+   plugin agent that declares no visibility anywhere therefore appears
+   neither in the UI nor as a tool.
 
-⚠️ Gemessen am 06.09.2026: **kein** ausgeliefertes `plugin.toml` deklariert
-eine Sichtbarkeit, und in `config/plugins.yaml` tut es genau ein Eintrag. Wer
-sich auf einen großzügigen Default verlässt, verlässt sich auf nichts.
+⚠️ Measured on 06.09.2026: **no** shipped `plugin.toml` declares
+a visibility, and in `config/plugins.yaml` exactly one entry does. Anyone
+relying on a generous default is relying on nothing.
 
 ## Internal Implementation
 

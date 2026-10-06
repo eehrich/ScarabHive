@@ -1,440 +1,436 @@
-# Der Modellkatalog — die Entscheidungen dahinter
+# The model catalogue — the decisions behind it
 
-`config/llm.yaml` und `config/llm_openrouter.yaml` sind **Daten**: Modellnamen,
-Fenster, Knöpfe. Was ein Feld bedeutet, steht in `agent_system/config/models.py`
-am Feld selbst. Was hier steht, ist das, was man den Werten nicht ansieht.
+`config/llm.yaml` and `config/llm_openrouter.yaml` are **data**: model names,
+windows, knobs. What a field means is documented on the field itself in
+`agent_system/config/models.py`. What is written here is what you cannot tell
+from the values.
 
-Die Vererbung zwischen den Einträgen (`extends:`) beschreibt
-[llm_model_inheritance_konzept.md](llm_model_inheritance_konzept.md).
+## What an endpoint speaks is stated by its entry — not by its name
 
-## Was ein Endpunkt spricht, sagt sein Eintrag — nicht sein Name
+The clients know no model names. Quirks of an endpoint are keys on the model, and
+whoever adds a new provider sets lines instead of code. Which route evaluates
+which key:
 
-Die Clients kennen keine Modellnamen. Eigenheiten eines Endpunkts stehen als
-Schlüssel am Modell, und wer einen neuen Anbieter aufnimmt, setzt Zeilen statt
-Code. Welche Route welchen Schlüssel auswertet:
-
-| Schlüssel | `openai_httpx` | `openai_responses` | `openrouter_sdk` | `anthropic` | `gemini*`, `openai`, `ollama` |
+| Key | `openai_httpx` | `openai_responses` | `openrouter_sdk` | `anthropic` | `gemini*`, `openai`, `ollama` |
 |---|---|---|---|---|---|
-| `tool_schema_dialect` | ja | ja | ja | – | – |
-| `reasoning_details_mode` | ja | ja | ja | ja | – |
-| `assistant_reasoning_field` | ja | – | – | – | – |
-| `thinking_request_shape` | – | – | – | ja | – |
-| `stream_silence_timeout` | ja | ja | – | – | – |
-| `provider_affinity_minutes` | ja | ja | ja | – | – |
-| `prompt_cache_marker_style` | ja | ja | verweigert `anthropic` | eigener Weg | – |
-| `safety_settings` | ja | ja | verweigert | – | nur `gemini*` (nativ) |
+| `tool_schema_dialect` | yes | yes | yes | – | – |
+| `reasoning_details_mode` | yes | yes | yes | yes | – |
+| `assistant_reasoning_field` | yes | – | – | – | – |
+| `thinking_request_shape` | – | – | – | yes | – |
+| `stream_silence_timeout` | yes | yes | – | – | – |
+| `provider_affinity_minutes` | yes | yes | yes | – | – |
+| `prompt_cache_marker_style` | yes | yes | refuses `anthropic` | own path | – |
+| `safety_settings` | yes | yes | refuses | – | only `gemini*` (native) |
 
-Die ersten sechs Zeilen sind die **Dialekt-Schlüssel**: steht einer auf einer
-Route, die ihn nicht auswertet, protokolliert der Bau des Clients das („is not
-wired for provider=…"). Die letzten beiden Zeilen haben diesen Wächter nicht.
-Ein unbekannter **Wert** lässt den Bau in allen Fällen scheitern. Beides mit Absicht: still ignoriert zu werden ist der
-Fall, den man erst Wochen später am Rechnungsbetrag merkt.
+The first six rows are the **dialect keys**: if one is set on a route that does
+not evaluate it, building the client logs this ("is not wired for provider=…").
+The last two rows do not have this guard.
+An unknown **value** makes the build fail in all cases. Both are deliberate: being
+silently ignored is the case you only notice weeks later on the invoice.
 
-## Structured Output: die Route hat das Feld, der Eintrag sagt, ob das Modell es kann
+## Structured output: the route has the field, the entry says whether the model can do it
 
-Ein Aufrufer, der die Schlussantwort als JSON will (`ResponseFormat`,
-`agent_system/llm/structured_output.py`), bekommt das native Feld nur, wenn
-**beides** stimmt: die Route hat ein Feld dafür (`response_format_kinds` am
-Client) und der Modelleintrag erklärt es.
+A caller that wants the final answer as JSON (`ResponseFormat`,
+`agent_system/llm/structured_output.py`) gets the native field only if
+**both** hold: the route has a field for it (`response_format_kinds` on the
+client) and the model entry declares it.
 
-| Route | Feld | JSON-Schema | JSON-Objekt |
+| Route | Field | JSON schema | JSON object |
 |---|---|---|---|
-| `openai`, `openai_httpx` (auch `ollama` im `openai_compat`-Modus) | `response_format` | ja | ja |
-| `openai_responses`, `openrouter_sdk` | `text.format` | ja | ja |
-| `anthropic` | `output_config.format` | ja | – (die Messages-API hat keinen JSON-Modus) |
-| `gemini`, `gemini_sdk` | `responseMimeType` + `responseJsonSchema` | ja | ja (nur der MIME-Typ) |
-| `ollama` nativ | `format` | ja | ja (`"json"`) |
+| `openai`, `openai_httpx` (also `ollama` in `openai_compat` mode) | `response_format` | yes | yes |
+| `openai_responses`, `openrouter_sdk` | `text.format` | yes | yes |
+| `anthropic` | `output_config.format` | yes | – (the Messages API has no JSON mode) |
+| `gemini`, `gemini_sdk` | `responseMimeType` + `responseJsonSchema` | yes | yes (MIME type only) |
+| `ollama` native | `format` | yes | yes (`"json"`) |
 | Batch, Realtime | – | – | – |
 
-- `capabilities.structured_output: true` heißt: das Modell hält sich an ein
-  Schema — **auch in einem Request mit Tools**, denn ein Agent schickt das Feld
-  auf jedem Schritt. Gemini vor 3 lehnt diese Kombination ab: dort nicht setzen.
-  Über OpenRouter hat es jedes Modell einzeln (`supported_parameters` enthält
+- `capabilities.structured_output: true` means: the model sticks to a schema —
+  **even in a request with tools**, because an agent sends the field on every
+  step. Gemini before 3 rejects this combination: do not set it there.
+  Over OpenRouter, each model has it individually (`supported_parameters` contains
   `structured_outputs`).
-- `capabilities.json_mode` wird nicht gelesen. Natives „irgendein
-  JSON-Objekt" bekommt nur ein Modell mit `structured_output: true`: die
-  `json_mode`-Werte in den Katalogdateien las bis F11 niemand und sind
-  ungeprüft (Claude-Einträge tragen `true`, obwohl die Anthropic-Route gar
-  keinen JSON-Modus hat). Ein Modell nur mit `json_mode` bekommt das Format
-  als Hinweis im Gespräch, die Antwort wird geprüft wie jede andere.
-- Das Schema geht so raus, wie es die strikte Teilmenge durchlaufen hat
-  (`agent_system/llm/schema_worker.py`: Schlüsselwort-Whitelist, `$ref` nur
-  auf `#/$defs/…`, Annotationen wie `default` entfernt). Gemini bekommt es als
-  `responseJsonSchema` (JSON Schema), nicht durch den Sanitizer der Function
-  Declarations. Anthropic und OpenAI im `strict`-Modus lehnen Schemas ab,
-  deren Objekte kein `additionalProperties: false` haben — laut, als 400,
-  statt still umgeschrieben.
-- Warum das Feld auf jedem Schritt steht und nicht nur auf dem letzten: OpenAI
-  rendert das Schema in den gecachten Kontext, Anthropic verwirft den Cache des
-  Gesprächs, wenn sich `output_config.format` ändert. Konstant über den Lauf
-  bleibt der Präfix gleich (gemessen am Payload:
-  `tests/agent/test_agent_structured_output.py`); nur auf dem letzten Call
-  wäre genau dieser Call ein Cache-Fehlgriff.
+- `capabilities.json_mode` is not read. Native "any JSON object" is only given
+  to a model with `structured_output: true`: nobody read the `json_mode` values in
+  the catalogue files until F11 and they are unverified (Claude entries carry
+  `true`, although the Anthropic route has no JSON mode at all). A model with only
+  `json_mode` gets the format as a hint in the conversation, and the answer is
+  validated like any other.
+- The schema goes out as it passed through the strict subset
+  (`agent_system/llm/schema_worker.py`: keyword whitelist, `$ref` only
+  to `#/$defs/…`, annotations such as `default` removed). Gemini gets it as
+  `responseJsonSchema` (JSON Schema), not through the sanitizer of the function
+  declarations. Anthropic and OpenAI in `strict` mode reject schemas whose
+  objects lack `additionalProperties: false` — loudly, as a 400, instead of
+  silently rewriting them.
+- Why the field is present on every step and not only on the last one: OpenAI
+  renders the schema into the cached context, Anthropic discards the
+  conversation's cache when `output_config.format` changes. Kept constant across
+  the run, the prefix stays the same (measured on the payload:
+  `tests/agent/test_agent_structured_output.py`); only on the last call, exactly
+  that call would be a cache miss.
 
-Stand 29.09.2026 erklärt kein Eintrag in `config/llm*.yaml`
-`structured_output`. Bis ein Betreiber das tut, läuft jeder strukturierte
-Aufruf — Schema wie JSON-Objekt — über den Fallback (Hinweis im Gespräch +
-Prüfung) oder scheitert, wenn der Aufrufer keinen Fallback erlaubt.
+As of 2026-09-29, no entry in `config/llm*.yaml` declares
+`structured_output`. Until an operator does, every structured call — schema or
+JSON object — goes through the fallback (hint in the conversation +
+validation) or fails if the caller does not allow a fallback.
 
-## Wie lange ein Stream nur Keep-alives schicken darf
+## How long a stream may send only keep-alives
 
-OpenRouter hält einen wartenden Stream mit Kommentarzeilen offen, etwa alle
-halbe Sekunde. Jede davon setzt den `read`-Timeout zurück — der feuert dort
-also nie. `stream_silence_timeout` zählt nur echte Events: kommt so lange
-keins, wird der Versuch wiederholt. Ohne Eintrag gibt es keine solche Grenze.
-Ist das Endereignis eines Laufs schon da, bleibt die Antwort stehen, egal wie
-der Stream danach endet (Keep-alives, Stille, abgerissene Verbindung).
+OpenRouter keeps a waiting stream open with comment lines, roughly every
+half second. Each of them resets the `read` timeout — so it never fires there.
+`stream_silence_timeout` counts only real events: if none arrives for that long,
+the attempt is retried. Without an entry there is no such limit.
+If a run's end event has already arrived, the answer stands, no matter how
+the stream ends afterwards (keep-alives, silence, dropped connection).
 
-Gemessen am 16.09.2026 (Produktions-Payload, Flex-Tier): zwischen zwei Events
-lagen höchstens 9,2 s, auch über 38.000 Tokens verdeckten Denkens — OpenRouter
-meldet dabei alle paar Sekunden ein `output_item`. Die 900 s der Basis liegen
-bei OpenAIs Empfehlung für Flex (15 Minuten Wartezeit sind dort normal).
-DeepSeek direkt bekommt keinen Eintrag: die API schickt unter Last ebenfalls
-nur Keep-alives, schließt eine Anfrage aber nach 10 Minuten Wartezeit selbst.
+Measured on 2026-09-16 (production payload, flex tier): between two events
+there were at most 9.2 s, even across 38,000 tokens of hidden thinking — OpenRouter
+reports an `output_item` every few seconds. The 900 s of the base are
+at OpenAI's recommendation for flex (15 minutes of waiting are normal there).
+DeepSeek direct gets no entry: under load the API likewise sends only
+keep-alives, but closes a request itself after 10 minutes of waiting.
 
-Nicht verwechseln: ein Call, der 26 Minuten lang **generiert** (gemessen: ein
-Kontinuitäts-Pass mit 55.742 Tokens), ist nicht still und wird nicht
-abgebrochen. Dagegen hilft die Output-Grenze des Agenten, kein Timeout.
+Do not confuse: a call that **generates** for 26 minutes (measured: a
+continuity pass with 55,742 tokens) is not silent and is not
+aborted. What helps there is the agent's output limit, not a timeout.
 
-## OpenRouter: warum die Backends gepinnt sind
+## OpenRouter: why the backends are pinned
 
-Der Prompt-Cache bei OpenRouter ist **backend-lokal**. Wer die Anbieterwahl dem
-Preis überlässt (`sort: price`), verteilt dieselbe Konversation über mehrere
-Backends — und ein Cache-Miss kostet bei Langkontext leicht mehr, als der
-günstigere Anbieter spart. Deshalb setzen die Einträge `provider_routing.order`
-und bleiben beim selben Backend.
+OpenRouter's prompt cache is **backend-local**. Whoever leaves the provider choice
+to price (`sort: price`) spreads the same conversation across several
+backends — and with long contexts a cache miss easily costs more than the
+cheaper provider saves. That is why the entries set `provider_routing.order`
+and stay with the same backend.
 
-`allow_fallbacks: false` steht dort, wo ein Ausweichen teuer wäre: fällt der
-gepinnte Anbieter aus, übernimmt die **Agent-Kette** (llm_profile), nicht ein
-stiller 2x-Preissprung bei OpenRouter.
+`allow_fallbacks: false` is set where falling back would be expensive: if the
+pinned provider fails, the **agent chain** (llm_profile) takes over, not a
+silent 2x price jump at OpenRouter.
 
-### Wer wirklich geliefert hat: `openrouter_metadata`
+### Who actually delivered: `openrouter_metadata`
 
-Die Clients schicken auf OpenRouter-Endpunkten den Header
-`X-OpenRouter-Metadata: enabled`. Ohne ihn nennt **keine** Antwort das
-Backend — auf der Responses-Route gibt es kein anderes Feld dafür. Mit ihm
-landet in jedem `post_llm_response`-Hook ein Feld `routing`:
+On OpenRouter endpoints the clients send the header
+`X-OpenRouter-Metadata: enabled`. Without it **no** answer names the
+backend — on the Responses route there is no other field for it. With it,
+every `post_llm_response` hook gets a `routing` field:
 
 ```json
 {"selected": "DeepInfra", "available": ["DeepInfra", "StreamLake"],
  "attempt": 1, "strategy": "latest", "region": "FRA"}
 ```
 
-Damit ist zum ersten Mal nachvollziehbar, ob `provider_routing.order`
-gehalten hat. **Der Client urteilt darüber nicht selbst:** die Config nennt
-Gateway-Slugs, die Metadaten Anzeigenamen, und übersetzen kann nur die
-Anbieterliste des Gateways (`GET /api/v1/providers`, `name` → `slug`) — ein
-naiver Vergleich schlüge ausgerechnet bei den härtesten Pins Fehlalarm.
-Gemeldet, nicht gerichtet.
+This makes it traceable for the first time whether `provider_routing.order`
+held. **The client does not judge this itself:** the config names
+gateway slugs, the metadata names display names, and only the gateway's
+provider list can translate (`GET /api/v1/providers`, `name` → `slug`) — a
+naive comparison would raise false alarms precisely at the hardest pins.
+Reported, not judged.
 
-**Anbieter-Pin:** Jeder Assistant-Turn merkt sich als `served_by`, welches
-Backend geliefert hat. Der nächste Request geht als **harter Pin** darauf
-raus: `order: [dieses eine]` plus `allow_fallbacks: false`. Den Slug zum
-Anzeigenamen liefert die Anbieterliste; im Code steht kein Anbietername.
+**Provider pin:** Every assistant turn remembers as `served_by` which
+backend delivered. The next request goes out with a **hard pin** on it:
+`order: [this one]` plus `allow_fallbacks: false`. The slug for the display
+name comes from the provider list; no provider name appears in the code.
 
-Warum hart: `allow_fallbacks: false` hält nur Anbieter **außerhalb** der Liste
-draußen. Eine Liste mit zwei Einträgen rotiert trotzdem — bei DeepSeek in 34
-von 38 Backend-Wechseln innerhalb eines Laufs —, und ein Eintrag ganz ohne
-`order` wird vom Gateway frei verteilt: ein `coder`-Aufruf am 22.09.2026 landete
-so auf einem Backend mit kaltem Cache und kostete das Vierfache seiner
-Nachbarn. Deshalb ein Eintrag ohne Ausweichweg; ein Modelleintrag ohne
-`order` wird genauso gepinnt.
+Why hard: `allow_fallbacks: false` only keeps providers **outside** the list
+out. A list with two entries rotates anyway — with DeepSeek in 34
+of 38 backend changes within a run —, and an entry without any
+`order` is distributed freely by the gateway: a `coder` call on 2026-09-22 ended
+up on a backend with a cold cache and cost four times as much as its
+neighbours. Hence an entry without a way to fall back; a model entry without
+`order` is pinned the same way.
 
-Der Eintrag entscheidet weiter, **welche** Backends überhaupt dürfen: steht
-das gelieferte nicht in seiner `order`, bleibt der Eintrag unverändert.
+The entry still decides **which** backends are allowed at all: if the
+one that delivered is not in its `order`, the entry stays unchanged.
 
-**Lehnt das gepinnte Backend ab** (429, 5xx, oder 404 „No endpoints found",
-wenn es das Modell nicht mehr führt), geht derselbe Aufruf sofort noch einmal
-raus — ohne Pin, also so, wie der Modelleintrag konfiguriert ist, und ohne
-Rate-Limit-Wartezeit; dort darf das Gateway wieder wählen. Der Agent-Typ
-merkt sich das abgelehnte Backend nicht weiter. Was das Backend dagegen
-beantwortet hat (etwa ein 400 wegen eines defekten Reasoning-Items), ist keine
-Ablehnung: die Heilung bleibt auf demselben Backend, sonst scheitert der
-zurückgespielte Verlauf erneut.
+**If the pinned backend refuses** (429, 5xx, or 404 "No endpoints found"
+when it no longer carries the model), the same call goes out again immediately
+— without the pin, i.e. as the model entry is configured, and without a
+rate-limit wait; there the gateway may choose again. The agent type does not
+remember the refused backend any further. What the backend did answer, on the
+other hand (for example a 400 because of a broken reasoning item), is not a
+refusal: the healing stays on the same backend, otherwise the replayed history
+fails again.
 
-**Der erste Aufruf eines Laufs** hat noch keinen Assistant-Turn. Er startet
-auf dem Backend, das den **Agent-Typ** zuletzt bedient hat — gleich welche
-Instanz, welcher Lauf, welcher Client (`agent_system/llm/backend_affinity.py`,
-Schlüssel Agent-Name + Modell, gesetzt über `set_app_title`). Dort liegt der
-Prompt, den alle Läufe des Typs teilen. Das gilt nur innerhalb von
-`provider_affinity_minutes` nach dem letzten Aufruf des Typs (Default: die
-Cache-Dauer des Modells `prompt_cache_ttl_minutes` — Claude und Gemini 5,
-GPT 30 —, ohne die 30; `0` = aus, pro Modelleintrag oder per `llm_params`
-pro Agent). Danach ist
-der Cache kalt, und es gilt wieder die konfigurierte `order`. Gemessen am
-22.09.2026 an den ersten Aufrufen von v4/v6-Läufen (72 h):
+**The first call of a run** has no assistant turn yet. It starts
+on the backend that last served the **agent type** — regardless of which
+instance, which run, which client (`agent_system/llm/backend_affinity.py`,
+key agent name + model, set via `set_app_title`). That is where the
+prompt shared by all runs of the type lies. This only applies within
+`provider_affinity_minutes` after the type's last call (default: the model's
+cache duration `prompt_cache_ttl_minutes` — Claude and Gemini 5,
+GPT 30 —, without the 30; `0` = off, per model entry or via `llm_params`
+per agent). After that
+the cache is cold, and the configured `order` applies again. Measured on
+2026-09-22 on the first calls of pipeline runs (72 h):
 
-| Abstand zum letzten Aufruf des Typs | gleiches Backend | anderes Backend |
+| Gap to the type's last call | same backend | different backend |
 |---|---|---|
-| < 5 min | 57,8 % aus dem Cache | 27,8 % |
-| 5–30 min | 22,5 % | 9,0 % |
-| 30–60 min | 1,1 % | 8,3 % |
+| < 5 min | 57.8 % from cache | 27.8 % |
+| 5–30 min | 22.5 % | 9.0 % |
+| 30–60 min | 1.1 % | 8.3 % |
 
-Die eigene Historie eines Laufs schlägt diesen Wert immer: nur sie sagt,
-welches Backend das zurückgespielte Reasoning prüfen kann. Lehnt das
-vorgezogene Backend ab (429, 5xx), fällt das Gateway im selben Request auf
-die übrigen `order`-Einträge weiter (gemessen: 34 von 38 Wechseln innerhalb
-eines Laufs waren genau das, die übrigen 4 Requests trugen keine `order`).
-Der Speicher lebt im Prozess; nach einem Neustart folgt der erste Aufruf
-jedes Typs wieder der `order`.
+A run's own history always beats this value: only it says
+which backend can verify the replayed reasoning. If the
+preferred backend refuses (429, 5xx), the gateway falls through to
+the remaining `order` entries in the same request (measured: 34 of 38 changes within
+a run were exactly that, the other 4 requests carried no `order`).
+The memory lives in the process; after a restart the first call of
+each type follows the `order` again.
 
-**Modell-Pin für Aliase (Responses-Route):** Ein `~author/familie-latest`
-wird pro Request aufgelöst, und OpenRouter steigt still auf ein älteres Modell
-der Familie ab, wenn das neueste scheitert (429/5xx; undokumentiert,
-OpenRouterTeam/docs#601). Gemessen an einem `shorts_producer`-Lauf am
-30.09.2026:
-- 23 von 69 Aufrufen gingen nach einem 504 von gemini-3.8-flash an 3.7.
-- Die Aufrufe wechselten bunt zwischen beiden Modellen, und jeder Wechsel traf
-  auf einen kalten Cache: 20 % gelesen statt 74 %.
-- Jeder dieser Aufrufe wartete vorher rund 25 s auf den 504.
+**Model pin for aliases (Responses route):** A `~author/family-latest`
+is resolved per request, and OpenRouter silently steps down to an older model
+of the family when the newest fails (429/5xx; undocumented,
+OpenRouterTeam/docs#601). Measured on a `shorts_producer` run on
+2026-09-30:
+- 23 of 69 calls went to 3.7 after a 504 from gemini-3.8-flash.
+- The calls alternated erratically between the two models, and every change hit
+  a cold cache: 20 % read instead of 74 %.
+- Each of these calls had waited about 25 s for the 504 beforehand.
 
-Deshalb bleibt ein Lauf auf dem Modell, das seinen letzten Turn beantwortet
-hat. Das steht als `served_model` im Replay-Block. Der Request nennt den
-konkreten Slug, und den kann OpenRouter nicht mehr abstufen (`available=1`).
-Das gilt für jeden `~`-Alias auf der Responses-Route; DeepSeek stuft genauso
-ab, nach 429ern. Die Claude-Aliase laufen über Chat Completions und sind nicht
-gepinnt, dort wurde kein Abstieg beobachtet.
+That is why a run stays on the model that answered its last turn.
+That is stored as `served_model` in the replay block. The request names the
+concrete slug, and OpenRouter can no longer step it down (`available=1`).
+This applies to every `~` alias on the Responses route; DeepSeek steps down in the
+same way, after 429s. The Claude aliases run over Chat Completions and are not
+pinned; no step-down was observed there.
 
-Eine Ablehnung (429, 5xx, 404) schickt die Wiederholung wieder an den Alias,
-wie beim Anbieter-Pin; der Lauf folgt dann dem Modell, das geantwortet hat,
-bis dieses ablehnt. Ein Lauf ohne eigene Historie beginnt beim Alias, also
-beim neuesten Modell; eine fortgesetzte Session bleibt auf ihrem Modell, bis es
-ablehnt. Der Preis: Scheitert das gepinnte Modell, wartet derselbe
-Aufruf zweimal, weil der Alias es vor dem Abstieg noch einmal versucht.
-Dafür bleibt ein kurzer Aussetzer ohne Modellwechsel.
+A refusal (429, 5xx, 404) sends the retry back to the alias,
+as with the provider pin; the run then follows the model that answered,
+until that one refuses. A run without its own history begins at the alias, i.e.
+at the newest model; a resumed session stays on its model until it
+refuses. The price: if the pinned model fails, the same
+call waits twice, because the alias tries it once more before stepping down.
+In return, a short outage passes without a model change.
 
-Der Replay-Block eines anderen Modells desselben Alias gilt dabei als fremd:
-Sein verschlüsseltes Reasoning prüft nur das Modell, das es geschrieben hat.
-Früher trug der Block nur den Alias, und die Prüfung verglich Alias mit Alias.
-Ist ein Block einer Nachricht fremd, oder fehlt einer ihrer Tool-Aufrufe im
-Replay, wird die ganze Nachricht neu aufgebaut.
-Der Message-Validator fasst aufeinanderfolgende Turns zusammen; nur halb
-zurückgespielt, fehlten die Aufrufe der fremden Hälfte, ihre Ergebnisse
-standen aber im Request.
+The replay block of another model of the same alias counts as foreign here:
+Its encrypted reasoning can only be verified by the model that wrote it.
+Previously the block carried only the alias, and the check compared alias with alias.
+If a block of a message is foreign, or one of its tool calls is missing from the
+replay, the whole message is rebuilt.
+The message validator merges consecutive turns; replayed only halfway,
+the calls of the foreign half were missing, but their results
+were in the request.
 
-### `session_id`: Cache-Lokalität ohne harten Pin
+### `session_id`: cache locality without a hard pin
 
-OpenRouters Prompt-Cache ist backend-lokal (siehe oben). `session_id` ist der
-Sticky-Routing-Schlüssel des Gateways: gleiche Session → gleiches Backend.
-Gemessen am 01.09.2026: **6/6** Aufrufe auf einem Anbieter mit `session_id`,
-ohne ihn verteilten sich 6 Aufrufe auf **4** Anbieter.
+OpenRouter's prompt cache is backend-local (see above). `session_id` is the
+gateway's sticky-routing key: same session → same backend.
+Measured on 2026-09-01: **6/6** calls on one provider with `session_id`,
+without it 6 calls were spread across **4** providers.
 
-Die Clients senden dafür den **aufgelösten `prompt_cache_key`** — der bedeutet
-schon „gleicher stabiler Präfix", ist also genau die richtige Gruppierung, und
-braucht keine Verdrahtung, die es nicht gibt. Nur an OpenRouter; ein fremder
-OpenAI-Endpunkt lehnt unbekannte Parameter mit 400 ab.
+For this the clients send the **resolved `prompt_cache_key`** — it already
+means "same stable prefix", so it is exactly the right grouping, and
+needs no wiring that does not exist. Only to OpenRouter; a foreign
+OpenAI endpoint rejects unknown parameters with a 400.
 
-Das ersetzt `provider_routing.order` nicht, macht es aber entbehrlicher: wer
-den harten Pin lockert, behält mit `session_id` die Cache-Treffer und gewinnt
-zurück, dass ein ausgefallener Anbieter nicht mehr den ganzen Modelleintrag
-kostet.
+This does not replace `provider_routing.order`, but makes it less necessary: whoever
+loosens the hard pin keeps the cache hits with `session_id` and wins
+back that a failed provider no longer costs the whole model entry.
 
-### Drei Felder, die bereitstehen und aus gutem Grund leer sind
+### Three fields that are available and empty for good reason
 
-`plugins`, `prompt_cache_options` und `safety_identifier` reichen die Clients
-unverändert durch, gesetzt wird keines davon:
+`plugins`, `prompt_cache_options` and `safety_identifier` are passed through
+by the clients unchanged; none of them is set:
 
-| Feld | was es könnte | warum ungesetzt |
+| Field | what it could do | why unset |
 |---|---|---|
-| `plugins` | `context-compression` (Prompt automatisch kürzen), `response-healing`, `moderation`, `file-parser`, `auto-router` | jedes ändert, was das Modell sieht oder kostet — nicht ohne Messung |
-| `prompt_cache_options` | `{"mode": "explicit"}` schaltet OpenAIs **eigene** Breakpoints ab, sodass nur unsere Marker zählen (GPT-5.6+) | welche der beiden Varianten besser cacht, ist hier ungemessen |
-| `safety_identifier` | stabiles Pseudonym pro Endnutzer; ohne es trägt der Request die **Konto**-Identität, ein Policy-Block trifft also alles | ein Wert pro Lauf müsste vom Aufrufer kommen, den Weg gibt es noch nicht (Responses-Route only) |
+| `plugins` | `context-compression` (shorten the prompt automatically), `response-healing`, `moderation`, `file-parser`, `auto-router` | each changes what the model sees or costs — not without a measurement |
+| `prompt_cache_options` | `{"mode": "explicit"}` switches off OpenAI's **own** breakpoints, so that only our markers count (GPT-5.6+) | which of the two variants caches better is unmeasured here |
+| `safety_identifier` | stable pseudonym per end user; without it the request carries the **account** identity, so a policy block hits everything | a value per run would have to come from the caller, and that path does not exist yet (Responses route only) |
 
-### Kein `usage: {include: true}` mehr
+### No more `usage: {include: true}`
 
-Das Feld ist bei OpenRouter deprecated und wirkungslos — Kosten, Cache-Treffer
-und `cost_details` kommen ohnehin in jeder Antwort. Am 01.09.2026 gegengeprüft,
-**streamend wie nicht-streamend**: mit und ohne Feld identische
-`usage`-Schlüssel und derselbe `cost`. Deshalb schicken die Clients es nicht
-mehr; wieder einbauen bringt nichts. `stream_options: {include_usage: true}`
-bleibt dagegen stehen — das braucht OpenAI direkt, nicht OpenRouter.
+The field is deprecated at OpenRouter and has no effect — costs, cache hits
+and `cost_details` arrive in every answer anyway. Cross-checked on 2026-09-01,
+**streaming and non-streaming alike**: with and without the field identical
+`usage` keys and the same `cost`. That is why the clients no longer send it;
+adding it back gains nothing. `stream_options: {include_usage: true}`
+stays, on the other hand — OpenAI direct needs that, not OpenRouter.
 
-## DeepSeek via OpenRouter: fp8, nicht fp4
+## DeepSeek via OpenRouter: fp8, not fp4
 
-Preistabelle vom 2026-08-20 (Input / Output / Cache-Read je 1M Token):
+Price table of 2026-08-20 (input / output / cache read per 1M tokens):
 
-| Endpunkt | in | out | cache | Quantisierung |
+| Endpoint | in | out | cache | Quantization |
 |---|---|---|---|---|
-| open-inference | 0,065 | 0,14 | 0,014 | fp4 |
-| relace | 0,07 | 0,14 | 0,014 | fp4 |
-| decart | 0,0765 | 0,153 | 0,0153 | fp4 |
-| **streamlake** | 0,0784 | 0,1568 | 0,0157 | **fp8** ← `order[0]` |
-| **baidu** | 0,0798 | 0,1596 | 0,0160 | **fp8** |
-| **deepinfra** | 0,08 | 0,18 | 0,0160 | **fp8** |
-| deepseek (direct) | 0,22 | 0,66 | 0,007 | — |
+| open-inference | 0.065 | 0.14 | 0.014 | fp4 |
+| relace | 0.07 | 0.14 | 0.014 | fp4 |
+| decart | 0.0765 | 0.153 | 0.0153 | fp4 |
+| **streamlake** | 0.0784 | 0.1568 | 0.0157 | **fp8** ← `order[0]` |
+| **baidu** | 0.0798 | 0.1596 | 0.0160 | **fp8** |
+| **deepinfra** | 0.08 | 0.18 | 0.0160 | **fp8** |
+| deepseek (direct) | 0.22 | 0.66 | 0.007 | — |
 
-Die drei billigsten sind **fp4-quantisiert**. Für Prosa ist das ein
-Qualitätsrisiko, das ~15 % Ersparnis nicht wert ist — deshalb beginnt `order`
-beim günstigsten fp8. Wer fp4 probieren will: `open-inference` auf Position 0
-setzen und **am Buch** messen, nicht an der Rechnung.
+The three cheapest are **fp4-quantized**. For prose that is a quality
+risk not worth ~15 % savings — that is why `order` starts
+at the cheapest fp8. Whoever wants to try fp4: put `open-inference` at position 0
+and measure **on the output**, not on the invoice.
 
-**baidu steht bewusst hinten**: es deckelt die Ausgabe bei 131072 Token,
-streamlake und deepinfra erlauben 384000. Drei v4-Scorer fordern 262144 über
-`llm_params` an und würden bei baidu mit 400 abbrechen (Review-Befund B4).
+**baidu is deliberately at the back**: it caps the output at 131072 tokens,
+streamlake and deepinfra allow 384000. Three scorer agents request 262144 via
+`llm_params` and would abort with a 400 at baidu (review finding B4).
 
-`quantizations: ["fp8"]` ist **erzwungen**, nicht bevorzugt: ohne das Feld
-routet ein ausgelasteter Pin preis-sortiert weiter — genau auf die fp4-Endpunkte,
-die die Tabelle für Prosa ausschließt.
+`quantizations: ["fp8"]` is **enforced**, not preferred: without the field,
+a busy pin falls through price-sorted — straight to the fp4 endpoints
+that the table rules out for prose.
 
-Kontextfenster: an den gepinnten Endpunkten gemessen (2026-08-20) — streamlake
-1,024M, baidu/deepinfra 1,048M. Die älteren or-deepseek-Einträge deklarierten
-100k; **die** sind die Untertreibung, nicht der große Wert. Ein zu kleines
-Fenster ließe den Summarizer zehnmal zu früh feuern.
+Context window: measured on the pinned endpoints (2026-08-20) — streamlake
+1.024M, baidu/deepinfra 1.048M. The older or-deepseek entries declared
+100k; **those** are the understatement, not the large value. A window that is too small
+would make the summarizer fire ten times too early.
 
-`deepseek-v4-pro` ist auf den Slug **0813** gepinnt: neuere Generation *und*
-billiger als der undatierte (1,60/3,20 gegen 1,205/3,614). Einen
-`latest`-Alias gibt es für Pro nicht, für Flash schon.
+`deepseek-v4-pro` is pinned to the slug **0813**: newer generation *and*
+cheaper than the undated one (1.60/3.20 versus 1.205/3.614). There is no
+`latest` alias for Pro, but there is for Flash.
 
-## Warum manche Einträge kein `max_tokens` setzen
+## Why some entries set no `max_tokens`
 
-Die OpenRouter-DeepSeek-Einträge ersetzen Direct-Profile, die ohne Cap liefen.
-Ein hartes Limit dort hätte lange Szenen und JSON still abgeschnitten — und das
-Reasoning teilt sich dieses Budget. Deshalb: kein `max_tokens`, der Anbieter
-entscheidet. Bei den `-unlimited`-Varianten steht `max_tokens: null`
-ausdrücklich da, weil sie es sonst von ihrem Elterneintrag erben würden.
+The OpenRouter DeepSeek entries replace direct profiles that ran without a cap.
+A hard limit there would have silently truncated long scenes and JSON — and
+reasoning shares this budget. Hence: no `max_tokens`, the provider
+decides. For the `-unlimited` variants `max_tokens: null` is
+stated explicitly, because otherwise they would inherit it from their parent entry.
 
-## Gemini via OpenRouter: die Responses-Route
+## Gemini via OpenRouter: the Responses route
 
-Die Gemini-Einträge laufen über `provider: openai_responses`, nicht über die
-Chat-Completions-Brücke. Auf dieser Route reisen die Output-Items des Modells
-**wortgleich** hin und zurück; die Brücke musste sie rekonstruieren, was die
-`"encrypted content ... could not be verified"`-400er erzeugte.
+The Gemini entries run via `provider: openai_responses`, not via the
+Chat Completions bridge. On this route the model's output items travel
+**verbatim** there and back; the bridge had to reconstruct them, which produced the
+`"encrypted content ... could not be verified"` 400s.
 
-**Die `openrouter-gemini*`-Einträge setzen kein `safety_settings`** — das Feld
-wirkt auf dieser Route nicht. Derselbe Unsinns-Wert
-(`category: HARM_CATEGORY_NOT_A_REAL_THING`) wird auf `/chat/completions` mit
-HTTP 400 samt Enum-Liste abgelehnt, auf `/responses` mit HTTP 200
-stillschweigend geschluckt: OpenRouter lässt es dort fallen, bevor es Google
-erreicht (gemessen 01.09.2026).
+**The `openrouter-gemini*` entries set no `safety_settings`** — the field
+has no effect on this route. The same nonsense value
+(`category: HARM_CATEGORY_NOT_A_REAL_THING`) is rejected on `/chat/completions` with
+HTTP 400 including the enum list, and on `/responses` swallowed silently with
+HTTP 200: OpenRouter drops it there before it reaches Google (measured 2026-09-01).
 
-Es fehlt dadurch nichts. `debug.echo_upstream_body` zeigt auf der Chat-Route,
-dass OpenRouter ohne eigene Angabe alle fünf Kategorien auf `OFF` setzt —
-freizügiger als die Schwellen, die hier früher standen (drei auf
-`BLOCK_ONLY_HIGH`, und `HARM_CATEGORY_CIVIC_INTEGRITY` fiel ganz aus dem
-Upstream-Body). Für Prosa war unsere Angabe die *strengere*.
+Nothing is missing as a result. `debug.echo_upstream_body` shows on the chat route
+that without its own setting OpenRouter sets all five categories to `OFF` —
+more permissive than the thresholds that used to stand here (three
+at `BLOCK_ONLY_HIGH`, and `HARM_CATEGORY_CIVIC_INTEGRITY` dropped out of the
+upstream body entirely). For prose our setting was the *stricter* one.
 
-Wer wirklich eigene Schwellen braucht, nimmt die nativen `gemini-3-*`-Einträge
-(`provider: gemini_sdk`): die reden direkt mit Google, dort greift das Feld.
+Whoever really needs their own thresholds takes the native `gemini-3-*` entries
+(`provider: gemini_sdk`): they talk directly to Google, where the field takes effect.
 
-`service_tier: flex` ist Googles Flex Processing: billiger, dafür längere
-Warteschlange. Bei einer 429 auf dem Flex-Tier lässt der Client das Feld einmal
-fallen und wiederholt auf Standard.
+`service_tier: flex` is Google's Flex Processing: cheaper, but a longer
+queue. On a 429 on the flex tier the client drops the field once
+and retries on standard.
 
-### AI Studio vor Vertex
+### AI Studio before Vertex
 
-`openrouter-gemini` fragt Google AI Studio zuerst, Vertex danach. Gemessen am
-01.10.2026 mit den ersten 30 Aufrufen eines `shorts_producer`-Laufs. Sie wurden
-je zweimal pro Anbieter nachgespielt, mit einer eigenen Nonce, sodass kein
-Durchgang den Cache eines anderen trifft:
+`openrouter-gemini` asks Google AI Studio first, Vertex afterwards. Measured on
+2026-10-01 with the first 30 calls of a `shorts_producer` run. They were
+replayed twice per provider, each with its own nonce, so that no
+pass hits another's cache:
 
 | | Standard | Flex |
 |---|---|---|
-| AI Studio: aus dem Cache | 80–84 % | 82–84 % |
-| AI Studio: Kosten | 0,25–0,27 $ | 0,12–0,14 $ |
-| AI Studio: je Aufruf | 3,5 s | 4,5 s (max. 11 s) |
-| Vertex: aus dem Cache | 59–71 % | 77–83 % |
-| Vertex: Kosten | 0,32–0,40 $ | 0,13–0,14 $ |
-| Vertex: je Aufruf | 7–12 s | 19 s (max. 78 s) |
+| AI Studio: from cache | 80–84 % | 82–84 % |
+| AI Studio: cost | $0.25–0.27 | $0.12–0.14 |
+| AI Studio: per call | 3.5 s | 4.5 s (max. 11 s) |
+| Vertex: from cache | 59–71 % | 77–83 % |
+| Vertex: cost | $0.32–0.40 | $0.13–0.14 |
+| Vertex: per call | 7–12 s | 19 s (max. 78 s) |
 
-Der Präfix war in allen Fällen byte-gleich. Vertex (auf OpenRouter nur sein
-`global`-Endpunkt) verfehlt seinen impliziten Cache öfter und ist langsamer. Auf
-Flex braucht Vertex 20–50 s pro Aufruf; die Messung vom 30.09. mit „Flex
-14–315 s“ lag auf Vertex. AI Studio ist mit Flex fast so schnell wie mit Standard,
-kostet aber nur die Hälfte. Ein echter Lauf bestätigt das: dieselbe Produktion
-mit Flex auf AI Studio kostete 0,35 $ bei 89 % Cache-Anteil.
+The prefix was byte-identical in all cases. Vertex (on OpenRouter only its
+`global` endpoint) misses its implicit cache more often and is slower. On
+flex, Vertex needs 20–50 s per call; the measurement of 30.09. with "flex
+14–315 s" was on Vertex. AI Studio with flex is almost as fast as with standard,
+but costs only half. A real run confirms this: the same production
+with flex on AI Studio cost $0.35 at an 89 % cache share.
 
-Fällt AI Studio aus (429/5xx), geht der Aufruf an Vertex. Der Pin auf den Anbieter
-(`served_by`) hält den Rest des Laufs dort, wo er angefangen hat.
+If AI Studio fails (429/5xx), the call goes to Vertex. The pin on the provider
+(`served_by`) keeps the rest of the run where it started.
 
 ## GPT-5.6 via OpenRouter
 
-`prompt_cache_key: "auto"` ist ab GPT-5.6 **Pflicht** für zuverlässiges
-Cache-Matching — ohne Key cacht das Modell praktisch nie (belegt 2026-07-21:
-byte-identischer 10k-Prefix, `cached_tokens=0`). Der Key gehört zum Modell, nicht
-in die Agent-Dateien; dort stand er bis zum 2026-08-22 34-mal.
+`prompt_cache_key: "auto"` is **mandatory** from GPT-5.6 on for reliable
+cache matching — without a key the model practically never caches (proven 2026-07-21:
+byte-identical 10k prefix, `cached_tokens=0`). The key belongs to the model, not
+in the agent files; it stood there 34 times until 2026-08-22.
 
-Reasoning-Round-Trip: Die Items der Reasoning-Modelle bilden eine
-verschlüsselte Kette, die jeder Turn vollständig zurückgeben muss. Das
-Config-Feld `reasoning_details_mode` sagt pro Modell, wie viel davon
-zurückreist, und wird auf `openai_httpx`, `openai_responses`,
-`openrouter_sdk` und `anthropic` ausgewertet. Der Default hängt an der Route:
-`keep_last` auf der Chat-Route (dort gilt eine Thought-Signature nur für den
-laufenden Turn), `keep_all` dort, wo ganze Item-Ketten verbatim zurückgehen.
+Reasoning round trip: The items of the reasoning models form an
+encrypted chain that every turn must return in full. The
+config field `reasoning_details_mode` says per model how much of it
+travels back, and is evaluated on `openai_httpx`, `openai_responses`,
+`openrouter_sdk` and `anthropic`. The default depends on the route:
+`keep_last` on the chat route (where a thought signature only applies to the
+current turn), `keep_all` where whole item chains go back verbatim.
 
-⚠️ Wer den Cache eines Modells nutzt, das seinen Prefix byteweise vergleicht
-(Claude), braucht `keep_all` — mit `keep_last` verliert die vorige Runde ihre
-Blöcke, das Prefix ändert sich vor dem Anker, und jeder Schritt schreibt den
-Cache neu statt ihn zu lesen. Gemessen am `book_launcher` (43 Calls): 19-mal
-Rückfall auf 25.878 gelesene Tokens, nie mehr. `openrouter-claude` setzt es
-deshalb.
+⚠️ Whoever uses the cache of a model that compares its prefix byte for byte
+(Claude) needs `keep_all` — with `keep_last` the previous round loses its
+blocks, the prefix changes before the anchor, and every step rewrites the
+cache instead of reading it. Measured on `book_launcher` (43 calls): 19 times
+a fall back to 25,878 tokens read, never more. `openrouter-claude` therefore
+sets it.
 
-## `openrouter_sdk`: dieselbe Route über das offizielle SDK
+## `openrouter_sdk`: the same route via the official SDK
 
-Seit 2026-09-01 gibt es einen zweiten Weg zum selben `/responses`-Endpunkt:
-`provider: openrouter_sdk` (Plugin `plugins/llm_openrouter`) schickt den
-Request über OpenRouters offizielles Python-SDK. Er ist ein **A/B-Kandidat**,
-kein Ersatz: der Client erbt vom `openai_responses`-Client und tauscht nur
-`_post` — Payload-Bau, Cache-Breakpoints, Parser, Heilungsschleife und Hooks
-sind dieselben. Was in einem Vergleich abweicht, ist der Transport.
+Since 2026-09-01 there is a second way to the same `/responses` endpoint:
+`provider: openrouter_sdk` (plugin `plugins/llm_openrouter`) sends the
+request via OpenRouter's official Python SDK. It is an **A/B candidate**,
+not a replacement: the client inherits from the `openai_responses` client and swaps only
+`_post` — payload building, cache breakpoints, parser, healing loop and hooks
+are the same. What differs in a comparison is the transport.
 
-Umschalten ist eine Zeile; die Einträge erben ohnehin von `openrouter-base`:
+Switching is one line; the entries inherit from `openrouter-base` anyway:
 
 ```yaml
     mein-modell:
       extends: openrouter-base
-      provider: openrouter_sdk    # statt openai_responses
+      provider: openrouter_sdk    # instead of openai_responses
 ```
 
-Voraussetzung: `pip install openrouter` (steht in `requirements/all.txt`).
-Ohne installiertes Paket ist nur dieser eine Eintrag betroffen — das Plugin
-wird erst importiert, wenn ein Modell den Provider nennt.
+Prerequisite: `pip install openrouter` (it is in `requirements/all.txt`).
+Without the package installed, only this one entry is affected — the plugin
+is only imported when a model names the provider.
 
-**Was gemessen ist** (openrouter 1.1.108, 2026-09-01):
+**What is measured** (openrouter 1.1.108, 2026-09-01):
 
-* Die Antwort wird **aus dem rohen Body** gelesen, nicht aus dem typisierten
-  Ergebnis. Hauptgrund ist baulich: die geerbte Heilungsschleife entscheidet
-  am Statuscode, erkennt Body-Fehler in einer HTTP 200 und prüft
-  Reasoning-Ablehnungen am Body-**Text** — sie braucht den Rohtext ohnehin.
-  Dazu kommt eine bekannte Zerbrechlichkeit: `usage` ist `OptionalNullable`,
-  und `UsageCostDetails` verlangt
-  `upstream_inference_input_cost`/`…output_cost`. Fehlen die, fällt das
-  **ganze** `usage`-Objekt still auf `Unset()` — Tokens, `cost` und
-  Cache-Treffer weg, ohne Fehler. **Nicht live beobachtet**: die am
-  01.09.2026 gemessenen Antworten (deepseek-v4-flash, gemini-3.5-flash-lite)
-  trugen alle Pflichtfelder, das typisierte Modell hätte sie korrekt
-  geparst. Der rohe Body ist also Vorsorge, kein Reparaturfall.
-* Der Request geht typisiert raus und trägt alles, was diese Route braucht:
-  `provider`-Routing, `reasoning`, `service_tier`, `prompt_cache_key` und den
-  Cache-Breakpoint `prompt_cache_breakpoint`.
-* **Zwei Felder kann er nicht**, und er verweigert deshalb beim Bauen statt
-  sie zu verlieren: `safety_settings` (kein SDK-Parameter — damit fällt die
-  Gemini-Route aus) und Anthropic-`cache_control` pro Content-Part
+* The answer is read **from the raw body**, not from the typed
+  result. The main reason is structural: the inherited healing loop decides
+  by status code, detects body errors in an HTTP 200 and checks
+  reasoning rejections against the body **text** — it needs the raw text anyway.
+  In addition there is a known fragility: `usage` is `OptionalNullable`,
+  and `UsageCostDetails` requires
+  `upstream_inference_input_cost`/`…output_cost`. If those are missing, the
+  **whole** `usage` object silently falls back to `Unset()` — tokens, `cost` and
+  cache hits gone, without an error. **Not observed live**: the answers
+  measured on 2026-09-01 (deepseek-v4-flash, gemini-3.5-flash-lite)
+  all carried the required fields, the typed model would have parsed them
+  correctly. So the raw body is a precaution, not a repair case.
+* The request goes out typed and carries everything this route needs:
+  `provider` routing, `reasoning`, `service_tier`, `prompt_cache_key` and the
+  cache breakpoint `prompt_cache_breakpoint`.
+* **Two fields it cannot do**, and therefore it refuses at build time instead of
+  losing them: `safety_settings` (not an SDK parameter — this rules out the
+  Gemini route) and Anthropic `cache_control` per content part
   (`prompt_cache_marker_style: anthropic`).
-* Das SDK ergänzt drei Felder von sich aus: `store: false`, `stream: false`
-  und `service_tier: "auto"`. Das letzte heißt: der Flex-Drop schickt den
-  Standard-Tier *explizit*, wo die httpx-Route das Feld weglässt.
-* Preis der Abhängigkeit: `pydantic<2.13`. Das deckelt die ganze Anwendung
-  eine Minor unter dem aktuellen Stand.
+* The SDK adds three fields on its own: `store: false`, `stream: false`
+  and `service_tier: "auto"`. The last one means: the flex drop sends the
+  standard tier *explicitly*, where the httpx route omits the field.
+* Price of the dependency: `pydantic<2.13`. This caps the whole application
+  one minor below the current release.
 
-## Profile
+## Profiles
 
-`turbo-batch` ist **kein Zwilling von `turbo` mehr.** `turbo` zeigt seit
-2026-08-18 auf gemini-3.5-flash-lite über OpenRouter, und einen
-OpenRouter-Batch-Pfad gibt es nicht (die Factory kennt nur
-gemini/openai/anthropic als `batch_provider`). Wer von `turbo` nach
-`turbo-batch` wechselt, um zu sparen, wechselt die Modellfamilie:
-gpt-5.4-nano statt gemini-flash-lite, 272k statt 400k Kontext, ohne
-`safety_settings` und ohne `provider_routing`.
+`turbo-batch` is **no longer a twin of `turbo`.** `turbo` has pointed to
+gemini-3.5-flash-lite via OpenRouter since 2026-08-18, and there is no
+OpenRouter batch path (the factory only knows
+gemini/openai/anthropic as `batch_provider`). Whoever switches from `turbo` to
+`turbo-batch` to save money switches the model family:
+gpt-5.4-nano instead of gemini-flash-lite, 272k instead of 400k context, without
+`safety_settings` and without `provider_routing`.
 
-`default_profile: or-deepseek-flash` (seit 2026-08-20, vorher `chat`):
-dieselbe Modellfamilie, aber über OpenRouter — `chat` zeigte auf die
-Direct-API, deren Konto fast leer ist. Greift nur als letzte Rückfallebene,
-wenn kein Profil auflösbar ist.
+`default_profile: or-deepseek-flash` (since 2026-08-20, before that `chat`):
+the same model family, but via OpenRouter — `chat` pointed to the
+direct API, whose account is almost empty. Applies only as the last fallback level,
+when no profile can be resolved.
 
-## Was NICHT im Katalog steht
+## What is NOT in the catalogue
 
-* **Keine Feld-Erklärungen.** Die stehen am Pydantic-Feld in
+* **No field explanations.** Those are on the Pydantic field in
   `agent_system/config/models.py`.
-* **Kein Änderungsprotokoll.** Wer wissen will, wann ein Wert warum gesetzt
-  wurde, liest `git log -p config/llm*.yaml` — dort steht es vollständig und
-  ohne die Datei zu verstopfen.
+* **No change log.** Whoever wants to know when and why a value was set
+  reads `git log -p config/llm*.yaml` — it is all there, and without
+  clogging up the file.

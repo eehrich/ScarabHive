@@ -1459,8 +1459,7 @@ class JsonStoreServer(SchemaBasedToolServer):
     async def stats(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Per-Kind-Wiederkehr von Begriffen ueber einen Doc-Teilbaum.
 
-        Deterministische Saettigungs-Analyse (docs/prompt_cache_design.md
-        verwandt; primaer fuer writer O9c): fuer jedes Kind unter ``path``
+        Deterministische Saettigungs-Analyse: fuer jedes Kind unter ``path``
         (dict-Werte oder Listen-Elemente) werden alle String-Werte rekursiv
         eingesammelt, in Woerter (>=4 Zeichen, lowercase) und Wort-Bigramme
         zerlegt, und pro Kind als MENGE gezaehlt. Ergebnis: Begriffe, die in

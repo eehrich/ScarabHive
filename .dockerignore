@@ -64,7 +64,6 @@ MagicMock/
 # --- Not needed at runtime --------------------------------------------------
 .github/
 .vscode/
-.prompts/
 .idea/
 # Developer-assistant settings. .claude/skills stays: config.yaml lists it as
 # a skill root (skills.skill_dirs), and a missing fixed root logs a warning.

@@ -198,8 +198,6 @@ Mandatory: Never change backlog.md directly!!
 
 ## developer docs
 
-- Primary prompt files: ` .prompts/developer_rules.md`, ` .prompts/project_objectives.md`, and ` .prompts/master_system_prompt.md`.
-- Usage: load `developer_rules.md` and `project_objectives.md` first, then initialize the assistant session with `master_system_prompt.md` so the agent follows repository rules (tests-first, preserve tests, update README when behavior changes).
 - load `README.md` and `backlog.md` for a general overview.
 
 Work step-by-step until task is **fully completed**. No intermediate reports.

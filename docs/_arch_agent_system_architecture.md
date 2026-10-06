@@ -323,18 +323,18 @@ timed-out hook is logged and skipped. Global `hooks.overrides` accept an exact
 
 Files listed under `includes:` contribute `llm_system`, `plugins` and `hooks` (deep-merged) and `external_servers` (the last file that has it wins). Every other top-level section (`network`, `logging`, ...) an include sets over what came before; `paths`, `auth`, `includes` and `files` are read from `config.yaml` only, and an include setting them is warned about and ignored. The exception is auth's route rules (`endpoint_security`, `llm_security`, `plugin_security`): an include `config.yaml` names by its own path -- never one a glob matched -- may set them, and `config/security.yaml` does. A file `config.yaml` names by its path must exist and load, or the start fails. `config/local.yaml` is read after all includes and may set every section but `includes` and `files`; it may be missing, but where it is there it must load, or the start fails (it names the machine's own signing key).
 
-**Datenverzeichnis (`agent_system/paths.py`):** Alles, was das System schreibt —
-Sessions, Datenbanken, Caches, die Bücher des Writers — liegt unter einem
-Verzeichnis. Standard ist `data` im Projekt; verschoben wird es mit
-`AGENT_DATA_DIR` (Umgebung, gewinnt) oder `paths: data_dir:` in
-`config/config.yaml` (nur dort, Neustart nötig; relativ = relativ zum Projekt).
-Die Regel: ein relativer Pfad, dessen erster Teil `data` ist, landet im
-Datenverzeichnis — der Loader schreibt so die Werte aus der Konfiguration und
-den `schema.yaml`-Defaults um, `PathSandbox` die Pfade, die das Modell aus
-Prompts kennt, `resolve_data_path` Werte aus Umgebung und Datenbank (etwa die
-portablen Cover-Pfade in `books.db`). Ist nichts gesetzt, ändert sich nichts.
-Nicht erfasst: Shell-Befehle im `terminal` (ein `ls data/...` läuft im
-Arbeitsverzeichnis) und die `ReadWritePaths` der systemd-Units.
+**Data directory (`agent_system/paths.py`):** Everything the system writes —
+sessions, databases, caches, the data of plugins in further plugin roots — lives
+under one directory. The default is `data` in the project; it is moved with
+`AGENT_DATA_DIR` (environment, wins) or `paths: data_dir:` in
+`config/config.yaml` (only there, restart required; relative = relative to the project).
+The rule: a relative path whose first part is `data` ends up in the data
+directory — this is how the loader rewrites the values from the configuration and
+the `schema.yaml` defaults, `PathSandbox` the paths the model knows from prompts,
+and `resolve_data_path` values from the environment and database (such as
+portable paths stored in a database). If nothing is set, nothing changes.
+Not covered: shell commands in `terminal` (an `ls data/...` runs in the
+working directory) and the `ReadWritePaths` of the systemd units.
 
 ---
 
@@ -722,9 +722,7 @@ AGENT_ENABLE_PROFILING=1   # debug/profiling endpoints
 
 ### 10.2 Design Documents
 
-- [Configurable Agents](configurable_agents.md) - YAML-based agents
 - [Session Management](session_management.md) - Multi-user sessions
-- [Status System](status_design.md) - Real-time updates
 - [Caching Systems](caching_systems.md) - Performance optimization
 
 ### 10.3 User Guides

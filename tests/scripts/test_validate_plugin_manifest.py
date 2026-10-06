@@ -314,7 +314,7 @@ class TestTheShapesTheRuntimeSupports:
             f"the failed second render was not reported: {validator.one_state}"
 
     def test_a_library_plugin_needs_no_entrypoint_module(self):
-        """`coder`, `amiga`, `research`, `writer_publish`: agents, skills and
+        """`coder`, `research`: agents, skills and
         prompts, no code. The runtime discovers them; this refused them for a
         missing plugin.py."""
         validator = _validate(REPO / "src" / "plugins" / "coder")

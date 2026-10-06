@@ -37,7 +37,7 @@ plugins:
 - `system_template` with `./` or `../` resolves relative to the YAML; only `.md`,
   `.txt`, `.markdown`. `<!-- -->` comments are stripped before Jinja.
   `default_config` sets `config/prompts/system_prompt.md` for every agent.
-- Prompt language: English outside `src/plugins_writer/`.
+- Prompt language: English, unless a further plugin root documents an exception.
 - Visibility: `tool`/`both` → callable as a tool by other agents; `ui`/`both` → in the UI.
   It only hides; it does not stop a run by name.
 - Called as a tool, an agent runs on a session of its own per caller session
@@ -84,7 +84,7 @@ plugins:
 - Date variables come via `config.context.auto_datetime`; never put them in the prompt
   (cache, see [hooks.md](hooks.md)).
 - Branch on what is there: `has_tool('*_manage_sub_agent')` (fnmatch over `tools`, the
-  agent's own tools; names carry the instance prefix), `'writer_pipeline_v4' in plugins`
+  agent's own tools; names carry the instance prefix), `'stategraph' in plugins`
   (types installed and enabled), `'github' in mcp_servers`. A plugin's id is its
   type = folder name. Table: `docs/config_based_agents.md`.
 

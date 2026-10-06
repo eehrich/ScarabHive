@@ -7,7 +7,7 @@
 # Lage, in der die drei Verben etwas taugen müssen.
 #
 # Nicht produktiv nutzen: mit diesen Schwellen bricht jede Verdichtung den
-# Prompt-Cache-Präfix (docs/prompt_cache_design.md §3.5).
+# Prompt-Cache-Präfix.
 plugins:
   servers:
     context_browse_test_agent:

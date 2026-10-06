@@ -322,8 +322,7 @@ class HTTPXOpenAIClient(LLMClient):
         # setzen — Fremd-Provider koennten den Param ablehnen.
         self.prompt_cache_key: str | None = self.extra_params.pop("prompt_cache_key", None)
 
-        # Cache-Verhalten (Agent, via llm_params "*") + Marker-Stil (Modell) —
-        # docs/prompt_cache_design.md §3/§4.
+        # Cache-Verhalten (Agent, via llm_params "*") + Marker-Stil (Modell).
         self.prompt_cache_mode: str | None = self.extra_params.pop("prompt_cache_mode", None)
         self.prompt_cache_marker_style: str | None = declared_choice(
             self.extra_params.pop("prompt_cache_marker_style", None),
@@ -1223,7 +1222,7 @@ class HTTPXOpenAIClient(LLMClient):
         message_dicts = await asyncio.to_thread(_serialize_messages)
         self._postprocess_messages_for_provider(message_dicts)
         # The key is resolved BEFORE the block split: the segment ladder needs it
-        # for the registry (docs/prompt_cache_design.md). From the ORIGINAL
+        # for the registry. From the ORIGINAL
         # messages, not message_dicts: the rung step in the postprocess above has
         # dropped `injected_by` from them, and without the marker the derivation
         # takes a plugin block rebuilt on every call for prompt.
@@ -1791,7 +1790,7 @@ class HTTPXOpenAIClient(LLMClient):
         message_dicts = await asyncio.to_thread(_serialize_messages)
         self._postprocess_messages_for_provider(message_dicts)
         # The key is resolved BEFORE the block split: the segment ladder needs it
-        # for the registry (docs/prompt_cache_design.md). From the ORIGINAL
+        # for the registry. From the ORIGINAL
         # messages, not message_dicts: the rung step in the postprocess above has
         # dropped `injected_by` from them, and without the marker the derivation
         # takes a plugin block rebuilt on every call for prompt.

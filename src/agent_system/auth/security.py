@@ -177,7 +177,7 @@ _PUBLIC_SECRET_KEY_SHA256 = frozenset({
     "a293967483cb240a5873265fb8001b3b2ecc62507ad548dc83c2a985512221f9",  # config/config.yaml as shipped
     "ce4672e4f246127083e95215b3715799cac14f4e9129dd6eab816aac6aac6af7",  # docs/multi_user_authentication.md
     "3709d7f2d6e177c01b2443871411546cc15aa03b0466c339cb72c0f2621668c2",  # docs/security_hardening_design.md
-    "fb944581fc56eb464b2fae7da22b7b47391476329c6ae27cc770d1cfb2ecf4ec",  # docs/reviews/2025-10-22/12_authentication_security.md
+    "fb944581fc56eb464b2fae7da22b7b47391476329c6ae27cc770d1cfb2ecf4ec",  # an example in a review document, since removed
 })
 
 

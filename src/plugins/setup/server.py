@@ -3,7 +3,7 @@
 It reports the keys, the admin's password and the signing key, and tries the
 chat. The panel changes the admin's password, writes a key into
 config/local.env and gives the installation its own signing key
-(agent_system.config.local_layer; docs/einrichtung_konzept.md). A tool never
+(agent_system.config.local_layer). A tool never
 writes a key: it would pass through the chat.
 """
 from __future__ import annotations

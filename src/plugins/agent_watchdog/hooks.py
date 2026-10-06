@@ -1,7 +1,7 @@
 """Agent watchdog — stage 1: a passive judge at the step boundary and, via
 ``llm_progress``, inside a call that is still thinking.
 
-Concept: ``docs/agent_watchdog_konzept.md``. This is Etappe 1 and nothing more:
+This is a first stage and nothing more:
 every *n* steps a separate, configurable model reads a bounded excerpt of the
 run and says whether the recent stretch moved the task forward. The verdict is
 logged and shown as a status line. **It is not acted on** — no message is

@@ -1,44 +1,43 @@
 ---
 name: panel-authoring
-description: Wie man in ScarabHive ein Panel baut oder ein bestehendes Plugin-Panel auf das UI-Kit umstellt — der web_ui.panel-Block in schema.yaml, das Template auf kit/panel_base.html, panel-kit.js (api, html, Dialoge, Session, Auto-Refresh), das Host-Protokoll, die Verbote und wie man prüft. Laden, sobald ein Panel (Plugin oder Kern), ein Template unter templates/ oder ein Skript unter static/ gebaut, migriert oder repariert wird, und bevor ein Plugin einen web_ui-Block bekommt.
+description: How to build a panel in ScarabHive or move an existing plugin panel onto the UI kit — the web_ui.panel block in schema.yaml, the template on kit/panel_base.html, panel-kit.js (api, html, dialogs, session, auto-refresh), the host protocol, the prohibitions and how to check. Load as soon as a panel (plugin or core), a template under templates/ or a script under static/ is built, migrated or repaired, and before a plugin gets a web_ui block.
 ---
 
-# Panels bauen
+# Building panels
 
-Deutsch mit dem Nutzer; Code, Oberflächentexte und Commit-Messages Englisch.
-Ausnahme: die Writer-Panels (`src/plugins_writer/`) sind bewusst deutsch.
+Code, UI text and commit messages are English. A further plugin root
+(`src/plugins_<name>/`) may keep its panels in another language (`<html lang>`).
 
-Hintergrund und Entscheidungen: `docs/webui_konzept.md`. Diese Skill ist das
-Handwerk. **Die Komponenten selbst zeigt `/ui/kit`** — jede in jedem Zustand,
-gerendert aus denselben Dateien, die ein Panel lädt. Dort nachsehen statt
-Markup aus alten Panels zu kopieren.
+This skill is the craft.
+**`/ui/kit` shows the components themselves** — each in every state, rendered
+from the same files a panel loads. Look there instead of copying markup from
+old panels.
 
-## Was ein Panel ist
+## What a panel is
 
-Eine HTML-Seite, die die Shell im **iframe** zeigt: als Tab neben dem Chat
-angedockt oder herausgelöst als schwebendes Fenster. Jedes Panel ist einmal
-offen; ein zweites Öffnen holt es nach vorn. Geöffnet wird es über den
-**Katalog** (`GET /api/ui/catalog`): Panel-Starter, Befehlspalette und die
-Einstiege im Chat lesen alle dieselbe Liste. Direkt im Browser-Tab geöffnet
-funktioniert dieselbe Seite auch — dann zeigt sie Dialoge und Toasts selbst.
-Dorthin bringt sie auch der Knopf „Open in a new browser tab“ an Tab und
-Fensterleiste. Ein eigener Tab hat keinen Chat, dem er folgen könnte: ein Panel
-mit `session`-Kontext bekommt dabei die Session des Chats als `?session_id=`
-angeheftet und zeigt so dasselbe wie im Frame. Steht `<pk-session all>` auf
-„alle Sessions“, startet der Tab dort (`?session_scope=all`) und bleibt trotzdem
-angeheftet: die Wahl „diese Session“ nennt dann eine. Der Rückweg: im eigenen
-Tab setzt das Kit „Open in ScarabHive“ in den Kopf — die Shell öffnet sich mit
-diesem Panel an dieser Seite (`/?panel=<Pfad der Seite>`; angedockt, oder wo es
-schon offen ist), auf „alle Sessions“, wenn es dort steht. Eine angeheftete
-Session öffnet sich dabei auch im Chat; die
-Anheftung bleibt, denn ein Panel kann mehr daran hängen als die Session, der es
-folgt (`message_debugger` filtert danach).
+An HTML page the shell shows in an **iframe**: docked as a tab next to the chat
+or detached as a floating window. Each panel is open once; opening it again
+brings it to the front. It is opened through the **catalog**
+(`GET /api/ui/catalog`): the panel launcher, the command palette and the entry
+points in the chat all read the same list. Opened directly in a browser tab the
+same page works too — it then shows dialogs and toasts itself. The button
+"Open in a new browser tab" on the tab and the window bar takes it there. A tab
+of its own has no chat to follow: a panel with a `session` context gets the
+chat's session pinned as `?session_id=` and so shows the same as in the frame.
+If `<pk-session all>` is set to "all sessions", the tab starts there
+(`?session_scope=all`) and stays pinned all the same: the choice "this session"
+then names one. The way back: in its own tab the kit puts "Open in ScarabHive"
+into the head — the shell opens with this panel on this page
+(`/?panel=<path of the page>`; docked, or where it is already open), on "all
+sessions" if it is set there. A pinned session opens in the chat as well; the
+pin stays, because a panel can hang more on it than the session it follows
+(`message_debugger` filters by it).
 
-Das iframe ist Stil-, Absturz- und Lebenszyklus-Grenze, **keine**
-Sicherheitsgrenze: Panels laufen mit `allow-same-origin` und dem Cookie der
-Shell. Fremden Code nicht als Panel einbinden.
+The iframe is a boundary for style, crashes and life cycle, **not** a security
+boundary: panels run with `allow-same-origin` and the shell's cookie. Do not
+embed foreign code as a panel.
 
-## 1. Der Katalog-Eintrag (`schema.yaml`)
+## 1. The catalog entry (`schema.yaml`)
 
 ```yaml
 web_ui:
@@ -59,42 +58,42 @@ web_ui:
       response_type: "html"
 ```
 
-| Feld | Pflicht | Bedeutung |
+| Field | Required | Meaning |
 |---|---|---|
-| `endpoint` | ja | URL der Panel-Seite. `{{ name }}` ist die Plugin-Instanz. |
-| `title` | ja | Name im Starter, im Tab, in der Fensterleiste. Zwei Instanzen mit gleichem Titel bekommen den Instanznamen angehängt. |
-| `icon` | ja | Symbol-ID aus `static/kit/icons.svg` (Liste: `/ui/kit`). |
-| `category` | ja | `session`, `writer`, `context`, `agents`, `debug`, `system`, `admin` — fest, nicht erweiterbar. |
-| `description` | | ein Satz, erscheint im Starter und wird durchsucht. |
-| `keywords` | | Suchwörter, die nicht im Titel stehen. |
-| `window` | | Größe des herausgelösten Fensters. |
-| `contexts` | | Einstiege aus dem Zusammenhang: `session` (Info-Knopf einer Session, Klick auf den Session-Titel im Kopf) und `request` (Request-ID unter einer Antwort). Die URL **muss mit `endpoint` beginnen**; `{session_id}` bzw. `{request_id}` setzt die Shell URL-kodiert ein. Nur eintragen, wenn das Panel den Parameter wirklich liest. **Ein `session`-Kontext heftet ein Panel an, das sonst dem Chat folgt** — es folgt ihm dann nicht mehr, bis der Nutzer die Anheftung löst. Wer ihn einträgt, zeigt die angeheftete Session deshalb sichtbar und wieder lösbar: mit `<pk-session>` in der Toolbar, oder in einem Feld, das man leeren kann (so macht es `message_debugger`). Stumm anheften ist der Fehler. |
+| `endpoint` | yes | URL of the panel page. `{{ name }}` is the plugin instance. |
+| `title` | yes | Name in the launcher, the tab, the window bar. Two instances with the same title get the instance name appended. |
+| `icon` | yes | Symbol id from `static/kit/icons.svg` (list: `/ui/kit`). |
+| `category` | yes | `session`, `writer`, `context`, `agents`, `debug`, `system`, `admin` — fixed, not extensible. |
+| `description` | | one sentence, shown in the launcher and searched. |
+| `keywords` | | search words that are not in the title. |
+| `window` | | size of the detached window. |
+| `contexts` | | entry points from context: `session` (a session's info button, a click on the session title in the head) and `request` (the request id under an answer). The URL **must start with `endpoint`**; the shell inserts `{session_id}` or `{request_id}` URL-encoded. Only add one when the panel really reads the parameter. **A `session` context pins a panel that otherwise follows the chat** — it then no longer follows it until the user releases the pin. Whoever adds it therefore shows the pinned session visibly and releasably: with `<pk-session>` in the toolbar, or in a field that can be cleared (as `message_debugger` does). Pinning silently is the mistake. |
 
-**Wer das Panel sieht, steht nicht im Block:** der Katalog zeigt es den Rollen,
-die beide Schichten der Route-Security in `config/security.yaml` den `endpoint`
-öffnen lassen: `auth.endpoint_security` (app-weit) und `auth.plugin_security`.
-Soll ein Panel nur für
-Admins sein, gehört eine Regel für seine Routen in die Konfiguration — dann
-passen Sichtbarkeit und Zugriff automatisch zusammen.
+**Who sees the panel is not in the block:** the catalog shows it to the roles
+that both layers of the route security in `config/security.yaml` let open the
+`endpoint`: `auth.endpoint_security` (app-wide) and `auth.plugin_security`.
+If a panel is for admins only, a rule for its routes belongs in the
+configuration — then visibility and access match automatically.
 
-`web_ui` kennt genau diese zwei Schlüssel: `panel` und `endpoints`. Andere
-Schlüssel (`button`, `menu`, `requires_auth`, `roles`, …) sind ein Fehler.
-`src/agent_system/ui/catalog.py` (`plugin_panel`) ist der Parser — der
-Validator benutzt denselben, zur Laufzeit fällt ein kaputter Eintrag mit
-Fehlerlog aus dem Katalog.
+`web_ui` knows exactly these two keys: `panel` and `endpoints`. Other keys
+(`button`, `menu`, `requires_auth`, `roles`, …) are an error.
+`src/agent_system/ui/catalog.py` (`plugin_panel`) is the parser — the
+validator uses the same one; at run time a broken entry drops out of the
+catalog with an error log.
 
-Das Plugin muss als Web-Plugin registriert sein und sein Schema herausgeben:
-es liefert `get_web_router()` **und** `get_schema_data()` — die Registry liest
-`web_ui` aus `get_schema_data()`, fehlt die Methode, fehlt das Panel ohne
-Meldung. Schema-basierte Plugins erben beides von
-`SchemaBasedPluginWebInterface` und erzeugen den Router mit `SchemaRouterGenerator`
-aus `web_ui.endpoints`. Der `endpoint` liegt unter `/plugins/<instanz>/` — dort
-bedient ihn der Schema-Router, und nur dort darf die Shell ihn einrahmen.
+The plugin has to be registered as a web plugin and hand out its schema: it
+provides `get_web_router()` **and** `get_schema_data()` — the registry reads
+`web_ui` from `get_schema_data()`; without the method the panel is missing
+without a message. Schema-based plugins inherit both from
+`SchemaBasedPluginWebInterface` and build the router with
+`SchemaRouterGenerator` from `web_ui.endpoints`. The `endpoint` lives under
+`/plugins/<instance>/` — the schema router serves it there, and only there may
+the shell frame it.
 
-## 2. Die Seite
+## 2. The page
 
-**Route:** das Template über `ui_templates()` rendern — es findet die
-Templates des Plugins zuerst und das Kit danach:
+**Route:** render the template through `ui_templates()` — it finds the
+plugin's templates first and the kit's after them:
 
 ```python
 from agent_system.ui.resources import ui_templates
@@ -123,16 +122,16 @@ async def render_panel(self, request: Request):
 {% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}
 ```
 
-Skript und eigenes CSS liegen im `static/`-Ordner des Plugins; liefert das
-Plugin ihn über `get_static_assets()`, ist er unter `/plugins/<name>/static/`
-erreichbar.
+Script and own CSS live in the plugin's `static/` folder; if the plugin serves
+it through `get_static_assets()`, it is reachable under
+`/plugins/<name>/static/`.
 
-`panel_base.html` setzt das Theme aus dem Cookie (kein Aufblitzen), lädt
-`kit.css` und `panel-kit.js`, und im Frame blendet es den eigenen Titel aus —
-den trägt dort der Tab oder die Fensterleiste; die Toolbar bleibt. Weitere
-Blöcke: `head`, `lang` (Writer: `de`).
+`panel_base.html` sets the theme from the cookie (no flash), loads `kit.css`
+and `panel-kit.js`, and in the frame hides its own title — the tab or the
+window bar carries it there; the toolbar stays. Further blocks: `head`, `lang`
+(`de` for a German panel).
 
-Icons im Template: `{{ icon('refresh-cw') }}`, `{{ icon('bug', size='sm', label='Bug') }}`.
+Icons in the template: `{{ icon('refresh-cw') }}`, `{{ icon('bug', size='sm', label='Bug') }}`.
 
 ## 3. `panel-kit.js`
 
@@ -140,63 +139,63 @@ Icons im Template: `{{ icon('refresh-cw') }}`, `{{ icon('bug', size='sm', label=
 import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 ```
 
-| Export | Wofür |
+| Export | What for |
 |---|---|
-| `api(path, {method, json, body, headers, quiet, raw, latest})` | jeder Server-Aufruf. Cookie-Auth, JSON rein und raus, Fehler als `ApiError(status, detail)` **plus Toast** (außer `quiet: true`), abgebrochen, wenn das Panel geht. Wer selbst reagiert (404 → leerer Zustand), nimmt `quiet` und fängt. **`latest: 'name'`** bricht den vorigen Aufruf gleichen Namens ab — eine überholte Antwort kann nie gezeichnet werden; der abgebrochene wirft einen `AbortError` ohne Toast, erkennbar mit `isAborted(error)`. Das ersetzt jeden eigenen Sequenz-Zähler. |
-| `abandon(name)` | den laufenden `latest`-Aufruf dieses Namens verwerfen, etwa wenn der Nutzer leert, was er füllen würde. |
-| `pluginBase(import.meta.url)` | die Adresse des Plugins für ein Skript aus seinem `static/`-Ordner (`/plugins/<name>`). |
-| `errorText(error)` | der Text, den der Toast zeigen würde („404: Not Found“) — für eine Seite, die den Fehler selbst anzeigt. |
-| `update(el, content)` | `render`, aber nur bei geändertem Markup (Rückgabe: gezeichnet ja/nein). Eine unveränderte Antwort lässt Scroll, Fokus, Auswahl und offene `<details>` stehen. Ein Element entweder mit `update` oder mit `render` zeichnen. |
-| `notice(el, text, {kind})` | Meldung an Ort und Stelle als `.pk-callout` (`danger` Standard, `warn`, `info`, `ok`); leerer Text versteckt sie. Für „Aktualisieren fehlgeschlagen, gezeigt ist der Stand von …“. |
-| `emptyState(icon, title, text)`, `skeleton(lines)` | leerer Zustand und Lade-Platzhalter; in Templates die Makros `empty()` und `skeleton()` aus `kit/macros.html`. |
-| `localTime(ts, {relative, seconds})` | ein gespeicherter Zeitstempel in Ortszeit und Seitensprache. Werte ohne Zone (so schreiben es alle unsere Datenbanken) gelten als UTC; `relative` ergibt „vor 5 Minuten“. |
-| `formQuery(form)`, `setQuery(params)` | Filterformular → Query (leere Felder fallen weg); Query in die URL schreiben (`replaceState`) und der Shell melden. |
-| `withBusy(controls, fn)` | `fn` einmal zur Zeit: die Knöpfe sind gesperrt, ein Doppelklick startet nichts. Danach sind **alle** wieder frei — wer eigene Sperrzustände hat, setzt sie nach `withBusy` neu. Ein Knopf, den ein Neuzeichnen währenddessen ersetzt, ist nicht mehr der gesperrte: Zeilen, die ein Takt neu zeichnet, merken sich ihre Sperre selbst (etwa eine Menge von IDs, die das Markup liest). |
-| `copyText(text)` | in die Zwischenablage, mit Toast. |
-| `<pk-pager page pages>` | Zurück/Weiter mit „Seite 2 von 7“, feuert `page` (`detail.page`), versteckt bei einer Seite. |
-| `<table data-pk-select>`, `selectRow(table, id)` | Zeilen mit `data-id` und `tabindex="0"` sind per Klick oder Enter wählbar (`aria-selected`, Event `rowselect` mit `detail.id`); Bedienelemente in der Zeile bleiben ihre eigenen. `selectRow` markiert nach dem Neuzeichnen wieder. |
-| `selectTab(list, name)` | einen Tab (`data-tab`) wählen, ohne Klick — etwa aus der URL. |
-| `isDark()` | ob die Seite gerade dunkel ist (für Canvas/SVG, die keine Tokens lesen). |
-| ``html`…` ``, `render(el, content)` | Markup bauen: jeder eingesetzte Wert wird escapet, verschachteltes ``html`` `` und Arrays bleiben Markup. `trusted(str)` nur für schon sicheres HTML (z. B. vom Server sanitisiert). `false`, `null` und `undefined` ergeben nichts — damit `${cond && html`…`}` geht; in einem Attribut darum `aria-pressed="${String(on)}"`, sonst steht dort `""`. `render` gibt den Fokus zurück: lag er im Element, bekommt ihn danach das neue Element mit demselben `data-key`. |
-| `escapeHtml(v)`, `jsonView(value)`, `icon(name, {size, label})` | Hilfen für dasselbe. `jsonView` zeigt JSON zum Lesen: alle Ebenen offen, Strings ohne Anführungszeichen und mit ihren Zeilenumbrüchen, Arrays als Liste. Das Roh-JSON bietet das Panel selbst an (Kopieren, Umschalter). |
-| `yamlCode(text)` | YAML-Text eingefärbt (`.pk-yaml-*`), der Text selbst unverändert: für ein `<pre class="pk-code">` oder als Kopie unter einer Textarea. `\|`/`>`-Blöcke behalten ihre Farbe über Leerzeilen, ein unquotiertes `!…` erscheint als Tag. Kein Prism nötig. |
-| `alert(msg)`, `confirm(msg, {title, confirmLabel, danger})`, `prompt(msg, {title, value, placeholder, confirmLabel})`, `dialog({title, message, actions, input})` | Dialoge — Promise mit dem Ergebnis (`confirm` → `true/false`, `prompt` → Text oder `null`). In der Shell über der ganzen Anwendung, sonst im Panel. |
+| `api(path, {method, json, body, headers, quiet, raw, latest})` | every server call. Cookie auth, JSON in and out, errors as `ApiError(status, detail)` **plus a toast** (unless `quiet: true`), aborted when the panel goes. Whoever reacts themselves (404 → empty state) takes `quiet` and catches. **`latest: 'name'`** aborts the previous call of the same name — an overtaken answer can never be drawn; the aborted one throws an `AbortError` without a toast, recognisable with `isAborted(error)`. That replaces every hand-made sequence counter. |
+| `abandon(name)` | drop the running `latest` call of this name, for instance when the user clears what it would fill. |
+| `pluginBase(import.meta.url)` | the plugin's address for a script from its `static/` folder (`/plugins/<name>`). |
+| `errorText(error)` | the text the toast would show ("404: Not Found") — for a page that shows the error itself. |
+| `update(el, content)` | `render`, but only when the markup changed (returns whether it drew). An unchanged answer leaves scroll, focus, selection and open `<details>` alone. Draw an element either with `update` or with `render`. |
+| `notice(el, text, {kind})` | a message in place as a `.pk-callout` (`danger` by default, `warn`, `info`, `ok`); an empty text hides it. For "Refresh failed, shown is the state of …". |
+| `emptyState(icon, title, text)`, `skeleton(lines)` | empty state and loading placeholder; in templates the macros `empty()` and `skeleton()` from `kit/macros.html`. |
+| `localTime(ts, {relative, seconds})` | a stored timestamp in local time and the page's language. Values without a zone (that is how all our databases write them) count as UTC; `relative` gives "5 minutes ago". |
+| `formQuery(form)`, `setQuery(params)` | filter form → query (empty fields drop out); write the query into the URL (`replaceState`) and tell the shell. |
+| `withBusy(controls, fn)` | `fn` one at a time: the buttons are locked, a double click starts nothing. Afterwards **all** are free again — whoever has lock states of their own sets them again after `withBusy`. A button that a redraw replaces meanwhile is no longer the locked one: rows a tick redraws remember their lock themselves (a set of ids the markup reads, for instance). |
+| `copyText(text)` | to the clipboard, with a toast. |
+| `<pk-pager page pages>` | back/next with "Page 2 of 7", fires `page` (`detail.page`), hidden with one page. |
+| `<table data-pk-select>`, `selectRow(table, id)` | rows with `data-id` and `tabindex="0"` are selectable by click or Enter (`aria-selected`, event `rowselect` with `detail.id`); controls in the row stay their own. `selectRow` marks again after a redraw. |
+| `selectTab(list, name)` | select a tab (`data-tab`) without a click — from the URL, for instance. |
+| `isDark()` | whether the page is dark right now (for canvas/SVG that read no tokens). |
+| ``html`…` ``, `render(el, content)` | build markup: every inserted value is escaped, nested ``html`` `` and arrays stay markup. `trusted(str)` only for HTML that is already safe (sanitised by the server, say). `false`, `null` and `undefined` yield nothing — so `${cond && html`…`}` works; in an attribute therefore `aria-pressed="${String(on)}"`, or it says `""`. `render` gives the focus back: if it was inside the element, the new element with the same `data-key` gets it afterwards. |
+| `escapeHtml(v)`, `jsonView(value)`, `icon(name, {size, label})` | helpers for the same. `jsonView` shows JSON for reading: all levels open, strings without quotes and with their line breaks, arrays as a list. The panel itself offers the raw JSON (copy, toggle). |
+| `yamlCode(text)` | YAML text coloured (`.pk-yaml-*`), the text itself unchanged: for a `<pre class="pk-code">` or as a copy under a textarea. `\|`/`>` blocks keep their colour across blank lines, an unquoted `!…` shows as a tag. No Prism needed. |
+| `alert(msg)`, `confirm(msg, {title, confirmLabel, danger})`, `prompt(msg, {title, value, placeholder, confirmLabel})`, `dialog({title, message, actions, input})` | dialogs — a promise with the result (`confirm` → `true/false`, `prompt` → text or `null`). In the shell above the whole application, otherwise in the panel. |
 | `toast(msg, {kind})` | `info`, `ok`, `warn`, `error`. |
-| `session.id`, `session.current`, `session.onChange(fn)` | die Session, die im **Chat** offen ist: ihre ID oder `null`, `current` dazu den Titel; `onChange` bekommt `{id, title}` oder `null`. |
-| `session.shown`, `session.scope`, `session.pinned`, `session.follow()` | die Session, die das **Panel** zeigt (siehe `<pk-session>` unten): `shown` ist die ID, um die es gerade geht (`null` für alle Sessions und wenn keine offen ist), `scope` ist `'session'` oder `'all'`, `pinned` die ID aus einem Kontext-Link, `follow()` löst die Anheftung — **die Seite lädt dabei neu**. Ein Panel mit ungespeicherter Eingabe (`setDirty`) gehört heute nicht zu denen mit `<pk-session>`: die Shell erfährt den gelösten Pfad, bevor der Browser fragen kann. |
-| `<pk-session>`, `<pk-session all>` | in die Toolbar. Sagt, **welche** Session das Panel zeigt, und bietet den Weg zurück zum Chat; mit `all` dazu die Wahl zwischen dieser Session und allen. Feuert `sessionscope` am `document`, sobald sich ändert, was das Panel zeigen soll — der Chat wechselt, der Nutzer wählt einen Bereich, die Anheftung fällt. Das Panel liest dann `session.shown`/`session.scope` und lädt neu; ein eigener `session.onChange` daneben lädt doppelt. Folgt es dem Chat und gibt es nichts zu wählen, hält sich das Element heraus (`hidden`). |
-| `autoRefresh(fn, ms)` → `{start, stop, running}`; `<pk-refresh interval="s">` | Nachladen, pausiert, solange das Panel nicht sichtbar ist. `<pk-refresh>` feuert `refresh` am `document`; `event.detail.auto` sagt, ob der Takt (true) oder ein Klick (false) fragt — teures Nachladen darf den Takt auslassen. Mit `auto` läuft der Takt von Anfang an (sonst erst nach Klick). `interval` und `auto` sind nur die **Voreinstellung der Seite**: Am Knopf wählt der Nutzer den Takt (5 s, 10 s, 30 s, 1 min, die Voreinstellung, oder aus), und diese Wahl gilt ab dann für diesen Panel-Pfad — gespeichert im localStorage unter `pk.refresh:<pathname>`. |
-| `isVisible()` | ob das Panel zu sehen ist — nicht bei Tab im Hintergrund, geschlossenem Fenster, verdecktem Browser-Tab. `autoRefresh` fragt es selbst. |
-| `initTabs(root)` | `[data-pk-tabs]` bedienbar machen (Klick, Pfeiltasten, Event `tabchange`). Läuft beim Laden von selbst; nach dem Nachrendern erneut aufrufen ist unschädlich. Jeder Tab ist so breit wie sein Text, solange alle passen; wird es eng, geben sie bis auf fünf Zeichen nach (mit „…"; ein kürzerer bleibt so breit wie sein Text — in Chromium, sonst auf die Mindestbreite aufgefüllt —, ein `pk-icon` oder `pk-dot` vor dem Text bekommt seinen Platz dazu, `--pk-tab-min` setzt eine eigene Mindestbreite), danach scrollt die Zeile seitwärts — das Mausrad dreht sie, und der gewählte Tab rückt ins Bild; ein gekürzter Tab zeigt beim Überfahren seinen ganzen Text (ein eigener `title` bleibt). Eine Leiste aus Seitenlinks (`nav` mit `a.pk-tab`) verhält sich genauso, ihre aktuelle Seite (`aria-current="page"`) steht beim Laden im Bild. In einer Flex-Zeile, in der die Tabs seitwärts nachgeben sollen, braucht `.pk-tabs` `flex: 1 1 auto` (von sich aus schrumpft die Zeile nicht, damit eine enge Spalte sie nicht auf Höhe 0 drückt). |
-| `wheelScrollsAcross(row)`, `keepInSight(row, item)` | für eine eigene seitwärts scrollende Zeile: das Mausrad dreht sie (der Browser nimmt dafür nur Shift oder ein Trackpad); `keepInSight` rückt ein Element ganz ins Bild, und lädt gerade noch eine Schrift, noch einmal, sobald sie da ist — nicht `scrollIntoView`, das zieht jede scrollende Box drumherum mit, bis in die Shell. |
-| `initSidebars(root)` | jeder `.pk-sidebar` die zuletzt gezogene Breite geben und die nächste merken (localStorage `pk.sidebar:<pathname>`, mit `#id`, wenn die Leiste eine hat). Ein Knopf mit `data-pk-sidebar-toggle` und `aria-controls="<id der Leiste>"` klappt sie weg und wieder her, wie die Session-Leiste des Chats; auch das bleibt gemerkt (`…:open`). Läuft beim Laden von selbst; nur eine später gerenderte Leiste braucht den Aufruf. |
-| `placeMenu(menu, box, {matchWidth})` | eigenes Menü positionieren (`matchWidth`: so breit wie das Feld, zu dem es gehört — Vorschlagslisten). Ein `.pk-menu[popover]` mit `id`, das per `popovertarget` geöffnet wird, platziert das Kit selbst. |
-| `setTitle(text)`, `navigate(path)` | Titel im Tab, Pfad im Panel merken (wird beim Wiederherstellen geöffnet und gilt als eigener Pfad: anders als ein Kontext-Link setzt der Starter ihn nicht zurück; ohne Argument der Pfad, den die Seite gerade zeigt). |
-| `openSession(id)` | eine Session im Chat öffnen (die Shell wechselt dorthin, auf schmalem Bildschirm tritt das Panel zur Seite). `false`, wo es keinen Chat gibt — im eigenen Browser-Tab; dann sagt das Panel selbst, was zu tun ist. |
-| `setDirty(bool)` | ungespeicherte Eingaben melden: solange `true`, fragt die Shell vor Schließen, Ab- oder Andocken oder einem Link, der das Panel neu lädt, und der eigene Browser-Tab vor dem Verlassen. Nach dem Speichern oder Verwerfen `setDirty(false)`. |
-| `setTheme(theme)`, `currentTheme()`, `onThemeChange(fn)`, `THEMES` | Theme-Wahl und -Wechsel (Einstellungen, Kit-Seite); `onThemeChange` meldet auch einen Wechsel aus der Shell und, bei `system`, einen Wechsel der Systemfarben. |
-| `announcePreferences(preferences)` | der Shell melden, dass Einstellungen am Konto gespeichert sind (nach dem PUT auf `/auth/me/preferences`); der Chat zeigt sofort danach an. |
+| `session.id`, `session.current`, `session.onChange(fn)` | the session open in the **chat**: its id or `null`, `current` with its title as well; `onChange` gets `{id, title}` or `null`. |
+| `session.shown`, `session.scope`, `session.pinned`, `session.follow()` | the session the **panel** shows (see `<pk-session>` below): `shown` is the id it is about right now (`null` for all sessions and when none is open), `scope` is `'session'` or `'all'`, `pinned` the id from a context link, `follow()` releases the pin — **the page reloads**. A panel with unsaved input (`setDirty`) is not among those with `<pk-session>` today: the shell learns the released path before the browser can ask. |
+| `<pk-session>`, `<pk-session all>` | into the toolbar. Says **which** session the panel shows and offers the way back to the chat; with `all` also the choice between this session and all. Fires `sessionscope` on the `document` as soon as what the panel should show changes — the chat switches, the user picks a scope, the pin falls. The panel then reads `session.shown`/`session.scope` and reloads; an own `session.onChange` next to it loads twice. If it follows the chat and there is nothing to choose, the element keeps out of the way (`hidden`). |
+| `autoRefresh(fn, ms)` → `{start, stop, running}`; `<pk-refresh interval="s">` | reloading, paused while the panel is not visible. `<pk-refresh>` fires `refresh` on the `document`; `event.detail.auto` says whether the tick (true) or a click (false) asks — an expensive reload may skip the tick. With `auto` the tick runs from the start (otherwise only after a click). `interval` and `auto` are only the **page's default**: at the button the user picks the tick (5 s, 10 s, 30 s, 1 min, the default, or off), and that choice holds for this panel path from then on — stored in localStorage under `pk.refresh:<pathname>`. |
+| `isVisible()` | whether the panel can be seen — not with the tab in the background, the window closed, the browser tab covered. `autoRefresh` asks it itself. |
+| `initTabs(root)` | make `[data-pk-tabs]` usable (click, arrow keys, event `tabchange`). Runs by itself on load; calling it again after a re-render does no harm. Each tab is as wide as its text while all fit; when it gets tight they give way down to five characters (with "…"; a shorter one stays as wide as its text — in Chromium, elsewhere padded to the minimum width —, a `pk-icon` or `pk-dot` before the text gets its room on top, `--pk-tab-min` sets a minimum width of your own), after that the row scrolls sideways — the mouse wheel turns it, and the selected tab moves into view; a shortened tab shows its whole text on hover (an own `title` stays). A bar of page links (`nav` with `a.pk-tab`) behaves the same, its current page (`aria-current="page"`) is in view on load. In a flex row where the tabs should give way sideways, `.pk-tabs` needs `flex: 1 1 auto` (on its own the row does not shrink, so that a narrow column cannot squash it to height 0). |
+| `wheelScrollsAcross(row)`, `keepInSight(row, item)` | for a sideways scrolling row of your own: the mouse wheel turns it (the browser takes only Shift or a trackpad for that); `keepInSight` moves an element fully into view, and while a font is still loading, once more as soon as it is there — not `scrollIntoView`, which drags every scrolling box around it along, up into the shell. |
+| `initSidebars(root)` | give every `.pk-sidebar` the width it was last dragged to and remember the next one (localStorage `pk.sidebar:<pathname>`, with `#id` when the bar has one). A button with `data-pk-sidebar-toggle` and `aria-controls="<id of the bar>"` folds it away and back, like the chat's session bar; that is remembered too (`…:open`). Runs by itself on load; only a bar rendered later needs the call. |
+| `placeMenu(menu, box, {matchWidth})` | position a menu of your own (`matchWidth`: as wide as the field it belongs to — suggestion lists). A `.pk-menu[popover]` with an `id` opened through `popovertarget` is placed by the kit itself. |
+| `setTitle(text)`, `navigate(path)` | title in the tab, remember the path in the panel (opened on restore and counted as the panel's own path: unlike a context link the launcher does not reset it; without an argument the path the page shows right now). |
+| `openSession(id)` | open a session in the chat (the shell switches there, on a narrow screen the panel steps aside). `false` where there is no chat — in a browser tab of its own; the panel then says itself what to do. |
+| `setDirty(bool)` | report unsaved input: while `true`, the shell asks before closing, detaching or docking, or a link that reloads the panel, and the browser tab of its own before leaving. After saving or discarding, `setDirty(false)`. |
+| `setTheme(theme)`, `currentTheme()`, `onThemeChange(fn)`, `THEMES` | theme choice and change (settings, kit page); `onThemeChange` also reports a change from the shell and, with `system`, a change of the system colours. |
+| `announcePreferences(preferences)` | tell the shell that settings are stored on the account (after the PUT to `/auth/me/preferences`); the chat shows them right away. |
 
-**Das Muster eines Laders** — neueste Antwort gewinnt, Unverändertes bleibt
-stehen, ein Fehler behält das Gezeigte und sagt es:
+**The pattern of a loader** — the newest answer wins, what did not change
+stays, an error keeps what is shown and says so:
 
 ```js
 async function load() {
   try {
     const data = await api(`${base}/jobs?${formQuery(filters)}`, { latest: 'jobs', quiet: true });
     notice(stale, '');
-    update(list, data.jobs.length ? rows(data.jobs) : emptyState('list-todo', 'Keine Jobs'));
+    update(list, data.jobs.length ? rows(data.jobs) : emptyState('list-todo', 'No jobs'));
   } catch (error) {
     if (isAborted(error)) return;
-    notice(stale, `Nicht aktualisiert (${errorText(error)}) — gezeigt ist der letzte Stand.`);
+    notice(stale, `Not refreshed (${errorText(error)}) — shown is the last state.`);
   }
 }
 ```
 
-Sprache: das Kit spricht die Sprache aus `<html lang>` (Writer-Panels: `de`)
-— Dialogknöpfe, Refresh-Menü, Pager, Kopier-Toast.
+Language: the kit speaks the language of `<html lang>` (`de` for a German
+panel) — dialog buttons, refresh menu, pager, copy toast.
 
-Beispiel:
+Example:
 
 ```js
 async function load() {
@@ -210,149 +209,147 @@ session.onChange(load);
 load();
 ```
 
-**Sortierbare Tabellen** brauchen kein eigenes Skript: `render()` sortiert
-danach jede `<table class="pk-table" data-pk-sort="<name>">` mit `<thead>`, die
-es gerendert hat (auch die umschließende, wenn nur der `tbody` neu kommt).
+**Sortable tables** need no script of their own: after `render()` the kit sorts
+every `<table class="pk-table" data-pk-sort="<name>">` with a `<thead>` that it
+rendered (the enclosing one too, when only the `tbody` is new).
 
-- Ein Klick irgendwo in die Kopfzelle sortiert, eine `.pk-num`-Spalte größte
-  zuerst, jede andere A–Z; der zweite Klick dreht um. Auf der Spalte, nach der
-  die Tabelle gerade sortiert ist (auch per `aria-sort` im Markup), dreht schon
-  der erste Klick um. Das Kit legt den Kopfinhalt in einen
-  `<button class="pk-sort" data-key="sort:<name>:<Kopftext>">` (Tastatur); über
-  den `data-key` bekommt er nach dem Neuzeichnen den Fokus zurück — ein eigener
-  Selektor auf `[data-key]` trifft ihn also mit. Köpfe ohne Text, mit eigenem
-  Bedienelement (Link, Button, Eingabefeld, Auswahl, Label, `summary`, alles
-  mit `tabindex`)
-  oder mit `data-pk-nosort` bleiben stumm; `data-pk-nosort` auch dort, wo die
-  Werte keine Ordnung haben (eine Reihe Badges).
-- Die Wahl hält über jedes Neuzeichnen (Auto-Refresh) und hängt am
-  **Kopftext**, nicht an der Spaltennummer; eine Spalte, die nur manchmal da
-  ist, verschiebt sie also nicht. Der Name trennt die Tabellen einer Seite.
-  Sie überlebt auch einen Reload: das Kit merkt sie pro Panel-Pfad im
-  localStorage unter `pk.sort:<pathname>` (Tabellenname → Kopftext und
-  Richtung), wie den Refresh-Takt. Gemerkt wird nur ein **schlichter Name**
-  (`[\w.:-]`, höchstens 40 Zeichen) und nur die letzten zwölf pro Panel —
-  ein Name, den ein Panel aus einer Eingabe baut (das SQL-Panel nennt seine
-  Tabelle nach der Abfrage), bleibt in der Seite und geht nicht auf Platte.
-  Ein kaputter Eintrag zählt als keiner.
-- Sortiert wird nach `data-sort-value`, sonst nach dem Text. Sind alle Werte
-  einer Spalte Zahlen, als Zahlen; alle ISO-Zeitstempel, als Zeitpunkte (ohne
-  Zone als UTC, wie unsere Datenbanken schreiben); sonst
-  die ganze Spalte natürlich als Text („B9" vor „B10"). Leer oder ein
-  einzelner Strich steht immer am Ende. **Jede Zelle, deren Text nicht ihr
-  Wert ist** (`toLocaleString()` mit Tausenderpunkt, „1.2 s", „0.300¢", ein
-  Badge, ein gekürzter Text), bekommt `data-sort-value="${roh ?? ''}"`.
-- `aria-sort="descending"` im Markup ist die Reihenfolge, bis der Nutzer
-  wählt. Sortiert das Panel seine Zeilen heute nach einer Spalte, gehört
-  diese Markierung an den Kopf und die JS-Sortierung weg.
-- Nicht sortierbar machen: Schlüssel-Wert-Tabellen, Tabellen mit Zeilenpaaren
-  (Detailzeile unter jedem Eintrag) und serverseitig seitenweise geladene
-  Listen — dort sortiert der Server (`writer_admin`). Eine Liste „die neuesten
-  N" sortiert das Kit innerhalb dieser N.
-- Eine Kopfzeile, ein `<tbody>` (nur das erste wird sortiert), kein
-  `colspan`. Zeilen behalten beim Umsortieren ihre
-  Attribute; Handler über `data-id`/`data-index` funktionieren weiter, Code,
-  der die Reihenfolge im DOM liest, nicht.
+- A click anywhere in the header cell sorts, a `.pk-num` column largest first,
+  any other A–Z; the second click reverses. On the column the table is sorted
+  by right now (also through `aria-sort` in the markup), the first click
+  already reverses. The kit puts the header content into a
+  `<button class="pk-sort" data-key="sort:<name>:<header text>">` (keyboard);
+  through the `data-key` it gets the focus back after a redraw — a selector of
+  your own on `[data-key]` therefore hits it as well. Headers without text,
+  with a control of their own (link, button, input, select, label, `summary`,
+  anything with `tabindex`) or with `data-pk-nosort` stay silent;
+  `data-pk-nosort` also where the values have no order (a row of badges).
+- The choice holds across every redraw (auto-refresh) and is tied to the
+  **header text**, not the column number; a column that is only sometimes
+  there does not shift it. The name separates the tables of a page. It also
+  survives a reload: the kit remembers it per panel path in localStorage under
+  `pk.sort:<pathname>` (table name → header text and direction), like the
+  refresh tick. Only a **plain name** is remembered (`[\w.:-]`, at most 40
+  characters) and only the last twelve per panel — a name a panel builds from
+  an input (the SQL panel names its table after the query) stays in the page
+  and does not go to disk. A broken entry counts as none.
+- Sorting goes by `data-sort-value`, else by the text. If all values of a
+  column are numbers, as numbers; all ISO timestamps, as points in time
+  (without a zone as UTC, as our databases write them); otherwise the whole
+  column naturally as text ("B9" before "B10"). Empty or a single dash always
+  comes last. **Every cell whose text is not its value** (`toLocaleString()`
+  with a thousands separator, "1.2 s", "0.300¢", a badge, a shortened text)
+  gets `data-sort-value="${raw ?? ''}"`.
+- `aria-sort="descending"` in the markup is the order until the user chooses.
+  If the panel sorts its rows by a column today, that mark belongs on the
+  header and the JS sorting goes.
+- Do not make sortable: key-value tables, tables with pairs of rows (a detail
+  row under each entry) and lists loaded page by page on the server — the
+  server sorts those. A list "the newest N" is sorted by the kit within
+  those N.
+- One header row, one `<tbody>` (only the first is sorted), no `colspan`. Rows
+  keep their attributes when re-sorted; handlers through
+  `data-id`/`data-index` keep working, code that reads the order in the DOM
+  does not.
 
-## 4. Aussehen
+## 4. Look
 
-- **Komponenten** statt eigener: `pk-btn` (`--primary`, `--danger`, `--ghost`,
-  `--icon`, `--sm`), `pk-input`/`pk-select`/`pk-textarea`/`pk-check`/`pk-switch`
-  in `pk-field` und `pk-form`, `pk-tabs`, `pk-dialog`, `pk-menu`, `pk-table` in
+- **Components** instead of your own: `pk-btn` (`--primary`, `--danger`,
+  `--ghost`, `--icon`, `--sm`), `pk-input`/`pk-select`/`pk-textarea`/`pk-check`/`pk-switch`
+  in `pk-field` and `pk-form`, `pk-tabs`, `pk-dialog`, `pk-menu`, `pk-table` in
   `pk-table-wrap`, `pk-card`, `pk-stats`/`pk-stat`, `pk-badge`, `pk-dot`,
   `pk-empty`, `pk-skeleton`, `pk-spinner`, `pk-progress` (`--ok/--warn/--danger`),
   `pk-code`, `pk-kv`, `pk-json`, `pk-callout` (`--danger/--warn/--info/--ok`),
-  `pk-details` (auf einem `<details>`), `pk-prose` (Lesetext; `pk-prose--breaks`
-  hält gespeicherte Zeilenumbrüche), `pk-text--ok/--warn/--danger/--info`
-  (ein Wert in einer Tonfarbe), `pk-code--full` (Code ohne Höhendeckel),
-  `pk-menu-item[aria-selected]` (der gewählte Vorschlag); Layout mit `pk-stack`, `pk-row`,
-  `pk-grow`, `pk-toolbar`, `pk-filters` (Filterzeile über einer Liste),
-  `pk-split` (Liste links, Detail rechts, das Detail bleibt stehen),
-  `pk-sidebar-layout` mit `pk-sidebar` (Seitenleiste neben dem Hauptbereich:
-  an der Ecke in der Breite ziehbar, das Kit merkt die Breite pro Panel,
-  schmal gestapelt — **jede Seitenleiste nimmt diese**, keine eigene), Seiten
-  eines Panels als `<nav class="pk-tabs">` mit `<a class="pk-tab"
+  `pk-details` (on a `<details>`), `pk-prose` (reading text; `pk-prose--breaks`
+  keeps stored line breaks), `pk-text--ok/--warn/--danger/--info` (a value in
+  a tone colour), `pk-code--full` (code without a height cap),
+  `pk-menu-item[aria-selected]` (the chosen suggestion); layout with
+  `pk-stack`, `pk-row`, `pk-grow`, `pk-toolbar`, `pk-filters` (filter row
+  above a list), `pk-split` (list on the left, detail on the right, the detail
+  stays put), `pk-sidebar-layout` with `pk-sidebar` (sidebar next to the main
+  area: width draggable at the corner, the kit remembers the width per panel,
+  stacked when narrow — **every sidebar takes this one**, none of your own),
+  a panel's pages as `<nav class="pk-tabs">` with `<a class="pk-tab"
   aria-current="page">`.
-- **Farben, Abstände, Radien, Schrift nur über Tokens**: `--surface-0…3`,
+- **Colours, spacing, radii, type only through tokens**: `--surface-0…3`,
   `--text-primary/secondary/muted`, `--border-subtle/default/strong`,
   `--accent*`, `--ok/--warn/--danger/--info` (+ `-subtle`), `--space-1…8`,
-  `--radius-sm/md/lg`, `--text-xs…xl`, `--font-ui`, `--font-mono`. Jeder Wert
-  gilt in hell und dunkel. Ein Hex-Wert im Panel ist ein Fehler — fehlt ein
-  Token, gehört er ins Kit.
-- **Eigenes CSS** nur für das, was das Panel wirklich eigen hat (eine
-  Zeitleiste, ein Graph), in einer Datei neben dem Skript, aus Tokens gebaut.
-- `hidden` versteckt zuverlässig, egal welches `display` eine Klasse setzt.
+  `--radius-sm/md/lg`, `--text-xs…xl`, `--font-ui`, `--font-mono`. Every value
+  holds in light and dark. A hex value in a panel is an error — if a token is
+  missing, it belongs in the kit.
+- **Own CSS** only for what is really the panel's own (a timeline, a graph),
+  in a file next to the script, built from tokens.
+- `hidden` hides reliably, whatever `display` a class sets.
 
-## 5. Verbote
+## 5. Prohibitions
 
-- **Kein `alert`/`confirm`/`prompt`** — das Kit ersetzt sie; der native Aufruf
-  scheitert laut (Konsole + Toast). Test: `tests/ui/test_kit.py`.
-- **Kein `innerHTML` mit Daten** außer über ``html`…` ``/`render`. Auch
-  Server-Daten nicht: Agent-Namen, Tool-Argumente, Titel kommen von Modellen.
-- **Kein `window.parent`, kein `window.top`** — die Shell spricht nur über das
-  Protokoll. Session, Theme und Dialoge kommen über das Kit.
-- **Kein rohes `fetch`** im Panel-Code.
-- **Keine eigenen Buttons, Tabs, Modals, Toasts, Refresh-Knöpfe**, keine Emoji
-  als Icons.
-- **Kein CDN** — Bibliotheken nach `static/vendor/`.
+- **No `alert`/`confirm`/`prompt`** — the kit replaces them; the native call
+  fails loudly (console + toast). Test: `tests/ui/test_kit.py`.
+- **No `innerHTML` with data** except through ``html`…` ``/`render`. Server
+  data neither: agent names, tool arguments, titles come from models.
+- **No `window.parent`, no `window.top`** — the shell speaks only through the
+  protocol. Session, theme and dialogs come through the kit.
+- **No raw `fetch`** in panel code.
+- **No buttons, tabs, modals, toasts, refresh buttons of your own**, no emoji
+  as icons.
+- **No CDN** — libraries go to `static/vendor/`.
 
-## 6. Das Protokoll (für Neugierige und die Shell)
+## 6. The protocol (for the curious and the shell)
 
-Alle Nachrichten tragen `type`. Das Kit spricht es; ein Panel ruft nur die
-Funktionen oben.
+Every message carries `type`. The kit speaks it; a panel only calls the
+functions above.
 
-| Richtung | `type` | Inhalt |
+| Direction | `type` | Content |
 |---|---|---|
-| Panel → Shell | `pk:ready` | beim Laden |
-| Shell → Panel | `pk:init` | `theme`, `visible`, `session` — erst danach gilt das Panel als „in der Shell" |
-| Shell → Panel | `pk:theme` / `pk:session` / `pk:visibility` | `theme` / `session` / `visible` |
-| Panel → Shell | `pk:dialog` → `pk:dialog-result` | `id`, `dialog: {title, message, actions, input}` → `id`, `value` |
-| Panel → Shell | `pk:toast` | `message`, `kind` |
-| Panel → Shell | `pk:title` / `pk:navigate` / `pk:set-theme` | `text` / `path` / `theme` |
-| Panel → Shell | `pk:dirty` | `dirty` (ungespeicherte Eingaben; eine neue Seite im Panel gilt als sauber) |
-| Panel → Shell | `pk:open-session` | `session_id` (der Chat lädt diese Session; `openSession`) |
-| Panel → Shell | `pk:scope` | `scope` (`'session'`/`'all'`, von `<pk-session all>` beim Wählen und beim Laden mit `?session_scope=all`; ein Tab, den die Shell öffnet, startet im selben Bereich) |
-| Panel → Shell | `pk:preferences` | `preferences` (schon gespeichert; die Shell feuert `preferences:changed` für den Chat) |
+| panel → shell | `pk:ready` | on load |
+| shell → panel | `pk:init` | `theme`, `visible`, `session` — only then does the panel count as "in the shell" |
+| shell → panel | `pk:theme` / `pk:session` / `pk:visibility` | `theme` / `session` / `visible` |
+| panel → shell | `pk:dialog` → `pk:dialog-result` | `id`, `dialog: {title, message, actions, input}` → `id`, `value` |
+| panel → shell | `pk:toast` | `message`, `kind` |
+| panel → shell | `pk:title` / `pk:navigate` / `pk:set-theme` | `text` / `path` / `theme` |
+| panel → shell | `pk:dirty` | `dirty` (unsaved input; a new page in the panel counts as clean) |
+| panel → shell | `pk:open-session` | `session_id` (the chat loads this session; `openSession`) |
+| panel → shell | `pk:scope` | `scope` (`'session'`/`'all'`, from `<pk-session all>` when choosing and when loading with `?session_scope=all`; a tab the shell opens starts in the same scope) |
+| panel → shell | `pk:preferences` | `preferences` (already stored; the shell fires `preferences:changed` for the chat) |
 
-Was ein Panel vor `pk:init` sagt (Titel, Pfad), hält das Kit zurück und
-schickt es nach dem Handschlag. Ohne Shell (eigener Browser-Tab, fremder
-Frame) kommt kein `pk:init`, und das Kit zeigt Dialoge und Toasts selbst.
+What a panel says before `pk:init` (title, path) the kit holds back and sends
+after the handshake. Without a shell (a browser tab of its own, a foreign
+frame) no `pk:init` comes, and the kit shows dialogs and toasts itself.
 
-## 7. Prüfen
+## 7. Checking
 
-1. `python src/scripts/validate_plugin.py src/plugins/<name>` — der
-   `web_ui`-Block geht durch den Katalog-Parser.
-2. `pytest tests/ui -q` — u. a. jedes im Code genannte Icon existiert, kein
-   Kit-Nutzer ruft native Dialoge (erfasst werden Templates auf
-   `panel_base.html` und Skripte, die `panel-kit.js` importieren),
-   Katalog-Regeln, Shell im echten Browser.
-3. **Sichtprüfung in beiden Themes**: Panel in der Shell öffnen, angedockt und
-   herausgelöst, Theme über den Knopf im Kopf wechseln. Direkt unter seiner URL
-   im Browser-Tab öffnen — auch da muss es funktionieren.
-4. Panel-Logik mit Verzweigungen bekommt einen Browser-Test nach dem Muster
-   `tests/ui/test_shell_browser.py` (`run_app_test_page` mit Stub-App) oder
-   `tests/ui/test_kit_js.py` — und die Mutationsprobe (Skill `unit-testing`):
-   ausgelieferte Datei im Speicher verändern, Test muss rot werden.
+1. `python src/scripts/validate_plugin.py src/plugins/<name>` — the `web_ui`
+   block goes through the catalog parser.
+2. `pytest tests/ui -q` — among other things every icon named in the code
+   exists, no kit user calls native dialogs (covered are templates on
+   `panel_base.html` and scripts that import `panel-kit.js`), catalog rules,
+   the shell in a real browser.
+3. **Visual check in both themes**: open the panel in the shell, docked and
+   detached, switch the theme with the button in the head. Open it directly
+   under its URL in a browser tab — it has to work there too.
+4. Panel logic with branches gets a browser test after the pattern of
+   `tests/ui/test_shell_browser.py` (`run_app_test_page` with a stub app) or
+   `tests/ui/test_kit_js.py` — and a mutation probe: change the served file in
+   memory, the test has to go red.
 
-## 8. Ein bestehendes Panel migrieren
+## 8. Migrating an existing panel
 
-Ein Plugin nach dem anderen; Writer-Panels mit der Writer-Session absprechen.
+One plugin at a time.
 
-1. **Inventur:** welche Endpoints, welche Zustände (leer, Fehler, lädt), welche
-   Aktionen (löschen → `confirm` mit `danger`), welche Parameter liest es
-   (`session_id`, `request_id`)? Nur was es wirklich liest, wird zu `contexts`.
-   Liest es `session_id`, gehört `<pk-session>` in die Toolbar und
-   `session.shown` an die Stelle von `pinned || session.id`.
-2. Route auf `ui_templates()`, Template auf `kit/panel_base.html`.
-3. Eingebettetes `<style>` löschen; was bleibt, auf Tokens. Eigene `.btn`,
-   `.modal`, `.tab`, `.toast`, `.badge` → Kit-Klassen.
-4. Inline-Skript in ein Modul neben dem Template (`static/panel.js`), `fetch` →
-   `api`, String-HTML → ``html`…` ``, `escapeHtml`-Kopie löschen,
-   `toggleAutoRefresh` → `<pk-refresh>`, Session-Raten über `window.parent` →
-   `session`.
-5. Emoji → `icon()`. Nicht im Sprite? In `static/kit/icons.svg` aus Lucide
-   ergänzen (gleiche Strichstärke), nicht als Emoji lassen.
-6. Tote Teile des alten Panels (nie erreichte Zweige, doppelte Handler,
-   ungenutzte Endpoints) entfernen statt mitzuschleppen.
-7. Prüfen wie in § 7, dann die Sichtprüfung — das alte und das neue Panel
-   einmal nebeneinander: fehlt eine Funktion, ist die Migration nicht fertig.
+1. **Inventory:** which endpoints, which states (empty, error, loading), which
+   actions (delete → `confirm` with `danger`), which parameters does it read
+   (`session_id`, `request_id`)? Only what it really reads becomes `contexts`.
+   If it reads `session_id`, `<pk-session>` belongs in the toolbar and
+   `session.shown` in place of `pinned || session.id`.
+2. Route on `ui_templates()`, template on `kit/panel_base.html`.
+3. Delete the embedded `<style>`; move what remains onto tokens. Own `.btn`,
+   `.modal`, `.tab`, `.toast`, `.badge` → kit classes.
+4. Inline script into a module next to the template (`static/panel.js`),
+   `fetch` → `api`, string HTML → ``html`…` ``, delete the `escapeHtml` copy,
+   `toggleAutoRefresh` → `<pk-refresh>`, guessing the session through
+   `window.parent` → `session`.
+5. Emoji → `icon()`. Not in the sprite? Add it to `static/kit/icons.svg` from
+   Lucide (same stroke width), do not leave it as an emoji.
+6. Remove dead parts of the old panel (branches never reached, duplicate
+   handlers, unused endpoints) instead of carrying them along.
+7. Check as in § 7, then the visual check — the old and the new panel side by
+   side once: if a function is missing, the migration is not done.

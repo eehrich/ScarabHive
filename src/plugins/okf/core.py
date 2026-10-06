@@ -2,8 +2,7 @@
 
 Format, not platform: an OKF *bundle* is a directory tree of markdown files; a
 *concept* is one ``.md`` file with a YAML frontmatter block. The only hard rule
-is that every concept carries a non-empty ``type``. See docs/okf_support_design.md
-and the spec at github.com/GoogleCloudPlatform/knowledge-catalog/okf.
+is that every concept carries a non-empty ``type``. See the spec at github.com/GoogleCloudPlatform/knowledge-catalog/okf.
 
 This module owns the format ONCE — parsing/serialization, conformance checking,
 link resolution and graph traversal. The tools (server.py) and the consumer

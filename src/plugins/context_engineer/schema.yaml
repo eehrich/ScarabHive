@@ -321,7 +321,7 @@ config:
 
   # Cache-Hysterese: Mindest-Wachstum zwischen prefix-brechenden Kompaktionen
   # (jede History-Mutation bricht das Provider-Prompt-Caching komplett —
-  # selten und tief kuerzen, docs/prompt_cache_design.md par. 3.5)
+  # selten und tief kuerzen)
   min_tokens_between_compactions:
     type: integer
     default: 20000

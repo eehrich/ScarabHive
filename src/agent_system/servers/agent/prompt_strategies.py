@@ -277,7 +277,7 @@ class PromptRenderer:
 
         Appended at the END of the system prompt, in configured order: the
         system prompt is the stable cache prefix, so a deterministic order keeps
-        it byte-identical between calls (see docs/prompt_cache_design.md).
+        it byte-identical between calls.
 
         Skill bodies are taken verbatim (Agent Skills standard — see
         ``skills/registry.py``). ``on_demand`` skills contribute only their
@@ -321,7 +321,7 @@ class PromptRenderer:
                 # template. Rendering it would silently blank any literal
                 # {{ ... }} the author wrote, because unknown variables render
                 # empty. Shared prompt fragments belong in the prompt TEMPLATES
-                # via {% include %} (docs/skills_design.md §8), not in skills.
+                # via {% include %}, not in skills.
                 rendered = skill.body().strip()
             except Exception as e:  # noqa: BLE001 - a broken skill must not kill the run
                 logger.error(

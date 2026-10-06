@@ -551,115 +551,116 @@ Both integrate seamlessly with the Agent System's LLM, hooks, and plugin infrast
 
 ---
 
-## LLM-Fallback und Sperren
+## LLM Fallback and Blocks
 
-Fällt ein LLM aus, läuft der Agent auf dem nächsten Profil seiner Kette weiter.
-Ob ein LLM **gesperrt** ist, gehört dabei dem LLM, nicht dem Agenten: die
-Sperre gilt für jeden Agenten im Prozess (`src/agent_system/llm/model_health.py`).
+If an LLM fails, the agent continues on the next profile in its chain.
+Whether an LLM is **blocked** belongs to the LLM, not to the agent: the
+block applies to every agent in the process (`src/agent_system/llm/model_health.py`).
 
-### Konfiguration
+### Configuration
 
-Fallbacks stehen als **Kette** direkt in `llm_profile` (seit 2026-07:
-Liste = `[primär, fallback1, fallback2, ...]`; der entfernte Schlüssel
-`llm_profile_fallbacks` bricht das Laden der Config ab):
+Fallbacks are given as a **chain** directly in `llm_profile` (since 2026-07:
+list = `[primary, fallback1, fallback2, ...]`; the removed key
+`llm_profile_fallbacks` aborts config loading):
 
 ```yaml
 my_agent:
   type: basic_agent
   agent_config:
-    llm_profile: ["gemini", "openai", "anthropic"]   # primär + Fallback-Kette
-    llm_profile_advanced: ["gpt-large", "claude"]    # optional: Advanced-Kette (use_advanced_model / Auto-Eskalation)
-    fallback_recovery_seconds: 1800                  # längste Sperre, die dieser Agent setzt (Default: 3600)
+    llm_profile: ["gemini", "openai", "anthropic"]   # primary + fallback chain
+    llm_profile_advanced: ["gpt-large", "claude"]    # optional: advanced chain (use_advanced_model / auto-escalation)
+    fallback_recovery_seconds: 1800                  # longest block this agent sets (default: 3600)
 ```
 
-Volle Ketten-Semantik (Advanced-Kette, `llm_params`, Migrationsskript
+Full chain semantics (advanced chain, `llm_params`, migration script
 `scripts/migrate_llm_profiles.py`): `docs/basic_agent_llm_profiles.md`.
 
-### Was eine Sperre auslöst — und was nicht
+### What Triggers a Block, and What Does Not
 
-| Fehler | Sperre des LLM (für alle Agenten) | Dieser Request |
+| Error | Block on the LLM (for all agents) | This request |
 |---|---|---|
-| `LLMRateLimitError` (429) | 60 s, verdoppelt bei jedem weiteren Fehlschlag bis `fallback_recovery_seconds`; `retry_after` des Anbieters ist die Untergrenze | nächstes Profil der Kette |
-| `LLMQuotaExhaustedError` | sofort `fallback_recovery_seconds` | nächstes Profil der Kette |
-| HTTP 401/402/403/404 | sofort `fallback_recovery_seconds` | nächstes Profil; war die Basis gescheitert, wird es Basis des Laufs |
-| 5xx, Verbindungsfehler, jeder andere 4xx (400/408/409/413/422 …) | keine | nächstes Profil; war die Basis gescheitert, wird es Basis des Laufs |
-| Fehler im Antwort-Body (HTTP 200 mit `error`) | keine | erst **einmal dasselbe Modell** (pro Modell und Schritt; ein Gateway-Aussetzer trifft selten zweimal), dann nächstes Profil; sofort wechseln ein Content-Filter (`content_filter`, `content_filter_<native>`), weil dasselbe Modell denselben Text wieder sperrt, und ein Fehler, den sein Client mit `retried` markiert (er hat schon selbst mit Backoff wiederholt). War die Basis gescheitert, wird das Profil Basis des Laufs; ist die Kette aufgebraucht, endet der Lauf mit einem `error`-Event |
-| lokal keine Dateideskriptoren mehr (EMFILE) | keine | kein Wechsel, Fehler |
+| `LLMRateLimitError` (429) | 60 s, doubled on each further failure up to `fallback_recovery_seconds`; the provider's `retry_after` is the lower bound | next profile in the chain |
+| `LLMQuotaExhaustedError` | immediately `fallback_recovery_seconds` | next profile in the chain |
+| HTTP 401/402/403/404 | immediately `fallback_recovery_seconds` | next profile; if the base had failed, it becomes the base of the run |
+| 5xx, connection errors, any other 4xx (400/408/409/413/422 …) | none | next profile; if the base had failed, it becomes the base of the run |
+| Error in the response body (HTTP 200 with `error`) | none | first **the same model once** (per model and step; a gateway hiccup rarely hits twice), then the next profile; a content filter (`content_filter`, `content_filter_<native>`) switches immediately, because the same model would block the same text again, as does an error its client marks with `retried` (it has already retried with backoff itself). If the base had failed, the profile becomes the base of the run; once the chain is exhausted, the run ends with an `error` event |
+| no local file descriptors left (EMFILE) | none | no switch, error |
 
-**Ein Burst ist ein Fehlschlag.** Ein 429 auf einen Aufruf, der losging, bevor
-die Sperre gesetzt wurde, verdoppelt sie nicht: sieben Requests, die gerade
-unterwegs sind, wenn das Minutenfenster zugeht, sperren 60 s, nicht eine
-Stunde. Kommt so ein Nachzügler erst nach Ablauf der Sperre an (die Clients
-wiederholen ein 429 selbst, bevor sie es melden), sperrt er gar nichts mehr —
-sonst machte er eine Probe zunichte, die das LLM gerade gesund findet. Ein
-`fallback_recovery_seconds` von 0 sperrt nichts. **Keine Sperre verkürzt eine längere, die noch läuft** — ein Agent mit
-kurzem `fallback_recovery_seconds` kürzt die Kontingent-Sperre eines anderen
-nicht auf seine.
+**A burst is one failure.** A 429 on a call that started before the block
+was set does not double it: seven requests in flight when the minute window
+closes block for 60 s, not for an hour. If such a straggler arrives only after
+the block has expired (the clients retry a 429 themselves before reporting
+it), it blocks nothing at all — otherwise it would ruin a probe that the LLM
+has just passed as healthy. A `fallback_recovery_seconds` of 0 blocks nothing. **No block shortens a longer one that is still running** — an agent with a
+short `fallback_recovery_seconds` does not cut another agent's quota block
+down to its own.
 
-Der Schlüssel eines LLM ist **(Endpunkt, Key, Modell)** des Clients:
-- Endpunkt ist die `base_url`; ein Client ohne (SDK-Clients, Batch-Client) ist
-  sein eigener Endpunkt, benannt nach seiner Klasse — ein Batch-Kontingent ist
-  nicht das Sync-Kontingent desselben Modells.
-- Key ist ein Fingerabdruck des API-Keys (nie der Key selbst): ein abgelehnter
-  oder erschöpfter Key sagt nichts über einen anderen.
-- Zwei Profile mit demselben Modell an derselben URL mit demselben Key sind
-  ein LLM, egal welche Client-Klasse sie spricht. Clients ohne eigene URL
-  (SDK, Batch) sind ein Endpunkt je Klasse, egal welchen Server sie erreichen.
+The key of an LLM is the client's **(endpoint, key, model)**:
+- The endpoint is the `base_url`; a client without one (SDK clients, batch
+  client) is its own endpoint, named after its class — a batch quota is not
+  the sync quota of the same model.
+- The key is a fingerprint of the API key (never the key itself): a rejected
+  or exhausted key says nothing about another one.
+- Two profiles with the same model at the same URL with the same key are
+  one LLM, regardless of which client class they use. Clients without their
+  own URL (SDK, batch) are one endpoint per class, regardless of which server
+  they reach.
 
-Das Provider-Routing gehört nicht dazu — ein 429 von einem OpenRouter-Backend
-sperrt das Modell auch für ein Profil mit anderem Routing.
+Provider routing is not part of it — a 429 from an OpenRouter backend
+also blocks the model for a profile with different routing.
 
-### Wie ein Schritt sein LLM wählt
+### How a Step Chooses Its LLM
 
-Vor jedem Schritt, **vor** den Pre-LLM-Hooks:
+Before each step, **before** the pre-LLM hooks:
 
-1. Ist das Eskalationsfenster offen und das Advanced-LLM frei, läuft der
-   Schritt darauf. Ist es gesperrt, gilt dieser Schritt als nicht eskaliert
-   (das Fenster bleibt offen) und es geht mit 2. weiter.
-2. Gewünscht ist dann das Override des Requests (`--llm`, Auswahl im Chat),
-   sonst die Basis des Laufs. Ist dessen LLM frei, läuft der Schritt darauf.
-3. Sonst läuft er auf dem ersten freien Profil der Kette.
-4. Ist keines frei, läuft er trotzdem auf dem gewünschten — ein gesperrtes LLM
-   ist besser als keines.
+1. If the escalation window is open and the advanced LLM is free, the
+   step runs on it. If it is blocked, this step counts as not escalated
+   (the window stays open) and the procedure continues with 2.
+2. The desired LLM is then the request's override (`--llm`, selection in the
+   chat), otherwise the base of the run. If that LLM is free, the step runs on
+   it.
+3. Otherwise it runs on the first free profile in the chain.
+4. If none is free, it runs on the desired one anyway — a blocked LLM
+   is better than none.
 
-Scheitert der Aufruf, versucht der Schritt die übrigen Profile der Kette —
-freie zuerst, dann gesperrte, jedes einmal. Die Basis des Laufs gehört dazu,
-wenn der Schritt nicht auf ihr lief: nach einer gescheiterten Eskalation als
-**erstes** Glied (das Advanced-Modell sagt nichts über die Basis), nach einem
-gescheiterten Weg um eine gesperrte Basis herum als **letztes**. So bricht der
-Lauf nicht ab, solange noch ein LLM übrig ist.
+If the call fails, the step tries the remaining profiles in the chain —
+free ones first, then blocked ones, each once. The base of the run is included
+if the step did not run on it: as the **first** member after a failed
+escalation (the advanced model says nothing about the base), as the **last**
+after a failed detour around a blocked base. This way the run does not abort
+as long as an LLM is left.
 
-Eine ausdrückliche Wahl ist **keine** Ausnahme: ein gesperrtes LLM bleibt
-gesperrt, auch wenn es im Chat gewählt wird. Ein anderes, freies LLM läuft
-dagegen sofort — die Sperre des einen hält es nicht auf.
+An explicit choice is **not** an exception: a blocked LLM stays
+blocked, even if it is chosen in the chat. Another, free LLM, on the other
+hand, runs immediately — one LLM's block does not hold it up.
 
-Dauern die Hooks, während eine Sperre gesetzt oder aufgehoben wird, wählt der
-Schritt danach neu (`model_health.version`). Jeder Modellwechsel, auch der
-zurück, entfernt die Reasoning-Artefakte des vorigen Modells aus dem Verlauf.
+If the hooks take long while a block is set or lifted, the step chooses again
+afterwards (`model_health.version`). Every model switch, including the switch
+back, removes the previous model's reasoning artifacts from the history.
 
-### Aufheben
+### Lifting a Block
 
-- **Eine Antwort hebt die Sperre für alle auf** — sofern der Aufruf nach dem
-  Setzen der Sperre losging. Eine Antwort auf einen älteren Aufruf sagt nichts
-  über das LLM danach.
-- **Nach Ablauf** probiert genau ein Request das LLM; die anderen behandeln es
-  weiter als gesperrt, bis die Probe antwortet (Aufheben) oder mit einem
-  sperrenden Fehler scheitert (neue Sperre: bei 429 doppelt so lang, bei
-  Kontingent oder abgelehntem Key wieder `fallback_recovery_seconds`). Endet
-  die Probe ohne Urteil (5xx, Abbruch), ist das LLM nach 120 s für die nächste
-  frei; erneutes Fragen desselben Requests verlängert diese Frist nicht (nach
-ihrem Ablauf wird die Probe neu vergeben, an wen zuerst fragt). Wählt der Request nach den
-  Hooks doch ein anderes LLM, gibt er die Probe sofort zurück. So laufen nicht
-  zwanzig Agenten gleichzeitig in dasselbe 429.
+- **A response lifts the block for everyone** — provided the call started after
+  the block was set. A response to an older call says nothing about the LLM
+  afterwards.
+- **After expiry** exactly one request probes the LLM; the others keep
+  treating it as blocked until the probe answers (lift) or fails with a
+  blocking error (new block: twice as long for a 429, `fallback_recovery_seconds`
+  again for quota or a rejected key). If the probe ends without a verdict (5xx,
+  abort), the LLM is free for the next request after 120 s;
+  asking again from the same request does not extend this period (after
+it expires the probe is reassigned to whoever asks first). If the request picks a different LLM after the
+  hooks, it returns the probe immediately. This keeps twenty agents from
+  running into the same 429 at once.
 
-### Grenzen
+### Limits
 
-- **Pro Prozess.** Die Writer-Job-Worker sind eigene Prozesse mit eigenen
-  Sperren; was die API sperrt, erreicht sie nicht.
-- **Alle Glieder versucht und der Aufruf scheitert:** der Fehler des letzten
-  Versuchs geht an den Aufrufer (beim Fehler im Antwort-Body: ein `error`-Event).
+- **Per process.** The job workers of a further plugin root are separate
+  processes with their own blocks; what the API blocks does not reach them.
+- **All members tried and the call fails:** the error of the last attempt goes
+  to the caller (for an error in the response body: an `error` event).
 
-### Statusmeldungen
+### Status Messages
 
 ```json
 {
@@ -669,8 +670,8 @@ ihrem Ablauf wird die Probe neu vergeben, an wen zuerst fragt). Wählt der Reque
 }
 ```
 
-Ein Schritt, der um ein gesperrtes LLM herumläuft, meldet sich als
-`Calling LLM (openai:fallback)`. Im Log:
+A step that runs around a blocked LLM reports itself as
+`Calling LLM (openai:fallback)`. In the log:
 
 - `LLM <model> blocked for 60s for every agent (rate limit hit, seen by <agent>)`
 - `[<agent>] LLM <model> is blocked for 42s more; this step runs on openai`
@@ -703,9 +704,6 @@ src/agent_system/servers/agent/
 ├── escalation.py (stuck-triggered auto-escalation to advanced profile)
 └── result_utils.py (result extraction & formatting)
 ```
-
-> Architektur-Befunde und offene Verbesserungen: see
-> `docs/agent_package_architecture_review.md`.
 
 ### Core Components
 

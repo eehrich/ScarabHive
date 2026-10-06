@@ -7,7 +7,7 @@ held against its owner as the app knows it. Read-only views fail closed: a
 session whose owner nobody knows is shown to nobody but an admin.
 
 Known gap, left for the per-user separation of plugin data
-(docs/multiuser_datentrennung_konzept.md -- the data in the user's own path,
+(the data in the user's own path,
 not a WHERE on an owner): the rows carry no owner, so an id another user's
 DELETED session had, taken for a new session of one's own, brings that
 user's old rows along.

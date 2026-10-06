@@ -75,20 +75,19 @@ Each message in the `messages` array includes:
 | `tool_call_id` | string | ID reference for tool responses (optional) |
 | `timestamp` | string | ISO 8601 timestamp (optional) |
 | `reasoning_content` | string | Chain-of-thought reasoning (optional) |
-| `request_id` | string | Auf der ersten Nachricht eines Laufs dessen Request-ID (optional; nie an einen Provider). |
-| `tool_request_ids` | object | Auf einer Assistant-Nachricht mit Tool-Calls: je Call-ID die Request-ID, unter der sein Tool läuft — gestempelt, sobald die Tools starten, also schon, während der Aufruf noch wartet (optional; nie an einen Provider). Ein Lauf, den ein Tool startet, trägt diese ID als Präfix (`<id>_async_…`, `<id>_sub_…`). |
-| `step` | int | Auf einer Assistant-Nachricht: der Schritt der Loop, aus dem sie kommt, so nummeriert wie die Live-Ereignisse des Laufs — auch ein Schritt, der nichts gespeichert hat, zählt mit (optional; nie an einen Provider). |
+| `request_id` | string | On the first message of a run, that run's request ID (optional; never sent to a provider). |
+| `tool_request_ids` | object | On an assistant message with tool calls: for each call ID, the request ID under which its tool runs — stamped as soon as the tools start, i.e. while the call is still waiting (optional; never sent to a provider). A run started by a tool carries this ID as a prefix (`<id>_async_…`, `<id>_sub_…`). |
+| `step` | int | On an assistant message: the loop step it comes from, numbered like the live events of the run — a step that stored nothing counts as well (optional; never sent to a provider). |
 
 The `estimated_tokens` field is computed when the session is saved using `~4 chars/token` for text and `~1000 tokens` for images.
 
-Die Zeile einer Sub-Session in `.subs.{parent_id}.index.json` trägt zusätzlich
-`runs`: die Request-IDs, mit denen ihre Läufe geöffnet wurden (jede Nachricht
-mit `request_id`), abgeleitet bei jedem Speichern und bei jedem Neuaufbau des
-Index. `GET
-/api/sessions/{id}/children` gibt sie mit; der Chat hängt damit nach einem
-Reload jeden Lauf eines Sub-Agents unter den Aufruf, der ihn gestartet hat
-(`docs/webui_konzept.md` § 5.4). Top-Level-Zeilen in `index.json` haben kein
-`runs`.
+The row of a sub-session in `.subs.{parent_id}.index.json` additionally carries
+`runs`: the request IDs with which its runs were opened (every message
+with `request_id`), derived on every save and on every rebuild of the
+index. `GET
+/api/sessions/{id}/children` returns it; with it, after a reload the chat
+attaches every run of a sub-agent under the call that started it.
+Top-level rows in `index.json` have no `runs`.
 ```
 
 ## API Endpoints
@@ -249,11 +248,11 @@ await manager.update_session_metadata(
 )
 ```
 
-`save_session` schreibt die Kopie des Aufrufers — bei den Metadaten aber gewinnt, was
-die Datei schon hat: `update_session_metadata` schreibt sie auch (etwa die Sub-Agents,
-die der Sub-Agent-Manager einträgt), und eine Kopie, die vor diesem Schreiben geladen
-wurde, nähme es sonst zurück. Einen Schlüssel, den die Datei noch nicht hat, übernimmt
-`save_session` aus der Kopie; einen vorhandenen ändert man mit `update_session_metadata`.
+`save_session` writes the caller's copy — for the metadata, however, what the file
+already has wins: `update_session_metadata` writes it too (for example the sub-agents
+registered by the sub-agent manager), and a copy loaded before that write would
+otherwise revert it. A key the file does not have yet is taken over by
+`save_session` from the copy; an existing one is changed with `update_session_metadata`.
 
 ## UI Integration
 

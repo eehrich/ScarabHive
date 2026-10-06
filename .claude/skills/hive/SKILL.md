@@ -49,7 +49,7 @@ Name of the System is ScarabHive
 
 ### Plugin Categories (`src/plugins/`)
 
-40+ general-purpose plugins. Key plugins:
+Over 60 general-purpose plugins. Key plugins:
 
 | Plugin | Purpose |
 |--------|---------|
@@ -64,7 +64,6 @@ Name of the System is ScarabHive
 | `agent_continuation/` | Agent session continuation |
 | `task_switch/` | Task context switching |
 | `llm_router/` | Multi-LLM routing |
-| `gemini_instruction_reinforcement/` | Gemini instruction reinforcement |
 | `memory/` | Persistent memory storage |
 | `file_ops/` | File system operations |
 | `terminal/` | Shell command execution |
@@ -93,9 +92,8 @@ Name of the System is ScarabHive
 | `datetime/` | Date/time utilities |
 | `simple_prompt_inject/` | Prompt injection utility |
 
-**Separate subsystems** (not covered here):
-- `src/plugins_writer/` — Writer/book generation system → see `/project:writer`
-- `src/plugins_trading/` — Trading plugins (IBKR, Yahoo Finance)
+**Further plugin roots** (`src/plugins_<name>/`, loaded through `plugins.plugin_dirs: src/plugins*`)
+may hold plugins outside the open-source release; they bring their own docs and are not covered here.
 
 ### Key Design Patterns
 
@@ -122,9 +120,8 @@ docs below are partly stale.
 | `plugin_hooks.md` | Hook system guide |
 | `config_based_agents.md` | YAML agent definition |
 | `session_management.md` | Session lifecycle |
-| `server_configuration.md` | External MCP server setup |
+| `mcp_configuration.md` | External MCP server setup |
 | `tool_execution.md` | Tool invocation flow |
-| `terminal_file_ops_konzept.md` | terminal/file_ops: findings, comparison with other agents, build plan (nothing built yet) |
 
 ## Workflow
 
@@ -134,7 +131,7 @@ docs below are partly stale.
 4. **Plan**: Use `todo` tool for multi-step tasks
 5. **Implement**: Edit code, update config schemas if needed
 6. **Test (unit)**: `pytest tests/<module>/test_*.py -v`
-7. **Test (lint)**: Run Ruff and Mypy tasks
+7. **Test (lint)**: Run Ruff and Mypy (commands below)
 8. **Test (CLI)**: `.venv/Scripts/agent-cli.exe --help`
 9. **Test (API)**: Run API task, test endpoints
 10. **Document**: Update relevant docs if behavior changes
@@ -162,20 +159,9 @@ source .venv/Scripts/activate
 .venv/Scripts/agent-cli.exe chat --agent basic_agent
 .venv/Scripts/agent-cli.exe plugins
 
-# API server (use VS Code tasks)
-# "AgentSystem: Run API" or "AgentSystem: Run API with Debug Output"
+# API server
+.venv/Scripts/agent-api.exe
 ```
-
-## VS Code Tasks
-
-| Task | Purpose |
-|------|---------|
-| `Python: Ruff (check & fix)` | Lint and auto-fix |
-| `Python: Mypy (type check)` | Type checking |
-| `Python: Run all tests (venv)` | Run pytest |
-| `AgentSystem: Run API` | Start API server |
-| `AgentSystem: Run API with Debug Output` | Start API with debug logging |
-| `AgentSystem: List plugins` | Show registered plugins |
 
 ## Configuration Files
 
@@ -221,10 +207,8 @@ source .venv/Scripts/activate
 
 Mandatory: Never run all tests unless absolutely necessary. Prefer targeted tests or groups for speed. Complete test run takes 20mins+.
 
-## developer docs
+## Overview
 
-- Primary prompt files: ` .prompts/developer_rules.md`, ` .prompts/project_objectives.md`, and ` .prompts/master_system_prompt.md`.
-- Usage: load `developer_rules.md` and `project_objectives.md` first, then initialize the assistant session with `master_system_prompt.md` so the agent follows repository rules (tests-first, preserve tests, update README when behavior changes).
-- load `README.md` for a general overview.
+- Load `README.md` for a general overview.
 
 Work step-by-step until task is **fully completed**. No intermediate reports.

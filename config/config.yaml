@@ -70,7 +70,7 @@ network:
 default_agent: chat_agent
 
 # ================================
-# Skills — packaged agent knowledge (docs/skills_design.md)
+# Skills — packaged agent knowledge
 # ================================
 # Discovery roots, like plugins.plugin_dirs: every immediate subdirectory of a
 # root whose SKILL.md carries YAML frontmatter is one skill. The first root

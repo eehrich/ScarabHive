@@ -341,29 +341,28 @@ Content-Type: application/json
 }
 ```
 
-Ein neues Passwort braucht `current_password` (fehlt es: 400, falsch: 403) und
-**beendet jede frühere Anmeldung des Kontos**: ein Token trägt die
-Passwort-Generation, unter der es ausgestellt wurde (`gen`, Tabelle
-`token_generations`), und eines von vor dem Wechsel weisen die Prüfung jeder
-Anfrage (`get_current_user`, Security-Middleware) und `/auth/refresh` ab — auch
-eines ganz ohne `gen` (von vor dieser Regel), sobald das Passwort einmal
-gewechselt wurde. Der Browser, der es ändert, bekommt ein neues Cookie und bleibt
-angemeldet; wer mit einem Bearer-Token arbeitet, meldet sich neu an. Hat
-inzwischen jemand anderes das Passwort gesetzt (ein Admin, auch aus einem
-anderen Prozess), gilt dessen Passwort: die Änderung wird mit 409 abgelehnt,
-nichts gespeichert.
+A new password requires `current_password` (missing: 400, wrong: 403) and
+**ends every earlier login of the account**: a token carries the password
+generation under which it was issued (`gen`, table `token_generations`), and a
+token from before the change is rejected by the check on every request
+(`get_current_user`, security middleware) and by `/auth/refresh` — this includes
+a token with no `gen` at all (from before this rule) once the password has been
+changed at least once. The browser that makes the change gets a new cookie and
+stays logged in; anyone working with a bearer token has to log in again. If
+someone else has set the password in the meantime (an admin, also from another
+process), that password wins: the change is rejected with 409 and nothing is
+saved.
 
-Setzt ein Admin ein Passwort (Admin-API, Users-Panel, `agent-cli users`), enden
-die Anmeldungen dieses Kontos ebenso. Setzt er in Admin-API oder Users-Panel
-sein **eigenes**, bekommt sein Browser ein neues Cookie — geschrieben wird es wie bei
-`PATCH /auth/me` nur, solange seine Anmeldung gilt (kam ein Reset dazwischen: 409,
-nichts gespeichert); über `agent-cli` enden
-auch seine eigenen Browser-Anmeldungen. **Auch der API-Key des Kontos wird
-widerrufen** — er ist eine Anmeldung wie jede andere, und einen mit dem alten
-Passwort erzeugten konnte jeder anlegen, der es kannte. Wer einen braucht
-(`agent-cli reload` liest `AGENT_ADMIN_API_KEY`), erzeugt danach einen neuen
-(`POST /auth/api-key`, `agent-cli users generate-api-key`). Name oder E-Mail zu
-ändern lässt Anmeldungen und Key stehen.
+When an admin sets a password (admin API, Users panel, `agent-cli users`), the
+logins of that account end in the same way. If an admin sets their **own** in the
+admin API or Users panel, their browser gets a new cookie — it is written, as with
+`PATCH /auth/me`, only while their login is still valid (if a reset came in
+between: 409, nothing saved); via `agent-cli`, their own browser logins end as
+well. **The account's API key is also revoked** — it is a login like any other,
+and a key created with the old password could be created by anyone who knew it.
+Anyone who needs one (`agent-cli reload` reads `AGENT_ADMIN_API_KEY`) creates a
+new one afterwards (`POST /auth/api-key`, `agent-cli users generate-api-key`).
+Changing the name or e-mail leaves logins and key untouched.
 
 **Response:**
 ```json
@@ -388,35 +387,34 @@ curl -X PATCH http://localhost:8000/auth/me \
 ```
 
 #### GET/PUT /auth/me/preferences
-Anzeige-Einstellungen des angemeldeten Kontos (heute: der Chat). `GET` antwortet
-immer mit allen Schlüsseln, nicht Gewähltes mit dem Default; `PUT` ersetzt das
-ganze Objekt, Weggelassenes wird zum Default. Unbekannte Schlüssel und Werte
-werden mit 422 abgelehnt statt still gespeichert. Gespeichert in der Tabelle
-`user_preferences` von `users.db` (legt der Start selbst an), gelöscht mit dem
-Konto. Ohne Anmeldung 401, ohne Authentifizierung gibt es den Endpunkt nicht.
+Display settings of the logged-in account (today: the chat). `GET` always answers
+with all keys, anything not chosen with its default; `PUT` replaces the whole
+object, anything omitted becomes the default. Unknown keys and values are
+rejected with 422 instead of being silently stored. Stored in the table
+`user_preferences` of `users.db` (created by startup itself), deleted with the
+account. Without a login: 401; without authentication the endpoint does not exist.
 
 ```json
 {"chat": {"fold_steps": "at_end", "thinking": "collapsed", "sub_agents": "expanded",
           "sub_agent_output": "collapsed"}}
 ```
 
-- `fold_steps`: `at_end` (Steps klappen mit der Antwort zu), `at_next_step`
-  (sobald der nächste beginnt), `never`
+- `fold_steps`: `at_end` (steps collapse when the answer arrives), `at_next_step`
+  (as soon as the next one begins), `never`
 - `thinking`: `collapsed` | `expanded`
-- `sub_agents`: `expanded` | `collapsed` (Sub-Agent-Läufe im Chat)
-- `sub_agent_output`: `collapsed` | `expanded` (die Antwort eines Sub-Agents in
-  seinem Lauf)
+- `sub_agents`: `expanded` | `collapsed` (sub-agent runs in the chat)
+- `sub_agent_output`: `collapsed` | `expanded` (a sub-agent's answer within its
+  run)
 
-Ein Schlüssel, der später dazukommt, erreicht auch Konten, die vorher gespeichert
-haben: ihrer Zeile fehlt er, sie liest sich mit seinem Default und behält alles,
-was sie gewählt hat.
+A key added later also reaches accounts that have saved before: it is missing from
+their row, so it is read with its default and everything they chose is kept.
 
 #### POST /auth/api-key
 Generate a new API key for the current user.
 
-Der Key wird nur geschrieben, solange die Anmeldung gilt, mit der er angefragt
-wird (Token oder bisheriger Key): kommt ein Passwortwechsel dazwischen, auch aus
-einem anderen Prozess, antwortet der Endpunkt mit 401 und schreibt nichts.
+The key is written only while the login it is requested with (token or current
+key) is still valid: if a password change comes in between, also from another
+process, the endpoint answers 401 and writes nothing.
 
 **Headers:**
 ```
@@ -457,8 +455,8 @@ List all users with pagination.
 - `skip`: Number of users to skip (default: 0)
 - `limit`: Maximum number of users to return (default: 100)
 
-**Response** (`UserListResponse` — `total` ist die Gesamtzahl aller Benutzer,
-nicht die Seitengröße; Clients paginieren mit `skip + limit >= total`):
+**Response** (`UserListResponse` — `total` is the total number of all users,
+not the page size; clients paginate with `skip + limit >= total`):
 ```json
 {
   "users": [
@@ -540,9 +538,8 @@ ID  USERNAME    EMAIL              FULL_NAME       ROLE   ACTIVE
 3   janedoe     jane@example.com   Jane Doe        GUEST  ✗
 ```
 
-Die Befehle adressieren Benutzer über den **Benutzernamen** (Positionsargument),
-nicht über `--email`. Hilfe: `agent-cli users BEFEHL --help`. Fehler enden mit
-Exit-Code 1.
+The commands address users by **username** (positional argument), not by
+`--email`. Help: `agent-cli users COMMAND --help`. Errors end with exit code 1.
 
 ### Create User
 
@@ -692,23 +689,23 @@ CREATE TABLE users (
 
 CREATE TABLE user_preferences (
     user_id INTEGER PRIMARY KEY,
-    data TEXT NOT NULL,        -- UserPreferences als JSON
+    data TEXT NOT NULL,        -- UserPreferences as JSON
     updated_at TEXT NOT NULL
 )
 
 CREATE TABLE token_generations (
     user_id INTEGER PRIMARY KEY,
-    generation INTEGER NOT NULL  -- Passwortwechsel des Kontos bisher
+    generation INTEGER NOT NULL  -- password changes of the account so far
 )
 ```
 
-`user_preferences` und `token_generations` legt die Datenbank beim Start selbst
-an (auch in einer bestehenden `users.db`); gelöscht wird eine Zeile mit ihrem
-Konto. Eine Zeile gibt es erst, wenn jemand etwas gewählt bzw. das Passwort
-gewechselt hat — ohne sie gelten die Defaults bzw. die Generation 0.
-**`token_generations` gehört zu jeder Kopie und jedem Umzug der Datenbank:** ohne
-sie zählt jedes Konto wieder 0, und die Anmeldungen von vor einem Passwortwechsel
-gelten wieder.
+The database creates `user_preferences` and `token_generations` itself at startup
+(also in an existing `users.db`); a row is deleted with its account. A row exists
+only once someone has chosen something or changed the password, respectively —
+without it, the defaults or generation 0 apply.
+**`token_generations` belongs in every copy and every move of the database:**
+without it, every account counts as 0 again, and logins from before a password
+change are valid again.
 
 ### PostgreSQL Migration
 

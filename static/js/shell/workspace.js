@@ -2,8 +2,7 @@
 // floating windows -- and the host side of the pk:* protocol every panel speaks.
 import { html, render, icon, showToast, showDialog, wheelScrollsAcross, keepInSight } from '/static/kit/panel-kit.js';
 
-// allow-modals keeps unmigrated panels' native dialogs working (docs/webui_konzept.md,
-// section 4.4) -- and a panel's beforeunload question (setDirty), which a sandbox
+// allow-modals keeps unmigrated panels' native dialogs working -- and a panel's beforeunload question (setDirty), which a sandbox
 // without it suppresses silently.
 const SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads';
 const MIN_WIDTH = 320;

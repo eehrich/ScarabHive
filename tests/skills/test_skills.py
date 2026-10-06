@@ -1,4 +1,4 @@
-"""Tests for the skills feature (docs/skills_design.md).
+"""Tests for the skills feature.
 
 Covers discovery of the Agent Skills layout and the prompt merge, including the
 properties that matter operationally: deterministic order (prompt-cache
