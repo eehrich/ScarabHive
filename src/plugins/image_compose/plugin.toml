@@ -11,24 +11,33 @@ entrypoint = "server:PLUGIN_FACTORY"
 type = ["tool-server"]
 category = "media"
 requires = { agent_system = ">=0.6.0" }
-# svglib/reportlab: the SVG layer renderer (compositor.py, lazy import) —
+# svglib/reportlab: the SVG layer renderer (compositor.py, lazy import) --
 # undeclared, they were only ever installed transitively; a fresh server
 # venv lacked them and every SVG layer failed at render time (2026-08-20).
-# rlPyCairo: reportlab 4 rasterises through it — without it renderPM fails
-# with "cannot import desired renderPM backend rlPyCairo" AFTER the two
-# imports above succeed. Its pycairo build needs system headers on hosts
-# without a wheel (Python 3.13: apt install libcairo2-dev pkg-config).
-# freetype-py: dritte Schicht derselben Zwiebel — Text->Pfad (text2Path in
-# svglib) braucht reportlabs PYCAIRO-Extra. Der Fehler kam erst zur
-# Laufzeit mit einem SVG, das TEXT enthaelt; ein Kreis rendert auch ohne.
-# Verifiziert auf dem Server mit einem Text-SVG, nicht nur Importen.
-# Das [pycairo]-Extra traegt BEIDE Backends selbst (rlPyCairo>=0.2,<1 und
-# freetype-py>=2.3,<2.4) — eigene Pins daneben kollidierten prompt: mein
-# freetype-py>=2.4 stand gegen reportlabs <2.4. Das Extra ist die Quelle.
 # rembg: the `cutout` option on image layers (compositor.py, lazy import).
-# It raises three floors the whole install shares — onnxruntime>=1.23.2
-# (core.txt asks only for >=1.20), numpy>=2.3 and Pillow>=12.1 — and pulls
+# It raises three floors the whole install shares -- onnxruntime>=1.23.2
+# (core.txt asks only for >=1.20), numpy>=2.3 and Pillow>=12.1 -- and pulls
 # scikit-image, scipy, pymatting and pooch. Resolved on the server
 # (Python 3.13.7) and locally; measured 2026-09-04. The model file
 # (~170 MB) is downloaded once per host into ~/.rembg on first use.
-dependencies = ["svglib>=1.5", "reportlab[pycairo]>=4.0", "numpy>=1.26", "rembg[cpu]>=2.0.60"]
+dependencies = ["svglib>=1.5", "reportlab>=4.0", "numpy>=1.26", "rembg[cpu]>=2.0.60"]
+# reportlab[pycairo]: reportlab 4 rasterises through rlPyCairo -- without it
+# renderPM fails with "cannot import desired renderPM backend rlPyCairo"
+# AFTER the svglib and reportlab imports succeed (reportlab 5 knows no other
+# backend; rl_renderPM, the old one, has no wheel for macOS / Python 3.14
+# either). The extra also brings freetype-py, the third layer of the same
+# onion: svglib turns SVG text into paths through it, so the failure showed
+# only with an SVG that holds TEXT (a circle renders without it; verified on
+# the server with a text SVG, not just imports). The extra pins both itself
+# (rlPyCairo>=0.2,<1 and freetype-py>=2.3,<2.4); own pins beside it
+# collided at once (freetype-py>=2.4 against reportlab's <2.4), so the extra
+# is the source.
+# OPTIONAL since 2026-10: pycairo has wheels for Windows only and builds
+# from source everywhere else, against cairo and pkg-config. As a hard
+# dependency it stopped `pip install -e .` on a fresh Mac (measured: the
+# only one of 161 packages without a wheel there). Without it the install
+# goes on and only SVG layers fail, with an error that names the fix;
+# install.sh installs cairo where it can and adds this part.
+# rlPyCairo is named on its own because compositor.py imports it (the check
+# before drawing); unpinned -- the extra's pin decides.
+optional_dependencies = ["reportlab[pycairo]>=4.0", "rlPyCairo"]

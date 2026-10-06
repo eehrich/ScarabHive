@@ -456,6 +456,10 @@ dependencies = ["requests>=2.25.0", "beautifulsoup4>=4.9.0"]
 - **`dependencies`**: the plugin's own pip requirements, as a list of PEP 508
   specs (`["ruamel.yaml>=0.18"]`). List only real PyPI packages — never other
   plugin names (inter-plugin needs are resolved by discovery, not pip).
+- **`optional_dependencies`**: pip specs whose install may fail without
+  breaking the install — typically one that builds from source on some
+  platforms (`image_compose`: `reportlab[pycairo]`). The code imports them
+  lazily and answers with the fix when they are missing.
 
 ### How plugin dependencies reach the install
 
@@ -471,13 +475,17 @@ Plugin-owned requirements do **not** live in the root `pyproject.toml`. Instead:
 3. The root `pyproject.toml` reads both files via `[tool.setuptools.dynamic]`
    (setuptools skips one that does not exist), so `pip install .` installs
    the full set of the checkout.
+4. Every plugin's `optional_dependencies` go to `requirements/optional.txt`
+   (`src/plugins` only). `pyproject.toml` does not read it: `install.sh` and
+   `install.ps1` install it after the core, best effort, and the Dockerfile
+   into the image.
 
 After adding or changing a plugin's `dependencies`, re-run:
 ```
 python scripts/aggregate_plugin_deps.py
 ```
 A drift-guard test (`tests/pluginsystem/test_plugin_deps_aggregation.py`) fails
-if `requirements/all.txt` is stale. Deps used by many plugins or by the
+if `requirements/all.txt` or `requirements/optional.txt` is stale. Deps used by many plugins or by the
 framework stay in `requirements/core.txt`; a dep used by exactly one plugin
 belongs in that plugin's `plugin.toml`.
 

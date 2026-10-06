@@ -57,6 +57,7 @@ type = ["tool-server"]
 category = "tools"
 requires = { agent_system = ">=0.6.0" }  # required by the validator
 dependencies = []                        # pip specs only
+optional_dependencies = []               # pip specs an install may lack (requirements/optional.txt)
 ```
 
 ```python
@@ -70,7 +71,11 @@ PLUGIN_FACTORY = MyServer   # called as (name, system_config, server_config)
   error → WARNING, the type is missing, every server entry using it logs
   "Unknown server type".
 - New pip dependency: run `python scripts/aggregate_plugin_deps.py` afterwards
-  (drift guard `tests/pluginsystem/test_plugin_deps_aggregation.py`).
+  (drift guard `tests/pluginsystem/test_plugin_deps_aggregation.py`). One that may
+  fail to install (builds from source on some platforms) goes in
+  `optional_dependencies`: `requirements/optional.txt`, installed best effort by
+  the install scripts, not by `pip install -e .`. The code imports it lazily and
+  answers with the fix when it is missing.
 
 ## Activation chain — when does an agent see the tool?
 

@@ -34,8 +34,8 @@ env:
   # tests/other, and the per-plugin suites under
   # src/plugins*/*/tests. Single files from those directories are in when
   # they need neither: the tool dispatch and cancellation tests, the systemd
-  # unit template check, and two that build the app on a minimal config or
-  # read a temporary session store.
+  # unit template check, install.sh run against stubs, and two that build the
+  # app on a minimal config or read a temporary session store.
   # ==========================================================================
   CI_TEST_PATHS: >-
     tests/config
@@ -57,6 +57,7 @@ env:
     tests/tools/test_schema_based_tool_server.py
     tests/other/test_cancellation_system.py
     tests/scripts/test_systemd_unit_template.py
+    tests/scripts/test_install_sh.py
   # Known failures on a clean checkout, and tests that need the network.
   # Remove a line once its test is fixed.
   CI_TEST_SKIP: >-
@@ -102,8 +103,10 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements/all.txt
+            requirements/optional.txt
             pyproject.toml
-      # pycairo (reportlab[pycairo]) has no Linux wheels and is compiled.
+      # pycairo (reportlab[pycairo], requirements/optional.txt) has no Linux
+      # wheels and is compiled.
       - name: System packages
         run: |
           sudo apt-get update
@@ -117,6 +120,9 @@ jobs:
             python -m pip freeze | grep -iE '^(torch|torchaudio)==' > "$RUNNER_TEMP/torch-constraints.txt"
           fi
           python -m pip install -c "$RUNNER_TEMP/torch-constraints.txt" -e ".[dev,test]"
+          # Not best effort as in install.sh: CI installs what the Docker
+          # image carries, and a build failure here is a finding.
+          python -m pip install -c "$RUNNER_TEMP/torch-constraints.txt" -r requirements/optional.txt
 
       # Non-blocking: mypy reports several hundred errors at the time CI was
       # introduced (539 in src/agent_system + src/plugins). The step shows
