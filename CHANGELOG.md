@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-06
+
+The first version published as open source. Changes before it are not
+summarised here; the git history has them.
+
 ### Security
 
 - The log viewer and the SSH machine panel are admin-only (rules in
@@ -253,8 +258,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for; ten periodic snapshots later (under an hour at the default interval) it
   said none were recorded.
 
-## [0.7.0]
-
-The version this changelog starts from and the first version published as
-open source. Its release date is set when the version is tagged. Changes
-before it are not summarised here; the git history has them.
+[Unreleased]: https://github.com/eehrich/ScarabHive/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/eehrich/ScarabHive/releases/tag/v0.7.0
