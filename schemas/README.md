@@ -1,69 +1,58 @@
-# JSON-Schemas für die AgentSystem-Konfiguration
+# JSON schemas for the ScarabHive configuration
 
-VS Code validiert die Config-Dateien live gegen diese Schemas
-(`.vscode/settings.json` → `yaml.schemas`): Autocomplete, Tippfehler und
-tote Keys leuchten direkt im Editor auf.
+VS Code validates the config files live against these schemas
+(`.vscode/settings.json` → `yaml.schemas`): autocomplete, typos and dead keys
+show up right in the editor.
 
-## Abgeleitete Schemas (nicht von Hand editieren)
+## Derived schemas (do not edit by hand)
 
-| Schema | validiert | Quelle (Pydantic) |
+| Schema | Validates | Source (Pydantic) |
 |---|---|---|
 | `llm-config.schema.json` | `config/llm.yaml` | `LLMSystemConfig` |
-| `main-config.schema.json` | `config/config.yaml` (vor Include-Merge) | `AgentSystemConfig` |
+| `main-config.schema.json` | `config/config.yaml` (before the include merge) | `AgentSystemConfig` |
 | `plugins-config.schema.json` | `config/plugins.yaml` | `PluginsConfig` + `GlobalHooksConfig` |
-| `config-part.schema.json` | jede über `includes:` gezogene Datei: `config/agents/*.yaml`, `config/mcp_servers.yaml`, die ~85 `src/plugins*/*/agents/*.yaml` | `AgentSystemConfig`, auf die vier gemergten Sektionen beschränkt |
+| `config-part.schema.json` | every file pulled in via `includes:`: `config/agents/*.yaml`, `config/mcp_servers.yaml`, the `src/plugins*/*/agents/*.yaml` | `AgentSystemConfig`, limited to the four merged sections |
 
-Warum die Agent-Dateien ein eigenes Schema bekommen: aus einer eingebundenen
-Datei hebt `settings.py` nur `llm_system`, `plugins`, `external_servers` und
-`hooks` heraus — alles andere (etwa `network:`) fällt still weg und wäre dort
-tot, obwohl das Haupt-Schema es erlaubt.
+Why the agent files get a schema of their own: from an included file,
+`settings.py` takes only `llm_system`, `plugins`, `external_servers` and
+`hooks` -- everything else (such as `network:`) is silently dropped and would
+be dead there, although the main schema allows it.
 
-Ein leerer Schlüssel unter `hooks:` (alle Zeilen darunter auskommentiert)
-bedeutet „nichts gesetzt“; die Modelle verwerfen ihn vor der Validierung, und
-das Schema lässt `null` dort deshalb zu.
+An empty key under `hooks:` (all lines below it commented out) means "nothing
+set"; the models discard it before validation, so the schema allows `null`
+there.
 
-**Grenze:** `ToolServerConfig` ist `extra="allow"` (die plugin-eigenen Keys wie
-`max_nesting_depth` oder `allowed_agents` leben dort), deshalb bleibt ein
-Tippfehler direkt unter einem Server-Eintrag unbemerkt. Innerhalb von
-`agent_config:` greift die Strictness.
+**Limit:** `ToolServerConfig` is `extra="allow"` (the plugin's own keys such
+as `max_nesting_depth` or `allowed_agents` live there), so a typo directly
+under a server entry goes unnoticed. Inside `agent_config:` the strictness
+applies.
 
-Diese drei werden **generiert** — die Modelle in
-`src/agent_system/config/models.py` sind die einzige Quelle. Nach jeder
-Modell-Änderung neu erzeugen:
+These four are **generated** -- the models in
+`src/agent_system/config/models.py` are the only source. Regenerate them after
+every model change:
 
 ```bash
 .venv/Scripts/python.exe src/scripts/generate_config_schemas.py
 ```
 
-Der Anti-Drift-Test `tests/config/test_config_schemas.py` wird rot, wenn
-eine Datei veraltet ist, die echte YAML nicht mehr validiert oder die
-Strictness verloren geht.
+The anti-drift test `tests/config/test_config_schemas.py` fails when a file
+is out of date, when the real YAML no longer validates, or when the
+strictness is lost.
 
-**Strictness:** Jedes Objekt mit deklarierten Feldern trägt
-`additionalProperties: false`. Die Laufzeit ignoriert unbekannte Keys
-(pydantic `extra="ignore"`) — genau deshalb überlebte die Klasse stiller
-toter Config-Keys (`ollama_url`, `include_thinking`) monatelang; der Editor
-ist der Ort, an dem sie auffallen sollen. Modelle mit `extra="allow"`
-(z. B. `ToolServerConfig`: plugin-spezifische Keys) bleiben durchlässig.
+**Strictness:** every object with declared fields carries
+`additionalProperties: false`. The runtime ignores unknown keys (pydantic
+`extra="ignore"`), so a dead config key would never show up there; the editor
+is where it should be caught. Models with `extra="allow"` (e.g.
+`ToolServerConfig`: plugin-specific keys) stay open.
 
-## Handgepflegte Schemas (kein Modell dahinter)
+## Hand-maintained schemas (no model behind them)
 
-- **`plugin-config.schema.json`**: Format der Plugin-Manifeste — der
-  `[plugin]`-Tabelle in `plugin.toml` (73 im Baum). Der Legacy-`plugin.yaml`
-  ist seit `2181390d` (06.09.2026) restlos raus, auch aus
-  `plugin_manifest.py`.
-  Angewandt von `src/scripts/validate_plugin.py`; nirgends in
-  `.vscode/settings.json` gemappt, im Editor wirkt es also nicht.
-  ⚠️ `additionalProperties: false` — ein neuer Manifest-Schlüssel muss hier
-  eingetragen werden, sonst weist der Validator das Plugin ab.
-- **`session-schema.json`**: Dokumentiert das Session-JSON auf der Platte.
-  Der `SessionManager` arbeitet dict-basiert ohne Pydantic-Modell — das
-  Schema ist reine Dokumentation und kann veraltet sein.
-
-## Historie
-
-Bis 2026-08 waren alle Schemas handgeschrieben und weit gedriftet
-(erfundene Felder, fehlende Provider). `mcp-config.schema.json` (validierte
-irreführenderweise die Haupt-Config) und `hooks-config.schema.json`
-(Teilmenge von `plugins.yaml`) sind in `main-config.schema.json` bzw. der
-`hooks:`-Sektion von `plugins-config.schema.json` aufgegangen.
+- **`plugin-config.schema.json`**: format of the plugin manifests -- the
+  `[plugin]` table in `plugin.toml`. Applied by
+  `src/scripts/validate_plugin.py`; not mapped in `.vscode/settings.json`, so
+  it has no effect in the editor.
+  ⚠️ `additionalProperties: false` -- a new manifest key must be added here,
+  or the validator rejects the plugin.
+- **`session-schema.json`**: documents the session JSON on disk. The
+  `SessionManager` works with plain dicts and no Pydantic model -- the schema
+  is documentation only and may be out of date.
