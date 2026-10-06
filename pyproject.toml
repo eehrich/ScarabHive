@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-system-mcp"
-version = "0.7.0"
+version = "0.7.1"
 description = "ScarabHive - Flexible AI Agent Framework with pluggable tool servers and FastAPI UI"
 authors = [{ name = "Enrico Ehrich" }]
 license = "Apache-2.0"
