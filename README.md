@@ -3,6 +3,9 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-brightgreen.svg)](https://www.python.org/)
 ![Status](https://img.shields.io/badge/status-beta-orange.svg)
+[![YouTube](https://img.shields.io/badge/YouTube-playlist-red.svg?logo=youtube)](https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI)
+
+▶ **Watch the [ScarabHive playlist](https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI) on YouTube.**
 
 ScarabHive is a self-hosted framework for LLM agents, built around plugins. You define an agent
 in YAML: its model, its prompt and the tools it may use. You run it in the browser, from the
