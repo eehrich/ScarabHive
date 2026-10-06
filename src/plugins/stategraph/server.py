@@ -30,6 +30,7 @@ from .model.spec import NAME_PATTERN
 from .model.validate import agent_params_problems
 from .runners import DEFAULT_RUNNER, runner_of
 from .store import MachineStore, machine_dirs
+from .wait_questions import WaitBroker
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,11 @@ class StateGraphServer(SchemaBasedToolServer):
         base = str(getattr(server_config, "public_url", None) or "").rstrip("/")  # e.g. https://hive.example.com
         self.run_manager.callback_base = f"{base}/plugins/{name}/callback"
         self.service = StateGraphService(self)
+        # a run's wait put to the person who watches the request that waits for it (wait_questions.py)
+        self.wait_questions = WaitBroker(
+            lambda run_id, name, data, frame, user_id: self.service.send_event(run_id, name, data, frame,
+                                                                               user_id=user_id),
+            self._live_row)
         self._registry: Any = None
         self._sweeper: Optional[asyncio.Task] = None
         self._scheduler: Optional[asyncio.Task] = None
@@ -484,7 +490,19 @@ class StateGraphServer(SchemaBasedToolServer):
                                     lambda r: "event queued: no frame accepts it yet" if r.get("queued")
                                     else f"event accepted by frame {r.get('frame') or 'root'}")
 
+    def _live_row(self, run_id: str) -> Optional[dict[str, Any]]:
+        """The run's status and view as they stand now, while this process runs it -- else None."""
+        live = self.run_manager.live.get(run_id)
+        if live is None or live.task.done() or live.ctx.lost:
+            return None
+        return {"id": run_id, "status": live.ctx.status, "view": live.ctx.view()}
+
     # ------------------------------------------------------------ web
+    @property
+    def wait_answer_url(self) -> str:
+        """Where a client posts the answer to a wait question (core.run_questions)."""
+        return f"/plugins/{self.name}/answer"
+
     def get_web_router(self) -> Any:
         from .web_endpoints import StateGraphWebEndpoints
 

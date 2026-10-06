@@ -16,7 +16,8 @@ Config (flat keys next to ``type``; ``agent_config`` forbids unknown keys)::
       task_param: task
       params: {}                 # literal params, under the ones from the message
       promote: [story_id]        # output keys copied onto the final event (writer_jobs reads them there)
-      on_wait: block             # ask: a wait state asks in the conversation (as a tool it blocks)
+      on_wait: block             # ask: a wait state asks in the conversation (as a tool it blocks); blocking,
+                                 # the wait is put to the person who watches the request, if any (wait_questions)
 
 Request ids: the run key is ``<agent>:<request id>`` (and belongs to the user who started the
 run), the run id ``<request id>_sg<n>``. So a re-dispatch of the same request attaches to its
@@ -44,6 +45,8 @@ from agent_system.servers.agent.components.status_forwarding import StatusEventF
 from agent_system.servers.agent.server import SESSION_LOCKED, Agent
 from agent_system.tools.status import current_request_id, status_bus, status_scope
 from agent_system.utils.id import short_id
+
+from .wait_questions import WaitAsker, declared, discarded, event_spec, last_seq, waits_of
 
 logger = logging.getLogger(__name__)
 
@@ -221,43 +224,52 @@ class MachineAgent(Agent):
                                    "a new run")
                 return
             # the message answers the question the run asked -- a timer that takes no event is waited out below
-            if ask and state == "waiting" and _waits(row):
-                since = _last_seq(server, run_id)
+            if ask and state == "waiting" and waits_of(row):
+                since = last_seq(server.run_store, run_id)
                 problem = self._reply(server, row, text, user_id)
                 if problem is not None:
                     yield {"type": "_outcome", "event": {"request_id": request_id,
                                                          **await self._ask(server, row, text, session_id, status,
                                                                            problem)}}
                     return
-                asked = _waits(row)  # the wait answered: the next question is a new wait, not this one again
+                asked = waits_of(row)  # the wait answered: the next question is a new wait, not this one again
 
         stopping = False
         last_state = None
-        while True:
-            row, ended_here = await self._tick(server, run_id)
-            for event in forwarder.get_pending_events():
-                yield event
-            if row is None:
-                yield await refuse(f"{self.name}: run {run_id} disappeared")
-                return
-            if row["status"] in ENDED and ended_here:
-                break
-            # a wait with events to answer -- a timer state (after) that takes none waits out its time
-            if ask and row["status"] == "waiting" and _waits(row) and _waits(row) != asked:
-                yield {"type": "_outcome", "event": {"request_id": request_id,
-                                                     **await self._ask(server, row, text, session_id, status,
-                                                                       since=since)}}
-                return
-            if not stopping and stopped():
-                stopping = True  # an explicit cancel of this request: the run ends terminated, finally included
-                try:  # the panel's path: a run no process runs is resumed into its termination (§3.10)
-                    await server.service.control_run(run_id, "terminate", user_id=user_id)
-                except Exception:  # idempotent where live; another process's run is refused (409)
-                    logger.debug("terminate of %s from the facade not applied", run_id, exc_info=True)
-            state = _root_state(row)
-            if state and state != last_state:
-                last_state = state
-                await status.progress(f"{self.machine_id} {run_id}: {state}"[:140])
+        # blocking -- on_wait: block, or as a tool -- a wait is put to the person who watches this request, if any
+        asker = WaitAsker(server.wait_questions, request_id=request_id, session_id=session_id, owner=user_id,
+                          agent_name=self.name, machine=self.machine_id, token=token,
+                          answer_url=server.wait_answer_url, store=server.run_store, stopped=stopped)
+        try:
+            while True:
+                row, ended_here = await self._tick(server, run_id)
+                for event in forwarder.get_pending_events():
+                    yield event
+                if row is None:
+                    yield await refuse(f"{self.name}: run {run_id} disappeared")
+                    return
+                if not ask:
+                    await asker.look(row)
+                if row["status"] in ENDED and ended_here:
+                    break
+                # a wait with events to answer -- a timer state (after) that takes none waits out its time
+                if ask and row["status"] == "waiting" and waits_of(row) and waits_of(row) != asked:
+                    yield {"type": "_outcome", "event": {"request_id": request_id,
+                                                         **await self._ask(server, row, text, session_id, status,
+                                                                           since=since)}}
+                    return
+                if not stopping and stopped():
+                    stopping = True  # an explicit cancel of this request: the run ends terminated, finally included
+                    try:  # the panel's path: a run no process runs is resumed into its termination (§3.10)
+                        await server.service.control_run(run_id, "terminate", user_id=user_id)
+                    except Exception:  # idempotent where live; another process's run is refused (409)
+                        logger.debug("terminate of %s from the facade not applied", run_id, exc_info=True)
+                state = _root_state(row)
+                if state and state != last_state:
+                    last_state = state
+                    await status.progress(f"{self.machine_id} {run_id}: {state}"[:140])
+        finally:
+            await asker.close()
         yield {"type": "_outcome", "event": {"request_id": request_id,
                                              **await self._answer(row, text, session_id, status)}}
 
@@ -267,14 +279,14 @@ class MachineAgent(Agent):
         a reply, why it did not move the run (``since``: the journal's last row before it)."""
         waits = [frame for frame in (row.get("view") or {}).get("frames") or [] if frame.get("accepts")]
         names = sorted({name for frame in waits for name in frame["accepts"]})
-        events, states = _declared(row, [(frame.get("machine"), frame.get("state")) for frame in waits])
-        lines = [f"Not sent: {problem}." if problem else "", *_discarded(server, row["id"], since),
+        events, states = declared(row, [(frame.get("machine"), frame.get("state")) for frame in waits])
+        lines = [f"Not sent: {problem}." if problem else "", *discarded(server.run_store, row["id"], since),
                  f"{self.machine_id} waits for an answer in {', '.join(f'{name!r}' for name, _ in states) or 'a wait state'}."]
         lines += [f"{name}: {description}" for name, description in states if description]
         lines.append("It takes:")
         shared = False
         for name in names:
-            spec = events.get(name) or {}
+            spec = event_spec(events, next(frame.get("machine") for frame in waits if name in frame["accepts"]), name)
             data = f" (data: {json.dumps(spec['data'], ensure_ascii=False)[:300]})" if spec.get("data") else ""
             frames = [f"{frame.get('prefix', '')!r} in {frame.get('state')!r}" for frame in waits
                       if name in frame["accepts"]]
@@ -292,12 +304,15 @@ class MachineAgent(Agent):
 
     def _reply(self, server: Any, row: dict[str, Any], text: str, user_id: Optional[str]) -> Optional[str]:
         """Send the event a reply names; why not, when it names none the run takes or the run refuses it."""
-        accepts = sorted({name for frame in (row.get("view") or {}).get("frames") or []
-                          for name in frame.get("accepts") or []})
+        frames = (row.get("view") or {}).get("frames") or []
+        accepts = sorted({name for frame in frames for name in frame.get("accepts") or []})
         found = _event_of(text, accepts)
         if isinstance(found, str):
             return found
         name, data, frame = found
+        if frame is None:  # to the one frame that waits for it: a parent's invoking state may take it too
+            takers = [waiting.get("prefix", "") for waiting in frames if name in (waiting.get("accepts") or [])]
+            frame = takers[0] if len(takers) == 1 else None
         try:
             answer = server.service.send_event(row["id"], name, data, frame, user_id=user_id)
         except Exception as exc:  # ServiceError: the run is gone, another user's, ...
@@ -519,12 +534,6 @@ def config_problems(server_config: Any) -> list[str]:
     return [problem for problem in problems if problem]
 
 
-def _waits(row: dict[str, Any]) -> frozenset[tuple[str, int]]:
-    """The waits a run stands in (frame, step): a reply answers these; a new one is another question."""
-    return frozenset((frame.get("prefix", ""), int(frame.get("step") or 0))
-                     for frame in (row.get("view") or {}).get("frames") or [] if frame.get("accepts"))
-
-
 #: A reply's event name, then its data: ``reject: {...}``, ``reject {...}``, the data on the next line.
 _REPLY = re.compile(r"^(\S+?)(?::\s*|\s+|$)(.*)$", re.S)
 
@@ -552,61 +561,6 @@ def _event_of(text: str, accepts: list[str]) -> Union[tuple[str, Any, Optional[s
     if match is None:
         return f"{name[:60]!r} is none of the events it takes now ({', '.join(accepts) or 'none'})"
     return match, data, frame
-
-
-def _last_seq(server: Any, run_id: str) -> int:
-    rows = server.run_store.tail(run_id, 1)
-    return int(rows[-1]["seq"]) if rows else 0
-
-
-def _discarded(server: Any, run_id: str, since: Optional[int]) -> list[str]:
-    """Why a reply did not move the run: the events a dispatch discarded after ``since``, with its guards."""
-    if since is None:
-        return []
-    lines = []
-    for row in server.run_store.page(run_id, after=since, kinds=["trace"]):
-        data = row.get("data") or {}
-        if row.get("status") != "event_discarded":
-            continue
-        guards = "; ".join(f"{guard.get('guard')} -> {guard['error'] if 'error' in guard else guard.get('result')}"
-                           for guard in data.get("guards") or [])
-        lines.append(f"Not taken: {data.get('event')!r} in {row.get('state')!r} -- no transition took it"
-                     + (f" (guards: {guards})" if guards else "") + ".")
-    return lines
-
-
-def _declared(row: dict[str, Any], waits: list[tuple[Any, Any]]) -> tuple[dict[str, dict[str, Any]],
-                                                                          list[tuple[str, str]]]:
-    """The events every machine of the run declares ({name: {description, data}}), and the waiting states with
-    their descriptions -- from the run's own definition."""
-    from .model.loader import load_snapshot
-
-    events: dict[str, dict[str, Any]] = {}
-    specs: dict[str, Any] = {}
-    try:
-        tree = load_snapshot(row.get("definition") or {}, execute_python=False)  # descriptions only
-        for loaded in tree.files.values():
-            spec = loaded.spec
-            if spec is None:
-                continue
-            specs[spec.id] = spec
-            for name, event in spec.events.items():
-                events.setdefault(name, {"description": event.description, "data": event.data})
-    except Exception:  # a definition that no longer loads: the question names the events without their text
-        logger.debug("definition of run %s not read", row.get("id"), exc_info=True)
-
-    def described(states: dict[str, Any], name: str) -> Optional[str]:
-        for state_name, state in (states or {}).items():
-            if state_name == name:
-                return state.description or ""
-            found = described(state.states, name)
-            if found is not None:
-                return found
-        return None
-
-    states = [(str(state), described(specs[machine].states, state) or "" if machine in specs else "")
-              for machine, state in waits if state]
-    return events, states
 
 
 def _root_state(row: dict[str, Any]) -> Optional[str]:

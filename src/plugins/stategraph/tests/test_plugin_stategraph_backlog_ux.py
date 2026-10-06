@@ -21,8 +21,11 @@ def web(server: SimpleNamespace):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    from plugins.stategraph.wait_questions import WaitBroker
     from plugins.stategraph.web_endpoints import StateGraphWebEndpoints
 
+    vars(server).setdefault("wait_questions", WaitBroker(lambda *sent: {"accepted": True}, lambda run: None))
+    vars(server).setdefault("wait_answer_url", "/plugins/stategraph/answer")
     app = FastAPI()
     app.state.config = SimpleNamespace(auth=SimpleNamespace(enabled=False))
     app.include_router(StateGraphWebEndpoints(server).get_web_router())
