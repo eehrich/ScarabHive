@@ -724,27 +724,45 @@ async def test_an_idle_worker_ends_itself_while_its_pool_lives(monkeypatch):
     await asyncio.wait_for(worker.wait(), 10)
 
 
-async def test_the_workers_of_a_loop_that_ended_exit_by_themselves(monkeypatch):
-    """The pool lives on its loop and goes with it; its idle workers exit after their idle time."""
+async def test_the_workers_of_a_loop_that_ended_are_gone_with_it(monkeypatch):
+    """asyncio.run closes the pool of its loop: the workers end with the loop -- not only after their idle
+    time, and not as zombies (on Linux from Python 3.12 nothing reaps a child once its loop is gone)."""
     import psutil
 
-    monkeypatch.setattr(structured_output, "WORKER_IDLE_SECONDS", 0.5)
+    monkeypatch.setattr(structured_output, "WORKER_IDLE_SECONDS", 60)
 
-    def a_run_of_its_own() -> int:
-        async def prepare() -> int:
+    def a_run_of_its_own() -> list[int]:
+        async def prepare() -> list[int]:
             await prepare_response_format(ResponseFormat(schema=SCHEMA))
-            return len(worker_pool()._all)
+            return [process.pid for process in worker_pool()._all]
         return asyncio.run(prepare())
 
-    assert await asyncio.to_thread(a_run_of_its_own) == 1
-    assert await asyncio.to_thread(a_run_of_its_own) == 1
-    for _ in range(100):
-        workers = [child for child in psutil.Process().children()
-                   if any("schema_worker.py" in part for part in child.cmdline())]
-        if not workers:
-            break
-        await asyncio.sleep(0.05)
-    assert not workers, "the workers of the ended loops stayed"
+    pids = await asyncio.to_thread(a_run_of_its_own) + await asyncio.to_thread(a_run_of_its_own)
+    assert len(pids) == 2
+    assert not [pid for pid in pids if psutil.pid_exists(pid)], "the workers of the ended loops stayed"
+
+
+def test_a_pool_first_asked_for_while_its_loop_shuts_down_still_comes():
+    """Once asyncio.run closes its async generators, the loop takes no new one (asyncio warns, an error
+    under -W error): worker_pool() asked for there must still answer, without the closing generator."""
+    import warnings
+
+    pools, holder = [], []
+
+    async def needs_the_pool_at_its_end():
+        try:
+            yield
+        finally:
+            pools.append(worker_pool())
+
+    async def main():
+        holder.append(needs_the_pool_at_its_end())
+        await holder[0].__anext__()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        asyncio.run(main())
+    assert len(pools) == 1 and pools[0].closer is None
 
 
 

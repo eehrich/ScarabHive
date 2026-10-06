@@ -83,7 +83,8 @@ QUEUE_DEADLINE = 30.0
 #: queue and holds at most one worker, the others stay free for everyone else. Waiting, not refusing: a
 #: user's two runs whose answers are checked at the same moment must both go through.
 WORKERS_PER_USER = 1
-#: Seconds an idle worker waits for its next request before it exits (the pool of a loop that is gone).
+#: Seconds an idle worker waits for its next request before it exits (the pool of a loop that ended
+#: without asyncio.run closing it).
 WORKER_IDLE_SECONDS = 300.0
 _WORKER_PATH = Path(schema_worker.__file__).resolve()
 #: One reply line may carry an answer of MAX_ANSWER_CHARS, JSON-escaped.
@@ -254,6 +255,8 @@ class SchemaWorkerPool:
         self._all: set[asyncio.subprocess.Process] = set()
         self.started = 0
         self.killed = 0
+        #: Set by worker_pool(): the async generator that closes this pool when its loop ends.
+        self.closer: Any = None
 
     async def _start(self) -> asyncio.subprocess.Process:
         try:
@@ -381,9 +384,20 @@ class SchemaWorkerPool:
 
 
 #: One pool per event loop -- a subprocess belongs to the loop that started it -- kept ON the loop, so it
-#: goes with it (a dict keyed by the loop kept every loop alive: the pool refers back to it). The
-#: workers of a loop that ended without closing its pool exit after WORKER_IDLE_SECONDS.
+#: goes with it (a dict keyed by the loop kept every loop alive: the pool refers back to it). asyncio.run
+#: closes it before the loop ends (_close_with_the_loop). The workers of a loop ended any other way exit
+#: after WORKER_IDLE_SECONDS, and on Linux from Python 3.12 nothing reaps them then: they stay zombies
+#: until this process ends (measured, Python 3.12.3).
 _POOL_ATTRIBUTE = "_agent_system_schema_workers"
+
+
+async def _close_with_the_loop(pool: SchemaWorkerPool):
+    """Suspended for the life of the loop. asyncio.run closes the async generators of its loop before
+    the loop itself: closing this one ends the pool's workers while the loop can still reap them."""
+    try:
+        yield
+    finally:
+        await pool.close()
 
 
 def worker_pool() -> SchemaWorkerPool:
@@ -392,6 +406,12 @@ def worker_pool() -> SchemaWorkerPool:
     if pool is None:
         pool = SchemaWorkerPool()
         setattr(loop, _POOL_ATTRIBUTE, pool)
+        # The loop holds its async generators weakly; the pool holds this one. A loop already past
+        # shutdown_asyncgens takes no new one (asyncio warns, an error under -W error): that pool
+        # ends by the idle time.
+        if not getattr(loop, "_asyncgens_shutdown_called", False):
+            pool.closer = _close_with_the_loop(pool)
+            loop.create_task(pool.closer.__anext__())
     return pool
 
 
