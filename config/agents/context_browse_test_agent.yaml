@@ -1,20 +1,17 @@
-# Live-Testagent für die Browsing-Oberfläche des context_engineer
-# (list / search / read auf den EIGENEN Kontext).
+# Live test agent for the browsing surface of context_engineer
+# (list / search / read on the agent's OWN context).
 #
-# Absichtlich brutal eingestellt: archiviert nach EINEM Turn und lagert fast
-# jedes Tool-Ergebnis aus. Damit ist eine Information aus Turn 1 in Turn 3
-# garantiert nicht mehr im Kontext, sondern nur noch im Archiv — genau die
-# Lage, in der die drei Verben etwas taugen müssen.
+# Deliberately extreme: archives after ONE turn and offloads almost every tool result. So
+# information from turn 1 is guaranteed to be only in the archive by turn 3, which is the
+# situation the three verbs must handle.
 #
-# Nicht produktiv nutzen: mit diesen Schwellen bricht jede Verdichtung den
-# Prompt-Cache-Präfix.
+# Not for production use: with these thresholds every compaction breaks the prompt-cache prefix.
 plugins:
   servers:
     context_browse_test_agent:
       type: basic_agent
-      # Aus, damit er nicht in der Agentenliste steht. Zum Nachfahren des
-      # Live-Tests auf true setzen und die API neu starten; das Rezept steht
-      # in .claude/skills/verify.
+      # Off so it does not appear in the agent list. Set to true and restart the API to rerun
+      # the live test.
       enabled: false
       description: "Test agent: browsing its own archived context"
 
@@ -25,10 +22,9 @@ plugins:
 
         tools:
           allowed:
-            # Bewusst NUR die beiden Verben: mit store_fact würde der Agent die
-            # gesuchte Information in den System-Prompt legen und käme nie ans
-            # Archiv — der Test prüfte dann etwas anderes als gemeint. recall
-            # ist ebenfalls draußen, damit der neue Weg allein tragen muss.
+            # Deliberately ONLY the two verbs: with store_fact the agent would put the sought
+            # information into the system prompt and never reach the archive. recall is excluded too, so
+            # the browsing verbs must carry alone.
             - "context_engineer/context_engineer_list"
             - "context_engineer/context_engineer_read"
             - "datetime/*"
@@ -38,13 +34,13 @@ plugins:
           overrides:
             context_engineer.engineer_context:
               enabled: true
-              # Jede dieser Zahlen ist absichtlich unrealistisch klein.
-              layer1_threshold: 400      # Tool-Ergebnisse sofort auslagern
-              layer2_threshold: 600      # Nachrichten sofort archivieren
-              layer3_threshold: 900000   # aber nichts wegwerfen — sonst
-                                         # wäre der Test nicht gewinnbar
+              # Each of these numbers is deliberately unrealistically small.
+              layer1_threshold: 400      # offload tool results immediately
+              layer2_threshold: 600      # archive messages immediately
+              layer3_threshold: 900000   # but discard nothing, otherwise
+                                         # the test could not be won
               target_tokens: 300
-              archive_after_turns: 1     # alles ausser dem aktuellen Turn
+              archive_after_turns: 1     # everything except the current turn
               tool_result_min_size: 20
               tool_result_keep_last: 0
 

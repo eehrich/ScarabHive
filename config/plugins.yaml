@@ -116,8 +116,6 @@ plugins:
       max_lessons_per_agent: 500
       dedup_similarity_threshold: 0.82
       exact_duplicate_threshold: 0.95
-      # Direct -> OpenRouter (2026-08-20): gleiches Modell, das Direct-Konto
-      # ist fast leer. Extraktion und Konsolidierung laufen ueber OR.
       llm_profile: "or-deepseek-flash"
       consolidation_llm_profile: "or-deepseek-flash"  # LLM for consolidation (merge decisions) - use think/normal for better quality
 
@@ -177,11 +175,10 @@ plugins:
       port: 8188
       strategy: "least_loaded"  # "least_loaded" (probe queues) or "random"
       timeout_seconds: 1200
-      servers:  # 4 ComfyUI-Instanzen auf einem Server (2 GPUs), load-balanced
-        # Der lokale PC ist meist aus. Die Auswahl ist zwar health-aware und
-        # weicht aus, aber erst NACH dem Verbindungsversuch: gemessen 3,07 s
-        # Timeout je Job gegen 0,006 s auf gpuhost1. Wieder aufmachen, sobald
-        # der PC dauerhaft laeuft.
+      servers:  # ComfyUI instances, load-balanced
+        # The local PC is usually off. Selection is health-aware, but only
+        # after the connection attempt, so every job pays the connect timeout.
+        # Enable it once the PC runs permanently.
         #- host: "192.0.2.64" # PC
         #  port: 8188
 
@@ -199,11 +196,9 @@ plugins:
       output_dir: "data/comfyui/outputs"
       workflow_files_dir: "config/comfyui_workflows"
       cleanup_age_hours: 48  # Delete files older than 48 hours (0 = disable cleanup)
-      # upload_image security allowlist. Mirrors the code defaults PLUS
-      # the writer cover dir — the Phase-E cover_feedback_judge uploads
-      # the real cover composite for its VLM verification passes; without
-      # this entry every judge run dies with "not found inside the
-      # configured upload_source_dirs allowlist" (book 26, job 242).
+      # upload_image security allowlist. Mirrors the code defaults plus the
+      # writer cover dir: the cover feedback judge uploads the cover composite
+      # for VLM verification and is refused without that entry.
       upload_source_dirs:
         - "data/comfyui/outputs"
         - "data/comfyui"
@@ -905,28 +900,18 @@ plugins:
       type: context_summarizer
       enabled: true
       config:
-        # Explizit, nicht ueber den schema-Default: bis 2026-08-18 hat ein
-        # Bug den konfigurierten Wert verschluckt (default_llm_profile ist
-        # eine Property, pydantic hat das kwarg still verworfen), also lief
-        # die Zusammenfassung unbeabsichtigt auf gpt-5.4-mini. Seit der Fix
-        # greift, wird das Modell hier bewusst gewaehlt: deepseek-v4-flash
-        # ist guenstiger und besser als gpt-5.4-nano, nicht-streamend (der
-        # Summarizer ruft .chat()) und hat 1M Kontext fuer lange Verlaeufe.
-        # or-deepseek-flash statt chat-nostream (2026-08-20): gleicher
-        # deepseek-v4-flash, aber ueber OpenRouter — das Direct-Konto ist
-        # fast leer. Plugin-Ebene kennt keine Kette. ACHTUNG: der
-        # context.llm-Rueckfall des Hooks greift nur, wenn die CLIENT-
-        # ERZEUGUNG scheitert (Tippfehler im Profilnamen). Ein LAUFZEIT-
-        # Ausfall von OpenRouter laesst die Zusammenfassung still
-        # ausfallen — der Kontext schrumpft dann nicht mehr. Galt genauso
-        # fuer die Direct-API davor; kein neues Risiko, aber ein offenes.
+        # Set explicitly rather than via the schema default. The profile must
+        # be non-streaming (the summarizer calls .chat()); a 1M context helps
+        # with long histories. The plugin level has no profile chain: the
+        # hook's context.llm fallback applies only when client creation fails
+        # (e.g. a typo in the profile name). A runtime outage of the provider
+        # silently skips summarization, so the context stops shrinking.
         llm_profile: or-deepseek-flash
         max_message_preview_length: 5000
         min_time_between_summarizations: 500
         max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)
-        # UEBER dem max_messages des context_engineer (190): dessen Prune
-        # (ohne LLM-Call, mit Archiv) greift zuerst, die Zusammenfassung nur,
-        # wenn er es nicht unter 200 schafft.
+        # Above the context_engineer's max_messages (190): its prune (no LLM
+        # call, archived) runs first; summarization only if that stays above 200.
         max_messages: 200
         summarization_trigger_percentage: 0.8
 
@@ -935,29 +920,28 @@ plugins:
       enabled: true
       config:
         # Token thresholds for layered compaction.
-        # Cache-Hysterese: JEDE Mutation
-        # vor dem Prefix-Ende bricht das Provider-Prompt-Caching komplett.
-        # Deshalb selten und TIEF kuerzen (High-Watermark -> Low-Watermark mit
-        # grossem Hub, ~140k -> 70k), nie inkrementell. Die Schwellen liegen
-        # bewusst hoch: Writer-Profile fahren 200k-1M-Kontexte; kleine Modelle
-        # schuetzt weiterhin max_request_bytes.
+        # Cache hysteresis: ANY mutation before the end of the prefix breaks
+        # provider prompt caching completely. So compact rarely and deep
+        # (high watermark -> low watermark, ~140k -> 70k), never incrementally.
+        # The thresholds are high on purpose: writer profiles run 200k-1M
+        # contexts; small models are still protected by max_request_bytes.
         layer1_threshold: 140000  # Start reversible compaction (tool refs, variables)
         layer2_threshold: 170000  # Start semi-reversible compaction (archival with summaries)
         layer3_threshold: 200000  # Start irreversible compaction (drop old messages)
-        target_tokens: 70000      # Target token count after compaction (Low-Watermark, grosser Hub)
-        min_tokens_between_compactions: 20000  # Wachstum seit der letzten Kompaktion — verhindert Kompaktions-Dauerlauf dicht ueber der Schwelle
+        target_tokens: 70000      # Target token count after compaction (low watermark, large drop)
+        min_tokens_between_compactions: 20000  # Growth since the last compaction; avoids compacting on every turn just above a threshold
 
-        store_media_before_compaction: true  # Aktiviert MediaStore
-        media_store_ttl_seconds: 604800      # 7 Tage
-        media_store_max_files: 500           # Max Dateien pro Session
+        store_media_before_compaction: true  # Enables the media store
+        media_store_ttl_seconds: 604800      # 7 days
+        media_store_max_files: 500           # Max files per session
 
         # Request size limits (bytes). OpenRouter (or-gemini-pro, or-gemini-flash)
         # has a HARD 30 MB cap on downloaded image content per request — direct
         # Gemini accepts up to 100 MB. We target near the OpenRouter cap since
         # everything outside the images is just text (tokens are tiny in bytes).
         # Direct-Gemini agents are unaffected (just compact a bit earlier).
-        max_request_bytes: 30408704    # 29 MB - trigger compaction (1 MB Puffer unter OpenRouter-30-MB-Cap)
-        target_request_bytes: 25165824 # 24 MB - target after compaction (5 MB Headroom für nächste Calls)
+        max_request_bytes: 30408704    # 29 MB - trigger compaction (1 MB buffer under the OpenRouter 30 MB cap)
+        target_request_bytes: 25165824 # 24 MB - target after compaction (5 MB headroom for the next calls)
         
         # Core memory settings
         core_memory_max_tokens: 5000   # Max tokens for always-present facts
@@ -971,7 +955,7 @@ plugins:
         archive_after_turns: 9999      # Archive messages older than N turns, deactivated, breaks cache
         keep_system_messages: true     # Never archive/drop system messages
 
-        enable_semantic_search: true   # VectorStore-Semantiksuche (ChromaDB oder sqlite-vec)
+        enable_semantic_search: true   # Vector store semantic search (ChromaDB or sqlite-vec)
         session_data_ttl_days: 14      # delete a session's on-disk data (archive, tool results, media) and its vectors after N idle days; 0 = off
 
         # Irreversible compaction settings
@@ -981,14 +965,14 @@ plugins:
         # Pre-Layer P: message limit - prunes oldest messages if exceeded
         # Runs BEFORE token-based layers to prevent excessive message counts
         # Counts ALL messages including tool calls/results, not just user messages
-        # Jeder Prune bricht den Prompt-Cache; entscheidend ist, wie selten:
-        # ueber 190 auf 100 heisst ein Bruch je ~90 Nachrichten, ohne LLM-Call,
-        # das Entfernte liegt im Archiv. Muss UNTER dem max_messages des
-        # context_summarizer (200) liegen, sonst fasst der zuerst zusammen.
-        # Der writer_context_summarizer (Writer-Agenten) steht auf 150 und
-        # greift dort weiterhin vorher.
-        max_messages: 190              # 0 = aus
-        max_messages_prune_to: 100     # so viele bleiben nach einem Prune; 0 = max_messages // 2
+        # Every prune breaks the prompt cache, so what matters is how rarely:
+        # pruning from 190 to 100 means one break per ~90 messages, no LLM call,
+        # removed messages go to the archive. Must stay BELOW the
+        # context_summarizer's max_messages (200), or it summarizes first.
+        # The writer_context_summarizer (writer agents) is set to 150 and
+        # still triggers first there.
+        max_messages: 190              # 0 = off
+        max_messages_prune_to: 100     # messages kept after a prune; 0 = max_messages // 2
         
         deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
         compact_media_after_user_message: true  # Compact media files after user messages 
@@ -1159,7 +1143,7 @@ plugins:
       config:
         llm_profile: "or-deepseek-flash"
 
-    # Approvals before tool calls (#091): allow/deny rules, and in ask mode a
+    # Approvals before tool calls: allow/deny rules, and in ask mode a
     # question to the person watching the run. The hook is off for every
     # agent; an agent switches it on with
     #   hooks.overrides:
@@ -1185,7 +1169,7 @@ plugins:
         allow: ["ask_user/*"]
         deny: []
 
-    # The model asks the person watching the run (F12): a question with 2-4
+    # The model asks the person watching the run: a question with 2-4
     # options or free text, answered in the web chat. A run nobody watches
     # gets an error at once ("decide yourself"). Agents get it through their
     # allowlist ("ask_user/*"). Manual: src/plugins/ask_user/ask_user.guide.
@@ -1228,9 +1212,8 @@ plugins:
         # Extra regex patterns added to the built-in hand-brake list
         # (rm -rf /, mkfs., fork bomb, dd of=/dev/, chmod -R 777,
         # chown -R root, wget|sh, curl|bash). Tightening this is a deployment
-        # decision, not a code change — see src/plugins/terminal/security.py
-        # for why pure syntax patterns (backticks, $(...), quote counting)
-        # were removed rather than kept here.
+        # decision, not a code change. Pure syntax patterns (backticks,
+        # $(...), quote counting) are deliberately not part of it.
         # dangerous_patterns:
         #   - "shutdown\\s"
 

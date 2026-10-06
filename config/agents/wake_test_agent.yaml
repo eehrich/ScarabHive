@@ -5,7 +5,7 @@ plugins:
     # ends its turn over a running sub-agent and the manager wakes the session
     # when the job is done.
     #
-    # Best watched in `agent-cli chat --agent wake_test_agent`: since 9d9c4652
+    # Best watched in `agent-cli chat --agent wake_test_agent`:
     # its prompt waits ON the event loop, so the job runs on while nobody types
     # and the woken turn appears in the same window. The API serves it too, but
     # there the woken run is a headless subprocess writing into the session

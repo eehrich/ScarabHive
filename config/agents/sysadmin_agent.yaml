@@ -76,7 +76,7 @@ plugins:
       enabled: true
       description: "System administration agent with SSH access to manage, monitor, and troubleshoot Linux servers across production and development environments"
 
-      # self_tool_descriptions now at ToolServerConfig level (not in agent_config)
+      # self_tool_descriptions is set at ToolServerConfig level (not in agent_config)
       self_tool_descriptions:
         sysadmin_agent_execute_task: "Execute system administration tasks including server management, deployment automation, performance monitoring, security audits, and infrastructure troubleshooting via SSH"
         sysadmin_agent_list_available_tools: "List system utilities, and administrative tools available for server management"
@@ -86,10 +86,9 @@ plugins:
         llm_profile_advanced: []
         llm_params:
           "*":
-            # Interaktive Multi-Turn-Session: auf Anthropic-Profilen (z.B.
-            # or-claude-sonnet) markiert der Client damit das Konversationsende
-            # als cache_control-Breakpoint (wachsender Verlauf cached
-            # inkrementell); auf GPT-Profilen = implizites Fortsetzungs-Caching.
+            # Interactive multi-turn session: on Anthropic profiles (e.g. or-claude-sonnet) the
+            # client marks the end of the conversation as a cache_control breakpoint (the growing history
+            # is cached incrementally); on GPT profiles this means implicit continuation caching.
             prompt_cache_mode: multi_turn
         max_steps: 100
         system_template: "./prompts/system_admin_prompt.md"

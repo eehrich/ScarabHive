@@ -1,12 +1,11 @@
 plugins:
   servers:
-    # Rauchtest fuer EXTERNE MCP-Server: der einzige Agent, der Tools eines
-    # fremden Servers rufen darf. Existiert, damit "externes MCP geht noch"
-    # eine Frage ist, die man in einem Lauf beantworten kann -- analog zu
-    # file_ops_test_agent fuer die lokale Dateiebene.
+    # Smoke test for EXTERNAL MCP servers: the only agent allowed to call tools of a foreign
+    # server. Makes "external MCP still works" answerable in one run, like file_ops_test_agent
+    # does for the local file layer.
     #
-    # Braucht `everything` in config/mcp_servers.yaml auf enabled: true.
-    # Der steht dort bewusst auf false; fuer einen Test kurz umschalten.
+    # Needs `everything` in config/mcp_servers.yaml set to enabled: true. It ships as false;
+    # switch it on for a test.
     mcp_external_test_agent:
       type: basic_agent
       enabled: true
@@ -20,16 +19,14 @@ plugins:
 
         tools:
           allowed:
-            # Punkt, nicht Slash: externe Tools heissen server.tool, lokale
-            # Plugins plugin/tool. Der Punkt entscheidet zur Laufzeit, ob ein
-            # Aufruf in ein Plugin geht oder nach draussen.
+            # Dot, not slash: external tools are named server.tool, local plugins plugin/tool. The
+            # dot decides at runtime whether a call goes to a plugin or to the outside.
             - "everything.*"
-            # Zweite Installationsform desselben Servers (external/mcp statt
-            # npx). Der Agent deckt beide ab, damit ein Rauchtest nicht davon
-            # abhaengt, welche gerade eingeschaltet ist.
+            # Second install form of the same server (external/mcp instead of npx). The agent covers
+            # both so the smoke test does not depend on which one is enabled.
             - "everything_local.*"
-            # Slash, nicht Punkt: die Verwaltungstools des mcp_client-Plugins
-            # selbst -- damit sind auch /mcp, /mcp-connect usw. im Chat da.
+            # Slash, not dot: the management tools of the mcp_client plugin itself, so /mcp,
+            # /mcp-connect etc. are also available in chat.
             - "mcp_client/*"
 
       metadata:

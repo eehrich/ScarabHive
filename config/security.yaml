@@ -6,7 +6,7 @@
 
 auth:
   # ============================================================
-  # Endpoint Security Rules (NEW)
+  # Endpoint Security Rules
   # ============================================================
   # Fine-grained control over which endpoints require authentication
   # and what role is needed. Rules are processed in order, first match wins.
@@ -98,7 +98,7 @@ auth:
         description: "Security Audit panel (its data is under /admin/*)"
       
       # Config endpoint - admin only (exposes system configuration)
-      # Note: Now under /admin/config (moved from /config)
+      # Note: served under /admin/config
       
       # Hook endpoints - admin only (system internals)
       - pattern: "* /hooks/*"
@@ -140,7 +140,7 @@ auth:
         min_role: "admin"
         description: "Admin endpoints require admin privileges"
       
-      # Request management - requires user role (now under /api/requests/*)
+      # Request management - requires user role (under /api/requests/*)
       - pattern: "GET /api/requests/*/status"
         policy: "require_auth"
         min_role: "user"
@@ -192,7 +192,7 @@ auth:
         description: "LLM profile listing requires authentication"
 
   # ============================================================
-  # LLM Request Security (NEW)
+  # LLM Request Security
   # ============================================================
   # Security settings for LLM API calls (which incur costs)
   llm_security:
@@ -203,7 +203,7 @@ auth:
     max_requests_per_hour_anonymous: 0      # 0 = anonymous users cannot make LLM requests
 
   # ============================================================
-  # Plugin Endpoint Security (NEW)
+  # Plugin Endpoint Security
   # ============================================================
   # Centralized security for all plugin-provided HTTP endpoints
   plugin_security:
@@ -253,12 +253,9 @@ auth:
         min_role: "admin"
         description: "State machine editor, runner and debugger require admin role"
 
-      # writer_admin exposes the whole writer DB (jobs.db, books.db,
-      # sessions, story payloads, raw reader feedback) — operator
-      # surface only. Pre-existing gap closed in Phase D after the
-      # Phase-B review surfaced H1 (any user-role JWT could DELETE
-      # queue jobs, dump payloads, etc.). The plugin button itself was
-      # gated at the UI layer, but the routes were technically reachable.
+      # writer_admin exposes the whole writer DB (jobs.db, books.db, sessions, story
+      # payloads, raw reader feedback): operator surface only. A user-role token must not be able
+      # to delete queue jobs or dump payloads.
       - pattern: "/plugins/writer_admin/*"
         policy: "require_auth"
         min_role: "admin"

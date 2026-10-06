@@ -2,7 +2,7 @@
 plugins:
   servers:
 
-    # base class agent for multipl uses
+    # base class agent for multiple uses
     multi_turn_agent:
       type: basic_agent
       enabled: true

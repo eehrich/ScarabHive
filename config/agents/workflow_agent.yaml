@@ -23,7 +23,7 @@ plugins:
 
     # Workflow Agent - executes multi-step data workflows. Prefers ONE
     # wf_pipe script over N single tool calls (fewer turns, no re-typing).
-    # Also the reference setup for tool_script adoption (e.g. v6 migration).
+    # Also the reference setup for tool_script adoption.
     workflow_agent:
       type: basic_agent
       enabled: true
