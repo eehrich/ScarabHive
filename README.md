@@ -154,8 +154,11 @@ and the [example plugin](src/plugins/example/).
 
 ## Getting started
 
-You need Python 3.11 or newer (3.12 recommended), git, a few GB of disk and an
-[OpenRouter API key](https://openrouter.ai/keys) — the default chat agent runs on OpenRouter.
+You need Python 3.11 or newer (3.12 recommended), git, a few GB of disk and an LLM provider.
+For the simplest start, take an [OpenRouter API key](https://openrouter.ai/keys): as shipped,
+every agent that is switched on runs on OpenRouter. To use OpenAI, Anthropic,
+Google Gemini, DeepSeek or a local Ollama instead, point the profiles in `config/llm.yaml` and
+`config/llm_openrouter.yaml` at their models ([how](docs/configuration.md#the-shipped-profiles)).
 
 ```bash
 git clone https://github.com/eehrich/ScarabHive.git ScarabHive

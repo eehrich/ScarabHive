@@ -14,8 +14,11 @@ This gets ScarabHive running on one machine: the web UI at `http://127.0.0.1:800
 - **Optional, for SVG layers in images:** the cairo library, pkg-config, a C compiler and
   Python's headers. Outside Windows, `pycairo` is built from source against them. You need not install them yourself: the
   install script does where it can, and without them everything but SVG layers works.
-- **An OpenRouter API key** ([openrouter.ai/keys](https://openrouter.ai/keys)): the default
-  chat agent runs on it. Keys for other providers are optional.
+- **An LLM provider.** Recommended for the first start: an OpenRouter API key
+  ([openrouter.ai/keys](https://openrouter.ai/keys)) — as shipped, every agent that is switched
+  on runs on it. Another provider works too once its models are in the profiles
+  ([docs/configuration.md](docs/configuration.md#the-shipped-profiles)); keys for further
+  providers are optional.
 
 ## 2. Install and start
 
@@ -73,7 +76,8 @@ run `python -m agent_system.auth.first_admin` before that start to choose one in
 Then open the **Setup** panel: click the grid icon in the top bar (tooltip *Panels*) and type
 `setup`.
 
-- **API keys:** Paste your OpenRouter key into the field next to `OPENROUTER_API_KEY` and click
+- **API keys:** Paste your OpenRouter key into the field next to `OPENROUTER_API_KEY` (another
+  provider's key next to its own variable, such as `ANTHROPIC_API_KEY`) and click
   *Save*. It goes into `config/local.env`, and the chat uses it from the next message on.
   Sub-agents, background jobs, fallback models and plugins that read their key at start (a web
   search, for example) use it after a restart. Each key shows as *set*, *missing* or
@@ -212,7 +216,7 @@ downloaded once, on first use, into `~/.cache/chroma`, so that first use needs n
 | `SVG layers in images are off: ...` at the end of the script, or an svg layer answers `SVG layers need reportlab's cairo backend` | The optional part is missing. Run the command the line names (macOS: `brew install cairo pkg-config`; Debian/Ubuntu: `sudo apt-get update && sudo apt-get install -y build-essential libcairo2-dev pkg-config`, plus `python3.X-dev` for your Python 3.X if it lacks its headers; the line names exactly what is missing), then the script again. Everything else works without it. |
 | `running scripts is disabled on this system` | PowerShell's execution policy: start the script as shown in step 2. |
 | `agent-cli: command not found`, or `The term 'agent-cli' is not recognized` | The virtual environment is not activated (see *Installing by hand*). |
-| `Config references N unset variable(s): ...` at every start | Normal for the services you do not use. Only `OPENROUTER_API_KEY` must not be in the list. |
+| `Config references N unset variable(s): ...` at every start | Normal for the services you do not use. Only the key of the provider your agents run on (`OPENROUTER_API_KEY` as shipped) must not be in the list. |
 | `Refusing to start: auth.secret_key is empty ...` or `... has N characters, at least 32 are needed` | The signing key is missing or too short: run `python -m agent_system.config.local_layer signing-key` in the activated virtual environment. |
 | `auth.secret_key is a published default ...` in the log | The installation still signs logins with the key from the repository: use *Make an own signing key* in the Setup panel, then restart. |
 | The admin password is lost | In the activated virtual environment: `agent-cli users update admin -p <new password>`. That also ends the admin's logins and revokes its API key; whatever used the key needs a new one (`agent-cli users generate-api-key admin`). Running the install script again does not reset the password. |

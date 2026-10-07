@@ -115,6 +115,22 @@ plugins:
         llm_profile: gpt-4-turbo  # a name under llm_system.profiles
 ```
 
+#### The shipped profiles
+
+As shipped, the default chat agent uses the profile `chat` (falling back to `or-gemini-flash-lite`),
+most other agents `normal` (falling back to `think`). These and the `or-*` profiles in
+`config/llm_openrouter.yaml` point at OpenRouter models; some agents fall back to DeepSeek or Gemini
+directly.
+
+To run on another provider, point the profiles in use at its models. Agents and plugins name profiles,
+not models (context_engineer condenses with `summarizer`; `llm_system.default_profile` is
+`or-deepseek-flash`), so a profile's new `model_ref` applies to everything that names it. The shared
+profiles sit in `llm.yaml` (`chat`, `normal`, `think`, `turbo`, `structured`, `code`, `summarizer`);
+many agents and some plugin entries in `plugins.yaml` name an `or-*` profile directly, so repoint those
+in `llm_openrouter.yaml` as well. `llm.yaml` already defines models for Anthropic (`claude-sonnet`),
+OpenAI (`gpt-luna`), Gemini (`gemini-3-flash-nostream`), DeepSeek (`deepseek-chat`) and Ollama
+(`ollama-gemma-4`, profile `local`; set its `base_url` to your server), or add your own as above.
+
 **API keys**: `${ENV_VAR}` placeholders are expanded in every config file, `llm.yaml` included (`api_key: ${OPENAI_API_KEY}`); an unset variable becomes empty and is named in a startup warning. Variables can also be put in `config/secrets.env` (template: `config/secrets.env.example`), which is loaded at startup without overriding the real environment. Omitting `api_key` falls back to the provider's environment variable as described above.
 
 ### Plugin Configuration
