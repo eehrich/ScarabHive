@@ -80,7 +80,12 @@ Errors say what to change:
 @{bullet}"subject is required: one line of at most 200 characters"
 @{bullet}"body is required: plain text of at most 100000 characters"
 @{bullet}"to: only configured recipients can be written to; leave it out to write to all of them"
-@{bullet}"the SMTP server refused the login (535): check username and password"
+@{bullet}"the SMTP server refused the login (<code> <the server's words>): check
+username and password", for example Gmail's "534 5.7.9 Application-specific
+password required". The plugin logs in once, with the first of CRAM-MD5,
+PLAIN and LOGIN the server offers (smtplib's own order; CRAM-MD5 sends no
+password): a server that hangs up on a second attempt would hide its
+answer to the first.
 @{bullet}"the SMTP server refused every recipient: ..."
 @{bullet}"mail not sent: SMTP sends the username, the password and the
 addresses as ASCII" when one of them holds other characters; the

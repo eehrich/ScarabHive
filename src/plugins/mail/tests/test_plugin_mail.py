@@ -16,18 +16,43 @@ SETTINGS = {"host": "smtp.example.org", "username": "bot@example.org", "password
 
 
 class FakeSMTP:
-    """One SMTP session: what the tool did in it, in order. `refuse` maps an address to the server's no for it;
-    `login_fails` and `down` make the login or the connection fail."""
+    """One SMTP session: what the tool did in it, in order. `offers` is the server's AUTH line; `refuse` maps an
+    address to the server's no for it; `login_fails` makes it refuse the login -- and, as Gmail does, hang up on a
+    second attempt; `down` makes the connection fail."""
     sessions: list["FakeSMTP"] = []
     refuse: dict = {}
+    offers = "LOGIN PLAIN XOAUTH2"
     login_fails = down = False
 
     def __init__(self, host, port, timeout=None, context=None):
         if FakeSMTP.down:
             raise ConnectionRefusedError(10061, "refused")
         self.host, self.port, self.timeout, self.context = host, port, timeout, context    # SMTP_SSL's
-        self.steps, self.message = [], None
+        self.steps, self.message, self.attempts = [], None, 0
+        self.esmtp_features, self.user, self.password = {"auth": " " + FakeSMTP.offers}, None, None
         FakeSMTP.sessions.append(self)
+
+    def ehlo_or_helo_if_needed(self):                 # smtplib: a fresh EHLO reads the features again
+        self.esmtp_features = self.esmtp_features or {"auth": " " + FakeSMTP.offers}
+
+    def auth_cram_md5(self, challenge=None):
+        return f"{self.user} <digest>"
+
+    def auth_plain(self, challenge=None):
+        return "\0%s\0%s" % (self.user, self.password)
+
+    def auth_login(self, challenge=None):
+        return self.user
+
+    def auth(self, mechanism, authobject, *, initial_response_ok=True):
+        self.attempts += 1
+        if self.attempts > 1:
+            raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+        self.steps.append(("login", mechanism, self.user, self.password))
+        authobject().encode("ascii")                                  # what smtplib does with the answer
+        if FakeSMTP.login_fails:
+            raise smtplib.SMTPAuthenticationError(534, b"5.7.9 Application-specific password required.")
+        return 235, b"2.7.0 Accepted"
 
     def __enter__(self):
         return self
@@ -37,13 +62,10 @@ class FakeSMTP:
 
     def starttls(self, context=None):
         self.steps.append("starttls")
-        self.context = context
+        self.context, self.esmtp_features = context, {}           # smtplib forgets them (RFC 3207)
 
-    def login(self, user, password):
-        self.steps.append(("login", user, password))
-        ("\0%s\0%s" % (user, password)).encode("ascii")           # what smtplib's AUTH PLAIN does
-        if FakeSMTP.login_fails:
-            raise smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted")
+    def login(self, user, password):                   # smtplib's own way, for a server offering neither
+        self.steps.append(("login", "smtplib", user, password))
 
     def send_message(self, message):
         self.steps.append("send")
@@ -57,6 +79,7 @@ class FakeSMTP:
 @pytest.fixture(autouse=True)
 def smtp(monkeypatch):
     FakeSMTP.sessions, FakeSMTP.refuse, FakeSMTP.login_fails, FakeSMTP.down = [], {}, False, False
+    monkeypatch.setattr(FakeSMTP, "offers", FakeSMTP.offers)
     monkeypatch.setattr(mail.smtplib, "SMTP", FakeSMTP)
     monkeypatch.setattr(mail.smtplib, "SMTP_SSL", lambda *a, **k: FakeSMTP(*a, **k))
     return FakeSMTP
@@ -88,7 +111,7 @@ async def test_a_mail_goes_to_every_configured_recipient_over_starttls(smtp):
     assert "2 recipient(s)" in line and "Video fertig" in line, line
     (session,) = smtp.sessions
     assert (session.host, session.port, session.timeout) == ("smtp.example.org", 587, 30.0)
-    assert session.steps == ["starttls", ("login", "bot@example.org", "secret"), "send", "quit"], session.steps
+    assert session.steps == ["starttls", ("login", "PLAIN", "bot@example.org", "secret"), "send", "quit"], session.steps
     m = session.message
     assert (m["From"], m["To"], m["Subject"]) == ("bot@example.org", "me@example.org, Team@Example.org",
                                                   "Video fertig: Übersicht")
@@ -125,14 +148,23 @@ async def test_what_cannot_go_out_is_refused_before_any_connection(smtp, setting
 
 
 @pytest.mark.parametrize("security, port, steps", [
-    ("ssl", 465, [("login", "bot@example.org", "secret"), "send", "quit"]),
-    ("none", 25, [("login", "bot@example.org", "secret"), "send", "quit"]),
+    ("ssl", 465, [("login", "PLAIN", "bot@example.org", "secret"), "send", "quit"]),
+    ("none", 25, [("login", "PLAIN", "bot@example.org", "secret"), "send", "quit"]),
 ])
 async def test_ssl_and_plain_take_their_own_port_and_no_starttls(smtp, security, port, steps):
     result, _ = await call(server(security=security), {"subject": "s", "body": "b"})
     assert result["status"] == "success", result
     (session,) = smtp.sessions
     assert session.port == port and session.steps == steps, (session.port, session.steps)
+
+
+@pytest.mark.parametrize("offers, step", [("XOAUTH2 LOGIN", ("login", "LOGIN", "bot@example.org", "secret")),
+                                          ("LOGIN PLAIN CRAM-MD5", ("login", "CRAM-MD5", "bot@example.org", "secret")),
+                                          ("XOAUTH2", ("login", "smtplib", "bot@example.org", "secret"))])
+async def test_the_login_takes_smtplib_s_order_in_one_attempt(smtp, offers, step):
+    smtp.offers = offers
+    result, _ = await call(server(), {"subject": "s", "body": "b"})
+    assert result["status"] == "success" and smtp.sessions[-1].steps[1] == step, smtp.sessions[-1].steps
 
 
 async def test_a_port_and_no_login_as_configured(smtp):
@@ -159,7 +191,8 @@ async def test_a_password_smtp_cannot_send_is_not_echoed(smtp):
 async def test_failures_say_what_happened(smtp):
     smtp.login_fails = True
     result, _ = await call(server(), {"subject": "s", "body": "b"})
-    assert "refused the login (535)" in result["error"] and "secret" not in result["error"], result
+    assert "refused the login (534 5.7.9 Application-specific password required.)" in result["error"], result
+    assert "secret" not in result["error"] and smtp.sessions[-1].attempts == 1, "one attempt: its answer, not a hang-up"
     smtp.login_fails, smtp.down = False, True
     result, _ = await call(server(), {"subject": "s", "body": "b"})
     assert result["error"].startswith("mail not sent: ConnectionRefusedError"), result

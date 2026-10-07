@@ -65,8 +65,22 @@ class MailServer(SchemaBasedToolServer):
             if self.security == "starttls":
                 smtp.starttls(context=context)
             if self.username:
-                smtp.login(self.username, self.password)
+                self._login(smtp)
             return smtp.send_message(message)
+
+    def _login(self, smtp: smtplib.SMTP) -> None:
+        """One login attempt. smtplib.login tries the next method after a refusal, and a server that hangs up on
+        the second (Gmail) hides the first answer -- "534 Application-specific password required" came out as
+        "Connection unexpectedly closed". smtplib's order (CRAM-MD5 sends no password); none of them offered:
+        smtplib's own way, for its error."""
+        smtp.ehlo_or_helo_if_needed()             # STARTTLS forgets the server's features: they come anew
+        offered = str(smtp.esmtp_features.get("auth", "")).upper().split()
+        method = next((m for m in ("CRAM-MD5", "PLAIN", "LOGIN") if m in offered), None)
+        if method is None:
+            smtp.login(self.username, self.password)
+            return
+        smtp.user, smtp.password = self.username, self.password
+        smtp.auth(method, getattr(smtp, f"auth_{method.lower().replace('-', '_')}"))
 
     async def send(self, params: dict) -> dict:
         """Tool "<name>_send"."""
@@ -103,8 +117,10 @@ class MailServer(SchemaBasedToolServer):
         message.set_content(body)
         try:
             refused = await asyncio.to_thread(self._deliver, message)
-        except smtplib.SMTPAuthenticationError as e:
-            return _error(f"the SMTP server refused the login ({e.smtp_code}): check username and password")
+        except smtplib.SMTPAuthenticationError as e:     # the server's own words say what it wants
+            said = e.smtp_error.decode("utf-8", "replace") if isinstance(e.smtp_error, bytes) else str(e.smtp_error)
+            said = " ".join(said.split())[:200]
+            return _error(f"the SMTP server refused the login ({e.smtp_code} {said}): check username and password")
         except smtplib.SMTPRecipientsRefused as e:
             return _error(f"the SMTP server refused every recipient: {', '.join(e.recipients)}")
         except UnicodeError:          # never the exception's text: smtplib's login error carries the password
