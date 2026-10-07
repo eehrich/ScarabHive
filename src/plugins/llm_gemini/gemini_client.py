@@ -152,11 +152,11 @@ class GeminiClient(LLMClient):
         function_declarations = convert_openai_tools_to_gemini(tools)
 
         # Build generationConfig
-        generation_config: dict = {
-            "temperature": self.extra_params.get("temperature", 1.0),
-            "topP": self.extra_params.get("top_p", 0.95),
-            "topK": self.extra_params.get("top_k", 40),
-        }
+        # Sampling only when the entry sets it: Google ignores it since Gemini 3.6 Flash, and
+        # upcoming models answer it with a 400.
+        generation_config: dict = {}
+        if self.extra_params.get("temperature") is not None:
+            generation_config["temperature"] = self.extra_params["temperature"]
         
         if self.max_tokens is not None:
             generation_config["maxOutputTokens"] = self.max_tokens
@@ -174,10 +174,10 @@ class GeminiClient(LLMClient):
             thinking_level=self.extra_params.get("thinking_level"),
         )
         if thinking_config:
-            # HTTP API expects THINKING_LEVEL_X format for thinkingLevel
+            # The REST enum names are LOW, HIGH, ... ("THINKING_LEVEL_LOW" is a 400)
             if "thinkingLevel" in thinking_config:
                 level = thinking_config["thinkingLevel"]
-                thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
+                thinking_config["thinkingLevel"] = level.upper()
             generation_config["thinkingConfig"] = thinking_config
 
         if response_format is not None:
@@ -672,11 +672,11 @@ class GeminiClient(LLMClient):
         function_declarations = convert_openai_tools_to_gemini(tools)
 
         # Build generationConfig
-        generation_config: dict = {
-            "temperature": self.extra_params.get("temperature", 1.0),
-            "topP": self.extra_params.get("top_p", 0.95),
-            "topK": self.extra_params.get("top_k", 40),
-        }
+        # Sampling only when the entry sets it: Google ignores it since Gemini 3.6 Flash, and
+        # upcoming models answer it with a 400.
+        generation_config: dict = {}
+        if self.extra_params.get("temperature") is not None:
+            generation_config["temperature"] = self.extra_params["temperature"]
         
         if self.max_tokens is not None:
             generation_config["maxOutputTokens"] = self.max_tokens
@@ -694,10 +694,10 @@ class GeminiClient(LLMClient):
             thinking_level=self.extra_params.get("thinking_level"),
         )
         if thinking_config:
-            # HTTP API expects THINKING_LEVEL_X format for thinkingLevel
+            # The REST enum names are LOW, HIGH, ... ("THINKING_LEVEL_LOW" is a 400)
             if "thinkingLevel" in thinking_config:
                 level = thinking_config["thinkingLevel"]
-                thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
+                thinking_config["thinkingLevel"] = level.upper()
             generation_config["thinkingConfig"] = thinking_config
 
         if response_format is not None:
