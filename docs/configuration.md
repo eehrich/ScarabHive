@@ -129,7 +129,7 @@ profiles sit in `llm.yaml` (`chat`, `normal`, `think`, `turbo`, `structured`, `c
 many agents and some plugin entries in `plugins.yaml` name an `or-*` profile directly, so repoint those
 in `llm_openrouter.yaml` as well. `llm.yaml` already defines models for Anthropic (`claude-sonnet`),
 OpenAI (`gpt-luna`), Gemini (`gemini-3-flash-nostream`), DeepSeek (`deepseek-chat`) and Ollama
-(`ollama-gemma-4`, profile `local`; set its `base_url` to your server), or add your own as above.
+(`ollama-gemma-4`, profile `local`, at `http://localhost:11434`), or add your own as above.
 
 **API keys**: `${ENV_VAR}` placeholders are expanded in every config file, `llm.yaml` included (`api_key: ${OPENAI_API_KEY}`); an unset variable becomes empty and is named in a startup warning. Variables can also be put in `config/secrets.env` (template: `config/secrets.env.example`), which is loaded at startup without overriding the real environment. Omitting `api_key` falls back to the provider's environment variable as described above.
 
