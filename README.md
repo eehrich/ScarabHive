@@ -160,7 +160,7 @@ You need Python 3.11 or newer (3.12 recommended), git, a few GB of disk and an
 ```bash
 git clone https://github.com/eehrich/ScarabHive.git ScarabHive
 cd ScarabHive
-sh install.sh                                           # Linux, macOS, Git Bash
+./install.sh                                            # Linux, macOS, Git Bash
 powershell -ExecutionPolicy Bypass -File install.ps1    # Windows PowerShell
 ```
 

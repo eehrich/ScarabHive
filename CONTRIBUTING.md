@@ -21,13 +21,18 @@ pip install -U pip
 pip install -e ".[dev,test]"
 ```
 
-Two things that trip up a fresh install:
+Two things to know about a fresh install:
 
-- **Cairo headers.** `pycairo` (pulled in by the `image_compose` plugin through
-  `reportlab[pycairo]`) publishes wheels for Windows only and is compiled
-  everywhere else. Install the headers first:
-  Debian/Ubuntu `sudo apt-get install libcairo2-dev pkg-config`,
-  macOS `brew install cairo pkg-config`.
+- **Cairo, for SVG layers.** `pycairo` (reportlab's cairo backend, which draws
+  the `image_compose` plugin's SVG layers) publishes wheels for Windows only and
+  is compiled everywhere else, so it is not part of `pip install -e .`: it sits
+  in `requirements/optional.txt`. To work on SVG layers, install the headers and
+  then that file:
+  Debian/Ubuntu `sudo apt-get install build-essential libcairo2-dev pkg-config`
+  (plus `python3.X-dev` if your Python 3.X lacks its headers),
+  macOS `brew install cairo pkg-config`, then
+  `pip install -r requirements/optional.txt`. Without it the tests that draw an
+  SVG skip.
 - **PyTorch.** The dependency set includes `torch`. On Linux x86_64 the PyPI
   build brings several GB of CUDA libraries. If you do not need a GPU, install
   the CPU build before the rest:
@@ -35,7 +40,9 @@ Two things that trip up a fresh install:
 
 Dependencies are aggregated: `pyproject.toml` reads `requirements/all.txt`,
 which `scripts/aggregate_plugin_deps.py` generates from `requirements/core.txt`
-and every plugin's `plugin.toml`. Never edit `requirements/all.txt` by hand.
+and every plugin's `plugin.toml`; a plugin's `optional_dependencies` go to
+`requirements/optional.txt`, which the install scripts install best effort.
+Never edit either file by hand.
 
 API keys go into `config/secrets.env` (if it does not exist yet, copy
 `config/secrets.env.example` and uncomment the keys you use) or into the

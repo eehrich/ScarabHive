@@ -1,15 +1,20 @@
 """Layered image composition built on Pillow.
 
 Layer types: image, text, rect, gradient, svg, vignette.
-SVG support is optional (lazy import of svglib + reportlab).
+SVG support is optional (lazy import of svglib + reportlab; drawing needs
+reportlab's cairo backend from requirements/optional.txt).
 """
 from __future__ import annotations
 
 import base64
+import importlib.util
 import io
 import logging
 import math
+import os
 import re
+import sys
+import sysconfig
 import threading
 from pathlib import Path
 from typing import Any, cast
@@ -57,6 +62,66 @@ SYSTEM_FONT_FALLBACKS = {
 
 class CompositionError(Exception):
     """Raised on any user-facing composition error (bad spec, missing asset, ...)."""
+
+
+#: What an svg layer answers on a host without reportlab's cairo backend. It
+#: names the fix for the operator: the model cannot install anything, but it
+#: can pass this on and draw with the other layer types meanwhile. The system
+#: package commands are install.sh's own (a test holds them equal).
+SVG_BACKEND_MISSING = (
+    "SVG layers need reportlab's cairo backend (rlPyCairo), which is not installed "
+    "on this server. To add it: install cairo, pkg-config, a C compiler and Python's "
+    "headers (macOS: brew install cairo pkg-config; Debian/Ubuntu: sudo apt-get update "
+    "&& sudo apt-get install -y {apt_packages}; Windows needs none of them), then pip "
+    "install -r requirements/optional.txt in the server's virtual environment, or run "
+    "install.sh (Windows: install.ps1) again. Every other layer type works without it."
+)
+
+
+def apt_packages() -> str:
+    """What install.sh installs with apt-get for pycairo: the headers package
+    only where this Python (the venv's) lacks Python.h -- a pyenv or uv Python
+    has its headers and no pythonX.Y-dev package, and a name apt does not know
+    fails the whole install."""
+    packages = "build-essential libcairo2-dev pkg-config"
+    if not os.path.exists(os.path.join(sysconfig.get_paths()["include"], "Python.h")):
+        packages += " python%d.%d-dev" % sys.version_info[:2]
+    return packages
+
+
+def svg_backend_problem() -> str | None:
+    """Why an svg layer cannot be drawn on this host, or None.
+
+    reportlab rasterises through the backend its ``rl_config.renderPMBackend``
+    names -- rlPyCairo by default since 4.0, the only one since 5.0. It comes
+    with the ``reportlab[pycairo]`` extra, which is optional (plugin.toml: it
+    builds from source outside Windows). reportlab itself notices only when it
+    draws, and says "cannot import desired renderPM backend" with a mailing
+    list to ask; this asks the same question first and answers with the fix.
+    reportlab 4 falls back to its old backend, _rl_renderPM, where that is
+    installed (read in its renderPM._getPMBackend; not drawn here -- the
+    package has no wheel for this Mac's Python); 5 does not.
+    """
+    try:
+        import reportlab  # type: ignore
+        from reportlab import rl_config  # type: ignore
+    except ImportError as e:
+        return ("SVG rendering requires 'svglib' and 'reportlab' "
+                f"(pip install svglib reportlab). Import failed: {e}")
+    if "cairo" not in str(getattr(rl_config, "renderPMBackend", "rlPyCairo")).lower():
+        return None  # another backend reportlab 4 still knows; it reports its own errors
+    try:
+        import rlPyCairo  # type: ignore  # noqa: F401 -- reportlab imports it by this name
+    except ImportError as e:
+        if str(getattr(reportlab, "Version", "5")).split(".")[0] == "4":
+            try:
+                import _rl_renderPM  # type: ignore  # noqa: F401 -- reportlab 4's fallback
+                return None
+            except ImportError:
+                pass
+        message = SVG_BACKEND_MISSING.format(apt_packages=apt_packages())
+        return f"{message} (import rlPyCairo: {e})"
+    return None
 
 
 # ── Top-level entry point ─────────────────────────────────────────────────
@@ -1265,10 +1330,14 @@ def _render_svg_to_image(svg_str: str, target_size: tuple[int, int] | None) -> I
         from svglib.svglib import svg2rlg  # type: ignore
         from reportlab.graphics import renderPM  # type: ignore
     except ImportError as e:
-        raise CompositionError(
+        # Both installed and still no import: reportlab 4.0.0 fails here
+        # without a backend (measured: "Could not create text2PathDescription
+        # ..." from svglib's import), later versions only when they draw.
+        installed = all(importlib.util.find_spec(m) for m in ("svglib", "reportlab"))
+        raise CompositionError((installed and svg_backend_problem()) or (
             "SVG rendering requires 'svglib' and 'reportlab' (pip install svglib reportlab). "
             f"Import failed: {e}"
-        )
+        ))
     _check_svg_rasters(svg_str)
     # svglib accepts a file-like object at runtime even though its type
     # stubs only mention str/PathLike.
@@ -1294,6 +1363,11 @@ def _render_svg_to_image(svg_str: str, target_size: tuple[int, int] | None) -> I
     # mask would erase white strokes/fills entirely).
     import numpy as np
 
+    # Asked here, right before reportlab would fail on it: parsing and the size
+    # checks above work without the backend and keep answering on such a host.
+    problem = svg_backend_problem()
+    if problem:
+        raise CompositionError(problem)
     png_white = renderPM.drawToString(drawing, fmt="PNG", bg=0xFFFFFF)
     png_black = renderPM.drawToString(drawing, fmt="PNG", bg=0x000000)
     iw = np.asarray(Image.open(io.BytesIO(png_white)).convert("RGB"), dtype=np.int16)
