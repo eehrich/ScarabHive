@@ -95,6 +95,17 @@ and tool calls -- hooks, parallel execution -- run in `ToolExecutionManager`
    with `network.remote_paths` set, a client not on loopback gets 404 for every
    path not listed.
 
+On Windows, `agent-api` (`own_console.api`) and `app.run()` first start the
+server as a process of its own on a hidden console (`agent_system/own_console.py`)
+and pass its output on to the terminal; the VS Code tasks start uvicorn the
+same way. On the terminal's console, a console host that stopped answering froze
+the whole server: starting a process with pipes, CPython asks the console,
+holding the GIL, whether a pipe is a console. The server's process is not the
+one that was started; it and what it starts die with that one (a job object
+the server joins before it starts anything), and Ctrl+C reaches it as before.
+What is meant to outlive the server -- a woken run (`session_presence`), a
+coding run (`coding_cli`) -- starts through `own_console.popen_outliving`.
+
 The lifespan (`custom_lifespan`, nested in `build_app`) sets up the executor
 and runs `_init_mcp_for_app`: it starts the batch queue manager, runs
 `initialize_tools()` (`ToolServerIntegration.initialize` -- its bootstrap is

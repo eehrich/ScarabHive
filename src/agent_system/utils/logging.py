@@ -16,6 +16,8 @@ from typing import Any, Optional
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 
+from .. import own_console
+
 # A plugin route whose URL carries a key -- whoever holds the URL may use it once (stategraph's callback URLs) --
 # puts it right after /callback/ or in the token parameter of /callback?...; no log keeps it, percent-encoded
 # neither (a URL handed on in a query; a path whose ? & = came encoded).
@@ -193,8 +195,7 @@ class SafeUnicodeFormatter(logging.Formatter):
         formatted = super().format(record)
         
         # Check if we should preserve ANSI colors (TTY output)
-        is_tty = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
-        if self.preserve_colors and is_tty:
+        if self.preserve_colors and stdout_is_terminal():
             # Preserve ANSI escape sequences but still handle Unicode issues
             try:
                 # Only replace problematic characters, not ANSI codes
@@ -237,12 +238,17 @@ def console_colours() -> bool:
     runtime in. agent-cli then sets its console handler after --color (agent_cli.colour_console_logs), so an
     explicit --color always colours them under NO_COLOR too.
     """
+    return (stdout_is_terminal() and not os.environ.get("NO_COLOR")
+            and os.environ.get("TERM", "").lower() not in ("dumb", "unknown"))
+
+
+def stdout_is_terminal() -> bool:
+    """Whether stdout ends in a terminal: its own, or -- the API on a console of its own (own_console) -- the
+    launcher's, to which a pipe passes the output on as it is."""
     try:
-        terminal = sys.stdout.isatty()
+        return sys.stdout.isatty() or own_console.output_reaches_a_terminal()
     except Exception:
         return False
-    return (terminal and not os.environ.get("NO_COLOR")
-            and os.environ.get("TERM", "").lower() not in ("dumb", "unknown"))
 
 
 def setup_logging(
@@ -359,7 +365,7 @@ def setup_logging(
     console_handler.setLevel(lvl)
     
     # Use colored formatter for console output if it's a TTY (whether it colours: console_colours)
-    if sys.stdout.isatty():
+    if stdout_is_terminal():
         console_formatter: logging.Formatter = ColorizedFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     else:
         console_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(message)s", preserve_colors=True)

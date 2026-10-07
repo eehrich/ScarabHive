@@ -228,9 +228,20 @@ uvicorn agent_system.app:build_app --factory --host 127.0.0.1 --port 8000
 
 # With specific log level
 AGENT_LOG_LEVEL=debug agent-api
+
+# Windows, uvicorn directly: through the launcher agent-api uses by itself (see below)
+python -m agent_system.own_console uvicorn.main:main agent_system.app:build_app --factory --port 8000
 ```
 
 Access the web UI at `http://localhost:8000`
+
+On Windows, `agent-api` runs the server on a hidden console of its own and passes its output on to the
+terminal. Sharing a terminal's console froze the whole server once that console stopped answering: CPython
+asks the console, holding the GIL, whether a pipe is a console every time it starts a process with pipes.
+Ctrl+C reaches the server as before (the first stops it, a second hurries it), a third ends it outright.
+The server and what it starts die with its launcher, as they did on the terminal's console: closing the
+terminal or ending or restarting the task ends them at once. Woken runs and coding runs outlive it, as
+before. The server's process is not the one `agent-api` started.
 
 ### CLI Mode
 

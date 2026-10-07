@@ -1002,7 +1002,7 @@ login page, the core panels, the kit's templates), @{tt}config/@{utt} and
 
 @{table}
 Where | What
-@{tt}app.py@{utt} | builds the FastAPI application (@{tt}build_app@{utt}) with most routes; @{tt}run()@{utt} is @{tt}agent-api@{utt}
+@{tt}app.py@{utt} | builds the FastAPI application (@{tt}build_app@{utt}) with most routes; @{tt}run()@{utt} serves it, behind @{tt}agent-api@{utt} (@{tt}own_console.py@{utt}: on Windows a console of its own first)
 @{tt}runtime.py@{utt} | the composition root: turns the configuration into running servers -- discover, merge the configuration, build, register
 @{tt}config/@{utt} | @{tt}models.py@{utt} (the Pydantic models, root @{tt}AgentSystemConfig@{utt}), @{tt}settings.py@{utt} (@{tt}load_settings@{utt}, includes, @{tt}${NAME}@{utt}, @{tt}get_tool_server_config@{utt})
 @{tt}plugins/@{utt} | discovery, manifests (@{tt}plugin.toml@{utt}), @{tt}schema.yaml@{utt} loading, the tool and web adapters, the schema router

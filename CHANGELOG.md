@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Windows the API no longer freezes whole when the terminal it was started
+  in stops answering: starting a process with pipes, CPython asked the
+  terminal's console, holding the GIL, whether a pipe is a console, and no
+  request ran again. `agent-api` now runs the server on a hidden console of its
+  own and passes its output on (`agent_system.own_console`; the entry point
+  moved there, reinstall with `pip install -e .` to pick it up).
+
 - A fresh install no longer needs a C compiler: `install.sh` stopped in
   `pip install -e .` on a Mac without cairo, because pycairo (reportlab's
   cairo backend, which draws SVG layers in `image_compose`) has wheels for

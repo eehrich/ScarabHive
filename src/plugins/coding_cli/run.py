@@ -22,6 +22,7 @@ from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
 import psutil
 import yaml
 
+from agent_system import own_console
 from agent_system.config.settings import _secrets_file_entries
 from agent_system.core.session_presence import alive
 from agent_system.utils import yaml_io
@@ -139,7 +140,8 @@ def launch(cmd: list[str], cwd: Path, env: dict, stdin: Path, stdout: Path, stde
     else:
         options = {"start_new_session": True}
     with open(stdin, "rb") as task, open(stdout, "wb") as out, open(stderr, "wb") as err:
-        return subprocess.Popen(cmd, cwd=cwd, env=env, stdin=task, stdout=out, stderr=err, **options)
+        # out of the job an API on a console of its own dies with (own_console)
+        return own_console.popen_outliving(cmd, cwd=cwd, env=env, stdin=task, stdout=out, stderr=err, **options)
 
 
 def process_start(pid: int) -> float:

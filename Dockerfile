@@ -132,6 +132,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD ["python", "-c", "import os, urllib.request as u; u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/api/health', timeout=5)"]
 
-# agent-api = agent_system.app:run. It listens on $HOST:$PORT (both set
+# agent-api = agent_system.own_console:api, i.e. agent_system.app:run (the
+# console of its own is Windows' only). It listens on $HOST:$PORT (both set
 # above), falling back to network.host/port from config/config.yaml.
 CMD ["agent-api"]

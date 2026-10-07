@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent_system import app as app_mod
+from agent_system import own_console
 
 
 def _config(tmp_path, extra=""):
@@ -36,6 +37,8 @@ def test_the_api_runs_on_the_config_the_variable_names(monkeypatch, tmp_path):
     monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
     served = []
     monkeypatch.setattr(app_mod.uvicorn, "run", lambda app, **kwargs: served.append(app))
+    # as serve() leaves it: on Windows run() would start a real server on a console of its own first
+    monkeypatch.setattr(own_console, "_serving", True)
 
     app_mod.run()
 
