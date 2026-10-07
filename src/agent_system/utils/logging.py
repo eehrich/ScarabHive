@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import atexit
+import functools
 import logging
 import os
 import queue
 import re
 import sys
+import sysconfig
 import threading
 import time
 from collections.abc import Mapping
@@ -54,6 +56,32 @@ def _masked(value: Any) -> Any:
         return loggable_path(str(value))
     except Exception:  # noqa: BLE001 -- no text to show: the formatter fails on it the same way and reports it
         return value
+
+
+_STDLIB = os.path.normcase(sysconfig.get_paths()["stdlib"]) + os.sep
+
+
+@functools.lru_cache(maxsize=None)
+def _library_file(path: str) -> bool:
+    """Whether code at ``path`` is a library's: the standard library, any site-packages (the venv's, the
+    user's, the system's), or Rust a native module hands to logging (primp: its DNS and HTTP/2 frames, with the
+    .rs file it was built from). Not by the logger's name: a plugin folder of the user's own, a stategraph
+    machine's companion module log under names of their own, and their DEBUG is ours."""
+    path = os.path.normcase(path)
+    return (path.startswith(_STDLIB) or path.endswith(".rs")
+            or any(part in ("site-packages", "dist-packages") for part in Path(path).parts))
+
+
+class LibraryDebugFilter(logging.Filter):
+    """A library's DEBUG is its wire, not ScarabHive's debugging, and it is dropped; everything of our own passes.
+
+    The MCP client logs every SSE message whole -- a tool that returns a screenshot is a line of 900 KB -- and
+    httpcore and filelock every step. Measured on one evening with level DEBUG: 56 MB of api.log in five hours,
+    65 % of it libraries' DEBUG. Added before the other filters, so a dropped record costs no masking either.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.INFO or not _library_file(record.pathname or "")
 
 
 class KeyInPathFilter(logging.Filter):
@@ -322,6 +350,7 @@ def setup_logging(
     file_handler.setLevel(lvl)
     file_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", preserve_colors=False)
     file_handler.setFormatter(file_formatter)
+    file_handler.addFilter(LibraryDebugFilter())
     file_handler.addFilter(KeyInPathFilter())
     root.addHandler(file_handler)
 
@@ -336,6 +365,7 @@ def setup_logging(
         console_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(message)s", preserve_colors=True)
     
     console_handler.setFormatter(console_formatter)
+    console_handler.addFilter(LibraryDebugFilter())
     console_handler.addFilter(KeyInPathFilter())
     # Set encoding to handle Unicode characters properly
     if hasattr(console_handler.stream, 'reconfigure'):

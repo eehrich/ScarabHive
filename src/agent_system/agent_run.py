@@ -56,11 +56,15 @@ def setup_basic_logging(verbose: bool = False) -> None:
     Args:
         verbose: If True, set level to DEBUG. Otherwise WARNING.
     """
+    from .utils.logging import LibraryDebugFilter
+
     level = logging.DEBUG if verbose else logging.WARNING
+    handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(LibraryDebugFilter())
     logging.basicConfig(
         level=level,
         format='%(levelname)s: %(message)s' if not verbose else '%(levelname)s: %(name)s: %(message)s',
-        handlers=[logging.StreamHandler(sys.stdout)]
+        handlers=[handler]
     )
 
 

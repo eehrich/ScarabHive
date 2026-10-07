@@ -289,9 +289,7 @@ def estimate_file_tokens(path: Union[str, Path], file_type: str | None = None) -
         
         else:
             # Image or unknown: one image, however large the file (TOKENS_PER_IMAGE).
-            tokens = TOKENS_PER_IMAGE
-            logger.debug(f"Estimated {tokens:,} tokens for image {file_path}")
-            return tokens
+            return TOKENS_PER_IMAGE
 
     except Exception as e:
         logger.debug(f"Could not estimate tokens for file {path}: {e}")

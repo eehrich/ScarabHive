@@ -532,7 +532,6 @@ class Runtime:
             from .plugins.tool_adapter import plugin_tool_registry
             plugin_tool_registry.register_existing_plugin_instance(
                 name, instance, self.config, decl.server_config)
-            logger.debug(f"Registered plugin '{name}' in both registries (ToolServerRegistry + PluginToolRegistry)")
 
             decl.apply_to(instance, self.registry)
         if self._session_service is not None:

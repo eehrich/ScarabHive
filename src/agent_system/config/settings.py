@@ -524,8 +524,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                         # A section with every line commented out sets nothing: a
                         # null `plugins:` failed the whole file in deep_merge.
                         part = {key: value for key, value in part.items() if value is not None}
-                    logger.debug(f"Loaded included config: {inc_path.name}")
-                    
+
                     # Resolve relative paths (./prompts/...) relative to include file dir
                     _resolve_relative_paths(part, inc_path.parent)
                     
@@ -551,11 +550,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                             data["plugins"] = deep_merge(data["plugins"], part["plugins"])
                         else:
                             data["plugins"] = part["plugins"]
-                        # Log servers being added
-                        if "servers" in part.get("plugins", {}):
-                            server_names = list(part["plugins"]["servers"].keys())
-                            logger.debug(f"Added servers from {inc_path.name}: {server_names}")
-                    
+
                     if "external_servers" in part:
                         # mcp_servers.yaml uses "external_servers" key
                         data["external_servers"] = part["external_servers"]
@@ -1101,11 +1096,7 @@ def get_tool_server_config(server_name: str, config: Optional[AgentSystemConfig]
     
     # Resolve inheritance chain (type: writer_agent -> type: basic_agent)
     try:
-        final_type, resolved_config_dict = _resolve_server_inheritance(server_name, config)
-        logger.debug(
-            "Resolved server '%s': type '%s' -> '%s'",
-            server_name, server_config.type, final_type
-        )
+        _, resolved_config_dict = _resolve_server_inheritance(server_name, config)
     except ValueError as e:
         logger.error("Failed to resolve inheritance for '%s': %s", server_name, e)
         # Fall back to direct config without inheritance (what it sets: the defaults come next)

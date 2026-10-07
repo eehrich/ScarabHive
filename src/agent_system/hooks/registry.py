@@ -329,7 +329,6 @@ class HookRegistry:
                         # Even if not modified, update metadata from hook result
                         if result.metadata:
                             current_context.metadata.update(result.metadata)
-                        logger.debug(f"Hook '{hook_name}' executed successfully (no modifications)")
                     if stop_when is not None and stop_when(current_context):
                         logger.debug(f"Hook '{hook_name}' ended the {hook_type.value} chain")
                         break
