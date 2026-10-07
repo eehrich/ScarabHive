@@ -54,6 +54,10 @@ plugins:
       max_wait_seconds: 3600
       default_update_interval: 5.0
 
+    mail:
+      type: mail
+      enabled: false   # switch on where your settings live (config/local.yaml): host, username, password, recipients (mail.guide)
+
     sequential_thinking:
       type: sequential_thinking
       enabled: true
