@@ -12,6 +12,7 @@ import hashlib
 import logging
 import re
 import time
+from fnmatch import fnmatchcase
 from typing import Any, Optional
 from pathlib import Path
 import os
@@ -523,8 +524,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                         # A section with every line commented out sets nothing: a
                         # null `plugins:` failed the whole file in deep_merge.
                         part = {key: value for key, value in part.items() if value is not None}
-                    logger.debug(f"Loaded included config: {inc_path.name}")
-                    
+
                     # Resolve relative paths (./prompts/...) relative to include file dir
                     _resolve_relative_paths(part, inc_path.parent)
                     
@@ -550,11 +550,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                             data["plugins"] = deep_merge(data["plugins"], part["plugins"])
                         else:
                             data["plugins"] = part["plugins"]
-                        # Log servers being added
-                        if "servers" in part.get("plugins", {}):
-                            server_names = list(part["plugins"]["servers"].keys())
-                            logger.debug(f"Added servers from {inc_path.name}: {server_names}")
-                    
+
                     if "external_servers" in part:
                         # mcp_servers.yaml uses "external_servers" key
                         data["external_servers"] = part["external_servers"]
@@ -894,6 +890,14 @@ def _restore_llm_params(raw: Any, agent_cfg: Any) -> None:
         kept[key] = copy.deepcopy(raw[key])
 
 
+def _profile_names(entries: Any) -> list[str]:
+    """The profiles a chain names: in a list, ``"+x"`` adds x and a ``"!x"`` entry
+    removes one and names none; a string is one name as written (it merges nothing)."""
+    if not isinstance(entries, list):
+        return [str(entries)]
+    return [e[1:] if e.startswith("+") else e for e in map(str, entries) if not e.startswith("!")]
+
+
 def _report_unknown_llm_profiles(cfg: AgentSystemConfig) -> None:
     """Name chain members that do not exist as profiles.
 
@@ -919,14 +923,14 @@ def _report_unknown_llm_profiles(cfg: AgentSystemConfig) -> None:
         own = agent_cfg.model_fields_set
         chain: list[str] = []
         if "llm_profile" in own:
-            profile = agent_cfg.llm_profile
-            chain += profile if isinstance(profile, list) else [profile]
+            chain += _profile_names(agent_cfg.llm_profile)
         if "llm_profile_advanced" in own:
-            chain += agent_cfg.llm_profile_advanced or []
+            chain += _profile_names(agent_cfg.llm_profile_advanced or [])
         chain = list(dict.fromkeys(chain))
         unknown = [p for p in chain if p not in profiles]
         if not unknown:
             continue
+        # a merging list's first entry carries its prefix, so an inherited primary is never "unknown" here
         primary = agent_cfg.default_llm_profile if "llm_profile" in own else None
         fmt = ("Agent '%s': LLM profiles %s are in its chain but in no "
                "llm_system.profiles — %s. Chain: %s")
@@ -1085,18 +1089,18 @@ def get_tool_server_config(server_name: str, config: Optional[AgentSystemConfig]
     # Use exclude_unset for default_config too - but this one we want WITH defaults
     # because it's the base layer. So use regular model_dump() here.
     default_config_dict = config.plugins.default_config.model_dump()
+    # ...except its metadata: with the defaults dumped, visibility "private" would read
+    # as named on every server and hide the plugin manifest's (ServerDecl.visibility)
+    if config.plugins.default_config.metadata is not None:
+        default_config_dict["metadata"] = config.plugins.default_config.metadata.model_dump(exclude_unset=True)
     
     # Resolve inheritance chain (type: writer_agent -> type: basic_agent)
     try:
-        final_type, resolved_config_dict = _resolve_server_inheritance(server_name, config)
-        logger.debug(
-            "Resolved server '%s': type '%s' -> '%s'",
-            server_name, server_config.type, final_type
-        )
+        _, resolved_config_dict = _resolve_server_inheritance(server_name, config)
     except ValueError as e:
         logger.error("Failed to resolve inheritance for '%s': %s", server_name, e)
-        # Fall back to direct config without inheritance
-        resolved_config_dict = server_config.model_dump()
+        # Fall back to direct config without inheritance (what it sets: the defaults come next)
+        resolved_config_dict = server_config.model_dump(exclude_unset=True)
     
     # Start with default config, then merge resolved (inherited) config
     merged_config = default_config_dict.copy()
@@ -1154,17 +1158,19 @@ def _deep_merge_dict(base: dict, override: dict, _path: str = "",
 
     for key, value in override.items():
         path = f"{_path}.{key}" if _path else str(key)
-        if (key in result and
-            isinstance(result[key], dict) and
-            isinstance(value, dict)):
-            # Recursively merge nested dictionaries
-            result[key] = _deep_merge_dict(result[key], value, path,
-                                           explicit_none=explicit_none)
+        if isinstance(value, dict) and (result.get(key) is None or isinstance(result[key], dict)):
+            # Recursively merge nested dictionaries -- also into a value the parent
+            # lacks or leaves None, or a nested "+x" would survive as a literal.
+            # Such a dict is taken over whole otherwise: its Nones stay.
+            fresh = not isinstance(result.get(key), dict)
+            result[key] = _deep_merge_dict(result.get(key) or {}, value, path,
+                                           explicit_none=explicit_none or fresh)
         elif isinstance(value, list):
             # Also for a key the parent does not have: without this, a "+x"
             # would survive into the value as a literal and match nothing.
             parent = result.get(key)
-            base_list = parent if isinstance(parent, list) else []
+            # an inherited string ("llm_profile: normal") is a list of one: "+x" adds to it
+            base_list = parent if isinstance(parent, list) else [parent] if isinstance(parent, str) else []
             result[key] = _merge_lists_with_syntax(base_list, value, path)
         elif value is not None or explicit_none:
             result[key] = value
@@ -1252,34 +1258,11 @@ def _apply_list_ops(base: list, items: list) -> list:
 
 
 def _matches_pattern(value: str, pattern: str) -> bool:
-    """Check if a value matches a pattern (supports * wildcard).
-    
-    Args:
-        value: The value to check
-        pattern: The pattern (e.g., "w_sam/*" or "exact_match")
-        
-    Returns:
-        True if value matches pattern
+    """Whether a list entry matches a ``!pattern`` -- fnmatch, case-sensitive;
+    ``"plugin/*"`` also matches the bare ``"plugin"``.
+
+    A wildcard in the middle (``"*_sam/*"``) used to match nothing, silently.
     """
     if not isinstance(value, str):
         return False
-    
-    if pattern == value:
-        return True
-    
-    if '*' in pattern:
-        # Simple wildcard matching
-        if pattern.endswith('/*'):
-            # "plugin/*" matches "plugin/tool" and "plugin"
-            prefix = pattern[:-2]
-            return value == prefix or value.startswith(prefix + '/')
-        elif pattern.endswith('*'):
-            # "prefix*" matches anything starting with "prefix"
-            prefix = pattern[:-1]
-            return value.startswith(prefix)
-        elif pattern.startswith('*'):
-            # "*suffix" matches anything ending with "suffix"
-            suffix = pattern[1:]
-            return value.endswith(suffix)
-    
-    return False
+    return fnmatchcase(value, pattern) or (pattern.endswith("/*") and value == pattern[:-2])

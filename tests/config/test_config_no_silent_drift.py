@@ -406,6 +406,86 @@ class TestStaleLlmParamKeysAreDroppedLoudly:
         assert not any("child_agent" in r.getMessage() for r in caplog.records), (
             "a valid key was reported as stale -- against a chain that is not the child's")
 
+    MERGING = ("llm_system:\n"
+               "  models:\n"
+               "    m:\n"
+               "      provider: openai\n"
+               "      model: probe\n"
+               "  profiles:\n"
+               "    a: {{model_ref: m}}\n"
+               "    b: {{model_ref: m}}\n"
+               "    c: {{model_ref: m}}\n"
+               "plugins:\n"
+               "  default_config:\n"
+               "    type: agent\n"
+               "    agent_config:\n"
+               "      llm_profile: [a, b]\n"
+               "  servers:\n"
+               "    child_agent:\n"
+               "      type: agent\n"
+               "      enabled: true\n"
+               "      agent_config:\n"
+               "        llm_profile: [\"+{added}\"]\n"
+               "        llm_params:\n"
+               "          \"{added}\":\n"
+               "            max_tokens: 7\n"
+               "          \"a\":\n"
+               "            max_tokens: 8\n")
+
+    def test_a_chain_that_adds_a_profile_keeps_the_params_keyed_to_it(self, tmp_path, caplog):
+        """`llm_profile: ["+c"]` on an agent without a parent agent merges c into
+        default_config's chain. The load judged the keys against the raw "+c" --
+        no "c", no inherited "a" -- and dropped them, and the merge reads the
+        loaded entry: the agent ran without the params written for it. (Under a
+        parent agent the merge reads the raw entry again, which hid it.)"""
+        from agent_system.config.settings import (
+            _reported_stale_llm_params,
+            get_tool_server_config,
+            load_settings,
+        )
+
+        (tmp_path / "config.yaml").write_text(self.MERGING.format(added="c"), encoding="utf-8")
+        _reported_stale_llm_params.clear()
+        with caplog.at_level(logging.ERROR):
+            cfg = load_settings(str(tmp_path / "config.yaml"))
+            merged = get_tool_server_config("child_agent", cfg)
+
+        assert merged.agent_config.available_llm_profiles[:3] == ["a", "b", "c"], (
+            "fixture is vacuous: the chain did not merge")
+        params = merged.agent_config.llm_params or {}
+        assert params.get("c") == {"max_tokens": 7}, f"the added profile's params were dropped: {params}"
+        assert params.get("a") == {"max_tokens": 8}, f"the inherited profile's params were dropped: {params}"
+        assert not any("child_agent" in r.getMessage() for r in caplog.records), (
+            "an added profile that exists was reported: "
+            + "; ".join(r.getMessage() for r in caplog.records))
+
+    def test_an_unknown_added_profile_is_named_but_does_not_stop_the_agent(self, tmp_path, caplog):
+        """`"+zzz"` adds a fallback nobody configured: that is worth an error, but
+        the primary is the inherited one -- "THE AGENT WILL NOT START" was false."""
+        from agent_system.config.settings import load_settings
+
+        (tmp_path / "config.yaml").write_text(self.MERGING.format(added="zzz"), encoding="utf-8")
+        with caplog.at_level(logging.ERROR):
+            load_settings(str(tmp_path / "config.yaml"))
+
+        said = [r.getMessage() for r in caplog.records if "child_agent" in r.getMessage()]
+        assert said and "'zzz'" in said[0], f"the unknown profile went unnamed: {said}"
+        assert "WILL NOT START" not in said[0], said[0]
+
+    def test_a_string_chain_is_a_name_not_a_merge(self, tmp_path, caplog):
+        """`llm_profile: "+c"` is a string: nothing merges it, the agent's primary
+        is the profile "+c" -- which does not exist. Reading it as c hid that."""
+        from agent_system.config.settings import load_settings
+
+        text = self.MERGING.format(added="c").replace('llm_profile: ["+c"]', 'llm_profile: "+c"')
+        assert 'llm_profile: "+c"' in text, "fixture did not change"
+        (tmp_path / "config.yaml").write_text(text, encoding="utf-8")
+        with caplog.at_level(logging.ERROR):
+            load_settings(str(tmp_path / "config.yaml"))
+
+        said = [r.getMessage() for r in caplog.records if "child_agent" in r.getMessage()]
+        assert any("'+c'" in m and "WILL NOT START" in m for m in said), f"the dead primary went unnamed: {said}"
+
     def test_a_child_that_inherits_its_chain_still_loses_a_stale_key_loudly(self, tmp_path, caplog):
         """Deferring the judgement must not drop it: a key in none of the
         inherited chains is still stale, and still named -- only now where

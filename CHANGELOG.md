@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows the API no longer freezes whole when the terminal it was started
+  in stops answering: starting a process with pipes, CPython asked the
+  terminal's console, holding the GIL, whether a pipe is a console, and no
+  request ran again. `agent-api` now runs the server on a hidden console of its
+  own and passes its output on (`agent_system.own_console`; the entry point
+  moved there, reinstall with `pip install -e .` to pick it up).
+
+- A fresh install no longer needs a C compiler: `install.sh` stopped in
+  `pip install -e .` on a Mac without cairo, because pycairo (reportlab's
+  cairo backend, which draws SVG layers in `image_compose`) has wheels for
+  Windows only. It moved to `requirements/optional.txt`, fed by a plugin's
+  new `optional_dependencies` and installed best effort after the core.
+  `install.sh` checks for cairo, a compiler and Python's headers and installs
+  what is missing (cairo with Homebrew on macOS, everything with `apt-get`
+  through sudo on Debian/Ubuntu; `SCARABHIVE_NO_SYSTEM_PACKAGES=1` leaves the
+  system alone) and otherwise names the command and goes on
+  without SVG layers. An svg layer on a host without the backend answers with
+  that fix instead of reportlab's "cannot import desired renderPM backend",
+  and the plugin warns at start. `install.sh` is executable in the
+  repository.
+
 ## [0.7.0] - 2026-10-06
 
 The first version published as open source. Changes before it are not

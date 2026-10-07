@@ -246,6 +246,17 @@ auth:
         min_role: "admin"
         description: "Setup panel requires admin role"
 
+      # A wait a person's own request runs into is theirs to answer (stategraph
+      # wait_questions.py): the route lets the run's owner or an admin answer.
+      - pattern: "/plugins/stategraph/answer"
+        policy: "require_auth"
+        min_role: "user"
+        description: "Answer a state machine's wait (the route checks the run's owner)"
+      - pattern: "/plugins/stategraph/pending"
+        policy: "require_auth"
+        min_role: "user"
+        description: "The waits of the caller's own runs"
+
       # stategraph machines contain Python and run agents and tools: editing,
       # running and debugging them is operator work (docs/stategraph_design.md §8.3).
       - pattern: "/plugins/stategraph/*"

@@ -56,6 +56,7 @@ from typing import Any, Awaitable, Callable, Optional, Union
 
 import psutil
 
+from .. import own_console
 from ..config.models import SessionPresenceConfig
 from ..config import settings as config_settings
 from ..paths import data_path
@@ -227,7 +228,8 @@ def spawn_wake(session_id: str, user_id: str, depth: int) -> tuple[int, float]:
         env[config_settings.AUTH_REQUIRED_ENV] = "1"
     errors = _wake_log()
     try:
-        process = subprocess.Popen(
+        # out of the job an API on a console of its own dies with (own_console)
+        process = own_console.popen_outliving(
             wake_command(session_id, user_id), cwd=REPO_ROOT,
             env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,

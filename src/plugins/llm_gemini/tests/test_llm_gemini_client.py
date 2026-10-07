@@ -1030,7 +1030,7 @@ class TestGeminiClientStreaming:
             gen_config = kwargs["json"].get("generationConfig", {})
             thinking_config = gen_config.get("thinkingConfig", {})
             assert thinking_config.get("includeThoughts") is True
-            assert thinking_config.get("thinkingLevel") == "THINKING_LEVEL_MEDIUM"
+            assert thinking_config.get("thinkingLevel") == "MEDIUM"
 
     @pytest.mark.asyncio
     async def test_streaming_http_error(self, gemini_client):

@@ -1223,6 +1223,8 @@ async def test_a_workdirs_mcp_servers_load_and_their_auth_is_only_in_the_childs_
     finally:
         answer, _ = await call(server, "cancel_run", run_id=started["run_id"])
     assert env["CODING_CLI_MCP_0"] == f"Bearer {TOKEN}" and "CODING_CLI_MCP_1" not in env
+    # A tool may stay silent as long as the run may last, not Claude Code's 5 min.
+    assert env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] == str(round(server.max_run_s * 1000))
     # Read at the start; once the run ended, a key in a url's path is no longer on disk.
     assert mcp == server._file(started["run_id"], "mcp.json") and not mcp.exists()
     assert config == {"mcpServers": {

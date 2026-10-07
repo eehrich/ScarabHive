@@ -1,1102 +1,340 @@
-# Software Architecture Document: FastAPI Application Layer
+# Architecture: FastAPI Application Layer
 
-**Document Type:** Software Architecture Document (SAD)  
-**Component:** FastAPI Application & API Layer  
-**Version:** 1.0  
-**Last Updated:** 2025-01-15  
-**Status:** Active
+How the HTTP side of ScarabHive is built: the application factory, its
+routes, how a run travels from a request to the agent and back, streaming,
+cancellation and authentication. Every name below is a real function, route
+or file; the code wins where this document and the code disagree. The running
+server lists every route with its parameters at `/docs` (FastAPI's own page).
 
----
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Architectural Goals](#architectural-goals)
-3. [Component Architecture](#component-architecture)
-4. [API Design](#api-design)
-5. [Service Layer](#service-layer)
-6. [Authentication & Authorization](#authentication--authorization)
-7. [Real-Time Communication](#real-time-communication)
-8. [Key Design Decisions](#key-design-decisions)
-9. [Data Flow](#data-flow)
-10. [Error Handling](#error-handling)
-11. [Related Documents](#related-documents)
-
----
+Related: [Agent system architecture](_arch_agent_system_architecture.md),
+[Plugin architecture](_arch_plugin_architecture.md),
+[CLI architecture](_arch_cli_architecture.md).
 
 ## 1. Overview
 
-### 1.1 Purpose
-
-The FastAPI Application Layer provides:
-- RESTful API endpoints for agent interaction
-- Server-Sent Events (SSE) for real-time streaming
-- Authentication and authorization
-- Session management
-- Service coordination layer
-- Static file serving and web UI
-
-### 1.2 Scope
-
-This document covers:
-- FastAPI application structure (`app.py`)
-- API endpoint design (`api/endpoints.py`)
-- Service layer architecture (`services/`)
-- Authentication system (`api/auth.py`)
-- Streaming endpoints (`api/streaming.py`)
-
-### 1.3 Key Features
-
-| Feature | Description |
-|---------|-------------|
-| **RESTful API** | JSON-based REST API for all operations |
-| **SSE Streaming** | Real-time status and result streaming |
-| **Markdown answers** | answers as the model wrote them; the chat and agent-cli draw them (`docs/multi_format_output.md`) |
-| **Authentication** | JWT-based auth with API key support |
-| **Session Management** | Per-user isolated sessions |
-| **Cancellation** | Request cancellation via tokens |
-| **Plugin UI** | Dynamic plugin UI integration |
-
----
-
-## 2. Architectural Goals
-
-### 2.1 Design Principles
-
-| Principle | Description | Priority |
-|-----------|-------------|----------|
-| **Separation of Concerns** | Clear layers: API → Service → Domain | High |
-| **Async-First** | All I/O operations async (LLM, MCP, file) | High |
-| **Stateless API** | No session state in HTTP layer | High |
-| **Type Safety** | Pydantic models for all API I/O | High |
-| **Testability** | Dependency injection, mocking support | Medium |
-| **Performance** | Streaming responses, parallel execution | Medium |
-
-### 2.2 Quality Goals
-
-- **Latency:** < 100ms for non-streaming endpoints
-- **Throughput:** 50+ concurrent users
-- **Availability:** 99.9% uptime (excluding LLM downtime)
-- **Security:** JWT tokens, input validation, CORS protection
-
----
-
-## 3. Component Architecture
-
-### 3.1 Application Structure
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      FastAPI Application                         │
-│                         (app.py)                                 │
-└─────────────────────────────────────────────────────────────────┘
-         │
-         ├─► Lifespan (startup/shutdown)
-         ├─► Middleware (CORS, rate limiting, auth)
-         ├─► Route Registration
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                       API Layer                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │  endpoints.py│  │ streaming.py │  │   auth.py    │          │
-│  │  (REST API)  │  │     (SSE)    │  │   (JWT)      │          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
-└─────────────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Service Layer                               │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │AgentService  │  │SessionManager│  │ToolService   │          │
-│  ├──────────────┤  ├──────────────┤  ├──────────────┤          │
-│  │ConfigService │  │ ToolServerService   │  │SessionService│          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
-└─────────────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Domain Layer                                │
-│  Agent │ ToolServerRegistry │ Plugin System │ LLM Clients              │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 3.2 Core Components
-
-#### 3.2.1 FastAPI Application (`app.py`)
-
-**File:** `src/agent_system/app.py`
-
-**Responsibilities:**
-- Application factory pattern (`build_app()`)
-- Dependency injection (services, config)
-- Route registration
-- Middleware configuration
-- Lifecycle management (startup/shutdown)
-
-**Key Code:**
-```python
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup and shutdown events"""
-    # Startup
-    logger.info("Application starting up")
-    yield
-    # Shutdown
-    logger.info("Application shutting down")
-
-def build_app(config_path: Optional[str] = None) -> FastAPI:
-    """Factory function to build FastAPI app"""
-    # Load config
-    config_service = ConfigService()
-    config = config_service.load_config(config_path)
-    
-    # Initialize services
-    tool_server_service = ToolServerService(config)
-    agent_service = AgentService(tool_server_service)
-    session_manager = SessionManager(config)
-    
-    # Create FastAPI app
-    app = FastAPI(lifespan=lifespan)
-    
-    # Register routes
-    app.include_router(api_router)
-    
-    # Store services in app.state
-    app.state.agent_service = agent_service
-    app.state.session_manager = session_manager
-    
-    return app
-```
-
-**Global State:**
-- `_config_service` - Configuration management
-- `_tool_server_service` - tool integration
-- `_agent_service` - Agent orchestration
-- `_session_manager` - Session lifecycle
-- `_app_registry` - tool server registry
-
-#### 3.2.2 Initialization Service (`services/initialization_service.py`)
-
-**Responsibilities:**
-- Provide centralized bootstrap for FastAPI entry point
-- Lazily create and cache `SessionManager`/`SessionService`
-- Invoke `bootstrap_servers()` once and inject shared dependencies into every agent via `agent_injection`
-- Coordinate with `ToolServerIntegration` through the `servers_bootstrapped` flag so CLI and API do not double-bootstrap
-
-**How the API Uses It:**
-- `build_app()` instantiates `InitializationService` immediately after loading config
-- Startup hook (`_init_mcp_for_app`) delegates to `initialize_for_api(skip_bootstrap=True)` because `initialize_tools()` already handled registry bootstrap
-- `app.state.session_manager` is populated from the service for dependency injection into routes
-- Ensures sub-agent manager, hooks, and web endpoints all observe the same `SessionService`
-
-#### 3.2.3 API Endpoints (`api/endpoints.py`)
-
-**File:** `src/agent_system/api/endpoints.py`
-
-**Error contract for body parsing (since 2026-07):** every endpoint that reads a
-JSON body (`POST /run`, `POST /events`, session appends) parses it through the
-shared helper `app._parse_json_body()` and answers syntactically broken JSON
-with **HTTP 400** `{"detail": "Invalid JSON body: could not be
-parsed"}` (formerly an unhandled 500). A broken multipart body sent to `/run`
-gets a 400 as well.
-
-**Responsibilities:**
-- RESTful API routes
-- Request validation (Pydantic)
-- Response formatting
-- Error handling
-- Authentication enforcement
-
-**Endpoint Categories:**
-
-| Category | Endpoints | Purpose |
-|----------|-----------|---------|
-| **Agent** | `/chat`, `/chat-stream` | Execute agent tasks |
-| **Session** | `/sessions`, `/sessions/{id}` | Manage sessions |
-| **Config** | `/config-agents`, `/config-agents/{name}` | Config-based agents |
-| **Tools** | `/tools`, `/tools/execute` | Tool discovery & execution |
-| **Status** | `/status`, `/status/metrics` | System status |
-| **Auth** | `/login`, `/logout`, `/me` | Authentication |
-| **Admin** | `/admin/users`, `/admin/sessions` | Admin operations |
-
-**Example Endpoint:**
-```python
-@router.post("/chat")
-async def chat_endpoint(
-    request: ChatRequest,
-    session_id: str = Header(...),
-    user: User = Depends(get_current_user)
-) -> ChatResponse:
-    """Execute an agent task and return result"""
-    # Validate session ownership
-    session_manager.validate_session(session_id, user.username)
-    
-    # Execute agent
-    result = await agent_service.run_agent(
-        agent_name=request.agent,
-        task=request.message,
-        session_id=session_id
-    )
-    
-    return ChatResponse(
-        result=result,
-        session_id=session_id
-    )
-```
-
-#### 3.2.4 Streaming API (`api/streaming.py`)
-
-**File:** `src/agent_system/api/streaming.py`
-
-**Responsibilities:**
-- Server-Sent Events (SSE) endpoints
-- Real-time status streaming
-- Agent result streaming
-- Connection lifecycle
-
-**Key Endpoints:**
-
-```python
-@router.get("/chat-stream")
-async def chat_stream_endpoint(
-    agent: str,
-    message: str,
-    session_id: str,
-    user: User = Depends(get_current_user)
-) -> StreamingResponse:
-    """Stream agent execution in real-time"""
-    
-    async def event_generator():
-        async for event in agent_service.run_agent_stream(
-            agent_name=agent,
-            task=message,
-            session_id=session_id
-        ):
-            # Format as SSE
-            data = json.dumps(event)
-            yield f"data: {data}\n\n"
-    
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream"
-    )
-```
-
-**SSE Event Format:**
-```json
-{
-  "type": "status",
-  "request_id": "req_abc123",
-  "status": "running",
-  "step": 2,
-  "max_steps": 10,
-  "message": "Executing tool: web_search"
-}
-```
-
-#### 3.2.5 Authentication (`api/auth.py`)
-
-**File:** `src/agent_system/api/auth.py`
-
-**Responsibilities:**
-- JWT token generation and validation
-- API key authentication
-- User management
-- Password hashing (bcrypt)
-
-**Authentication Flow:**
-```
-User Login (POST /login)
-    │
-    ├─► Validate credentials (username/password)
-    ├─► Generate JWT token
-    ├─► Return token + user info
-    │
-User Request (with Authorization: Bearer <token>)
-    │
-    ├─► Extract JWT from header
-    ├─► Validate signature & expiry
-    ├─► Extract user info
-    ├─► Inject into request context (Depends)
-    │
-Protected Endpoint
-    │
-    ├─► Access user from dependency
-    ├─► Perform operation
-    ├─► Return result
-```
-
-**Key Functions:**
-```python
-def create_access_token(data: dict) -> str:
-    """Generate JWT token"""
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=30)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-async def get_current_user(
-    token: str = Depends(oauth2_scheme)
-) -> User:
-    """Dependency for protected endpoints"""
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username = payload.get("sub")
-        if username is None:
-            raise HTTPException(401, "Invalid token")
-        return User(username=username)
-    except JWTError:
-        raise HTTPException(401, "Invalid token")
-```
-
----
-
-## 4. API Design
-
-### 4.1 Request/Response Models
-
-**Pydantic Models:**
-
-```python
-# Chat Request
-class ChatRequest(BaseModel):
-    agent: str  # Agent name
-    message: str  # User task/question
-    output_format: str = "json"  # json|html|markdown
-    cancellation_token: Optional[str] = None
-
-# Chat Response
-class ChatResponse(BaseModel):
-    result: str  # Agent output
-    session_id: str
-    usage_stats: Dict[str, Any]
-    request_id: str
-
-# Session Info
-class SessionInfo(BaseModel):
-    session_id: str
-    user: str
-    created_at: datetime
-    last_accessed: datetime
-    message_count: int
-
-# Config Agent Info
-class ConfigAgentInfo(BaseModel):
-    name: str
-    enabled: bool
-    description: Optional[str]
-    llm_profile: str
-    max_steps: int
-    tools: Dict[str, List[str]]
-    metadata: Dict[str, Any]
-```
-
-### 4.2 REST API Reference
-
-#### 4.2.1 Agent Endpoints
-
-```http
-POST /chat
-Content-Type: application/json
-Authorization: Bearer <token>
-X-Session-ID: <session_id>
-
-{
-  "agent": "default",
-  "message": "What is the weather?",
-  "output_format": "json"
-}
-
-Response 200:
-{
-  "result": "The current weather is...",
-  "session_id": "sess_xyz",
-  "request_id": "req_abc",
-  "usage_stats": { "total_tokens": 1234 }
-}
-```
-
-```http
-GET /chat-stream
-  ?agent=default
-  &message=hello
-  &session_id=sess_xyz
-Accept: text/event-stream
-Authorization: Bearer <token>
-
-Response 200 (streaming):
-data: {"type": "status", "status": "starting"}
-
-data: {"type": "status", "status": "running", "step": 1}
-
-data: {"type": "result", "content": "Hello!"}
-
-data: {"type": "complete"}
-```
-
-#### 4.2.2 Session Endpoints
-
-```http
-GET /sessions
-Authorization: Bearer <token>
-
-Response 200:
-{
-  "sessions": [
-    {
-      "session_id": "sess_abc",
-      "user": "alice",
-      "created_at": "2025-01-15T10:00:00Z",
-      "message_count": 5
-    }
-  ]
-}
-```
-
-```http
-GET /sessions/{session_id}/messages
-Authorization: Bearer <token>
-
-Response 200:
-{
-  "messages": [
-    {"role": "user", "content": "Hello"},
-    {"role": "assistant", "content": "Hi!"}
-  ],
-  "message_count": 2
-}
-```
-
-#### 4.2.3 Config Agent Endpoints
-
-```http
-GET /config-agents
-Authorization: Bearer <token>
-
-Response 200:
-{
-  "total": 5,
-  "enabled": 3,
-  "disabled": 2,
-  "agents": [
-    {
-      "name": "researcher",
-      "enabled": true,
-      "description": "Research assistant",
-      "llm_profile": "gpt4",
-      "tools": {"include": ["web_search", "calculator"]}
-    }
-  ]
-}
-```
-
-```http
-GET /config-agents/{agent_name}
-Authorization: Bearer <token>
-
-Response 200:
-{
-  "name": "researcher",
-  "enabled": true,
-  "description": "Research assistant",
-  "llm_profile": "gpt4",
-  "max_steps": 10,
-  "system_template": "prompts/researcher.md",
-  "tools": {"include": ["web_search"]},
-  "metadata": {"visibility": "ui"}
-}
-```
-
-### 4.3 Error Responses
-
-**Standard Error Format:**
-```json
-{
-  "detail": "Error message",
-  "error_code": "AGENT_NOT_FOUND",
-  "request_id": "req_abc123",
-  "timestamp": "2025-01-15T10:00:00Z"
-}
-```
-
-**HTTP Status Codes:**
-
-| Code | Meaning | Example |
-|------|---------|---------|
-| 200 | Success | Normal response |
-| 400 | Bad Request | Invalid parameters |
-| 401 | Unauthorized | Missing/invalid token |
-| 403 | Forbidden | Access denied |
-| 404 | Not Found | Agent/session not found |
-| 422 | Validation Error | Pydantic validation failed |
-| 429 | Rate Limit | Too many requests |
-| 500 | Server Error | Internal error |
-| 503 | Service Unavailable | LLM/MCP unavailable |
-
----
-
-## 5. Service Layer
-
-### 5.1 Service Architecture
-
-Services encapsulate business logic and coordinate domain components.
-
-#### 5.1.1 InitializationService
-
-**File:** `src/agent_system/services/initialization_service.py`
-
-**Responsibilities:**
-- Single source of truth for bootstrap across API, CLI, and `agent_run`
-- Lazily instantiate `SessionManager` and `SessionService`
-- Bridge between `initialize_tools()` and dependency injection utility functions
-- Track initialization state (`servers_bootstrapped`, `initialized`) to avoid redundant work during hot reloads
-
-**Key Methods:**
-```python
-class InitializationService:
-    def bootstrap_and_inject(
-        self,
-        registry: Optional[ToolServerRegistry] = None,
-        inject_sessions: bool = True
-    ) -> ToolServerRegistry:
-        """Create registry, bootstrap plugins, inject session service."""
-
-    def initialize_for_api(
-        self,
-        plugin_registry=None,
-        skip_bootstrap: bool = False
-    ) -> SessionService:
-        """Inject dependencies into the global plugin registry used by FastAPI."""
-
-    def initialize_for_cli(self) -> tuple[ToolServerRegistry, SessionService]:
-        """Convenience helper for CLI tools (used by `agent_cli` and `agent_run`)."""
-```
-
-#### 5.1.2 ConfigService
-
-**File:** `src/agent_system/services/config_service.py`
-
-**Responsibilities:**
-- Load and parse YAML configuration
-- Environment variable substitution
-- Schema validation
-- Pydantic model binding
-
-**Key Methods:**
-```python
-class ConfigService:
-    def load_config(self, config_path: str) -> AgentConfig:
-        """Load and validate configuration"""
-    
-    def get_llm_profile(self, name: str) -> LLMProfile:
-        """Get LLM profile by name"""
-    
-    def get_agent_config(self, name: str) -> ConfigAgentDefinition:
-        """Get config-based agent definition"""
-```
-
-#### 5.1.3 AgentService
-
-**File:** `src/agent_system/services/agent_service.py`
-
-**Responsibilities:**
-- Agent execution orchestration
-- Request lifecycle management
-- Status event coordination
-- Error handling and recovery
-
-**Key Methods:**
-```python
-class AgentService:
-    async def run_agent_stream(
-        self,
-        agent_name: str,
-        task: str,
-        session_id: str,
-        request_id: str,
-        cancellation_token: Optional[str] = None
-    ) -> AsyncGenerator[dict, None]:
-        """Stream agent execution events"""
-```
-
-#### 5.1.4 SessionManager
-
-**File:** `src/agent_system/services/session_manager.py`
-
-**Responsibilities:**
-- Session CRUD operations
-- Session file I/O (JSON)
-- User isolation (per-user directories)
-- Session cleanup
-
-**Key Methods:**
-```python
-class SessionManager:
-    def create_session(self, user: str) -> str:
-        """Create new session for user"""
-    
-    def get_session(self, session_id: str, user: str) -> Session:
-        """Load session (validates ownership)"""
-    
-    def save_session(self, session: Session):
-        """Persist session to disk"""
-    
-    def list_sessions(self, user: str) -> List[SessionInfo]:
-        """List all sessions for user"""
-```
-
-#### 5.1.5 ToolServerService
-
-**File:** `src/agent_system/services/tool_server_service.py`
-
-**Responsibilities:**
-- MCP client/server lifecycle
-- External MCP server connections
-- Tool list aggregation
-- Health monitoring
-
-**Key Methods:**
-```python
-class ToolServerService:
-    async def initialize(self):
-        """Connect to external MCP servers"""
-    
-    async def shutdown(self):
-        """Disconnect from tool servers"""
-    
-    def get_all_tools(self) -> List[ToolInfo]:
-        """Get aggregated tool list"""
-```
-
-#### 5.1.6 ToolService
-
-**File:** `src/agent_system/services/tool_service.py`
-
-**Responsibilities:**
-- Tool discovery and filtering
-- Tool execution
-- Hook invocation
-- Parallel execution
-
-**Key Methods:**
-```python
-class ToolService:
-    def discover_tools(
-        self,
-        agent_name: str,
-        include: List[str],
-        exclude: List[str]
-    ) -> List[ToolInfo]:
-        """Discover and filter tools"""
-    
-    async def execute_tool(
-        self,
-        tool_name: str,
-        arguments: dict,
-        request_id: str
-    ) -> dict:
-        """Execute single tool"""
-```
-
-### 5.2 Dependency Injection
-
-Services are injected via FastAPI's dependency system:
-
-```python
-# app.py - Store in app.state
-app.state.agent_service = AgentService(...)
-app.state.session_manager = SessionManager(...)
-
-# endpoints.py - Access via dependency
-def get_agent_service(request: Request) -> AgentService:
-    return request.app.state.agent_service
-
-@router.post("/chat")
-async def chat(
-    agent_service: AgentService = Depends(get_agent_service)
-):
-    result = await agent_service.run_agent(...)
-```
-
----
-
-## 6. Authentication & Authorization
-
-### 6.1 Authentication Modes
-
-| Mode | Mechanism | Use Case |
-|------|-----------|----------|
-| **JWT** | Bearer token in header | Web UI, CLI |
-| **API Key** | `X-API-Key` header, or `Authorization: Bearer <key>` (no dots: never a JWT) | Service-to-service, OpenAI clients (`openai_api`) |
-| **None** | No auth (configurable) | Development, internal networks |
-
-### 6.2 JWT Configuration
+There is one application, built by `build_app(config_path=None)` in
+`src/agent_system/app.py`. Most routes -- `/run`, `/events`, the agent and chat
+routes, the status pages -- are closures inside `build_app`; the rest come from
+routers in `api/` and `ui/` and from the plugins' web routers.
+
+| Feature | Where |
+|---------|-------|
+| Agent runs, answered as JSON or streamed as SSE | `POST /run`, `GET`/`POST /events` in `app.py` |
+| Markdown answers, drawn by the web chat and agent-cli | [Multi-format output](multi_format_output.md) |
+| Authentication: JWT (header or cookie) and per-user API keys | `auth/`, `api/auth_endpoints.py` |
+| Per-user sessions | `services/session_manager.py`, `services/session_service.py` |
+| Cancelling a run by its request id | `POST /api/requests/{request_id}/cancel` |
+| Panels of plugins in the web UI | `plugin_web_registry`, `ui/routes.py`, [Plugin architecture](_arch_plugin_architecture.md) |
+
+## 2. Modules
+
+### API and UI
+
+| Module | Contents |
+|--------|----------|
+| `app.py` | `build_app`, its lifespan, and most routes (see [Routes](#4-routes)) |
+| `api/endpoints.py` | `/api/debug/messages`, `/api/debug/context-stats`, `/api/health`, `/api/version` |
+| `api/session_endpoints.py` | `/api/sessions...` -- list, get, update, delete, restore, messages, hierarchy |
+| `api/auth_endpoints.py` | `/auth/...` -- login, logout, refresh, me, register, API key, password reset |
+| `api/admin_endpoints.py` | `/admin/...` -- users, active sessions, config reload, system |
+| `api/debug_endpoints.py` | `/debug/health`; `/debug/memory...` (admin, `AGENT_ENABLE_MEMORY_PROFILING=1`); `/debug/profile...` (admin, `AGENT_ENABLE_PROFILING=1`) |
+| `api/question_routes.py` | `question_router`: the `/answer` and `/pending` routes a plugin mounts when it asks the person (ask_user, tool_approval) |
+| `api/dependencies.py` | `get_agent`, `get_config`, `get_session_manager`, `get_tool_registry` for `Depends` |
+| `ui/routes.py` | `/ui/...`, the panel catalog `/api/ui/catalog`, help |
+
+The session, auth and admin routers are included only when `auth.enabled` is
+true.
+
+### Authentication (`auth/`)
+
+`security.py` (passwords with bcrypt, JWTs, API key hashing),
+`dependencies.py` (`get_current_user`, `require_admin`), `middleware.py`
+(rate limiting, security audit), `enforcement.py` (`EndpointSecurityEnforcer`,
+route security from `auth.endpoint_security`), `remote_paths.py` (which paths
+a client off loopback may reach), `session_access.py` (who
+sees which session), `agent_access.py` (an agent's `min_role`), `database.py`
+(the user store).
+
+### Services (`services/`)
+
+| Service | Role |
+|---------|------|
+| `InitializationService` | One bootstrap for API, `agent-cli` and `agent-run`: builds and starts the `Runtime`, creates `SessionManager`/`SessionService` lazily and injects the session service into the agents (`agent_injection`) |
+| `ConfigService` | `load_config(config_path=None, force_reload=False)` -- delegates to `config.settings.load_settings` (includes, `${VAR}` expansion, models) |
+| `SessionManager` | Session files, one directory per user; async, works on dicts: `create_session`, `load_session`, `save_session`, `list_sessions`, `delete_session` |
+| `SessionService` | What a run does with its session: `open_for_run`, `load_and_restore_session`, `save_session` |
+| `SessionArchive` | Archiving old sessions (a periodic sweep started in the lifespan) |
+| `BackgroundJobManager` | Every streamed run is a job: its event buffer, followers, reconnect, `cancel_job` |
+| `ToolServerService` | Status of tool servers and tools (`GET /tools/status`, `agent-cli mcp list`, `status`, `test`) |
+| `ToolService` | `list_tools` for `agent-cli mcp tools`; unused by the API |
+| `AgentService` | A stub, not used by any route |
+| `config_reload` | `POST /admin/reload-config` and `agent-cli reload` |
+| `system_status` | What the System panel shows (`GET /admin/system`) and the commit the process started from |
+
+The lifecycle of the tool servers (`initialize`, `shutdown`, `list_all_tools`)
+is in `tools/integration.py` (`ToolServerIntegration`); which tools an agent
+may call is decided by `ToolDiscoveryService` (`servers/agent/tool_discovery.py`),
+and tool calls -- hooks, parallel execution -- run in `ToolExecutionManager`
+(`servers/agent/components/tool_execution.py`).
+
+## 3. Startup
+
+`build_app(config_path=None) -> FastAPI`:
+
+1. `ConfigService().load_config(config_path=...)` loads the configuration.
+2. `InitializationService.bootstrap_and_inject()` builds and starts the
+   `Runtime`, which bootstraps every configured server, and injects the
+   session service into the agents. (Skipped only when an earlier `build_app`
+   in the same process left a bootstrapped `ToolServerIntegration`.)
+3. `app.state` gets `agent`, `tool_registry`, `config`, `runtime`,
+   `config_service`, `config_path` and `auth_config`.
+4. The routers are included: the API router, the UI router, the debug router;
+   with authentication on also the auth, admin and session routers, plus CORS,
+   rate limiting and the auth middleware. The profiling middleware comes with
+   `AGENT_ENABLE_PROFILING=1`. Last and outermost, `auth/remote_paths.install`:
+   with `network.remote_paths` set, a client not on loopback gets 404 for every
+   path not listed.
+
+On Windows, `agent-api` (`own_console.api`) and `app.run()` first start the
+server as a process of its own on a hidden console (`agent_system/own_console.py`)
+and pass its output on to the terminal; the VS Code tasks start uvicorn the
+same way. On the terminal's console, a console host that stopped answering froze
+the whole server: starting a process with pipes, CPython asks the console,
+holding the GIL, whether a pipe is a console. The server's process is not the
+one that was started; it and what it starts die with that one (a job object
+the server joins before it starts anything), and Ctrl+C reaches it as before.
+What is meant to outlive the server -- a woken run (`session_presence`), a
+coding run (`coding_cli`) -- starts through `own_console.popen_outliving`.
+
+The lifespan (`custom_lifespan`, nested in `build_app`) sets up the executor
+and runs `_init_mcp_for_app`: it starts the batch queue manager, runs
+`initialize_tools()` (`ToolServerIntegration.initialize` -- its bootstrap is
+skipped because the registry is already filled -- then plugin discovery,
+plugin hooks, `start_all()`), injects the session service into the plugin
+registry (`InitializationService.initialize_for_api(plugin_registry=...)`),
+sets `app.state.session_manager` and `app.state.session_archive`, and mounts
+the plugins' web routers and static files (`plugin_web_registry.apply_to_app`).
+Then it starts the archive sweep and the job cleanup. Plugin routes exist only
+after the lifespan has run -- a test sees them only inside
+`with TestClient(app)`. On shutdown it stops the job cleanup, the batch queue
+manager and the tool servers (`shutdown_tools`).
+
+`agent-cli` and `agent-run` call `InitializationService.initialize_for_cli()`,
+the same `bootstrap_and_inject()` without the HTTP parts.
+
+## 4. Routes
+
+The main routes. "auth" means the route exists only with `auth.enabled: true`.
+
+| Area | Routes |
+|------|--------|
+| **Runs** | `POST /run`; `GET`/`POST /events` (SSE); `POST /events/{request_id}/append`; `POST /sessions/{session_id}/append`; `GET /api/requests/{request_id}/status`; `POST /api/requests/{request_id}/cancel` |
+| **Agents and LLMs** | `GET /agents`; `GET /agents/{name}/tools`; `GET /agents/{name}/allowed-tools`; `GET /agents/debug/{name}/allowed-tools`, `GET /agents/debug/{name}/system-prompt` (admin); `GET /llm/profiles` |
+| **Chat commands** | `/chat/commands`, `/chat/resolve`, `/chat/command`, `/chat/vars`, `/chat/undo`, `/chat/checkpoints`, `/chat/rewind`, `/chat/context`, `/chat/transcript`, `/chat/last_answer` |
+| **Sessions** | `/api/sessions...` (auth); `POST /sessions`; `/sessions/{session_id}/force_optimize`, `/sessions/force_optimize` |
+| **Auth** (auth) | `POST /auth/login`, `/auth/logout`, `/auth/refresh`, `/auth/register`; `GET`/`PATCH /auth/me`; `/auth/me/preferences`; `POST`/`DELETE /auth/api-key`; `/auth/password-reset...` |
+| **Admin** | `/admin/users...`, `/admin/active-sessions` and `.../{request_id}/cancel`, `/admin/reload-config`, `/admin/system`, `/admin/security/audit` (all auth); `GET /admin/config` |
+| **Status and tools** | `/status` (redirects to `/`), `/status/meta` (status bus metrics), `/health`, `/api/health`, `/api/version`, `GET /tools/status`, `GET /tools/cache/statistics`, `POST /tools/cache/invalidate` |
+| **Hooks** | `/hooks...` |
+| **Web UI** | `/` and `/login` (HTML), `/ui/...`, `/api/ui/catalog`, plugin panels under `/plugins/<instance>/` |
+| **Debug** | `/api/debug/messages`, `/api/debug/context-stats`, `/debug/health`, `/debug/memory...`, `/debug/profile...` |
+
+There is no HTTP route that executes a single tool; tools run inside an agent
+run.
+
+### Request bodies
+
+**Error contract for body parsing:** the routes in `app.py` that read a JSON
+body (`POST /run`, `POST /events`, the append routes, the `/chat/...` POSTs)
+parse it with `_parse_json_body()` and answer syntactically broken JSON with
+**HTTP 400** `{"detail": "Invalid JSON body: could not be parsed"}`; a broken
+multipart body sent to `/run` gets a 400 as well. Routes with a Pydantic body
+model (auth, admin, sessions) answer it with FastAPI's 422.
+
+**`POST /run`** takes JSON `{task, session_id, agent_name, llm_profile,
+session_title, request_id, force}`, the same as query parameters, or
+multipart (`task`, `files`, `attended`). Without files it waits for the run
+and answers `{"task", "calls", "summary"}`, plus `errors`, `cancelled` or
+`refused` when they apply. With files it streams the run as SSE.
+
+**`GET /events`** takes `task`, `session_id`, `agent` (or `agent_name`),
+`llm_profile`, `request_id`, `force`, `session_title`, `attended` as query
+parameters (`task` is required); `POST /events` takes the same as JSON. `attended` says that a person watches
+the stream and may be asked (see `request_context.set_run_attended`).
+
+## 5. How a run travels
+
+### 5.1 `POST /run`
+
+1. `_enforce_endpoint_security` -- the route security of `auth.endpoint_security`
+   (`EndpointSecurityEnforcer`) -- and `_validate_llm_access`
+   (`auth.llm_security`: may this caller, an anonymous one say, start an LLM
+   run at all).
+2. `_get_agent_with_overrides` picks the agent; an unknown name answers 404
+   (`agent_not_found:<name>`).
+3. `_open_session_for_run` -> `SessionService.open_for_run` opens the session
+   (403 for another user's).
+4. `_mirror_run_as_job` registers the run as a job, so it can be followed and
+   cancelled like a streamed one (409 if a job already runs under that
+   request id).
+5. `_claim_session` holds the session through session presence
+   (`core/session_presence.py`, an OS lock next to the session file): a session
+   another process runs (an open `agent-cli chat`, a woken run) or one deleted
+   in this process answers 409; `force=true` runs it anyway, for the lock of a
+   hung process -- a dead process's lock is released by the OS. A second run of
+   the session inside this process is refused by the run itself (`refused` in
+   the result).
+6. `collect_final_result` (`servers/agent/result_utils.py`) drives
+   `Agent.run_events` and collects calls, summary and errors.
+7. `SessionService.save_session` stores the session; the JSON result goes back.
+
+### 5.2 `GET`/`POST /events`
+
+1. The same checks as above, then `_handle_events`.
+2. `BackgroundJobManager.create_job` runs `agent.run_events(...)` as a job.
+   Status lines of tools and plugins (the status bus) join the run's own
+   events through the `StatusEventForwarder`.
+3. `_sse_lines` follows the job (`job.follow`) and writes each event with
+   `_format_and_yield_event`, with keepalives in between.
+4. A client that lost the stream reconnects with
+   `GET /events?task=&request_id=<id>` (`task` is required, empty here),
+   optionally `&catch_up=skip&seen=<n>`; it gets a `reconnect` event and the
+   rest of the run. An id with no job left answers 404.
+
+### 5.3 The stream
+
+SSE lines: `:ok` and `:keepalive` comments, and `data: {...}` with one JSON
+event each (on `/run` with files, an `event: <type>` line precedes each
+`data:` line). `/events` sends `Cache-Control: no-cache` and
+`X-Accel-Buffering: no`.
+The server is uvicorn, HTTP/1.1.
+
+| Event | Content |
+|-------|---------|
+| `start` | The run's `request_id` and `session_id` |
+| `thinking`, `thinking_delta`, `thinking_complete`, `reasoning_delta` | What the model thinks, as it streams |
+| `tool_call`, `tool_result`, `tool_error` | The tool calls of a step |
+| `status` | A status line: `{type, server, request_id, message, phase, level, timestamp, meta, tree}` |
+| `heartbeat` | `{step, max_steps}` (or `{step, timestamp}`) |
+| `sub_run` | One event of a sub-agent's run below this one, wrapped: `{run_id, spawned_by, depth_level, agent, event}` |
+| `final` | `{summary, content_format, usage}` -- the answer |
+| `end`, `error`, `cancelled` | How the run ended |
+| `reconnect` | Sent to a client that reattached by `request_id` |
+
+## 6. Status bus
+
+Tools and plugins report progress on the status bus (`tools/status.py`):
+`await publish_status(server, message, request_id, phase, level, meta)`, or
+`async with StatusScope(bus, server, request_id, start_msg, end_msg)`, which
+sends the start and the end line. Phases: `START`, `PROGRESS`, `END`, `ERROR`.
+
+`await status_bus.subscribe(server=None, request_id=None, maxsize=None)`
+returns an `asyncio.Queue` (read with `await queue.get()`, released with
+`unsubscribe(queue)`); the CLIs use it. The API does not subscribe per run: a
+`StatusEventForwarder` puts the run's status lines into its event stream as
+`status` events.
+
+## 7. Cancellation
+
+`POST /api/requests/{request_id}/cancel?force=true` calls
+`BackgroundJobManager.cancel_job(request_id, force_timeout=5.0 if force else 0.0)`
+-- with `force`, the run's task is cancelled after 5 s if it has not stopped
+by itself. Admins also have `/admin/active-sessions/{request_id}/cancel`
+(always with the 5 s force). Inside the run, the
+cancellation token is keyed by the request id:
+`get_cancellation_manager().create_token(request_id)` /
+`get_token(request_id)`; code checks `token.is_cancelled` and may raise
+`CancellationError(request_id, forced=False)` (`core/cancellation.py`). The
+run ends with a `cancelled` event.
+
+## 8. Authentication and authorization
+
+### Modes
+
+| Mode | Mechanism | Use |
+|------|-----------|-----|
+| **JWT** | `Authorization: Bearer <jwt>` or the HttpOnly `access_token` cookie set at login | Web UI, CLI |
+| **API key** | `X-API-Key: <key>`, or `Authorization: Bearer <key>` (no dots: never a JWT) | Services, OpenAI-compatible clients (`openai_api` plugin) |
+| **None** | `auth.enabled: false` | Local use |
+
+`get_current_user` tries the Bearer header, then the cookie, then the API key.
+`POST /auth/login` answers `{access_token, refresh_token, token_type,
+expires_in}` and sets the cookie; `/auth/refresh` issues new tokens from the
+refresh token (a JWT as well -- nothing is stored per token).
+
+### Configuration
 
 ```yaml
 # config/config.yaml
-authentication:
+auth:
   enabled: true
-  jwt:
-    secret_key: ${JWT_SECRET}  # From env var
-    algorithm: HS256
-    access_token_expire_minutes: 30
-  api_keys:
-    - name: service_account
-      key: ${API_KEY_SERVICE}
+  secret_key: ${JWT_SECRET}
+  algorithm: HS256
+  access_token_expire_minutes: 30
+  refresh_token_expire_days: 30
 ```
 
-### 6.3 Authorization
-
-**Session Ownership:**
-- Sessions are per-user (stored in `data/sessions/{username}/`)
-- API validates session ownership on every request
-- Users cannot access other users' sessions
-
-**Admin Endpoints:**
-```python
-async def require_admin(
-    user: User = Depends(get_current_user)
-) -> User:
-    """Dependency for admin-only endpoints"""
-    if not user.is_admin:
-        raise HTTPException(403, "Admin access required")
-    return user
-
-@router.get("/admin/sessions")
-async def list_all_sessions(
-    admin: User = Depends(require_admin)
-):
-    """Admin-only: list all sessions"""
-```
-
----
-
-## 7. Real-Time Communication
-
-### 7.1 Server-Sent Events (SSE)
-
-**Why SSE?**
-- Simpler than WebSockets for one-way communication
-- Automatic reconnection
-- HTTP/2 multiplexing
-- Better browser compatibility
-
-**SSE Format:**
-```
-HTTP/1.1 200 OK
-Content-Type: text/event-stream
-Cache-Control: no-cache
-Connection: keep-alive
-
-data: {"type": "status", "status": "starting"}
-
-data: {"type": "llm_response", "content": "Hello"}
-
-data: {"type": "complete"}
-```
-
-### 7.2 Status Bus
-
-**Architecture:**
-```python
-from agent_system.tools.status import status_bus, publish_status, StatusPhase, StatusScope
-
-# Method 1: Using publish_status helper (recommended)
-await publish_status(
-    server="my_tool",
-    message="Processing...",
-    request_id="req_abc",
-    phase=StatusPhase.PROGRESS,
-    level="info"
-)
-
-# Method 2: Using StatusScope for automatic START/END (best practice)
-async with StatusScope(status_bus, "my_tool", request_id="req_abc",
-                       start_msg="Starting...", end_msg="Done"):
-    # Work happens here - automatic START/END messages
-    pass
-
-# Method 3: Direct publish (low-level, rarely needed)
-from agent_system.tools.status import StatusEvent
-await status_bus.publish(StatusEvent(
-    server="my_tool",
-    request_id="req_abc",
-    message="Processing...",
-    phase=StatusPhase.PROGRESS
-))
-
-# Subscribe to events
-queue = await status_bus.subscribe(request_id="req_abc")
-async for event in queue:
-    yield event
-```
-
-**Event Types:**
-- `status` - Agent status updates
-- `llm_request` - LLM API calls
-- `llm_response` - LLM responses
-- `tool_execution` - Tool calls
-- `error` - Errors
-- `complete` - Agent finished
-
-### 7.3 Cancellation
-
-**Token-Based Cancellation:**
-```python
-# Client sends cancellation token
-POST /chat
-{
-  "message": "Long task",
-  "cancellation_token": "cancel_xyz"
-}
-
-# Client cancels request
-POST /cancel/{cancellation_token}
-
-# Agent checks cancellation periodically
-if cancellation_manager.is_cancelled(cancellation_token):
-    raise CancellationError()
-```
-
----
-
-## 8. Key Design Decisions
-
-### ADR-001: FastAPI over Flask
-
-**Context:** Need async HTTP framework with SSE support  
-**Decision:** Use FastAPI  
-**Rationale:**
-- Native async/await
-- Built-in OpenAPI docs
-- Pydantic validation
-- Excellent performance
-- Type safety
-
-**Status:** Accepted
-
----
-
-### ADR-002: Service Layer Pattern
-
-**Context:** Decouple API from domain logic  
-**Decision:** Introduce service layer between API and domain  
-**Rationale:**
-- Clear separation of concerns
-- Easier testing (mock services)
-- Business logic not in routes
-- Reusable across API/CLI
-
-**Status:** Accepted
-
----
-
-### ADR-003: SSE for Streaming
-
-**Context:** Need real-time updates in web UI  
-**Decision:** Use Server-Sent Events (SSE)  
-**Rationale:**
-- Simpler than WebSockets
-- One-way communication sufficient
-- Auto-reconnect
-- HTTP/2 support
-
-**Status:** Accepted
-
----
-
-### ADR-004: JWT Authentication
-
-**Context:** Need stateless authentication  
-**Decision:** JWT tokens in Authorization header  
-**Rationale:**
-- Stateless (no session storage)
-- Standard protocol
-- Works with API and web UI
-- Easy to validate
-
-**Status:** Accepted
-
----
-
-## 9. Data Flow
-
-### 9.1 Synchronous Request Flow
-
-```
-Client (POST /chat)
-    │
-    ▼
-FastAPI Router (endpoints.py)
-    │
-    ├─► Validate JWT token (get_current_user)
-    ├─► Validate request body (Pydantic)
-    │
-    ▼
-InitializationService (bootstrapped during startup)
-    │
-    ├─► Offers shared SessionService & injected registry state
-    │
-    ▼
-AgentService.run_agent()
-    │
-    ├─► Load session
-    ├─► Execute agent
-    ├─► Save session
-    │
-    ▼
-Agent.run_events()
-    │
-    ├─► LLM request
-    ├─► Tool execution
-    ├─► Multi-step loop
-    │
-    ▼
-AgentService
-    │
-    ├─► Format output
-    ├─► Build response
-    │
-    ▼
-FastAPI Router
-    │
-    ├─► JSON serialization
-    │
-    ▼
-Client (JSON response)
-```
-
-### 9.2 Streaming Request Flow
-
-```
-Client (GET /chat-stream)
-    │
-    ▼
-FastAPI Router (streaming.py)
-    │
-    ├─► Validate JWT
-    ├─► Create SSE connection
-    │
-    ▼
-AgentService.run_agent_stream()
-    │
-    ├─► Async generator
-    ├─► Subscribe to status_bus
-    │
-    ▼
-Agent.run_events()
-    │
-    ├─► Emit status events
-    ├─► Emit LLM events
-    ├─► Emit tool events
-    │
-    ▼
-Status Bus
-    │
-    ├─► Broadcast to subscribers
-    │
-    ▼
-AgentService
-    │
-    ├─► Yield events
-    │
-    ▼
-FastAPI Router
-    │
-    ├─► Format as SSE
-    ├─► Stream to client
-    │
-    ▼
-Client (SSE events)
-```
-
----
-
-## 10. Error Handling
-
-### 10.1 Error Categories
-
-| Category | HTTP Code | Handling |
-|----------|-----------|----------|
-| **Validation** | 422 | Pydantic validation errors |
-| **Authentication** | 401 | Invalid/missing token |
-| **Authorization** | 403 | Insufficient permissions |
-| **Not Found** | 404 | Agent/session not found |
-| **Rate Limit** | 429 | Too many requests |
-| **LLM Error** | 503 | LLM API unavailable |
-| **Internal** | 500 | Unexpected errors |
-
-### 10.2 Error Handling Strategy
-
-```python
-# Global exception handler
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "detail": "Internal server error",
-            "error_code": "INTERNAL_ERROR",
-            "request_id": request.state.request_id
-        }
-    )
-
-# Specific exception handlers
-@app.exception_handler(AgentNotFoundError)
-async def agent_not_found_handler(request, exc):
-    return JSONResponse(
-        status_code=404,
-        content={
-            "detail": f"Agent '{exc.agent_name}' not found",
-            "error_code": "AGENT_NOT_FOUND"
-        }
-    )
-```
-
-### 10.3 Graceful Degradation
-
-- LLM unavailable → Return cached response or error
-- tool server down → Continue without external tools
-- Session load error → Create new session
-- Tool execution error → Continue agent loop, report error
-
----
-
-## 11. Related Documents
-
-### 11.1 Architecture Documents
-
-- [System Architecture](agent_system_architecture.md) - Overall system design
-- [Plugin Architecture](plugin_architecture.md) - Plugin system
-- [CLI Architecture](cli_architecture.md) - Command-line interface
-
-### 11.2 Design Documents
-
-- [Authentication](multi_user_authentication.md) - Auth system
-- [Session Management](session_management.md) - Session handling
-- [Tool Execution](tool_execution.md) - Tool system
-
-### 11.3 API Reference
-
-- [API Documentation](../README.md#api) - Endpoint reference
-- [OpenAPI Spec](http://localhost:8000/docs) - Interactive API docs
-
----
-
-**Document Changelog:**
-
-| Version | Date | Author | Changes |
-|---------|------|--------|---------|
-| 1.0 | 2025-01-15 | AgentSystem Team | Initial FastAPI app architecture SAD |
-
----
-
-**Approval:**
-
-| Role | Name | Date | Signature |
-|------|------|------|-----------|
-| Architect | - | - | - |
-| Tech Lead | - | - | - |
-| Product Owner | - | - | - |
+API keys are per user, issued by `POST /auth/api-key` and stored hashed in the
+user store -- there is no list of keys in the configuration.
+
+### Who may do what
+
+- **Routes:** `auth.endpoint_security` (app routes: `auth/enforcement.py`,
+  `EndpointSecurityMiddleware`) and `auth.plugin_security` (plugin routes:
+  `PluginEndpointSecurityEnforcer` in `plugins/web_adapter.py`) decide which
+  roles reach a route; both are set in `config/security.yaml`, the only file
+  that may set them. `require_admin` guards the admin router (role `admin`).
+- **Sessions:** each user's sessions live in a directory of their own; the
+  session routes serve only the caller's. Admins -- and everyone while
+  authentication is off -- see all sessions in plugin views
+  (`auth/session_access.py`).
+- **Agents:** an agent's `metadata.min_role` gates who may run it, on every
+  path (`auth/agent_access.py`; see
+  [Configuration-Based Agents](config_based_agents.md#visibility-and-min_role)).
+
+## 9. Errors
+
+- Errors are mostly FastAPI's `HTTPException`: `{"detail": ...}`. Exceptions:
+  `/tools/status`, `/tools/cache/...` and `/agents/debug/...` answer 200 with
+  `{"error": ...}`; cancelling an unknown id answers 200
+  `{"status": "not_found"}`.
+- Status codes: 400 (broken body), 401/403 (authentication, role), 404
+  (unknown agent or session), 409 (another process holds the session, or the
+  request id is already running -- on `/events` and `/run` with files the
+  session refusal arrives as an `error` event), 422
+  (validation), 429 (rate limit, with authentication on), 503 (a service not
+  initialised or the store unavailable).
+- **LLM failures** do not become an HTTP status: they arrive as an `error`
+  event, or in `errors` of the `/run` result. Before that, the agent moves along
+  its profile chain; a rate limit, an exhausted quota or a rejected key also
+  blocks that LLM for every agent in the process (see
+  [Fallbacks](config_based_agents.md#fallbacks)). There is no response cache.
+- An external tool server that fails at start logs a warning and the rest
+  runs. A session that cannot be loaded starts as a new one -- except on a
+  permission error, which is raised. A failing tool call becomes a
+  `tool_error` event and the loop goes on.
+
+## 10. Design decisions
+
+- **FastAPI** for async I/O, request validation where models are used (auth,
+  admin, sessions) and the generated `/docs`.
+- **SSE instead of WebSockets:** a run's events go one way, server to client;
+  SSE works through proxies and needs no protocol of its own. Input during a
+  run goes through ordinary POSTs (`/events/{request_id}/append`).
+- **JWT with refresh tokens:** stateless, nothing stored per token; the cookie
+  serves the web UI, the header the CLI and clients.
+- **Run logic in `app.py`:** `/run` and `/events` are closures inside
+  `build_app` and use module state (the job manager, session holds). The
+  `AgentService` that was meant to hold this logic is a stub; reuse between API
+  and CLI happens one level lower, in `InitializationService`, `SessionService`
+  and `Agent.run_events`.
+
+## 11. Related documents
+
+- [Agent system architecture](_arch_agent_system_architecture.md)
+- [Agent architecture](_arch_agent_architecture.md)
+- [Plugin architecture](_arch_plugin_architecture.md)
+- [CLI architecture](_arch_cli_architecture.md)
+- [Multi-user authentication](multi_user_authentication.md)
+- [Session management](session_management.md)
+- [Tool execution](tool_execution.md)

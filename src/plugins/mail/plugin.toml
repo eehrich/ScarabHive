@@ -1,0 +1,11 @@
+# mail -- a plain-text mail over SMTP, only to the recipients the server entry names.
+[plugin]
+name = "mail"
+version = "0.1.0"
+description = "Send a plain-text mail over SMTP to the recipients the configuration names."
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server"]
+category = "utilities"
+tags = ["mail", "smtp", "notification"]
+requires = { agent_system = ">=0.6.0" }

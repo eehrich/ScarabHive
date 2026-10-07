@@ -171,38 +171,37 @@
 .operation-progress.unfinished .progress-message { color: var(--text-muted); }
 .progress-open-note { color: var(--text-muted); font-style: italic; flex: none; }
 
-/* A question the run put to the person watching it, under the row that asks:
-   tool_approval's (the call's arguments and three answers) or ask_user's (the
-   model's question, its options, a field for an answer in one's own words). */
+/* A question the run put to the person watching it, under the row that asks,
+   drawn from its form whatever its kind (questionBox): what is asked, what
+   answering gives up, text to read as it is, the choices, a field to write in. */
 .question-actions {
   margin: var(--space-1) 0 var(--space-2) var(--space-5); padding: var(--space-2);
   border-left: 2px solid var(--accent); background: var(--surface-1);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
-.ask-user-question {
+.question-prompt {
   margin: 0 0 var(--space-2); white-space: pre-wrap; overflow-wrap: anywhere;
   font-size: var(--text-sm); color: var(--text-primary);
 }
-.ask-user-options { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-2); }
-/* an option is the model's text: it wraps rather than running out of the box */
-.ask-user-options .pk-btn { height: auto; min-height: var(--control-h-sm); white-space: normal; text-align: left; }
-label.ask-user-option {
-  display: inline-flex; align-items: center; gap: var(--space-1); cursor: pointer;
-  font-size: var(--text-xs); color: var(--text-secondary); overflow-wrap: anywhere;
+.question-warning {
+  margin-bottom: var(--space-2); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm);
+  background: var(--danger-subtle); color: var(--danger); font-size: var(--text-xs); font-weight: 600;
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.ask-user-text { flex: 1 1 14em; min-width: 0; height: var(--control-h-sm); font-size: var(--text-xs); }
-.approval-arguments {
+.question-detail {
   margin: 0 0 var(--space-2); max-height: 24em; overflow: auto; white-space: pre-wrap;
   overflow-wrap: anywhere; font: 400 var(--text-xs)/1.5 var(--font-mono); color: var(--text-secondary);
 }
-.approval-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
-.approval-reason { flex: 1 1 14em; min-width: 0; height: var(--control-h-sm); font-size: var(--text-xs); }
-.approval-note { color: var(--text-muted); font-size: var(--text-xs); }
-.approval-cut { margin-bottom: var(--space-1); color: var(--warn); font-size: var(--text-xs); }
-.approval-warning {
-  margin-bottom: var(--space-2); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm);
-  background: var(--danger-subtle); color: var(--danger); font-size: var(--text-xs); font-weight: 600;
+.question-choices { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-2); }
+/* a choice is the run's text: it wraps rather than running out of the box */
+.question-choices .pk-btn { height: auto; min-height: var(--control-h-sm); white-space: normal; text-align: left; }
+label.question-choice {
+  display: inline-flex; align-items: center; gap: var(--space-1); cursor: pointer;
+  font-size: var(--text-xs); color: var(--text-secondary); overflow-wrap: anywhere;
 }
+.question-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.question-text { flex: 1 1 14em; min-width: 0; height: var(--control-h-sm); font-size: var(--text-xs); }
+.question-note { color: var(--text-muted); font-size: var(--text-xs); }
 /* A call a hook blocked: the reason is the point of the line, so it wraps. */
 .operation-progress.blocked .progress-message { white-space: normal; overflow-wrap: anywhere; }
 

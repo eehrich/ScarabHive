@@ -115,6 +115,22 @@ plugins:
         llm_profile: gpt-4-turbo  # a name under llm_system.profiles
 ```
 
+#### The shipped profiles
+
+As shipped, the default chat agent uses the profile `chat` (falling back to `or-gemini-flash-lite`),
+most other agents `normal` (falling back to `think`). These and the `or-*` profiles in
+`config/llm_openrouter.yaml` point at OpenRouter models; some agents fall back to DeepSeek or Gemini
+directly.
+
+To run on another provider, point the profiles in use at its models. Agents and plugins name profiles,
+not models (context_engineer condenses with `summarizer`; `llm_system.default_profile` is
+`or-deepseek-flash`), so a profile's new `model_ref` applies to everything that names it. The shared
+profiles sit in `llm.yaml` (`chat`, `normal`, `think`, `turbo`, `structured`, `code`, `summarizer`);
+many agents and some plugin entries in `plugins.yaml` name an `or-*` profile directly, so repoint those
+in `llm_openrouter.yaml` as well. `llm.yaml` already defines models for Anthropic (`claude-sonnet`),
+OpenAI (`gpt-luna`), Gemini (`gemini-3-flash-nostream`), DeepSeek (`deepseek-chat`) and Ollama
+(`ollama-gemma-4`, profile `local`, at `http://localhost:11434`), or add your own as above.
+
 **API keys**: `${ENV_VAR}` placeholders are expanded in every config file, `llm.yaml` included (`api_key: ${OPENAI_API_KEY}`); an unset variable becomes empty and is named in a startup warning. Variables can also be put in `config/secrets.env` (template: `config/secrets.env.example`), which is loaded at startup without overriding the real environment. Omitting `api_key` falls back to the provider's environment variable as described above.
 
 ### Plugin Configuration
@@ -212,9 +228,20 @@ uvicorn agent_system.app:build_app --factory --host 127.0.0.1 --port 8000
 
 # With specific log level
 AGENT_LOG_LEVEL=debug agent-api
+
+# Windows, uvicorn directly: through the launcher agent-api uses by itself (see below)
+python -m agent_system.own_console uvicorn.main:main agent_system.app:build_app --factory --port 8000
 ```
 
 Access the web UI at `http://localhost:8000`
+
+On Windows, `agent-api` runs the server on a hidden console of its own and passes its output on to the
+terminal. Sharing a terminal's console froze the whole server once that console stopped answering: CPython
+asks the console, holding the GIL, whether a pipe is a console every time it starts a process with pipes.
+Ctrl+C reaches the server as before (the first stops it, a second hurries it), a third ends it outright.
+The server and what it starts die with its launcher, as they did on the terminal's console: closing the
+terminal or ending or restarting the task ends them at once. Woken runs and coding runs outlive it, as
+before. The server's process is not the one `agent-api` started.
 
 ### CLI Mode
 

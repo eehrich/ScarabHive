@@ -219,6 +219,313 @@ async def test_another_process_pauses_continues_and_terminates_a_run_it_does_not
         await other.stop_plugin()
 
 
+async def test_another_process_sends_an_event_to_a_run_it_does_not_hold(server, tmp_path):
+    """The API's panel reaches a run agent-cli holds: the event goes through the row, its answer comes back."""
+    from plugins.stategraph.tests.stategraph_testkit import until
+
+    (tmp_path / "machines" / "checked.yaml").write_text(APPROVAL.replace("id: approval", "id: checked").replace(
+        "events: {approve: {}}", "events: {approve: {data: {type: object}}}"), encoding="utf-8")
+    other = StateGraphServer("stategraph", AgentSystemConfig(), tool_config(tmp_path, allowed_users=["ops_*"]))
+    try:
+        result, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "checked", "mock_only": True})
+        run_id = result["run_id"]
+        assert result["run_status"] == "waiting" and run_id not in other.run_manager.live, result
+
+        unknown = await other.service.deliver_event(run_id, "nope")
+        assert unknown["accepted"] is False and "declares event 'nope'" in unknown["reason"], unknown
+        wrong = await other.service.deliver_event(run_id, "approve", "not an object")
+        assert wrong["accepted"] is False and wrong.get("data_refused"), wrong
+        taken, closing = await run_tool(other, "stategraph_send_event",   # the tool, as the panel's route
+                                        {"run_id": run_id, "name": "approve", "data": {"by": "panel"}})
+        assert taken["accepted"] is True and "id" not in taken, taken
+        assert closing.message == "event accepted by frame root", closing.message
+
+        await until(lambda: server.run_store.get_run(run_id)["status"] == "succeeded", what="the end", timeout=10)
+    finally:
+        await other.stop_plugin()
+
+
+async def test_an_event_for_a_run_nobody_holds_is_refused_as_before(server):
+    from plugins.stategraph.service import ServiceError
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    seed_run(server.run_store, "dropped", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="gone:1:x", lease=-60, status="waiting")   # its owner died: no live lease, nobody takes it
+
+    with pytest.raises(ServiceError) as refused:
+        await server.service.deliver_event("dropped", "approve")
+
+    assert refused.value.status == 409 and "not active in this process" in refused.value.message, refused.value.message
+
+
+async def test_an_event_its_holder_does_not_take_is_withdrawn_and_refused(server, monkeypatch):
+    from plugins.stategraph import service as service_module
+    from plugins.stategraph.service import ServiceError
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    monkeypatch.setattr(service_module, "CONTROL_WAIT", 0.3)
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+
+    with pytest.raises(ServiceError) as refused:
+        await server.service.deliver_event("held", "approve")
+
+    assert refused.value.status == 409 and "did not take the event" in refused.value.message, refused.value.message
+    assert server.run_store.get_run("held")["control"] is None, "withdrawn: a late holder must not take it anyway"
+
+
+async def test_an_answer_its_holder_writes_just_before_the_withdraw_is_still_read(server, monkeypatch):
+    """The holder's loop ran late: it took the event and answered between the asker's last look and its withdraw."""
+    from plugins.stategraph import service as service_module
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    monkeypatch.setattr(service_module, "CONTROL_WAIT", 0.3)
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+    store, withdraw = server.run_store, server.run_store.withdraw_control
+
+    def late_holder(run_id, request):
+        for taken_id, taken in store.take_controls("elsewhere:1:x"):
+            store.answer_control(taken_id, taken["id"], {"accepted": True, "frame": "", "queued": False})
+        return withdraw(run_id, request)
+
+    monkeypatch.setattr(store, "withdraw_control", late_holder)
+
+    assert await server.service.deliver_event("held", "approve") == {"accepted": True, "frame": "", "queued": False}
+
+
+async def test_an_event_its_holder_took_without_answering_is_not_called_refused(server, monkeypatch):
+    """Taken, and no answer came: it most likely landed -- not refused, and a callback URL is not freed to fire twice."""
+    import time
+
+    from plugins.stategraph import service as service_module
+    from plugins.stategraph.service import EventOutcomeUnknown, _digest
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    monkeypatch.setattr(service_module, "CONTROL_WAIT", 0.3)
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+    store, withdraw = server.run_store, server.run_store.withdraw_control
+
+    def silent_holder(run_id, request):
+        store.take_controls("elsewhere:1:x")  # took it; its answer never came (it died, or the write failed)
+        return withdraw(run_id, request)
+
+    monkeypatch.setattr(store, "withdraw_control", silent_holder)
+
+    with pytest.raises(EventOutcomeUnknown) as unknown:
+        await server.service.deliver_event("held", "approve")
+    assert unknown.value.status == 409 and "read the run before sending it again" in unknown.value.message
+
+    store.add_callback(_digest("tok"), "held", "approve", None, time.time() + 60, now=time.time())
+    sent = await server.service.use_callback("tok", None)
+    assert sent == {"sent": "approve", "queued": None, "outcome": "unknown"}, sent
+    assert not store.use_callback(_digest("tok"), time.time()), "the URL holds again: a second call sends it twice"
+
+
+async def test_an_event_dropped_before_its_holder_took_it_is_refused_and_its_url_holds(server, monkeypatch):
+    """A sweep, a new owner, or a holder that takes no events clears the request without the mark that it was taken:
+    the event did not land -- refused, and a callback URL stays usable."""
+    import time
+
+    from plugins.stategraph import service as service_module
+    from plugins.stategraph.service import EventOutcomeUnknown, ServiceError, _digest
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    monkeypatch.setattr(service_module, "CONTROL_WAIT", 0.3)
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+    store, withdraw = server.run_store, server.run_store.withdraw_control
+
+    def dropped(run_id, request):
+        store._db().execute("UPDATE runs SET control = NULL WHERE id = ?", (run_id,))
+        return withdraw(run_id, request)
+
+    monkeypatch.setattr(store, "withdraw_control", dropped)
+
+    with pytest.raises(ServiceError) as refused:
+        await server.service.deliver_event("held", "approve")
+    assert not isinstance(refused.value, EventOutcomeUnknown), "an event that never landed reads as maybe landed"
+    assert refused.value.status == 409 and "did not reach" in refused.value.message, refused.value.message
+
+    store.add_callback(_digest("tok"), "held", "approve", None, time.time() + 60, now=time.time())
+    with pytest.raises(ServiceError) as again:
+        await server.service.use_callback("tok", None)
+    assert again.value.status == 409, again.value.message
+    assert store.use_callback(_digest("tok"), time.time()), "the URL is used up by an event that did not land"
+
+
+async def test_an_event_taken_and_answered_later_is_its_answer_not_the_mark(server, monkeypatch):
+    """The mark that the holder took it comes before its answer: the asker waits on for the answer."""
+    import asyncio
+
+    from plugins.stategraph import service as service_module
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    monkeypatch.setattr(service_module, "CONTROL_WAIT", 3.0)
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+    store = server.run_store
+
+    async def slow_holder():
+        while not (taken := store.take_controls("elsewhere:1:x")):
+            await asyncio.sleep(0.02)
+        assert store.control_answer("held", taken[0][1]["id"]) == {"taken": True}, "taken without its mark"
+        await asyncio.sleep(0.3)
+        store.answer_control("held", taken[0][1]["id"], {"accepted": True, "frame": "", "queued": False})
+
+    holder = asyncio.create_task(slow_holder())
+    answer = await server.service.deliver_event("held", "approve")
+    await holder
+
+    assert answer == {"accepted": True, "frame": "", "queued": False}, answer
+
+
+async def test_a_callback_stopped_after_another_process_took_its_event_stays_used(server, monkeypatch):
+    """The request was cancelled while it waited for the answer: taken, the event most likely landed -- the URL must not
+    fire it twice. Stopped before anyone took it, the URL holds again."""
+    import asyncio
+    import time
+
+    from plugins.stategraph import service as service_module
+    from plugins.stategraph.service import _digest
+    from plugins.stategraph.tests.stategraph_testkit import seed_run, until
+
+    monkeypatch.setattr(service_module, "CONTROL_WAIT", 3.0)
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+    store = server.run_store
+    for token in ("taken", "untaken"):
+        store.add_callback(_digest(token), "held", "approve", None, time.time() + 60, now=time.time())
+
+    sending = asyncio.create_task(server.service.use_callback("taken", None))
+    while not store.take_controls("elsewhere:1:x"):  # the holder takes it, and its answer does not come
+        await asyncio.sleep(0.02)
+    sending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await sending
+    assert not store.use_callback(_digest("taken"), time.time()), "the URL holds again though its event was taken"
+
+    sending = asyncio.create_task(server.service.use_callback("untaken", None))
+    await until(lambda: store.get_run("held")["control"] is not None, what="the request", timeout=5)
+    sending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await sending
+    assert store.get_run("held")["control"] is None, "the stopped request was left for the holder"
+    assert store.use_callback(_digest("untaken"), time.time()), "the URL is used up by an event nobody took"
+
+
+async def test_an_answered_event_is_not_taken_back(server, monkeypatch):
+    """Its holder cleared the request before it answered: a withdraw that fails now must not turn the answer into an
+    error."""
+    import asyncio
+    import sqlite3
+
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+    store = server.run_store
+
+    def locked(run_id, request):
+        raise sqlite3.OperationalError("database is locked")
+
+    async def holder():
+        while not (taken := store.take_controls("elsewhere:1:x")):
+            await asyncio.sleep(0.02)
+        store.answer_control("held", taken[0][1]["id"], {"accepted": True, "frame": "", "queued": False})
+
+    monkeypatch.setattr(store, "withdraw_control", locked)
+    answering = asyncio.create_task(holder())
+    answer = await server.service.deliver_event("held", "approve")
+    await answering
+
+    assert answer == {"accepted": True, "frame": "", "queued": False}, answer
+
+
+async def test_a_request_that_cannot_be_taken_waits_and_the_ones_taken_before_are_carried_out(server, monkeypatch):
+    """take_controls clears each request in its own transaction: one that fails is rolled back and left for the next
+    look, the ones already cleared go to their run -- not lost with the error."""
+    import sqlite3
+
+    from plugins.stategraph.tests.stategraph_testkit import seed_run, utc_at
+
+    store = server.run_store
+    for run_id in ("a", "b"):
+        seed_run(store, run_id, {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+                 owner="elsewhere:1:x", lease=60, status="waiting")
+        assert store.request_control(run_id, {"action": "event", "id": f"r{run_id}", "name": "approve"},
+                                     now=utc_at(0)) == "requested"
+    put, calls = store._put_answer, []
+
+    def failing_second(db, run_id, request_id, answer):
+        calls.append(run_id)
+        if len(calls) == 2:
+            raise sqlite3.OperationalError("disk I/O error")
+        put(db, run_id, request_id, answer)
+
+    monkeypatch.setattr(store, "_put_answer", failing_second)
+
+    taken = store.take_controls("elsewhere:1:x")
+
+    first, second = calls
+    assert [run_id for run_id, _ in taken] == [first], taken
+    assert store.control_answer(first, f"r{first}") == {"taken": True}
+    assert store.get_run(second)["control"] == {"action": "event", "id": f"r{second}", "name": "approve"}, \
+        "the failed one was cleared without being taken"
+    assert store.control_answer(second, f"r{second}") is None
+
+
+async def test_a_runs_row_leaves_out_the_hand_over_between_processes(server):
+    """get_run and the panel show the run: not the requests and answers between processes, which keep refusals with
+    the data they refused."""
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+    server.run_store.answer_control("held", "r1", {"accepted": False, "reason": "x" * 1000})
+
+    row = server.run_manager.describe("held")
+
+    assert "control_answer" not in row and "control" not in row, sorted(row)
+
+
+async def test_the_answer_to_an_event_is_kept_under_its_request_with_the_last_few(server):
+    """The next request's answer does not replace one its asker has not read yet; old ones go."""
+    from plugins.stategraph.engine.journal import ANSWERS_KEPT
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+    store = server.run_store
+    for n in range(ANSWERS_KEPT + 1):
+        store.answer_control("held", f"r{n}", {"accepted": True, "n": n})
+
+    assert store.control_answer("held", "r0") is None, "the oldest answer is kept for ever"
+    assert store.control_answer("held", "r1") == {"accepted": True, "n": 1}, "an earlier answer was replaced"
+    assert store.control_answer("held", f"r{ANSWERS_KEPT}") == {"accepted": True, "n": ANSWERS_KEPT}
+    assert store.control_answer("held", "nope") is None
+
+
+async def test_send_event_waits_until_another_processs_run_took_the_event(server, monkeypatch):
+    """A read right after shows what the event started there too: its row says when its process took it."""
+    due = {"id": "x", "status": "waiting", "view": {"frames": [{"prefix": "", "accepts": ["approve"]}],
+                                                     "inbox": [{"name": "approve", "frame": None}]}}
+    rows = [due, due, {"id": "x", "status": "running", "view": {}}]
+    read = []
+
+    def get_run(run_id):
+        assert run_id == "x", run_id
+        read.append(run_id)
+        return rows[min(len(read), len(rows)) - 1]
+
+    monkeypatch.setattr(server.run_manager.store, "get_run", get_run)
+
+    await server.run_manager.taken("x", timeout=5.0)
+
+    assert len(read) == 3, f"taken returned after {len(read)} reads, before the row showed the event taken"
+
+
 async def test_a_control_request_its_holder_does_not_take_is_withdrawn_and_refused(server, monkeypatch):
     from plugins.stategraph import service as service_module
     from plugins.stategraph.service import ServiceError

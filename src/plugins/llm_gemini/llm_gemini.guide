@@ -93,7 +93,7 @@ api_key | GEMINI_API_KEY, else GOOGLE_API_KEY | building the client fails withou
 base_url | https://generativelanguage.googleapis.com/v1beta | gemini only; gemini_sdk ignores it
 context_window | the model-config default 32768, 200000 if 0 | only reported to the core, never sent
 max_tokens | none | generationConfig.maxOutputTokens; null sends nothing
-temperature | 1.0 | generationConfig.temperature. topP 0.95 and topK 40 are always sent
+temperature | none | generationConfig.temperature, only when set; Gemini 3.6 Flash and later ignore it, upcoming models reject it
 thinking_level | none | thinkingConfig.thinkingLevel (Gemini 3); see @{" Thinking " link reasoning}
 thinking_budget | none | thinkingConfig.thinkingBudget (Gemini 2.5); 0 turns thinking off
 include_thoughts | none | thinkingConfig.includeThoughts: whether thought summaries come back

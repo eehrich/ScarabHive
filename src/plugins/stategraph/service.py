@@ -71,6 +71,11 @@ class ServiceError(Exception):
         self.message = message
 
 
+class EventOutcomeUnknown(ServiceError):
+    """Another process took the event but did not say what came of it: it most likely landed, so it is not one to
+    send again blindly."""
+
+
 #: A run id becomes the session id sg_<run id> and a journal key: letters, digits, _ and -.
 _RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
@@ -545,6 +550,54 @@ class StateGraphService:
                                     f" which did not take the {action} within {CONTROL_WAIT:.0f}s")
         return True
 
+    async def _event_elsewhere(self, run_id: str, name: str, data: Any, frame: Optional[str], *,
+                               request_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """Hand an event to the process that holds the run (it looks each second) and wait for what it made of it:
+        its answer, or None when no process holds a live lease on the run. ``request_id`` names the request, for a
+        caller that asks runs.db afterwards whether it was taken (``control_answer``)."""
+        request = {"action": "event", "id": request_id or os.urandom(6).hex(), "name": name, "data": data,
+                   "frame": frame}
+        asked = self.run_store.request_control(run_id, request, now=utc_now())
+        if asked == "open":
+            raise ServiceError(409, f"run {run_id}: another control request waits for the process that holds it; "
+                                    "try again in a moment")
+        if asked != "requested":
+            return None
+        answer: dict[str, Any] = {}
+        try:
+            deadline = time.monotonic() + CONTROL_WAIT
+            while time.monotonic() < deadline:
+                answer = self.run_store.control_answer(run_id, request["id"]) or {}
+                if "accepted" in answer:  # not the mark that it was taken: what came of it
+                    return answer  # its holder cleared the request before it answered: nothing to take back
+                await asyncio.sleep(0.1)
+        finally:  # not taken in time, or the asker stopped: taken back, so no later owner meets it
+            if "accepted" not in answer:
+                withdrawn = self.run_store.withdraw_control(run_id, request)
+        owner = (self.run_store.get_run(run_id) or {}).get("owner")
+        if withdrawn:
+            raise ServiceError(409, f"run {run_id} is held by {owner}, which did not take the event within "
+                                    f"{CONTROL_WAIT:.0f}s")
+        answer = self.run_store.control_answer(run_id, request["id"]) or {}  # answered just before the withdraw
+        if "accepted" in answer:
+            return answer
+        if not answer.get("taken"):  # a sweep or a new owner cleared it, or a holder that takes no events
+            raise ServiceError(409, f"run {run_id}: the event did not reach the process that holds it (its lease ran "
+                                    "out, another process took the run over, or it takes no events from elsewhere); "
+                                    "send it again")
+        raise EventOutcomeUnknown(409, f"run {run_id} is held by {owner}, which took the event but did not say "
+                                       f"within {CONTROL_WAIT:.0f}s what came of it: read the run before sending "
+                                       "it again")
+
+    def _taken_elsewhere(self, run_id: str, request_id: str) -> bool:
+        """Whether another process took the event request ``request_id`` and did not refuse it: its mark, or its
+        answer that it accepted, is in runs.db."""
+        try:
+            answer = self.run_store.control_answer(run_id, request_id) or {}
+        except Exception:  # the database that failed the call: what it cannot say, it did not take
+            return False
+        return bool(answer.get("taken") or answer.get("accepted"))
+
     async def _terminate_elsewhere(self, run_id: str) -> None:
         """A run no process here runs: resume it into its termination, so its finally activities run (§3.10).
 
@@ -696,12 +749,14 @@ class StateGraphService:
 
     async def use_callback(self, token: str, data: Any) -> dict[str, Any]:
         """Send a callback URL's event -- once: the URL is used when the run took it (or keeps it in its inbox). A
-        run no process runs is resumed first; a run another process holds cannot take it here (409)."""
+        run no process runs is resumed first; a run another process holds gets it through runs.db (as a pause from
+        the panel), and its answer is that process's."""
         digest = _digest(token)
         self.callback(token)  # an ended run's URL is gone, not used up by a call that cannot land
         if not self.run_store.use_callback(digest, time.time()):
             raise ServiceError(404, "no such callback")
         row = self.run_store.callback_row(digest) or {}
+        request_id = os.urandom(6).hex()  # if it goes to another process: whether that one took it, runs.db says
         try:
             run = self.run_store.get_run(row.get("run_id", "")) or {}
             if run.get("id") not in self.runs.live and run.get("status") in ("interrupted", "waiting", "running",
@@ -711,14 +766,24 @@ class StateGraphService:
                 if run.get("status") == "interrupted":
                     await self._resume(run["id"])
                     await self.runs.wait(run["id"], timeout=10.0)  # into its wait again
-            answer = self.runs.send_event(row["run_id"], row["event"], data, row.get("frame"))
+            answer = None
+            if run.get("id") not in self.runs.live:  # another process holds it: handed over through runs.db
+                answer = await self._event_elsewhere(row["run_id"], row["event"], data, row.get("frame"),
+                                                     request_id=request_id)
+            if answer is None:
+                answer = self.runs.send_event(row["run_id"], row["event"], data, row.get("frame"))
+        except EventOutcomeUnknown as exc:  # it most likely landed: the URL stays used, so it does not fire twice
+            logger.info("stategraph: callback for run %s: %s", row.get("run_id"), exc.message)
+            return {"sent": row["event"], "queued": None, "outcome": "unknown"}
         except (KeyError, ValueError, ServiceError) as exc:
             self.run_store.unuse_callback(digest)
             # the caller holds a URL, not an account: which process holds the run is the log's, not theirs
             logger.info("stategraph: callback for run %s not taken: %s", row.get("run_id"), getattr(exc, "message", exc))
             raise ServiceError(409, "the run cannot take the event now; try again later") from None
-        except BaseException:  # anything else (a closed database, a cancelled request): the event did not land
-            self.run_store.unuse_callback(digest)
+        except BaseException:  # anything else (a closed database, a cancelled request): the event did not land --
+            # unless another process took it before the request was withdrawn: then it most likely did
+            if not self._taken_elsewhere(row.get("run_id", ""), request_id):
+                self.run_store.unuse_callback(digest)
             raise
         if not answer.get("accepted"):
             self.run_store.unuse_callback(digest)  # not taken: the URL holds for a corrected or later call
@@ -727,6 +792,18 @@ class StateGraphService:
             logger.info("stategraph: callback for run %s not taken: %s", row.get("run_id"), answer.get("reason"))
             raise ServiceError(409, "the run cannot take the event now; try again later")
         return {"sent": row["event"], "queued": bool(answer.get("queued"))}
+
+    async def deliver_event(self, run_id: str, name: str, data: Any = None, frame: Optional[str] = None, *,
+                            user_id: Optional[str] = None) -> dict[str, Any]:
+        """``send_event`` for a run any process holds: this one's here, another process's through runs.db -- it
+        takes it within a second, as a pause from the panel (agent-cli and agent-run hold the runs they start).
+        A run nobody holds is refused as before (409): resume it first."""
+        self._run(run_id, user_id)
+        if run_id not in self.runs.live:
+            answer = await self._event_elsewhere(run_id, name, data, frame)
+            if answer is not None:
+                return answer
+        return self.send_event(run_id, name, data, frame, user_id=user_id)
 
     def send_event(self, run_id: str, name: str, data: Any = None, frame: Optional[str] = None, *,
                    user_id: Optional[str] = None) -> dict[str, Any]:

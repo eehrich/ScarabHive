@@ -126,7 +126,7 @@ def data_of(text: str) -> Any:
         return None
     try:
         return json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):  # nested deeper than the parser goes: words, like any other text
         return text
 
 

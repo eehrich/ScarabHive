@@ -3029,10 +3029,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         Returns:
             True if agent is allowed, False otherwise
         """
-        allowed = agent_allowed(agent_name, self.allowed_agents, self.blocked_agents)
-        if not allowed:
-            logger.debug(f"Agent '{agent_name}' not allowed: allowed={self.allowed_agents} blocked={self.blocked_agents}")
-        return allowed
+        return agent_allowed(agent_name, self.allowed_agents, self.blocked_agents)
 
     async def _runs_in_another_process(self, instance_id: str, user_id: str) -> bool:
         """Whether some other process has this sub-agent's session in hand, i.e. is running it.

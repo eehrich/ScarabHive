@@ -8,18 +8,17 @@ This gets ScarabHive running on one machine: the web UI at `http://127.0.0.1:800
 
 - **Python 3.11 or newer** (3.12 recommended; the Docker image uses it), and git. Check with
   `python --version` (`python3 --version` on Linux and macOS; on Windows `py --version` if
-  `python` opens the Microsoft Store).
+  `python` opens the Microsoft Store). On Debian/Ubuntu also `sudo apt-get install python3-venv`.
 - **A few GB of disk**: the dependencies include PyTorch. The first installation takes many
   minutes.
-- **Linux**: a compiler and the headers `pycairo` builds against (it has no Linux wheels):
-
-  ```bash
-  sudo apt-get install python3-venv python3-dev build-essential libcairo2-dev pkg-config
-  ```
-
-- **macOS**: `brew install cairo pkg-config`.
-- **An OpenRouter API key** ([openrouter.ai/keys](https://openrouter.ai/keys)): the default
-  chat agent runs on it. Keys for other providers are optional.
+- **Optional, for SVG layers in images:** the cairo library, pkg-config, a C compiler and
+  Python's headers. Outside Windows, `pycairo` is built from source against them. You need not install them yourself: the
+  install script does where it can, and without them everything but SVG layers works.
+- **An LLM provider.** Recommended for the first start: an OpenRouter API key
+  ([openrouter.ai/keys](https://openrouter.ai/keys)) — as shipped, every agent that is switched
+  on runs on it. Another provider works too once its models are in the profiles
+  ([docs/configuration.md](docs/configuration.md#the-shipped-profiles)); keys for further
+  providers are optional.
 
 ## 2. Install and start
 
@@ -31,25 +30,37 @@ cd ScarabHive
 Then run the install script:
 
 ```bash
+./install.sh                                            # Linux, macOS, Git Bash on Windows
 powershell -ExecutionPolicy Bypass -File install.ps1    # Windows, PowerShell
-sh install.sh                                           # Linux, macOS, Git Bash on Windows
 ```
+
+`sh install.sh` works as well.
 
 The script:
 
 1. Creates the virtual environment `.venv` and installs ScarabHive into it. On Linux without an
    NVIDIA GPU it takes the CPU build of PyTorch, which is several GB smaller.
-2. Gives this installation its own signing key for logins. The key goes into
+2. Installs the optional part, `requirements/optional.txt`: today reportlab's cairo backend,
+   which draws SVG layers in images (on Windows it comes ready-built). Where cairo, a compiler or
+   Python's headers are missing, `install.sh` installs them first -- cairo with Homebrew on macOS
+   (Apple's Command Line Tools it only names: `xcode-select --install`), everything with
+   `apt-get update && apt-get install` through `sudo` on Debian/Ubuntu (sudo asks for your
+   password; without a terminal it only tries `sudo -n`). On other systems, or when that fails,
+   it prints the command to run and goes on: the installation works, only SVG layers stay off
+   until you run that command and the script again. The last lines before the start repeat it.
+   `SCARABHIVE_NO_SYSTEM_PACKAGES=1 ./install.sh` leaves the system's packages alone and only
+   says what is missing.
+3. Gives this installation its own signing key for logins. The key goes into
    `config/local.env`, and `config/local.yaml` points to it. Both files belong to this machine
    and never go into the repository.
-3. Asks for a password for the `admin` account, twice; Enter generates one. Where it cannot ask
+4. Asks for a password for the `admin` account, twice; Enter generates one. Where it cannot ask
    (an unattended run; Git Bash's own window unless its pseudo console is on) it generates one and
    shows it once. A publicly known password is refused. Only its hash
    goes into the user database. Run again, it leaves an admin with a password of its own alone;
    an admin still on a password the repository has printed (`admin123` of older versions) is
    asked for a new one, which also revokes that account's API key. If you aborted this step, the script stops
    and does not start the API.
-4. Starts the API and opens `http://127.0.0.1:8000` in the browser as soon as it answers.
+5. Starts the API and opens `http://127.0.0.1:8000` in the browser as soon as it answers.
 
 Running the script again installs what a `git pull` added and starts the API; stop a running
 API first. To start the API later without the script, run `.venv\Scripts\agent-api.exe` (Windows) or `.venv/bin/agent-api`
@@ -65,7 +76,8 @@ run `python -m agent_system.auth.first_admin` before that start to choose one in
 Then open the **Setup** panel: click the grid icon in the top bar (tooltip *Panels*) and type
 `setup`.
 
-- **API keys:** Paste your OpenRouter key into the field next to `OPENROUTER_API_KEY` and click
+- **API keys:** Paste your OpenRouter key into the field next to `OPENROUTER_API_KEY` (another
+  provider's key next to its own variable, such as `ANTHROPIC_API_KEY`) and click
   *Save*. It goes into `config/local.env`, and the chat uses it from the next message on.
   Sub-agents, background jobs, fallback models and plugins that read their key at start (a web
   search, for example) use it after a restart. Each key shows as *set*, *missing* or
@@ -98,6 +110,7 @@ source .venv/Scripts/activate      # Windows, Git Bash
 
 pip install -U pip
 pip install -e .
+pip install -r requirements/optional.txt   # optional: SVG layers; outside Windows needs cairo, pkg-config, a compiler
 python -m agent_system.config.local_layer signing-key
 python -m agent_system.auth.first_admin
 agent-api
@@ -200,10 +213,10 @@ downloaded once, on first use, into `~/.cache/chroma`, so that first use needs n
 |---|---|
 | `Python 3.11 or newer is needed` | Install Python from [python.org](https://www.python.org/downloads/), then run the script again. |
 | `Could not create the virtual environment` | Debian/Ubuntu: `sudo apt-get install python3-venv`. |
-| `pip install` fails building `pycairo`, or asks for a C compiler | Install the build packages (step 1). |
+| `SVG layers in images are off: ...` at the end of the script, or an svg layer answers `SVG layers need reportlab's cairo backend` | The optional part is missing. Run the command the line names (macOS: `brew install cairo pkg-config`; Debian/Ubuntu: `sudo apt-get update && sudo apt-get install -y build-essential libcairo2-dev pkg-config`, plus `python3.X-dev` for your Python 3.X if it lacks its headers; the line names exactly what is missing), then the script again. Everything else works without it. |
 | `running scripts is disabled on this system` | PowerShell's execution policy: start the script as shown in step 2. |
 | `agent-cli: command not found`, or `The term 'agent-cli' is not recognized` | The virtual environment is not activated (see *Installing by hand*). |
-| `Config references N unset variable(s): ...` at every start | Normal for the services you do not use. Only `OPENROUTER_API_KEY` must not be in the list. |
+| `Config references N unset variable(s): ...` at every start | Normal for the services you do not use. Only the key of the provider your agents run on (`OPENROUTER_API_KEY` as shipped) must not be in the list. |
 | `Refusing to start: auth.secret_key is empty ...` or `... has N characters, at least 32 are needed` | The signing key is missing or too short: run `python -m agent_system.config.local_layer signing-key` in the activated virtual environment. |
 | `auth.secret_key is a published default ...` in the log | The installation still signs logins with the key from the repository: use *Make an own signing key* in the Setup panel, then restart. |
 | The admin password is lost | In the activated virtual environment: `agent-cli users update admin -p <new password>`. That also ends the admin's logins and revokes its API key; whatever used the key needs a new one (`agent-cli users generate-api-key admin`). Running the install script again does not reset the password. |

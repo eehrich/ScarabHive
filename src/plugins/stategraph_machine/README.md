@@ -8,7 +8,8 @@ panel shows and controls it -- and the answer is the run's output as a JSON obje
 - A retry of the same request attaches to its run, resumes it, or answers its outcome again; a cancel terminates the
   run (its `finally` activities run).
 - `on_wait: ask` turns a wait state into a question in the conversation; `block` waits for the event from elsewhere,
-  and asks the person who watches the request for it (`agent-cli chat`) -- as does a machine called as a tool.
+  and asks the person who watches the request for it (web chat, `agent-cli chat`) -- as does a machine called as a
+  tool.
 
 Enable it with an `agent:` block in the machine's file (`agent: {visibility: tool}`, declared when a process starts),
 or with a `type: stategraph_machine` entry naming `machine:` in `config/plugins.yaml`. Without `visibility` it is

@@ -2,7 +2,9 @@
 
 Every route is for admins (docs/stategraph_design.md §8.3): a machine holds Python and runs agents and tools, so
 whoever may save or run one may run code on the server. The route rules in the config should say so as well; the
-check here holds whatever they say, as the agent editor's does. Without auth the app has one user, its owner.
+check here holds whatever they say, as the agent editor's does. Without auth the app has one user, its owner. Not
+the wait questions' ``/answer`` and ``/pending``: the person whose request waits answers it, and question_routes
+lets only them or an admin.
 A write must arrive as JSON, so a plain cross-site form post cannot reach it.
 
 Errors: the service raises ``ServiceError(status, message)``, answered as that status with the message as detail.
@@ -16,7 +18,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
 
 from agent_system.auth.database import get_db
 from agent_system.auth.dependencies import bearer_scheme, get_optional_user
@@ -44,14 +45,6 @@ def _field(body: dict[str, Any], key: str, kind: type | tuple[type, ...], *, req
     return value
 
 
-class WaitAnswerBody(BaseModel):
-    """An answer to a wait question, as every client sends one: the event picked, the data written."""
-
-    question_id: str = Field(min_length=1, max_length=64)
-    choices: list[str] = Field(default_factory=list, max_length=64)
-    text: str = Field(default="", max_length=100_000)
-
-
 class StateGraphWebEndpoints:
     def __init__(self, server: Any):
         self.server = server
@@ -66,13 +59,7 @@ class StateGraphWebEndpoints:
     def _wait_answers(self) -> APIRouter:
         """``/answer`` and ``/pending`` of the wait questions: the person whose request waits answers, or an admin
         (question_routes) -- as a reply in the conversation answers an ``on_wait: ask`` wait, not the admins' panel."""
-        broker = self.server.wait_questions
-
-        def take(question: Any, body: WaitAnswerBody, answered_by: str) -> dict[str, Any]:
-            broker.take(body.question_id, body.choices, body.text, answered_by=answered_by)
-            return {"status": "ok", "question_id": question.id}
-
-        return question_router("", broker, self.server.wait_answer_url, WaitAnswerBody, take)
+        return question_router("", self.server.wait_questions, self.server.wait_answer_url)
 
     # ------------------------------------------------------------------ plumbing
 
@@ -194,7 +181,9 @@ margin: 2rem; max-width: 32rem"><h1>Send {event}?</h1><p>This sends the event <b
 machine <b>{machine}</b>. The link works once.</p><button id="send">Send {event}</button><p id="said"></p><script>
 document.getElementById('send').onclick = async (e) => {{ e.target.disabled = true;
   const answer = await fetch(location.href, {{ method: 'POST', headers: {{ 'content-type': 'application/json' }}, body: '{{}}' }});
-  document.getElementById('said').textContent = answer.ok ? 'Sent.' : 'Not sent: ' + (await answer.json()).detail; }};
+  document.getElementById('said').textContent = answer.status === 202
+    ? 'Handed to the run, which has not said yet what came of it. The link is used.'
+    : answer.ok ? 'Sent.' : 'Not sent: ' + (await answer.json()).detail; }};
 </script></body></html>""", headers={"Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
 
     async def callback_send(self, request: Request, token: str):
@@ -208,12 +197,16 @@ document.getElementById('send').onclick = async (e) => {{ e.target.disabled = tr
         if body.strip():
             try:
                 parsed = json.loads(body)
-            except ValueError:
+            except (ValueError, RecursionError):  # not JSON, or nested deeper than the parser goes
                 raise HTTPException(status_code=422, detail="the body is JSON: {\"data\": ...}") from None
             if not isinstance(parsed, dict) or set(parsed) - {"data"}:
                 raise HTTPException(status_code=422, detail="the body is a JSON object {\"data\": ...}")
             data = parsed.get("data")
-        return await self._call("use_callback", token, data)
+        result = await self._call("use_callback", token, data)
+        if result.get("outcome") == "unknown":  # handed to the process that holds the run, which did not answer
+            from fastapi.responses import JSONResponse
+            return JSONResponse(result, status_code=202)
+        return result
 
     async def api_catalog(self, request: Request, machine_id: Optional[str] = None):
         """What the inspector's fields offer: the agents a machine may run, the tools its runner may call (the
@@ -267,5 +260,5 @@ document.getElementById('send').onclick = async (e) => {{ e.target.disabled = tr
     async def api_send_event(self, request: Request, run_id: str):
         user = await self._user(request)
         body = await self._body(request)
-        return await self._call("send_event", run_id, _field(body, "name", str, required=True),
+        return await self._call("deliver_event", run_id, _field(body, "name", str, required=True),
                                 data=body.get("data"), frame=_field(body, "frame", str), user_id=user)

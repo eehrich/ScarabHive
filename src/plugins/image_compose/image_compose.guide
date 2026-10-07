@@ -228,6 +228,9 @@ recover real transparency, so white parts stay white. The SVG cannot load
 files; PNG and JPEG images embedded as data: URIs work. A font-family is
 looked up by name among the installed fonts; a family that looks like a
 path (with /, \\ or :) is drawn in Helvetica instead of being opened.
+Drawing needs reportlab's cairo backend, an optional part of the install
+(see Dependencies under @{" Setting it up " link setup}); without it an
+svg layer fails with a message that names the fix.
 
 @{h2}vignette
 
@@ -411,6 +414,7 @@ output_path \\\\host\\share\\x.png is a network or device path
 layers_dir <path> is the directory the composite is written to; the per-layer export needs one of its own (omit layers_dir for <name>_layers, or pass "" to skip it)
 region_size (900, 200) must fit inside image 800x600
 max_candidates must be an integer 1-10
+layer 0 (svg): SVG layers need reportlab's cairo backend (rlPyCairo), which is not installed on this server. To add it: install cairo, pkg-config, a C compiler and Python's headers (macOS: brew install cairo pkg-config; Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y build-essential libcairo2-dev pkg-config [python<3.X>-dev, where Python.h is missing]; Windows needs none of them), then pip install -r requirements/optional.txt in the server's virtual environment, or run install.sh (Windows: install.ps1) again. Every other layer type works without it. (import rlPyCairo: <reason>)
 @{body}
 
 A render with warnings answers @{tt}status: warning@{utt} and adds
@@ -501,9 +505,24 @@ system fonts:
 @{h2}Dependencies
 
 Pillow, and with the plugin: numpy (measuring and SVG), svglib with
-@{tt}reportlab[pycairo]@{utt} (SVG layers; on a host without a pycairo
-wheel it needs @{tt}libcairo2-dev@{utt} and @{tt}pkg-config@{utt} to
-build), and @{tt}rembg[cpu]@{utt} (cutout). Each is imported only when
-a layer needs it; without it, that layer fails with a message naming the
-package.
+reportlab (SVG layers) and @{tt}rembg[cpu]@{utt} (cutout). Each is
+imported only when a layer needs it; without it, that layer fails with a
+message naming the package.
+
+SVG layers are drawn through reportlab's cairo backend,
+@{tt}reportlab[pycairo]@{utt}. It is an optional dependency
+(@{tt}requirements/optional.txt@{utt}, not part of
+@{tt}pip install -e .@{utt}): pycairo has wheels for Windows only and is
+built everywhere else, against cairo and pkg-config. The install scripts
+add it -- install.sh installs cairo first where it can (Homebrew; apt-get
+with sudo) -- and go on without it when that fails. Without it the plugin
+logs a WARNING at start and every svg layer answers with the fix: cairo,
+pkg-config, a compiler and Python's headers (macOS
+@{tt}brew install cairo pkg-config@{utt}, Debian/Ubuntu
+@{tt}sudo apt-get update && sudo apt-get install -y build-essential
+libcairo2-dev pkg-config@{utt}, plus @{tt}python3.X-dev@{utt} where the
+server's Python 3.X lacks its headers),
+then
+@{tt}pip install -r requirements/optional.txt@{utt} or the install script
+again. The Docker image carries it.
 @endnode

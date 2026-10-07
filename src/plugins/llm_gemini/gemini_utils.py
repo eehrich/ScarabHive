@@ -1291,7 +1291,7 @@ def build_thinking_config(
         thinking_config["thinkingBudget"] = thinking_budget
 
     # thinking_level: for Gemini 3 models (minimal, low, medium, high)
-    # Keep lowercase - HTTP client will map to THINKING_LEVEL_X format if needed
+    # Keep lowercase - the HTTP client upper-cases it for the REST enum
     if thinking_level is not None:
         level = thinking_level.lower()
         if level not in ("minimal", "low", "medium", "high"):
@@ -1317,7 +1317,7 @@ def apply_retry_thinking_config(
 
     ALWAYS replaces the first attempt's thinkingConfig — keeping it when the
     reduction resolves to None silently undid the whole retry reduction.
-    Maps thinkingLevel to the THINKING_LEVEL_X wire format of the HTTP API.
+    Upper-cases thinkingLevel for the REST enum (LOW, HIGH, ...).
     Shared by the streaming and non-streaming retry loops in GeminiClient;
     the two hand-rolled copies of this block had already diverged once.
     """
@@ -1328,7 +1328,7 @@ def apply_retry_thinking_config(
     if thinking_config:
         if "thinkingLevel" in thinking_config:
             level = thinking_config["thinkingLevel"]
-            thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
+            thinking_config["thinkingLevel"] = level.upper()
         gen_cfg["thinkingConfig"] = thinking_config
     else:
         gen_cfg.pop("thinkingConfig", None)

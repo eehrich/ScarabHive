@@ -479,8 +479,9 @@ class StateGraphServer(SchemaBasedToolServer):
 
     async def send_event(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            result = self.service.send_event(_need(params, "run_id"), _need(params, "name"), params.get("data"),
-                                             params.get("frame"), user_id=params.get("_user_id"))
+            result = await self.service.deliver_event(_need(params, "run_id"), _need(params, "name"),
+                                                      params.get("data"), params.get("frame"),
+                                                      user_id=params.get("_user_id"))
             if not result.get("accepted"):
                 raise ServiceError(409, result.get("reason") or "not accepted")
             if not result.get("queued"):  # a read right after shows what the event started, not the old wait

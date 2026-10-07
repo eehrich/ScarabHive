@@ -1,0 +1,14 @@
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_send"
+      description: |
+        Send a plain-text mail to the configured recipients. Returns the addresses it went to.
+      parameters:
+        type: object
+        properties:
+          subject: {type: string, description: "One line, at most 200 characters"}
+          body: {type: string, description: "Plain text"}
+          to: {type: array, items: {type: string}, description: "Some of the configured recipients; leave out for all"}
+        required: [subject, body]
+        additionalProperties: false

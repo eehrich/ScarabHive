@@ -1,0 +1,170 @@
+@database "mail"
+@author "Enrico Ehrich"
+@$VER: mail.guide 1.0 (07.10.2026)
+@smartwrap
+
+@node main "Mail"
+@{h1}Mail
+
+Sends a plain-text mail over SMTP. An agent or a workflow calls one tool
+with a subject and a text, for example to tell you that a job has
+finished, what it made and where it lies, or why it failed. The mail goes
+only to the recipients you name in the server entry: the model can pick
+some of them, but it cannot write to any other address, not even when a
+web page it read tells it to.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  The send tool  " link tool}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node tool "The send tool"
+@{h1}The send tool
+
+@{tt}<instance>_send@{utt} sends one mail to some or all of the configured
+recipients. With the instance name @{tt}mail@{utt} the tool is
+@{tt}mail_send@{utt}.
+
+@{h2}Parameters
+
+@{table}
+Name | Meaning
+subject | required, one line of at most 200 characters; no line break of any kind, so nothing can be smuggled into the headers
+body | required, plain text of at most 100000 characters, sent as UTF-8; text that UTF-8 cannot hold (a lone surrogate) is refused
+to | optional, a list of addresses (a single string works too); each must be one of the configured recipients, compared without case. Left out or empty: all of them
+@{body}
+
+Every check runs before a connection is opened. The mail carries the
+configured sender in From, the chosen recipients in To, the date and a
+message id.
+
+@{h2}Answer
+
+@{code}
+{"status": "success", "sent_to": ["me@example.org"]}
+@{body}
+
+@{tt}sent_to@{utt} names the recipients as they stand in the configuration.
+When the SMTP server took the mail but refused some recipients, they are
+listed in @{tt}refused@{utt} beside the others. A mail that did not go out
+answers @{tt}{"status": "error", "error": ...}@{utt}.
+
+@{h2}Example
+
+@{code}
+mail_send(subject="Report ready", body="The weekly report is in data/reports/week41.md")
+@{body}
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The description and parameter texts come from @{tt}schema.yaml@{utt}:
+"Send a plain-text mail to the configured recipients. Returns the
+addresses it went to." The description names no address; the answer lists
+the ones the mail went to.
+
+Errors say what to change:
+
+@{bullet}"no SMTP server configured: set host in the mail server entry"
+@{bullet}"security: one of starttls, ssl, none in the mail server entry, not '...'"
+@{bullet}"no sender address configured: set sender (or username) in the mail server entry"
+@{bullet}"no recipients configured: set recipients in the mail server entry"
+@{bullet}"subject is required: one line of at most 200 characters"
+@{bullet}"body is required: plain text of at most 100000 characters"
+@{bullet}"to: only configured recipients can be written to; leave it out to write to all of them"
+@{bullet}"the SMTP server refused the login (<code> <the server's words>): check
+username and password", for example Gmail's "534 5.7.9 Application-specific
+password required". The plugin logs in once, with the first of CRAM-MD5,
+PLAIN and LOGIN the server offers (smtplib's own order; CRAM-MD5 sends no
+password): a server that hangs up on a second attempt would hide its
+answer to the first.
+@{bullet}"the SMTP server refused every recipient: ..."
+@{bullet}"mail not sent: SMTP sends the username, the password and the
+addresses as ASCII" when one of them holds other characters; the
+password is never repeated in an answer.
+@{bullet}"mail not sent: <error type>: <what happened>" when the server cannot be
+reached, the TLS handshake fails, the connection times out or the server
+answers otherwise.
+
+The chat's status line ends with "Mail to <n> recipient(s): <subject>".
+
+@{h2}Tokens and cache
+
+The answer is an ordinary tool result of one line. It is appended, and
+nothing earlier changes.
+
+@{h2}Known gaps
+
+@{bullet}Plain text only: no HTML and no attachments. A file is named by its
+path in the text.
+@{bullet}One attempt: a server that is down is not tried again. The caller
+decides whether to send once more.
+@{bullet}Recipients are bare addresses. A display name ("Name <a\@b.org>")
+in the recipient list is not supported.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+@{h2}The server entry
+
+The plugin is off in the default configuration (@{tt}config/plugins.yaml@{utt}).
+Switch it on where you keep your own settings, for example in
+@{tt}config/local.yaml@{utt}, and name your SMTP server and the
+recipients:
+
+@{code yaml}
+plugins:
+  servers:
+    mail:
+      type: mail
+      enabled: true
+      host: smtp.example.org
+      username: bot@example.org
+      password: "${MAIL_PASSWORD}"
+      recipients: [me@example.org]
+@{body}
+
+Put the password into @{tt}config/secrets.env@{utt} as
+@{tt}MAIL_PASSWORD=...@{utt}; the configuration fills in
+@{tt}${MAIL_PASSWORD}@{utt} from there. For Gmail, the host is
+@{tt}smtp.gmail.com@{utt} and the password an app password (Google
+account, Security, App passwords; it needs two-step verification).
+
+@{h2}The allowlist
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+mail/*"
+@{body}
+
+A workflow reaches the tool through its runner agent, whose allowlist
+needs the same line.
+
+@{h2}Server settings
+
+@{table}
+Key | Default in code | Meaning
+host | (none) | the SMTP server; without it every call answers with an error
+security | starttls | starttls (plain connection, then TLS), ssl (TLS from the start) or none; with none a login sends the password unencrypted, so use it only for a server on your own machine or network
+port | 587, 465 for ssl, 25 for none | the server's port
+username | (none) | the login; empty means no login
+password | (none) | the login's password, best "${MAIL_PASSWORD}"
+sender | the username | the From address, also "Name <address>"
+recipients | (none) | the addresses the tool may write to: a list, or one string with commas
+timeout_s | 30 | seconds for the connection and each answer of the server
+@{body}
+
+The TLS connection checks the server's certificate against the system's
+trusted authorities. The plugin keeps no data.
+@endnode

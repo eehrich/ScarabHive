@@ -129,7 +129,9 @@ class ServerDecl:
         the instance's own ToolServerConfig metadata first, then the plugin manifest,
         else private (not visible; secure by default)."""
         metadata = self.server_config.metadata
-        if metadata and metadata.visibility:
+        # named, not merely defaulted: the field defaults to private, so any
+        # metadata block (a min_role, an author) would otherwise hide the manifest's
+        if metadata and "visibility" in metadata.model_fields_set:
             return metadata.visibility
         if self.plugin_metadata:
             declared = self.plugin_metadata.get("visibility")
@@ -530,7 +532,6 @@ class Runtime:
             from .plugins.tool_adapter import plugin_tool_registry
             plugin_tool_registry.register_existing_plugin_instance(
                 name, instance, self.config, decl.server_config)
-            logger.debug(f"Registered plugin '{name}' in both registries (ToolServerRegistry + PluginToolRegistry)")
 
             decl.apply_to(instance, self.registry)
         if self._session_service is not None:

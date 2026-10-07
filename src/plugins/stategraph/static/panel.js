@@ -2368,7 +2368,7 @@ function drawDebugBar() {
   bar.dataset.status = run.status;
   const paused = run.debug?.paused;
   const live = liveRun();
-  // held by another process: the server hands pause, continue, step and terminate over to it (a second at most)
+  // held by another process: the server hands its events, pause, continue, step and terminate over to it (a second at most)
   const elsewhere = !run.active && ['running', 'waiting', 'paused'].includes(run.status);
   // run_to stops on a state's enter hook: offer only states that have one
   const states = (S.machine?.graph?.states || []).filter((s) => hooksOf(s).hooks.includes('enter')).map((s) => s.name);
@@ -2394,7 +2394,7 @@ function drawDebugBar() {
     ${run.machine_id !== S.machine?.id ? frameChoice(run) : ''}
     ${paused ? html`<span title="${paused.reason}">paused at <span class="pk-mono">${paused.state ?? '—'}</span> (${paused.hook}${paused.frame ? `, frame ${paused.frame}` : ''})</span>` : ''}
     ${!paused && run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span></span>` : ''}
-    ${elsewhere ? html`<span class="pk-muted" title="Shown from its journal; pause, continue, step and terminate reach it within a second -- run to, breakpoints and edits only in its own process">in another process</span>` : ''}
+    ${elsewhere ? html`<span class="pk-muted" title="Shown from its journal; its events, pause, continue, step and terminate reach it within a second -- run to, breakpoints and edits only in its own process">in another process</span>` : ''}
     ${S.pollError ? html`<span class="pk-text--warn" title="${S.pollError}">${icon('circle-alert', { size: 'sm' })} not refreshed</span>` : ''}
     <span class="pk-grow"></span>
     <button type="button" class="pk-btn pk-btn--sm" data-control="continue" ${can.resume ? '' : 'disabled'} title="Continue">${icon('play', { size: 'sm' })} Continue</button>

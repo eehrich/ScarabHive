@@ -1,8 +1,9 @@
 // The chat's half of tool_approval, and the line for a call that did not run.
 //
 // A pre_tool_call hook that asks the person watching the run sends a status line
-// with `meta.tool_approval`; the chat puts the answer buttons on that line's row
-// and takes them down with the row's last line. A call a hook blocked sends a
+// with `meta.tool_approval` -- the question's form, as every kind of question
+// carries it; the chat puts the box drawn from it (questionBox) on that line's row
+// and takes it down with the row's last line. A call a hook blocked sends a
 // `tool_error` event and nothing else -- no status scope, no tool_call -- so the
 // chat draws a line of its own for it, or the call is nowhere on the page.
 //
@@ -20,7 +21,8 @@ const SOURCE = fs.readFileSync(path.join(__dirname, '..', '..', 'static', 'js', 
 
 /** The text of `function <name>(...) { ... }` at the module's own indent. */
 function functionSource(name) {
-  const start = SOURCE.indexOf(`\n  function ${name}(`);
+  const plain = SOURCE.indexOf(`\n  function ${name}(`);
+  const start = plain >= 0 ? plain : SOURCE.indexOf(`\n  async function ${name}(`);
   assert.ok(start >= 0, `${name} is not in chat_module.js`);
   const end = SOURCE.indexOf('\n  }\n', start);
   assert.ok(end > start, `the end of ${name} was not found`);
@@ -34,13 +36,12 @@ function load(name, scope) {
   return new Function(...names, `${functionSource(name)}\nreturn ${name};`)(...names.map((n) => scope[n]));
 }
 
-/** syncQuestionActions, with the functions of the module it reaches for (they moved out
- * of it when ask_user got a box of its own), handed the page's `document` and `postJSON`. */
+/** syncQuestionActions, with the functions of the module it reaches for, handed the page's
+ * `document` and `postJSON`. */
 function loadSync(scope) {
   const sendAnswer = load('sendAnswer', { postJSON: scope.postJSON });
-  const approvalBox = load('approvalBox', { document: scope.document, sendAnswer });
-  const askUserBox = load('askUserBox', { document: scope.document, sendAnswer });
-  return load('syncQuestionActions', { approvalBox, askUserBox });
+  const questionBox = load('questionBox', { document: scope.document, sendAnswer });
+  return load('syncQuestionActions', { questionBox });
 }
 
 class Element {
@@ -93,16 +94,23 @@ class Element {
 const document = { createElement: (tag) => new Element(tag) };
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function question(extra) {
+/** An approval as tool_approval asks it: its form (broker.ApprovalQuestion.form). */
+function question(form, extra) {
   return Object.assign({
-    id: 'a1b2c3d4e5f60718', tool: 'terminal_execute', arguments: '{"command": "ls"}',
-    answer_url: '/plugins/tool_approval/answer', decisions: ['allow_once', 'allow_session', 'deny'],
+    id: 'a1b2c3d4e5f60718', answer_url: '/plugins/tool_approval/answer',
+    form: Object.assign({
+      prompt: 'Approve terminal_execute?', detail: '{"command": "ls"}', warning: null,
+      choices: [{ value: 'allow_once', label: 'Allow once', tone: 'primary' },
+                { value: 'allow_session', label: 'Allow for this session' },
+                { value: 'deny', label: 'Deny', tone: 'danger' }],
+      multi_select: false, text: { label: 'Why not (sent to the agent with Deny)', alone: false, max_chars: 1000 },
+    }, form || {}),
   }, extra || {});
 }
 
-function asking(extra) {
+function asking(form, extra) {
   return { type: 'status', phase: 'progress', request_id: 'r1_approval_a1b2c3d4e5f60718',
-           message: 'Approve terminal_execute?', meta: { tool_approval: question(extra) } };
+           message: 'Approve terminal_execute?', meta: { tool_approval: question(form, extra) } };
 }
 
 async function testTheQuestionGetsItsButtonsOnce() {
@@ -113,18 +121,23 @@ async function testTheQuestionGetsItsButtonsOnce() {
   sync(row, asking());
   sync(row, asking());   // asked again: no second set
 
-  assert.strictEqual(row.all('approval-actions').length, 1, 'the question got its buttons twice');
-  const box = row.querySelector(':scope > .approval-actions');
-  assert.strictEqual(box.querySelector('.approval-arguments').textContent, '{"command": "ls"}');
-  const buttons = box.all('pk-btn');
+  assert.strictEqual(row.all('question-actions').length, 1, 'the question got its buttons twice');
+  const box = row.querySelector(':scope > .question-actions');
+  assert.strictEqual(box.querySelector('.question-prompt').textContent, 'Approve terminal_execute?');
+  assert.strictEqual(box.querySelector('.question-detail').textContent, '{"command": "ls"}');
+  const buttons = box.all('question-choice');
   assert.deepStrictEqual(buttons.map((b) => b.textContent), ['Allow once', 'Allow for this session', 'Deny']);
+  assert.deepStrictEqual(buttons.map((b) => ['pk-btn--primary', 'pk-btn--danger'].filter((c) => b.classList.contains(c))),
+    [['pk-btn--primary'], [], ['pk-btn--danger']], 'the tones were not set apart');
+  assert.strictEqual(box.querySelector('.question-send'), null, 'a reason alone was offered as an answer');
+  assert.strictEqual(box.querySelector('.question-text').maxLength, 1000, 'a reason longer than the kind takes could be typed');
 
-  box.querySelector('.approval-reason').value = 'only this once';
-  await buttons[1].listeners.click();
+  box.querySelector('.question-text').value = 'use the staging copy';
+  await buttons[2].listeners.click();
   assert.deepStrictEqual(posted, [['/plugins/tool_approval/answer',
-    { question_id: 'a1b2c3d4e5f60718', decision: 'allow_session', reason: 'only this once' }]]);
+    { question_id: 'a1b2c3d4e5f60718', choices: ['deny'], text: 'use the staging copy' }]]);
   assert.ok(buttons.every((b) => b.disabled), 'the buttons stayed live after the answer was taken');
-  assert.strictEqual(box.querySelector('.approval-note').textContent, 'Answered: Allow for this session');
+  assert.strictEqual(box.querySelector('.question-note').textContent, 'Answered: Deny, use the staging copy');
 }
 
 async function testTheRowsLastLineTakesTheButtonsDown() {
@@ -132,40 +145,32 @@ async function testTheRowsLastLineTakesTheButtonsDown() {
   for (const phase of ['end', 'error']) {
     const row = new Element('div');
     sync(row, asking());
-    assert.ok(row.querySelector(':scope > .approval-actions'), 'fixture: no buttons to take down');
+    assert.ok(row.querySelector(':scope > .question-actions'), 'fixture: no buttons to take down');
     sync(row, { type: 'status', phase, request_id: 'r1_approval_x', message: 'terminal_execute: denied', meta: {} });
-    assert.strictEqual(row.querySelector(':scope > .approval-actions'), null, `a ${phase} line left the buttons`);
+    assert.strictEqual(row.querySelector(':scope > .question-actions'), null, `a ${phase} line left the buttons`);
   }
 }
 
-async function testAShortenedPreviewSaysSo() {
+async function testTheWarningIsShownWhereThereIsOne() {
+  // what allowing gives up -- a spawn without approvals, a preview shortened in the middle
   const sync = loadSync({ document, postJSON: async () => ({}) });
-  const cut = new Element('div');
-  sync(cut, asking({ arguments: 'content: "yy … 9000 characters … yy"\npath: "/x"', arguments_cut: true }));
-  assert.ok(cut.querySelector('.approval-cut'), 'a shortened preview was shown as the whole call');
-  const whole = new Element('div');
-  sync(whole, asking());
-  assert.strictEqual(whole.querySelector('.approval-cut'), null, 'a whole preview was called shortened');
+  const row = new Element('div');
+  sync(row, asking({ warning: "agent 'coder' runs WITHOUT tool approvals\nLong values are shortened in the middle" }));
+  const warning = row.querySelector('.question-warning');
+  assert.ok(warning, 'the warning was not shown');
+  assert.ok(warning.textContent.includes('WITHOUT tool approvals') && warning.textContent.includes('shortened'));
+  const plain = new Element('div');
+  sync(plain, asking());
+  assert.strictEqual(plain.querySelector('.question-warning'), null, 'a warning where none was sent');
 }
 
 async function testOnlyTheOfferedAnswersGetButtons() {
   const sync = loadSync({ document, postJSON: async () => ({}) });
   const script = new Element('div');
-  sync(script, asking({ decisions: ['allow_once', 'deny'] }));
-  assert.deepStrictEqual(script.all('pk-btn').map((b) => b.textContent), ['Allow once', 'Deny'],
-    'a script was offered for the session');
-}
-
-async function testASpawnWithoutApprovalsIsAskedWithItsWarning() {
-  const sync = loadSync({ document, postJSON: async () => ({}) });
-  const row = new Element('div');
-  sync(row, asking({ warning: "agent 'coder' runs WITHOUT tool approvals: the rules of this run do not apply to its calls." }));
-  const warning = row.querySelector('.approval-warning');
-  assert.ok(warning, 'the warning was not shown');
-  assert.ok(warning.textContent.includes('WITHOUT tool approvals'));
-  const plain = new Element('div');
-  sync(plain, asking());
-  assert.strictEqual(plain.querySelector('.approval-warning'), null, 'a warning where none was sent');
+  sync(script, asking({ choices: [{ value: 'allow_once', label: 'Allow once', tone: 'primary' },
+                                  { value: 'deny', label: 'Deny', tone: 'danger' }, 'junk', { label: 'no value' }] }));
+  assert.deepStrictEqual(script.all('question-choice').map((b) => b.textContent), ['Allow once', 'Deny'],
+    'a script was offered for the session, or a choice without a value was drawn');
 }
 
 async function testARowLeftOpenAtTheRunsEndLosesItsButtons() {
@@ -178,11 +183,11 @@ async function testARowLeftOpenAtTheRunsEndLosesItsButtons() {
   icon.className = 'progress-icon';
   row.append(icon, line);
   sync(row, asking());
-  assert.ok(row.querySelector(':scope > .approval-actions'), 'fixture: no buttons');
+  assert.ok(row.querySelector(':scope > .question-actions'), 'fixture: no buttons');
   const activeOperations = new Map([['r1_approval_a1b2c3d4e5f60718', row]]);
   const mark = load('markOpenScopesUnfinished', { activeOperations, document });
   mark();
-  assert.strictEqual(row.querySelector(':scope > .approval-actions'), null, 'the buttons outlived the run');
+  assert.strictEqual(row.querySelector(':scope > .question-actions'), null, 'the buttons outlived the run');
   assert.ok(row.classList.contains('unfinished'));
 }
 
@@ -194,12 +199,12 @@ async function testARefusedAnswerSaysWhyAndOnlyA404IsFinal() {
   });
   const row = new Element('div');
   sync(row, asking());
-  const box = row.querySelector(':scope > .approval-actions');
-  const [allow] = box.all('pk-btn');
+  const box = row.querySelector(':scope > .question-actions');
+  const [allow] = box.all('question-choice');
 
   await allow.listeners.click();
   assert.ok(!allow.disabled, 'a 403 left no second try');
-  assert.ok(box.querySelector('.approval-note').textContent.includes('may answer'));
+  assert.ok(box.querySelector('.question-note').textContent.includes('may answer'));
 
   status = 404;
   await allow.listeners.click();
@@ -211,12 +216,26 @@ async function testOnlyAnAnswerPathOnThisServerIsTaken() {
   for (const url of ['https://elsewhere.example/steal', '//elsewhere.example/x', '/api/requests/r1/cancel',
                      '/plugins/../api/requests/r1/cancel', '/plugins/tool_approval/answer?x=1']) {
     const row = new Element('div');
-    sync(row, asking({ answer_url: url }));
-    assert.strictEqual(row.querySelector(':scope > .approval-actions'), null, `buttons that post to ${url}`);
+    sync(row, asking({}, { answer_url: url }));
+    assert.strictEqual(row.querySelector(':scope > .question-actions'), null, `buttons that post to ${url}`);
   }
   const plain = new Element('div');
   sync(plain, { type: 'status', phase: 'progress', request_id: 'r1_003', message: 'reading', meta: {} });
   assert.strictEqual(plain.children.length, 0, 'an ordinary status line got buttons');
+  const formless = new Element('div');   // a question that does not say how to draw it
+  sync(formless, { type: 'status', phase: 'progress', request_id: 'r1_004', message: 'x',
+                   meta: { tool_approval: question({}, { form: undefined }), note: 'x' } });
+  assert.strictEqual(formless.children.length, 0, 'a question without a form got buttons');
+}
+
+async function testARefusedBodyReadsAsText() {
+  // FastAPI refuses a body that does not fit with a list: the note says what each entry says
+  const getJSON = load('getJSON', { fetch: async () => ({
+    ok: false, status: 422, statusText: 'Unprocessable Entity',
+    json: async () => ({ detail: [{ loc: ['body', 'text'], msg: 'String should have at most 100000 characters' }] }),
+  }) });
+  await assert.rejects(getJSON('/plugins/tool_approval/answer'),
+    (error) => error.message === 'String should have at most 100000 characters' && error.status === 422);
 }
 
 async function testABlockedCallGetsALineOfItsOwn() {
@@ -269,8 +288,8 @@ async function testAToolErrorReachesItsLine() {
 
 (async () => {
   const tests = [testTheQuestionGetsItsButtonsOnce, testTheRowsLastLineTakesTheButtonsDown,
-    testAShortenedPreviewSaysSo, testARowLeftOpenAtTheRunsEndLosesItsButtons,
-    testASpawnWithoutApprovalsIsAskedWithItsWarning, testOnlyTheOfferedAnswersGetButtons,
+    testTheWarningIsShownWhereThereIsOne, testARowLeftOpenAtTheRunsEndLosesItsButtons,
+    testOnlyTheOfferedAnswersGetButtons, testARefusedBodyReadsAsText,
     testARefusedAnswerSaysWhyAndOnlyA404IsFinal, testOnlyAnAnswerPathOnThisServerIsTaken,
     testABlockedCallGetsALineOfItsOwn, testAToolErrorReachesItsLine];
   // That the chat marks the runs it starts as attended: chat_commands_web.test.js,

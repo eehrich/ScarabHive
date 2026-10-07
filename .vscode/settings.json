@@ -1,8 +1,6 @@
 {
   "python.testing.pytestEnabled": true,
-  "python.testing.pytestArgs": [
-    "tests"
-  ],
+  "python.testing.pytestArgs": [],
   "editor.wordWrap": "on",
   "python.testing.unittestEnabled": false,
   "terminal.integrated.defaultProfile.windows": "Git Bash",

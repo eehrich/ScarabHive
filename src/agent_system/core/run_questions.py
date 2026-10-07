@@ -1,7 +1,8 @@
 """Questions a run puts to the person watching it, and the wait for the answer.
 
-Two things ask that person: tool_approval's pre_tool_call hook (may this call
-run?) and the ask_user tool (what the model wants to know). Both use what is
+Three things ask that person: tool_approval's pre_tool_call hook (may this
+call run?), the ask_user tool (what the model wants to know) and a state
+machine's wait (stategraph ``wait_questions``: which event?). All use what is
 here:
 
 * ``QuestionBroker`` -- the open questions by id. The asker opens one and
@@ -26,10 +27,10 @@ above it, while a tab reads it.
 
 A question describes itself in one form any client can draw
 (``Question.form``), and takes an answer in one form any client can send
-(``QuestionBroker.take``): ``agent-cli chat`` draws every kind from it and
-hands the answer to ``answer_question`` in its own process. The web chat does
-not yet: it draws the two kinds it knows (ask_user, tool_approval) with boxes
-of their own and posts to their own routes -- a new kind needs a box there.
+(``QuestionBroker.take``). Both chats draw every kind from it alone: the web
+chat (``questionBox``) posts the answer to the asker's route
+(``api.question_routes``), ``agent-cli chat`` hands it to ``answer_question``
+in its own process. A new kind needs no code in either.
 """
 from __future__ import annotations
 
@@ -104,9 +105,11 @@ class Question:
 
         ``prompt`` what is asked; ``detail`` text shown as it is (a call's arguments), or None;
         ``warning`` what answering gives up, or None; ``choices`` ``[{"value", "label"}]`` to pick
-        from (``value`` is what the answer names); ``multi_select`` whether several may be picked;
+        from (``value`` is what the answer names), each with an optional ``tone`` -- ``primary``
+        or ``danger``: how a client may set it apart; ``multi_select`` whether several may be picked;
         ``text`` ``{"label", "alone"}`` when the person may write something -- ``alone``: the
-        text answers without a choice -- or None.
+        text answers without a choice; an optional ``max_chars``: the longest the kind takes --
+        or None.
 
         Every kind of question has one: a question only one client can draw is one the
         person at the other cannot answer.

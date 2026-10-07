@@ -430,6 +430,16 @@ async def test_a_question_that_cannot_be_put_leaves_the_caller_waiting_on(monkey
     await asker.close()
 
 
+def test_words_nested_deeper_than_the_parser_goes_are_sent_as_words():
+    """A written answer is JSON when it reads as JSON: brackets nested past the parser's depth are text, not a 500."""
+    from plugins.stategraph.wait_questions import data_of
+
+    deep = "[" * 5000 + "]" * 5000
+
+    assert data_of(deep) == deep
+    assert data_of(' {"a": [1]} ') == {"a": [1]} and data_of("  ") is None
+
+
 def test_an_answer_to_a_wait_the_run_has_left_is_refused_and_sends_nothing():
     """The run moves on before its caller looks again: the event would wait in the inbox for the next wait."""
     from plugins.stategraph.wait_questions import Offer, WaitBroker, WaitQuestion

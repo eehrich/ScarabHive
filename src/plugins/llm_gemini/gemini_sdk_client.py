@@ -133,7 +133,7 @@ class GeminiSDKClient(LLMClient):
             thinking_budget: Token budget for thinking (Gemini 2.5 models)
             thinking_level: Thinking level: minimal, low, medium, high (Gemini 3 models)
             safety_settings: Gemini safety settings: {HarmCategory: HarmBlockThreshold}
-            **extra_params: Additional generation parameters (temperature, top_p, etc.)
+            **extra_params: Additional generation parameters (temperature)
         """
         self.model = model
         self.model_name = model  # For token tracking compatibility
@@ -335,11 +335,9 @@ class GeminiSDKClient(LLMClient):
             retry_thinking_budget: Override thinking budget for retry (Gemini 2.5)
             retry_thinking_level: Override thinking level for retry (Gemini 3)
         """
-        config = types.GenerateContentConfig(
-            temperature=self.extra_params.get("temperature", 1.0),
-            top_p=self.extra_params.get("top_p", 0.95),
-            top_k=self.extra_params.get("top_k", 40),
-        )
+        # Sampling only when the entry sets it (None is not sent): Google ignores it since
+        # Gemini 3.6 Flash, and upcoming models answer it with a 400.
+        config = types.GenerateContentConfig(temperature=self.extra_params.get("temperature"))
         
         # Set max output tokens if specified
         max_tokens = self.extra_params.get("max_tokens")

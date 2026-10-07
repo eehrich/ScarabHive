@@ -28,6 +28,8 @@ MAX_REASON_CHARS = 1000
 
 #: The decisions as the person reads them.
 DECISION_LABELS = {ALLOW_ONCE: "Allow once", ALLOW_SESSION: "Allow for this session", DENY: "Deny"}
+#: How a client may set a decision apart: the narrow allow first, the refusal as one.
+DECISION_TONES = {ALLOW_ONCE: "primary", DENY: "danger"}
 #: Said where the preview left out part of a long value.
 CUT_NOTE = "Long values are shortened in the middle -- check what the call writes before you allow it."
 
@@ -78,9 +80,12 @@ class ApprovalQuestion(Question):
         warnings = [note for note in (self.warning, CUT_NOTE if self.arguments_cut else None) if note]
         return {"prompt": f"Approve {self.tool}?", "detail": self.arguments_preview or None,
                 "warning": "\n".join(warnings) or None,
-                "choices": [{"value": decision, "label": DECISION_LABELS[decision]} for decision in self.decisions],
+                "choices": [{"value": decision, "label": DECISION_LABELS[decision],
+                             **({"tone": DECISION_TONES[decision]} if decision in DECISION_TONES else {})}
+                            for decision in self.decisions],
                 "multi_select": False,
-                "text": {"label": "Why not (sent to the agent with Deny)", "alone": False}}
+                "text": {"label": "Why not (sent to the agent with Deny)", "alone": False,
+                         "max_chars": MAX_REASON_CHARS}}
 
 
 class ApprovalBroker(QuestionBroker):

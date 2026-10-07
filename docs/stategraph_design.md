@@ -224,7 +224,7 @@ common keys.
 | `decide: noul\|choice\|score` | `question` (template); `criteria` (choice: `{option: meaning}` with ≥2 options; score: `[lowest, …, highest]` with ≥2; noul: optional `{true: …, false: …}`); `input` (template, the content to judge, not empty); `profile` (a decision profile of `llm_system.decision_profiles`; default: `llm_system.default_decision_profile`); or `by` (an agent decides instead of a decision model; not together with `profile`) with `advanced` and `parse_retries` (default 1) | `{value, confidence, probabilities}`. `value` is a probability (noul), an option (choice) or a scale point (score). `confidence` and `probabilities` may be `null`. |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`; `input`; `profile` or `by` | `{name: {value, confidence, probabilities}}`, from one call. |
 | `call: <companion function>` or `module:func` | `args` (template map) | The return value of `fn(**args)`, or `fn(sg, **args)` if its first parameter is named `sg`, which then receives the read-only scope, `sg.tool()` and `sg.Error`. Sync or async; a sync function runs in a worker thread (below). |
-| `callback: <event>` | `frame` (template); `expires` (a duration, default 168h, at most 720h) | `{url, event, expires}`: a URL that sends that event (one this machine declares) to this run, once, until it expires -- for a system outside (a mail, a webhook) to answer a wait. `POST` sends it (a JSON body `{"data": ...}` is its data; at most 64 KB); `GET` shows what it would send and sends nothing (mail scanners open links). Unknown, used and expired URLs, and those of a run that ended, all answer 404; a POST reads its body only for a URL that holds (counted as it comes, whatever its content-length says). Data that does not fit the event leaves the URL usable; a run no process runs is resumed first; a run another process holds cannot take it (409 -- which process, only the log says). The URL is `<public_url>/plugins/<instance>/callback?token=...`: the token in the query, so the path is one `network.remote_paths` (exact paths) can list; a URL made before, with the token in its path (`/callback/<token>`), still works. The URL is a bearer key: runs.db keeps the token's SHA-256 only (table `callbacks`; expired rows go as a new URL is made), but the URL itself lies in the clear wherever the out goes (journal, ctx, output, the run's session); the server's logs mask its token (`agent_system/utils/logging.py`, `loggable_path`). **A system outside reaches the route only once the operator opens `/plugins/<instance>/callback*` in both layers**: `allow_anonymous` in `auth.endpoint_security.rules` and in `auth.plugin_security.endpoint_rules`, each listed before a rule that matches the plugin's other routes, and, with `network.remote_paths` set, lists `/plugins/<instance>/callback` there (README, Security). |
+| `callback: <event>` | `frame` (template); `expires` (a duration, default 168h, at most 720h) | `{url, event, expires}`: a URL that sends that event (one this machine declares) to this run, once, until it expires -- for a system outside (a mail, a webhook) to answer a wait. `POST` sends it (a JSON body `{"data": ...}` is its data; at most 64 KB); `GET` shows what it would send and sends nothing (mail scanners open links). Unknown, used and expired URLs, and those of a run that ended, all answer 404; a POST reads its body only for a URL that holds (counted as it comes, whatever its content-length says). Data that does not fit the event leaves the URL usable; a run no process runs is resumed first; a run another process holds gets it through runs.db (§5.7): one its process does not take answers 409 (which process, only the log says), one it took without saying in time what came of it 202, and the URL is used -- the event most likely landed. The URL is `<public_url>/plugins/<instance>/callback?token=...`: the token in the query, so the path is one `network.remote_paths` (exact paths) can list; a URL made before, with the token in its path (`/callback/<token>`), still works. The URL is a bearer key: runs.db keeps the token's SHA-256 only (table `callbacks`; expired rows go as a new URL is made), but the URL itself lies in the clear wherever the out goes (journal, ctx, output, the run's session); the server's logs mask its token (`agent_system/utils/logging.py`, `loggable_path`). **A system outside reaches the route only once the operator opens `/plugins/<instance>/callback*` in both layers**: `allow_anonymous` in `auth.endpoint_security.rules` and in `auth.plugin_security.endpoint_rules`, each listed before a rule that matches the plugin's other routes, and, with `network.remote_paths` set, lists `/plugins/<instance>/callback` there (README, Security). |
 | `emit: <template>` | -- | The text. The run tells how far it is: a status line under its request (a machine agent's caller and the chat see it; its first 500 characters) and a message in its session. Journaled like any activity: a replay does not tell it again. Not external: it runs in a mock-only run. |
 | `machine: <import alias>` | `params` (template map) | The output of the final the submachine ends in. A `failed` final raises `submachine_failed` with `error.data` = that output. |
 | `parallel: {branch: <activity>}` | `fail: fast\|collect`; `join: all\|first\|{count: n}` | `{branch: out}`. With `join: first` or `{count}`: `{branch: out}` of the first branches that succeeded (in branch order); the rest is cancelled, a failed branch only counts against the quorum, and too many failures raise `join_failed` (`error.data` = `{branch: error}`). The join journals each branch's end as it sees it (`trace` rows `<child>:joined`, an activity's row keeps the seq it started with), so a resume takes the branches the recorded run took and replays the others into their ends. `fast`: the first failure cancels the other branches and is raised (with `error.branch`). `collect`: all branches run to the end, and `out[branch]` = `{status, out}` or `{status, error}`. Nothing is raised. |
@@ -477,8 +477,8 @@ impossible: a state waits only if it is a wait state (§2.3).
   reserved.
 - **Recording.** `send_event(run, name, data, frame=None)` checks `data` against the event's
   declared `data` schema, then writes an inbox row before it returns, so a received event
-  survives a restart. The run must be active in the process that receives the call; an
-  interrupted run is resumed first.
+  survives a restart. A run another process holds gets it through its row (§5.7); one no
+  process runs is refused (resume it first) -- a callback URL resumes it itself.
 - **Routing.**
   - Without `frame`, the event goes to the frame whose active configuration accepts it:
     some active state has a transition with that trigger.
@@ -883,14 +883,21 @@ A run executes as an asyncio task in the process that started it (usually the AP
   writing anything more. A heartbeat that finds its live run swept to `interrupted`
   restores the status together with the lease.
 - **Controls follow the lease.** Debugger commands, `set`, `evaluate` and events act in
-  the owning process only; a process that has lost the run refuses them ("another process
+  the owning process; a process that has lost the run refuses them ("another process
   owns run ... now"), and a debugger edit it could not journal leaves its context
-  unchanged. Another process asks for pause, continue, step or terminate through the run's
-  row (`control`, a request with its own id): the owner takes its runs' requests each second
+  unchanged. Another process asks for pause, continue, step, terminate or an event through
+  the run's row (`control`, a request with its own id): the owner takes its runs' requests each second
   (a partial index holds only the rows with one open) and carries them out; one it does not
   take within 5 s -- or whose asker stopped -- is withdrawn and refused (409). One request at a
   time: a second one while the first is open is refused, not written over it; a sweep or a
-  new owner drops a request nobody took. `run_to` and breakpoints need the owner's
+  new owner drops a request nobody took. An event wants an answer: the owner clears its
+  request in one transaction with `{"taken": true}` under the request's id in `control_answer`,
+  sends it to the run and writes what came of it there (keyed by the request's id, the last 16
+  kept, so the next request's answer does not replace one its asker has not read). The asker
+  reads it there. A request cleared without that mark (a sweep, a new owner, a holder that
+  takes no events) did not land: 409, and a callback URL stays usable. One taken whose answer
+  does not come within 5 s has an unknown outcome (409 "read the run before sending it again";
+  a callback URL answers 202 and stays used). `run_to` and breakpoints need the owner's
   machine to check them, `evaluate` and `set` an answer back: they stay in the owning process. Breakpoints of a run that no process holds a live lease on are stored in its
   row and apply when it is resumed; while another process holds it they are refused with
   that owner's name.
@@ -1136,7 +1143,8 @@ Runs are `user`'s, or nobody's. A wrong entry is logged at start and left out.
 Machines contain Python and run agents and tools.
 
 - **Routes.** `/plugins/stategraph/*` is admin-only (`auth.plugin_security`) -- the callback route too, until the
-  operator opens it (§2.5, `callback`).
+  operator opens it (§2.5, `callback`). `/plugins/stategraph/answer` and `/pending` are open to every user: they
+  answer and list only the waits of the caller's own runs (an admin's any; `api/question_routes.py`).
 - **Tools.** Every tool that validates, saves, runs, controls or sends events checks
   `params['_user_id']` in its handler: the user must be an active admin, or listed in the
   instance's `allowed_users`. `catalog`, `list_machines`, `get_machine` and `get_run` are
@@ -1283,8 +1291,8 @@ is configuration only (`story_designer_agent` plus `v4_sam.allowed_agents`, and
 
 ## 11. Known limits of the prototype
 
-- **Cross-process debugging.** Of a run another process holds, pause, continue, step and
-  terminate go through its row (§5.7); `run_to`, breakpoints, `evaluate` and `set` act only in
+- **Cross-process debugging.** Of a run another process holds, pause, continue, step,
+  terminate and events go through its row (§5.7); `run_to`, breakpoints, `evaluate` and `set` act only in
   the owning process.
 - **Browser tests.** The panel is checked for syntax and logic with JavaScriptCore (`jsc`), or
   with node where `jsc` is missing (`tests/js/node_jsc.mjs` gives node jsc's `print`, `load` and

@@ -4049,6 +4049,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
 def run() -> None:
     """Run the FastAPI server with proper configuration."""
+    from . import own_console
+    if own_console.needed():  # Windows: off the terminal's console first, or a stuck one freezes the server
+        raise SystemExit(own_console.relaunch("agent_system.app:run", []))
+
     # Set UTF-8 environment for Windows compatibility
     os.environ.setdefault('PYTHONUTF8', '1')
     os.environ.setdefault('PYTHONIOENCODING', 'utf-8')

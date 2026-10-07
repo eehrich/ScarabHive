@@ -200,13 +200,7 @@ class ToolDiscoveryService:
             # consulting the get() those tests steer.
             view = self.registry.describe(tool_name)
             if isinstance(view, ServerView):
-                if not view.tool_visible:
-                    logger.debug(
-                        f"Skipping agent '{tool_name}' in tool discovery "
-                        f"(not exposed as tool: _tool_visible=False)"
-                    )
-                    return False
-                return True
+                return bool(view.tool_visible)
 
             # Unbound registry, or a declaration that cannot answer for its
             # instance: the instance is the only source. Verbatim the old path.
@@ -214,10 +208,6 @@ class ToolDiscoveryService:
             if server and hasattr(server, '_tool_visible'):
                 visible = getattr(server, '_tool_visible', True)
                 if not visible:
-                    logger.debug(
-                        f"Skipping agent '{tool_name}' in tool discovery "
-                        f"(not exposed as tool: _tool_visible=False)"
-                    )
                     return False
             # No _tool_visible attribute → include as tool (backward compat)
             return True

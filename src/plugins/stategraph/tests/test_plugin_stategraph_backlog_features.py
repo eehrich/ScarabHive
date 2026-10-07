@@ -961,6 +961,25 @@ async def waiting_url(server) -> tuple[str, str]:
     return run_id, url
 
 
+async def test_a_callback_for_a_run_another_process_holds_lands_there(hive, tmp_path):
+    """agent-cli holds the run; the callback URL reaches the API: the event goes through the row to the holder."""
+    from agent_system.config.models import AgentSystemConfig
+    from plugins.stategraph.server import StateGraphServer
+    from plugins.stategraph.tests.stategraph_testkit import tool_config
+
+    server, _ = hive
+    run_id, url = await waiting_url(server)
+    other = StateGraphServer("stategraph", AgentSystemConfig(), tool_config(tmp_path, public_url="https://hive.test/"))
+    try:
+        assert run_id not in other.run_manager.live
+        sent = await other.service.use_callback(url.partition("?token=")[2], {"by": "mail"})
+    finally:
+        await other.stop_plugin()
+
+    assert sent == {"sent": "approve", "queued": False}, sent
+    assert (await settle(server.run_manager, run_id))["output"] == "mail"
+
+
 async def test_a_callback_url_sends_its_event_once_and_keeps_only_its_hash(hive):
     server, client = hive
     run_id, url = await waiting_url(server)
@@ -978,6 +997,20 @@ async def test_a_callback_url_sends_its_event_once_and_keeps_only_its_hash(hive)
     token = path.partition("?token=")[2]
     rows = server.run_store._db().execute("SELECT * FROM callbacks").fetchall()
     assert len(rows) == 1 and token not in str(dict(rows[0])), "the token is kept in clear"
+
+
+async def test_a_callback_whose_event_was_handed_over_without_an_answer_answers_202(hive, monkeypatch):
+    """Another process took it and did not say what came of it: accepted, not confirmed -- and not a refusal."""
+    server, client = hive
+    _, url = await waiting_url(server)
+
+    async def handed_over(token, data):
+        return {"sent": "approve", "queued": None, "outcome": "unknown"}
+
+    monkeypatch.setattr(server.service, "use_callback", handed_over)
+    sent = await client.post(url.removeprefix("https://hive.test"), json={"data": {"by": "mail"}})
+
+    assert (sent.status_code, sent.json()) == (202, {"sent": "approve", "queued": None, "outcome": "unknown"}), sent.text
 
 
 async def test_a_url_made_with_the_token_in_its_path_still_sends(hive):
@@ -1027,6 +1060,17 @@ async def test_data_that_does_not_fit_leaves_the_url_to_use_again(hive):
 
     assert (wrong.status_code, right.status_code) == (422, 200), (wrong.text, right.text)
     assert (await settle(server.run_manager, run_id))["output"] == "phone"
+
+
+async def test_a_body_nested_deeper_than_the_parser_goes_is_refused_and_the_url_holds(hive):
+    server, client = hive
+    run_id, url = await waiting_url(server)
+    path = url.removeprefix("https://hive.test")
+
+    deep = await client.post(path, content=b"[" * 5000 + b"]" * 5000, headers={"content-type": "application/json"})
+    right = await client.post(path, json={"data": {"by": "phone"}})
+
+    assert (deep.status_code, right.status_code) == (422, 200), (deep.text[:200], right.text)
 
 
 async def test_an_expired_or_unknown_url_is_not_found_and_a_big_body_refused(hive, monkeypatch):

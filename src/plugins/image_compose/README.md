@@ -12,7 +12,9 @@ tools tell how bright and busy an area is and find the calmest place for a block
 
 Enable it in `config/plugins.yaml` (`image_compose: {type: image_compose, enabled: true}`) and allow
 `+image_compose/*` in an agent's tool list. SVG layers need svglib/reportlab, cutouts need rembg (both
-installed with the plugin); font files go into `fonts/` (see its README).
+installed with the plugin); drawing an SVG also needs reportlab's cairo backend, an optional part of the
+install (`requirements/optional.txt`, built against cairo and pkg-config -- install.sh sets it up where it
+can). Font files go into `fonts/` (see its README).
 
 The full manual -- every layer field and answer, the path rules and size limits, the image agent, what the
 model sees and the server settings -- is the plugin's guide, `image_compose.guide`, in the Help panel.

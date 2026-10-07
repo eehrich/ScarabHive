@@ -1,50 +1,99 @@
 {
+  // Debug configurations for the Python Debugger extension (debugpy ships with it).
+  // The API runs through uvicorn directly, one process, as .claude/skills/verify starts it.
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "API (uvicorn)",
       "type": "debugpy",
       "request": "launch",
-      "name": "Launch Agent API (module)",
-      "module": "agent_system.app",
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "justMyCode": false
-    },
-    {
-      "type": "debugpy",
-      "request": "launch",
-      "name": "Agent CLI (module) — with args",
-      "module": "agent_system.cli",
+      "module": "uvicorn",
       "args": [
-        "${input:cliArgs}"
+        "agent_system.app:build_app",
+        "--factory",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "${input:apiPort}",
+        "--timeout-graceful-shutdown",
+        "5"
       ],
-      "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8:replace"
+      },
+      "console": "integratedTerminal",
       "justMyCode": false
     },
     {
+      "name": "agent-cli",
       "type": "debugpy",
       "request": "launch",
-      "name": "Debug pytest (module) — run single test or folder",
+      "module": "agent_system.agent_cli",
+      "args": "${command:pickArgs}",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8:replace"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "agent-run",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent_system.agent_run",
+      "args": "${command:pickArgs}",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8:replace"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "pytest: current file",
+      "type": "debugpy",
+      "request": "launch",
       "module": "pytest",
-      "args": [
-        "${input:pytestTest}"
-      ],
-      "console": "integratedTerminal",
+      "args": ["${file}", "-p", "no:cacheprovider"],
       "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8:replace"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "pytest: test, file or folder",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${input:pytestTarget}", "-p", "no:cacheprovider"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8:replace"
+      },
+      "console": "integratedTerminal",
       "justMyCode": false
     }
   ],
   "inputs": [
     {
+      "id": "apiPort",
       "type": "promptString",
-      "id": "cliArgs",
-      "description": "Arguments to pass to agent-cli (e.g. \"\"\"run 'my task' --option value\"\"\")"
+      "description": "Port for the API (8000 is the usual one; another, e.g. 8123, beside a running API)",
+      "default": "8000"
     },
     {
+      "id": "pytestTarget",
       "type": "promptString",
-      "id": "pytestTest",
-      "description": "pytest target to run (e.g. tests/test_cli.py::test_case or tests/)"
+      "description": "pytest target, e.g. tests/agent/test_run_questions.py::test_x or src/plugins/stategraph/tests"
     }
   ]
 }

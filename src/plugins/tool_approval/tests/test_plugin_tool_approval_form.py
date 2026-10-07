@@ -20,10 +20,11 @@ async def test_the_call_its_decisions_and_a_reason_for_deny_are_the_form():
 
     assert plain.to_public()["form"] == {
         "prompt": "Approve write_file?", "detail": '{"path": "a.txt"}', "warning": None,
-        "choices": [{"value": "allow_once", "label": "Allow once"},
+        "choices": [{"value": "allow_once", "label": "Allow once", "tone": "primary"},
                     {"value": "allow_session", "label": "Allow for this session"},
-                    {"value": "deny", "label": "Deny"}],
-        "multi_select": False, "text": {"label": "Why not (sent to the agent with Deny)", "alone": False}}
+                    {"value": "deny", "label": "Deny", "tone": "danger"}],
+        "multi_select": False, "text": {"label": "Why not (sent to the agent with Deny)", "alone": False,
+                                        "max_chars": 1000}}
     form = script.form()
     assert [c["value"] for c in form["choices"]] == ["allow_once", "deny"], "a decision not offered is drawn"
     assert form["warning"] == f"It runs without approvals.\n{CUT_NOTE}"

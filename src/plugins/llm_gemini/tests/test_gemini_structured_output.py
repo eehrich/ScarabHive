@@ -1,4 +1,5 @@
-"""Structured output on both Gemini routes: generationConfig.responseMimeType (+ responseJsonSchema).
+"""The generationConfig both Gemini routes send: structured output (responseMimeType +
+responseJsonSchema), and sampling only where the entry sets it.
 
 Both clients run against an httpx MockTransport -- the REST client's own requests, and the
 google-genai SDK's through ``HttpOptions(httpx_async_client=...)`` -- so what is asserted is the
@@ -113,3 +114,33 @@ async def test_a_model_entry_without_the_capability_sends_nothing(route, streami
     with pytest.raises(StructuredOutputUnsupported):
         await _ask(client, streaming, response_format=ResponseFormat(schema=SCHEMA))
     assert sent == []
+
+
+@pytest.mark.parametrize("route", ["rest", "sdk"])
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_sampling_goes_out_only_when_the_entry_sets_it(route, streaming, monkeypatch):
+    # Google ignores temperature/top_p/top_k since Gemini 3.6 Flash and upcoming models
+    # reject them with a 400; a fixed 1.0/0.95/40 went out on every request.
+    sent: list[dict] = []
+    caps = ModelCapabilitiesConfig(streaming=streaming)
+    client = _rest_client(caps, sent, monkeypatch) if route == "rest" else _sdk_client(caps, sent)
+    await _ask(client, streaming)
+    client.extra_params["temperature"] = 0.3
+    await _ask(client, streaming)
+
+    assert len(sent) == 2
+    assert not {"temperature", "topP", "topK"} & set(sent[0]["generationConfig"])
+    assert sent[1]["generationConfig"]["temperature"] == 0.3
+    assert not {"topP", "topK"} & set(sent[1]["generationConfig"])
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_the_rest_thinking_level_goes_by_its_enum_name(streaming, monkeypatch):
+    # The REST enum is LOW, HIGH, ...; "THINKING_LEVEL_LOW" was a 400 at Google (measured live).
+    # The SDK route serialises its own ThinkingLevel enum.
+    sent: list[dict] = []
+    client = _rest_client(ModelCapabilitiesConfig(streaming=streaming), sent, monkeypatch)
+    client.extra_params["thinking_level"] = "low"
+    await _ask(client, streaming)
+
+    assert sent[-1]["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "LOW"

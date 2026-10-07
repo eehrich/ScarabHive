@@ -623,7 +623,7 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
     from agent_system.servers.agent.components.server_resolution import resolve_longest_prefix
     from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 
-    from ..runners import DEFAULT_RUNNER, runner_names, runner_of
+    from plugins.stategraph.runners import DEFAULT_RUNNER, runner_names, runner_of
 
     servers = getattr(getattr(system_config, "plugins", None), "servers", None) or {}
     runners = runner_names(system_config, runner) | ({default_runner} if default_runner else set())

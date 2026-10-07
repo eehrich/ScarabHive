@@ -123,10 +123,10 @@ class TestApplyRetryThinkingConfig:
 
     def test_replaces_existing_config_and_maps_wire_format(self):
         payload = {"generationConfig": {
-            "thinkingConfig": {"thinkingLevel": "THINKING_LEVEL_HIGH"}}}
+            "thinkingConfig": {"thinkingLevel": "HIGH"}}}
         apply_retry_thinking_config(payload, {"thinkingLevel": "low"})
         assert payload["generationConfig"]["thinkingConfig"] == {
-            "thinkingLevel": "THINKING_LEVEL_LOW"}
+            "thinkingLevel": "LOW"}
 
     def test_none_pops_stale_config(self):
         # Keeping the stale config silently undid the whole retry reduction.

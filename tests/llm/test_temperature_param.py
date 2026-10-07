@@ -7,8 +7,8 @@ Kopier-Aufgabe. Die Tests sichern die drei Kanten ab, an denen so eine
 Durchreichung typischerweise bricht:
 
 1. ``0.0`` ist ein GÜLTIGER Wert und darf nicht als „nicht gesetzt" gelten.
-2. ``None`` darf NICHT in ``extra_params`` landen — der GeminiClient liest
-   ``extra_params.get("temperature", 1.0)`` und bekäme sonst ``None``.
+2. ``None`` must NOT land in ``extra_params``: without a configured value
+   no sampling field goes to the provider.
 3. Reasoning-Modelle lehnen den Param ab → bei ``thinking_level``/-budget
    wird er nicht gesendet (statt 400er zu riskieren).
 """
@@ -52,7 +52,7 @@ class TestClientWiring:
         client = make_llm(provider="openai_httpx", model="m", api_key="k")
         assert client.temperature is None
 
-    def test_gemini_default_not_overwritten_by_none(self):
+    def test_gemini_without_value_has_none(self):
         client = make_llm(provider="gemini", model="g", api_key="k")
         assert "temperature" not in client.extra_params
 
