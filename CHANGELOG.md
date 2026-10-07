@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the plugin warns at start. `install.sh` is executable in the
   repository.
 
+- The VS Code API tasks listen where the config says (`network.host`/`port`;
+  a machine opens the API to its network in `config/local.yaml`), not on a host
+  of their own: they start `app.run` as `agent-api` does. A stop of `agent-api`
+  no longer waits for every open stream (5 s, as the systemd unit), and its
+  access log reaches the terminal again (never `api.log`). `python -m
+  agent_system.app` served from a copy of the module the rest of the code
+  never saw -- a session lookup answered 503 off Windows; it starts as
+  `agent-api` now.
+
 ## [0.7.0] - 2026-10-06
 
 The first version published as open source. Changes before it are not

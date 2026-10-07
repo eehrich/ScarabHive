@@ -4083,10 +4083,14 @@ def run() -> None:
         port=port,
         log_level=uvicorn_log_level,
         access_log=config.logging.enabled,
+        timeout_graceful_shutdown=5,  # as the systemd unit: an open stream does not hold up a stop
         use_colors=False,
         log_config=None  # Disable uvicorn's logging config to preserve our setup
     )
 
 
 if __name__ == "__main__":
-    run()
+    # python -m agent_system.app runs this file as __main__, a module the rest of the code never imports: run()
+    # here would serve from globals (_session_service, ...) its lazy imports of agent_system.app never see.
+    from agent_system.own_console import api
+    api()

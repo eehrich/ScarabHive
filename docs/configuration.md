@@ -270,6 +270,13 @@ Use predefined VS Code tasks (`.vscode/tasks.json`):
 3. Choose:
    - `AgentSystem: Run API` - Start API server
    - `AgentSystem: Run API with Debug Output` - Debug mode
+
+     Both start `app.run` as `agent-api` does: host and port come from `network` in the config.
+     To reach the API from other machines, set `network.host: 0.0.0.0` in `config/local.yaml`
+     (this machine only, never in the repository), with your own `auth.secret_key`
+     (`python -m agent_system.config.local_layer signing-key` writes one into `config/local.env`
+     and points `config/local.yaml` at it); `network.remote_paths` limits what other machines
+     may reach.
    - `Python: Run all tests (venv)` - The whole suite (20+ minutes; see [Testing](#testing))
    - `Python: Ruff (check & fix)` - Lint code
    - `Python: Mypy (type check)` - Type checking

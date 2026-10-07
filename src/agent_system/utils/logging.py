@@ -396,11 +396,18 @@ def setup_logging(
         # Don't add handlers, they will inherit from root
         logger.propagate = True
 
-    # Special handling for uvicorn.access to prevent duplicate logs
-    # Uvicorn will create its own handlers, so we disable propagation
+    # uvicorn.access goes to the terminal only, never the logfile (a line per request). Started as
+    # `uvicorn --factory`, uvicorn gave it a handler of its own before this runs; started through
+    # uvicorn.run(log_config=None) -- agent-api, the VS Code tasks -- it has none, and uvicorn turns the
+    # access log off where it finds none: then it gets the console's.
     access_logger = logging.getLogger("uvicorn.access")
     access_logger.setLevel(lvl)
-    access_logger.propagate = False  # Prevent propagation to root to avoid duplicates
+    access_logger.propagate = False
+    for handler in [h for h in access_logger.handlers if getattr(h, "agent_console", False)]:
+        access_logger.removeHandler(handler)  # an earlier setup's
+    if not access_logger.handlers:
+        console_handler.agent_console = True  # type: ignore[attr-defined]
+        access_logger.addHandler(console_handler)
 
     # Config errors raised before this point had nowhere to go: every entry
     # point loads the config first and configures logging afterwards. Replay
