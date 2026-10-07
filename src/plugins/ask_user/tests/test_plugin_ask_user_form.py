@@ -22,8 +22,8 @@ async def test_the_options_and_an_answer_in_ones_own_words_are_the_form():
     assert picked.to_public()["form"] == {
         "prompt": "Which database?", "detail": None, "warning": None,
         "choices": [{"value": "Postgres", "label": "Postgres"}, {"value": "SQLite", "label": "SQLite"}],
-        "multi_select": True, "text": {"label": "Or answer in your own words", "alone": True}}
-    assert free.form()["choices"] == [] and free.form()["text"] == {"label": "Your answer", "alone": True}
+        "multi_select": True, "text": {"label": "Or answer in your own words", "alone": True, "max_chars": 4000}}
+    assert free.form()["choices"] == [] and free.form()["text"] == {"label": "Your answer", "alone": True, "max_chars": 4000}
 
 
 async def test_an_answer_in_the_common_form_goes_through_the_question_s_own_check():

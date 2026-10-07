@@ -247,7 +247,12 @@
       let detail = resp.status + ' ' + resp.statusText;
       try {
         const body = await resp.json();
-        if (body && body.detail) detail = body.detail;
+        // a refusal of the body itself (FastAPI's 422) is a list: what each entry says, not "[object Object]"
+        if (body && Array.isArray(body.detail)) {
+          detail = body.detail.map((d) => (d && typeof d.msg === 'string' ? d.msg : JSON.stringify(d))).join('; ');
+        } else if (body && body.detail) {
+          detail = body.detail;
+        }
       } catch (e) { /* not JSON -- keep the status line */ }
       const error = new Error(detail);
       error.status = resp.status;
@@ -2570,12 +2575,13 @@
   /**
    * The answer a question needs, on the row that asks it.
    *
-   * A run asks the person watching it with a status line whose meta names the question
-   * and where the answer goes: `meta.tool_approval` (a pre_tool_call hook asks whether a
-   * call may run) or `meta.ask_user` (the model asks something). The box stands while the
-   * row asks; the row's last line (end or error: answered, denied, timed out) takes it
-   * down, in every tab that shows the run. The asker sends the question again now and
-   * then, so a page reloaded mid-question gets its box back with the next line.
+   * A run asks the person watching it with a status line whose meta carries the question
+   * under its kind's key (`tool_approval`, `ask_user`, `stategraph`, ...): its id, its form
+   * (core/run_questions.py, Question.form) and where the answer goes. Every kind is drawn
+   * from its form alone, as agent-cli chat draws it: a plugin that asks needs no code here.
+   * The box stands while the row asks; the row's last line (answered, denied, timed out)
+   * takes it down, in every tab that shows the run. The asker sends the question again now
+   * and then, so a page reloaded mid-question gets its box back with the next line.
    *
    * The answer goes to the URL the line names -- a plugin's answer route on this server,
    * nothing else -- with the page's own sign-in, as every other request of the chat.
@@ -2587,13 +2593,13 @@
       if (open) open.remove();
       return;
     }
-    if (open || !ev.meta) return;
-    for (const [key, build] of [['tool_approval', approvalBox], ['ask_user', askUserBox]]) {
-      const ask = ev.meta[key];
+    if (open || !ev.meta || typeof ev.meta !== 'object') return;
+    for (const ask of Object.values(ev.meta)) {
       // A plugin's answer route and nothing else: `/plugins/../api/…` would reach any route.
-      if (!ask || typeof ask.id !== 'string' || typeof ask.answer_url !== 'string'
+      if (!ask || typeof ask !== 'object' || typeof ask.id !== 'string' || !ask.form
+          || typeof ask.form !== 'object' || typeof ask.answer_url !== 'string'
           || !/^\/plugins\/[A-Za-z0-9_-]+\/answer$/.test(ask.answer_url)) continue;
-      row.appendChild(build(ask));
+      row.appendChild(questionBox(ask));
       return;
     }
   }
@@ -2613,94 +2619,74 @@
       });
   }
 
-  /** tool_approval's box: the call's arguments, a reason for Deny, the decisions offered. */
-  function approvalBox(ask) {
-    const box = document.createElement('div');
-    box.className = 'question-actions approval-actions';
-    if (typeof ask.warning === 'string' && ask.warning) {
-      // what allowing gives up: a spawn whose calls no approval reaches
-      const warning = document.createElement('div');
-      warning.className = 'approval-warning';
-      warning.textContent = ask.warning;
-      box.appendChild(warning);
-    }
-    if (ask.arguments_cut) {
-      // every argument is there by name; only long values lost their middle
-      const warn = document.createElement('div');
-      warn.className = 'approval-cut';
-      warn.textContent = 'Long values are shortened in the middle -- check what the call writes before you allow it.';
-      box.appendChild(warn);
-    }
-    if (ask.arguments) {
-      const args = document.createElement('pre');
-      args.className = 'approval-arguments';
-      args.textContent = ask.arguments;  // what the model chose: data, never markup
-      box.appendChild(args);
-    }
-    const bar = document.createElement('div');
-    bar.className = 'approval-bar';
-    const reason = document.createElement('input');
-    reason.type = 'text';
-    reason.className = 'pk-input approval-reason';
-    reason.maxLength = 1000;
-    reason.placeholder = 'Why not (sent to the agent with Deny)';
-    const note = document.createElement('span');
-    note.className = 'approval-note';
-    // the answers the question offers: a script is allowed call by call, never for the session
-    const offered = Array.isArray(ask.decisions) ? ask.decisions : ['allow_once', 'allow_session', 'deny'];
-    const choices = [['allow_once', 'Allow once'], ['allow_session', 'Allow for this session'], ['deny', 'Deny']]
-      .filter(([decision]) => offered.includes(decision));
-    const buttons = choices.map(([decision, label]) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `pk-btn pk-btn--sm${decision === 'deny' ? ' pk-btn--danger' : (decision === 'allow_once' ? ' pk-btn--primary' : '')} approval-${decision}`;
-      button.textContent = label;
-      button.addEventListener('click', () => sendAnswer(
-        ask, { decision, reason: reason.value || '' }, [...buttons, reason], note, label));
-      bar.appendChild(button);
-      return button;
-    });
-    bar.append(reason, note);
-    box.appendChild(bar);
-    return box;
-  }
-
   /**
-   * ask_user's box: the model's question, its options -- a click sends one, boxes to tick
-   * where several may be picked -- and a field for an answer in one's own words, which
-   * goes along with a picked option too.
+   * A question's box, drawn from its form: what is asked, what answering gives up, text to
+   * read as it is (a call's arguments), the choices -- a click sends one, boxes to tick where
+   * several may be picked -- and a field for what the person writes. Words that answer on
+   * their own (`text.alone`, or a question without choices) go with Send or Enter; others go
+   * along with the choice clicked (a reason for Deny). All of it is the run's text: data,
+   * never markup.
    */
-  function askUserBox(ask) {
+  function questionBox(ask) {
+    const form = ask.form;
     const box = document.createElement('div');
-    box.className = 'question-actions ask-user-actions';
-    const question = document.createElement('div');
-    question.className = 'ask-user-question';
-    question.textContent = typeof ask.question === 'string' ? ask.question : '';  // the model's text: data, never markup
-    box.appendChild(question);
-    const options = Array.isArray(ask.options) ? ask.options.filter((o) => typeof o === 'string') : [];
-    const multi = ask.multi_select === true && options.length > 0;
-    const text = document.createElement('input');
-    text.type = 'text';
-    text.className = 'pk-input ask-user-text';
-    text.maxLength = 4000;
-    text.placeholder = options.length ? 'Or answer in your own words' : 'Your answer';
+    box.className = 'question-actions';
+    const shown = (tag, className, content) => {
+      if (typeof content !== 'string' || !content) return;
+      const part = document.createElement(tag);
+      part.className = className;
+      part.textContent = content;
+      box.appendChild(part);
+    };
+    shown('div', 'question-prompt', form.prompt);
+    shown('div', 'question-warning', form.warning);
+    shown('pre', 'question-detail', form.detail);
+    const choices = Array.isArray(form.choices)
+      ? form.choices.filter((c) => c && typeof c === 'object' && typeof c.value === 'string') : [];
+    const labelOf = (c) => (typeof c.label === 'string' && c.label ? c.label : c.value);
+    const multi = form.multi_select === true && choices.length > 0;
+    const words = form.text && typeof form.text === 'object' ? form.text : null;
+    const alone = !!words && (words.alone === true || !choices.length);
     const note = document.createElement('span');
-    note.className = 'approval-note';
-    const controls = [text];
+    note.className = 'question-note';
+    const controls = [];
+    let text = null;
+    if (words) {
+      text = document.createElement('input');
+      text.type = 'text';
+      text.className = 'pk-input question-text';
+      text.placeholder = typeof words.label === 'string' ? words.label : '';
+      // what the kind takes: more would be cut or refused after it was sent
+      if (Number.isInteger(words.max_chars) && words.max_chars > 0) {
+        text.maxLength = words.max_chars;
+        // the browser cuts a longer paste without a word: the person hears it before sending
+        const cut = `At most ${words.max_chars} characters: longer text is cut.`;
+        text.addEventListener('input', () => {
+          if (text.value.length >= words.max_chars) note.textContent = cut;
+          else if (note.textContent === cut) note.textContent = '';
+        });
+      }
+      controls.push(text);
+    }
+    const typed = () => (text ? text.value.trim() : '');
+    const send = (picked) => {
+      const said = choices.filter((c) => picked.includes(c.value)).map(labelOf);
+      return sendAnswer(ask, { choices: picked, text: typed() }, controls, note,
+        said.concat(typed() ? [typed()] : []).join(', '));
+    };
     const ticks = [];
-    const send = (choices, label) => sendAnswer(ask, { choices, text: text.value.trim() }, controls, note, label);
-    if (options.length) {
+    if (choices.length) {
       const list = document.createElement('div');
-      list.className = 'ask-user-options';
-      options.forEach((option) => {
+      list.className = 'question-choices';
+      choices.forEach((choice) => {
         if (multi) {
           const label = document.createElement('label');
-          label.className = 'ask-user-option';
+          label.className = 'question-choice';
           const tick = document.createElement('input');
           tick.type = 'checkbox';
-          tick.value = option;
+          tick.value = choice.value;
           const caption = document.createElement('span');
-          caption.textContent = option;
+          caption.textContent = labelOf(choice);
           label.append(tick, caption);
           ticks.push(tick);
           controls.push(tick);
@@ -2708,12 +2694,10 @@
         } else {
           const button = document.createElement('button');
           button.type = 'button';
-          button.className = 'pk-btn pk-btn--sm ask-user-option';
-          button.textContent = option;
-          button.addEventListener('click', () => {
-            const typed = text.value.trim();   // it goes along; the note says so, as for Send
-            return send([option], [option].concat(typed ? [typed] : []).join(', '));
-          });
+          const tone = choice.tone === 'primary' ? ' pk-btn--primary' : (choice.tone === 'danger' ? ' pk-btn--danger' : '');
+          button.className = `pk-btn pk-btn--sm${tone} question-choice`;
+          button.textContent = labelOf(choice);
+          button.addEventListener('click', () => send([choice.value]));
           controls.push(button);
           list.appendChild(button);
         }
@@ -2721,28 +2705,34 @@
       box.appendChild(list);
     }
     const bar = document.createElement('div');
-    bar.className = 'approval-bar';
-    const submit = document.createElement('button');
-    submit.type = 'button';
-    submit.className = 'pk-btn pk-btn--sm pk-btn--primary ask-user-send';
-    submit.textContent = 'Send';
-    submit.addEventListener('click', () => {
-      const picked = ticks.filter((t) => t.checked).map((t) => t.value);
-      const typed = text.value.trim();
-      if (!picked.length && !typed) {
-        note.textContent = multi ? 'Tick an option or write an answer.' : 'Write an answer first.';
-        return undefined;
+    bar.className = 'question-bar';
+    if (text) bar.appendChild(text);
+    if (multi || alone) {
+      // what is ticked, or written to answer alone, goes with Send -- and with Enter in the field
+      const submit = document.createElement('button');
+      submit.type = 'button';
+      submit.className = 'pk-btn pk-btn--sm pk-btn--primary question-send';
+      submit.textContent = 'Send';
+      submit.addEventListener('click', () => {
+        const picked = ticks.filter((t) => t.checked).map((t) => t.value);
+        if (!picked.length && !(alone && typed())) {
+          note.textContent = !multi ? 'Write an answer first.'
+            : (alone ? 'Tick an option or write an answer.' : 'Tick an option first.');
+          return undefined;
+        }
+        return send(picked);
+      });
+      if (text) {
+        text.addEventListener('keydown', (e) => {
+          if (e.key !== 'Enter' || e.isComposing) return;
+          e.preventDefault();
+          if (!submit.disabled) submit.click();
+        });
       }
-      return send(picked, picked.concat(typed ? [typed] : []).join(', '));
-    });
-    // Enter sends what is typed (and ticked), as the Send button does
-    text.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter' || e.isComposing) return;
-      e.preventDefault();
-      if (!submit.disabled) submit.click();
-    });
-    controls.push(submit);
-    bar.append(text, submit, note);
+      controls.push(submit);
+      bar.appendChild(submit);
+    }
+    bar.appendChild(note);
     box.appendChild(bar);
     return box;
   }

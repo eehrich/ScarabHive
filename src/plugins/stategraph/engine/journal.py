@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS runs (
     journal_format INTEGER,
     nesting TEXT,
     control TEXT,
+    control_answer TEXT,
     runner TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_key ON runs(run_key);
@@ -137,9 +138,13 @@ def _frames_from_journal(conn: sqlite3.Connection) -> None:
         raise
 
 
-_JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting", "control")
+_JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting", "control",
+                 "control_answer")
 #: Columns a runs.db from before them lacks: added when it is opened.
-_ADDED_COLUMNS = {"nesting": "TEXT", "control": "TEXT", "runner": "TEXT"}
+_ADDED_COLUMNS = {"nesting": "TEXT", "control": "TEXT", "runner": "TEXT", "control_answer": "TEXT"}
+#: Answers to event requests kept per run: one request at a time, each taken within a second, and its asker reads
+#: for a few seconds at most -- the last 16 hold every answer still read.
+ANSWERS_KEPT = 16
 
 
 def utc_now() -> str:
@@ -341,14 +346,68 @@ class RunStore:
             return "open" if row and row["control"] is not None and (row["lease_until"] or "") >= now else "unheld"
 
     def take_controls(self, owner: str) -> list[tuple[str, dict[str, Any]]]:
-        """The control requests for the runs ``owner`` holds, each cleared as it is taken."""
+        """The control requests for the runs ``owner`` holds, each cleared as it is taken -- an event's in one
+        transaction with ``{"taken": true}`` under its id: a sweep or a new owner clears a request too, and its
+        asker tells the event dropped from one taken that is still to be answered."""
         with self._lock:
             db = self._db()
             rows = db.execute("SELECT id, control FROM runs WHERE owner = ? AND control IS NOT NULL",
                               (owner,)).fetchall()
-            return [(row["id"], _loads(row["control"])) for row in rows
-                    if db.execute("UPDATE runs SET control = NULL WHERE id = ? AND control = ?",
-                                  (row["id"], row["control"])).rowcount]
+            taken = []
+            for row in rows:
+                request = _loads(row["control"])
+                try:
+                    db.execute("BEGIN IMMEDIATE")
+                    cleared = db.execute("UPDATE runs SET control = NULL WHERE id = ? AND control = ?",
+                                         (row["id"], row["control"])).rowcount
+                    if cleared and isinstance(request, dict) and request.get("action") == "event":
+                        self._put_answer(db, row["id"], str(request.get("id")), {"taken": True})
+                    db.execute("COMMIT")
+                except BaseException as exc:
+                    if db.in_transaction:  # SQLite may have rolled it back itself
+                        db.execute("ROLLBACK")
+                    if not taken or not isinstance(exc, Exception):
+                        raise
+                    # the ones taken before are cleared for good: they are carried out, this one waits for the next look
+                    logger.warning("stategraph: control request for run %s left for the next look: %s", row["id"], exc)
+                    break
+                if cleared:
+                    taken.append((row["id"], request))
+            return taken
+
+    def answer_control(self, run_id: str, request_id: str, answer: dict[str, Any]) -> None:
+        """What the process that took a request wanting an answer (an event) made of it, kept under the request's id
+        with the last few: the next request's answer does not replace one its asker has not read yet. One write
+        transaction, as the mark that it was taken: a process that lost the run since answers too, and must not
+        drop the new owner's mark."""
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                self._put_answer(db, run_id, request_id, answer)
+                db.execute("COMMIT")
+            except BaseException:
+                if db.in_transaction:
+                    db.execute("ROLLBACK")
+                raise
+
+    @staticmethod
+    def _put_answer(db: sqlite3.Connection, run_id: str, request_id: str, answer: dict[str, Any]) -> None:
+        row = db.execute("SELECT control_answer FROM runs WHERE id = ?", (run_id,)).fetchone()
+        answers = _loads(row["control_answer"]) if row is not None else None
+        answers = answers if isinstance(answers, dict) else {}
+        answers.pop(request_id, None)
+        answers[request_id] = answer
+        db.execute("UPDATE runs SET control_answer = ? WHERE id = ?",
+                   (_dumps(dict(list(answers.items())[-ANSWERS_KEPT:])), run_id))
+
+    def control_answer(self, run_id: str, request_id: str) -> Optional[dict[str, Any]]:
+        """The owner's answer to the request ``request_id``, once it is there."""
+        with self._lock:
+            row = self._db().execute("SELECT control_answer FROM runs WHERE id = ?", (run_id,)).fetchone()
+        answers = _loads(row["control_answer"]) if row is not None else None
+        answer = answers.get(request_id) if isinstance(answers, dict) else None
+        return answer if isinstance(answer, dict) else None
 
     def withdraw_control(self, run_id: str, request: dict[str, Any]) -> bool:
         """Take back a request its owner has not taken: whether it was still there."""

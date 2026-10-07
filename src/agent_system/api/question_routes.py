@@ -2,9 +2,14 @@
 
 A plugin that asks mounts them under its own prefix (``question_router``):
 
-``POST <prefix>/answer`` -- the answer; its body is the plugin's, with a
-``question_id``, and the plugin checks it against the question (``take``).
-``GET <prefix>/pending`` -- the open questions the caller may answer.
+``POST <prefix>/answer`` -- the answer in the form every client sends
+(``AnswerBody``: the question, the ``value`` of each choice picked, the text
+written); the question's kind checks it (``QuestionBroker.take``).
+``GET <prefix>/pending`` -- the open questions the caller may answer, each
+with its ``form`` and the ``answer_url`` to post to.
+
+Mounted at ``/plugins/<instance>``: the web chat posts an answer to
+``/plugins/<instance>/answer`` and to no other path (syncQuestionActions).
 
 Who may answer: the user the run belongs to, or an admin -- the rule the app
 applies to acting on a run (``_refuse_foreign_request``: stopping it, writing
@@ -15,19 +20,25 @@ Only a person's sign-in counts: an access token (Bearer or the chat's cookie),
 never an API key. A key belongs to a program, and a program that answers the
 questions put to a person makes the question pointless.
 
-No ``from __future__ import annotations`` here: the answer route's body type
-is the plugin's model, and FastAPI reads it from the annotation at definition.
+No ``from __future__ import annotations`` here: FastAPI reads the answer
+route's body type from the annotation at definition.
 """
-from typing import Any, Callable, Dict, Optional, Type
+from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent_system.auth.models import User, UserRole
 from agent_system.core.run_questions import NOT_WAITING, AnswerRejected, Question, QuestionBroker
 
-#: What ``take`` gets: the question, the posted body, and who answers ("anonymous" with auth off).
-TakeAnswer = Callable[[Question, Any, str], Dict[str, Any]]
+
+class AnswerBody(BaseModel):
+    """An answer as every client sends it. The bounds keep a request small; what fits
+    the question is the kind's own check (``take``)."""
+
+    question_id: str = Field(min_length=1, max_length=64)
+    choices: List[Annotated[str, Field(max_length=1000)]] = Field(default_factory=list, max_length=64)
+    text: str = Field(default="", max_length=100_000)
 
 
 def auth_enabled(request: Request) -> bool:
@@ -60,26 +71,26 @@ def may_answer(enabled: bool, user: Optional[User], question: Question) -> bool:
     return question.owner is not None and user.username == question.owner
 
 
-def question_router(prefix: str, broker: QuestionBroker, answer_url: str,
-                    body_model: Type[BaseModel], take: TakeAnswer) -> APIRouter:
+def question_router(prefix: str, broker: QuestionBroker, answer_url: str) -> APIRouter:
     """``/answer`` and ``/pending`` under ``prefix`` for the questions of
-    ``broker``. ``body_model`` has a ``question_id``; ``take`` hands the
-    question its answer (raising AnswerRejected when the body does not fit it)
-    and returns what the route answers."""
+    ``broker``: the answer goes to the kind's ``take``, which refuses what does
+    not fit the question (AnswerRejected)."""
     router = APIRouter(prefix=prefix)
 
-    async def answer(request: Request, body: body_model) -> Dict[str, Any]:  # type: ignore[valid-type]
+    async def answer(request: Request, body: AnswerBody) -> Dict[str, Any]:
         """Hand a waiting question a person's answer."""
         user = await person(request)
-        question = broker.get(body.question_id)  # type: ignore[attr-defined]
+        question = broker.get(body.question_id)
         if question is None:
             raise HTTPException(status_code=404, detail=NOT_WAITING)
         if not may_answer(auth_enabled(request), user, question):
             raise HTTPException(status_code=403, detail="Only the user whose run asks, or an admin, may answer.")
         try:
-            return take(question, body, user.username if user is not None else "anonymous")
+            broker.take(body.question_id, body.choices, body.text,
+                        answered_by=user.username if user is not None else "anonymous")
         except AnswerRejected as exc:
             raise HTTPException(status_code=exc.status, detail=exc.detail) from None
+        return {"status": "ok", "question_id": question.id}
 
     async def pending(request: Request,
                       session_id: Optional[str] = Query(default=None),

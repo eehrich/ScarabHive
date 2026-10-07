@@ -95,6 +95,10 @@ Allow for this session | this call runs, and every later call of the same tool i
 Deny | the call does not run. The reason you typed goes to the agent with the refusal
 @{body}
 
+A reason goes with Deny only: typed and then allowed, the call is not
+answered (@{i}Not taken: a reason goes with Deny only@{ui}); clear the field,
+or deny.
+
 "Allow for this session" is kept per tool (@{tt}server/tool@{utt}), not per
 argument: allowing @{tt}terminal_execute@{utt} once for the session allows
 every later command. A deny rule still wins over it. For a spawn without
@@ -465,14 +469,14 @@ packages. Each agent opts in as shown in @{" The hook " link hook}.
 @{h2}The routes
 
 @{code text}
-POST /plugins/tool_approval/answer    {"question_id", "decision", "reason"}
+POST /plugins/tool_approval/answer    {"question_id", "choices", "text"}
 GET  /plugins/tool_approval/pending   [?session_id=…&request_id=…]
 @{body}
 
-@{tt}decision@{utt} is @{tt}allow_once@{utt}, @{tt}allow_session@{utt} or
-@{tt}deny@{utt}; @{tt}reason@{utt} reaches the model with deny only, cut to
-1000 characters. An unknown decision, or @{tt}allow_session@{utt} for a
-script, answers 422; a question that no longer waits, 404; someone else's,
+@{tt}choices@{utt} is one decision: @{tt}allow_once@{utt},
+@{tt}allow_session@{utt} or @{tt}deny@{utt}; @{tt}text@{utt} is a reason,
+with deny only, cut to 1000 characters. An unknown decision, several,
+@{tt}allow_session@{utt} for a script or a reason with an allow answer 422; a question that no longer waits, 404; someone else's,
 403. @{tt}/pending@{utt} lists the open questions the caller may answer;
 @{tt}request_id@{utt} also takes those of the runs under it,
 @{tt}session_id@{utt} those of the agents that session called as tools.
@@ -483,10 +487,12 @@ arguments_cut, warning, decisions, request_id, session_id, agent, asked_at,
 expires_at, answer_url@{utt}, and @{tt}form@{utt} -- the question as every client draws it:
 @{tt}prompt, detail, warning, choices@{utt} (each @{tt}value, label@{utt}),
 @{tt}multi_select, text@{utt} (@{tt}label, alone@{utt}: whether words answer
-without a choice, or null). A client other than the web chat draws the
-question from @{tt}form@{utt}, posts the @{tt}value@{utt} of what was picked,
-and sends @{tt}attended@{utt} when it starts a run; agent-cli chat does
-exactly that, in its own process. For tool_approval the
+without a choice, @{tt}max_chars@{utt}: the longest text the kind takes -- or
+null; a choice may carry a @{tt}tone@{utt},
+@{tt}primary@{utt} or @{tt}danger@{utt}). Every client draws the question
+from @{tt}form@{utt} alone, posts the @{tt}value@{utt} of what was picked
+with the words, and sends @{tt}attended@{utt} when it starts a run: the web
+chat to @{tt}answer_url@{utt}, agent-cli chat in its own process. For tool_approval the
 choices are the decisions offered, the detail is the arguments, and the
 words -- a reason -- go along with Deny only.
 

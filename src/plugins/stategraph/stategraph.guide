@@ -207,9 +207,10 @@ activities still run), @{b}Resume@{ub} for an interrupted run, and
 @{b}Fork@{ub}: a new run that replays this one up to a top-level step and
 goes on live from there (with Shift: on the machine as it is now, not as
 it was when the run started). A run waiting for an event has a button per
-event it takes. "in another process" marks a run another process runs:
-you see its journal; Pause, Continue, Step and Terminate reach it within a
-second, Run to and breakpoints only in its own process.
+event it takes. "in another process" marks a run another process runs --
+agent-cli, agent-run: you see its journal; its events, Pause, Continue,
+Step and Terminate reach it within a second, Run to and breakpoints only
+in its own process.
 @{bullet}The @{b}graph@{ub} marks the states the run is in, and the states
 with breakpoints.
 @{bullet}@{b}Submachines@{ub}: with a run selected, a state that started
@@ -768,7 +769,12 @@ takes it when it next waits. An event no frame accepts yet is kept in the
 run's inbox (@{tt}queued: true@{utt}) until one does. Refused (@{tt}http_409@{utt}): an undeclared event, data
 that does not fit ("data does not match its declared schema"), several
 frames that accept it without @{tt}frame@{utt}, a run that has ended or
-runs in another process.
+that no process runs (resume it first). A run another process holds --
+agent-cli, agent-run -- gets the event through runs.db within a second, and
+the answer is that process's; one that does not take it in 5 seconds
+answers 409. One that took it but did not say in time what came of it
+answers 409 too, with "read the run before sending it again": the event
+most likely landed.
 @endnode
 
 @node author "The authoring agent"
@@ -855,7 +861,11 @@ a mail scanner that opens the link sends nothing.
 run took the event (or keeps it in its inbox); an interrupted run is
 resumed first. A link that is unknown, used, expired, or whose run ended
 answers 404; one the run cannot take right now answers 409 and stays
-usable; data that does not fit the event's schema answers 422.
+usable; data that does not fit the event's schema answers 422. A run
+another process holds gets the event through runs.db; when that process
+took it but did not say in time what came of it, the link answers 202
+and is used: the event most likely landed, and a second call would send
+it twice.
 
 The token is the key. The table that holds the callbacks keeps only its
 hash, but the URL itself is the activity's answer: it is in the run's
@@ -930,9 +940,9 @@ runs' own sessions.
 sub-agents'; LLM calls a tool makes on its own are not in it. A call with
 neither a billed cost nor a price for its model counts in
 @{tt}cost_unpriced_calls@{utt}, not in @{tt}cost@{utt}.
-@{bullet}Of a run another process holds, pause, continue, step and
-terminate reach it; run_to, breakpoints, evaluate and set act only in its
-own process.
+@{bullet}Of a run another process holds, pause, continue, step,
+terminate and events reach it; run_to, breakpoints, evaluate and set act
+only in its own process.
 @{bullet}A synchronous @{tt}call@{utt} function runs in a worker thread:
 terminate and timeouts end the activity at once, and Python cannot stop
 the thread -- a long function checks @{tt}sg.cancelled@{utt} (a

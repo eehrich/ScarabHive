@@ -201,11 +201,12 @@ default; a caller that takes every answer for the result needs it.
 
 A run that blocks its request -- @{tt}on_wait: block@{utt}, or any
 machine called as another agent's tool -- has its wait put to the person
-who watches that request: in @{tt}agent-cli chat@{utt} under the status
-lines, where the next line typed answers it. Nobody watches agent-run, a
-one-shot @{tt}agent-cli "task"@{utt}, a writer job or a schedule: nothing
-is asked there. The web chat shows the question's status line; its event
-comes from the panel there.
+who watches that request: in the web chat as a box under the run's row
+(a button per event, a field for the data where an event takes some), in
+@{tt}agent-cli chat@{utt} under the status lines, where the next line
+typed answers it. Nobody watches agent-run, a one-shot
+@{tt}agent-cli "task"@{utt}, a writer job or a schedule: nothing is asked
+there.
 
 The question names the waiting state with its description and offers the
 events the run takes now -- an event several frames take once for each

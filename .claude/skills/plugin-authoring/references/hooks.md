@@ -31,7 +31,7 @@ a run whose client said a person reads it (the web chat, `attended` on /events;
 agent-cli and background dispatches. The question itself
 (open questions, status row, wait, answer route, who may answer, the chat's box)
 is shared: `core/run_questions.py` (`QuestionBroker`, `put_to_person`) and
-`api/question_routes.py` -- `tool_approval` and the `ask_user` tool use both. A hook that changes
+`api/question_routes.py` -- `tool_approval`, the `ask_user` tool and stategraph's wait questions use both. A hook that changes
 arguments declares `category: tool_arguments`; `tool_approval` orders itself
 after that category. The plugin `tool_approval` is the worked example. tool_script's
 `inject_params` secrets are merged after the hooks; a tool that raises under

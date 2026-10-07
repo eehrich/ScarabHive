@@ -103,9 +103,12 @@ for `/answer` + `/pending` with the owner-or-admin rule. Ask only where
 `is_read(request_id, grace)` is true. Your `Question` subclass implements `form()` (the
 question as every client draws it) and your broker `take()` (the answer as every client
 sends it, onto your own check) -- without them asking fails, because a question only one
-client can draw is one the person at the other cannot answer: `agent-cli chat` draws every
-kind from `form`, the web chat its own box per meta key in `syncQuestionActions`.
-Worked examples: `src/plugins/ask_user`, `src/plugins/tool_approval`.
+client can draw is one the person at the other cannot answer. Both chats draw every kind
+from `form` alone (`cli_utils/questions.py`, `questionBox` in `static/js/chat_module.js`):
+a new kind needs no client code -- as long as its `answer_url` is `/plugins/<instance>/answer`
+(`question_router` mounted at `/plugins/<instance>`): the web chat posts to no other path.
+Worked examples: `src/plugins/ask_user`,
+`src/plugins/tool_approval`, `src/plugins/stategraph/wait_questions.py`.
 
 ## Multimodal
 

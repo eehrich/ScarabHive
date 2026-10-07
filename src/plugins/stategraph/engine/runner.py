@@ -1105,11 +1105,26 @@ class RunManager:
             logger.debug("stategraph: control requests could not be read", exc_info=True)
             return
         for run_id, request in requests:
+            if (request or {}).get("action") == "event":
+                self._take_event(run_id, request)
+                continue
             try:
                 self.control(run_id, (request or {}).get("action"))  # one of REMOTE_CONTROLS: the asker checks
             except Exception:
                 logger.info("stategraph: control request %s for run %s not carried out", request, run_id,
                             exc_info=True)
+
+    def _take_event(self, run_id: str, request: dict[str, Any]) -> None:
+        """An event sent to a run of ours in another process (its panel, a callback URL there): sent here, and what
+        came of it written back for the asker, who waits for it."""
+        try:
+            answer = self.send_event(run_id, request.get("name"), request.get("data"), request.get("frame"))
+        except Exception as exc:  # it ended or was lost meanwhile: the asker hears why
+            answer = {"accepted": False, "reason": str(exc)}
+        try:
+            self.store.answer_control(run_id, str(request.get("id")), answer)
+        except Exception:
+            logger.info("stategraph: the answer to an event for run %s was not stored", run_id, exc_info=True)
 
     def renew_leases(self) -> None:
         """Extend our runs' leases; a run whose owner changed is lost and stops locally (§5.7)."""
@@ -1243,15 +1258,20 @@ class RunManager:
         return self._live(run_id).ctx.send_event(name, data, frame)
 
     async def taken(self, run_id: str, timeout: float = 1.0) -> None:
-        """Until the run of this process took the events its waiting frames accept, at most ``timeout``: after a
-        send_event, a read shows what the event started, not the old wait with the event in the inbox."""
+        """Until the run took the events its waiting frames accept, at most ``timeout``: after a send_event, a read
+        shows what the event started, not the old wait with the event in the inbox. A run another process holds
+        is read from runs.db, which its process writes when it takes them."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        while (live := self.live.get(run_id)) is not None and not live.task.done() and row_event_due(
-                {"status": live.ctx.status, "view": live.ctx.view()}):
-            if loop.time() >= deadline:
+        while True:
+            live = self.live.get(run_id)
+            if live is not None and live.task.done():
                 return
-            await asyncio.sleep(0.01)
+            row = ({"status": live.ctx.status, "view": live.ctx.view()} if live is not None
+                   else self.store.get_run(run_id))
+            if not row or not row_event_due(row) or loop.time() >= deadline:
+                return
+            await asyncio.sleep(0.01 if live is not None else 0.05)
 
     async def wait(self, run_id: str, timeout: Optional[float] = None) -> dict[str, Any]:
         """Until the run ends, pauses or waits for an event it has not got yet (or ``timeout``); the run's row."""
@@ -1285,6 +1305,9 @@ class RunManager:
         if row is None:
             raise KeyError(run_id)
         row.pop("definition", None)
+        # the hand-over between processes, not the run: the answers keep refusals with the data they refused
+        row.pop("control", None)
+        row.pop("control_answer", None)
         row["active"] = run_id in self.live
         row["terminal"] = row["status"] in TERMINAL_STATUSES
         return row

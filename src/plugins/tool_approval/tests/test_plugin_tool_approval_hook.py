@@ -532,7 +532,7 @@ class TestAsking:
             async def allow(question, event):
                 assert probe.received == [] or question["arguments"] == 'text: "two"', "ran before its answer"
                 response = await client.post("/plugins/tool_approval/answer",
-                                             json={"question_id": question["id"], "decision": "allow_once"})
+                                             json={"question_id": question["id"], "choices": ["allow_once"]})
                 assert response.status_code == 200, response.text
 
             events = await _run(agent, watched("once1"), answer=allow)
@@ -556,7 +556,7 @@ class TestAsking:
         async with _client(plugin) as client:
             async def deny(question, event):
                 await client.post("/plugins/tool_approval/answer", json={
-                    "question_id": question["id"], "decision": "deny", "reason": "use the staging copy"})
+                    "question_id": question["id"], "choices": ["deny"], "text": "use the staging copy"})
 
             events = await _run(agent, watched("deny1"), answer=deny)
 
@@ -575,7 +575,7 @@ class TestAsking:
         async with _client(plugin) as client:
             async def for_the_session(question, event):
                 await client.post("/plugins/tool_approval/answer",
-                                  json={"question_id": question["id"], "decision": "allow_session"})
+                                  json={"question_id": question["id"], "choices": ["allow_session"]})
 
             first = await _run(agent, watched("sess1run"), session_id="sess-A", answer=for_the_session)
             assert [r["text"] for r in probe.received] == ["one", "two"]
@@ -588,7 +588,7 @@ class TestAsking:
             async def record_and_allow(question, event):
                 asked.append(question["arguments"])
                 await client.post("/plugins/tool_approval/answer",
-                                  json={"question_id": question["id"], "decision": "allow_once"})
+                                  json={"question_id": question["id"], "choices": ["allow_once"]})
 
             await _run(agent, watched("sess2run"), session_id="sess-B", answer=record_and_allow)
 
@@ -636,7 +636,7 @@ class TestAsking:
                     lines.append(event)
                     if len(lines) == 3:
                         await client.post("/plugins/tool_approval/answer",
-                                          json={"question_id": question["id"], "decision": "allow_once"})
+                                          json={"question_id": question["id"], "choices": ["allow_once"]})
 
         assert len(lines) >= 3 and len({line["meta"]["tool_approval"]["id"] for line in lines}) == 1
         assert [r["text"] for r in probe.received] == ["one"]
@@ -768,7 +768,7 @@ class TestAsking:
                             question = (event.get("meta") or {}).get("tool_approval")
                             if question:
                                 await client.post("/plugins/tool_approval/answer", json={
-                                    "question_id": question["id"], "decision": "allow_once"})
+                                    "question_id": question["id"], "choices": ["allow_once"]})
                                 return question
                         await asyncio.sleep(0.02)
                     return None
@@ -814,7 +814,7 @@ class TestWhoMayAnswer:
         task, question = await self._ask(plugin, watched("auth1", "alice"), "alice")
         async with _client(plugin, auth=True) as client:
             foreign = await client.post("/plugins/tool_approval/answer", headers=_signed_in("bob"),
-                                        json={"question_id": question["id"], "decision": "allow_once"})
+                                        json={"question_id": question["id"], "choices": ["allow_once"]})
             listed = await client.get("/plugins/tool_approval/pending", headers=_signed_in("bob"))
             assert foreign.status_code == 403, foreign.text
             assert listed.json()["count"] == 0, "another user's question was listed"
@@ -827,10 +827,10 @@ class TestWhoMayAnswer:
                 narrowed = await client.get(f"/plugins/tool_approval/pending?{query}", headers=_signed_in("alice"))
                 assert narrowed.json()["count"] == count, query
             own = await client.post("/plugins/tool_approval/answer", headers=_signed_in("alice"),
-                                    json={"question_id": question["id"], "decision": "allow_once"})
+                                    json={"question_id": question["id"], "choices": ["allow_once"]})
             assert own.status_code == 200, own.text
             again = await client.post("/plugins/tool_approval/answer", headers=_signed_in("alice"),
-                                      json={"question_id": question["id"], "decision": "deny"})
+                                      json={"question_id": question["id"], "choices": ["deny"]})
             assert again.status_code == 404, "a question was answered twice"
         probe, events = await asyncio.wait_for(task, 10)
         assert [r["text"] for r in probe.received] == ["one"]
@@ -851,7 +851,7 @@ class TestWhoMayAnswer:
                 narrowed = await client.get(f"/plugins/tool_approval/pending?{query}", headers=_signed_in("alice"))
                 assert narrowed.json()["count"] == count, query
             await client.post("/plugins/tool_approval/answer", headers=_signed_in("alice"),
-                              json={"question_id": question["id"], "decision": "allow_once"})
+                              json={"question_id": question["id"], "choices": ["allow_once"]})
         await asyncio.wait_for(task, 10)
 
     async def test_an_admin_may_answer(self, approval, watched, users):
@@ -859,7 +859,7 @@ class TestWhoMayAnswer:
         task, question = await self._ask(plugin, watched("auth2", "alice"), "alice")
         async with _client(plugin, auth=True) as client:
             response = await client.post("/plugins/tool_approval/answer", headers=_signed_in("root"),
-                                         json={"question_id": question["id"], "decision": "deny"})
+                                         json={"question_id": question["id"], "choices": ["deny"]})
         assert response.status_code == 200, response.text
         probe, _ = await asyncio.wait_for(task, 10)
         assert probe.received == []
@@ -871,7 +871,7 @@ class TestWhoMayAnswer:
         assert key, "fixture: no API key"
         try:
             async with _client(plugin, auth=True) as client:
-                body = {"question_id": question["id"], "decision": "allow_once"}
+                body = {"question_id": question["id"], "choices": ["allow_once"]}
                 by_key = await client.post("/plugins/tool_approval/answer", headers={"X-API-Key": key}, json=body)
                 by_bearer_key = await client.post("/plugins/tool_approval/answer",
                                                   headers={"Authorization": f"Bearer {key}"}, json=body)
@@ -888,11 +888,11 @@ class TestWhoMayAnswer:
         task, question = await self._ask(plugin, watched("auth4", "alice"), "alice")
         async with _client(plugin) as client:
             response = await client.post("/plugins/tool_approval/answer",
-                                         json={"question_id": question["id"], "decision": "sure"})
+                                         json={"question_id": question["id"], "choices": ["sure"]})
             assert response.status_code == 422, response.text
             assert plugin.broker.get(question["id"]) is not None
             await client.post("/plugins/tool_approval/answer",
-                              json={"question_id": question["id"], "decision": "deny"})
+                              json={"question_id": question["id"], "choices": ["deny"]})
         await asyncio.wait_for(task, 10)
 
 

@@ -53,7 +53,8 @@ class UserQuestion(Question):
         return {"prompt": self.question, "detail": None, "warning": None,
                 "choices": [{"value": option, "label": option} for option in self.options],
                 "multi_select": self.multi_select,
-                "text": {"label": "Or answer in your own words" if self.options else "Your answer", "alone": True}}
+                "text": {"label": "Or answer in your own words" if self.options else "Your answer", "alone": True,
+                         "max_chars": MAX_TEXT_CHARS}}
 
 
 def parse_arguments(params: Dict[str, Any]) -> Tuple[str, Tuple[str, ...], bool]:

@@ -225,7 +225,7 @@ def test_a_run_is_read_evented_and_controlled_as_the_admin_asking(monkeypatch):
 
     assert (run.status_code, event.status_code, control.status_code) == (200, 200, 200)
     assert service.calls == [("get_run", ("r1",), {"steps": 200, "user_id": "ada", "frames": True}),  # the frame picker
-                             ("send_event", ("r1", "approve"), {"data": None, "frame": None, "user_id": "ada"}),
+                             ("deliver_event", ("r1", "approve"), {"data": None, "frame": None, "user_id": "ada"}),
                              ("control_run", ("r1", "pause"), {"steps": 200, "user_id": "ada"})]
 
 

@@ -254,19 +254,20 @@ agent-cli, a run woken in a process of its own, JSON `/run`) is unattended, and 
 hook decides without asking. The question itself is a status line under its
 own child ID with `meta.tool_approval`. The chat draws buttons for it, and
 the last line of the series (end/error) removes them again. The machinery
-for this is shared by `tool_approval` and the tool `ask_user`: open questions,
+for this is shared by `tool_approval`, the tool `ask_user` and stategraph's wait questions: open questions,
 status line, waiting for the answer, timeout, cancellation and "nobody reads any more" in
 `agent_system/core/run_questions.py` (`QuestionBroker`, `put_to_person`), the
 answer route including "who may answer" in `agent_system/api/question_routes.py`,
-the answer box in the chat in `syncQuestionActions` (`static/js/chat_module.js`).
+the answer box in the chat in `syncQuestionActions` and `questionBox` (`static/js/chat_module.js`).
 Every kind of question describes itself in one form any client can draw
 (`Question.form`: prompt, detail, warning, choices, multi_select, text) and
 takes an answer in one form any client can send (`QuestionBroker.take`: the
 values picked and the text); `agent-cli chat` prints every kind from the form
 and answers through `run_questions.answer_question` in its own process
-(`cli_utils/questions.py`). The web chat does not yet: it draws its own box per
-meta key and posts the body of that kind's route. A kind without them fails
-when it asks (`QuestionBroker.open_question`).
+(`cli_utils/questions.py`); the web chat draws every kind from the same form
+(`questionBox`) and posts that answer to the kind's route (`question_router`).
+A new kind needs no client code; one without `form` or `take` fails when it
+asks (`QuestionBroker.open_question`).
 
 **Pitfalls for policy and approval hooks:**
 
