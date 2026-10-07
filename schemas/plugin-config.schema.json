@@ -112,6 +112,13 @@
         "type": "string"
       }
     },
+    "optional_dependencies": {
+      "type": "array",
+      "description": "Python package dependencies whose install may fail without breaking the install (requirements/optional.txt, installed best effort by the install scripts)",
+      "items": {
+        "type": "string"
+      }
+    },
     "requires": {
       "type": "object",
       "description": "Minimum version requirements",

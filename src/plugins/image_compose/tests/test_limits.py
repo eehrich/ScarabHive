@@ -199,6 +199,10 @@ async def test_an_infinite_max_candidates_is_an_error_answer(server, picture, gi
 # ── svg ───────────────────────────────────────────────────────────────────
 
 needs_svglib = pytest.mark.skipif(importlib.util.find_spec("svglib") is None, reason="svglib missing")
+#: Drawing also needs reportlab's cairo backend (requirements/optional.txt).
+needs_svg_backend = pytest.mark.skipif(
+    importlib.util.find_spec("svglib") is None or importlib.util.find_spec("rlPyCairo") is None,
+    reason="svglib or reportlab's cairo backend missing")
 
 
 def svg_text(family):
@@ -206,7 +210,7 @@ def svg_text(family):
             f'<text x="1" y="10" font-family="{family}">A</text></svg>')
 
 
-@needs_svglib
+@needs_svg_backend
 async def test_an_svg_font_family_that_is_a_path_opens_no_file(server, tmp_path, monkeypatch):
     """svglib turns an unknown family into "<family>.ttf" and opens it."""
     import svglib.fonts

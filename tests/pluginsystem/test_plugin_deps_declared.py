@@ -7,8 +7,10 @@ test was green. A fresh server venv did not, and every SVG layer failed at
 render time with a pip hint in the error message.
 
 "Declared somewhere" means: in requirements/core.txt (framework-owned) or in
-the plugin's own plugin.toml `dependencies`. Transitive availability does not
-count — it is exactly what made the gap invisible.
+the plugin's own plugin.toml `dependencies` or `optional_dependencies` (an
+optional import has to cope with its absence, but it is declared all the
+same). Transitive availability does not count — it is exactly what made the
+gap invisible.
 """
 from __future__ import annotations
 
@@ -56,6 +58,10 @@ KNOWN_OPTIONAL = {
     # would put a remote repair tool's pins into every install.
     ("writer_jobs", "kernels"),
     ("writer_jobs", "transformers"),
+    # reportlab 4's old raster backend (dist rl_renderPM): accepted where an
+    # older install has it, since reportlab 4 falls back to it; never
+    # installed by us -- it has no wheel for current Pythons on macOS.
+    ("image_compose", "_rl_renderPM"),
 }
 
 
@@ -66,9 +72,10 @@ def _norm(name: str) -> str:
 def _core_dists() -> set[str]:
     out = set()
     for req in (REPO_ROOT / "requirements").glob("*.txt"):
-        # all.txt is the aggregate itself; private.txt is the private
-        # roots' own declarations, not something a public plugin may lean on.
-        if req.name in ("all.txt", "private.txt"):
+        # all.txt and optional.txt are aggregates of the manifests; private.txt
+        # is the private roots' own declarations, not something a public
+        # plugin may lean on.
+        if req.name in ("all.txt", "optional.txt", "private.txt"):
             continue
         for line in req.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.split("#")[0].strip()
@@ -116,7 +123,8 @@ def _declared(plugin_dir: Path) -> set[str]:
     if not manifest.exists():
         return set()
     data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-    deps = data.get("plugin", {}).get("dependencies", [])
+    deps = [*data.get("plugin", {}).get("dependencies", []),
+            *data.get("plugin", {}).get("optional_dependencies", [])]
     reqs = data.get("plugin", {}).get("requires", {})
     names = {re.split(r"[<>=\[\s]", d)[0] for d in deps}
     names |= {k for k in reqs if k != "agent_system"}

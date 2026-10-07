@@ -10,7 +10,14 @@ from typing import TYPE_CHECKING, Any, Dict
 from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
-from .compositor import CompositionError, analyze_image, check_local, compose, find_text_region
+from .compositor import (
+    CompositionError,
+    analyze_image,
+    check_local,
+    compose,
+    find_text_region,
+    svg_backend_problem,
+)
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -23,6 +30,8 @@ _MIME_BY_FORMAT = {
     "jpeg": "image/jpeg",
 }
 MAX_WARNINGS = 20
+#: One status row (tests/plugins/test_status_end_lines.py: MAX_LINE).
+MAX_STATUS_LINE = 140
 
 
 class ImageComposeServer(SchemaBasedToolServer):
@@ -74,6 +83,11 @@ class ImageComposeServer(SchemaBasedToolServer):
             self.fonts_dir, self.output_directories or "unrestricted", len(self.font_aliases),
             self.overlap_check_enabled, self.overlap_min_gap_px,
         )
+        # Said at start, so the operator reads it before a model meets it in
+        # an svg layer: the cairo backend is an optional install.
+        problem = svg_backend_problem()
+        if problem:
+            logger.warning("image_compose (%s): svg layers will fail -- %s", name, problem)
 
     async def render(self, params: Dict[str, Any]) -> Dict[str, Any]:
         status = params.get("_status")
@@ -223,12 +237,12 @@ class ImageComposeServer(SchemaBasedToolServer):
         except CompositionError as e:
             msg = str(e)
             if status:
-                await status.error(f"Composition failed: {msg}")
+                await status.error(_status_line(f"Composition failed: {msg}"))
             return _error(msg, "CompositionError")
         except Exception as e:
             logger.error("image_compose.render failed", exc_info=True)
             if status:
-                await status.error(f"Unexpected error: {e}")
+                await status.error(_status_line(f"Unexpected error: {e}"))
             return _error(str(e), type(e).__name__)
 
     def _resolve_out(self, value: str, what: str) -> Path:
@@ -322,7 +336,7 @@ class ImageComposeServer(SchemaBasedToolServer):
         except Exception as e:
             logger.error("image_compose.analyze failed", exc_info=True)
             if status:
-                await status.error(f"Analyse failed: {e}")
+                await status.error(_status_line(f"Analyse failed: {e}"))
             return _error(str(e), type(e).__name__)
 
     async def find_region(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -373,13 +387,20 @@ class ImageComposeServer(SchemaBasedToolServer):
             return payload
         except CompositionError as e:
             if status:
-                await status.error(f"Find-region failed: {e}")
+                await status.error(_status_line(f"Find-region failed: {e}"))
             return _error(str(e), "CompositionError")
         except Exception as e:
             logger.error("image_compose.find_region failed", exc_info=True)
             if status:
-                await status.error(f"Find-region failed: {e}")
+                await status.error(_status_line(f"Find-region failed: {e}"))
             return _error(str(e), type(e).__name__)
+
+
+def _status_line(text: str) -> str:
+    """An error for the status row: its first line, cut to the row's budget.
+    The full text goes into the result; the row only has to say what failed."""
+    line = text.splitlines()[0] if text else text
+    return line if len(line) <= MAX_STATUS_LINE else line[:MAX_STATUS_LINE - 1] + "…"
 
 
 def _error(msg: str, kind: str) -> Dict[str, Any]:

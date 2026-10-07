@@ -38,6 +38,14 @@ if (-not (Test-Path $python)) {
 Invoke-Checked $python @("-m", "pip", "install", "-U", "pip")
 Invoke-Checked $python @("-m", "pip", "install", "-e", ".")
 
+# requirements/optional.txt: what may fail without failing the install (today reportlab's cairo
+# backend, which draws SVG layers in images; on Windows pycairo comes as a wheel).
+& $python -m pip install -r requirements/optional.txt
+$svgOff = $LASTEXITCODE -ne 0
+if ($svgOff) {
+    Write-Host "Going on without SVG layers in images (requirements/optional.txt, see above). To add them: run install.ps1 again." -ForegroundColor Yellow
+}
+
 & $python -m agent_system.config.local_layer signing-key
 if ($LASTEXITCODE -ne 0) { Write-Host "Going on: the Setup panel shows the signing key." -ForegroundColor Yellow }
 # Not past a failed or aborted step: an admin of an older install may still open with admin123.
@@ -54,6 +62,7 @@ Write-Host "Starting ScarabHive at $url -- the browser opens when it answers."
 Write-Host "Log in with the admin account. Then open the Setup panel (grid icon, type 'setup')"
 Write-Host "and enter your OpenRouter key. Stop the API with Ctrl+C;"
 Write-Host "start it again with: .venv\Scripts\agent-api.exe"
+if ($svgOff) { Write-Host "SVG layers in images are off: run install.ps1 again." -ForegroundColor Yellow }
 Write-Host ""
 
 $null = Start-Job -ArgumentList $url -ScriptBlock {
