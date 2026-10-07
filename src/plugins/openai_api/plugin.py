@@ -170,6 +170,10 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
         self.blocked_patterns = [str(p) for p in (getattr(server_config, "blocked_agents", None) or [])]
         self.responses_db = str(resolve_data_path(
             getattr(server_config, "responses_db", None) or data_path("openai_api", "responses.db")))
+        # Clients with function calling on (Open WebUI's native mode, n8n, LibreChat) send their own tools with every
+        # request: the agent calls its own, so they are passed over; false refuses such a request (400) instead.
+        ignore = getattr(server_config, "ignore_client_tools", True)
+        self.ignore_client_tools = str(ignore).strip().lower() not in ("false", "0", "no", "off")
         self._store: Optional[ResponseStore] = None
         self._busy: set[str] = set()  # sessions with a turn in flight: a conversation takes one turn at a time
         self._turns: set[AgentTurn] = set()  # the turns not settled yet (stop_plugin waits for them)
@@ -243,7 +247,7 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
         try:
             body = await self._body(request)
             user = await self._user(request)
-            refuse_client_tools(body)
+            refuse_client_tools(body, ignore=self.ignore_client_tools)
             if body.get("background"):
                 raise ApiError(400, "background: not supported", param="background")
             store = body.get("store", True) is not False
@@ -380,7 +384,7 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
         try:
             body = await self._body(request)
             user = await self._user(request)
-            refuse_client_tools(body)
+            refuse_client_tools(body, ignore=self.ignore_client_tools)
             n = body.get("n")
             if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n != 1):
                 raise ApiError(400, "n: only one choice is supported", param="n")

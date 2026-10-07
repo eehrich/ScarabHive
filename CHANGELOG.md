@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `openai_api` passes a request's own tools over instead of refusing it:
+  clients with function calling on (Open WebUI's native mode, n8n, LibreChat)
+  send their tools with every request, and the agent calls its own.
+  `ignore_client_tools: false` in the server entry refuses them (400) as
+  before. A forced call (`tool_choice: required`, a named tool) is refused
+  either way: the agent never calls the client's tools.
+
 ### Fixed
 
 - On Windows the API no longer freezes whole when the terminal it was started

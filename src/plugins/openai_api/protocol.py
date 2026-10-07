@@ -92,9 +92,30 @@ def turn_from_messages(messages: Any, where: str, instructions: Optional[str] = 
     return Turn(message=message, history=history, title=first_user or "")
 
 
-def refuse_client_tools(body: dict[str, Any]) -> None:
-    if body.get("tools"):
-        raise ApiError(400, "tools: not supported -- the agent brings its own tools", param="tools")
+def refuse_client_tools(body: dict[str, Any], *, ignore: bool) -> None:
+    """The client's own tools: passed over where the instance ignores them (``ignore_client_tools``, the default),
+    refused otherwise. A call the client forces is refused either way: the agent never calls the client's tools,
+    and a client that needs the call would take a plain answer for one it cannot parse."""
+    for key in ("tool_choice", "function_call"):
+        if _forces_a_call(body.get(key)):
+            raise ApiError(400, f"{key}: a forced tool call is not supported -- the agent calls its own tools",
+                           param=key)
+    if not ignore:
+        for key in ("tools", "functions"):
+            if body.get(key):
+                raise ApiError(400, f"{key}: not supported -- the agent brings its own tools", param=key)
+
+
+def _forces_a_call(choice: Any) -> bool:
+    """``required``, a named function or tool, or ``allowed_tools`` in required mode (Responses: ``mode``; Chat
+    Completions: ``allowed_tools.mode``); ``auto``, ``none`` and nothing force none."""
+    if isinstance(choice, dict):
+        if choice.get("type") == "allowed_tools":
+            nested = choice.get("allowed_tools")
+            mode = choice.get("mode") or (nested.get("mode") if isinstance(nested, dict) else None)
+            return mode == "required"
+        return True
+    return choice == "required"
 
 
 # ------------------------------------------------------------------ structured output

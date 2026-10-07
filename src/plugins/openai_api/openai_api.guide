@@ -98,7 +98,7 @@ store | default true; false runs on a throwaway session and records no id
 stream | true: Server-Sent Events (below)
 text.format | structured output (see @{" Structured output " link structured})
 background | true is refused (400)
-tools | a non-empty list is refused (400): the agent brings its own tools
+tools, tool_choice | passed over: the agent calls its own tools (with @{tt}ignore_client_tools: false@{utt} a non-empty @{tt}tools@{utt} is refused, 400); a forced call -- @{tt}tool_choice@{utt} @{tt}required@{utt}, a named tool, @{tt}allowed_tools@{utt} in required mode -- is refused either way (400)
 @{body}
 
 The answer is a @{tt}response@{utt} object with one output message: the
@@ -125,7 +125,7 @@ n | only 1
 stream | true: @{tt}chat.completion.chunk@{utt}s, then @{tt}data: [DONE]@{utt}
 stream_options.include_usage | adds a last chunk with usage and no choices
 response_format | structured output
-tools | a non-empty list is refused (400)
+tools, functions, tool_choice, function_call | as for Responses: passed over, a forced call refused (400)
 @{body}
 
 The answer is one choice with @{tt}finish_reason: stop@{utt}. A failed
@@ -455,6 +455,7 @@ Key | Default | Meaning
 agents | (all) | fnmatch patterns of the agents offered as models; empty: every agent the web UI lists
 blocked_agents | (none) | fnmatch patterns never offered, even if @{tt}agents@{utt} matches
 responses_db | data/openai_api/responses.db | the SQLite file mapping response ids to sessions; a path starting with data/ lands in the data directory
+ignore_client_tools | true | a request's own @{tt}tools@{utt} (and the older @{tt}functions@{utt}) are passed over: clients with function calling on (Open WebUI's native mode, n8n, LibreChat) send theirs with every request, and the agent calls its own; false refuses them (400). A forced call is refused either way
 @{body}
 
 @{code yaml}
