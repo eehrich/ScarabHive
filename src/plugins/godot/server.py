@@ -462,7 +462,10 @@ class GodotServer(SchemaBasedToolServer):
         return candidate
 
     def _resolve_output(self, filename: str) -> Path:
-        if remote_outside(filename, self._out_dir, (self._out_dir,)):
+        # A drive or share is absolute wherever it is written, as for a project: on POSIX
+        # \\host\share\x.png read as a file below the output directory.
+        if remote_outside(filename, self._out_dir, (self._out_dir,)) or (
+                PureWindowsPath(filename).drive and not Path(filename).is_absolute()):
             raise ValueError(f"'{filename}' resolves outside the output directory ({self._out_dir}); "
                              "pass a plain name or a path below it")
         candidate = (self._out_dir / filename).resolve()
