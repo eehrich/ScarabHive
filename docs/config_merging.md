@@ -26,7 +26,7 @@ includes:
 **Wildcard Patterns Supported:**
 - `*.yaml` - All YAML files in current directory
 - `agents/*.yaml` - All YAML files in agents/ subdirectory
-- `config/**/*.yaml` - All YAML files recursively (use with caution!)
+- `agents/**/*.yaml` - All YAML files exactly one subdirectory below agents/ (`**` is not recursive)
 
 **Note**: Wildcard matches are sorted alphabetically to ensure consistent load order.
 
@@ -126,14 +126,14 @@ includes:
 1. Patterns are resolved relative to the config file directory
 2. Matches are sorted alphabetically for consistent load order
 3. If a pattern matches no files, it's silently ignored
-4. Standard glob patterns supported: `*`, `?`, `[abc]`, `**` (recursive)
+4. Standard glob patterns supported: `*`, `?`, `[abc]` (`**` is not recursive: it matches like `*`, one directory level)
 
 ## Implementation
 
 See `src/agent_system/config/settings.py`:
 - `deep_merge()` function handles recursive dictionary merging
 - Wildcard expansion using Python's `glob` module
-- Applied specifically to `plugins` key to allow multiple files to contribute agents
+- Applied to every top-level section an include sets (`plugins`, `llm_system`, `hooks`, ...), except `external_servers`, which the last include replaces; `paths`, `auth` (apart from route rules), `includes` and `files` are read from the master config only
 
 ## Testing
 
@@ -144,7 +144,7 @@ config = load_settings()
 plugins = config.plugins.servers
 
 # Verify agents from different files are all present
-assert 'basic_agent' in plugins      # From plugins.yaml
-assert 'meta_agent' in plugins       # From agents/meta_agent.yaml
+assert 'sub_agent_manager' in plugins  # From plugins.yaml
+assert 'okf_agent' in plugins        # From agents/okf_agent.yaml
 assert 'sysadmin_agent' in plugins   # From agents/sysadmin_agent.yaml
 ```

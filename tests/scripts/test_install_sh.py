@@ -96,11 +96,14 @@ class Run:
 
 
 def run_install(tmp_path: Path, shell: str = "/bin/sh", *, tools=("pkg-config", "brew", "xcode-select"), windows=False,
-                tty=False, rlpycairo=False, brew_off_path=False, **env_overrides) -> Run:
+                tty=False, rlpycairo=False, brew_off_path=False, private=False, **env_overrides) -> Run:
     """Copy install.sh into tmp_path with a stubbed .venv and PATH, run it, return what it did."""
     work = tmp_path / "checkout"
     work.mkdir()
     shutil.copy(REPO / "install.sh", work / "install.sh")
+    if private:
+        (work / "requirements").mkdir()
+        (work / "requirements" / "private.txt").touch()
     venv = work / ".venv" / ("Scripts" if windows else "bin")
     venv.mkdir(parents=True)
     path = tmp_path / "path"
@@ -323,6 +326,14 @@ def test_linux_with_cairo_a_compiler_and_headers_installs_nothing(tmp_path):
     assert_went_on(run)
     assert any("Python.h" in c for c in run.calls), "fixture: the headers were never asked for"
     assert not run.called("apt-get") and not run.called("sudo") and run.optional_installed, run.calls
+
+
+@pytest.mark.parametrize("private", [False, True])
+def test_the_cpu_build_of_pytorch_only_where_private_txt_pulls_torch_in(tmp_path, private):
+    # Only requirements/private.txt needs torch; download.pytorch.org out of reach stopped every install.
+    run = run_install(tmp_path, PKG_CONFIG_RC=0, private=private, **LINUX)
+    assert_went_on(run)
+    assert bool([c for c in run.called("python ") if "download.pytorch.org" in c]) == private, run.calls
 
 
 def test_macos_without_the_command_line_tools_names_them_and_runs_nothing(tmp_path):

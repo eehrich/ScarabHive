@@ -6,4 +6,6 @@
 #   agents:          fnmatch patterns of the agents offered as models; default: the agents the web UI lists
 #   blocked_agents:  fnmatch patterns never offered
 #   responses_db:    where response ids are kept for previous_response_id (default data/openai_api/responses.db)
+#   ignore_client_tools: default true: a request's own tools (tools, functions, tool_choice auto/none) are passed
+#                    over -- the agent calls its own; false refuses them (400). A forced call is refused either way.
 tools: []

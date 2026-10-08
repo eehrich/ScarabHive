@@ -686,7 +686,7 @@ async def test_system_messages_and_instructions_reach_the_turn_marked(tmp_path):
 @pytest.mark.parametrize("case", ["image", "tools", "assistant last", "unknown model", "tool message"])
 async def test_what_the_agent_cannot_take_is_refused(tmp_path, case):
     agent = ScriptedAgent("chat_agent")
-    app, _ = build(tmp_path, agent)
+    app, _ = build(tmp_path, agent, **({"ignore_client_tools": False} if case == "tools" else {}))
     body: dict[str, Any] = {"model": "chat_agent", "messages": [{"role": "user", "content": "hi"}]}
     if case == "image":
         body["messages"][0]["content"] = [{"type": "image_url", "image_url": {"url": "data:,"}}]
@@ -704,6 +704,75 @@ async def test_what_the_agent_cannot_take_is_refused(tmp_path, case):
     assert answer.status_code == (404 if case == "unknown model" else 400), answer.text
     assert answer.json()["error"]["message"]
     assert agent.calls == []
+
+
+async def test_a_clients_own_tools_are_passed_over_and_the_agent_answers(tmp_path):
+    """Clients with function calling on (Open WebUI's native mode) send their tools with every request: by default the
+    agent answers as if they had sent none (it calls its own)."""
+    agent = ScriptedAgent("chat_agent", "done")
+    app, _ = build(tmp_path, agent)
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object", "properties": {}}}}]
+
+    chat = await client(app).chat.completions.create(model="chat_agent", tools=tools, tool_choice="auto",
+                                                     messages=[{"role": "user", "content": "hi"}])
+    response = await client(app).responses.create(
+        model="chat_agent", input="hi", tool_choice="auto",
+        tools=[{"type": "function", "name": "f", "parameters": {"type": "object", "properties": {}}}])
+
+    assert chat.choices[0].message.content == "done" and not chat.choices[0].message.tool_calls
+    assert response.output_text == "done"
+    assert [call["task"] for call in agent.calls] == ["hi", "hi"]
+
+
+@pytest.mark.parametrize("endpoint", ["/chat/completions", "/responses"])
+@pytest.mark.parametrize("key", ["tools", "functions"])
+async def test_an_instance_that_refuses_client_tools_refuses_them_on_both_endpoints(tmp_path, endpoint, key):
+    agent = ScriptedAgent("chat_agent")
+    app, _ = build(tmp_path, agent, ignore_client_tools="false")  # as ${VAR} expansion leaves it: a string
+    body: dict[str, Any] = ({"model": "chat_agent", "messages": [{"role": "user", "content": "hi"}]}
+                            if endpoint == "/chat/completions" else {"model": "chat_agent", "input": "hi"})
+    body[key] = [{"type": "function", "name": "f", "parameters": {}}]
+    async with raw(app) as web:
+        answer = await web.post(endpoint, json=body)
+
+    assert answer.status_code == 400 and answer.json()["error"]["param"] == key, answer.text
+    assert agent.calls == []
+
+
+@pytest.mark.parametrize("endpoint", ["/chat/completions", "/responses"])
+@pytest.mark.parametrize("ignore", [True, False])
+@pytest.mark.parametrize("key, choice", [
+    ("tool_choice", "required"),
+    ("tool_choice", {"type": "function", "function": {"name": "f"}}),
+    ("tool_choice", {"type": "allowed_tools", "mode": "required", "tools": []}),
+    ("tool_choice", {"type": "allowed_tools", "allowed_tools": {"mode": "required", "tools": []}}),
+    ("function_call", {"name": "f"}),
+])
+async def test_a_forced_tool_call_is_refused_whatever_the_setting(tmp_path, endpoint, ignore, key, choice):
+    """A client that forces a call parses the call's arguments: a plain answer in its place would fail it later,
+    or make it retry whole agent runs."""
+    agent = ScriptedAgent("chat_agent")
+    app, _ = build(tmp_path, agent, ignore_client_tools=ignore)
+    body: dict[str, Any] = ({"model": "chat_agent", "messages": [{"role": "user", "content": "hi"}]}
+                            if endpoint == "/chat/completions" else {"model": "chat_agent", "input": "hi"})
+    body[key] = choice
+    async with raw(app) as web:
+        answer = await web.post(endpoint, json=body)
+
+    assert answer.status_code == 400 and answer.json()["error"]["param"] == key, answer.text
+    assert agent.calls == []
+
+
+@pytest.mark.parametrize("choice", ["auto", "none", {"type": "allowed_tools", "mode": "auto", "tools": []}])
+async def test_a_tool_choice_that_forces_nothing_is_passed_over(tmp_path, choice):
+    agent = ScriptedAgent("chat_agent", "done")
+    app, _ = build(tmp_path, agent)
+    async with raw(app) as web:
+        answer = await web.post("/chat/completions", json={"model": "chat_agent", "tool_choice": choice,
+                                                           "messages": [{"role": "user", "content": "hi"}]})
+
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["choices"][0]["message"]["content"] == "done"
 
 
 @pytest.mark.parametrize("case", ["n", "stream_options", "instructions", "content type"])

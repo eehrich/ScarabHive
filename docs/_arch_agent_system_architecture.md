@@ -249,7 +249,7 @@ class Agent(ToolServer):
 **Responsibilities:**
 - Centralized bootstrap for all entry points (API, CLI, lightweight runner)
 - Lazily provision `SessionManager` and `SessionService`
-- Invoke `bootstrap_servers()` once per process and inject dependencies into every agent instance
+- Build and start the `Runtime` (`runtime.py`, `Runtime.start()`) once per process and inject dependencies into every agent instance
 - Coordinate with tool integration to avoid duplicate initialization via `servers_bootstrapped` flag
 
 **Key Capabilities:**
@@ -552,7 +552,7 @@ Ready
 ```yaml
 runtime:
   language: Python 3.11+
-  framework: FastAPI 0.115.6
+  framework: FastAPI 0.142.2
   server: Uvicorn
 
 dependencies:
@@ -605,7 +605,7 @@ development:
 | **Tool Execution** | Parallel | Parallel | asyncio.create_task() + asyncio.wait() |
 | **Concurrent Users** | 50+ | Tested: 20 | Limited by LLM rate limits |
 | **Session Load Time** | < 100ms | ~50ms | JSON file I/O |
-| **Tool Cache Hit Rate** | > 80% | ~85% | 30s TTL |
+| **Tool Cache Hit Rate** | > 80% | ~85% | invalidated on config change (no TTL) |
 
 ### 8.2 Reliability
 

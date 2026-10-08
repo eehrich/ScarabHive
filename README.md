@@ -154,7 +154,7 @@ and the [example plugin](src/plugins/example/).
 
 ## Getting started
 
-You need Python 3.11 or newer (3.12 recommended), git, a few GB of disk and an LLM provider.
+You need Python 3.11 or newer (3.12 recommended), git, about 2 GB of disk and an LLM provider.
 For the simplest start, take an [OpenRouter API key](https://openrouter.ai/keys): as shipped,
 every agent that is switched on runs on OpenRouter. To use OpenAI, Anthropic,
 Google Gemini, DeepSeek or a local Ollama instead, point the profiles in `config/llm.yaml` and

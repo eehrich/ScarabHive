@@ -28,7 +28,8 @@ def log(tmp_path):
     root = logging.getLogger()
     before, level = list(root.handlers), root.level
     touched = {name: (logging.getLogger(name).level, logging.getLogger(name).propagate,
-                      list(logging.getLogger(name).filters)) for name in _TOUCHED}
+                      list(logging.getLogger(name).filters), list(logging.getLogger(name).handlers))
+               for name in _TOUCHED}
     setup_logging(True, "DEBUG", str(path))
     added = [handler for handler in root.handlers if handler not in before]
     yield path, added
@@ -39,9 +40,9 @@ def log(tmp_path):
     for handler in before:
         root.addHandler(handler)
     root.setLevel(level)
-    for name, (lvl, propagate, filters) in touched.items():
+    for name, (lvl, propagate, filters, handlers) in touched.items():
         logger = logging.getLogger(name)
-        logger.level, logger.propagate, logger.filters = lvl, propagate, filters
+        logger.level, logger.propagate, logger.filters, logger.handlers = lvl, propagate, filters, handlers
 
 
 def _record(name: str, path: str | None, level: int, msg: str) -> logging.LogRecord:

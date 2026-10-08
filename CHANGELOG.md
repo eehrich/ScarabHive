@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `openai_api` passes a request's own tools over instead of refusing it:
+  clients with function calling on (Open WebUI's native mode, n8n, LibreChat)
+  send their tools with every request, and the agent calls its own.
+  `ignore_client_tools: false` in the server entry refuses them (400) as
+  before. A forced call (`tool_choice: required`, a named tool) is refused
+  either way: the agent never calls the client's tools.
+
 ### Fixed
 
 - On Windows the API no longer freezes whole when the terminal it was started
@@ -29,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that fix instead of reportlab's "cannot import desired renderPM backend",
   and the plugin warns at start. `install.sh` is executable in the
   repository.
+
+- The VS Code API tasks listen where the config says (`network.host`/`port`;
+  a machine opens the API to its network in `config/local.yaml`), not on a host
+  of their own: they start `app.run` as `agent-api` does. A stop of `agent-api`
+  no longer waits for every open stream (5 s, as the systemd unit), and its
+  access log reaches the terminal again (never `api.log`). `python -m
+  agent_system.app` served from a copy of the module the rest of the code
+  never saw -- a session lookup answered 503 off Windows; it starts as
+  `agent-api` now.
 
 ## [0.7.0] - 2026-10-06
 

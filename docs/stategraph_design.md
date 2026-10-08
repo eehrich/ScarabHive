@@ -142,7 +142,7 @@ def writer_task(ctx, params):
 | `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of its origin -- "My machines" for the first writable root, else the plugin folder that holds its `machines/` directory. |
 | `python` | path | | Companion module, relative to the file (`\` reads as `/`; an absolute path is SG004: a run's snapshot holds only relative files). Its public names are in scope for all code of this machine. |
 | `imports` | alias → ref | | Submachines this machine uses. A ref is a relative path (`./x.yaml`; `\` reads as `/`, an absolute path is SG006) or a machine id. `do: {machine: …}` names an alias, never an id. |
-| `machines` | name → machine | | Machines inside this file: a mapping like a machine file without `stategraph`, `id`, `python`, `imports`, `group`, `machines`, `agent`. `do: {machine: <name>}` runs one in its own frame, like an import (machine id `<id>.<name>` in frames and traces). They share the file's companion module and its imports; one runs no other machine of the file, and its name is no import alias. Problems are reported at `machines.<name>....` in the file. |
+| `machines` | name → machine | | Machines inside this file: a mapping like a machine file without `stategraph`, `id`, `notes`, `python`, `imports`, `group`, `machines`, `agent`. `do: {machine: <name>}` runs one in its own frame, like an import (machine id `<id>.<name>` in frames and traces). They share the file's companion module and its imports; one runs no other machine of the file, and its name is no import alias. Problems are reported at `machines.<name>....` in the file. |
 | `params` | name → field | | The machine's parameters. For a top-level run they are the run input; for a submachine, the `params:` of the calling activity. Field keys: `type` (`string`, `integer`, `number`, `boolean`, `object`, `array`, `any`), `required`, `default`, `enum`, `description`. |
 | `events` | name → `{description, data}` | | The named events this machine accepts (§3.4). A trigger that is neither `done`, `error` nor declared here is an error. `data` is an optional JSON schema for the payload; one that is not a valid JSON schema is SG001. |
 | `context` | name → JSON | | The machine's variables with their initial values. They are plain JSON, not templates. |
@@ -500,7 +500,7 @@ impossible: a state waits only if it is a wait state (§2.3).
 
 | Group | Types |
 |---|---|
-| activities | `agent_failed`, `schema_invalid`, `parse_failed`, `tool_failed`, `tool_denied`, `decision_failed`, `call_failed`, `submachine_failed`, `activity_failed` (an unexpected exception in a kind from another plugin), `timeout`, `interrupted`, `template_failed`, `params_invalid`, `unmocked`, `no_backend`, `config` |
+| activities | `agent_failed`, `schema_invalid`, `parse_failed`, `check_failed`, `tool_failed`, `tool_denied`, `decision_failed`, `call_failed`, `submachine_failed`, `join_failed`, `activity_failed` (an unexpected exception in a kind from another plugin), `timeout`, `interrupted`, `template_failed`, `params_invalid`, `unmocked`, `no_backend`, `config` |
 | engine | `loop_limit`, `no_transition`, `guard_failed`, `action_failed`, `wait_timeout`, `not_serialisable` |
 
 - **Handling.** An error is dispatched as the `error` event of the state where it was
@@ -701,7 +701,7 @@ line when it is known.
 ```
 model/     spec.py (pydantic format)  code.py (Python, templates, scopes)  loader.py  validate.py
            yamledit.py (comment-preserving edits)  graph.py (editor view)
-kinds/     base.py (registry, KindSpec, ActivityError)  builtin.py (the seven kinds)
+kinds/     base.py (registry, KindSpec, ActivityError)  builtin.py (the nine kinds)
 engine/    machine.py (compiled tree, LCA)  interpreter.py (frame, RTC)  activity.py (mocks,
            replay, retries, journal)  runner.py (RunContext, RunManager)  journal.py (SQLite)
            debugger.py  backend.py (ScarabHive + config checks)

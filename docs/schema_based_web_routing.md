@@ -260,30 +260,30 @@ async def create_item(
 
 ```python
 RuntimeError: Handler method 'nonexistent_handler' not found in MyWebFactory
-for endpoint POST /api/items. Add method: async def nonexistent_handler(self, request: Request) -> Response
+for endpoint POST /api/items in my_plugin. Add method: async def nonexistent_handler(self, request: Request) -> Response
 ```
 
 ### Missing Handler Field
 
 ```python
-RuntimeError: Missing 'handler' in endpoint definition for /api/test.
-Add 'handler: method_name' to endpoint in schema.yaml
+RuntimeError: Missing 'handler' in endpoint definition for /api/test
+in my_plugin schema. Add 'handler: method_name' to endpoint.
 ```
 
 ### Invalid HTTP Method
 
 ```python
-ValueError: Unsupported HTTP method 'INVALID'. Supported methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']
+ValueError: Unsupported HTTP method 'INVALID' in my_plugin schema. Supported methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']
 ```
 
 ## Validation
 
-The `SchemaRouterGenerator` validates at initialization:
+The `SchemaRouterGenerator` validates:
 
 1. ✅ Handler method exists in handler class
 2. ✅ HTTP method is supported
 3. ✅ `handler` field is present in schema
-4. ✅ Response type is valid
+4. ⚠️ Response type is not validated: an unknown type falls back to `Response`
 
 Validation happens when `generate_router()` is called, before the server starts.
 
@@ -373,7 +373,7 @@ def test_schema_generated_routes():
     assert response.json()["status"] == "ok"
 ```
 
-See `tests/test_schema_router.py` for comprehensive test suite.
+See `tests/pluginsystem/test_schema_router.py` for comprehensive test suite.
 
 ## Migration Guide
 
@@ -434,22 +434,22 @@ web_ui:
   endpoints:
     - path: "/"
       method: "GET"
-      handler: "get_panel"
+      handler: "render_panel"
       response_type: "html"
     
     - path: "/sub-agents"
       method: "GET"
-      handler: "get_sub_agents_json"
+      handler: "get_sub_agents"
       response_type: "json"
     
     - path: "/sub-agents/{agent_id}"
       method: "GET"
-      handler: "get_sub_agent_detail"
+      handler: "get_sub_agent"
       response_type: "json"
     
     - path: "/sub-agents/{agent_id}"
       method: "DELETE"
-      handler: "delete_sub_agent"
+      handler: "archive_sub_agent"
       response_type: "json"
 ```
 
@@ -464,17 +464,17 @@ class SubAgentManagerWebFactory:
             handler_class=self
         )
     
-    async def get_panel(self, request: Request) -> HTMLResponse:
-        return self.render_panel(request)
+    async def render_panel(self, request: Request) -> HTMLResponse:
+        ...
     
-    async def get_sub_agents_json(
+    async def get_sub_agents(
         self,
         request: Request,
         session_id: str = Query(...),
-        include_completed: bool = Query(False)
-    ) -> JSONResponse:
+        current_user: Optional[User] = Depends(get_optional_user),
+    ) -> dict[str, Any]:
         # Implementation
-        pass
+        ...
 ```
 
 ## Best Practices
@@ -537,7 +537,7 @@ async def get_user(self, request: Request, user_id: str) -> JSONResponse:
 - [MCP Client Plugin](../src/plugins/mcp_client/README.md)
 - [Plugin Authoring Guide](plugin_authoring.md)
 - [API Reference](../README.md)
-- Tests: `tests/test_schema_router.py`
+- Tests: `tests/pluginsystem/test_schema_router.py`
 - Example: `src/plugins/sub_agent_manager/`
 
 ## Future Enhancements

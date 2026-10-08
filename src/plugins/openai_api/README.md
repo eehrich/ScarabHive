@@ -10,7 +10,8 @@ in the web UI; Chat Completions calls leave nothing behind. Streaming and struct
 - **Tools / hooks / panel** -- none.
 
 Enabled in the shipped `config/plugins.yaml` (`openai_api: {type: openai_api, enabled: true}`); `agents`,
-`blocked_agents` and `responses_db` go flat in that entry.
+`blocked_agents`, `responses_db` and `ignore_client_tools` (default true: a request's own tools are passed over, the
+agent calls its own; false refuses them; a forced tool call is refused either way) go flat in that entry.
 
 The full manual -- connecting a client, the endpoints, how a request becomes a turn, structured output, stored
 conversations, errors and settings -- is the plugin's guide, `openai_api.guide`, in the Help panel.

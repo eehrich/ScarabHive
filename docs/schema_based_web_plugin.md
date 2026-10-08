@@ -15,11 +15,10 @@ Follows the same pattern as other schema-based components:
 ## Architecture
 
 ```
-SchemaBasedMixin (schema_mixin.py)
+SchemaBaseMixin (core/schema_base_mixin.py)
     │
     ├─> SchemaBasedToolServer (tools/schema_based.py)
-    ├─> SchemaBasedAgent (agents/schema_based.py)
-    ├─> SchemaBasedPluginHook (hooks/schema_based.py)
+    ├─> SchemaBasedAgent (servers/agent/schema_based.py)
     └─> SchemaBasedPluginWebInterface (plugins/web_base.py) ← NEW
 ```
 
@@ -127,7 +126,7 @@ class MyPlugin(SchemaBasedPluginWebInterface):
 Located in: `src/agent_system/plugins/web_base.py`
 
 ```python
-class SchemaBasedPluginWebInterface(SchemaBasedMixin):
+class SchemaBasedPluginWebInterface(SchemaBaseMixin):
     """Base class for plugins with web interfaces."""
     
     def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
@@ -135,8 +134,8 @@ class SchemaBasedPluginWebInterface(SchemaBasedMixin):
         self.system_config = system_config
         self.server_config = server_config
         
-        # Initialize schema mixin
-        self._init_schema_mixin()
+        # Initialize schema base
+        self._init_schema_base()
     
     def get_schema_data(self) -> dict[str, Any]:
         """Get the full loaded schema data."""
@@ -145,12 +144,11 @@ class SchemaBasedPluginWebInterface(SchemaBasedMixin):
 
 ### Schema Loading
 
-Uses `SchemaBasedMixin._load_schema()` which:
+Uses `SchemaBaseMixin._load_schema()` which:
 1. Determines plugin directory automatically
 2. Loads `schema.yaml` from plugin directory
 3. Renders Jinja2 templates with `get_template_vars()`
 4. Caches schema data for performance
-5. Validates schema structure
 
 ### Plugin Registry Integration
 
@@ -201,7 +199,7 @@ class UserManagementPlugin(SchemaBasedPluginWebInterface):
 
 **Reason**: No tool server component, need schema for web_ui configuration only.
 
-### Hook+Web Plugins (message_debugger, context_summarizer, context_usage_tracker)
+### Hook+Web Plugins (message_debugger, context_usage_tracker)
 
 **Pattern**: Inherit from `SchemaBasedPluginWebInterface`
 
@@ -336,7 +334,7 @@ async def test_plugin_appears_in_catalog():
 
 ## Related Components
 
-- **SchemaBasedMixin** (`agent_system/tools/schema_mixin.py`) - Core schema loading logic
+- **SchemaBaseMixin** (`agent_system/core/schema_base_mixin.py`) - Core schema loading logic
 - **SchemaBasedToolServer** (`agent_system/tools/schema_based.py`) - For tool servers
 - **SchemaBasedPluginHook** (`agent_system/hooks/schema_based.py`) - For hook plugins
 - **PluginToolRegistry** (`agent_system/plugins/tool_adapter.py`) - Uses `get_schema_data()`
@@ -344,6 +342,5 @@ async def test_plugin_appears_in_catalog():
 
 ## See Also
 
-- [Plugin Architecture](plugin_architecture.md)
-- [Schema-Based Components](schema_based_components.md)
+- [Plugin Architecture](_arch_plugin_architecture.md)
 - [Plugin Authoring Guide](plugin_authoring.md)

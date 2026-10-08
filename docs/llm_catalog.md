@@ -255,17 +255,17 @@ Price table of 2026-08-20 (input / output / cache read per 1M tokens):
 | open-inference | 0.065 | 0.14 | 0.014 | fp4 |
 | relace | 0.07 | 0.14 | 0.014 | fp4 |
 | decart | 0.0765 | 0.153 | 0.0153 | fp4 |
-| **streamlake** | 0.0784 | 0.1568 | 0.0157 | **fp8** ← `order[0]` |
+| **streamlake** | 0.0784 | 0.1568 | 0.0157 | **fp8** |
 | **baidu** | 0.0798 | 0.1596 | 0.0160 | **fp8** |
-| **deepinfra** | 0.08 | 0.18 | 0.0160 | **fp8** |
+| **deepinfra** | 0.08 | 0.18 | 0.0160 | **fp8** ← `order[0]` |
 | deepseek (direct) | 0.22 | 0.66 | 0.007 | — |
 
 The three cheapest are **fp4-quantized**. For prose that is a quality
 risk not worth ~15 % savings — that is why `order` starts
-at the cheapest fp8. Whoever wants to try fp4: put `open-inference` at position 0
+at an fp8 endpoint. Whoever wants to try fp4: put `open-inference` at position 0
 and measure **on the output**, not on the invoice.
 
-**baidu is deliberately at the back**: it caps the output at 131072 tokens,
+**baidu is not in the order**: it caps the output at 131072 tokens,
 streamlake and deepinfra allow 384000. Three scorer agents request 262144 via
 `llm_params` and would abort with a 400 at baidu (review finding B4).
 
@@ -278,9 +278,8 @@ Context window: measured on the pinned endpoints (2026-08-20) — streamlake
 100k; **those** are the understatement, not the large value. A window that is too small
 would make the summarizer fire ten times too early.
 
-`deepseek-v4-pro` is pinned to the slug **0813**: newer generation *and*
-cheaper than the undated one (1.60/3.20 versus 1.205/3.614). There is no
-`latest` alias for Pro, but there is for Flash.
+`openrouter-deepseek-pro` uses the alias `~deepseek/deepseek-pro-latest`
+(order: alibaba, deepinfra).
 
 ## Why some entries set no `max_tokens`
 
@@ -414,13 +413,10 @@ is only imported when a model names the provider.
 
 ## Profiles
 
-`turbo-batch` is **no longer a twin of `turbo`.** `turbo` has pointed to
+There is **no `turbo-batch` profile** any more. `turbo` has pointed to
 gemini-3.5-flash-lite via OpenRouter since 2026-08-18, and there is no
-OpenRouter batch path (the factory only knows
-gemini/openai/anthropic as `batch_provider`). Whoever switches from `turbo` to
-`turbo-batch` to save money switches the model family:
-gpt-5.4-nano instead of gemini-flash-lite, 272k instead of 400k context, without
-`safety_settings` and without `provider_routing`.
+OpenRouter batch path (batch backends exist only for
+gemini/openai/openai_httpx/anthropic as `batch_provider`).
 
 `default_profile: or-deepseek-flash` (since 2026-08-20, before that `chat`):
 the same model family, but via OpenRouter — `chat` pointed to the

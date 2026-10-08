@@ -28,22 +28,17 @@ Each model's vision capabilities are defined in the `llm_system:` section:
 llm_system:
   models:
     gpt-5:
-      vision_support: true
-      max_image_size_mb: 20
-      supported_image_formats: [jpeg, jpg, png, gif, webp]
-      max_images_per_message: 10
-      image_detail_levels: [auto, low, high]
+      capabilities:
+        image_input: true
+        max_image_size: 20971520   # bytes
+        supported_image_formats: [jpeg, jpg, png, gif, webp]
+        image_detail_control: true
 ```
 
 **Key Parameters:**
-- `vision_support`: Enable/disable vision for this model
-- `max_image_size_mb`: Maximum file size per image (in megabytes)
-- `supported_image_formats`: Allowed image formats (lowercase)
-- `max_images_per_message`: Maximum number of images in a single message
-- `image_detail_levels`: Available detail modes:
-  - `auto`: Let model choose optimal detail level
-  - `low`: Faster, less detailed analysis (uses 85 tokens)
-  - `high`: Detailed analysis (uses 129 tokens + scaled by image size)
+- `image_input`: Enable/disable vision for this model
+- `max_image_size`, `supported_image_formats`, `image_detail_control`: describe the model;
+  nothing reads them today (no size or format check, no detail gate)
 
 ## WebUI Usage
 
@@ -75,19 +70,22 @@ llm_system:
 
 ### Image Validation
 
-The WebUI validates images before sending:
-- **Format**: Must be a supported image format (JPEG, PNG, GIF, WebP)
-- **Size**: Must not exceed model's `max_image_size_mb` limit
-- **Count**: Cannot exceed `max_images_per_message` limit
+The WebUI checks a file before it sends it: by its MIME type or else its extension (images jpg,
+jpeg, png, gif, webp; audio; text files), and at most 20 MB -- otherwise "Unsupported file type"
+or "File too large (max 20MB)".
 
-Invalid files trigger error messages:
-- "Invalid image format. Supported: jpeg, png, gif, webp"
-- "Image too large (25.3 MB). Maximum: 20 MB"
-- "Too many images (12). Maximum: 10"
+The server sorts an attachment by its extension when the request arrives:
+- **Format**: images (jpeg, jpg, jfif, jpe, png, gif, webp, bmp, tiff, tif), audio and text files
+  (text is inlined); a file with an unknown extension is skipped
+- **Size**: Not checked by the server (no size limit is applied on `/run`)
+- **Model**: The model must declare `capabilities.image_input: true`
+
+Refused attachments get HTTP 400 and the reason, e.g.:
+- "Model 'X' does not support image_input (1 attachment(s) given)"
 
 ## API Usage
 
-### Endpoint: `/run/multimodal`
+### Endpoint: `/run`
 
 Send multimodal requests with text and images using FormData.
 
@@ -102,7 +100,7 @@ Send multimodal requests with text and images using FormData.
 ### Example: cURL with Single Image
 
 ```bash
-curl -X POST http://127.0.0.1:8000/run/multimodal \
+curl -X POST http://127.0.0.1:8000/run \
   -F "task=What's in this image?" \
   -F "files=@/path/to/image.jpg"
 ```
@@ -110,7 +108,7 @@ curl -X POST http://127.0.0.1:8000/run/multimodal \
 ### Example: cURL with Multiple Images
 
 ```bash
-curl -X POST http://127.0.0.1:8000/run/multimodal \
+curl -X POST http://127.0.0.1:8000/run \
   -F "task=Compare these two screenshots" \
   -F "files=@screenshot1.png" \
   -F "files=@screenshot2.png"
@@ -121,7 +119,7 @@ curl -X POST http://127.0.0.1:8000/run/multimodal \
 ```python
 import requests
 
-url = "http://127.0.0.1:8000/run/multimodal"
+url = "http://127.0.0.1:8000/run"
 
 # Single image
 with open("diagram.png", "rb") as img:
@@ -155,7 +153,7 @@ formData.append('task', 'Describe this chart');
 const fileInput = document.querySelector('input[type="file"]');
 formData.append('files', fileInput.files[0]);
 
-const response = await fetch('http://127.0.0.1:8000/run/multimodal', {
+const response = await fetch('http://127.0.0.1:8000/run', {
     method: 'POST',
     body: formData
 });
@@ -166,37 +164,24 @@ console.log(result);
 
 ### Response Format
 
-**Success (200 OK):**
+**Success (200 OK, `text/event-stream`):** the run's events, e.g.
 ```
 The image shows a bar chart with quarterly sales data...
 ```
 
 **Error Responses:**
 
-- **400 Bad Request**: Invalid image format or validation error
+- **400 Bad Request**: Image refused (unsupported by the model or unreadable)
 ```json
 {
-  "detail": "Image format 'tiff' not supported. Supported formats: jpeg, png, gif, webp"
+  "detail": "Model 'X' does not support image_input (1 attachment(s) given)"
 }
 ```
 
-- **413 Payload Too Large**: Image exceeds size limit
+- **400 Bad Request**: Neither `task` nor files given
 ```json
 {
-  "detail": "Image 'large.jpg' size (25.5 MB) exceeds maximum 20 MB"
-}
-```
-
-- **422 Unprocessable Entity**: Missing required parameters
-```json
-{
-  "detail": [
-    {
-      "loc": ["body", "task"],
-      "msg": "field required",
-      "type": "value_error.missing"
-    }
-  ]
+  "detail": "Missing 'task' in request"
 }
 ```
 
@@ -221,7 +206,7 @@ Standard web image formats are supported:
 
 ### Size Limits
 
-Size limits vary by model (configured in `llm_system:` section):
+Size limits vary by model and are enforced by the provider, not by `/run` (`capabilities.max_image_size` only describes them):
 - **GPT-5**: 20 MB per image
 - **GPT-5-mini**: 5 MB per image
 - **Custom models**: Check config
@@ -239,8 +224,7 @@ OpenAI vision models support detail level control:
 - **`low`**: Faster, uses 85 tokens regardless of image size
 - **`high`**: Detailed analysis, higher token cost (129 base + scaled)
 
-**Setting detail level** (currently applies to all images):
-Configure in `llm_system:` section under model's `default_image_detail` parameter.
+**Setting detail level**: per image via `ImageContent.detail` (`auto`, `low`, `high`); it is sent as it is, whatever the model declares.
 
 ## Message Structure
 
@@ -263,7 +247,7 @@ msg2 = ChatMessage(
     content=[
         TextContent(text="What's in this image?"),
         ImageContent(
-            image_url=ImageSource(url="https://example.com/image.jpg")
+            source=ImageSource(type="url", url="https://example.com/image.jpg")
         )
     ]
 )
@@ -274,7 +258,7 @@ msg3 = ChatMessage(
     content=[
         TextContent(text="Analyze this chart"),
         ImageContent(
-            image_url=ImageSource(url="data:image/png;base64,iVBORw0KG...")
+            source=ImageSource(type="base64", media_type="image/png", data="iVBORw0KG...")
         )
     ]
 )
@@ -308,15 +292,13 @@ llm_system:
   models:
     gpt-5:
       # Vision support
-      vision_support: true
-      max_image_size_mb: 20
-      supported_image_formats: [jpeg, jpg, png, gif, webp]
-      max_images_per_message: 10
-      image_detail_levels: [auto, low, high]
-      default_image_detail: auto
-      
-      # Other capabilities
-      text_generation: true
+      capabilities:
+        image_input: true
+        max_image_size: 20971520   # bytes
+        supported_image_formats: [jpeg, jpg, png, gif, webp]
+        image_detail_control: true
+
+      # Other settings
       max_tokens: 128000
       temperature: 1.0
       # ... (see llm_system configuration for full options)
@@ -329,11 +311,10 @@ To enable vision for a new model:
 1. Add model configuration to `llm_system:` section:
 ```yaml
 my-custom-vision-model:
-  vision_support: true
-  max_image_size_mb: 10
-  supported_image_formats: [jpeg, png]
-  max_images_per_message: 5
-  image_detail_levels: [auto]
+  capabilities:
+    image_input: true
+    max_image_size: 10485760   # bytes
+    supported_image_formats: [jpeg, png]
 ```
 
 2. Update model routing logic if needed (see `src/agent_system/llm/capabilities.py`)
@@ -342,27 +323,27 @@ my-custom-vision-model:
 
 ## Troubleshooting
 
-### Error: "Image format 'X' not supported"
+### Error: "Unsupported file type" (WebUI)
 
-**Cause:** Image format not in model's `supported_image_formats` list
+**Cause:** Neither the file's MIME type nor its extension is one of the image, audio or text types
+the WebUI knows
 
 **Solution:** 
 - Convert image to JPEG or PNG
-- Check model config in `llm_system:` configuration section
 - Verify file extension matches actual format
 
 ### Error: "Image too large"
 
-**Cause:** Image exceeds `max_image_size_mb` limit
+**Cause:** Image exceeds the provider's size limit
 
 **Solution:**
 - Compress image (reduce quality or resize)
 - Use online tools like TinyPNG or ImageOptim
 - Switch to a model with higher size limits
 
-### Error: "Model does not support vision"
+### Error: "Model '...' does not support image_input"
 
-**Cause:** Selected model has `vision_support: false`
+**Cause:** Selected model has `capabilities.image_input: false`
 
 **Solution:**
 - Use a vision-capable model (GPT-5, GPT-4.1, etc.)
@@ -408,7 +389,7 @@ my-custom-vision-model:
 
 - Send multiple related images together
 - Use clear numbering: "Image 1 shows..., Image 2 shows..."
-- Stay within `max_images_per_message` limit
+- Keep the number of images per message small
 
 ### 4. Error Handling
 
@@ -421,8 +402,6 @@ try:
 except requests.HTTPError as e:
     if e.response.status_code == 400:
         print(f"Validation error: {e.response.json()['detail']}")
-    elif e.response.status_code == 413:
-        print("Image too large")
 ```
 
 ### 5. Token Costs
@@ -476,18 +455,6 @@ except requests.HTTPError as e:
 
 ## Advanced Usage
 
-### Custom Detail Levels (Future)
-
-Currently, detail level applies globally via config. Future enhancements may support per-image detail:
-
-```python
-# Planned API (not yet implemented)
-ImageContent(
-    image_url=ImageSource(url="..."),
-    detail="high"  # Override default
-)
-```
-
 ### Audio/Video Support (Future)
 
 The message structure supports audio and video content types:
@@ -506,15 +473,13 @@ These are prepared for future model capabilities but not yet functional.
 
 ## See Also
 
-- [LLM Configuration Guide](server_configuration.md#llm-configuration)
-- [API Design Documentation](plugin_web_api_design.md)
-- [Vision Research Document](vision_llm_research.md)
+- [Configuration](configuration.md)
 - [Plugin Authoring Guide](plugin_authoring.md)
 
 ## Support
 
 For issues, questions, or feature requests:
-1. Check existing tests in `tests/test_llm_models_multimodal.py`
+1. Check existing tests in `tests/llm/test_llm_models_multimodal.py`
 2. Review capability config in `llm_system:` configuration section
 3. Check API logs in `logs/api.log`
 4. Consult source code in `src/agent_system/llm/`
