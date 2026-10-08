@@ -230,5 +230,7 @@ def test_state_changes_take_json_only(db):
                     data={"username": "mallory", "email": "m@example.com", "password": PASSWORD, "role": "admin"})
     put = web.put(f"/plugins/user_management/users/{ids(db).bob}", headers={**as_user("root"), "Content-Type": "text/plain"},
                   content='{"role": "admin"}')
-    assert [plain.status_code, untyped.status_code, form.status_code, put.status_code] == [422, 415, 422, 422]
+    # untyped: fastapi refuses a body without a Content-Type itself since 0.13x (strict_content_type); before, it read
+    # it as JSON and only create_user's own check answered, with 415
+    assert [plain.status_code, untyped.status_code, form.status_code, put.status_code] == [422, 422, 422, 422]
     assert snapshot(db) == before
