@@ -39,8 +39,9 @@ if [ -x .venv/bin/python ]; then BIN=.venv/bin; elif [ -x .venv/Scripts/python.e
 fi
 
 "$BIN/python" -m pip install -U pip
-if [ "$(uname -s)" = Linux ] && ! command -v nvidia-smi >/dev/null 2>&1; then
-  # No NVIDIA GPU: the CPU build of PyTorch, not the CUDA build pip would take (several GB more).
+if [ -f requirements/private.txt ] && [ "$(uname -s)" = Linux ] && ! command -v nvidia-smi >/dev/null 2>&1; then
+  # Only private.txt pulls in PyTorch (as in the Dockerfile). No NVIDIA GPU: the CPU build of PyTorch,
+  # not the CUDA build pip would take (several GB more).
   "$BIN/python" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 fi
 "$BIN/python" -m pip install -e .

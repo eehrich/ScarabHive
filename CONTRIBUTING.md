@@ -33,9 +33,10 @@ Two things to know about a fresh install:
   macOS `brew install cairo pkg-config`, then
   `pip install -r requirements/optional.txt`. Without it the tests that draw an
   SVG skip.
-- **PyTorch.** The dependency set includes `torch`. On Linux x86_64 the PyPI
-  build brings several GB of CUDA libraries. If you do not need a GPU, install
-  the CPU build before the rest:
+- **PyTorch.** Only `requirements/private.txt` (further plugin roots, not part
+  of this release) pulls in `torch`. On Linux x86_64 the PyPI build brings
+  several GB of CUDA libraries. If you do not need a GPU, install the CPU build
+  before the rest:
   `pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio`.
 
 Dependencies are aggregated: `pyproject.toml` reads `requirements/all.txt`,
