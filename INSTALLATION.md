@@ -9,8 +9,7 @@ This gets ScarabHive running on one machine: the web UI at `http://127.0.0.1:800
 - **Python 3.11 or newer** (3.12 recommended; the Docker image uses it), and git. Check with
   `python --version` (`python3 --version` on Linux and macOS; on Windows `py --version` if
   `python` opens the Microsoft Store). On Debian/Ubuntu also `sudo apt-get install python3-venv`.
-- **A few GB of disk**: the dependencies include PyTorch. The first installation takes many
-  minutes.
+- **About 2 GB of disk** and network access to PyPI. The first installation takes a few minutes.
 - **Optional, for SVG layers in images:** the cairo library, pkg-config, a C compiler and
   Python's headers. Outside Windows, `pycairo` is built from source against them. You need not install them yourself: the
   install script does where it can, and without them everything but SVG layers works.
@@ -38,8 +37,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1    # Windows, PowerShell
 
 The script:
 
-1. Creates the virtual environment `.venv` and installs ScarabHive into it. On Linux without an
-   NVIDIA GPU it takes the CPU build of PyTorch, which is several GB smaller.
+1. Creates the virtual environment `.venv` and installs ScarabHive into it.
 2. Installs the optional part, `requirements/optional.txt`: today reportlab's cairo backend,
    which draws SVG layers in images (on Windows it comes ready-built). Where cairo, a compiler or
    Python's headers are missing, `install.sh` installs them first -- cairo with Homebrew on macOS
@@ -104,9 +102,10 @@ This is what the script does, step by step:
 ```bash
 python -m venv .venv
 
-source .venv/Scripts/activate      # Windows, Git Bash
+# Activate it with the line for your system:
+source .venv/bin/activate          # Linux/macOS
+# source .venv/Scripts/activate    # Windows, Git Bash
 # .venv\Scripts\Activate.ps1       # Windows, PowerShell
-# source .venv/bin/activate        # Linux/macOS
 
 pip install -U pip
 pip install -e .
@@ -120,8 +119,6 @@ agent-api
   active. **On Windows**, type `py` if `python` opens the Microsoft Store.
 - **PowerShell refuses `Activate.ps1`** ("running scripts is disabled on this system"): run
   `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then activate again.
-- **Linux without an NVIDIA GPU:** before `pip install -e .`, run
-  `pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu`.
 
 Keys can also be written into `config/local.env` by hand, one `NAME=value` line each, for
 example `OPENROUTER_API_KEY=sk-or-v1-...`. The template `config/secrets.env.example` lists
@@ -217,6 +214,8 @@ downloaded once, on first use, into `~/.cache/chroma`, so that first use needs n
 | `running scripts is disabled on this system` | PowerShell's execution policy: start the script as shown in step 2. |
 | `agent-cli: command not found`, or `The term 'agent-cli' is not recognized` | The virtual environment is not activated (see *Installing by hand*). |
 | `Config references N unset variable(s): ...` at every start | Normal for the services you do not use. Only the key of the provider your agents run on (`OPENROUTER_API_KEY` as shipped) must not be in the list. |
+| `Agent '...': LLM initialization failed: OPENROUTER_API_KEY is required ...` for many agents at start; `Skipping plugin llm_...: entrypoint file ... not found` | Before the key is entered, the first is expected: enter it as in section 3. The second is normal: provider and agent-only plugins have no `plugin.py`. |
+| The chat answers `Failed to apply LLM profile: OPENROUTER_API_KEY is required ...`, the chat test `No answer ValueError: OPENROUTER_API_KEY is required ...`, or `agent-cli` says `No LLM available; agent requires an LLM to run` | No key for the provider of the agent's model: enter it in the Setup panel (section 3) or in `config/local.env`. `agent-cli` reads the file at its start. |
 | `Refusing to start: auth.secret_key is empty ...` or `... has N characters, at least 32 are needed` | The signing key is missing or too short: run `python -m agent_system.config.local_layer signing-key` in the activated virtual environment. |
 | `auth.secret_key is a published default ...` in the log | The installation still signs logins with the key from the repository: use *Make an own signing key* in the Setup panel, then restart. |
 | The admin password is lost | In the activated virtual environment: `agent-cli users update admin -p <new password>`. That also ends the admin's logins and revokes its API key; whatever used the key needs a new one (`agent-cli users generate-api-key admin`). Running the install script again does not reset the password. |
