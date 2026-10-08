@@ -13,37 +13,30 @@ MCP servers are configured in `config/mcp_servers.yaml`:
 ```yaml
 # External MCP server connections
 external_servers:
-  weather_service:
-    url: "https://api.weather.com/mcp"
+  remote_servers:
+    weather_service:
+      url: "https://api.weather.com/mcp"
+      enabled: true
+      description: "Weather data and forecasting"
+      auth:
+        type: "api_key"
+        api_key: "${WEATHER_API_KEY}"
+        api_key_header: "X-API-Key"
+      timeout: 30.0
+      features:
+        tools: true
+      tools:
+        blocked: ["admin_tools"]   # the only list that takes effect here
+
+  # Connection and cache settings
+  connection:
+    timeout: 5.0
+    parallel_connect: true
+
+  cache:
     enabled: true
-    description: "Weather data and forecasting"
-    auth:
-      type: "api_key"
-      api_key: "${WEATHER_API_KEY}"
-      api_key_header: "X-API-Key"
-    ssl_verify: true
-    timeout: 30.0
-    max_retries: 3
-    retry_delay: 1.0
-    features:
-      tools: true
-      resources: true
-      prompts: true
-    tools:
-      allowed: ["get_forecast", "get_current"]
-      blocked: ["admin_tools"]
-    tags: ["weather", "data"]
-    priority: 50
-
-# Connection and cache settings
-connection:
-  timeout: 5.0
-  parallel_connect: true
-
-cache:
-  enabled: true
-  tool_list_ttl: 30.0
-  max_size: 1000
+    tool_list_ttl: 30.0
+    max_size: 1000
 ```
 
 **Note**: System-wide settings (ports, security, etc.) are configured in `config/config.yaml`.
@@ -165,7 +158,6 @@ Control which tools are available from external servers:
 
 ```yaml
 tools:
-  prefix: "external_"          # Add prefix to all tool names
   blocked: ["delete", "admin"]   # These tools blocked
 ```
 
@@ -175,35 +167,17 @@ which tools an agent may call is governed by its `agent_config.tools.allowed`.
 
 ### Resources Filtering
 
-Similar filtering for resources:
-
-```yaml
-resources:
-  prefix: "res_"
-  allowed: ["documents", "images"]
-  blocked: ["sensitive_data"]
-```
+Not supported: a server entry has no `resources` key (the config model drops it).
 
 ### Prompts Filtering
 
-Control prompt availability:
-
-```yaml
-prompts:
-  prefix: "prompt_"
-  allowed: ["generate", "summarize"]
-  blocked: ["system_prompts"]
-```
+Not supported: a server entry has no `prompts` key (the config model drops it).
 
 ## Complete Example
 
 ```yaml
-mcp:
-  enabled: true
-  expose_local_server: true
-  local_server_port: 8000
-
-  external_servers:
+external_servers:
+  remote_servers:
     # Weather service with API key auth
     weather_api:
       url: "https://api.weather.com/mcp"
@@ -217,10 +191,6 @@ mcp:
         tools: true
         resources: false
         prompts: true
-      tools:
-        prefix: "weather_"
-        allowed: ["forecast", "current", "alerts"]
-      priority: 10
 
     # Database service with bearer token
     database_service:
@@ -230,16 +200,13 @@ mcp:
       auth:
         type: "bearer"
         bearer_token: "${DB_ACCESS_TOKEN}"
-      ssl_verify: true
       timeout: 60.0
       features:
         tools: true
         resources: true
         prompts: false
       tools:
-        prefix: "db_"
         blocked: ["delete", "drop", "truncate"]
-      priority: 20
 
     # Analytics service with basic auth
     analytics:
@@ -253,9 +220,6 @@ mcp:
         tools: true
         resources: true
         prompts: true
-      tools:
-        prefix: "analytics_"
-      priority: 30
 ```
 
 ## Entry Agent Selection (Dynamic)
@@ -266,13 +230,13 @@ registered agent server acts as the primary entry point for `/run` and `/events`
 Add to your top-level configuration (e.g. `agent.yaml` or merged config):
 
 ```yaml
-entry_agent: basic_agent
+default_agent: basic_agent
 ```
 
 Behavior:
-* If `entry_agent` matches a plugin-provided agent (e.g. `basic_agent`), that instance is used.
-* If it does not exist, a core `Agent` is created under that name.
-* For backward compatibility an alias `agent` is also registered pointing to the chosen entry agent.
+* If `default_agent` matches a plugin-provided agent (e.g. `basic_agent`), that instance is used.
+* If it does not exist, the API creates a core `Agent` under that name from `plugins.default_config` (the CLI refuses it).
+* If `default_agent` is empty, the name `agent` is used.
 * Legacy module `main_agent.py` has been deprecated and replaced by this dynamic selection.
 
 ## Per-Agent Tool Allow / Deny Lists
@@ -284,49 +248,50 @@ servers:
   basic_agent:
     type: basic_agent
     agent_config:
-      allowed_tools:
-        - "web_scraper/*"
-        - "web_research_agent/*"
-      blocked_tools:
-        - "web_scraper.experimental_*"
+      tools:
+        allowed:
+          - "web_scraper/*"
+          - "web_research_agent/*"
+        blocked:
+          - "web_scraper.experimental_*"
 ```
 
 Policy:
-* Default is DENY-ALL if `allowed_tools` is absent or empty.
-* `allowed_tools` patterns support:
+* Default is DENY-ALL if `tools.allowed` is absent or empty.
+* `tools.allowed` patterns support:
   * `plugin` or `plugin/*` – all tools from a plugin
   * `plugin.function` – single function
   * `external_server/*` or `external_server.tool`
   * `*` – allow everything (use cautiously)
-* `blocked_tools` (if present) is applied after allow filtering and subtracts matches.
+* `tools.blocked` (if present) is applied after allow filtering and subtracts matches.
 * Unmatched patterns are logged at DEBUG level to help diagnose typos.
 
 Diagnostics Endpoints:
 * `GET /agents` – list agent servers.
 * `GET /agents/{name}/allowed-tools` – effective filtered list (already filtered, default deny may yield empty list).
-* `GET /agents/{name}/allowed-tools/debug` – includes which patterns matched each tool.
+* `GET /agents/debug/{name}/allowed-tools` (admin) – which patterns matched each server.
 
 Examples:
 
 | Configuration | Effective result |
 |---------------|------------------|
-| (no allowed_tools) | No tools available to that agent |
-| allowed_tools: ["*"] | All discovered tool servers available |
-| allowed_tools: ["web_scraper/*", "datetime.*"], blocked_tools: ["datetime.legacy_*"] | Only web_scraper tools and datetime.* minus legacy_* |
+| (no tools.allowed) | No tools available to that agent |
+| tools.allowed: ["*"] | All discovered tool servers available |
+| tools.allowed: ["web_scraper/*", "datetime.*"], tools.blocked: ["datetime.legacy_*"] | Only web_scraper tools and datetime.* minus legacy_* |
 
 ## Migration Notes
 
 | Legacy | New Approach |
 |--------|--------------|
-| `MainAgent` class | Removed; use `entry_agent` selection |
+| `MainAgent` class | Removed; use `default_agent` selection |
 | Implicit all tools available | Default deny-all until explicitly allowed |
 | Ad-hoc tool filtering in code | Centralized in `Agent.list_usable_tools()` |
 
 To migrate existing deployments:
-1. Add an explicit `entry_agent` if you relied on a custom main agent.
-2. Add `allowed_tools` lists for each agent that should have tool access.
+1. Add an explicit `default_agent` if you relied on a custom main agent.
+2. Add `tools.allowed` lists for each agent that should have tool access.
 3. (Optional) Use `*` temporarily while phasing in tighter allow lists.
-4. Verify via `/agents/{entry_agent}/allowed-tools/debug`.
+4. Verify via `/agents/{default_agent}/allowed-tools`, and `/agents/debug/{default_agent}/allowed-tools` for the matched patterns.
 
 
 ## Usage Examples
@@ -336,16 +301,13 @@ To migrate existing deployments:
 ```python
 from agent_system.tools import ToolServerIntegration
 
-# Initialize with configuration
-mcp = ToolServerIntegration(config=config_dict)
-await mcp.initialize()
+# Initialize with configuration (an AgentSystemConfig)
+mcp = ToolServerIntegration(config=config)
+await mcp.initialize(config)
 
 # List all available tools
 tools = await mcp.list_all_tools()
 print(f"Available tools: {tools}")
-
-# Get FastAPI app with MCP endpoints
-app = mcp.get_app()
 
 # Shutdown when done
 await mcp.shutdown()
@@ -365,9 +327,9 @@ python -m agent_system.app
 
 1. **Environment Variables**: Always use environment variables for secrets
 2. **SSL Verification**: Keep `ssl_verify: true` for production
-3. **Rate Limiting**: Configure appropriate rate limits
+3. **Rate Limiting**: Configure appropriate rate limits (`auth.requests_per_minute`)
 4. **Tool Filtering**: Use allowlists for critical services
-5. **Network Security**: Restrict `allowed_origins` in production
+5. **Network Security**: Restrict `auth.cors_origins` in production
 6. **Regular Rotation**: Rotate API keys and tokens regularly
 
 ## Troubleshooting
@@ -382,9 +344,8 @@ python -m agent_system.app
 ### Performance Issues
 
 1. Adjust timeout values
-2. Reduce `max_concurrent_requests`
-3. Enable health checks for early detection
-4. Monitor server response times
+2. Set a per-server `timeout` for slow servers
+3. Monitor server response times
 
 ### Authentication Problems
 
@@ -395,20 +356,12 @@ python -m agent_system.app
 
 ## Advanced Configuration
 
-### Health Checks
-
-```yaml
-mcp:
-  enable_health_checks: true
-  health_check_interval: 300.0  # Check every 5 minutes
-```
-
 ### Rate Limiting
 
 ```yaml
-mcp:
-  rate_limit_requests: 1000   # Max requests per window
-  rate_limit_window: 3600     # Window size in seconds
+auth:
+  rate_limit_enabled: true
+  requests_per_minute: 60
 ```
 
 ### Web Scraper Proxy Configuration
@@ -416,13 +369,14 @@ mcp:
 The web scraper plugin supports proxy rotation to avoid IP-based blocking. Configure proxies in your `config/plugins.yaml`:
 
 ```yaml
-servers:
-  web_scraper:
-    type: web_scraper
-    proxies:
-      - "http://proxy1.example.com:8080"
-      - "https://proxy2.example.com:8080"
-      - "socks5://proxy3.example.com:1080"
+plugins:
+  servers:
+    web_scraper:
+      type: web_scraper
+      proxies:
+        - "http://proxy1.example.com:8080"
+        - "https://proxy2.example.com:8080"
+        - "socks5://proxy3.example.com:1080"
 ```
 
 #### Proxy Options
@@ -443,8 +397,8 @@ The web scraper automatically rotates through configured proxies based on the ta
 ### CORS Configuration
 
 ```yaml
-mcp:
-  allowed_origins:
+auth:
+  cors_origins:
     - "http://localhost:3000"
     - "https://your-frontend.com"
 ```

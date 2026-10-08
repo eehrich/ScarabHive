@@ -33,13 +33,13 @@ Other Agent → ToolSchemaBuilder.build_schemas()
 ### 2. INTERNAL: What This Agent CAN USE
 
 ```python
-async def list_usable_tools(self) -> List[str]:
+async def list_usable_tools(self) -> tuple[list[str], list[str] | None, list[str] | None]:
     """Return list of tool names this agent CAN USE (filtered by agent config)."""
 ```
 
 - **Purpose**: Get tools available for this agent's execution
 - **Used by**: `_run_events()` to build LLM prompt with available tools
-- **Returns**: List of tool server names (filtered by `agent_config.tools.allowed`)
+- **Returns**: Tuple of (tool server names filtered by `agent_config.tools.allowed`, allowed patterns, blocked patterns)
 - **Example**: `["datetime", "web_search", "other_agent"]`
 - **Think**: "What can I call during my execution?"
 
@@ -47,7 +47,7 @@ async def list_usable_tools(self) -> List[str]:
 ```
 Agent._run_events() → self.list_usable_tools()
                    → ToolDiscoveryService.discover_allowed_tools()
-                   → Returns: ["datetime", "web_search", ...]
+                   → Returns: (["datetime", "web_search", ...], allowed, blocked)
 ```
 
 ### 3. UTILITY: Detailed Info for User-Facing Endpoints
@@ -67,7 +67,7 @@ async def _list_usable_tools_with_details(self, params: Dict[str, Any]) -> List[
 | Method | Purpose | Returns | Used By |
 |--------|---------|---------|---------|
 | `list_tools()` | What I OFFER | `List[ToolDef]` | ToolServer interface, ToolSchemaBuilder |
-| `list_usable_tools()` | What I CAN USE | `List[str]` | Internal execution (_run_events) |
+| `list_usable_tools()` | What I CAN USE | `(List[str], allowed, blocked)` | Internal execution (_run_events) |
 | `_list_usable_tools_with_details()` | What I CAN USE (detailed) | `List[Dict]` | BasicAgent tools, API endpoints |
 
 ## Common Confusion Patterns
@@ -82,7 +82,7 @@ tools = await agent.list_tools()
 ### ✅ CORRECT: Getting tools the agent can use
 ```python
 # This gets what the agent CAN USE internally
-tool_names = await agent.list_usable_tools()
+tool_names, _allowed, _blocked = await agent.list_usable_tools()
 # tool_names = ["datetime", "web_search", "other_agent"]
 ```
 
@@ -96,7 +96,7 @@ tools = await agent.list_tools()
 ### ✅ CORRECT: Getting filtered tools
 ```python
 # list_usable_tools() respects agent_config.tools.allowed patterns
-tool_names = await agent.list_usable_tools()
+tool_names, _allowed, _blocked = await agent.list_usable_tools()
 # Filtered based on agent_config.tools.allowed = ["datetime/*"]
 ```
 
@@ -130,7 +130,7 @@ Think of Agent as having two "faces":
 # Agent A wants to use Agent B as a tool
 
 # Step 1: Agent A queries what tools are available
-available_tool_names = await agent_a.list_usable_tools()
+available_tool_names, _, _ = await agent_a.list_usable_tools()
 # Returns: ["datetime", "agent_b", "web_search"]
 
 # Step 2: ToolSchemaBuilder builds schemas for each tool

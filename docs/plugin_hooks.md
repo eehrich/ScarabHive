@@ -488,6 +488,7 @@ class HookContext:
     step: int = 0
     llm: Optional[Any] = None
     cancellation_token: Optional[Any] = None
+    user_id: Optional[str] = None  # the user the run belongs to
     # llm_request_payload, llm_response_data, llm_provider, llm_model,
     # llm_request_url, llm_duration_ms, llm_error, llm_usage,
     # llm_finish_reason, llm_is_streaming: pre_llm_request / post_llm_response
@@ -1019,5 +1020,5 @@ grep "Registered hook" logs/cli.log | grep inject_todo_tasks
 
 **Related Documentation:**
 - [Plugin Authoring Guide](./plugin_authoring.md)
-- [Configuration Reference](../config/README.md)
-- [API Reference](./api_reference.md)
+- [Configuration Reference](./configuration.md)
+- [App Architecture](./_arch_app_architecture.md)

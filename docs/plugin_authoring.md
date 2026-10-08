@@ -724,7 +724,7 @@ web_ui:
     title: "My Plugin"                        # required
     description: "Plugin description for UI"  # shown and searched in the launcher
     icon: wrench                              # required: a symbol id in static/kit/icons.svg
-    category: agents                          # required: session, context, agents, debug, system, admin
+    category: agents                          # required: session, writer, context, agents, debug, system, admin
     keywords: [dashboard, data]               # optional search words
     window: {width: 800, height: 600}         # optional: size of the detached window
     contexts:                                 # optional entry points from the chat: session, request
@@ -765,7 +765,7 @@ not parse is left out of the catalogue with an error log.
 - `endpoint` (required): URL of the panel page; `{{ name }}` is the plugin instance
 - `title` (required): name in the launcher, on the tab and in the window bar
 - `icon` (required): a symbol id from `static/kit/icons.svg` (all of them render at `/ui/kit`)
-- `category` (required): one of `session`, `context`, `agents`, `debug`, `system`, `admin`
+- `category` (required): one of `session`, `writer`, `context`, `agents`, `debug`, `system`, `admin`
 - `description`: one sentence, shown and searched in the launcher
 - `keywords`: search words that are not in the title
 - `window`: `{width, height}` of the detached window
@@ -2018,6 +2018,7 @@ from agent_system.ui.resources import ui_templates
 class MyWebEndpoints(PluginWebInterface):
     def __init__(self, name: str, config: dict):
         self.name = name
+        self.config = config
 
         # Setup templates and static files
         self.templates_dir = Path(__file__).parent / "templates"

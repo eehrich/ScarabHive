@@ -14,7 +14,7 @@ The Agent System implements real-time streaming of status events during parallel
      (the sole production interface; the old `execute_tools()` wrapper was removed)
 
 2. **StatusEventForwarder** (`src/agent_system/servers/agent/components/status_forwarding.py`)
-   - Collects status events from `status_bus` in background task
+   - Collects status events from `status_bus` via a direct handler (no background task)
    - Provides `get_pending_events()` for polling
    - Automatically resets state between requests
 
@@ -67,11 +67,11 @@ async for item in execute_tools_streaming(...):
 ```
 
 ### 3. Zero CPU Overhead
-Background status collection uses blocking `queue.get()`:
+Status collection uses a direct `status_bus` handler that appends matching events to a list (no queue, no background task):
 
 ```python
-# Blocks efficiently until event arrives
-status_event = await self.status_queue.get()  # No timeout!
+# DirectStatusHandler.process(): append events for this request (or its sub-requests)
+self.events_list.append(status_sse_event)
 ```
 
 ### 4. Request ID Hierarchy
@@ -98,7 +98,11 @@ async def execute_tools_streaming(
     tool_name_mapping: Dict[str, str],
     available_tools: List[str],
     step: int,
-    request_id: str | None = None
+    request_id: str | None = None,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    status_forwarder: Optional[StatusEventForwarder] = None,
+    ...
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Yields:
@@ -162,8 +166,8 @@ messages, events, results = await execute_tools_collect(tool_execution_manager, 
 ```python
 # 1. Request starts
 await status_forwarder.start_forwarding(request_id)
-  ↓ Resets: forwarding_done, forwarding_ready, first_get_started
-  ↓ Starts: Background collection task
+  ↓ Resets: status_events_to_forward, _open_deltas
+  ↓ Registers: DirectStatusHandler on status_bus
 
 # 2. During execution
 async for item in execute_tools_streaming(...):
@@ -172,16 +176,15 @@ async for item in execute_tools_streaming(...):
 
 # 3. Request ends
 await status_forwarder.stop_forwarding()
-  ↓ Cancels background task
-  ↓ Cleans up queue subscription
+  ↓ Removes the status_bus handler
 ```
 
 ### Multi-Request Support
 
 Each request gets:
-- Fresh StatusEventForwarder state (via `.clear()` on Events)
+- Fresh StatusEventForwarder (created per request in `run_events()`)
 - Unique request_id hierarchy (base + suffixes)
-- Independent background collection task
+- Independent status_bus handler
 
 ## Testing
 
@@ -191,14 +194,14 @@ Each request gets:
 async def test_streaming_status_events():
     """Test that status events are streamed during tool execution"""
     forwarder = StatusEventForwarder()
-    manager = ToolExecutionManager(registry, agent, status_forwarder=forwarder)
+    manager = ToolExecutionManager(registry, agent)
     
     # Start forwarding
     await forwarder.start_forwarding("test123")
     
     # Collect streamed events
     status_events = []
-    async for item in manager.execute_tools_streaming(...):
+    async for item in manager.execute_tools_streaming(..., status_forwarder=forwarder):
         if item["type"] == "status":
             status_events.append(item["event"])
     
@@ -208,7 +211,7 @@ async def test_streaming_status_events():
 
 ### Integration Tests
 
-See `tests/test_agent_streaming_status.py` for full examples.
+See `tests/tool/test_tool_execution_streaming.py` for full examples.
 
 ## Troubleshooting
 
@@ -217,19 +220,19 @@ See `tests/test_agent_streaming_status.py` for full examples.
 **Symptom**: No status events during tool execution
 
 **Causes**:
-1. StatusEventForwarder not injected into ToolExecutionManager
-2. Background task not started (`start_forwarding()` not called)
+1. StatusEventForwarder not passed to `execute_tools_streaming(status_forwarder=...)`
+2. Handler not registered (`start_forwarding()` not called)
 3. Events filtered out (wrong request_id)
 
-**Fix**: Ensure proper initialization in `Agent.__init__()`:
+**Fix**: Ensure a per-request forwarder is created and passed (as in `Agent.run_events()`):
 
 ```python
-self._status_event_forwarder = StatusEventForwarder()
-self._tool_execution_manager = ToolExecutionManager(
-    registry, 
-    self, 
-    status_forwarder=self._status_event_forwarder
-)
+status_forwarder = StatusEventForwarder()
+await status_forwarder.start_forwarding(request_id)
+async for item in self._tool_execution_manager.execute_tools_streaming(
+    ..., status_forwarder=status_forwarder
+):
+    ...
 ```
 
 ### Events Appear Only at End
@@ -237,14 +240,14 @@ self._tool_execution_manager = ToolExecutionManager(
 **Symptom**: All status events arrive after tool completion
 
 **Causes**:
-1. Using `execute_tools()` instead of `execute_tools_streaming()`
+1. Collecting all items (e.g. `execute_tools_collect()`) instead of yielding from `execute_tools_streaming()`
 2. Not yielding status events in the generator loop
 
 **Fix**: Use streaming version:
 
 ```python
 # Wrong (buffered)
-messages, events, results = await execute_tools(...)
+messages, events, results = await execute_tools_collect(manager, ...)
 
 # Right (streaming)
 async for item in execute_tools_streaming(...):
@@ -260,14 +263,14 @@ async for item in execute_tools_streaming(...):
 1. Polling timeout too aggressive (<10ms)
 2. Busy-wait loop in status collection
 
-**Fix**: Verify blocking queue.get():
+**Fix**: Verify the poll timeout in `execute_tools_streaming()`:
 
 ```python
-# Efficient (blocking)
-status_event = await self.status_queue.get()  # No timeout!
+# Efficient (50ms)
+done, pending = await asyncio.wait(pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED)
 
 # Inefficient (spinning)
-await asyncio.wait_for(queue.get(), timeout=0.001)  # Too fast!
+await asyncio.wait(pending, timeout=0.001)  # Too fast!
 ```
 
 ## Future Improvements
@@ -281,7 +284,7 @@ await asyncio.wait_for(queue.get(), timeout=0.001)  # Too fast!
 
 ### Backward Compatibility
 
-The `execute_tools()` wrapper ensures existing tests and code continue working without changes. New code should use `execute_tools_streaming()` for optimal performance.
+The `execute_tools()` wrapper was removed; tests use `execute_tools_collect()` from `tests/tool_execution_test_helpers.py`. New code should use `execute_tools_streaming()` for optimal performance.
 
 ## References
 

@@ -73,8 +73,8 @@ The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) pr
    - `get_optional_user`: Allow both authenticated and anonymous access
 
 7. **API Endpoints**
-   - **Auth Endpoints** (`src/api/auth_endpoints.py`): `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`, API key management
-   - **Admin Endpoints** (`src/api/admin_endpoints.py`): `/admin/users/*` for user management (admin-only)
+   - **Auth Endpoints** (`src/agent_system/api/auth_endpoints.py`): `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`, API key management
+   - **Admin Endpoints** (`src/agent_system/api/admin_endpoints.py`): `/admin/users/*` for user management (admin-only)
 
 8. **CLI Commands (`src/agent_system/cli_utils/users.py`)**
    - `agent-cli users list`: List all users
@@ -224,7 +224,7 @@ auth:
    - JWT tokens and API keys are sensitive credentials
 
 4. **Rate Limiting**
-   - Adjust `rate_limit_per_minute` based on your needs
+   - Adjust `requests_per_minute` based on your needs
    - Monitor for abuse patterns
 
 5. **CORS Configuration**
@@ -268,7 +268,7 @@ The setting is read on every request, so `agent-cli reload`
   "full_name": "John Doe",
   "is_active": true,
   "role": "user",
-  "created_at": "2025-10-10T20:00:00.000000"
+  "created_at": "2025-10-10T20:00:00.123456Z"
 }
 ```
 
@@ -297,7 +297,7 @@ Logout (client-side token disposal).
 **Response:**
 ```json
 {
-  "message": "Successfully logged out"
+  "message": "Logged out successfully"
 }
 ```
 
@@ -318,7 +318,7 @@ Authorization: Bearer <token>
   "full_name": "John Doe",
   "is_active": true,
   "role": "user",
-  "created_at": "2025-10-10T20:00:00.000000"
+  "created_at": "2025-10-10T20:00:00.123456Z"
 }
 ```
 
@@ -373,8 +373,8 @@ Changing the name or e-mail leaves logins and key untouched.
   "full_name": "New Full Name",
   "is_active": true,
   "role": "user",
-  "created_at": "2025-10-10T20:00:00.000000",
-  "updated_at": "2025-10-11T10:30:00.000000"
+  "created_at": "2025-10-10T20:00:00.123456Z",
+  "updated_at": "2025-10-11T10:30:00.123456Z"
 }
 ```
 
@@ -425,7 +425,8 @@ Authorization: Bearer <token>
 ```json
 {
   "api_key": "ak_1234567890abcdef",
-  "message": "API key generated successfully. Store it securely - it won't be shown again."
+  "created_at": "2025-10-10T20:00:00.123456Z",
+  "note": "Save this key securely. It will not be shown again."
 }
 ```
 
@@ -466,9 +467,9 @@ not the page size; clients paginate with `skip + limit >= total`):
       "email": "admin@example.com",
       "full_name": "Administrator",
       "is_active": true,
-      "role": "ADMIN",
-      "created_at": "2025-10-10T20:00:00.000000",
-      "last_login": "2025-10-10T20:30:00.000000"
+      "role": "admin",
+      "created_at": "2025-10-10T20:00:00.123456Z",
+      "last_login": "2025-10-10T20:30:00.123456Z"
     }
   ],
   "total": 1,
@@ -502,7 +503,7 @@ Update user details.
 ```json
 {
   "full_name": "Updated Name",
-  "role": "ADMIN"
+  "role": "admin"
 }
 ```
 
@@ -623,7 +624,7 @@ agent-cli users revoke-api-key johndoe
 
 3. **Start the API**
    ```bash
-   agent-cli run-api
+   agent-api
    ```
    The system will automatically create the admin user on first startup.
 
@@ -680,7 +681,7 @@ CREATE TABLE users (
     full_name TEXT,
     hashed_password TEXT NOT NULL,
     is_active BOOLEAN DEFAULT 1,
-    role TEXT DEFAULT 'USER',  -- ADMIN, USER, GUEST
+    role TEXT DEFAULT 'user',  -- admin, user, guest
     api_key TEXT,  -- SHA-256 hashed
     created_at TEXT NOT NULL,
     updated_at TEXT,
@@ -725,7 +726,7 @@ CREATE TABLE users (
     full_name VARCHAR(255),
     hashed_password VARCHAR(255) NOT NULL,
     is_active BOOLEAN DEFAULT true,
-    role VARCHAR(50) DEFAULT 'USER',
+    role VARCHAR(50) DEFAULT 'user',
     api_key VARCHAR(255),
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP,
@@ -775,11 +776,11 @@ CREATE TABLE token_generations (
 
 ## Testing
 
-Comprehensive test suite available in `tests/test_auth_system.py`:
+Comprehensive test suite available in `tests/auth/test_auth_system.py`:
 
 ```bash
 # Run auth system tests
-python -m pytest tests/test_auth_system.py -v
+python -m pytest tests/auth/test_auth_system.py -v
 
 # Run all tests
 python -m pytest tests/ -v
@@ -819,7 +820,7 @@ Test coverage includes:
    - Check file permissions
 
 5. **Rate limit errors**
-   - Adjust `security.rate_limit_per_minute` in config
+   - Adjust `auth.requests_per_minute` in config
    - Wait for rate limit window to reset (60 seconds)
 
 ### Debug Mode
@@ -828,7 +829,7 @@ Enable debug logging to troubleshoot authentication issues:
 
 ```bash
 # Set log level in config
-AGENT_LOG_LEVEL=debug agent-cli run-api
+AGENT_LOG_LEVEL=debug agent-api
 ```
 
 Check logs for:

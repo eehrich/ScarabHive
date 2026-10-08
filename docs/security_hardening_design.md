@@ -446,7 +446,6 @@ auth:
   plugin_security:
     default_policy: "require_auth"
     default_min_role: "user"
-    audit_enabled: true
     endpoint_rules:
       - pattern: "/plugins/*/admin/*"
         policy: "require_auth"
@@ -485,7 +484,6 @@ auth:
     # Global defaults
     default_policy: "require_auth"    # Default for all plugin endpoints
     default_min_role: "user"          # Minimum role required
-    audit_enabled: true               # Log all plugin endpoint access
     
     # Plugin-specific overrides
     plugin_overrides:

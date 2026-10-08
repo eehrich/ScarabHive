@@ -23,8 +23,8 @@ The agent system uses **two independent cancellation mechanisms** that work toge
 **Mechanism**:
 - Creates `CancellationToken` objects for each tool execution
 - Tools check `token.is_cancelled` during long operations
-- Grace period (5s default) before force-terminating
-- Background monitor thread for timeout enforcement
+- Grace period (10s default) before force-terminating
+- Background monitor task (asyncio) for timeout enforcement
 
 **Usage**:
 ```python
@@ -66,7 +66,7 @@ if self._request_manager.is_cancelled(request_id):
     return
 
 # Cancel from outside (via component)
-await self._request_manager.cancel_request(request_id, status_bus)
+await self._request_manager.cancel_request(request_id)
 ```
 
 **Use Cases**:
@@ -164,5 +164,5 @@ Potential unification approach (if needed):
 **Related Files**:
 - `src/agent_system/core/cancellation.py` - CancellationManager implementation
 - `src/agent_system/servers/agent/server.py` - Agent cancel_request(), _is_cancelled(), _run_events()
-- `tests/test_cancellation_system.py` - Unit tests
-- `tests/test_webui_cancellation.py` - Integration tests
+- `tests/other/test_cancellation_system.py` - Unit tests
+- `tests/app/test_webui_cancellation.py` - Integration tests
