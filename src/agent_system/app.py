@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio  # noqa: F401 - used in nested closures in event_stream() and lifespan
 import types
 from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 import json
 import logging
 import os
@@ -341,6 +342,21 @@ def _gated_agent_names(config) -> list[str]:
         if merged is not None and merged.metadata is not None and merged.metadata.min_role is not None:
             names.append(name)
     return sorted(names)
+
+
+def listen_host(config: Any) -> str:
+    """The address run() binds: HOST, else network.host, else loopback."""
+    return os.getenv("HOST") or config.network.host or "127.0.0.1"
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Whether only this machine reaches ``host``; a name other than localhost may resolve anywhere."""
+    if host.strip("[]").lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
 
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
@@ -909,6 +925,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             expire_minutes=config.auth.access_token_expire_minutes,
             refresh_expire_days=config.auth.refresh_token_expire_days,
             reject_default_key=config.auth.reject_default_secret_key,
+            listens_beyond_loopback=not _is_loopback_host(listen_host(config)),
         )
 
     # Bootstrap tool servers and plugin registry using InitializationService
@@ -4064,7 +4081,7 @@ def run() -> None:
     config = _config_service.get_config()
 
     # Get server configuration
-    host = os.getenv("HOST") or config.network.host or "127.0.0.1"
+    host = listen_host(config)
     port_env = os.getenv("PORT")
     port = int(port_env) if port_env else int(getattr(config.network, "port", 8000))
 

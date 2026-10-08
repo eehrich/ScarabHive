@@ -151,7 +151,8 @@ Remaining limits:
   environment and `config/secrets.env`, e.g. `secret_key: "${AUTH_SECRET_KEY}"`.
   The server does not start with an empty or short (under 32 characters) key,
   and logs an error for a published one, such as the shipped development key;
-  `auth.reject_default_secret_key: true` makes that a startup error as well.
+  a server that listens beyond loopback refuses it, and
+  `auth.reject_default_secret_key: true` makes that a startup error on loopback as well.
 - Replace the wildcard in `auth.cors_origins` with the origins you serve.
 - `POST /auth/register` is reachable by anyone who reaches the server and
   creates a `user` account. Turn it off (`auth.registration.enabled: false`) or

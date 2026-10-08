@@ -314,8 +314,10 @@ export AUTH_SECRET_KEY="your-generated-secret"
 
 The server checks the key at startup: an empty one (for example an unset
 `AUTH_SECRET_KEY`) or one shorter than 32 characters stops it; a published
-key -- the shipped development key, the built-in default -- is logged as an
-error. Set `auth.reject_default_secret_key: true` to refuse starting with one.
+key -- the shipped development key, the built-in default, any key the
+repository has printed -- is logged as an error on loopback and stops a server
+that listens beyond loopback (`network.host` or `HOST` other than a loopback
+address). Set `auth.reject_default_secret_key: true` to refuse it on loopback too.
 
 ### 3. Create Admin User
 

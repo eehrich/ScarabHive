@@ -169,15 +169,45 @@ def verify_api_key(plain_key: str, hashed_key: str) -> bool:
 #: Shorter signing keys are refused at startup.
 MIN_SECRET_KEY_LENGTH = 32
 
-#: sha256 of signing keys that are public, so anyone can sign an admin token with them: the
-#: AuthConfig default, the development key config/config.yaml ships, the examples in the docs.
-_PUBLIC_SECRET_KEY_SHA256 = frozenset({
-    "c49cfe74258c7bf875ad025ab4aed98c7311d9d9929d732f0108f99f9ba1e8fb",  # AuthConfig.secret_key default
-    "a293967483cb240a5873265fb8001b3b2ecc62507ad548dc83c2a985512221f9",  # config/config.yaml as shipped
-    "ce4672e4f246127083e95215b3715799cac14f4e9129dd6eab816aac6aac6af7",  # docs/multi_user_authentication.md
-    "3709d7f2d6e177c01b2443871411546cc15aa03b0466c339cb72c0f2621668c2",  # docs/security_hardening_design.md
-    "fb944581fc56eb464b2fae7da22b7b47391476329c6ae27cc770d1cfb2ecf4ec",  # an example in a review document, since removed
-})
+#: Every signing key the repository has printed -- config.yaml's, the examples in the docs,
+#: reviews and templates, the tests' -- found in its history on 28.09.2026. The history keeps
+#: them known for good, whatever the files say today. The guard below refuses or reports each of
+#: them; the Setup panel (plugins/setup/status.py) names the same list. setup's
+#: test_every_key_the_repository_prints_is_known holds every literal key a commit puts into a
+#: file outside the tests against it.
+PUBLISHED_SIGNING_KEYS = (
+    "published-signing-key-replace-with-your-own-0000000000",
+    "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION_USE_RANDOM_STRING",
+    "your-secret-key-here-CHANGE-IN-PRODUCTION-min-32-chars",
+    "your-secret-key-min-32-chars",
+    "your-secret-here",
+    "your-generated-secret",
+    "YOUR_VERY_LONG_RANDOM_SECRET_KEY_HERE",
+    "e4c8f2b9a7d3e1f5c6b8a2d9e7f1c3b5a8d2e6f9c1b4a7d3e8f2c5b9a1d6e3f7",
+    "generate-secure-random-key",
+    "generated-secure-key",
+    "test-secret-key",
+    "test-secret-key-12345",
+    "test-secret-key-for-jwt",
+    "test-secret-key-do-not-use-in-production",
+    "test-key-min-32-chars-long-secure",
+    "secure-secret-key-32chars!",
+    "not-the-secret-" * 4,
+    "your-secure-key-here-min-32-chars",  # user_management's auth_disabled.html offered it to paste, for months
+    "test-only-secret-not-the-config-one",
+    "test-only-secret-not-the-config-one-0123456789",
+    "jwt-signing-key-42",
+    "generated-for-this-installation",
+    "own-key-of-this-installation-0123456789",
+    "reloaded-own-key-0123456789abcdef",
+)
+
+#: sha256 of every key above and of the AuthConfig.secret_key default. It held five of them alone,
+#: so nine published keys of 32 characters or more passed the start without a word -- even with
+#: reject_default_secret_key.
+_PUBLIC_SECRET_KEY_SHA256 = frozenset(
+    hashlib.sha256(key.encode()).hexdigest()
+    for key in (*PUBLISHED_SIGNING_KEYS, "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION"))
 
 
 class WeakSecretKeyError(ValueError):
@@ -205,13 +235,14 @@ def check_secret_key(secret_key: str, *, reject_public: bool = False) -> None:
 
 
 def set_jwt_config(secret_key: str, algorithm: str = "HS256", expire_minutes: int = 30, refresh_expire_days: int = 30,
-                   reject_default_key: bool = False) -> None:
+                   reject_default_key: bool = False, listens_beyond_loopback: bool = False) -> None:
     """
     Configure JWT settings from application config.
 
     The key is checked first (check_secret_key): an empty or short one raises
     WeakSecretKeyError, a published one logs an error -- or raises with
-    ``reject_default_key``.
+    ``reject_default_key``, or when the server listens beyond loopback
+    (``listens_beyond_loopback``): there anyone it answers could sign an admin token.
 
     Args:
         secret_key: Secret key for JWT signing
@@ -224,7 +255,7 @@ def set_jwt_config(secret_key: str, algorithm: str = "HS256", expire_minutes: in
     # The model's default stands in the repository, and an auth section without the line gets it:
     # refused whatever reject_default_key says -- everyone could sign a login with it.
     try:
-        check_secret_key(secret_key, reject_public=reject_default_key
+        check_secret_key(secret_key, reject_public=reject_default_key or listens_beyond_loopback
                          or secret_key == AuthConfig.model_fields["secret_key"].default)
     except WeakSecretKeyError as exc:
         logger.critical("Refusing to start: %s", exc)  # the API log too, not only the console of the start

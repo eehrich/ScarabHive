@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from agent_system.auth import database
+from agent_system.auth.security import PUBLISHED_SIGNING_KEYS
 from agent_system.config.local_layer import signing_key_at_restart
 from agent_system.config.settings import (_ENV_PLACEHOLDER, LOCAL_CONFIG, config_files, local_text,
                                           set_by_the_environment)
@@ -41,37 +42,10 @@ class ReadOnlyUsers(database.UserDatabase):
             connection.close()
 
 
-#: Every signing key the repository has printed -- config.yaml's, the examples in the docs,
-#: reviews and templates, the tests' -- found in its history on 28.09.2026. The history keeps
-#: them known for good, whatever the files say today; the model's own default and an empty key
-#: are too. test_every_key_the_repository_prints_is_known holds every literal key a commit of this
-#: branch put into a file outside the tests against this list.
-SHIPPED_SIGNING_KEYS = (
-    "published-signing-key-replace-with-your-own-0000000000",
-    "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION_USE_RANDOM_STRING",
-    "your-secret-key-here-CHANGE-IN-PRODUCTION-min-32-chars",
-    "your-secret-key-min-32-chars",
-    "your-secret-here",
-    "your-generated-secret",
-    "YOUR_VERY_LONG_RANDOM_SECRET_KEY_HERE",
-    "e4c8f2b9a7d3e1f5c6b8a2d9e7f1c3b5a8d2e6f9c1b4a7d3e8f2c5b9a1d6e3f7",
-    "generate-secure-random-key",
-    "generated-secure-key",
-    "test-secret-key",
-    "test-secret-key-12345",
-    "test-secret-key-for-jwt",
-    "test-secret-key-do-not-use-in-production",
-    "test-key-min-32-chars-long-secure",
-    "secure-secret-key-32chars!",
-    "not-the-secret-" * 4,
-    "your-secure-key-here-min-32-chars",  # user_management's auth_disabled.html offered it to paste, for months
-    "test-only-secret-not-the-config-one",
-    "test-only-secret-not-the-config-one-0123456789",
-    "jwt-signing-key-42",
-    "generated-for-this-installation",
-    "own-key-of-this-installation-0123456789",
-    "reloaded-own-key-0123456789abcdef",
-)
+#: Every signing key the repository has printed: the list the start check refuses or reports
+#: (agent_system.auth.security). test_every_key_the_repository_prints_is_known holds every literal
+#: key a commit of this branch put into a file outside the tests against it.
+SHIPPED_SIGNING_KEYS = PUBLISHED_SIGNING_KEYS
 
 
 def referenced_keys(config_path: Optional[str] = None) -> dict[str, list[str]]:
