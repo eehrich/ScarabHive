@@ -1341,9 +1341,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         Live, not the start state: the endpoint whose whole job is to show the
         configuration must not report the state before the reload that just
-        succeeded.
+        succeeded. Without its credentials: the signing key, the providers' keys,
+        passwords and the credentials in URLs show as ``***`` -- an admin login
+        must not turn into the key that signs every login, for good.
         """
-        return _live_config().model_dump()
+        from .utils.redact import redact_secrets
+        return redact_secrets(_live_config().model_dump())
 
     def _public_agents() -> tuple[list[str], dict[str, str]]:
         """The registered agents GET /agents lists, and the role gate of those that carry one.

@@ -17,6 +17,7 @@ from typing import Any, Optional
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 
 from .. import own_console
+from .redact import mask_url_credentials, may_hold_url_credential
 
 # A plugin route whose URL carries a key -- whoever holds the URL may use it once (stategraph's callback URLs) --
 # puts it right after /callback/ or in the token parameter of /callback?...; no log keeps it, percent-encoded
@@ -39,15 +40,17 @@ _TOKEN_PARAM = re.compile(r"((?:\?|&|%3F|%26)token(?:=|%3D))(?:(?!%26)[^/\s?#&\"
 
 def loggable_path(text: str) -> str:
     """``text`` with the key of every callback URL in it masked (``/plugins/<plugin>/callback/***``,
-    ``/plugins/<plugin>/callback?token=***``)."""
+    ``/plugins/<plugin>/callback?token=***``), and every credential parameter of a query
+    (``?key=***`` -- the Gemini REST API's, which httpx logs at INFO with the whole URL)."""
     text = _CALLBACK_QUERY.sub(lambda query: _TOKEN_PARAM.sub(r"\1***", query.group(0)), text)
-    return _KEY_IN_PATH.sub(lambda found: (found.group(1) or found.group(2)) + "***", text)
+    text = _KEY_IN_PATH.sub(lambda found: (found.group(1) or found.group(2)) + "***", text)
+    return mask_url_credentials(text)
 
 
 def _may_hold_a_key(value: Any) -> bool:
     text = str(value).lower()
     return any(mark in text for mark in ("/callback/", "/callback?", "/callback%3f", "%2fcallback%2f",
-                                         "%2fcallback%3f"))
+                                         "%2fcallback%3f")) or may_hold_url_credential(text)
 
 
 def _masked(value: Any) -> Any:
@@ -87,7 +90,7 @@ class LibraryDebugFilter(logging.Filter):
 
 
 class KeyInPathFilter(logging.Filter):
-    """Masks callback keys in every record a handler writes: the access log, security.log, the app log.
+    """Masks callback keys and URL credentials in every record a handler writes: the access log, security.log, the app log.
 
     Each argument on its own: a formatter that takes the arguments apart (uvicorn's access log, five of them) gets
     them all. Message and arguments are merged only where the key stands in the message itself. A record without
