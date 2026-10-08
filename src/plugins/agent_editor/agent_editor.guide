@@ -91,7 +91,7 @@ cannot read.
 @{tt}_@{utt}, starting with a letter, 2 to 64 characters -- and what to
 start from:
 
-@{bullet}@{b}Blank basic_agent@{ub}: @{tt}type: basic_agent@{utt},
+@{bullet}@{b}Blank agent@{ub}: @{tt}type: basic_agent@{utt},
 enabled.
 @{bullet}@{b}Inherit from an agent@{ub}: @{tt}type@{utt} is that agent;
 everything else comes from it.
@@ -122,15 +122,17 @@ and why a read-only agent cannot be edited.
 
 @{b}Revert@{ub} goes back to the entry as loaded; "unsaved changes" marks
 an edited form. @{b}Save@{ub} shows the diff and writes on confirmation.
-The menu next to it offers @{b}Duplicate@{ub} (a copy under a new name),
-@{b}New child agent@{ub} (one that inherits from this one) and
+A read-only agent offers neither. The menu next to them offers
+@{b}Duplicate@{ub} (a copy under a new name), @{b}New child agent@{ub}
+(one that inherits from this one), @{b}Reload config@{ub} and
 @{b}Delete@{ub}, which is off while another entry inherits from this one
 (its tooltip names them). Leaving an agent, or opening another one, with
 unsaved changes asks first.
 
-@{b}Reload config@{ub} in the toolbar asks, then calls the core's
-@{tt}POST /admin/reload-config@{utt} and reports how many servers it
-refreshed or which ones failed.
+@{b}Reload config@{ub} -- in that menu, on the banner, and in the empty
+editor or a list that failed to load, so it is there without an agent
+open -- asks, then calls the core's @{tt}POST /admin/reload-config@{utt}
+and reports how many servers it refreshed or which ones failed.
 
 @{h2}When the server refuses
 
@@ -143,10 +145,11 @@ changes@{ub} (the form stays, a save is refused until you reload) or
 @node tabs "The tabs"
 @{h1}The tabs
 
-A field the entry does not set shows the inherited value, marked
-@{i}inherited@{ui}. Setting it writes the key into the entry; the reset
-button next to its label removes the key again. The Tools and Sub-agents
-tabs have nodes of their own: @{" The Tools tab " link tools},
+A field the entry does not set shows the inherited value, muted, with
+an inherited mark (a branch icon) beside its label. Setting it writes the
+key into the entry; the reset button next to its label removes the key
+again. The Tools and Sub-agents tabs have nodes of their own:
+@{" The Tools tab " link tools},
 @{" The Sub-agents tab " link subagents}.
 
 @{h2}General
@@ -156,8 +159,9 @@ inherited: an entry without it stays off.
 @{bullet}@{b}Based on@{ub} -- an agent class (starts from its defaults) or
 another agent (passes on everything it has). Changing it reloads the
 inherited values of every tab.
-@{bullet}@{b}Description@{ub}, @{b}Visibility@{ub} (ui, tool, both,
-private -- the help line says what each means), @{b}Category@{ub},
+@{bullet}@{b}Description@{ub}, @{b}Visibility@{ub} (UI list, Tool, UI and
+tool, Hidden -- written as ui, tool, both, private; the help line says
+what each means), @{b}Category@{ub},
 @{b}Tags@{ub} (Enter adds one).
 
 @{h2}Model
@@ -188,7 +192,9 @@ The core's run settings, key by key: @{b}Max steps@{ub}; auto-escalation
 reasoning loop detection (@{tt}enabled@{utt},
 @{tt}repetition_threshold@{utt} from 0.01 to 1); and the timeouts
 @{tt}session_lock_timeout@{utt}, @{tt}tool_cleanup_timeout@{utt},
-@{tt}llm_task_max_iterations@{utt}. Each field has a help line.
+@{tt}llm_task_max_iterations@{utt}. Each field has a help line. Tool
+loops, reasoning loops and timeouts are folded; a group in which the agent
+sets a value of its own opens by itself.
 
 A number outside what the runtime can use -- the config would take it --
 is marked red, counts as an unsaved change and holds @{b}Save@{ub} back.
@@ -229,7 +235,7 @@ The agent's own entry as it is written to the file, for every key without
 a form control (@{tt}self_tool_descriptions@{utt}, a plugin's own keys).
 @{b}Apply to form@{ub} takes the typed text; so does leaving the tab. Text
 that does not parse stays, with the error below it, and keeps the tab
-open. @{b}Show the form's entry@{ub} drops the typed text.
+open. @{b}Discard typed text@{ub} drops it. Both buttons wait for typed text.
 
 @{h2}Every YAML field
 
@@ -273,10 +279,12 @@ Every tool server of the running app with its tools, searchable (server
 names, plugin types, tool names and descriptions) and filtered to the
 servers in the list or not in it. Ticking a server writes
 @{tt}server/*@{utt}; ticking a tool writes @{tt}server/tool@{utt}.
-A tool that another pattern grants or blocks is locked, and its label
-names the pattern; a blocked tool shows unticked in the allowed tree.
-Patterns that are not a server or a tool of the tree are chips below it;
-type one and press Enter.
+A tool that another pattern grants or blocks is locked, and the tooltip of
+its label and of the lock icon beside it names the pattern; a blocked tool
+shows unticked in the allowed tree. The inherited entries and the patterns
+that are not a server or a tool of the tree are chips in the folded section
+below it (open by itself while the agent has such patterns); type one and
+press Enter.
 
 @{h2}How patterns match
 

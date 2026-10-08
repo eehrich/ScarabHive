@@ -63,7 +63,7 @@
   const type = (element, value) => { element.value = value; element.dispatchEvent(new Event('input', { bubbles: true })); };
   const enter = (element) => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   const openTab = (name) => $(`#tabs [data-tab="${name}"]`).click();
-  const dirtyShown = () => !$('#dirtyMark').hidden;
+  const dirtyShown = () => $('#dirtyMark').dataset.dirty === 'true' && !$('#dirtyMark').hidden;
   const choose = async (name) => {
     row(name).click();
     await until(`${name} shown`, () => heading() === name && !$('#editor').hidden && $('#tab-general [data-field]'));
@@ -227,7 +227,7 @@
       && !isSet(['metadata', 'visibility']) && control(['metadata', 'visibility']).value === 'ui';
     const chainText = fieldOf(CHAIN).textContent;
     const chain = !isSet(CHAIN) && chainOf(CHAIN) === 'smart,fast' && chainText.includes('openai · large-2')
-      && chainText.includes('#1 Primary') && chainText.includes('Fallback 1');
+      && chainText.includes('primary') && chainText.includes('fallback 1');
     const clean = $('#save').disabled && !dirtyShown() && text('#banners') === '';
     $('#head [data-goto="worker"]').click();
     await until('worker shown', () => heading() === 'worker');
@@ -314,12 +314,12 @@
     const notTwice = offered() === '' && fieldOf(CHAIN).querySelector('.ae-picker-list').hidden;
     type(picker(), 'anthropic');
     enter(picker());
-    const added = chainOf(CHAIN) === 'smart,fast,deep' && position('deep') === 'Fallback 2' && picker().value === ''
+    const added = chainOf(CHAIN) === 'smart,fast,deep' && position('deep') === 'fallback 2' && picker().value === ''
       && doc().activeElement === picker();
     button('deep', 'up').click();
-    const moved = chainOf(CHAIN) === 'smart,deep,fast' && position('deep') === 'Fallback 1';
+    const moved = chainOf(CHAIN) === 'smart,deep,fast' && position('deep') === 'fallback 1';
     button('smart', 'remove').click();
-    const removed = chainOf(CHAIN) === 'deep,fast' && position('deep') === '#1 Primary' && button('deep', 'up').disabled
+    const removed = chainOf(CHAIN) === 'deep,fast' && position('deep') === 'primary' && button('deep', 'up').disabled
       && button('fast', 'down').disabled && isSet(CHAIN) && doc().activeElement === button('deep', 'remove');
     await saveAll('worker saved');
     const written = (await file('config/agents/team.yaml')).text;
@@ -567,8 +567,10 @@
     const painted = Boolean(view().querySelector('.pk-yaml-key')) && coloured($('#yamlText').value)
       && view().textContent.includes(MARKUP) && !doc().querySelector('img') && frame.contentWindow.__xss === undefined;
     const rendered = $('#yamlText').value;
+    const idle = $('#yamlApply').disabled && $('#yamlReload').disabled;  // nothing typed: nothing to apply or discard
     type($('#yamlText'), rendered.replace('enabled: true', 'enabled: false'));
-    const typedDirty = dirtyShown() && !$('#save').disabled && control(ENABLED).checked === true;
+    const typedDirty = idle && dirtyShown() && !$('#save').disabled && control(ENABLED).checked === true
+      && !$('#yamlApply').disabled && !$('#yamlReload').disabled;
     $('#yamlApply').click();
     await until('the entry applied', () => control(ENABLED).checked === false);
     const applied = isSet(ENABLED) && dirtyShown() && !$('#tab-yaml').hidden;
@@ -742,7 +744,7 @@
     await until('the defaults', () => chainOf(CHAIN) === 'fast' && count() === '1');
     const followed = !isSet(TYPE) && control(TYPE).value === 'basic_agent' && !$('#head [data-goto]')
       && text('#head').includes('basic_agent') && !files().checked && !files().disabled
-      && text('#tools-allowed').includes('Nothing.') && dirtyShown();
+      && !$('#tools-allowed .ae-chip--locked') && dirtyShown();
     $('#revert').click();
     await until('the parent again', () => count() === '3' && Boolean($('#head [data-goto="worker"]')) && !dirtyShown());
     return followed;
@@ -1363,17 +1365,39 @@
     const gone = !(await file('config/agents/fresh.yaml')).exists && $('#editor').hidden
       && text('#placeholder').includes('No agent selected')
       && toasts('ok').some((one) => one.includes('config/agents/fresh.yaml removed')) && !keepsPage();
+    // with no agent open, Reload config is still offered: in the empty editor, and where the list failed to load
+    $('#placeholder [data-reload]').click();
+    const placeholderReload = (await until('the reload question', question)).textContent.includes('Re-read the config files');
+    await answer('Cancel');
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let listReload = false;
+    try {
+      panelWindow.fetch = async (url, options) => (String(url).endsWith('/plugins/agent_editor/agents')
+        ? new Response(JSON.stringify({ detail: 'broken' }), { status: 500, headers: { 'content-type': 'application/json' } })
+        : realFetch(url, options));
+      doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+      await until('the list error', () => text('#list').includes('Agents could not be loaded') && $('#list [data-reload]'));
+      $('#list [data-reload]').click();
+      listReload = (await until('the reload question', question)).textContent.includes('Re-read the config files');
+      await answer('Cancel');
+    } finally {
+      panelWindow.fetch = realFetch;
+    }
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await until('the list back', () => row('worker'));
     openTab('general');
     await choose('worker');  // a parent is not deleted: its children are named
     const guard = $('#moreMenu [data-menu="delete"]');
-    return preview && kept && askedFirst && gone && guard.disabled && guard.title.includes('editor');
+    return preview && kept && askedFirst && gone && placeholderReload && listReload && guard.disabled && guard.title.includes('editor');
   });
 
   await check('a read-only agent says why and cannot be edited', async () => {
     await choose('twin');
     const says = text('#banners').includes('Read-only') && text('#banners').toLowerCase().includes('defined in 2 files');
     const locked = $('#tab-general fieldset').disabled && control(DESCRIPTION).matches(':disabled')
-      && $('#tab-model fieldset').disabled && $('#save').disabled && $('#moreMenu [data-menu="delete"]').disabled
+      && $('#tab-model fieldset').disabled && $('#save').disabled && $('#save').hidden && $('#revert').hidden
+      && $('#moreMenu [data-menu="delete"]').disabled
       && $('#tab-general [data-reset]').matches(':disabled');
     // a date in an entry: the form is locked, delete is not
     await replace('config/agents/worker_child.yaml', '    worker_child:\n', '    worker_child:\n      since: 2026-09-17\n');
@@ -1398,6 +1422,7 @@
   await check('Reload config refreshes what the running app has, and keeps unsaved edits', async () => {
     await choose('worker');
     const before = text('#banners').includes('Needs a restart') && Boolean($('#head [data-state="changed"]'));
+    const inMenu = Boolean($('#moreMenu #reloadConfig'));  // in the head's More menu, no longer in the toolbar
     type(control(DESCRIPTION), 'Typed before the reload');
     clearToasts();
     $('#reloadConfig').click();
@@ -1408,7 +1433,7 @@
     const kept = control(DESCRIPTION).value === 'Typed before the reload' && dirtyShown() && !$('#reloadConfig').disabled;
     $('#revert').click();
     await until('reverted', () => !dirtyShown());
-    return before && locked && kept;
+    return inMenu && before && locked && kept;
   });
 
   await check('the panel never calls a native dialog', async () => {

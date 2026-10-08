@@ -24,6 +24,7 @@ class FakeElement {
     this.dataset = new Proxy({}, {
       get: (_, key) => this.attrs[`data-${String(key).replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`],
       set: (_, key, value) => { this.attrs[`data-${String(key).replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`] = String(value); return true; },
+      deleteProperty: (_, key) => { delete this.attrs[`data-${String(key).replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`]; return true; },
     });
     this.classList = new ClassList(this); this.style = {}; this.value = ''; this.checked = false; this.disabled = false;
     this.readOnly = false; this.hidden = false; this.innerHTML = ''; this._text = ''; this.id = id;

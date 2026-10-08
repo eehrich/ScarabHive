@@ -5,10 +5,10 @@
 import {
   abandon, api, autoRefresh, confirm, copyText, dialog, emptyState, errorText, html, icon, isAborted, jsonView,
   localTime, navigate, notice, openSession, pluginBase, prompt, render, selectTab, setDirty, setQuery, setTitle, toast,
-  trusted, update, withBusy, yamlCode,
+  trusted, update, withBusy, yamlCode, keepInSight, scrollerOf,
 } from '/static/kit/panel-kit.js';
 import {
-  autoOf, Canvas, fragmentLock, groupedSpots, isRoute, keepingChoices, LINE_STYLES, lineKeys, NOTE, noteKey, outermost, posixPath,
+  autoOf, Canvas, counted, fragmentLock, groupedSpots, isRoute, keepingChoices, LINE_STYLES, lineKeys, NOTE, noteKey, outermost, posixPath,
   problemIndex, putTyped, renamedLines, runOverlay, sameSelection, selectionOf, shorten, stateFragment, typedIn,
   foldTrace,
 } from './graph.js';
@@ -284,9 +284,8 @@ async function drawGraph({ fit = false } = {}) {
   }
   const parses = !S.machine.problems.some((p) => p.level === 'error' && !p.path);
   render($('sgStates'), S.machine.graph.states.map((s) => html`<option value="${s.name}">${s.label || ''}</option>`));
-  $('canvasHint').textContent = S.machine.graph.states.length
-    ? 'Drag a state to move it, from its handle to another state to connect; double-click to rename. Select a line to bend it by its handles. Wheel scrolls, Ctrl+wheel zooms.'
-    : parses ? 'No states yet: add one from the bar above.' : 'The file does not parse: fix it in the YAML tab.';
+  $('canvasHint').textContent = S.machine.graph.states.length ? ''
+    : parses ? 'No states yet: add one with Add in the bar above.' : 'The file does not parse: fix it in the YAML tab.';
 }
 
 function savePositions(spots) {
@@ -342,8 +341,7 @@ function lineTools(t) {
   return html`<div class="pk-row sg-actions">
       <button type="button" class="pk-btn pk-btn--sm" data-act="add-bend" data-key="add-bend:${t.id}" title="Split the line's longest segment: two handles more to drag">${icon('plus', { size: 'sm' })} Add bend</button>
       ${drawn ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="reset-line" data-key="reset-line:${t.id}" title="Let the canvas draw the line again">${icon('rotate-ccw', { size: 'sm' })} Reset line</button>` : ''}
-    </div>
-    <p class="pk-help">Select the line on the canvas and drag a handle on it to move its segment; the arrow keys move a focused one.</p>`;
+    </div>`;
 }
 
 /** The line styles and tools of the transitions shown (one, or a state's), after a line changed or the canvas drew
@@ -427,13 +425,17 @@ function folderTree(machines) {
 
 const folderSize = (folder) => folder.machines.length + [...folder.children.values()].reduce((sum, f) => sum + folderSize(f), 0);
 
+/** The id under a title only where it says something the title does not ("V4 Beats Write" is v4_beats_write). */
+const bare = (text) => String(text).toLowerCase().replace(/[\s_-]+/g, '');
+const idSaysMore = (m) => Boolean(m.title) && bare(m.title) !== bare(m.id);
+
 function machineItem(m) {
   return html`<button type="button" class="pk-btn pk-btn--ghost sg-item" data-machine="${m.id}" aria-current="${String(m.id === S.machine?.id)}">
       <span class="sg-item-top"><span class="sg-item-name">${m.title || m.id}</span>
-        ${m.errors ? badge(`${m.errors} err`, 'danger') : m.warnings ? badge(`${m.warnings} warn`, 'warn') : badge('valid', 'ok')}
+        ${m.errors ? badge(counted(m.errors, 'error'), 'danger') : m.warnings ? badge(counted(m.warnings, 'warning'), 'warn') : ''}
         ${m.writable ? '' : badge('read-only')}</span>
-      <span class="sg-item-sub pk-mono">${m.id}</span>
-      ${m.description ? html`<span class="sg-item-sub">${shorten(m.description, 120)}</span>` : ''}
+      ${idSaysMore(m) ? html`<span class="sg-item-sub pk-mono">${m.id}</span>` : ''}
+      ${m.description ? html`<span class="sg-item-sub sg-clamp">${m.description}</span>` : ''}
     </button>`;
 }
 
@@ -500,6 +502,8 @@ async function openMachine(id, { keepRun = false, discard = false } = {}) {
       .map((p) => ({ ...p, machine: p.machine || machine.id }));
     S.nextWatch = recall(`watch:${machine.id}`, []);
     $('mocks').value = recall(`mocks:${machine.id}`, '');
+    notice($('startError'), '');  // the last machine's refusal
+    drawTestOptions({ open: true });
     fitPending = true;
     if (!keepRun) selectRun(null);
   }
@@ -569,44 +573,52 @@ async function newEventFor(t, select) {
     form.elements.trigger.value = name;
     S.inspectorDrafts.add(draftKey(form));
     setDirty(true);
+    markApplies();
   }
 }
 
+/** The head: one row -- the name gives way, the state of the file, Save and auto-save stay; the rest in its menu. */
 function drawHead() {
   const m = S.machine;
   const errors = m.problems.filter((p) => p.level === 'error').length;
   const warnings = m.problems.length - errors;
   update($('machineHead'), html`
     <div class="sg-head-title">
-      <h2 class="sg-head-name">${m.graph.title || m.id}</h2>
-      <span class="sg-head-sub"><span class="pk-mono">${m.id}</span> · <span class="pk-mono">${m.file}</span></span>
+      <h2 class="sg-head-name pk-truncate">${m.graph.title || m.id}</h2>
+      <span class="sg-head-sub pk-truncate">${m.graph.title ? html`<span class="pk-mono">${m.id}</span> · ` : ''}<span class="pk-mono" title="${m.file}">${m.root_file}</span></span>
     </div>
     ${errors || warnings ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost sg-head-problems" data-act="show-problems" title="Show every problem in the inspector">
-      ${errors ? badge(`${errors} error${errors > 1 ? 's' : ''}`, 'danger') : ''}${warnings ? badge(`${warnings} warning${warnings > 1 ? 's' : ''}`, 'warn') : ''}</button>`
+      ${errors ? badge(counted(errors, 'error'), 'danger') : ''}${warnings ? badge(counted(warnings, 'warning'), 'warn') : ''}</button>`
     : badge('valid', 'ok')}
     ${m.writable ? '' : html`<span class="pk-badge" title="Not in a writable machine root: shown, run and debugged, not edited">read-only</span>`}
     ${m.writable ? html`<button type="button" class="pk-btn pk-btn--sm${savable() ? ' pk-btn--primary' : ''}" data-act="save" title="Save the changes (Ctrl+S)" ${savable() ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Save</button>
-    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="autosave" aria-pressed="${String(S.autosave)}" title="Write every graph edit and move at once, not by Save">Auto-save</button>` : ''}
-    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="copy-id" title="Copy the machine id">${icon('copy', { size: 'sm' })}</button>
-    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="duplicate-machine" title="A copy under a new id among your own machines">${icon('layers', { size: 'sm' })} Duplicate</button>
-    ${m.writable ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="delete-machine" title="Delete the machine" aria-label="Delete the machine">${icon('trash-2', { size: 'sm' })}</button>` : ''}`);
-  $('yamlCount').textContent = savable() ? 'unsaved' : '';
+    <label class="pk-switch" title="Write every graph edit and move at once, not by Save"><input type="checkbox" role="switch" data-act="autosave" ${S.autosave ? 'checked' : ''}> Auto-save</label>` : ''}
+    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" popovertarget="machineMenu" title="More" aria-label="More">${icon('ellipsis', { size: 'sm' })}</button>
+    <div class="pk-menu" id="machineMenu" popover>
+      <button type="button" class="pk-menu-item" data-act="copy-id">${icon('copy', { size: 'sm' })} Copy id</button>
+      <button type="button" class="pk-menu-item" data-act="duplicate-machine" title="A copy under a new id among your own machines">${icon('layers', { size: 'sm' })} Duplicate</button>
+      ${m.writable ? html`<hr class="pk-menu-separator">
+      <button type="button" class="pk-menu-item pk-menu-item--danger" data-act="delete-machine">${icon('trash-2', { size: 'sm' })} Delete</button>` : ''}
+    </div>`);
+  $('yamlDot').classList.toggle('sg-invisible', !savable());
 }
 
-/** The buttons that add a state, in the bar -- and, for a narrow panel, in the menu that stands in for it. */
+/** The Add menu: the activity kinds, the states without one, a note. A read-only machine offers none. */
 function drawPalette() {
-  const writable = S.machine?.writable;
-  const items = (look, ghost) => [
-    ...S.kinds.map((kind) => html`<button type="button" class="${look}" data-add-kind="${kind.key}"
-      title="${`Add a ${kind.title} state: ${kind.summary}`}" ${writable ? '' : 'disabled'}>${icon(kind.icon || 'square', { size: 'sm' })}${kind.title}</button>`),
-    ...PSEUDO.map((p) => html`<button type="button" class="${look}${ghost}" data-add-type="${p.type}"
-      title="${p.hint}" ${writable ? '' : 'disabled'}>${icon(p.icon, { size: 'sm' })}${p.title}</button>`),
-    html`<button type="button" class="${look}${ghost}" data-add-note title="A note of free text on the canvas: kept in the file under notes:, never run"
-      ${writable ? '' : 'disabled'}>${icon('notebook-pen', { size: 'sm' })}Note</button>`,
-  ];
-  render($('palette'), items('pk-btn pk-btn--sm', ' pk-btn--ghost'));
-  render($('paletteMenu'), items('pk-menu-item', ''));
+  $('paletteToggle').hidden = !S.machine?.writable;
+  // no kinds when /kinds failed (start): the menu offers the states without an activity
+  render($('paletteMenu'), html`${S.kinds.length ? html`<div class="pk-menu-label">Activities</div>
+    ${S.kinds.map((kind) => html`<button type="button" class="pk-menu-item" data-add-kind="${kind.key}"
+      title="${`Add a ${kind.title} state: ${kind.summary}`}">${icon(kind.icon || 'square', { size: 'sm' })}${kind.title}</button>`)}
+    <hr class="pk-menu-separator">` : ''}<div class="pk-menu-label">Structure</div>
+    ${PSEUDO.map((p) => html`<button type="button" class="pk-menu-item" data-add-type="${p.type}"
+      title="${p.hint}">${icon(p.icon, { size: 'sm' })}${p.title}</button>`)}
+    <hr class="pk-menu-separator">
+    <button type="button" class="pk-menu-item" data-add-note title="A note of free text on the canvas: kept in the file under notes:, never run">${icon('notebook-pen', { size: 'sm' })}Note</button>`);
 }
+
+/** Close a menu an item of it was clicked in: hidePopover throws on one that is not open. */
+const closeMenu = (menu) => { if (menu?.matches?.(':popover-open')) menu.hidePopover(); };
 
 // ------------------------------------------------------------------ edits
 
@@ -736,7 +748,8 @@ function keepTyped(typed) {
   const { restored, dropped } = putTyped($('side-inspect'), typed, draftKey);
   for (const key of restored) S.inspectorDrafts.add(key);
   if (restored.size) setDirty(true);
-  if (dropped.length) toast(`Not kept -- the edit changed or removed the form you typed into: ${dropped.join(', ')}`, { kind: 'warn' });
+  markApplies();
+  if (dropped.length) toast(`Not kept — the edit changed or removed the form you typed into: ${dropped.join(', ')}`, { kind: 'warn' });
 }
 
 /** Undo the last edit (`back`) or redo the last undo: the root file written back as the step holds it, if nothing
@@ -853,13 +866,10 @@ async function putLayout(m, layout) {
   }
 }
 
-/** The save controls: the YAML tab's and the head's. */
+/** The save controls: the head's Save, the YAML tab's Revert. */
 function drawSaveControls() {
-  const m = S.machine;
-  $('yamlSave').disabled = !m.writable || !savable();
+  $('yamlRevert').hidden = !S.machine.writable;
   $('yamlRevert').disabled = !savable();
-  $('yamlState').textContent = !m.writable ? 'read-only' : hasDrafts() ? `${Object.keys(S.drafts).length} file(s) unsaved`
-    : S.layoutDirty ? 'layout unsaved' : 'saved';
   drawHead();
 }
 
@@ -998,7 +1008,6 @@ function removal(names, ids) {
   return { states, transitions, within };
 }
 
-const counted = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 const arrow = (t) => `${t.source} → ${t.target ?? '(internal)'}`;
 
 /** The composite that removing `states` would leave empty -- one that stays itself (`within`: the state goes). */
@@ -1194,6 +1203,7 @@ function transitionEditor(t) {
   const events = Object.keys(S.machine.graph.events || {});
   const triggers = [...new Set(['done', 'error', ...events, t.trigger])];
   const writable = S.machine.writable;
+  const off = writable ? '' : 'disabled';  // a read-only machine shows its values, it does not take them
   const newEvent = writable && !S.machine.graph.locked?.includes('events');
   const siblings = S.machine.graph.transitions.filter((other) => other.source === t.source);
   const pinned = S.problems.transitions[t.id];
@@ -1204,34 +1214,76 @@ function transitionEditor(t) {
       <span class="pk-mono">#${t.index}</span>
       ${t.trigger !== 'done' ? badge(t.trigger, t.trigger === 'error' ? 'danger' : 'info') : ''}
       <span class="pk-mono">${t.source} → ${t.target ?? '(internal)'}</span>
-      ${pinned?.errors ? badge(`${pinned.errors} err`, 'danger') : ''}
+      ${pinned?.errors ? badge(counted(pinned.errors, 'error'), 'danger') : ''}
       <span class="pk-grow"></span>
-      <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="move-up" title="Try it earlier" aria-label="Move up" ${!writable || t.index === Math.min(...siblings.map((s) => s.index)) ? 'disabled' : ''}>${icon('arrow-up', { size: 'sm' })}</button>
-      <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="move-down" title="Try it later" aria-label="Move down" ${!writable || t.index === Math.max(...siblings.map((s) => s.index)) ? 'disabled' : ''}>${icon('arrow-down', { size: 'sm' })}</button>
-      <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="remove-transition" title="Remove" aria-label="Remove transition" ${writable ? '' : 'disabled'}>${icon('trash-2', { size: 'sm' })}</button>
+      ${writable ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="move-up" title="Try it earlier" aria-label="Move up" ${t.index === Math.min(...siblings.map((s) => s.index)) ? 'disabled' : ''}>${icon('arrow-up', { size: 'sm' })}</button>
+      <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="move-down" title="Try it later" aria-label="Move down" ${t.index === Math.max(...siblings.map((s) => s.index)) ? 'disabled' : ''}>${icon('arrow-down', { size: 'sm' })}</button>
+      <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="remove-transition" title="Remove" aria-label="Remove transition">${icon('trash-2', { size: 'sm' })}</button>` : ''}
     </div>
     <div class="sg-fields">
       <label for="tr-trigger-${t.id}">Trigger</label>
-      <select class="pk-select pk-select--sm" id="tr-trigger-${t.id}" name="trigger" data-shape="enum" data-orig="${t.trigger}">${triggers.map((name) => html`<option value="${name}" ${name === t.trigger ? 'selected' : ''}>${name === 'done' ? 'done (completion)' : name}</option>`)}
+      <select class="pk-select pk-select--sm" id="tr-trigger-${t.id}" name="trigger" data-shape="enum" data-orig="${t.trigger}" ${off}>${triggers.map((name) => html`<option value="${name}" ${name === t.trigger ? 'selected' : ''}>${name === 'done' ? 'done (completion)' : name}</option>`)}
         ${newEvent ? html`<option value="${NEW_EVENT}">New event…</option>` : ''}</select>
       <label for="tr-target-${t.id}">Target</label>
-      <select class="pk-select pk-select--sm" id="tr-target-${t.id}" name="target" data-shape="enum" data-orig="${t.target ?? ''}"><option value="">(internal: no target)</option>${states.map((name) => html`<option value="${name}" ${name === t.target ? 'selected' : ''}>${name}</option>`)}</select>
+      <select class="pk-select pk-select--sm" id="tr-target-${t.id}" name="target" data-shape="enum" data-orig="${t.target ?? ''}" ${off}><option value="">(internal: no target)</option>${states.map((name) => html`<option value="${name}" ${name === t.target ? 'selected' : ''}>${name}</option>`)}</select>
       <label for="tr-guard-${t.id}">Guard</label>
       ${(t.guard ?? '').includes('\n')  // an input drops line breaks: a guard over lines needs a text area
-        ? html`<textarea class="pk-textarea pk-input--mono" id="tr-guard-${t.id}" name="guard" rows="3" data-shape="code" data-orig="${t.guard}">
+        ? html`<textarea class="pk-textarea pk-input--mono" id="tr-guard-${t.id}" name="guard" rows="3" data-shape="code" data-orig="${t.guard}" ${off}>
 ${t.guard}</textarea>`
-        : html`<input class="pk-input pk-input--sm pk-input--mono" id="tr-guard-${t.id}" name="guard" value="${t.guard ?? ''}" data-shape="line" data-orig="${t.guard ?? ''}" placeholder="Python expression, or else">`}
+        : html`<input class="pk-input pk-input--sm pk-input--mono" id="tr-guard-${t.id}" name="guard" value="${t.guard ?? ''}" data-shape="line" data-orig="${t.guard ?? ''}" placeholder="Python expression, or else" ${off}>`}
       <label for="tr-effect-${t.id}">Effect</label>
-      <textarea class="pk-textarea pk-input--mono" id="tr-effect-${t.id}" name="effect" rows="2" data-shape="code" data-orig="${t.effect ?? ''}" placeholder="Python statements">
+      <textarea class="pk-textarea pk-input--mono" id="tr-effect-${t.id}" name="effect" rows="2" data-shape="code" data-orig="${t.effect ?? ''}" placeholder="Python statements" ${off}>
 ${t.effect ?? ''}</textarea>
       ${t.target ? html`<label for="tr-line-${t.id}">Line</label>
       <select class="pk-select pk-select--sm" id="tr-line-${t.id}" data-line="${t.id}" title="How the canvas draws every transition from ${t.source} to ${t.target}: kept in the layout, not in the YAML, and set at once">${lineChoices(line, { inherit: true })}</select>` : ''}
       ${t.target ? html`<span></span><div class="pk-stack" id="line-tools-${t.id}">${lineTools(t)}</div>` : ''}
     </div>
     ${problemList(pinned?.problems)}
-    <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
+    ${writable ? applyButton : ''}
   </form>`;
 }
+
+/** An inspector form's Apply: offered once its form holds typed text (markApplies), primary then. */
+const applyButton = html`<div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm" data-apply disabled>${icon('save', { size: 'sm' })} Apply</button></div>`;
+
+/** Each Apply as its form stands: disabled until text is typed into it (S.inspectorDrafts), primary once there is. */
+function markApplies() {
+  for (const button of $('side-inspect').querySelectorAll('[data-apply]')) {
+    const form = button.closest('form');
+    if (form.dataset.applying !== undefined) continue;  // sending: withBusy holds it, typing elsewhere does not free it
+    const typed = S.inspectorDrafts.has(draftKey(form));
+    button.disabled = !typed;
+    button.classList.toggle('pk-btn--primary', typed);
+  }
+}
+
+/** A YAML key as a label: max_visits -> Max visits. */
+const human = (key) => {
+  const text = String(key).replace(/_/g, ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+};
+
+/** A read-only machine says so once, at the top of the inspector, with the way to a copy that can be edited. */
+const readOnlyNote = (m) => (m.writable ? '' : html`<div class="pk-callout pk-callout--info pk-row"><span class="pk-grow">Read-only. Duplicate it to edit.</span>
+  <button type="button" class="pk-btn pk-btn--sm" data-act="duplicate-machine">${icon('layers', { size: 'sm' })} Duplicate</button></div>`);
+
+/** Every gesture and key of the canvas, folded at the end of each inspector view. */
+const SHORTCUTS = html`<details class="pk-details"><summary>Shortcuts</summary>
+  <dl class="pk-kv">
+    <dt>Click</dt><dd>Select a state, a transition or a note; Escape selects nothing</dd>
+    <dt>Ctrl or Shift+click</dt><dd>Add a state or a transition to the selection, or take it out (on a focused state also with Enter)</dd>
+    <dt>Ctrl or Shift+drag</dt><dd>Select the states wholly inside the box</dd>
+    <dt>Drag</dt><dd>Move a state or a note; a selected state moves every selected one</dd>
+    <dt>Drag the handle</dt><dd>Connect the state to another one</dd>
+    <dt>Double-click</dt><dd>Rename a state, open a note</dd>
+    <dt>Delete</dt><dd>Remove what is selected</dd>
+    <dt>Wheel</dt><dd>Scroll; with Ctrl, zoom</dd>
+    <dt>Ctrl+Z, Ctrl+Y</dt><dd>Undo, redo (Ctrl+Shift+Z too)</dd>
+    <dt>Ctrl+S</dt><dd>Save</dd>
+  </dl>
+  <p class="pk-help">Select a line to bend it: drag the handles on it, or move a focused one with the arrow keys. New states go into the
+    selected composite; Group puts several selected states into a new one.</p>
+</details>`;
 
 function drawInspector() {
   const pane = $('side-inspect');
@@ -1239,13 +1291,14 @@ function drawInspector() {
   S.inspectorDrafts.clear();  // the forms are drawn anew: what was typed into them is gone (callers asked first)
   setDirty(savable());
   if (!m) {
-    render(pane, emptyState('workflow', 'Nothing open'));
+    render(pane, '');  // the pane hides without a machine (panel.css)
     return;
   }
+  const show = (content) => render(pane, html`${readOnlyNote(m)}${content}${SHORTCUTS}`);
   const sel = S.selection;
   if (sel?.kind === 'transition' && transitionOf(sel.id)) {
     const t = transitionOf(sel.id);
-    render(pane, html`<div class="sg-section">
+    show(html`<div class="sg-section">
       <div class="sg-inspect-head"><h3 class="sg-inspect-name">Transition</h3>
         <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-select-state="${t.source}">${icon('arrow-left', { size: 'sm' })} ${t.source}</button></div>
       ${transitionEditor(t)}
@@ -1256,17 +1309,17 @@ function drawInspector() {
   if (note) {
     const shared = m.graph.locked?.includes('notes');
     const editable = m.writable && !shared;
-    render(pane, html`<div class="sg-section">
+    show(html`<div class="sg-section">
       <div class="sg-inspect-head">${icon('notebook-pen')}<h3 class="sg-inspect-name">Note</h3><span class="pk-mono pk-muted">${note.name}</span></div>
       <form data-form="note" class="pk-stack">
         <textarea class="pk-textarea sg-note-input" name="text" rows="10" aria-label="The note's text" data-orig="${note.text}"
           placeholder="Free text: what the machine is for, what to watch, what is left to do" ${editable ? '' : 'readonly'}>
 ${note.text}</textarea>
         ${shared ? html`<p class="pk-help">${SHARED_HINT}</p>` : ''}
-        <p class="pk-help">Kept in the file under notes: and drawn on the canvas; the engine never reads it. Drag the note to move it.</p>
+        <p class="pk-help">Kept in the file under notes: and drawn on the canvas; the engine never reads it.</p>
         ${editable ? html`<div class="pk-form-actions">
           <button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="remove-note">${icon('trash-2', { size: 'sm' })} Remove</button>
-          <button type="submit" class="pk-btn pk-btn--sm pk-btn--primary">${icon('save', { size: 'sm' })} Apply</button></div>` : ''}
+          <button type="submit" class="pk-btn pk-btn--sm" data-apply disabled>${icon('save', { size: 'sm' })} Apply</button></div>` : ''}
       </form></div>`);
     return;
   }
@@ -1277,7 +1330,7 @@ ${note.text}</textarea>
     const goes = removal(names, sel.transitions);
     const gone = [goes.states.length && counted(goes.states.length, 'state'),
       goes.transitions.length && counted(goes.transitions.length, 'transition')].filter(Boolean);
-    render(pane, html`<div class="sg-section">
+    show(html`<div class="sg-section">
       <div class="sg-inspect-head"><h3 class="sg-inspect-name">${[names.length && counted(names.length, 'state'),
         edges.length && counted(edges.length, 'transition')].filter(Boolean).join(', ')}</h3></div>
       <div class="pk-row">${names.map((name) => html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost"
@@ -1286,9 +1339,6 @@ ${note.text}</textarea>
       ${ways.length ? html`<div class="sg-fields"><label for="many-line">Line${ways.length > 1 ? 's' : ''}</label>
         <select class="pk-select pk-select--sm" id="many-line" data-line="*" title="How the canvas draws the selected transitions (each the way it goes): kept in the layout, set at once">${lineChoices(
           styleOfAll(ways), { inherit: true, mixed: styleOfAll(ways) === undefined })}</select></div>` : ''}
-      <p class="pk-help">Drag one of the states to move them all; Delete removes what is selected, Group puts the states
-        into a new composite. Ctrl or Shift+click adds or takes out a state or a transition, Ctrl or Shift+drag draws a
-        box and adds the states wholly inside it.</p>
       ${m.writable ? html`<div class="pk-row">
         ${goes.states.length ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="group">
           ${icon('network', { size: 'sm' })} Group</button>` : ''}
@@ -1300,7 +1350,7 @@ ${note.text}</textarea>
   }
   const state = sel?.kind === 'state' ? stateOf(sel.id) : null;
   if (!state) {
-    render(pane, machineOverview());
+    show(machineOverview());
     return;
   }
   const pinned = S.problems.states[state.name];
@@ -1312,7 +1362,7 @@ ${note.text}</textarea>
   const fragment = stateFragment(drawnText(m), state.line, state.name);
   const lock = fragmentLock(drawnText(m), state.line, state.name);
   const applies = m.writable && !lock;
-  render(pane, html`
+  show(html`
     <div class="sg-section">
       <div class="sg-inspect-head">
         ${state.icon ? icon(state.icon) : ''}<h3 class="sg-inspect-name">${state.name}</h3>
@@ -1324,25 +1374,24 @@ ${note.text}</textarea>
       <form data-form="state-description" class="pk-stack sg-description">
         <div class="sg-fields">${field('description', STATE_FIELD_SCHEMA.description, state.description,
           { locked: state.locked?.includes('description'), prefix: 'sd' })}</div>
-        ${m.writable && !state.locked?.includes('description') ? html`<div class="pk-form-actions">
-          <button type="submit" class="pk-btn pk-btn--sm">${icon('save', { size: 'sm' })} Apply</button></div>` : ''}
+        ${m.writable && !state.locked?.includes('description') ? applyButton : ''}
       </form>
-      <div class="pk-row sg-actions">
-        <button type="button" class="pk-btn pk-btn--sm" data-act="rename" ${m.writable ? '' : 'disabled'}>${icon('pencil', { size: 'sm' })} Rename</button>
-        <button type="button" class="pk-btn pk-btn--sm" data-act="initial" ${m.writable && parentInitial !== state.name ? '' : 'disabled'} title="Make it the initial state of its region">${icon('play', { size: 'sm' })} Initial</button>
-        <button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="remove" ${m.writable ? '' : 'disabled'}>${icon('trash-2', { size: 'sm' })} Remove</button>
+      ${m.writable ? html`<div class="pk-row sg-actions">
+        <button type="button" class="pk-btn pk-btn--sm" data-act="rename">${icon('pencil', { size: 'sm' })} Rename</button>
+        <button type="button" class="pk-btn pk-btn--sm" data-act="initial" ${parentInitial !== state.name ? '' : 'disabled'} title="Make it the initial state of its region">${icon('play', { size: 'sm' })} Initial</button>
+        <button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="remove">${icon('trash-2', { size: 'sm' })} Remove</button>
       </div>
       <label class="pk-field sg-parent">Inside
-        <select class="pk-select pk-select--sm" data-act="parent" ${m.writable ? '' : 'disabled'} title="The composite it sits in: another one moves it there">
+        <select class="pk-select pk-select--sm" data-act="parent" title="The composite it sits in: another one moves it there">
           ${parentChoices(state).map((one) => html`<option value="${one}" ${one === (state.parent || '') ? 'selected' : ''}>${one || '(top level)'}</option>`)}
         </select>
-      </label>
+      </label>` : ''}
       ${problemList(pinned?.problems)}
     </div>
     <div class="sg-section">
       <h4 class="sg-section-title">Breakpoints ${live ? html`<span class="pk-badge pk-badge--info">run ${shorten(live.id, 12)}</span>` : html`<span class="pk-muted">(next run)</span>`}</h4>
       ${hooks.length ? html`<div class="pk-row sg-checks">
-        ${hooks.map((at) => html`<label class="pk-check"><input type="checkbox" data-breakpoint="${at}" ${points.has(at) ? 'checked' : ''}> ${at}</label>`)}
+        ${hooks.map((at) => html`<label class="pk-check"><input type="checkbox" data-breakpoint="${at}" ${points.has(at) ? 'checked' : ''}> ${human(at)}</label>`)}
       </div>` : ''}
       ${why ? html`<p class="pk-help">${why}</p>` : ''}
     </div>
@@ -1350,13 +1399,13 @@ ${note.text}</textarea>
       <h4 class="sg-section-title">Activity</h4>
       <form data-form="activity" class="pk-stack">
         ${state.locked?.includes('do') ? html`<p class="pk-help">${SHARED_HINT}</p>` : ''}
-        <div class="sg-fields"><label for="af-kind">kind</label>
+        <div class="sg-fields"><label for="af-kind">Kind</label>
           <select class="pk-select pk-select--sm" id="af-kind" name="kind" data-orig="${state.kind || ''}" ${m.writable && !state.locked?.includes('do') ? '' : 'disabled'}>
             <option value="">(none: waits, or passes on)</option>
             ${S.kinds.map((k) => html`<option value="${k.key}" ${k.key === state.kind ? 'selected' : ''}>${k.title} (${k.key})</option>`)}
           </select></div>
         <div id="activityFields">${activityFields(state.kind, state)}</div>
-        <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${m.writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
+        ${m.writable ? applyButton : ''}
       </form>
     </div>` : ''}
     <div class="sg-section">
@@ -1365,16 +1414,16 @@ ${note.text}</textarea>
         ${stateFieldNames(state).some((name) => state.locked?.includes(name)) ? html`<p class="pk-help">${SHARED_HINT}</p>` : ''}
         <div class="sg-fields">${stateFieldNames(state).map((name) => field(name, STATE_FIELD_SCHEMA[name], stateValue(state, name), {
           text: state.yaml?.[name], locked: state.locked?.includes(name), prefix: 'sf' }))}</div>
-        <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${m.writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
+        ${m.writable ? applyButton : ''}
       </form>
     </div>
     <div class="sg-section">
       <h4 class="sg-section-title">Transitions (tried in this order)</h4>
-      ${outgoing.length ? outgoing.map(transitionEditor) : html`<p class="pk-help">None. Drag from the state's handle to another state to add one.</p>`}
-      <form class="pk-row sg-inline" data-form="add-transition">
+      ${outgoing.length ? outgoing.map(transitionEditor) : html`<p class="pk-help">None.</p>`}
+      ${m.writable ? html`<form class="pk-row sg-inline" data-form="add-transition">
         <select class="pk-select pk-select--sm pk-grow" name="target" aria-label="Target of the new transition">${m.graph.states.map((s) => html`<option value="${s.name}">${s.name}</option>`)}</select>
-        <button type="submit" class="pk-btn pk-btn--sm" ${m.writable ? '' : 'disabled'}>${icon('plus', { size: 'sm' })} Transition</button>
-      </form>
+        <button type="submit" class="pk-btn pk-btn--sm">${icon('plus', { size: 'sm' })} Transition</button>
+      </form>` : ''}
     </div>
     <div class="sg-section">
       <h4 class="sg-section-title">YAML</h4>
@@ -1382,7 +1431,7 @@ ${note.text}</textarea>
         ${codeBox(fragment, html`<textarea class="pk-textarea pk-input--mono sg-fragment" name="yaml" spellcheck="false" wrap="off"
           aria-label="The state's YAML" ${applies ? '' : 'readonly'}>${fragment}</textarea>`)}
         ${lock ? html`<p class="pk-help">${lock}: edit it in the YAML tab.</p>` : ''}
-        <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${applies ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
+        ${applies ? applyButton : ''}
       </form>
     </div>
     <div class="sg-section" id="stateFrames" hidden></div>`);
@@ -1405,9 +1454,9 @@ function agentSection(m) {
       <span class="pk-mono">${offer.name}</span>${offer.declared ? '.' : ' after a restart: every process reads the agent: blocks as it starts.'}</p>`;
   }
   return html`${listed}<p class="pk-help">${agents.length ? 'An agent: block in its settings offers it under a name of its own'
-    : 'No agent runs this machine. An agent: block like this one in its settings offers it as one after a restart'}
-    -- no config entry.</p>
-    <details class="pk-details" ${agents.length ? '' : 'open'}><summary>agent: block</summary>
+    : 'No agent runs this machine. An agent: block like this one in its settings offers it as one after a restart'},
+    with no config entry.</p>
+    <details class="pk-details"><summary>agent: block</summary>
     <pre class="sg-result-text" id="agentEntry">${agentEntry(m)}</pre>
     <button type="button" class="pk-btn pk-btn--sm" data-act="copy-agent-entry">${icon('copy', { size: 'sm' })} Copy</button></details>`;
 }
@@ -1429,28 +1478,32 @@ function machineOverview() {
   const g = m.graph;
   const table = (entries, head) => (entries.length ? html`<table class="pk-table"><thead><tr>${head.map((h) => html`<th>${h}</th>`)}</tr></thead>
     <tbody>${entries}</tbody></table>` : html`<p class="pk-help">None.</p>`);
+  // the settings a machine has, and those that say what it is; the rest folded: fifteen fields drowned the few set
+  const set = (name) => (MACHINE_FIELD_SCHEMA[name].type === 'object' ? name in (g.yaml || {}) : Boolean(g[name]));
+  const names = Object.keys(MACHINE_FIELD_SCHEMA);
+  const shown = names.filter((name) => ['title', 'description', 'group'].includes(name) || set(name));
+  const folded = names.filter((name) => !shown.includes(name));
+  const machineField = (name) => field(name, MACHINE_FIELD_SCHEMA[name], g[name] ?? undefined,
+    { text: g.yaml?.[name], locked: g.locked?.includes(name), prefix: 'mf' });
   return html`
     <div class="sg-section">
       <h3 class="sg-inspect-name">${g.title || m.id}</h3>
       ${g.description ? html`<p class="pk-help">${g.description}</p>` : ''}
-      <dl class="pk-kv"><dt>initial</dt><dd class="pk-mono">${g.initial ?? '—'}</dd>
-        <dt>states</dt><dd>${g.states.length}</dd><dt>transitions</dt><dd>${g.transitions.length}</dd>
-        ${m.runner ? html`<dt>runner</dt><dd class="pk-mono" title="Hosts its runs: its tool allowlist is what the machine's tool activities may call. Chosen by the machine's folder (runs_machines_in).">${m.runner}</dd>` : ''}</dl>
+      <dl class="pk-kv"><dt>Initial</dt><dd class="pk-mono">${g.initial ?? '—'}</dd>
+        <dt>States</dt><dd>${g.states.length}</dd><dt>Transitions</dt><dd>${g.transitions.length}</dd>
+        ${m.runner ? html`<dt>Runner</dt><dd class="pk-mono" title="Hosts its runs: its tool allowlist is what the machine's tool activities may call. Chosen by the machine's folder (runs_machines_in).">${m.runner}</dd>` : ''}</dl>
       ${m.runner_problem ? html`<div class="pk-callout pk-callout--warn">${m.runner_problem}</div>` : ''}
       <div class="sg-fields"><label for="machine-line">Lines</label>
         <select class="pk-select pk-select--sm" id="machine-line" data-line-default title="How the canvas draws the transitions that have no style of their own: kept in the layout, set at once">${lineChoices(lineStyle(m.layout?.line))}</select></div>
-      <p class="pk-help">Click a state or a transition to edit it. New states from the bar above the graph go into the selected composite.
-        Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box the states in it: drag
-        one to move them all, Delete removes them, Group puts the states into a new composite. Note in the bar adds a
-        note of free text: drag it anywhere, click it to edit it.</p>
     </div>
     ${m.problems.length ? html`<div class="sg-section"><h4 class="sg-section-title">Problems</h4>${problemButtons(m.problems)}</div>` : ''}
     <div class="sg-section"><h4 class="sg-section-title">Settings</h4>
       <form data-form="machine-fields" class="pk-stack">
-        <div class="sg-fields">${Object.keys(MACHINE_FIELD_SCHEMA).map((name) => field(name, MACHINE_FIELD_SCHEMA[name],
-          g[name] ?? undefined, { text: g.yaml?.[name], locked: g.locked?.includes(name), prefix: 'mf' }))}</div>
+        <div class="sg-fields">${shown.map(machineField)}</div>
+        ${folded.length ? html`<details class="pk-details"><summary>More settings</summary>
+          <div class="sg-fields">${folded.map(machineField)}</div></details>` : ''}
         ${g.python ? html`<p class="pk-help">Companion module: <span class="pk-mono">${g.python}</span> (YAML tab)</p>` : ''}
-        <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${m.writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
+        ${m.writable ? applyButton : ''}
       </form></div>
     ${Object.keys(g.imports || {}).length ? html`<div class="sg-section"><h4 class="sg-section-title">Imported machines</h4>
       ${table(Object.entries(g.imports).map(([alias, ref]) => html`<tr><td class="pk-mono">${alias}</td>
@@ -1484,9 +1537,9 @@ const MACHINE_FIELD_SCHEMA = {
   context: { type: 'object', description: 'the run context and its start values' },
   vars: { type: 'object', description: 'agent template vars: a map of templates' },
   imports: { type: 'object', description: 'alias: ./file.yaml or machine id' },
-  machines: { type: 'object', description: 'machines inside this file -- name: {params, context, initial, states, ...}; machine: <name> runs one; they share the companion module and imports' },
+  machines: { type: 'object', description: 'machines inside this file, name: {params, context, initial, states, ...}; machine: <name> runs one; they share the companion module and imports' },
   resources: { type: 'object', description: 'name: {open, fork, close} activities' },
-  agent: { type: 'object', description: 'offer this machine as an agent, no config entry -- {name, description, input, task_param, on_wait, params, promote, visibility (default private)}; every process declares it as it starts' },
+  agent: { type: 'object', description: 'offer this machine as an agent, no config entry: {name, description, input, task_param, on_wait, params, promote, visibility (default private)}; every process declares it as it starts' },
   limits: { type: 'object', description: 'max_steps, timeout, concurrency' },
   finally: { type: 'object', description: 'an activity that runs once when the machine ends' },
 };
@@ -1531,7 +1584,7 @@ function field(name, p = {}, value, { text, locked = false, required = false, pr
   if ((shape === 'line' || shape === 'duration') && orig.includes('\n')) shape = 'text';  // an input drops line breaks
   const off = !S.machine.writable || locked;
   const common = { id, name, shape, orig, off };
-  const label = html`<label for="${id}" title="${p.description || ''}">${name}${required ? ' *' : ''}</label>`;
+  const label = html`<label for="${id}">${human(name)}${required ? ' *' : ''}</label>`;
   if (shape === 'enum' || shape === 'bool') {
     const options = shape === 'bool' ? ['true', 'false'] : [...new Set([p, ...(p.anyOf || [])].flatMap((o) => o.enum || []))];
     return html`${label}<select class="pk-select pk-select--sm" ${attrs(common)}>
@@ -1684,6 +1737,7 @@ $('side-inspect').addEventListener('click', async (event) => {
   if (target.dataset.selectTransition) return choose({ kind: 'transition', id: target.dataset.selectTransition });
   if (target.dataset.problem !== undefined && !S.selection) return goToProblem(S.machine.problems[Number(target.dataset.problem)]);
   if (target.dataset.openMachine) return openMachine(target.dataset.openMachine, { keepRun: true });  // a run of this one shows its frame
+  if (act === 'duplicate-machine') return duplicateMachine(S.machine);
   if (act === 'remove-selection' && S.selection?.kind === 'many') return removeSelection(S.selection.states, S.selection.transitions);
   if (act === 'group' && S.selection?.kind === 'many') return groupStates(S.selection.states);
   if (act === 'rename' && name) return renameState(name);
@@ -1716,10 +1770,17 @@ $('side-inspect').addEventListener('click', async (event) => {
   }
 });
 
+/** A form whose text came back to what it showed: nothing to apply, its Apply goes back to disabled (markApplies). */
+function untyped(form) {
+  S.inspectorDrafts.delete(draftKey(form));
+  setDirty(unsaved());
+}
+
 $('side-inspect').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
   const button = form.querySelector('[type="submit"]');
+  form.dataset.applying = '';
   await withBusy(button, async () => {
     if (form.dataset.form in FIELD_FORMS) {
       let request;
@@ -1729,7 +1790,7 @@ $('side-inspect').addEventListener('submit', async (event) => {
         if (!(error instanceof FormError)) throw error;
         return toast(error.message, { kind: 'warn' });
       }
-      if (!request) return toast('Nothing changed', { kind: 'info' });
+      if (!request) return untyped(form);
       await edit(request, { from: FORM_DRAFTS[form.dataset.form] });
     } else if (form.dataset.form === 'set-state' && S.selection?.kind === 'state') {
       await edit({ op: 'set_state', name: S.selection.id, yaml: form.elements.yaml.value }, { from: 'state' });
@@ -1737,7 +1798,7 @@ $('side-inspect').addEventListener('submit', async (event) => {
       const name = S.selection.id;
       const text = form.elements.text.value.replace(/\s+$/, '');
       // what the file holds as the textarea shows it: a | block ends in a line break the typed text loses here
-      if (text === (noteOf(name)?.text ?? '').replace(/\s+$/, '')) return toast('Nothing changed', { kind: 'info' });
+      if (text === (noteOf(name)?.text ?? '').replace(/\s+$/, '')) return untyped(form);
       if (!text.trim()) return removeNote(name);  // emptied: the note goes, after asking
       await edit({ op: 'set_note', name, text }, { from: 'note' });
     } else if (form.dataset.form === 'add-transition' && S.selection?.kind === 'state') {
@@ -1748,10 +1809,11 @@ $('side-inspect').addEventListener('submit', async (event) => {
       // only what changed: a key sent unchanged would be written anew (a guard's layout, an explicit trigger: done)
       const fields = changedFields(form);
       if ('trigger' in fields && fields.trigger === 'done') fields.trigger = null;  // completion: no trigger key
-      if (!Object.keys(fields).length) return toast('Nothing changed', { kind: 'info' });
+      if (!Object.keys(fields).length) return untyped(form);
       await edit({ op: 'update_transition', source: t.source, index: t.index, fields }, { from: draftKey(form) });
     }
-  });
+  }).finally(() => { delete form.dataset.applying; });
+  markApplies();  // withBusy freed the button it held: an Apply with nothing typed goes back to disabled
 });
 
 /** The composites a state can go into, and '' for the top level: not itself, nor one inside it. */
@@ -1785,6 +1847,7 @@ $('side-inspect').addEventListener('change', async (event) => {
     if (state) render($('activityFields'), activityFields(event.target.value, state));
     S.inspectorDrafts.add('activity');
     setDirty(true);
+    markApplies();
     return;
   }
   const box = event.target.closest('[data-breakpoint]');
@@ -1801,6 +1864,7 @@ $('side-inspect').addEventListener('input', (event) => {
   if (key) {
     S.inspectorDrafts.add(key);
     setDirty(true);
+    markApplies();
   }
 });
 $('side-inspect').addEventListener('scroll', (event) => followScroll(event.target), true);
@@ -1891,8 +1955,8 @@ const problemButtons = (problems) => problems.map((p, i) => html`<button type="b
       <span class="sg-problem-where">${[posixPath(p.file)?.split('/').pop(), p.line && `line ${p.line}`, p.path].filter(Boolean).join(' · ')}</span></span></button>`);
 
 function drawProblems(element, problems, label) {
-  if (!problems.length) {
-    render(element, html`<div class="pk-callout pk-callout--ok">${label}: no problems.</div>`);
+  if (!problems.length) {  // a saved file without problems says nothing; text not saved yet says it checked out
+    render(element, label === 'Saved file' ? '' : html`<p class="pk-help">${label}: no problems.</p>`);
     return;
   }
   render(element, html`<div class="pk-help">${label}: ${problems.length} problem${problems.length > 1 ? 's' : ''}. Click one to go there.</div>
@@ -1986,14 +2050,19 @@ function allFiles() {
 }
 
 $('yamlValidate').addEventListener('click', () => withBusy($('yamlValidate'), async () => {
+  let problems;
   if (!S.autosave) {  // the graph drawn from the text: graph edits go on from it
-    if (await dropTyped()) await drawDrafts();
-    return;
+    if (!await dropTyped()) return;
+    const m = S.machine;
+    await drawDrafts();
+    if (S.machine !== m) problems = S.machine.problems;  // redrawn: else the check failed (toasted)
+  } else {
+    try {
+      problems = (await api(`${API}/validate`, { method: 'POST', json: { files: allFiles(), machine_id: S.machine.id } })).problems;
+      drawProblems($('yamlProblems'), problems, hasDrafts() ? 'Unsaved text' : 'Saved file');
+    } catch (error) { /* toasted */ }
   }
-  try {
-    const result = await api(`${API}/validate`, { method: 'POST', json: { files: allFiles(), machine_id: S.machine.id } });
-    drawProblems($('yamlProblems'), result.problems, hasDrafts() ? 'Unsaved text' : 'Saved file');
-  } catch (error) { /* toasted */ }
+  if (problems && !problems.length) toast('No problems', { kind: 'ok' });  // a clean saved file shows no line for it
 }));
 
 $('yamlRevert').addEventListener('click', async () => {
@@ -2006,8 +2075,6 @@ $('yamlRevert').addEventListener('click', async () => {
   }
   await openMachine(S.machine.id, { keepRun: true, discard: true });  // graph and layout as saved
 });
-
-$('yamlSave').addEventListener('click', () => withBusy($('yamlSave'), saveAll));
 
 async function saveYaml(force, layout = null) {
   const m = S.machine;
@@ -2144,7 +2211,7 @@ $('startForm').addEventListener('submit', (event) => {
       mocks = text ? JSON.parse(text) : null;
       if (mocks !== null && (typeof mocks !== 'object' || Array.isArray(mocks))) throw new Error('mocks: a JSON object {state path: out}');
     } catch (problem) {
-      notice($('startError'), problem instanceof SyntaxError ? `mocks: not valid JSON (${problem.message})` : problem.message);
+      startProblem(problem instanceof SyntaxError ? `mocks: not valid JSON (${problem.message})` : problem.message);
       return;
     }
     await startRun(params, mocks, $('mockOnly').checked);
@@ -2179,15 +2246,37 @@ async function startRun(params, mocks, mockOnly) {
     selectRun(started.run_id);
     selectTab($('sideTabs'), 'debug');
   } catch (failure) {
-    if (!isAborted(failure)) notice(error, errorText(failure));
+    if (!isAborted(failure)) startProblem(errorText(failure));
   }
 }
+
+/** Why a run did not start, where it can be seen: Run again starts from the result card, the start form may be
+ * folded -- it unfolds, and so do its test options when the problem is theirs. */
+function startProblem(text) {
+  $('startBox').open = true;
+  if (/mock/i.test(text)) $('testOptions').open = true;
+  notice($('startError'), text);
+  // Run again sits low on the result card: the form opens above it, maybe out of sight
+  keepInSight(scrollerOf($('startError')), $('startError'));
+}
+
+/** What the test options hold, said in their summary: a run must not send mocks nobody sees. `open`: unfold them
+ * when they hold something -- the mocks a machine kept, the inputs Run again took over. */
+function drawTestOptions({ open = false } = {}) {
+  const held = [$('mocks').value.trim() && 'mocks', $('mockOnly').checked && 'mock only',
+    $('pauseAtStart').checked && 'pause at start'].filter(Boolean);
+  $('testOptionsHeld').textContent = held.length ? `· ${held.join(', ')}` : '';
+  if (open && held.length) $('testOptions').open = true;
+}
+
+$('testOptions').addEventListener('input', () => drawTestOptions());
 
 /** The run's inputs -- params, mocks, mock only -- into the start form, and a new run with them. */
 async function rerun(run) {
   const mocks = run.mocks?.mocks && Object.keys(run.mocks.mocks).length ? run.mocks.mocks : null;
   $('mocks').value = mocks ? JSON.stringify(mocks) : '';
   $('mockOnly').checked = Boolean(run.mocks?.mock_only);
+  drawTestOptions({ open: true });
   await startRun(run.params || {}, mocks, Boolean(run.mocks?.mock_only));
   $('paramFields').dataset.signature = '';  // drawn anew with the params startRun kept
   drawStartForm();
@@ -2196,6 +2285,7 @@ async function rerun(run) {
 // ------------------------------------------------------------------ runs: list, selection, polling
 
 const RUN_PAGE = 50;
+let startFor = null;  // the machine whose first run list opened or folded the start form
 
 /** The machine's newest runs of the status chosen, and those of other machines it ran in as a submachine -- as many
  * as are shown already (older pages stay through a refresh); `older`: the page after the last one shown. */
@@ -2221,6 +2311,12 @@ async function loadRuns({ older = false, tick = false } = {}) {
   }
   S.runs = older ? [...S.runs, ...page] : page;
   S.runsMore = page.length === limit;
+  // decided once per machine, on its whole list (a status filter is the viewer's, not "no runs"), and never over
+  // a start error the form shows
+  if (startFor !== S.machine.id && !S.runStatus) {
+    startFor = S.machine.id;
+    $('startBox').open = !S.runs.length || !$('startError').hidden;
+  }
   $('runCount').textContent = S.runs.length ? `${S.runs.length}${S.runsMore ? '+' : ''}` : '';
   $('olderRuns').hidden = !S.runsMore;
   drawRunList();
@@ -2237,6 +2333,8 @@ function followRuns() {
 }
 
 $('olderRuns').addEventListener('click', () => withBusy($('olderRuns'), () => loadRuns({ older: true })));
+// New run opened or folded by hand (or by a start error): decided for this machine, no run list turns it over
+$('startBox').addEventListener('toggle', () => { if (S.machine) startFor = S.machine.id; });
 $('runStatus').addEventListener('change', () => {
   S.runStatus = $('runStatus').value;
   S.runs = [];  // another list: its first page
@@ -2384,7 +2482,7 @@ function drawDebugBar() {
   const choices = runChoices(run);
   keepingChoices(bar, () => update(bar, html`
     ${choices.length > 1 ? html`<span class="sg-runpick" role="group" aria-label="Live runs: the one to show">${choices.map((r) => html`<button
-      type="button" class="pk-btn pk-btn--sm${r.id === run.id ? ' pk-btn--primary' : ''}" data-pick-run="${r.id}" data-key="pick:${r.id}"
+      type="button" class="pk-btn pk-btn--sm" data-pick-run="${r.id}" data-key="pick:${r.id}"
       aria-pressed="${String(r.id === run.id)}" title="${r.id}${r.machine_id && r.machine_id !== S.machine?.id ? ` (a run of ${r.machine_id})` : ''}"><span
       class="pk-mono">${runTail(r.id)}</span>
       ${statusBadge(r.id === run.id ? run.status : r.status)}</button>`)}</span>`
@@ -2394,19 +2492,17 @@ function drawDebugBar() {
     ${run.machine_id !== S.machine?.id ? frameChoice(run) : ''}
     ${paused ? html`<span title="${paused.reason}">paused at <span class="pk-mono">${paused.state ?? '—'}</span> (${paused.hook}${paused.frame ? `, frame ${paused.frame}` : ''})</span>` : ''}
     ${!paused && run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span></span>` : ''}
-    ${elsewhere ? html`<span class="pk-muted" title="Shown from its journal; its events, pause, continue, step and terminate reach it within a second -- run to, breakpoints and edits only in its own process">in another process</span>` : ''}
+    ${elsewhere ? html`<span class="pk-muted" title="Shown from its journal; its events, pause, continue, step and terminate reach it within a second; run to, breakpoints and edits only in its own process">in another process</span>` : ''}
     ${S.pollError ? html`<span class="pk-text--warn" title="${S.pollError}">${icon('circle-alert', { size: 'sm' })} not refreshed</span>` : ''}
     <span class="pk-grow"></span>
-    <button type="button" class="pk-btn pk-btn--sm" data-control="continue" ${can.resume ? '' : 'disabled'} title="Continue">${icon('play', { size: 'sm' })} Continue</button>
-    <button type="button" class="pk-btn pk-btn--sm" data-control="step" ${can.resume ? '' : 'disabled'} title="Run to the next hook">${icon('step-forward', { size: 'sm' })} Step</button>
-    <button type="button" class="pk-btn pk-btn--sm" data-control="pause" ${can.pause ? '' : 'disabled'} title="Pause at the next hook">${icon('pause', { size: 'sm' })} Pause</button>
-    <select class="pk-select pk-select--sm" id="runToState" aria-label="State to run to" ${can.runTo ? '' : 'disabled'}>${states.map((name) => html`<option value="${name}">${name}</option>`)}</select>
-    <button type="button" class="pk-btn pk-btn--sm" data-control="run_to" ${can.runTo ? '' : 'disabled'} title="Run until the chosen state is entered">${icon('crosshair', { size: 'sm' })} Run to</button>
-    <button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-control="terminate" ${can.terminate ? '' : 'disabled'}>${icon('square', { size: 'sm' })} Terminate</button>
-    ${can.restart ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" data-control="resume" title="Resume the interrupted run: finished activities are replayed, not repeated">${icon('rotate-ccw', { size: 'sm' })} Resume</button>` : ''}
-    <input class="pk-input pk-input--sm sg-step-input" type="number" min="0" id="forkStep" aria-label="Top-level step to fork from" placeholder="step">
-    <label class="pk-check" title="Hold the fork at the fork point, to look at or set ctx before it goes on"><input type="checkbox" id="forkPause"> paused</label>
-    <button type="button" class="pk-btn pk-btn--sm" data-control="fork" title="A new run from this top-level step (current definition with Shift)">${icon('git-branch', { size: 'sm' })} Fork</button>
+    ${can.resume ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--icon" data-control="continue" title="Continue" aria-label="Continue">${icon('play', { size: 'sm' })}</button>
+    <button type="button" class="pk-btn pk-btn--sm pk-btn--icon" data-control="step" title="Step: run to the next hook" aria-label="Step">${icon('step-forward', { size: 'sm' })}</button>` : ''}
+    ${can.pause ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--icon" data-control="pause" title="Pause at the next hook" aria-label="Pause">${icon('pause', { size: 'sm' })}</button>` : ''}
+    ${can.runTo ? html`<select class="pk-select pk-select--sm" id="runToState" aria-label="State to run to">${states.map((name) => html`<option value="${name}">${name}</option>`)}</select>
+    <button type="button" class="pk-btn pk-btn--sm" data-control="run_to" title="Run until the chosen state is entered">${icon('crosshair', { size: 'sm' })} Run to</button>` : ''}
+    ${can.terminate ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-control="terminate">${icon('square', { size: 'sm' })} Terminate</button>` : ''}
+    ${can.restart ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" data-control="resume" title="Resume the interrupted run: finished activities are replayed, not repeated">${icon('play', { size: 'sm' })} Resume</button>` : ''}
+    <button type="button" class="pk-btn pk-btn--sm" data-control="fork" title="A new run from a top-level step of this one (Shift: with the machine's current definition)">${icon('git-branch', { size: 'sm' })} Fork…</button>
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`));
 }
 
@@ -2505,17 +2601,27 @@ $('debugBar').addEventListener('click', async (event) => {
   const extra = {};
   if (action === 'run_to') Object.assign(extra, { state: $('runToState').value, machine: S.machine?.id });
   if (action === 'fork') {
-    const step = Number($('forkStep').value);
-    if (!$('forkStep').value || !Number.isInteger(step) || step < 0) {
-      toast('Fork: name the top-level step to fork from.', { kind: 'warn' });
-      return;
-    }
-    extra.at_step = step;
-    extra.definition = event.shiftKey ? 'current' : 'snapshot';
-    if ($('forkPause').checked) extra.pause = true;
+    const fork = await askFork(event.shiftKey ? 'current' : 'snapshot');
+    if (!fork) return;
+    Object.assign(extra, fork);
   }
   await withBusy(button, () => control(action, extra));
 });
+
+/** A fork's step and whether it holds there, asked: the top-level step a new run replays up to, then runs on from. */
+async function askFork(definition) {
+  const step = await askUntil('Top-level step to fork from: the new run replays this run up to it.', {
+    title: 'Fork the run', placeholder: '3',
+    problem: (text) => (/^\d+$/.test(text) ? '' : `"${text}" is no step: a whole number, 0 or more.`) });
+  if (step === null) return null;
+  const how = await dialog({
+    title: 'Fork the run',
+    message: `Hold the fork at step ${step}, to look at or set ctx before it goes on, or let it run on?`,
+    actions: [{ label: 'Cancel', value: null }, { label: 'Hold it', value: 'hold' }, { label: 'Run on', value: 'run', primary: true }],
+  });
+  if (!how) return null;
+  return { at_step: Number(step), definition, ...(how === 'hold' && { pause: true }) };
+}
 
 async function control(action, extra = {}) {
   const id = S.runId;
@@ -2556,14 +2662,14 @@ function drawDebugPane() {
   update($('dbgRun'), run ? html`<div class="sg-section">
       <div class="sg-inspect-head"><h3 class="sg-inspect-name">Run</h3>${statusBadge(run.status)}
         <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="copy-run" title="Copy the run id" aria-label="Copy the run id">${icon('copy', { size: 'sm' })}</button></div>
-      <dl class="pk-kv"><dt>id</dt><dd class="pk-mono">${run.id}</dd>
-        ${run.params && Object.keys(run.params).length ? html`<dt>params</dt><dd>${jsonView(run.params)}</dd>` : ''}
-        ${debug.paused ? html`<dt>paused</dt><dd>${debug.paused.reason}</dd>` : ''}
-        ${debug.paused?.out !== undefined && debug.paused?.out !== null ? html`<dt>out</dt><dd>${jsonView(debug.paused.out)}</dd>` : ''}
-        ${debug.paused?.error ? html`<dt>error</dt><dd>${jsonView(debug.paused.error)}</dd>` : ''}
-        ${run.output !== undefined && run.output !== null ? html`<dt>output</dt><dd>${jsonView(run.output)}</dd>` : ''}
-        ${run.error ? html`<dt>error</dt><dd class="pk-text--danger">${jsonView(run.error)}</dd>` : ''}
-        ${run.view?.inbox?.length ? html`<dt>inbox</dt><dd>${run.view.inbox.map((e) => e.name).join(', ')}</dd>` : ''}
+      <dl class="pk-kv"><dt>Id</dt><dd class="pk-mono">${run.id}</dd>
+        ${run.params && Object.keys(run.params).length ? html`<dt>Params</dt><dd>${jsonView(run.params)}</dd>` : ''}
+        ${debug.paused ? html`<dt>Paused</dt><dd>${debug.paused.reason}</dd>` : ''}
+        ${debug.paused?.out !== undefined && debug.paused?.out !== null ? html`<dt>Out</dt><dd>${jsonView(debug.paused.out)}</dd>` : ''}
+        ${debug.paused?.error ? html`<dt>Error</dt><dd>${jsonView(debug.paused.error)}</dd>` : ''}
+        ${run.output !== undefined && run.output !== null ? html`<dt>Output</dt><dd>${jsonView(run.output)}</dd>` : ''}
+        ${run.error ? html`<dt>Error</dt><dd class="pk-text--danger">${jsonView(run.error)}</dd>` : ''}
+        ${run.view?.inbox?.length ? html`<dt>Inbox</dt><dd>${run.view.inbox.map((e) => e.name).join(', ')}</dd>` : ''}
       </dl></div>`
     : emptyState('bug', 'No run selected', 'Start a run in the Runs tab, or pick one there.'));
 
@@ -2587,13 +2693,13 @@ function drawDebugPane() {
       <span class="pk-grow"></span><button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-drop-breakpoint="${i}" aria-label="Remove breakpoint">${icon('x', { size: 'sm' })}</button></li>`)}</ul>`
     : html`<p class="pk-help">None. Set them on a state in the inspector.</p>`);
 
-  $('dbgEvalHint').textContent = paused ? '' : '(while paused)';
-  for (const form of [$('evalForm'), $('setForm')]) for (const control of form.elements) control.disabled = !paused;
+  // what only a paused run takes, or only a run at all, shows only then: no pane of disabled forms before a run
+  $('evalSection').hidden = !paused;
   update($('dbgEval'), S.evaluation ? html`<div class="sg-frame"><span class="pk-mono">${S.evaluation.expr}</span>${'error' in S.evaluation
     ? html`<span class="pk-text--danger">${S.evaluation.error}</span>` : jsonView(S.evaluation.value)}</div>` : '');
 
   const events = Object.keys(S.machine?.graph?.events || {});
-  $('eventSection').hidden = !events.length;
+  $('eventSection').hidden = !events.length || !run || TERMINAL.has(run.status);
   const accepted = new Set((run?.accepts || []).flatMap((a) => a.events || []));
   // a wait state marks its events "(accepted now)": the redraw must not put another event in the viewer's choice
   const eventName = $('eventForm').elements.name;
@@ -2606,7 +2712,7 @@ function drawDebugPane() {
   S.acceptedSeen = waitsFor;
   drawEventHelp();
   keepingChoices($('eventFrame'), () => update($('eventFrame'), html`<option value="">any frame</option>${frames.map((f) => html`<option value="${f.prefix}">${f.prefix || 'top'}</option>`)}`));
-  for (const control of $('eventForm').elements) control.disabled = !run || TERMINAL.has(run.status);
+  $('framesSection').hidden = !run;
 
   update($('dbgFrames'), frames.length ? frames.map((f, i) => html`<div class="sg-frame">
       <div class="sg-frame-head">${badge(f.prefix ? 'submachine' : 'top', f.prefix ? 'info' : '')}<span class="pk-mono">${f.machine}</span>
@@ -2616,7 +2722,7 @@ function drawDebugPane() {
       ${f.waiting_since ? html`<div class="pk-help">waits for ${(f.accepts || []).join(', ') || 'an event'} since ${localTime(f.waiting_since, { seconds: true })}${f.deadline ? `, until ${localTime(f.deadline, { seconds: true })}` : ''}</div>` : ''}
       <details class="pk-details" ${i === 0 ? 'open' : ''}><summary>ctx</summary>${jsonView(f.ctx ?? {})}</details>
       ${f.visits && Object.keys(f.visits).length ? html`<div class="pk-help">visits: ${Object.entries(f.visits).map(([n, v]) => `${n} ×${v}`).join(', ')}</div>` : ''}
-    </div>`) : html`<p class="pk-help">${run ? 'No live frames: the run has not started or has ended.' : 'Frames show while a run is selected.'}</p>`);
+    </div>`) : html`<p class="pk-help">No live frames: the run has not started or has ended.</p>`);
 }
 
 $('side-inspect').addEventListener('click', (event) => {
@@ -2726,6 +2832,8 @@ onSubmit($('eventForm'), async (fields) => {
 // ------------------------------------------------------------------ runs: history
 
 const WHAT = { activity: 'activity', trace: 'trace', event: 'event', edit: 'edit', timer: 'timer' };
+/** A duration in seconds as the history and the result show it; '' when there is none. */
+const seconds = (value) => (value === undefined || value === null ? '' : `${Number(value).toFixed(1)} s`);
 
 function historyRow(row) {
   const data = row.data || {};
@@ -2760,7 +2868,7 @@ function historyRow(row) {
     <td>${WHAT[row.kind] || row.kind}</td>
     <td>${kind ? html`<span class="pk-text--${kind}">${what}</span>` : what}</td>
     <td class="pk-mono">${row.state || ''}</td>
-    <td class="pk-num" data-sort-value="${duration ?? ''}">${duration === undefined || duration === null ? '' : `${duration.toFixed(2)} s`}</td>
+    <td class="pk-num" data-sort-value="${duration ?? ''}">${seconds(duration)}</td>
     <td class="sg-mono sg-preview" title="${detail}">${detail}</td>
   </tr>`;
 }
@@ -2768,8 +2876,8 @@ function historyRow(row) {
 function drawHistory() {
   const all = S.run?.journal || [];
   const rows = S.historyKind ? all.filter((row) => row.kind === S.historyKind) : all;
-  keepingChoices($('runHistory'), () => update($('runHistory'), S.run ? html`<div class="pk-card">
-    <div class="pk-card-head"><h3 class="pk-card-title">History of ${shorten(S.run.id, 16)}</h3><span class="pk-muted">the last ${all.length} journal rows</span>
+  keepingChoices($('runHistory'), () => update($('runHistory'), S.run ? html`<div class="pk-card" data-run="${S.run.id}">
+    <div class="pk-card-head"><h3 class="pk-card-title">History</h3><span class="pk-muted">the last ${all.length} journal rows</span>
       <span class="pk-grow"></span>
       <select class="pk-select pk-select--sm" id="historyKind" aria-label="Rows to show">
         <option value="">every row</option>${Object.keys(WHAT).map((kind) => html`<option value="${kind}" ${kind === S.historyKind ? 'selected' : ''}>${kind}</option>`)}</select></div>
@@ -2893,12 +3001,12 @@ function drawResult() {
   const finals = rows.filter((row) => row.kind === 'trace');
   const shown = shownFrame()?.prefix;  // once: each row's button asks it
   const reason = run.error?.type || (TERMINAL.has(run.status) ? run.status : '');
-  update($('runResult'), html`<div class="pk-card sg-result">
-    <div class="pk-card-head"><h3 class="pk-card-title">Result of ${shorten(run.id, 16)}</h3>${statusBadge(run.status)}
+  update($('runResult'), html`<div class="pk-card sg-result" data-run="${run.id}">
+    <div class="pk-card-head"><h3 class="pk-card-title">Result</h3>${statusBadge(run.status)}
       ${run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span>${reason && reason !== run.status ? html` (${reason})` : ''}</span>` : ''}
       <span class="pk-grow"></span>
       ${run.machine_id === S.machine?.id ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="rerun"
-        title="A new run with this run's params and mocks (they go into the start form too)">${icon('rotate-ccw', { size: 'sm' })} Run again</button>` : ''}
+        title="A new run with this run's params and mocks (they go into the start form too)">${icon('rotate-cw', { size: 'sm' })} Run again</button>` : ''}
       ${run.mocks?.mock_only || !ownSessions(run) ? '' : html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${run.session_id || `sg_${run.id}`}"
         title="The run's session in the chat: what it was asked, how it ended, its agents' conversations below it">${icon('message-square', { size: 'sm' })} Session</button>`}</div>
     ${run.error ? errorView(run.error) : ''}
@@ -2928,7 +3036,7 @@ function resultActivity(row) {
       ${who ? html`<span class="pk-mono">${who}</span>` : ''}
       ${failed ? badge(data.error?.type || 'error', 'danger') : ''}
       ${meta.mocked ? badge('mocked') : ''}
-      <span class="pk-muted">${meta.duration_s === undefined || meta.duration_s === null ? '' : `${Number(meta.duration_s).toFixed(1)} s`}</span>
+      <span class="pk-muted">${seconds(meta.duration_s)}</span>
       ${failed ? '' : html`<span class="sg-mono sg-preview">${preview(data.out, 120)}</span>`}</summary>
     <div class="sg-result-body" data-drawn="${open ? 'yes' : ''}">${open ? resultBody(row) : ''}</div>
   </details>`;
@@ -2965,15 +3073,15 @@ function resultBody(row) {
     ${meta.failures?.length ? html`<details class="pk-details"><summary>Failed attempts (${meta.failures.length})</summary>
       <ul class="sg-plain-list">${meta.failures.map((f) => html`<li><span class="pk-mono">#${f.attempt}</span> ${f.type}: ${f.message}</li>`)}</ul></details>` : ''}
     <dl class="pk-kv">
-      ${meta.instance_id ? html`<dt>session</dt><dd><span class="pk-mono">${meta.instance_id}</span>
+      ${meta.instance_id ? html`<dt>Session</dt><dd><span class="pk-mono">${meta.instance_id}</span>
         ${ownSessions(S.run) ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${meta.instance_id}" title="Open the agent's conversation in the chat">${icon('message-square', { size: 'sm' })} Open</button>`
     : html`<span class="pk-muted">${S.run?.user_id || 'anonymous'}'s</span>`}</dd>` : ''}
-      ${meta.request_id ? html`<dt>request</dt><dd><span class="pk-mono">${meta.request_id}</span>
+      ${meta.request_id ? html`<dt>Request</dt><dd><span class="pk-mono">${meta.request_id}</span>
         <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-copy="${meta.request_id}"
           title="Copy the request id: the message debugger finds its LLM calls by it" aria-label="Copy the request id">${icon('copy', { size: 'sm' })}</button></dd>` : ''}
-      ${meta.model ? html`<dt>model</dt><dd class="pk-mono">${meta.model}</dd>` : ''}
-      ${meta.attempts > 1 ? html`<dt>attempts</dt><dd>${meta.attempts}</dd>` : ''}
-      <dt>step</dt><dd class="pk-mono">${row.key}</dd>
+      ${meta.model ? html`<dt>Model</dt><dd class="pk-mono">${meta.model}</dd>` : ''}
+      ${meta.attempts > 1 ? html`<dt>Attempts</dt><dd>${meta.attempts}</dd>` : ''}
+      <dt>Step</dt><dd class="pk-mono">${row.key}</dd>
     </dl>`;
 }
 
@@ -3056,15 +3164,20 @@ $('newMachine').addEventListener('click', async () => {
 });
 
 $('machineHead').addEventListener('click', (event) => {
-  if (event.target.closest('[data-act="copy-id"]') && S.machine) copyText(S.machine.id);
-  if (event.target.closest('[data-act="duplicate-machine"]') && S.machine) duplicateMachine(S.machine);
-  if (event.target.closest('[data-act="show-problems"]') && S.machine) {
+  if (!S.machine) return;
+  if (event.target.closest('.pk-menu-item')) closeMenu($('machineMenu'));
+  if (event.target.closest('[data-act="copy-id"]')) copyText(S.machine.id);
+  if (event.target.closest('[data-act="duplicate-machine"]')) duplicateMachine(S.machine);
+  if (event.target.closest('[data-act="show-problems"]')) {
     selectTab($('sideTabs'), 'inspect');
     choose(null);  // the overview lists them all
   }
-  if (event.target.closest('[data-act="delete-machine"]') && S.machine) deleteMachine(S.machine);
-  if (event.target.closest('[data-act="save"]') && S.machine) withBusy(event.target.closest('[data-act="save"]'), saveAll);
-  if (event.target.closest('[data-act="autosave"]') && S.machine) toggleAutosave();
+  if (event.target.closest('[data-act="delete-machine"]')) deleteMachine(S.machine);
+  if (event.target.closest('[data-act="save"]')) withBusy(event.target.closest('[data-act="save"]'), saveAll);
+  const auto = event.target.closest('[data-act="autosave"]');
+  // the switch turned itself already: it shows what toggleAutosave made of it (refused while an edit is out, or a
+  // save that failed) -- a head that comes out the same is not drawn anew
+  if (auto) toggleAutosave().then(() => { auto.checked = S.autosave; });
 });
 
 document.addEventListener('keydown', (event) => {
@@ -3149,12 +3262,11 @@ async function deleteMachine(m) {
 function addFrom(event) {
   const button = event.target.closest('button');
   if (!button) return;
-  $('paletteMenu').hidePopover?.();
+  closeMenu($('paletteMenu'));
   if (button.dataset.addKind) addState({ kind: S.kinds.find((k) => k.key === button.dataset.addKind), type: 'state' });
   else if (button.dataset.addType) addState({ type: button.dataset.addType });
   else if (button.dataset.addNote !== undefined) addNote();
 }
-$('palette').addEventListener('click', addFrom);
 $('paletteMenu').addEventListener('click', addFrom);
 
 /** The state the search names: that name, else the one state whose name has the text in it. */

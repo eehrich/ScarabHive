@@ -207,7 +207,11 @@
 .pk-btn--lg { height: var(--control-h-lg); padding: 0 var(--space-4); font-size: var(--text-md); }
 .pk-btn--icon { width: var(--control-h-md); padding: 0; }
 .pk-btn--icon.pk-btn--sm { width: var(--control-h-sm); }
-.pk-btn[aria-pressed="true"] { --btn-bg: var(--accent-subtle); --btn-fg: var(--accent-text); --btn-border: transparent; }
+/* pressed, or the current item of a list (a machine, an agent): marked, and still marked under the pointer */
+.pk-btn[aria-pressed="true"], .pk-btn[aria-current="true"] {
+  --btn-bg: var(--accent-subtle); --btn-fg: var(--accent-text); --btn-border: transparent;
+  --btn-bg-hover: var(--accent-subtle);
+}
 
 /* ------------------------------------------------------------------ inputs */
 
@@ -250,6 +254,8 @@
 .pk-switch input:checked::after { transform: translateX(12px); background: var(--text-on-accent); }
 
 .pk-field { display: flex; flex-direction: column; gap: var(--space-1); }
+/* a switch in a field: as tall as an input in the field beside it, so their help lines start level */
+.pk-field .pk-switch { min-height: var(--control-h-md); }
 .pk-field > .pk-label, .pk-label { font-size: var(--text-sm); font-weight: 500; color: var(--text-secondary); }
 .pk-help { font-size: var(--text-xs); color: var(--text-muted); }
 .pk-error { font-size: var(--text-xs); color: var(--danger); }
@@ -265,7 +271,7 @@
    calc-size() (Chromium 129+); elsewhere it is padded out to the least width. The line under the row is a shadow: a
    border would be cut off by the scrolling box, and with it the marker of the chosen tab that sits on it.
    flex-shrink 0: a scrolling box has no least height of its own, and a column short of room squeezed the row to
-   nothing; in a row, a .pk-tabs that is to give way sideways gets flex: 1 1 auto (agent_editor's list bar). */
+   nothing; in a row, a .pk-tabs that is to give way sideways gets flex: 1 1 auto. */
 .pk-tabs {
   display: flex; flex-shrink: 0; gap: var(--space-1); box-shadow: inset 0 -1px 0 var(--border-subtle);
   overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
@@ -292,6 +298,8 @@ a.pk-tab { text-decoration: none; }
   height: 2px; border-radius: 2px; background: var(--accent);
 }
 .pk-tab-count { font-size: var(--text-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* in a tab, room for the count as it comes and goes: the label keeps its width */
+.pk-tab > .pk-tab-count { display: inline-block; min-width: 2ch; line-height: 1; }
 
 /* ----------------------------------------------------------------- dialogs */
 
@@ -334,6 +342,7 @@ a.pk-tab { text-decoration: none; }
   background: none; border: 0; border-radius: var(--radius-sm); cursor: pointer;
 }
 .pk-menu-item:hover, .pk-menu-item:focus-visible { background: var(--surface-3); outline: none; }
+.pk-menu-item:disabled { opacity: 0.5; cursor: not-allowed; background: none; }
 .pk-menu-item--danger { color: var(--danger); }
 .pk-menu-separator { height: 1px; margin: var(--space-1) 0; background: var(--border-subtle); border: 0; }
 .pk-menu-label { padding: var(--space-2) var(--space-2) var(--space-1); font-size: var(--text-xs); font-weight: 500; color: var(--text-muted); }
@@ -519,6 +528,8 @@ pk-refresh:has(.pk-refresh-auto[aria-pressed="true"]) .pk-refresh-pick { --btn-b
 /* a row of filters above a list: fields side by side, wrapping, their controls on one line */
 .pk-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-2) var(--space-3); }
 .pk-filters > .pk-field { min-width: 140px; }
+/* a bare select in a filter row: as wide as its choices, beside the search */
+.pk-filters > .pk-select { width: auto; }
 
 /* a list beside the detail of the chosen entry; the detail stays in view while the list scrolls */
 .pk-split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: var(--space-4); align-items: start; }

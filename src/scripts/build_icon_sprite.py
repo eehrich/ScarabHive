@@ -31,6 +31,8 @@ ICONS = sorted({
     "arrow-up", "arrow-down", "rotate-ccw", "save", "eye", "eye-off", "link",
     # debugger (stategraph)
     "pause", "step-forward", "circle-dot", "crosshair",
+    # editing (stategraph's graph bar, agent_editor's locked tools)
+    "undo-2", "redo-2", "zoom-in", "zoom-out", "rotate-cw", "lock",
     # states
     "info", "triangle-alert", "circle-alert", "circle-check", "circle-x",
     "loader-circle", "clock", "circle-help", "ban",

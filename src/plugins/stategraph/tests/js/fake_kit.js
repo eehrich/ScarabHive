@@ -25,6 +25,8 @@ export const openSession = (id) => { (globalThis.OPENED ||= []).push(id); return
 export const selectTab = (list, name) => { globalThis.TABS[list.id] = name; return true; };
 export const toast = (m, { kind = 'info' } = {}) => { globalThis.TOASTS.push([kind, String(m)]); };
 export const copyText = async (text) => { (globalThis.COPIED ||= []).push(text); return true; };
+export const scrollerOf = (element) => element.parentElement || element;
+export const keepInSight = (box, item) => { (globalThis.KEPT_IN_SIGHT ||= []).push(item.id); };
 const busyControls = new Set();
 /** As the kit's: its controls disabled while fn runs and freed after it -- a call while one of them is busy does not run. */
 export async function withBusy(controls, fn) {
