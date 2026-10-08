@@ -714,7 +714,12 @@ class WebScraperServer(SchemaBasedToolServer):
             return {"error": str(e)}
         if target.is_dir():
             return {"error": f"path names a directory: {path}. Give the file name to write."}
-        if target.exists() and not params.get("overwrite", False):
+        overwrite = params.get("overwrite")
+        if isinstance(overwrite, str):  # a model sends it as text too, and "false" is a true value in Python
+            if overwrite.strip().lower() not in ("true", "false", "1", "0", "yes", "no", ""):
+                return {"error": f"overwrite: true or false, got {overwrite!r}"}
+            overwrite = overwrite.strip().lower() in ("true", "1", "yes")
+        if target.exists() and not overwrite:
             return {"error": f"File exists: {path}. Pass overwrite=true to replace it."}
         try:
             await self._assert_url_safe(url)

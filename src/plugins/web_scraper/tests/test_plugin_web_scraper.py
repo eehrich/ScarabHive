@@ -391,6 +391,28 @@ async def test_download_refuses_to_overwrite_unless_told(downloader, tmp_path):
     assert done["bytes"] == 3 and target.read_bytes() == b"new"
 
 
+@pytest.mark.parametrize("told", ["false", "False", "0", "no", " "])
+async def test_overwrite_sent_as_text_false_keeps_the_file(downloader, tmp_path, told):
+    # "false" is a true value in Python: the download replaced the file it was told to keep
+    target = tmp_path / "dl" / "a.bin"
+    target.parent.mkdir()
+    target.write_bytes(b"old")
+    with no_ssrf_check(), transport(serve(body=b"new")):
+        refused, _ = await call(downloader, "web_scraper_download", url="https://example.com/a", path=str(target),
+                                overwrite=told)
+    assert "exists" in refused["error"] and target.read_bytes() == b"old"
+
+
+async def test_overwrite_neither_true_nor_false_is_an_error(downloader, tmp_path):
+    target = tmp_path / "dl" / "a.bin"
+    target.parent.mkdir()
+    target.write_bytes(b"old")
+    with no_ssrf_check(), transport(serve(body=b"new")):
+        refused, _ = await call(downloader, "web_scraper_download", url="https://example.com/a", path=str(target),
+                                overwrite="maybe")
+    assert "true or false" in refused["error"] and target.read_bytes() == b"old"
+
+
 async def test_download_over_the_size_cap_leaves_nothing_behind(downloader, tmp_path):
     target = tmp_path / "dl" / "big.bin"
     with no_ssrf_check(), transport(serve(body=b"y" * 5000)):
