@@ -75,8 +75,12 @@ def _called_paths(root: Path) -> dict[str, set[str]]:
 
 def _route_paths() -> set[str]:
     from agent_system.app import build_app
+    from http_routes import http_routes
 
-    return {getattr(route, "path", "") for route in build_app().routes}
+    app = build_app()
+    # app.routes holds an included router as one entry (fastapi 0.13x on): its routes come from the schema, the
+    # entries themselves for what the schema leaves out (the static mount, routes not in it)
+    return {path for _method, path in http_routes(app)} | {getattr(route, "path", "") for route in app.routes}
 
 
 def _matches(called: str, route: str) -> bool:
