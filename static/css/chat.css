@@ -300,6 +300,10 @@ label.question-choice {
 }
 .composer-select:hover { background: var(--surface-3); color: var(--text-primary); }
 .composer-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* A profile chosen for this chat, not the agent's own (selector_module.js): only the icon says so --
+   a whole blue button read as "selected right now" */
+.composer-select.is-custom > .pk-icon:first-child { color: var(--accent); }
+.think-menu .pk-menu-item[aria-pressed="false"] > .pk-icon { visibility: hidden; }
 /* Stop is red: the kit's danger button. Once a stop has an outcome the plain button comes
    back, and its icon says how it ended -- on red, the red of a failed stop would vanish. */
 .stop-btn:not(.cancelled, .cancel-failed) {

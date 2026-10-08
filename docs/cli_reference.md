@@ -180,7 +180,9 @@ Takes the same options as `run`: `--agent`, `--llm`, `--llm-params`,
 - `--attach` attaches the files to the first message, as `/attach` does,
   including a check whether the model can read them. Without a first
   message passed along, they wait for the first one typed.
-- `--llm-params` also apply to every profile that `/model` switches to.
+- `--llm-params` also apply to every profile that `/model` switches to. They are
+  the chat's params, as `/think` sets them: written with the session, and a later
+  `--session <id>` of the same agent starts with them unless `--llm-params` names others.
 - `--session-title` names only the session the chat starts with —
   not the one after `/new` or `/resume`.
 - `--raw` and `--show-tools` have no effect in the chat; `/last` shows the
@@ -196,9 +198,10 @@ Takes the same options as `run`: `--agent`, `--llm`, `--llm-params`,
 | `/sessions [count\|all]` | List this user's sessions, one line each (default 20, `0` = no limit). Sub-agent sessions are left out — they outnumber the real ones ten to one. So are the runs of agents that are not meant for chat (visibility neither `ui` nor `both`; measured 25.09.: 4562 of 5054, almost all pipeline evaluators) — the agent of this chat and the running session always stay in. A footer counts the rest, `/sessions all` shows it. The browser chat reads the same list via `GET /api/sessions/listing?count=&agent=&current=` — the server computes count, `all`, filter and footer with the same functions as the terminal |
 | `/resume [id\|titel]` | Continue an earlier session without leaving the chat; without an argument the last one this user left (in the browser the most recent one from `/sessions` except the open one, from any chat agent: the browser switches the agent along with the session, the terminal stays with its own). The title works instead of the ID: IDs are machine-generated (`2332j2kj22k`) and **cannot** be renamed — they are the key under which usage tracker, message debugger, context store, sub-session indexes and presence locks keep their rows. Several sessions with the same title: the most recently used; a prefix suffices. Like `--session <id>`: the session continues on its own LLM. In the terminal a session of another agent is rejected, with the command that resumes it (the browser switches the agent instead) — in this chat it would run with foreign tools and a foreign prompt, and the next save would write this agent into its record. The same applies if its LLM cannot be started here (missing key): otherwise it would run on this chat's profile, and saving would overwrite its own choice |
 | `/title [text]` | Give the session a name — the one `/sessions` shows, and under which `/resume` and `--session` find it again; without text it shows the current one. Titles are searched only among top-level sessions (sub-agent titles are their task text); an ID reaches any session. If several sessions carry the same title, `/resume` takes the most recent and says that there are others. A session without a first turn has no record yet; there the title goes along with the first save. The same in the browser: there is not even a session ID before the first message, the title goes along with the first message as `session_title` to `/run` or `/events` (only for a session the run creates), a rejected first message hands it back to the next one, and switching the session beforehand drops it with a notice. A `/title` during the first run, before it has saved, is remembered by the server for its first save (as in the terminal, which writes it after the turn) |
-| `/agent [name]` | Agent of this chat — without an argument it lists the agents of the configuration, with an argument it switches. The switch **always starts a new session**: a session carries the agent it ran with, and under another one it would run with foreign tools and a foreign prompt. The new agent runs on its own LLM, a `/model` before it does not apply to it |
+| `/agent [name]` | Agent of this chat — without an argument it lists the agents of the configuration, with an argument it switches. The switch **always starts a new session**: a session carries the agent it ran with, and under another one it would run with foreign tools and a foreign prompt. The new agent runs on its own LLM, a `/model` or `/think` before it does not apply to it |
 | `/vars [KEY=VALUE ...]` | Template variables of this session — bare lists them, `unset KEY` removes one, `clear` empties. The same variables `--vars` fills. A change reaches the agent on its next step and is written to the session file at once, so a removal survives `/resume` |
 | `/model [profile]`, `/llm` | LLM of this session — without an argument it lists the profiles and marks the current one, with an argument it switches. Applies from the next message and is written to the session immediately, so a later `--session <id>` starts on it — even if the chat ends right afterwards. A session without a first message has no record yet; there the choice lands with the first save. `--llm-params` go along |
+| `/think [level\|default]`, `/reasoning` | Thinking level of this session (`thinking_level`: none, minimal, low, medium, high, xhigh, max) — without an argument it shows the current one, `default` takes the model's own. Applies to whichever profile the chat runs on, from the next message, and is written to the session like `/model`. Models whose provider does not wire `thinking_level` (native Anthropic, the OpenAI SDK route) ignore it and log so |
 | `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered); deferred ones (`tools.deferred`) are listed too, a run sends their schema once loaded |
 | `/skills` | Skill bundles it loads, `always` vs `on_demand` |
 | `/costs` | Session cost so far **including sub-agents** (needs `context_usage_tracker`) |
@@ -252,7 +255,7 @@ overwrite it.
 Only `/exit` is terminal-specific: a browser tab has no terminal to
 leave. When typed, the browser says so instead of rejecting it. Everything else exists
 in **both** surfaces — a command the user finds in the terminal
-and not in the browser reads like a defect. Four do the
+and not in the browser reads like a defect. Five do the
 equivalent there:
 
 - `/model` goes through the profile selector, as `/agent` goes through the
@@ -261,6 +264,14 @@ equivalent there:
   Unlike in the terminal not immediately: whoever reloads beforehand is back on the
   session's profile — as with the button next to it. `/undo` and `/retry` also reload,
   but keep the choice.
+  The model follows the agent: without a pick a run sends no `llm_profile`, and the agent
+  runs on its own profile (its chain, its escalation). Picking the agent's own profile clears
+  the pick; picking another agent (picker, palette, `/agent`) drops the pick and the thinking
+  level, and a note offers them back with one click. A loaded session brings its own.
+- `/think` goes through the Thinking button next to the model, and goes out as
+  `llm_params` with the next run. The server takes only `thinking_level` there
+  (`CHAT_LLM_PARAMS`, anything else is a 400): other fields such as `provider_routing`
+  or `plugins` would get through the config validator.
 - `/copy` fetches the text of the last answer from the server (`GET /chat/last_answer`,
   the same reading as in the terminal: `chat_actions.last_answer`) and puts it on
   the clipboard. The browser gives a page the clipboard only over https or on
@@ -320,7 +331,12 @@ selector re-fetches the list.
 record, and a bare `--session <id>` reads them back — the same
 conversation therefore continues with the agent and the model it was
 started with, instead of the config defaults. `--agent` and `--llm` still
-override that. **`agent-run` behaves identically**, and that is not a
+override that. "The model" is the profile somebody **picked** for the session
+(`llm_profile_override` in the record, `null` when nobody did — then the agent
+runs on its own profile, as it is configured today), plus its `llm_params`.
+`llm_profile` names the profile that last ran, picked or not; only a record from
+before `llm_profile_override` is continued on it. The browser reads the same
+key, so a session continued in the terminal and opened in the browser agree. **`agent-run` behaves identically**, and that is not a
 convenience but a necessity: both entry points *write* the same
 record, and as long as they answered the question differently, every
 `agent-run` call deleted what `agent-cli` had stored there. The

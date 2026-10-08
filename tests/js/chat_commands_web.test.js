@@ -90,8 +90,11 @@ function load(sessions, options) {
   const updated = [];  // sessions a run's start named to the session list
   const headers = [];  // what the header was set to, id:title
   const copied = [];  // what went onto the clipboard
-  // the profile selector's choice -- null while its list is not there
+  // the agent's own profile -- null while the list is not there -- and what a person chose on top
+  // (selector_module.js: only an override and params go out with a run)
   let profile = 'profile' in settings ? settings.profile : 'fast';
+  let override = null;
+  let params = {};
   // What the tab keeps: two loads share it when a test reloads the page.
   const kept = settings.storage || {};
   const store = { getItem(key) { return key in kept ? kept[key] : null; },
@@ -102,8 +105,8 @@ function load(sessions, options) {
     location: { href: 'http://localhost/', origin: 'http://localhost' },
     localStorage: store, sessionStorage: store,
     addEventListener(name, fn) { (listeners[name] = listeners[name] || []).push(fn); },
-    removeEventListener() {},
-    dispatchEvent(event) { (listeners[event.type] || []).forEach((fn) => fn(event)); },
+    removeEventListener(name, fn) { listeners[name] = (listeners[name] || []).filter((f) => f !== fn); },
+    dispatchEvent(event) { (listeners[event.type] || []).slice().forEach((fn) => fn(event)); },
     setTimeout, clearTimeout, setInterval, clearInterval,
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
     URL: { createObjectURL() { return 'blob:x'; }, revokeObjectURL() {} },
@@ -178,7 +181,9 @@ function load(sessions, options) {
         // The real one announces the switch; the chat learns its session there.
         if (settings.loads) {
           // another session opened meanwhile answers instead, when a test says so
-          const shown = settings.openedMeanwhile || { session_id: id, llm_profile: settings.storedProfile };
+          // a stored profile is a chosen one (llm_profile_override), as the server writes it
+          const shown = settings.openedMeanwhile || { session_id: id, llm_profile: settings.storedProfile,
+            llm_profile_override: settings.storedProfile };
           window.dispatchEvent({ type: 'session:loaded',
             detail: { session: { messages: [], ...shown } } });
         }
@@ -205,11 +210,34 @@ function load(sessions, options) {
     selectorModule: {
       agents: () => settings.agents || ['coder', 'writer'],
       getCurrentAgent: () => settings.agent || 'coder',
-      setAgent: (name) => { acted.push('setAgent:' + name); return settings.setAgentFails !== true; },
+      setAgent: (name) => {
+        acted.push('setAgent:' + name);
+        if (settings.setAgentFails === true) return false;
+        // a person's pick drops their model choice, and says so (selector_module.setAgent)
+        const dropped = override || params.thinking_level ? { profile: override, params: { ...params } } : null;
+        override = null;
+        params = {};
+        window.dispatchEvent({ type: 'selector:change', detail: { kind: 'agent', dropped } });
+        return true;
+      },
       profiles: () => settings.profiles || [{ name: 'fast', description: 'Quick answers' }, { name: 'deep' }],
       listState: (kind) => (kind === 'profile' ? settings.profileState || 'ready' : 'ready'),
-      getCurrentLLMProfile: () => profile,
-      setLLMProfile: (name) => { acted.push('setLLMProfile:' + name); profile = name; return true; },
+      getCurrentLLMProfile: () => override || profile,
+      getProfileOverride: () => override,
+      getLLMParams: () => ({ ...params }),
+      agentDefaultProfile: () => profile,
+      thinkingLevels: () => ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+      setLLMProfile: (name) => { acted.push('setLLMProfile:' + name); override = name === profile ? null : name; return true; },
+      setThinking: (level) => { acted.push('setThinking:' + level); params = level ? { thinking_level: level } : {}; return true; },
+      restore: (stored) => {
+        override = stored.profile && stored.profile !== profile ? stored.profile : null;
+        params = stored.params && stored.params.thinking_level ? { thinking_level: stored.params.thinking_level } : {};
+      },
+      choice: () => ({ override, params: { ...params } }),
+      setChoice: (choice) => {
+        override = choice.override;
+        params = { ...choice.params };
+      },
     },
     slashCommands: { helpLines() { return ['  /help [topic]   this help']; }, catalogue: {}, attach() {}, close() {} },
     // A file waiting to go out with the next message, when a test asks for one.
@@ -897,6 +925,18 @@ test('a first message with a file takes the waiting title along too', async () =
   assert.ok(!('session_id' in bodies[0]), JSON.stringify(bodies[0]));
 });
 
+test('a message with a file carries the choice as form fields, and nothing when there is none', async () => {
+  const { chatModule, bodies, send } = load([], { files: true, answers: {
+    '/run': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await send('lies das');
+  assert.ok(!('llm_profile' in bodies[0]) && !('llm_params' in bodies[0]), JSON.stringify(bodies[0]));
+  await chatModule.runCommand('model', 'deep');
+  await chatModule.runCommand('think', 'high');
+  await send('und das');
+  assert.strictEqual(bodies[1].llm_profile, 'deep');
+  assert.deepStrictEqual(JSON.parse(bodies[1].llm_params), { thinking_level: 'high' });
+});
+
 test('a first message with a file the server refused gives its title back too', async () => {
   const { chatModule, bodies, send } = load([], { files: true, answers: {
     '/run': { fails: 'Boom', status: 500 } } });
@@ -946,6 +986,130 @@ test('/agent switches the selector and starts a new session', async () => {
   await chatModule.runCommand('agent', 'writer');
   assert.deepStrictEqual(acted, ['setAgent:writer', 'new'],
     'the switch and the new session have to happen, and in that order');
+});
+
+test('a message with nothing chosen carries no model: the agent runs on its own', async () => {
+  const { bodies, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }] } } });
+  await send('hallo');
+  const body = bodies[bodies.length - 1];
+  assert.ok(!('llm_profile' in body), 'the agent\'s own profile went out as an override: ' + JSON.stringify(body));
+  assert.ok(!('llm_params' in body), JSON.stringify(body));
+});
+
+test('/think sets the level, the next message carries it, /think default takes it back', async () => {
+  const { chatModule, container, acted, bodies, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }] } } });
+  await chatModule.runCommand('think', 'HIGH');
+  assert.deepStrictEqual(acted, ['setThinking:high']);
+  assert.strictEqual(notesOf(container).pop(), 'Thinking: high   (from the next message on)');
+  await send('hallo');
+  assert.deepStrictEqual(bodies[bodies.length - 1].llm_params, { thinking_level: 'high' });
+  await chatModule.runCommand('think', 'default');
+  assert.deepStrictEqual(acted, ['setThinking:high', 'setThinking:null']);
+  await send('nochmal');
+  assert.ok(!('llm_params' in bodies[bodies.length - 1]), JSON.stringify(bodies[bodies.length - 1]));
+});
+
+test('/think refuses a level the server does not take, and bare shows the current one', async () => {
+  const { chatModule, container, acted } = load([], { session: 'sid7' });
+  await chatModule.runCommand('think', 'ultra');
+  assert.deepStrictEqual(acted, []);
+  assert.ok(notesOf(container).pop().startsWith('Unknown thinking level: ultra'));
+  await chatModule.runCommand('think', '');
+  assert.ok(notesOf(container).pop().startsWith('Thinking: default\n'));
+});
+
+test('/agent drops the model choice for the agent it leaves and offers it back after the new session', async () => {
+  const { chatModule, container, window, bodies, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid8' }] } } });
+  await chatModule.runCommand('model', 'deep');
+  await chatModule.runCommand('think', 'high');
+  await chatModule.runCommand('agent', 'writer');
+  assert.strictEqual(window.selectorModule.getProfileOverride(), null);
+  const notes = notesOf(container);
+  assert.ok(notes[notes.length - 2].startsWith('Agent: writer'), notes.join('\n'));
+  assert.ok(notes[notes.length - 1].includes('(deep, thinking high)'), notes.join('\n'));
+  assert.strictEqual(notes.filter((n) => n.includes('(deep, thinking high)')).length, 1, 'noted twice');
+  const findKeep = (node) => (node.textContent || '').startsWith('Keep ') ? node
+    : (node.children || []).map(findKeep).find(Boolean);
+  const keep = findKeep(container);
+  assert.ok(keep, 'no Keep button on the note');
+  keep.listeners.click();
+  assert.strictEqual(window.selectorModule.getProfileOverride(), 'deep');
+  await send('hallo');
+  assert.strictEqual(bodies[bodies.length - 1].llm_profile, 'deep');
+  assert.deepStrictEqual(bodies[bodies.length - 1].llm_params, { thinking_level: 'high' });
+});
+
+test('an agent picked in the picker with a model choice gets the note too', async () => {
+  const { chatModule, container, window } = load([], { session: 'sid7' });
+  await chatModule.runCommand('model', 'deep');
+  window.selectorModule.setAgent('writer');  // the picker's way: no /agent around it
+  assert.ok(notesOf(container).pop().includes('(deep)'), notesOf(container).join('\n'));
+});
+
+test('a session the chat opens brings its thinking level, and the next message carries it', async () => {
+  const { window, bodies, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }] } } });
+  window.dispatchEvent({ type: 'session:loaded', detail: { session: {
+    messages: [], session_id: 'sid7', agent_name: 'coder', llm_profile: 'deep', llm_profile_override: 'deep',
+    llm_params: { thinking_level: 'low' } } } });
+  await send('hallo');
+  assert.strictEqual(bodies[bodies.length - 1].llm_profile, 'deep');
+  assert.deepStrictEqual(bodies[bodies.length - 1].llm_params, { thinking_level: 'low' });
+});
+
+test('an old session names the profile it ran on, not one somebody chose: the agent runs on its own', async () => {
+  // every web session before llm_profile_override carries the global default in llm_profile
+  const { window, bodies, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }] } } });
+  window.dispatchEvent({ type: 'session:loaded', detail: { session: {
+    messages: [], session_id: 'sid7', agent_name: 'coder', llm_profile: 'deep' } } });
+  await send('hallo');
+  assert.ok(!('llm_profile' in bodies[bodies.length - 1]), JSON.stringify(bodies[bodies.length - 1]));
+});
+
+test('/think while the levels load says so, and does not call them unknown', async () => {
+  const { chatModule, container, acted } = load([], { session: 'sid7', profileState: 'loading' });
+  await chatModule.runCommand('think', 'high');
+  assert.deepStrictEqual(acted, []);
+  assert.ok(notesOf(container).pop().includes('still loading'), notesOf(container).join('\n'));
+});
+
+test('/think default still takes a level back when the levels could not be read', async () => {
+  const { chatModule, acted, container, window } = load([], { session: 'sid7', profileState: 'failed' });
+  window.selectorModule.restore({ profile: null, params: { thinking_level: 'high' } });  // a stored level
+  await chatModule.runCommand('think', 'high');
+  assert.deepStrictEqual(acted, []);
+  await chatModule.runCommand('think', 'default');
+  assert.deepStrictEqual(acted, ['setThinking:null'], notesOf(container).join('\n'));
+});
+
+test('/agent whose new session did not start still offers the choice back', async () => {
+  const { chatModule, container } = load([], { session: 'sid7', newConversationRefused: true });
+  await chatModule.runCommand('model', 'deep');
+  await chatModule.runCommand('agent', 'writer');
+  assert.ok(notesOf(container).pop().includes('(deep)'), notesOf(container).join('\n'));
+});
+
+test('a dropped profile the new agent runs on by itself is not offered back', async () => {
+  // the stub's agents all run on 'fast' by themselves
+  const { chatModule, container, window } = load([], { session: 'sid7' });
+  await chatModule.runCommand('model', 'deep');
+  const notes = notesOf(container).length;
+  window.dispatchEvent({ type: 'selector:change', detail: { kind: 'agent', dropped: { profile: 'fast', params: {} } } });
+  assert.strictEqual(notesOf(container).length, notes, notesOf(container).join('\n'));
+});
+
+test('a reconnect takes the running job\'s choice for the messages after it', async () => {
+  const { bodies, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'reconnect', request_id: 'r0', session_id: 'sid7', agent_name: 'coder',
+      llm_profile: 'deep', llm_params: { thinking_level: 'max' } }, { type: 'end' }] } } });
+  await send('erste');
+  await send('zweite');
+  assert.strictEqual(bodies[bodies.length - 1].llm_profile, 'deep');
+  assert.deepStrictEqual(bodies[bodies.length - 1].llm_params, { thinking_level: 'max' });
 });
 
 test('/agent does not claim a new session that never started', async () => {
@@ -1035,7 +1199,7 @@ test('/model before a /retry: the question is asked again on the chosen one', as
 
 test('/model before a /undo does not follow into a session opened meanwhile', async () => {
   const { chatModule, window } = load([], { session: 'sid7', loads: true,
-    openedMeanwhile: { session_id: 'sB', llm_profile: 'turbo' },
+    openedMeanwhile: { session_id: 'sB', llm_profile: 'turbo', llm_profile_override: 'turbo' },
     answers: { '/chat/undo': { dropped: { text: 'frage' } } } });
   await chatModule.runCommand('model', 'deep');
   await chatModule.runCommand('undo', '');  // the chat is in sB by the time the reload is done
@@ -1106,6 +1270,7 @@ test('/model names what difflib would: blocks on both sides, a tie to the larger
 
 test('/undo before the profiles are there leaves the reload its profile', async () => {
   const { chatModule, window } = load([], { session: 'sid7', loads: true, profile: null, storedProfile: 'deep',
+    profileState: 'loading',
     answers: { '/chat/undo': { dropped: { text: 'frage' } } } });
   await chatModule.runCommand('undo', '');
   assert.strictEqual(window.selectorModule.getCurrentLLMProfile(), 'deep');

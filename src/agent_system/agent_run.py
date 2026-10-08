@@ -29,6 +29,7 @@ from .services.session_manager import SessionPermissionError
 from .cli_utils.session_defaults import (
     choose_agent_name,
     choose_llm_profile,
+    load_session_llm_params,
     profile_for_record,
     session_defaults,
 )
@@ -259,12 +260,17 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             llm_profile, stored_llm, stored_agent, agent_name,
             agent.agent_config.default_llm_profile)
         record_profile = profile_for_record(llm_profile, agent.agent_config.default_llm_profile)
+        # And its llm_params (a chat's /think, the web chat's thinking level), for the agent they were set for
+        llm_params = (await load_session_llm_params(
+            getattr(session_service, "session_manager", None), session_user, session_id)
+            if stored_agent and stored_agent == agent_name else None) or {}
+        llm_choice = {"profile": llm_profile, "params": llm_params}
 
         # Open the session the way the API and agent-cli do.
         if session_service is not None:
             try:
                 session_exists = await session_service.open_for_run(
-                    agent, session_user, actual_session_id, record_profile)
+                    agent, session_user, actual_session_id, record_profile, llm_choice=llm_choice)
             except SessionPermissionError as e:
                 # Exit 1, not return: a refused run is not a finished one.
                 logger.error(f"Permission denied for session {actual_session_id}: {e}")
@@ -295,11 +301,13 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         # Create LLM override if profile specified
         llm_override = None
         llm_profile_info = None
-        if llm_profile and config.llm_system and config.llm_system.profiles:
+        if (llm_profile or llm_params) and config.llm_system and config.llm_system.profiles:
             from .llm.factory import UnknownLLMProfile, override_for_profile
             try:
+                # params alone apply to the agent's own primary, as --llm-params do in agent-cli
                 llm_override, llm_profile_info = override_for_profile(
-                    config, agent.agent_config, llm_profile)
+                    config, agent.agent_config, llm_profile or agent.agent_config.default_llm_profile,
+                    llm_params or None)
                 logger.info(f"Using LLM override: {llm_profile_info}")
             except UnknownLLMProfile:
                 raise   # a ValueError whose message lists the profiles there are
@@ -382,7 +390,8 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     agent_name=agent_name_used,
                     llm_profile=llm_profile_used,
                     was_new_session=was_new_session,
-                    title=session_title
+                    title=session_title,
+                    llm_choice=llm_choice,
                 )
 
                 if success:

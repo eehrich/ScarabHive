@@ -1415,8 +1415,10 @@ def stub_app() -> FastAPI:
         # slow: the default is not the first row, so a picker waiting for the list has to find it
         default = {"nodefault": "missing", "slow": "writer"}.get(mode, "assistant")
         return {"agents": ["assistant", "writer"], "default": default,
-                "details": [{"name": "assistant", "description": "General help", "category": "tools", "tags": ["chat"]},
-                            {"name": "writer", "category": None, "tags": ["prose"],
+                # llm_profile: each agent's own, which the chat runs on until a person picks another
+                "details": [{"name": "assistant", "llm_profile": "default", "description": "General help",
+                             "category": "tools", "tags": ["chat"]},
+                            {"name": "writer", "llm_profile": "default", "category": None, "tags": ["prose"],
                              "description": "Writes books from one request: plans the story, drafts every chapter and "
                                             "scene, then reviews and repairs the text until it reads well"}]}
 
@@ -1429,7 +1431,7 @@ def stub_app() -> FastAPI:
              "provider": "openai_httpx", "model": "gpt-x", "host": None},
             {"name": "fast", "description": "Fast", "model_ref": "or-fast", "max_steps": 5,
              "provider": "openai_responses", "model": "google/flash", "host": "openrouter.ai"},
-        ], "default": "default"}
+        ], "default": "default", "thinking_levels": ["none", "low", "high"]}
 
     @app.get("/api/sessions/hierarchy")
     async def hierarchy(request: Request):
@@ -1803,6 +1805,7 @@ EXPECTED = [
     'a new window takes the first free step down, not the count of windows',
     'the docked tabs sort by drag and drop and by Shift+arrow, keep their order after a reload, and a cancelled drag changes nothing',
     'the agent and profile pickers open on the current choice, search, group by a remembered grouping and pick by click or keyboard',
+    'the Thinking button sets a level for the chat from its menu, and Default takes it back',
     'a picker says when its list is on its way and shows it when it comes, says when it failed, and falls back only to what it lists',
     'the sessions pane takes the width it was dragged or keyed to, keeps it after a reload, and stays within its bounds',
     'closing the last panel hides the dock',

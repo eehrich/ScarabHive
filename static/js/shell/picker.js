@@ -23,7 +23,8 @@ const KINDS = {
     placeholder: 'Name, description, model or route',
     items: () => selector().profiles(),
     current: () => selector().getCurrentLLMProfile(),
-    fallback: () => selector().defaultLLMProfile(),
+    // the badge goes to what the chat runs on without a pick: the agent's own profile
+    fallback: () => selector().agentDefaultProfile(selector().getCurrentAgent()),
     pick: (name) => selector().setLLMProfile(name),
     hint: (p) => (p.description && p.description !== p.name ? p.description : ''),
     meta: (p) => p.model || p.model_ref,

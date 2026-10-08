@@ -38,7 +38,29 @@ async def load_session_settings(session_manager: Any, session_user: str,
         return None, None
     if not isinstance(data, dict):
         return None, None
-    return (data.get("agent_name") or None), (data.get("llm_profile") or None)
+    # The profile somebody picked: llm_profile names the one that RAN, picked or not -- continuing on it
+    # froze the agent's own profile of that day, and a save then recorded it as a pick. A record from
+    # before llm_profile_override has nothing else, and keeps what it always meant here.
+    stored = data["llm_profile_override"] if "llm_profile_override" in data else data.get("llm_profile")
+    return (data.get("agent_name") or None), (stored or None)
+
+
+async def load_session_llm_params(session_manager: Any, session_user: str,
+                                  session_id: Optional[str]) -> Optional[dict]:
+    """The llm_params a session record carries (a chat's thinking level), or None when it has none.
+
+    None, not {}: a session without params leaves a chat its own (agent-cli --llm-params) on /resume.
+    Read like load_session_settings: a record that cannot be read is no error here.
+    """
+    if not session_id or session_manager is None:
+        return None
+    try:
+        data = await session_manager.load_session(session_user, session_id)
+    except Exception:
+        logger.debug("No stored llm_params for session %s", session_id, exc_info=True)
+        return None
+    params = data.get("llm_params") if isinstance(data, dict) else None
+    return dict(params) if isinstance(params, dict) and params else None
 
 
 def usable_session_defaults(stored_agent: Optional[str], stored_llm: Optional[str],

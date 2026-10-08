@@ -48,6 +48,8 @@
           <div class="composer-bar">
             <button id="agentPicker" type="button" class="composer-select" title="Agent" aria-haspopup="dialog">{{ icon('workflow', size='sm') }}<span id="agentLabel" class="pk-truncate">Agent</span>{{ icon('chevron-down', size='sm') }}</button>
             <button id="modelPicker" type="button" class="composer-select" title="Model profile" aria-haspopup="dialog">{{ icon('cpu', size='sm') }}<span id="modelLabel" class="pk-truncate">Model profile</span>{{ icon('chevron-down', size='sm') }}</button>
+            <button id="thinkButton" type="button" class="composer-select" title="Thinking level" aria-haspopup="true" popovertarget="thinkMenu" disabled>{{ icon('brain', size='sm') }}<span id="thinkLabel" class="pk-truncate">Thinking</span>{{ icon('chevron-down', size='sm') }}</button>
+            <div id="thinkMenu" class="pk-menu think-menu" popover role="group" aria-label="Thinking level"></div>
             <span class="pk-grow"></span>
             <button id="attachButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Attach files" aria-label="Attach files">{{ icon('paperclip') }}</button>
             <input id="fileInput" type="file" multiple hidden>

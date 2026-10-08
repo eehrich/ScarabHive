@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import typing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, TYPE_CHECKING
@@ -139,6 +140,29 @@ def create_llm_from_profile(
         llm_params=resolve_llm_params(llm_params, llm_profile),
     )
     return _build_client(config, temp_agent_config, ssl_verify)
+
+
+#: What a chat may set per session (web chat, the chat's /think): how the model answers, never where
+#: the request goes or what it may do. The identity fields (base_url, api_key ...) are refused by
+#: AgentConfig's validator anyway; provider_routing (a provider pin, a data policy) or plugins (paid
+#: OpenRouter features) are not -- hence a list of what is allowed. stategraph's CALL_LLM_PARAMS is
+#: the same idea for a machine call, which may set more.
+CHAT_LLM_PARAMS = ("thinking_level",)
+#: The values thinking_level takes, from the config model itself.
+THINKING_LEVELS = tuple(typing.get_args(typing.get_args(LLMModelConfig.model_fields["thinking_level"].annotation)[0]))
+
+
+def chat_llm_params_problem(params: Any) -> Optional[str]:
+    """Why *params* cannot be a chat's llm_params, or None. See CHAT_LLM_PARAMS."""
+    if not isinstance(params, dict):
+        return "llm_params must be an object"
+    wrong = sorted(set(params) - set(CHAT_LLM_PARAMS))
+    if wrong:
+        return f"llm_params: {', '.join(wrong)} cannot be set here (allowed: {', '.join(CHAT_LLM_PARAMS)})"
+    level = params.get("thinking_level")
+    if "thinking_level" in params and level not in THINKING_LEVELS:
+        return f"llm_params: thinking_level {level!r} is not one of {', '.join(THINKING_LEVELS)}"
+    return None
 
 
 class UnknownLLMProfile(ValueError):

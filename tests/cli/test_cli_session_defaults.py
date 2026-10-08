@@ -118,6 +118,29 @@ class TestStoredSessionSettings:
         assert stored_session_settings(reader, "u", "s1") == (
             "v6_synopsis_writer", "llm_writer_creative")
 
+    def _with(self, manager, **fields):
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(self._make(manager, "s3", "coder", "ran_on_this"))
+            record = loop.run_until_complete(manager.load_session("u", "s3"))
+            record.update(fields)
+            loop.run_until_complete(manager.save_session(record))
+        finally:
+            loop.close()
+        return SessionManager(storage_path=str(manager.storage_path))
+
+    def test_a_record_that_says_nobody_picked_continues_on_the_agents_own(self, manager):
+        """llm_profile names what RAN: continuing on it froze the agent's profile of that day, and the
+        save after it recorded that as a pick the browser then held on to."""
+        reader = self._with(manager, llm_profile_override=None)
+        assert stored_session_settings(reader, "u", "s3") == ("coder", None)
+
+    def test_a_picked_profile_comes_back(self, manager):
+        reader = self._with(manager, llm_profile_override="picked")
+        assert stored_session_settings(reader, "u", "s3") == ("coder", "picked")
+
     def test_an_unknown_session_is_not_an_error(self, manager):
         # --session also NAMES a new session; the load further down is what
         # reports a real problem.

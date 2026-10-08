@@ -234,7 +234,8 @@ class SessionService:
             return False, 0
 
     async def open_for_run(self, agent, user_id: str, session_id: str, llm_profile: str,
-                           in_use: bool = False, holding: str | None = None) -> bool:
+                           in_use: bool = False, holding: str | None = None,
+                           llm_choice: Optional[dict] = None) -> bool:
         """Ready *session_id* on *agent* for a run; returns whether it existed.
 
         A stored session is restored (conversation, its context_vars). A new
@@ -243,7 +244,7 @@ class SessionService:
         start mark -- on the agent's template_vars. *in_use*: a run of this
         process has the session, so what the tracker holds is that run's
         unsaved state and stays as it is. Either way the metadata names this
-        run: user, agent, *llm_profile*.
+        run: user, agent, *llm_profile*, and *llm_choice* when given (see save_session).
 
         In use by a run of THIS agent -- its session lock held -- nothing of the
         session is touched: read back from disk, that run's turn so far was
@@ -284,12 +285,13 @@ class SessionService:
                 tracker.mark_opened(session_id)
                 return True
         try:
-            return await self._open(agent, tracker, user_id, session_id, llm_profile, in_use)
+            return await self._open(agent, tracker, user_id, session_id, llm_profile, in_use, llm_choice)
         finally:
             if opener is not None:
                 await tracker.release_session_lock(session_id, opener)
 
-    async def _open(self, agent, tracker, user_id: str, session_id: str, llm_profile: str, in_use: bool) -> bool:
+    async def _open(self, agent, tracker, user_id: str, session_id: str, llm_profile: str, in_use: bool,
+                    llm_choice: Optional[dict] = None) -> bool:
         exists, _ = await self.load_and_restore_session(agent, user_id, session_id)
         if not exists and not in_use:
             # A title the first run was given and never wrote (it saved nothing):
@@ -303,8 +305,11 @@ class SessionService:
             own_vars = getattr(getattr(agent, "agent_config", None), "template_vars", None)
             if own_vars:
                 tracker.set_session_template_vars(session_id, dict(own_vars))
-        tracker.set_session_metadata(session_id, {
-            "user_id": user_id, "agent_name": agent.name, "llm_profile": llm_profile})
+        metadata = {"user_id": user_id, "agent_name": agent.name, "llm_profile": llm_profile}
+        if llm_choice is not None:
+            # Present, this key is what the run's saves write (save_session)
+            metadata["llm_choice"] = llm_choice
+        tracker.set_session_metadata(session_id, metadata)
         tracker.mark_opened(session_id)
         return exists
 
@@ -324,7 +329,7 @@ class SessionService:
 
     async def save_session(self, agent, user_id: str, session_id: str, agent_name: str, llm_profile: str,
                            was_new_session: bool, title: Optional[str] = None,
-                           after_run: bool = False) -> bool:
+                           after_run: bool = False, llm_choice: Optional[dict] = None) -> bool:
         """_save_session, one write of the session at a time (save_lock). An ephemeral session is not written.
 
         ``after_run``: a save that follows a run the caller started (the API's save after /run and /events,
@@ -334,7 +339,13 @@ class SessionService:
         itself, not finished yet (a client that left mid-stream) -- is left the session, and nothing is written
         (False). Asked under the save lock, right before the messages are read: a run that takes the session
         later finds this save's state, not the other way round. Not for a save made under the lock by the one
-        who holds it -- a run's own, a put back, an append: it turns every holder away, the caller too."""
+        who holds it -- a run's own, a put back, an append: it turns every holder away, the caller too.
+
+        ``llm_choice``: what was CHOSEN for the run's model -- ``{"profile": <a profile picked over the
+        agent's own, or None>, "params": <llm_params, a chat's thinking level>}`` -- written beside
+        llm_profile, which names the profile that ran either way: the record says whether a person (or a
+        caller) picked it, so a restore does not take the agent's own profile of the day for a choice. An
+        empty part removes the record's; None (a save that does not know) leaves both."""
         if is_ephemeral_session(session_id):
             return False
         async with self.save_lock(session_id):
@@ -345,7 +356,7 @@ class SessionService:
                                 session_id, owner)
                     return False
             return await self._save_session(agent, user_id, session_id, agent_name, llm_profile,
-                                            was_new_session, title)
+                                            was_new_session, title, llm_choice)
 
     async def _save_session(
         self,
@@ -355,7 +366,8 @@ class SessionService:
         agent_name: str,
         llm_profile: str,
         was_new_session: bool,
-        title: Optional[str] = None
+        title: Optional[str] = None,
+        llm_choice: Optional[dict] = None,
     ) -> bool:
         """
         Save or update a session to storage.
@@ -489,6 +501,16 @@ class SessionService:
                         existing = {}
                     existing.update(runtime_vars)
                     session_data["context_vars"] = existing
+
+            if llm_choice is not None:
+                # null, not absent: "nobody picked one" -- a record without the key predates it, and
+                # its llm_profile is all a reader has (cli_utils/session_defaults.py)
+                session_data["llm_profile_override"] = llm_choice.get("profile") or None
+                params = dict(llm_choice.get("params") or {})
+                if params:
+                    session_data["llm_params"] = params
+                else:
+                    session_data.pop("llm_params", None)
 
             # Save back
             await self.session_manager.save_session(session_data)

@@ -90,6 +90,11 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("model", ("/model", "/llm"),
                 "LLM of this session: bare lists, a name switches",
                 usage="/model [profile]"),
+    # In the browser through the Thinking button next to the model one, for the
+    # same reason as /model. It applies to whichever profile the chat runs on.
+    ChatCommand("think", ("/think", "/reasoning"),
+                "thinking level of this session: bare shows it, 'default' takes the model's own",
+                usage="/think [level|default]"),
     ChatCommand("tools", ("/tools",), "tools this agent really has (not what it claims)",
                 usage="/tools [filter]"),
     ChatCommand("skills", ("/skills",), "skills you can run, and what this agent loads"),

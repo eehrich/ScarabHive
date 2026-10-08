@@ -113,6 +113,8 @@ class BackgroundJob:
     task_description: Optional[str] = None
     # LLM profile used for this job
     llm_profile: Optional[str] = None
+    # What the chat set for the model (CHAT_LLM_PARAMS): a reconnecting page restores it with the profile
+    llm_params: Optional[dict] = None
     # The run has sent its answer (ANSWER_EVENTS) and only finishes now: saves, session-end hooks
     answered: bool = False
     # A mirror of a run someone else collects (POST /run): pages follow it like any job, but
@@ -282,6 +284,7 @@ class BackgroundJobManager:
         agent_runner: Callable[[], Any],  # async generator function
         llm_profile: Optional[str] = None,
         mirror: bool = False,
+        llm_params: Optional[dict] = None,
     ) -> BackgroundJob:
         """Create and start a new background job.
         
@@ -400,6 +403,7 @@ class BackgroundJobManager:
                 task=task,
                 events=deque(maxlen=self.MAX_EVENT_BUFFER),
                 llm_profile=llm_profile,
+                llm_params=llm_params or None,
                 mirror=mirror,
             )
             own_job = job

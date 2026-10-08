@@ -198,6 +198,37 @@
     // "only scroll when already at the bottom" would hide the reply to their
     // own keystroke whenever they had scrolled up.
     scrollBottom(true);
+    return msgDiv;
+  }
+
+  /**
+   * A person picked another agent and their model choice went with the agent
+   * they left (selector_module.setAgent): say what the chat runs on now and
+   * offer the choice back -- one click, no question asked at the pick.
+   */
+  function noteDroppedChoice(container, dropped) {
+    const selector = window.selectorModule;
+    if (!container || !selector || !dropped) return;
+    const agent = selector.getCurrentAgent();
+    const own = selector.agentDefaultProfile(agent);
+    const level = dropped.params && dropped.params.thinking_level;
+    // a profile the new agent runs on by itself is nothing to offer back
+    const profile = dropped.profile === own ? null : dropped.profile;
+    if (!profile && !level) return;
+    const was = [profile, level ? 'thinking ' + level : null].filter(Boolean).join(', ');
+    const note = addNote(container, 'Model: ' + (own || "the agent's own") + ' -- ' + agent +
+      "'s own. What you chose before (" + was + ') applied to the agent you left.');
+    if (!note) return;
+    const keep = document.createElement('button');
+    keep.type = 'button';
+    keep.className = 'pk-btn pk-btn--sm';
+    keep.textContent = 'Keep ' + was;
+    keep.addEventListener('click', function () {
+      selector.setChoice({ override: dropped.profile, params: dropped.params });
+      keep.disabled = true;
+      keep.textContent = 'Kept: ' + was;
+    });
+    note.appendChild(keep);
   }
 
   /**
@@ -619,7 +650,21 @@
       addNote(container, 'Unknown agent: ' + wanted + '\n  /agent lists them.');
       return;
     }
-    if (!selector.setAgent(wanted)) {
+    // The model choice this pick drops (selector:change carries it; the
+    // window's own listener leaves this pick to us): its note goes AFTER the
+    // new session below, which empties the chat.
+    let dropped = null;
+    const takeDropped = function (event) { dropped = event.detail && event.detail.dropped; };
+    window.addEventListener('selector:change', takeDropped);
+    agentCommandPicking = true;
+    let took;
+    try {
+      took = selector.setAgent(wanted);
+    } finally {
+      agentCommandPicking = false;
+      window.removeEventListener('selector:change', takeDropped);
+    }
+    if (!took) {
       addNote(container, 'The selector did not take "' + wanted + '".');
       return;
     }
@@ -636,9 +681,11 @@
       addNote(container, 'Agent: ' + wanted +
         '   -- but the session stayed: the next message would run ' + before +
         ' under ' + wanted + '. /new once the running request is done.');
+      if (dropped) noteDroppedChoice(container, dropped);
       return;
     }
     addNote(container, 'Agent: ' + wanted + '   (new session)');
+    if (dropped) noteDroppedChoice(container, dropped);
   }
 
   /**
@@ -686,9 +733,51 @@
       return;
     }
     selector.setLLMProfile(wanted);
+    const own = wanted === selector.agentDefaultProfile(selector.getCurrentAgent());
     // a message to a running run joins it, on the model it started with
-    addNote(container, 'LLM: ' + wanted + (chatModule.hasActiveRequest()
+    addNote(container, 'LLM: ' + wanted + (own ? " (the agent's own)" : '') + (chatModule.hasActiveRequest()
       ? '   (from the next run on -- the running one keeps its model)'
+      : '   (from the next message on)'));
+  }
+
+  /**
+   * `/think [level|default]` -- the thinking level of this chat, through the
+   * Thinking button's selector as /model goes through the profile one. It goes
+   * out as llm_params with the next message, whichever profile that runs on.
+   */
+  function cmdThink(container, payload) {
+    const selector = window.selectorModule;
+    if (!selector || typeof selector.setThinking !== 'function') {
+      addNote(container, 'The model selector is not available in this window.');
+      return;
+    }
+    const state = selector.listState('profile');
+    const wanted = (payload || '').trim().toLowerCase();
+    // without the list only 'default' is safe: it takes a level back, whatever the server knows
+    if (state !== 'ready' && !(state === 'failed' && wanted === 'default')) {
+      addNote(container, state === 'failed'
+        ? "The thinking levels could not be read -- the model list did not load. /think default still takes a level back."
+        : 'The thinking levels are still loading -- try again in a moment.');
+      return;
+    }
+    const levels = selector.thinkingLevels();
+    const current = selector.getLLMParams().thinking_level || 'default';
+    if (!wanted) {
+      addNote(container, 'Thinking: ' + current + '\n  /think ' + levels.join('|') +
+        " sets it, /think default takes the model's own.");
+      return;
+    }
+    if (wanted !== 'default' && levels.indexOf(wanted) === -1) {
+      addNote(container, 'Unknown thinking level: ' + wanted + '   (one of ' + levels.join(', ') + ', or default)');
+      return;
+    }
+    if (wanted === current) {
+      addNote(container, 'Thinking: already ' + current + '.');
+      return;
+    }
+    selector.setThinking(wanted === 'default' ? null : wanted);
+    addNote(container, 'Thinking: ' + wanted + (chatModule.hasActiveRequest()
+      ? '   (from the next run on -- the running one keeps its setting)'
       : '   (from the next message on)'));
   }
 
@@ -946,11 +1035,12 @@
       addNote(container, 'Nothing to take back in this session yet.');
       return;
     }
-    // The reload puts the record's LLM profile back into the selector; one
-    // chosen since (the button, /model) goes with the next message -- and
+    // The reload puts the record's LLM profile and params back into the selector;
+    // a choice made since (the buttons, /model, /think) goes with the next message -- and
     // "ask again on a stronger model" is what a /retry is for.
     const selector = window.selectorModule;
-    const chosen = selector && selector.getCurrentLLMProfile();
+    // Before the lists are there nothing was chosen: the reload's own choice stands
+    const chosen = selector && selector.listState('profile') === 'ready' ? selector.choice() : null;
     const asked = answer.dropped.text || '';
     // What the file rewind reports (files put back, or why not), under either note.
     const filesNote = answer.files && answer.files.text ? '\n' + answer.files.text : '';
@@ -963,7 +1053,7 @@
         (retry ? '\n  Not put back into the input -- the chat has moved on meanwhile.' : ''));
       return;
     }
-    if (chosen && selector.getCurrentLLMProfile() !== chosen) selector.setLLMProfile(chosen);
+    if (chosen) selector.setChoice(chosen);
     addNote(container, 'Dropped: ' + oneLine(asked, 70) + filesNote);
     if (!retry) return;
     // The text goes back into the input rather than being sent: a file that
@@ -1479,6 +1569,7 @@
       rewind: function () { return cmdRewind(container, payload); },
       export: function () { return cmdExport(container, payload); },
       model: function () { return cmdModel(container, payload); },
+      think: function () { return cmdThink(container, payload); },
       copy: function () { return cmdCopy(container); },
       attach: function () { return cmdAttach(container, payload); },
       edit: function () { return cmdEdit(container, payload); },
@@ -3021,6 +3112,8 @@
   let runBtn = null;
   let stopBtn = null;
   let chatContainer = null;
+  // /agent writes its own note on a dropped model choice, after the new session it starts
+  let agentCommandPicking = false;
   // The message box, kept like the three above: /retry writes the question
   // back into it, and looking it up by id a second time is how one of the two
   // spellings goes stale without anything saying so.
@@ -3924,14 +4017,12 @@
         run.sessionId = data.session_id;
         currentSessionId = data.session_id;
 
-        // Update agent selector to match the job's agent
-        if (data.agent_name && window.selectorModule && typeof window.selectorModule.setAgent === 'function') {
-          window.selectorModule.setAgent(data.agent_name);
-        }
-        
-        // Update LLM profile selector to match the job's profile
-        if (data.llm_profile && window.selectorModule && typeof window.selectorModule.setLLMProfile === 'function') {
-          window.selectorModule.setLLMProfile(data.llm_profile);
+        // The selector takes the job's agent and what it runs with (no override where that is the agent's own)
+        if (window.selectorModule) {
+          window.selectorModule.restore({
+            agent: data.agent_name || window.selectorModule.getCurrentAgent(),
+            profile: data.llm_profile, params: data.llm_params,
+          });
         }
         
         // Notify session manager about reconnected session
@@ -4116,6 +4207,13 @@
     
     // Expose current session id for other modules (fallback for UI)
     chatModule.getCurrentSessionId = function() { return currentSessionId; };
+
+    // A person picked another agent in the picker or the palette and their model
+    // choice went with the agent they left: offered back here (/agent does its own).
+    window.addEventListener('selector:change', function (event) {
+      const dropped = event.detail && event.detail.dropped;
+      if (dropped && !agentCommandPicking) noteDroppedChoice(chatContainer, dropped);
+    });
 
     if (!chatForm || !taskInput || !runBtn || !stopBtn || !chatContainer) {
       console.warn('Chat form elements not found');
@@ -4335,13 +4433,18 @@
 
         // Add agent and LLM profile selections if available
         const selectedAgent = window.selectorModule && window.selectorModule.getCurrentAgent ? window.selectorModule.getCurrentAgent() : null;
-        const selectedLLMProfile = window.selectorModule && window.selectorModule.getCurrentLLMProfile ? window.selectorModule.getCurrentLLMProfile() : null;
-        
+        // The model goes out only when a person chose one; otherwise the agent runs on its own
+        const selectedLLMProfile = window.selectorModule ? window.selectorModule.getProfileOverride() : null;
+        const llmParams = window.selectorModule ? window.selectorModule.getLLMParams() : {};
+
         if (selectedAgent) {
           formData.append('agent_name', selectedAgent);
         }
         if (selectedLLMProfile) {
           formData.append('llm_profile', selectedLLMProfile);
+        }
+        if (Object.keys(llmParams).length) {
+          formData.append('llm_params', JSON.stringify(llmParams));
         }
         // A person reads this run and can answer what it asks (syncQuestionActions).
         formData.append('attended', 'true');
@@ -4419,7 +4522,9 @@
 
       // Get current agent and LLM profile selections
       const selectedAgent = window.selectorModule && window.selectorModule.getCurrentAgent ? window.selectorModule.getCurrentAgent() : null;
-      const selectedLLMProfile = window.selectorModule && window.selectorModule.getCurrentLLMProfile ? window.selectorModule.getCurrentLLMProfile() : null;
+      // The model goes out only when a person chose one; otherwise the agent runs on its own
+      const selectedLLMProfile = window.selectorModule ? window.selectorModule.getProfileOverride() : null;
+      const llmParams = window.selectorModule ? window.selectorModule.getLLMParams() : {};
       
       // Build POST body
       const postBody = { task: task };
@@ -4430,6 +4535,7 @@
       }
       if (selectedAgent) postBody.agent_name = selectedAgent;
       if (selectedLLMProfile) postBody.llm_profile = selectedLLMProfile;
+      if (Object.keys(llmParams).length) postBody.llm_params = llmParams;
       // A person reads this run and can answer what it asks (syncQuestionActions).
       postBody.attended = true;
 
@@ -4933,12 +5039,14 @@
       // Set current session ID for continuation
       currentSessionId = session.session_id;
       
-      // Restore agent and LLM profile selectors (selector_module handles fallback to defaults)
-      if (session.agent_name && window.selectorModule) {
-        window.selectorModule.setAgent(session.agent_name);
-      }
-      if (session.llm_profile && window.selectorModule) {
-        window.selectorModule.setLLMProfile(session.llm_profile);
+      // What the session ran with: its agent, and the profile and params chosen for it. Not llm_profile:
+      // that names the profile that ran, chosen or not -- every web session before llm_profile_override
+      // carries the global default there (selector_module handles the fallback to defaults)
+      if (window.selectorModule) {
+        window.selectorModule.restore({
+          agent: session.agent_name || window.selectorModule.getCurrentAgent(),
+          profile: session.llm_profile_override, params: session.llm_params,
+        });
       }
       
     }

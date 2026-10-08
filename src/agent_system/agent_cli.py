@@ -47,6 +47,7 @@ from .cli_utils.commands.hooks import handle_hooks_command
 from .cli_utils.session_defaults import (
     choose_agent_name,
     choose_llm_profile,
+    load_session_llm_params,
     load_session_settings,
     profile_for_record,
     usable_session_defaults,
@@ -1275,6 +1276,14 @@ def _main() -> None:
     if llm_profile_override and not requested_profile:
         vprint(f"[cli] continuing session with its own LLM profile: "
                f"{llm_profile_override}")
+    # And with its own llm_params (a chat's /think, the web chat's thinking level), on the same
+    # terms as the profile: --llm-params wins, and only for the agent they were set for.
+    if llm_params_override is None and stored_agent and stored_agent == entry_name:
+        llm_params_override = run_async(load_session_llm_params(
+            session_manager, getattr(args, "session_user", "cli_user"),
+            getattr(args, "session_id", None))) or None
+        if llm_params_override:
+            vprint(f"[cli] continuing session with its own llm_params: {llm_params_override}")
     # Exit 1 on the profile errors below, not 0: a caller checking the code
     # took a refused run for a finished one. Same for a session that cannot
     # be loaded further down.
@@ -1701,7 +1710,9 @@ def _main() -> None:
                     agent_name=agent_name_used,
                     llm_profile=llm_profile_used,
                     was_new_session=was_new_session,
-                    title=getattr(args, "session_title", None)
+                    title=getattr(args, "session_title", None),
+                    # what this run was given for its model: the next bare --session starts on it
+                    llm_choice={"profile": llm_profile_override, "params": llm_params_override or {}},
                 )
 
                 if success:

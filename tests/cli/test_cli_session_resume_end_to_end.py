@@ -144,6 +144,51 @@ def other_process():
         process.wait()
 
 
+class TestTheSessionsOwnLlmParams:
+    """A session continued with `--session` runs with the llm_params it was left with (a /think, the web
+    chat's thinking level), on the same terms as its profile: --llm-params wins, and only for its agent."""
+
+    def _store(self, cli_env, params):
+        loop = asyncio.new_event_loop()
+        try:
+            record = loop.run_until_complete(cli_env.manager.load_session("cli_user", "s1"))
+            record["llm_params"] = params
+            loop.run_until_complete(cli_env.manager.save_session(record))
+        finally:
+            loop.close()
+        cli_env.manager.clear_cache()
+
+    def _chat(self, monkeypatch, *extra):
+        import agent_system.cli_utils.chat as chat
+
+        seen = {}
+        monkeypatch.setattr(chat, "run_chat_loop", lambda **kwargs: seen.update(kwargs))
+        monkeypatch.setattr("agent_system.llm.factory.create_llm_from_profile",
+                            lambda config, llm_profile, llm_params=None: object())
+        _run(monkeypatch, ["agent-cli", "chat", "--session", "s1", *extra])
+        return seen
+
+    def test_they_come_back(self, cli_env, monkeypatch):
+        self._store(cli_env, {"thinking_level": "high"})
+        assert self._chat(monkeypatch)["llm_params"] == {"thinking_level": "high"}
+
+    def test_typed_ones_win(self, cli_env, monkeypatch):
+        self._store(cli_env, {"thinking_level": "high"})
+        assert self._chat(monkeypatch, "--llm-params", "thinking_level=low")["llm_params"] == {
+            "thinking_level": "low"}
+
+    def test_a_one_shot_run_writes_what_it_ran_with_back(self, cli_env, monkeypatch):
+        """It wrote the profile and left the params: the next bare --session went back to the old ones."""
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1",
+                           "--llm-params", "thinking_level=low"])
+        assert cli_env.saved.get("llm_choice") == {"profile": STORED_PROFILE,
+                                                   "params": {"thinking_level": "low"}}
+
+    def test_another_agent_does_not_take_them(self, cli_env, monkeypatch):
+        self._store(cli_env, {"thinking_level": "high"})
+        assert not self._chat(monkeypatch, "--agent", "config_default_agent")["llm_params"]
+
+
 class TestBareResume:
     """`agent-cli "weiter" --session s1` with no --agent and no --llm."""
 

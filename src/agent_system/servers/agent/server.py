@@ -1243,7 +1243,9 @@ class Agent(ToolServer):
             session_id=session_id,
             agent_name=session_meta.get("agent_name", self.name),
             llm_profile=session_meta.get("llm_profile", self.agent_config.default_llm_profile),
-            was_new_session=False  # Always update for intermediate/final saves
+            was_new_session=False,  # Always update for intermediate/final saves
+            # whoever opened the run named its choice (the API, the chat); one who did not leaves the record's
+            llm_choice=session_meta.get("llm_choice"),
         )
         logger.debug(f"Saved session {session_id} to disk")
         return bool(written)

@@ -85,7 +85,8 @@ def test_only_the_publicly_visible_agents_are_listed(client, registry_of_agents)
 
 
 def test_the_listings_carry_what_the_pickers_search_and_group_by(registry_of_agents, monkeypatch):
-    """Agents: description, category and tags from the live merged config (None where it has no entry).
+    """Agents: their own profile, description, category and tags from the live merged config (None where it
+    has no entry).
     Profiles: provider, model and the route's host from the model the profile points at."""
     from tests.app.test_run_llm_override_uses_live_config import _disable_auth
     _disable_auth(monkeypatch)  # before build_app: /llm/profiles sits behind a route policy
@@ -114,8 +115,10 @@ def test_the_listings_carry_what_the_pickers_search_and_group_by(registry_of_age
 
     details = {d["name"]: d for d in agents["details"]}
     assert set(details) == EXPECTED_IN_UI, agents
-    assert details["probe_ui"] == {"name": "probe_ui", "description": "The UI probe", "category": "probes", "tags": ["one", "two"]}
-    assert details["probe_both"] == {"name": "probe_both", "description": None, "category": None, "tags": []}
+    assert details["probe_ui"] == {"name": "probe_ui", "llm_profile": "normal", "description": "The UI probe",
+                                   "category": "probes", "tags": ["one", "two"]}
+    assert details["probe_both"] == {"name": "probe_both", "llm_profile": None, "description": None,
+                                     "category": None, "tags": []}
     assert profiles["routed"] == {"name": "routed", "model_ref": "routed", "provider": "openai", "model": "vendor/m",
                                       "host": "openrouter.ai", "description": "Via a router", "max_steps": None}
     assert (profiles["normal"]["model"], profiles["normal"]["host"]) == ("m", None)

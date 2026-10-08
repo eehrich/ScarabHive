@@ -722,7 +722,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             target_agent._session_tracker.carry_title(event["session_id"], title.strip())
 
     async def _mirror_run_as_job(request_id: str, user_id: str, agent_name: str,
-                                 session_id: Optional[str], llm_profile: Optional[str]):
+                                 session_id: Optional[str], llm_profile: Optional[str], llm_params: dict):
         """A BackgroundJob that shows a run somebody else collects, or None.
 
         POST /run answers its caller from collect_final_result and made no job, so
@@ -744,7 +744,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             await get_background_job_manager().create_job(
                 request_id=request_id, user_id=user_id, agent_name=agent_name,
                 session_id=session_id, agent_runner=relay, llm_profile=llm_profile,
-                mirror=True)
+                llm_params=llm_params, mirror=True)
         except DuplicateRequestIdError:
             logger.warning("[RUN] refused duplicate request_id=%s -- a job is already running under it", request_id)
             raise HTTPException(status_code=409, detail="request_id is already running")
@@ -1182,7 +1182,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
 
     async def _open_session_for_run(selected_agent, user_id: str, session_id: Optional[str],
-                                    llm_profile: Optional[str]) -> bool:
+                                    llm_profile: Optional[str], llm_choice: dict) -> bool:
         """SessionService.open_for_run for /run and /events; whether the session
         existed. 403 for another user's session; without an id there is nothing
         to open -- the run creates its session and names it in the start event.
@@ -1202,7 +1202,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return await _session_service.open_for_run(
                 selected_agent, user_id, session_id,
                 llm_profile or selected_agent.agent_config.default_llm_profile,
-                in_use=running is not None)
+                in_use=running is not None, llm_choice=llm_choice)
         except SessionPermissionError as e:
             raise HTTPException(status_code=403, detail=f"Permission denied: {e}")
 
@@ -1238,13 +1238,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             ),
         )
 
+    def _llm_params_from(raw: Any) -> dict:
+        """A request's llm_params: an object (JSON body) or its JSON text (a form field); 400 if neither."""
+        if raw is None or raw == "":
+            return {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="llm_params is not valid JSON")
+        from .llm.factory import chat_llm_params_problem
+        problem = chat_llm_params_problem(raw)
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
+        return dict(raw)
+
     def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None,
-                                  *, requester: Any):
+                                  *, requester: Any, llm_params: Optional[dict] = None):
         """Get agent instance with optional overrides.
 
         Args:
             agent_name: Name of agent to use (None = use default global agent)
             llm_profile: LLM profile to use (None = use agent's configured profile)
+            llm_params: what a chat set for its model (_llm_params_from checked it); without a
+                profile they apply to the agent's own primary, which is no switch of model
             requester: the caller the endpoint resolved; an agent it may not run
                 (its role gate) is answered as an unknown agent (404), the default
                 agent -- which has a name only the server knows -- with a 403.
@@ -1301,6 +1318,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # config -- a profile added by a reload was "not found" here and fell
         # back to the default profile.
         live = _live_config()
+        if llm_params and not llm_profile:
+            llm_profile = selected_agent.agent_config.default_llm_profile
         if llm_profile and live.llm_system and live.llm_system.profiles:
             if llm_profile not in live.llm_system.profiles:
                 # LLM profile not found - fallback to default profile
@@ -1311,7 +1330,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             try:
                 from .llm.factory import override_for_profile
                 llm_override, llm_profile_info = override_for_profile(
-                    live, getattr(selected_agent, "agent_config", None), llm_profile)
+                    live, getattr(selected_agent, "agent_config", None), llm_profile, llm_params or None)
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"Failed to apply LLM profile: {str(e)}")
@@ -1434,8 +1453,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger.debug(f"No config details for agent {name}: {e}")
                 cfg = None
             meta = cfg.metadata if cfg else None
+            agent_config = getattr(cfg, "agent_config", None) if cfg else None
             details.append({
                 "name": name,
+                # the agent's own model: what the chat runs on until a person picks another
+                "llm_profile": agent_config.default_llm_profile if agent_config else None,
                 "description": cfg.description if cfg else None,
                 "category": meta.category if meta else None,
                 "tags": (meta.tags or []) if meta else [],
@@ -1468,9 +1490,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 default_profile = live.llm_system.default_profile
         except Exception as e:
             logger.debug(f"Failed to list LLM profiles: {e}")
+        from .llm.factory import THINKING_LEVELS
         return {
             "profiles": sorted(profiles, key=lambda p: p["name"].lower()),
-            "default": default_profile or "normal"
+            "default": default_profile or "normal",
+            # what a chat's llm_params.thinking_level takes (CHAT_LLM_PARAMS)
+            "thinking_levels": list(THINKING_LEVELS),
         }
 
     async def _gate_refuses_caller(request: Request, target: Any) -> bool:
@@ -1738,6 +1763,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Optional client-supplied request id — collected from body/form/
         # query below, validated + applied after parsing.
         client_request_id: Optional[str] = None
+        raw_llm_params: Any = None  # JSON body: an object; multipart: its JSON text
         # The client shows the run's questions to the person who started it
         # (form field ``attended``; the chat sends it with files). Only a run
         # streamed back to that client can be: the text-only run is not.
@@ -1756,6 +1782,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     agent_name = body.get('agent_name')
                 if not llm_profile and 'llm_profile' in body:
                     llm_profile = body.get('llm_profile')
+                raw_llm_params = body.get('llm_params')
                 if not session_title and 'session_title' in body:
                     session_title = body.get('session_title')
                 if 'request_id' in body:
@@ -1787,6 +1814,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 agent_name = form.get('agent_name')
             if not llm_profile and 'llm_profile' in form:
                 llm_profile = form.get('llm_profile')
+            raw_llm_params = form.get('llm_params')
             if not session_title and 'session_title' in form:
                 session_title = form.get('session_title')
             if 'request_id' in form:
@@ -1833,7 +1861,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                    llm_profile or "default", user_id)
 
         # Get agent with LLM override
-        selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile, requester=current_user)
+        llm_params = _llm_params_from(raw_llm_params)
+        # what the caller chose for the model: the session's record keeps it (SessionService.save_session)
+        llm_choice = {"profile": llm_profile, "params": llm_params}
+        selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(
+            agent_name, llm_profile, requester=current_user, llm_params=llm_params)
 
         # A run without a session creates one, as with files and on /events. The text-only run goes through
         # collect_final_result, which takes a missing id for a stateless call: a throwaway session, never saved.
@@ -1843,7 +1875,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not session_id and not upload_files and task:
             session_id, made_session = short_id(), True
 
-        session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile)
+        session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile, llm_choice)
         if session_exists:
             session_title = None  # it names a session the run creates, not one it continues
 
@@ -1860,7 +1892,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             try:
                 mirror = await _mirror_run_as_job(
                     request_id, user_id, selected_agent.name, session_id,
-                    llm_profile or selected_agent.agent_config.default_llm_profile)
+                    llm_profile or selected_agent.agent_config.default_llm_profile, llm_params)
             except HTTPException:
                 if made_session:  # opened already, and nothing below lets go of it
                     selected_agent._session_tracker.discard_session(session_id)
@@ -1908,6 +1940,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         effective_llm_profile,
                         was_new_session,
                         after_run=True,
+                        llm_choice=llm_choice,
                     )
 
                 return result
@@ -2034,7 +2067,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             selected_agent._session_tracker.set_session_metadata(actual_session_id, {
                                 "user_id": user_id,
                                 "agent_name": selected_agent.name,
-                                "llm_profile": effective_llm_profile
+                                "llm_profile": effective_llm_profile,
+                                "llm_choice": llm_choice,
                             })
                         # Ensure proper JSON serialization
                         if hasattr(event, 'to_dict'):
@@ -2074,6 +2108,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                     effective_llm_profile,
                                     was_new_session,
                                     after_run=True,
+                                    llm_choice=llm_choice,
                                 )
                     finally:
                         # Whatever became of the save: skipped, the session stayed held
@@ -2149,6 +2184,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         force: bool = False,
         session_title: Optional[str] = None,
         attended: bool = False,
+        llm_params: Optional[dict] = None,
     ):
         """Shared implementation for GET/POST /events endpoints.
 
@@ -2245,6 +2281,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     "session_id": existing_job.actual_session_id or existing_job.session_id,
                     "agent_name": existing_job.agent_name,
                     "llm_profile": existing_job.llm_profile,
+                    "llm_params": existing_job.llm_params,
                     "status": existing_job.status.value,
                     "task": existing_job.task_description,
                     "created_at": existing_job.created_at,
@@ -2266,8 +2303,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # NORMAL PATH: For new requests, do full setup
         try:
-            selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile, requester=current_user)
-            session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile)
+            llm_params = llm_params or {}
+            llm_choice = {"profile": llm_profile, "params": llm_params}
+            selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(
+                agent_name, llm_profile, requester=current_user, llm_params=llm_params)
+            session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile, llm_choice)
         except HTTPException:
             # Registered above for the status stream; no run follows to release it.
             release_request_user_tree(request_id)
@@ -2323,6 +2363,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     session_id=session_id,
                     agent_runner=agent_runner,
                     llm_profile=llm_profile,
+                    llm_params=llm_params,
                 )
             except DuplicateRequestIdError:
                 # A concurrent request won the race for this caller-supplied
@@ -2362,6 +2403,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         # session UI resolves it against the registry.
                         "agent_name": selected_agent.name,
                         "llm_profile": llm_profile or selected_agent.agent_config.default_llm_profile,
+                        "llm_choice": llm_choice,
                     })
 
             try:
@@ -2409,6 +2451,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                     effective_llm_profile,
                                     was_new_session,
                                     after_run=True,
+                                    llm_choice=llm_choice,
                                 )
                 finally:
                     # Whatever became of the save: skipped, the session stayed held.
@@ -2477,6 +2520,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent_name: Optional agent to use
         - llm_profile: Optional LLM profile override
+        - llm_params: Optional object, what the chat set for the model (CHAT_LLM_PARAMS)
         - session_title: Optional title for the session, written with its first save
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
@@ -2501,6 +2545,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             force=bool(body.get("force")),
             session_title=body.get("session_title"),
             attended=body.get("attended") is True,
+            llm_params=_llm_params_from(body.get("llm_params")),
         )
 
     async def _refuse_foreign_request(request_id: str, current_user: Any, *, reaches_below: bool = False) -> None:

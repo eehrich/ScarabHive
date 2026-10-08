@@ -134,6 +134,24 @@ class TestAgentRunContinuesLikeAgentCli:
         assert run_env.seen["profile_info"], "no LLM override was built"
         assert run_env.seen["profile_info"].startswith(STORED_PROFILE + ":")
 
+    def test_the_sessions_own_params_come_back_and_are_written_again(self, run_env):
+        """agent-cli took them, agent-run did not: the same session ran at another thinking level."""
+        manager = run_env.service.session_manager
+        loop = asyncio.new_event_loop()
+        try:
+            record = loop.run_until_complete(manager.load_session("cli_user", "s1"))
+            record["llm_params"] = {"thinking_level": "high"}
+            loop.run_until_complete(manager.save_session(record))
+        finally:
+            loop.close()
+        manager.clear_cache()
+
+        _run(session_id="s1")
+
+        assert "thinking_level=high" in (run_env.seen["profile_info"] or ""), run_env.seen["profile_info"]
+        assert run_env.seen["saved"].get("llm_choice") == {
+            "profile": STORED_PROFILE, "params": {"thinking_level": "high"}}
+
     def test_the_record_is_not_overwritten_with_the_defaults(self, run_env):
         # The defect this exists for: agent-run wrote config.default_agent and
         # the agent's default profile back, erasing what agent-cli stored.

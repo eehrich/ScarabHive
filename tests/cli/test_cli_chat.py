@@ -1627,6 +1627,104 @@ class TestSwitchModel:
         assert "no api key" in capsys.readouterr().out
 
 
+class TestThinkCommand:
+    """/think sets the thinking level of the chat: into ctx.llm_params, which every /model takes along,
+    onto the client of the profile the chat runs on, and into the session's metadata -- what its saves
+    write and a resume reads back."""
+
+    _ctx = TestSwitchModel._ctx
+    _patch_factory = TestSwitchModel._patch_factory
+
+    def _own(self, ctx, own="profile_a"):
+        ctx.agent.agent_config = SimpleNamespace(default_llm_profile=own, llm_params=None)
+        return ctx
+
+    def test_a_level_reaches_the_client_and_the_session(self, monkeypatch, capsys):
+        from agent_system.cli_utils.chat import _set_thinking
+
+        self._patch_factory(monkeypatch)
+        ctx, tracker = self._ctx()
+        self._own(ctx)
+
+        assert _set_thinking(ctx, "HIGH") is True
+
+        assert ctx.llm_params == {"thinking_level": "high"}
+        assert ctx.llm_override.params == {"thinking_level": "high"}
+        assert ctx.llm_profile == "profile_a"
+        assert tracker.metadata["s1"]["llm_choice"] == {"profile": None, "params": {"thinking_level": "high"}}, (
+            "params on the agent's own profile were recorded as a picked profile")
+
+    def test_default_on_the_agents_own_profile_gives_the_agent_its_own_client_back(self, monkeypatch):
+        from agent_system.cli_utils.chat import _set_thinking
+
+        self._patch_factory(monkeypatch)
+        ctx, tracker = self._ctx(llm_params={"thinking_level": "max"})
+        self._own(ctx)
+        ctx.llm_override = SimpleNamespace(model="the override")
+
+        assert _set_thinking(ctx, "default") is True
+
+        assert ctx.llm_params == {}
+        assert ctx.llm_override is None, "an override without a reason stayed"
+        assert tracker.metadata["s1"]["llm_choice"] == {"profile": None, "params": {}}
+
+    def test_default_on_a_picked_profile_keeps_the_profile(self, monkeypatch):
+        from agent_system.cli_utils.chat import _set_thinking
+
+        self._patch_factory(monkeypatch)
+        ctx, _ = self._ctx(current="profile_b", llm_params={"thinking_level": "max"})
+        self._own(ctx)
+
+        assert _set_thinking(ctx, "default") is True
+
+        assert ctx.llm_profile == "profile_b"
+        assert ctx.llm_override.model == "model-of-profile_b"
+        assert not ctx.llm_override.params
+
+    def test_a_picked_profile_is_recorded_as_the_choice(self, monkeypatch):
+        from agent_system.cli_utils.chat import _switch_model
+
+        self._patch_factory(monkeypatch)
+        ctx, tracker = self._ctx()
+        self._own(ctx)
+
+        assert _switch_model(ctx, "profile_b") is True
+
+        assert tracker.metadata["s1"]["llm_choice"]["profile"] == "profile_b"
+
+    def test_an_unknown_level_changes_nothing(self, monkeypatch, capsys):
+        from agent_system.cli_utils.chat import _set_thinking
+
+        self._patch_factory(monkeypatch)
+        ctx, tracker = self._ctx()
+        self._own(ctx)
+
+        assert _set_thinking(ctx, "ultra") is False
+
+        assert ctx.llm_params == {} and ctx.llm_override is None and tracker.metadata == {}
+        assert "Unknown thinking level: ultra" in capsys.readouterr().out
+
+
+class TestTheChatSavesItsParams:
+    """The chat's own save writes its llm_params beside the profile: the record a resume reads back."""
+
+    async def test_the_save_carries_them(self, monkeypatch):
+        import agent_system.cli_utils.chat as chat
+
+        seen = {}
+
+        class _Service:
+            async def save_session(self, **kwargs):
+                seen.update(kwargs)
+                return True
+
+        ctx = _completion_ctx(monkeypatch, session_service=_Service(),
+                              llm_params={"thinking_level": "high"})
+
+        assert await chat._save_session(ctx) is True
+        assert seen["llm_choice"] == {"profile": None, "params": {"thinking_level": "high"}}
+
+
 class TestPromptEditorWiring:
     """What the editor hands to the prompt sessions it builds."""
 
@@ -3446,14 +3544,15 @@ class TestResumeBringsTheSessionAlong:
     that, /resume loaded any session into the running agent and wrote this
     agent's name over its record on the next save."""
 
-    def _ctx(self, monkeypatch, stored_agent, stored_llm, current="profile_a"):
+    def _ctx(self, monkeypatch, stored_agent, stored_llm, current="profile_a", stored_params=None,
+             record_extra=None, own=None):
         import agent_system.llm.factory as factory
         from agent_system.cli_utils.chat import _ChatContext
 
         monkeypatch.setattr(
             factory, "create_llm_from_profile",
             lambda config, llm_profile, llm_params=None:
-            SimpleNamespace(model="model-of-" + llm_profile))
+            SimpleNamespace(model="model-of-" + llm_profile, params=llm_params))
         monkeypatch.setattr(
             factory, "resolve_llm_config_for_agent",
             lambda config, agent_config: SimpleNamespace(
@@ -3479,7 +3578,11 @@ class TestResumeBringsTheSessionAlong:
                 return self.titles.get(ref, ref)
 
             async def load_session(self, user_id, session_id):
-                return {"agent_name": stored_agent, "llm_profile": stored_llm}
+                record = {"agent_name": stored_agent, "llm_profile": stored_llm}
+                if stored_params is not None:
+                    record["llm_params"] = stored_params
+                record.update(record_extra or {})
+                return record
 
         loads = []
 
@@ -3491,7 +3594,8 @@ class TestResumeBringsTheSessionAlong:
         tracker = SimpleNamespace(set_session_metadata=lambda sid, meta: None)
         ctx = _ChatContext(
             agent=SimpleNamespace(system_config=config, _session_tracker=tracker,
-                                  llm=SimpleNamespace(model="m")),
+                                  llm=SimpleNamespace(model="m"),
+                                  agent_config=SimpleNamespace(default_llm_profile=own)),
             entry_name="coder", session_service=_Service(), session_user="u",
             session_id="s1", was_new_session=False, llm_profile=current,
             llm_override=None, llm_profile_info=None, show_status=False,
@@ -3544,6 +3648,57 @@ class TestResumeBringsTheSessionAlong:
         assert loads == ["s2"]
         assert ctx.llm_profile == "profile_b"
         assert ctx.llm_override.model == "model-of-profile_b"
+
+    async def test_it_continues_with_its_own_llm_params(self, monkeypatch):
+        """A thinking level set in the session (/think, the web chat's button) is the session's, like
+        its profile -- on the same profile it was never applied: only a profile change rebuilt."""
+        from agent_system.cli_utils.chat import _resume_session
+
+        ctx, _ = self._ctx(monkeypatch, "coder", "profile_a", stored_params={"thinking_level": "high"})
+
+        assert await _resume_session(ctx, "s2") is True
+
+        assert ctx.llm_params == {"thinking_level": "high"}
+        assert ctx.llm_override.params == {"thinking_level": "high"}
+
+    async def test_a_session_nobody_picked_a_profile_for_runs_on_the_agents_own(self, monkeypatch, capsys):
+        """llm_profile_override null: the session ran on the agent's own. Staying on this chat's /model
+        pick wrote it into that record as the session's choice on the next save."""
+        from agent_system.cli_utils.chat import _llm_choice, _resume_session
+
+        ctx, _ = self._ctx(monkeypatch, "coder", "profile_a", current="profile_b",
+                           record_extra={"llm_profile_override": None}, own="profile_a")
+        ctx.llm_override = SimpleNamespace(model="model-of-profile_b")
+
+        assert await _resume_session(ctx, "s2") is True
+
+        assert ctx.llm_profile == "profile_a"
+        assert ctx.llm_override is None, "the agent's own client must answer, not a pick"
+        assert _llm_choice(ctx) == {"profile": None, "params": {}}
+        assert "the agent's own" in capsys.readouterr().out
+
+    async def test_a_session_without_params_leaves_the_chat_its_own(self, monkeypatch):
+        """`--llm-params` typed for this chat win over a session at startup; /resume dropped them for
+        a session that has none -- every session from before."""
+        from agent_system.cli_utils.chat import _resume_session
+
+        ctx, _ = self._ctx(monkeypatch, "coder", "profile_a")
+        ctx.llm_params = {"thinking_level": "max"}
+
+        assert await _resume_session(ctx, "s2") is True
+
+        assert ctx.llm_params == {"thinking_level": "max"}
+
+    async def test_a_sessions_own_params_win_over_the_chats(self, monkeypatch):
+        from agent_system.cli_utils.chat import _resume_session
+
+        ctx, _ = self._ctx(monkeypatch, "coder", "profile_a", stored_params={"thinking_level": "low"})
+        ctx.llm_params = {"thinking_level": "max"}
+
+        assert await _resume_session(ctx, "s2") is True
+
+        assert ctx.llm_params == {"thinking_level": "low"}
+        assert ctx.llm_override.params == {"thinking_level": "low"}
 
     async def test_the_title_of_the_session_left_behind_does_not_follow(
             self, monkeypatch):
@@ -4325,6 +4480,13 @@ class TestCompletion:
         assert "bb22" not in values, "a session of another agent was offered"
         assert "cc33" in values, "an index without the field must not hide a session"
 
+    def test_think_offers_the_levels_the_server_takes(self, monkeypatch):
+        from agent_system.llm.factory import THINKING_LEVELS
+
+        values = self._values(_completion_ctx(monkeypatch), "/think ")
+
+        assert values == [*THINKING_LEVELS, "default"]
+
     def test_the_editor_only_offers_what_starts_with_the_word(self):
         """The completer filters; the REPL answers for the whole context."""
         import agent_system.cli_utils.chat as chat
@@ -4700,6 +4862,20 @@ class TestSwitchAgent:
         assert chat._switch_agent(ctx, "writer") is True
 
         assert [c.name for c in ctx.plugin_commands] == ["only-writer-has-this"]
+
+    def test_a_thinking_level_stays_with_the_agent_it_was_set_for(self, monkeypatch):
+        """/think on the coder, /agent writer: the writer answered without it, yet the chat still held
+        it -- and its save wrote it into the writer's new session."""
+        import agent_system.cli_utils.chat as chat
+
+        self._patch_factory(monkeypatch)
+        ctx = _completion_ctx(monkeypatch)
+        ctx.llm_override = SimpleNamespace(model="m")
+        ctx.llm_params = {"thinking_level": "high"}
+
+        assert chat._switch_agent(ctx, "writer") is True
+
+        assert ctx.llm_params == {}
 
     def test_a_command_line_llm_is_named_when_it_stops_applying(
             self, monkeypatch, capsys):

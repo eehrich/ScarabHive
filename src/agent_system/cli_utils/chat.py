@@ -42,7 +42,7 @@ from .common import (
 from .attachments import sort_attachments
 from .session_listing import (DEFAULT_LIMIT, in_chat_selector, newest_of, parse_listing,
                               print_sessions)
-from .session_defaults import session_defaults
+from .session_defaults import load_session_llm_params, session_defaults
 from ..core.session_presence import WAKE_TASK, SessionBusy, note_stop, presence_for
 from .agent_runner import wake_message
 
@@ -1136,6 +1136,10 @@ def _completions_for(ctx: "_ChatContext", skill_names: Sequence[str],
                 for name in sorted(profiles)]
     if command == "agent":
         return [(name, "agent") for name in _agent_names(ctx)]
+    if command == "think":
+        from ..llm.factory import THINKING_LEVELS
+
+        return [(level, "thinking level") for level in THINKING_LEVELS] + [("default", "the model's own")]
     if command == "resume":
         # Whatever the last listing knows; /sessions and a bare /resume fill
         # it. Reading the store HERE is not possible -- the completer runs
@@ -1487,11 +1491,7 @@ def _init_fresh_session(ctx: _ChatContext) -> str:
         merged.update(ctx.template_vars)
         if merged:
             tracker.set_session_template_vars(new_id, merged)
-        tracker.set_session_metadata(new_id, {
-            "user_id": ctx.session_user,
-            "agent_name": ctx.entry_name,
-            "llm_profile": ctx.llm_profile,
-        })
+        tracker.set_session_metadata(new_id, _session_metadata(ctx))
     return new_id
 
 
@@ -2390,19 +2390,21 @@ def _show_costs(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
         print("  ~ = estimated from config/llm_pricing.yaml, not provider billing")
 
 
-def _build_profile(ctx: "_ChatContext", wanted: str) -> tuple[Any, str]:
+def _build_profile(ctx: "_ChatContext", wanted: str,
+                   params: Optional[dict] = None) -> tuple[Any, str]:
     """(client, label) for LLM profile *wanted*; raises if it cannot be built.
 
     The switch ``--llm`` performs, with the ``--llm-params`` of this chat
     applied to the new profile the way the command line applies them: a
     ``thinking_level=max`` typed at the start must not vanish on /model.
     Changes nothing, so an interrupt while it builds leaves the chat as it was.
+    *params* instead of the chat's own: what a resumed session ran with.
     """
     from ..llm.factory import override_for_profile
 
     return override_for_profile(getattr(ctx.agent, "system_config", None),
                                 getattr(ctx.agent, "agent_config", None),
-                                wanted, ctx.llm_params or None)
+                                wanted, (ctx.llm_params if params is None else params) or None)
 
 
 def _use_profile(ctx: "_ChatContext", wanted: str,
@@ -2416,11 +2418,71 @@ def _use_profile(ctx: "_ChatContext", wanted: str,
     if tracker is not None:
         # Same three keys the bootstrap writes; the turn loop reads them for
         # tool context, and the session record is what a later resume reads.
-        tracker.set_session_metadata(ctx.session_id, {
-            "user_id": ctx.session_user,
-            "agent_name": ctx.entry_name,
-            "llm_profile": wanted,
-        })
+        tracker.set_session_metadata(ctx.session_id, _session_metadata(ctx))
+
+
+def _llm_choice(ctx: "_ChatContext") -> dict:
+    """What this chat chose for its model (SessionService.save_session): a profile other than the
+    agent's own, and the params. An override on the agent's own primary carries params only."""
+    own = getattr(getattr(ctx.agent, "agent_config", None), "default_llm_profile", None)
+    picked = ctx.llm_profile if ctx.llm_override is not None and ctx.llm_profile != own else None
+    return {"profile": picked, "params": dict(ctx.llm_params)}
+
+
+def _session_metadata(ctx: "_ChatContext") -> dict:
+    """What the tracker holds for this chat's session: the turn loop reads it for tool context, and the
+    agent's own saves write llm_profile and the choice from it -- the record a later resume reads."""
+    return {"user_id": ctx.session_user, "agent_name": ctx.entry_name,
+            "llm_profile": ctx.llm_profile, "llm_choice": _llm_choice(ctx)}
+
+
+def _set_thinking(ctx: "_ChatContext", payload: str) -> bool:
+    """Show or change the thinking level of this chat (/think); True if it changed.
+
+    It goes into the chat's llm_params, which every profile /model switches to
+    takes along, as with --llm-params. On the agent's own profile and with no
+    params left, the chat runs on the agent's own client again.
+    """
+    from ..llm.factory import THINKING_LEVELS
+
+    wanted = payload.strip().lower()
+    current = ctx.llm_params.get("thinking_level")
+    if not wanted:
+        print(f"Thinking: {current or 'default'}")
+        print(f"  /think {'|'.join(THINKING_LEVELS)} sets it, /think default takes the model's own.")
+        return False
+    if wanted != "default" and wanted not in THINKING_LEVELS:
+        print(f"Unknown thinking level: {wanted}   (one of {', '.join(THINKING_LEVELS)}, or default)")
+        return False
+    params = dict(ctx.llm_params)
+    if wanted == "default":
+        params.pop("thinking_level", None)
+    else:
+        params["thinking_level"] = wanted
+    if params == ctx.llm_params:
+        print(f"Thinking: already {current or 'default'}.")
+        return False
+    own = getattr(getattr(ctx.agent, "agent_config", None), "default_llm_profile", None)
+    built = None
+    if params or ctx.llm_profile != own:
+        try:
+            built = _build_profile(ctx, ctx.llm_profile, params)
+        except Exception as e:
+            # The old client is still good; a failed switch must not end the chat.
+            logger.error("Could not set thinking level %s: %s", wanted, e, exc_info=True)
+            print(f"Could not set thinking to '{wanted}': {e}")
+            return False
+    ctx.llm_params = params
+    if built is not None:
+        _use_profile(ctx, ctx.llm_profile, built)
+    else:
+        ctx.llm_override = None
+        ctx.llm_profile_info = None
+        tracker = getattr(ctx.agent, "_session_tracker", None)
+        if tracker is not None:
+            tracker.set_session_metadata(ctx.session_id, _session_metadata(ctx))
+    print(f"Thinking: {params.get('thinking_level') or 'default'}   (from the next message on)")
+    return True
 
 
 def _llm_profiles(ctx: "_ChatContext") -> dict:
@@ -2549,8 +2611,9 @@ def _switch_agent(ctx: "_ChatContext", payload: str) -> bool:
     # banner would otherwise name a profile nobody chose here.
     if ctx.llm_override is not None:
         print(f"({ctx.llm_profile_info or ctx.llm_profile} no longer applies -- "
-              f"{wanted} answers on its own profile; /model switches it)")
+              f"{wanted} answers on its own profile; /model and /think switch it)")
     ctx.llm_override = None
+    ctx.llm_params = {}
     ctx.llm_profile_info = None
     ctx.llm_profile = (getattr(getattr(agent, "agent_config", None),
                                "default_llm_profile", None) or ctx.llm_profile)
@@ -2993,17 +3056,28 @@ async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
     # instead would look harmless and then write that profile over the
     # session's record on the next save -- a failed switch destroying the
     # very choice it was trying to honour.
+    stored_params = await load_session_llm_params(ctx.session_manager, ctx.session_user, session_id)
+    if stored_params is None:
+        # none stored: --llm-params typed for this chat stay, as they do when it starts on a session
+        stored_params = dict(ctx.llm_params)
+    own = getattr(getattr(ctx.agent, "agent_config", None), "default_llm_profile", None)
+    # Nothing stored: nobody picked one for that session (or llm.yaml retired it), so it runs on the
+    # agent's own, as --session <id> starts it. Staying on this chat's pick wrote it into that record
+    # as the session's own on the next save.
+    target = stored_llm or own or ctx.llm_profile
+    back_to_own = target == own and not stored_params
     built = None
-    if stored_llm and stored_llm != ctx.llm_profile:
+    if not back_to_own and (target != ctx.llm_profile or stored_params != ctx.llm_params):
         try:
-            built = _build_profile(ctx, stored_llm)
+            built = _build_profile(ctx, target, stored_params)
         except Exception as e:
             logger.error("Could not switch to the session's profile %s: %s",
-                         stored_llm, e, exc_info=True)
-            print(f"Session '{session_id}' runs on LLM '{stored_llm}', which "
+                         target, e, exc_info=True)
+            print(f"Session '{session_id}' runs on LLM '{target}', which "
                   f"cannot be started here: {e}")
-            print(f"Continue it with: {_resume_hint(ctx, session_id)} "
-                  f"--llm <profile>")
+            # stored params go with any --llm (agent_cli), so a profile alone does not get past them
+            print(f"Continue it with: {_resume_hint(ctx, session_id)} --llm <profile>"
+                  + (" --llm-params thinking_level=<level>" if stored_params else ""))
             return False
     try:
         exists, count = await ctx.session_service.load_and_restore_session(
@@ -3022,18 +3096,23 @@ async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
     ctx.session_id = session_id
     ctx.was_new_session = False
     ctx.session_title = None
+    left_a_pick = back_to_own and ctx.llm_override is not None
+    if back_to_own:
+        ctx.llm_override = None
+        ctx.llm_profile = own
+        ctx.llm_profile_info = None
+        ctx.llm_params = {}
     tracker = getattr(ctx.agent, "_session_tracker", None)
     if tracker is not None:
         # The turn loop reads metadata for tool context; without this the
         # resumed session would still carry the previous one's values.
-        tracker.set_session_metadata(session_id, {
-            "user_id": ctx.session_user,
-            "agent_name": ctx.entry_name,
-            "llm_profile": ctx.llm_profile,
-        })
+        tracker.set_session_metadata(session_id, _session_metadata(ctx))
     print(f"({count} messages restored)")
-    if built is not None and stored_llm:
-        _use_profile(ctx, stored_llm, built)
+    if left_a_pick:
+        print(f"LLM: {own}   (the agent's own -- the session has no pick)")
+    if built is not None:
+        ctx.llm_params = stored_params
+        _use_profile(ctx, target, built)
         print(f"LLM: {ctx.llm_profile_info}   (the session's own)")
     return True
 
@@ -3048,6 +3127,7 @@ async def _save_session(ctx: _ChatContext) -> bool:
             llm_profile=ctx.llm_profile,
             was_new_session=ctx.was_new_session,
             title=ctx.session_title,
+            llm_choice=_llm_choice(ctx),
         ))
     except Exception as e:
         logger.error("Failed to save chat session: %s", e, exc_info=True)
@@ -3751,6 +3831,10 @@ def run_chat_loop(
                     continue
                 if command == "vars":
                     _run_interruptible(loop, _handle_vars(ctx, renderer, payload), "/vars")
+                    continue
+                if command == "think":
+                    if _set_thinking(ctx, payload) and not ctx.was_new_session:
+                        _save_now(loop, ctx)
                     continue
                 if command == "model":
                     if _switch_model(ctx, payload) and not ctx.was_new_session:

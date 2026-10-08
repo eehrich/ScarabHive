@@ -248,6 +248,33 @@
     }
   });
 
+  await check('the Thinking button sets a level for the chat from its menu, and Default takes it back', async () => {
+    const button = $('#thinkButton');
+    const menu = $('#thinkMenu');
+    const open = () => menu.matches(':popover-open');
+    try {
+      const enabled = !button.disabled;
+      button.click();
+      await until('the thinking menu', open, 2000);
+      const levels = $$('#thinkMenu [data-level]').map((item) => item.dataset.level).join();
+      $$('#thinkMenu [data-level]').find((item) => item.dataset.level === 'high').click();
+      // the label says it; the button is not coloured like a pressed one
+      const set = !open() && $('#thinkLabel').textContent === 'Thinking: high' && !button.classList.contains('is-custom')
+        && win().selectorModule.getLLMParams().thinking_level === 'high';
+      button.click();
+      await until('the thinking menu again', open, 2000);
+      const marked = $('#thinkMenu [data-level="high"]').getAttribute('aria-pressed') === 'true'
+        && $('#thinkMenu [data-level=""]').getAttribute('aria-pressed') === 'false';
+      $('#thinkMenu [data-level=""]').click();
+      const back = $('#thinkLabel').textContent === 'Thinking'
+        && Object.keys(win().selectorModule.getLLMParams()).length === 0;
+      return enabled && levels === ',none,low,high' && set && marked && back;
+    } finally {
+      if (open()) menu.hidePopover();
+      win().selectorModule.setThinking(null);
+    }
+  });
+
   await check('a picker says when its list is on its way and shows it when it comes, says when it failed, and falls back only to what it lists', async () => {
     const listText = () => $('#pickerList').textContent.replace(/\s+/g, ' ');
     try {
