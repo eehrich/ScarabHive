@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from agent_system.config.settings import config_files, get_tool_server_config, load_settings
-from plugins.agent_editor.store import CREATED_HEADER, Store, StoreError, splice, version_of
+from plugins.agent_editor.store import CREATED_HEADER, Store, StoreError, atomic_write, splice, version_of
 
 REPO = Path(__file__).resolve().parents[4]
 
@@ -821,6 +821,25 @@ def test_a_read_only_file_is_read_only(store, tmp_path):
         with pytest.raises(StoreError) as refused:
             store.save("writer", store.own("writer"), store.version("writer"), dry_run=False)
         assert refused.value.status == 400
+    finally:
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+
+
+def test_a_read_only_file_is_read_only_for_root_too(store, tmp_path, monkeypatch):
+    """On Linux and macOS os.access lets root write any file: a file without a write bit stays read-only to the editor
+    all the same, and a write does not replace it."""
+    path = team(tmp_path)
+    before = path.read_bytes()
+    os.chmod(path, stat.S_IREAD)
+    monkeypatch.setattr(os, "access", lambda *args, **kwargs: True)  # root's answer
+    try:
+        assert store.readonly_reason("writer") == "the file is read-only"
+        with pytest.raises(StoreError) as refused:
+            store.save("writer", store.own("writer"), store.version("writer"), dry_run=False)
+        assert refused.value.status == 400
+        with pytest.raises(PermissionError):
+            atomic_write(path, b"replaced")
+        assert path.read_bytes() == before
     finally:
         os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
 

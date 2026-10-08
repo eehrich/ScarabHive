@@ -1090,7 +1090,7 @@ def _file_problem(path: Path, root: Path, stamp: tuple[int, int, int]) -> Option
     """Why a file cannot be written in place, None when it can (cached per file state)."""
     if not path.is_relative_to(root):
         return "the file is outside the repository root"
-    if not os.access(path, os.W_OK):
+    if read_only(path):
         return "the file is read-only"
     try:
         text = path.read_bytes().decode("utf-8")
@@ -1132,9 +1132,20 @@ def _discard(tmp: str) -> None:
         pass
 
 
+def read_only(path: Path) -> bool:
+    """The file may not be written: this process lacks the right, or nobody has it (no write bit). The second holds
+    for root on Linux and macOS, whom os.access lets write any file -- a file marked read-only stays so for it too, as
+    the read-only attribute does for an administrator on Windows."""
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return False
+    return not os.access(path, os.W_OK) or not mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+
+
 def atomic_write(path: Path, data: bytes) -> None:
     """A temp file in the same directory, then a rename; the file keeps its permissions."""
-    if path.exists() and not os.access(path, os.W_OK):
+    if path.exists() and read_only(path):
         raise PermissionError(f"{path.name} is read-only")
     mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
