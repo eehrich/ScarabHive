@@ -202,8 +202,9 @@ class GeminiClient(LLMClient):
                 for category, threshold in self.safety_settings.items()
             ]
 
-        url = f"{self.base_url}/models/{self.model}:streamGenerateContent?key={self.api_key}&alt=sse"
-        await end.start(url.split("?")[0], payload)  # the URL without the key
+        # The key in a header, not the query: httpx logs every request's URL at INFO
+        url = f"{self.base_url}/models/{self.model}:streamGenerateContent?alt=sse"
+        await end.start(url.split("?")[0], payload)
 
         # Track MALFORMED_FUNCTION_CALL for auto-retry
         got_malformed_function_call = False
@@ -270,7 +271,7 @@ class GeminiClient(LLMClient):
             try:
                 logger.debug(f"Gemini streaming: Starting request to {self.model}")
                 async with httpx.AsyncClient(timeout=self.timeouts, verify=httpx_verify(self.verify)) as client:
-                    async with client.stream("POST", url, json=payload) as response:
+                    async with client.stream("POST", url, json=payload, headers=self._key_header()) as response:
                         # Handle server errors (5xx) - retry with exponential backoff
                         if response.status_code >= 500 and attempt < self.max_retries:
                             wait_time = 2 ** attempt
@@ -724,8 +725,9 @@ class GeminiClient(LLMClient):
                 for category, threshold in self.safety_settings.items()
             ]
 
-        url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
-        await end.start(url.split("?")[0], payload)  # the URL without the key
+        # The key in a header, not the query: httpx logs every request's URL at INFO
+        url = f"{self.base_url}/models/{self.model}:generateContent"
+        await end.start(url, payload)
 
         # Track MALFORMED_FUNCTION_CALL for auto-retry
         got_malformed_function_call = False
@@ -766,7 +768,7 @@ class GeminiClient(LLMClient):
 
             try:
                 async with httpx.AsyncClient(timeout=self.timeouts, verify=httpx_verify(self.verify)) as client:
-                    response = await client.post(url, json=payload)
+                    response = await client.post(url, json=payload, headers=self._key_header())
 
                     if response.status_code != 200:
                         error_text = response.text
@@ -996,6 +998,10 @@ class GeminiClient(LLMClient):
         """Simple chat without tools."""
         result = await self.chat_tools(messages, [], cancellation_token, response_format=response_format)
         return result["assistant"]["content"]
+
+    def _key_header(self) -> dict[str, str]:
+        """The API key as the REST API takes it in a header (x-goog-api-key)."""
+        return {"x-goog-api-key": self.api_key or ""}
 
     def supports_streaming(self) -> bool:
         """Streaming unless the model's capabilities explicitly disable it."""
