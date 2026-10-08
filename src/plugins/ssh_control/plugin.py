@@ -68,6 +68,12 @@ class SSHControlHybridPlugin:
     def get_static_assets(self):
         """Delegate to web endpoints."""
         return self.web_endpoints.get_static_assets()
+
+    def get_security_config(self) -> dict:
+        """Admins only, under any instance name: the panel runs commands on the configured
+        hosts with the server's keys and adds hosts. config/security.yaml's rule matches the
+        name ``ssh_control`` alone (PluginWebRegistry.effective_policy)."""
+        return {"min_role": "admin"}
     
     async def close(self):
         """Clean up resources."""
