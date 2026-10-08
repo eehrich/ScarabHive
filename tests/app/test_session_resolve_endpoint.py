@@ -23,15 +23,9 @@ import pytest
 
 from agent_system.auth.security import create_access_token
 from agent_system.services.session_manager import SessionManager
-from live_accounts import token_generation
+from live_accounts import signing_key, token_generation
 
 pytestmark = pytest.mark.anyio
-
-#: The session routes ride on the auth router (app.py:1110), so the test signs
-#: itself a token for a REAL account, the way tests/app/test_app_chat_commands.py
-#: does -- a name the user store does not know is rejected before any route runs.
-#: Read-only: the sessions themselves live in tmp_path.
-DEV_SECRET = "published-signing-key-replace-with-your-own-0000000000"
 
 
 @pytest.fixture(scope="module")
@@ -49,11 +43,15 @@ def account():
     return row
 
 
+#: The session routes ride on the auth router (app.py:1110), so the test signs
+#: itself a token for a REAL account, the way tests/app/test_app_chat_commands.py
+#: does -- a name the user store does not know is rejected before any route runs.
+#: Read-only: the sessions themselves live in tmp_path.
 @pytest.fixture
 def headers(account):
     return {"Authorization": "Bearer " + create_access_token(
         {"sub": account[1], "user_id": account[0], "role": account[2], "gen": token_generation(account[0])},
-        secret_key=DEV_SECRET, algorithm="HS256")}
+        secret_key=signing_key(), algorithm="HS256")}
 
 
 @pytest.fixture

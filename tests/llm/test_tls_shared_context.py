@@ -94,12 +94,16 @@ def test_the_verifying_context_also_trusts_the_os_store(monkeypatch):
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(ssl.SSLContext, "load_default_certs", counting)
+    # A pinned trust base keeps the OS store out (the test below); a proxy's CA pins it in many containers.
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
     tls._context.cache_clear()
 
     httpx_verify(True)
     assert len(calls) == 1, "the verifying context did not load the OS trust store"
     httpx_verify(False)
     assert len(calls) == 1, "a no-verify context must not load a trust store"
+    tls._context.cache_clear()
 
 
 def test_a_pinned_trust_base_is_not_widened_by_the_os_store(monkeypatch, tmp_path):

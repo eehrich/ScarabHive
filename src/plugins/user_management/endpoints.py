@@ -71,7 +71,8 @@ class UserManagementWebEndpoints:
 
     async def create_user(self, request: Request, user: UserCreate):
         admin, db = await self._admin(request)
-        # A POST without a Content-Type is a simple cross-site request, and FastAPI reads its body as JSON anyway.
+        # A POST without a Content-Type is a simple cross-site request. FastAPI refuses its body itself since 0.13x
+        # (strict_content_type, on by default); before, it read it as JSON, and a router that turns that off does.
         if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
             raise HTTPException(status_code=415, detail="Send the account as JSON")
         try:
