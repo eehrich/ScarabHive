@@ -185,10 +185,6 @@ class RequestLoggerPlugin(SchemaBasedPluginHook):
         logger.info(f"Request #{self.request_count}")
         return HookResult(success=True, modified=False, context=context)
 
-    async def to_markdown(self, context: HookContext) -> HookResult:
-        context.output = f"**Response:**\n\n{context.output}"
-        return HookResult(success=True, modified=True, context=context)
-
 # plugin.py
 def PLUGIN_FACTORY(name=None, system_config=None, server_config=None):
     return RequestLoggerPlugin(Path(__file__).parent, server_config)
@@ -781,7 +777,7 @@ Continue Agent Loop
 
 - [Hook System Design](plugin_hooks.md) - Lifecycle hooks
 - [Tool Execution](tool_execution.md) - Tool discovery and execution
-- [Tool server configuration](server_configuration.md) - Server configuration
+- [Tool server configuration](configuration.md) - Server configuration
 
 ---
 

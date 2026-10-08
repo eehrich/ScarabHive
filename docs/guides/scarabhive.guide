@@ -133,7 +133,7 @@ agent-api
 @{body}
 
 This starts the FastAPI application with the web UI and the REST API. It
-always reads @{tt}config/config.yaml@{utt} of the project and listens on
+reads @{tt}config/config.yaml@{utt} of the project (or @{tt}AGENT_CONFIG_PATH@{utt}) and listens on
 @{tt}network.host@{utt} and @{tt}network.port@{utt} from that file
 (@{tt}127.0.0.1:8000@{utt} as shipped); the environment variables
 @{tt}HOST@{utt} and @{tt}PORT@{utt} override them. More in
@@ -345,9 +345,14 @@ Command | What it does
 @{tt}/context@{utt} (@{tt}/ctx@{utt}) | what fills this session's context window
 @{tt}/history [n]@{utt} (@{tt}/hist@{utt}) | the last n exchanges (default 6)
 @{tt}/last@{utt} | the tool calls and results of the last turn, in full
-@{tt}/undo@{utt} | drop the last exchange from the session
-@{tt}/retry@{utt} | drop the last exchange and ask it again
+@{tt}/undo [files]@{utt} | drop the last exchange from the session; @{tt}files@{utt} also puts back the files it changed
+@{tt}/retry [files]@{utt} | drop the last exchange and ask it again
+@{tt}/rewind [n]@{utt} | put files back as they were before a checkpoint; bare lists them
 @{tt}/export [path]@{utt} | write the conversation to a Markdown file
+@{tt}/model [profile]@{utt} (@{tt}/llm@{utt}) | bare: list the LLM profiles; a name switches this session's profile. In the browser it works through the @{b}Model profile@{ub} button
+@{tt}/copy@{utt} | copy the last answer to the clipboard
+@{tt}/attach [path \| clear]@{utt} | attach a file to the next message; bare lists, @{tt}clear@{utt} empties; in the browser a path opens the file picker
+@{tt}/edit [text]@{utt} | write the next message in @{tt}$EDITOR@{utt}; in the browser, in the message box
 @{tt}/help [topic]@{utt} (@{tt}/h@{utt}, @{tt}/?@{utt}) | the list; with a topic, the help on it
 @{body}
 
@@ -355,10 +360,6 @@ Command | What it does
 
 @{table}
 Command | What it does
-@{tt}/model [profile]@{utt} (@{tt}/llm@{utt}) | bare: list the LLM profiles; a name switches this session's profile. In the browser the @{b}Model profile@{ub} button does this
-@{tt}/copy@{utt} | copy the last answer to the clipboard
-@{tt}/attach [path \| clear]@{utt} | attach a file to the next message; bare lists, @{tt}clear@{utt} empties
-@{tt}/edit [text]@{utt} | write the next message in @{tt}$EDITOR@{utt}
 @{tt}/exit@{utt} (@{tt}/quit@{utt}, @{tt}/q@{utt}, @{tt}/bye@{utt}) | end the chat; Ctrl-D works too
 @{body}
 
@@ -585,9 +586,9 @@ command.
 @{h2}Starting
 
 @{tt}agent-api@{utt} starts the FastAPI application: the web UI, the REST
-API and every enabled plugin. It always reads @{tt}config/config.yaml@{utt}
-of the project (@{tt}AGENT_CONFIG_PATH@{utt} is read by @{tt}agent-cli@{utt},
-not by @{tt}agent-api@{utt}) and takes no command-line options. Environment
+API and every enabled plugin. It reads @{tt}config/config.yaml@{utt}
+of the project, or the file @{tt}AGENT_CONFIG_PATH@{utt} names (as
+@{tt}agent-cli@{utt} does), and takes no command-line options. Environment
 variables it reads:
 
 @{table}
@@ -744,11 +745,11 @@ runs, and users can open only their own sessions.
 @{bullet}Everybody changes their own profile and password in
 @{b}Settings@{ub}.
 @{bullet}@{b}Registration is open@{ub}: @{tt}POST /auth/register@{utt}
-creates an active @{tt}user@{utt} for anyone who can reach the server. The
-login page offers no sign-up, but the route is there. To close it, put a
-rule for @{tt}POST /auth/register@{utt} with @{tt}policy: require_auth@{utt}
-and @{tt}min_role: admin@{utt} before the @{tt}* /auth/*@{utt} rule (rules
-are read in order, see below).
+creates a @{tt}user@{utt} for anyone who can reach the server; as shipped
+(@{tt}auth.registration.require_approval@{utt}) it stays inactive until an
+admin activates it. The
+login page offers no sign-up, but the route is there. To close it, set
+@{tt}auth.registration.enabled: false@{utt}.
 
 @{h2}Logging in
 
@@ -974,7 +975,7 @@ Route | Purpose
 @{tt}GET /agents/{name}/tools@{utt}, @{tt}/allowed-tools@{utt} | an agent's tools
 @{tt}GET /agents/debug/{name}/system-prompt@{utt}, @{tt}/allowed-tools@{utt} | what the agent finally sees (admin)
 @{tt}GET /llm/profiles@{utt} | the LLM profiles
-@{tt}/chat/...@{utt} | the chat commands: @{tt}GET /chat/commands@{utt}, @{tt}POST /chat/resolve@{utt}, @{tt}POST /chat/command@{utt}, @{tt}GET@{utt}/@{tt}POST /chat/vars@{utt}, @{tt}POST /chat/undo@{utt}, @{tt}GET /chat/context@{utt}, @{tt}GET /chat/transcript@{utt}
+@{tt}/chat/...@{utt} | the chat commands: @{tt}GET /chat/commands@{utt}, @{tt}POST /chat/resolve@{utt}, @{tt}POST /chat/command@{utt}, @{tt}GET@{utt}/@{tt}POST /chat/vars@{utt}, @{tt}POST /chat/undo@{utt}, @{tt}GET /chat/checkpoints@{utt}, @{tt}POST /chat/rewind@{utt}, @{tt}GET /chat/context@{utt}, @{tt}GET /chat/transcript@{utt}
 @{tt}/auth/...@{utt} | @{tt}POST register@{utt}, @{tt}login@{utt}, @{tt}logout@{utt}, @{tt}refresh@{utt}; @{tt}GET@{utt}/@{tt}PATCH /auth/me@{utt}; @{tt}GET@{utt}/@{tt}PUT /auth/me/preferences@{utt}; @{tt}POST@{utt}/@{tt}DELETE /auth/api-key@{utt}
 @{tt}/admin/...@{utt} | admin: @{tt}POST reload-config@{utt}, @{tt}GET config@{utt}, @{tt}users@{utt} (@{tt}GET@{utt}, @{tt}POST@{utt}; @{tt}users/{id}@{utt}: @{tt}GET@{utt}, @{tt}PATCH@{utt}, @{tt}DELETE@{utt}, @{tt}POST activate@{utt}, @{tt}deactivate@{utt}, @{tt}promote@{utt}, @{tt}demote@{utt}), @{tt}GET active-sessions@{utt}, @{tt}POST active-sessions/{id}/cancel@{utt}, @{tt}GET system@{utt}, @{tt}GET security/audit@{utt}
 @{tt}GET /api/ui/catalog@{utt}, @{tt}/ui/kit@{utt}, @{tt}/ui/panels/{name}@{utt} | the panel catalog and the core panels

@@ -321,7 +321,7 @@ async def _execute_external_tool(
         "external"
     )
     
-    # 3. Create the response (analogous to plugin tools, without multimodal_content)
+    # 3. Create the response (analogous to plugin tools, incl. _multimodal_content)
     message = ChatMessage(...)
     events = [
         {"type": "tool_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, ...},
@@ -938,5 +938,5 @@ tool_request_id = f"{request_id}_{step:03d}_{i:03d}"
 ## See Also
 
 - [Plugin Architecture](_arch_plugin_architecture.md) - Plugin system
-- [Tool server configuration](server_configuration.md) - Tool server configuration
+- [Tool server configuration](configuration.md) - Tool server configuration
 - [Cancellation Architecture](cancellation_architecture.md) - Cancellation system

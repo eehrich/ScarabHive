@@ -26,11 +26,10 @@ The available profiles are configured in the agent's `llm_profile` configuration
 Common profiles include:
 
 - `turbo` - Fast, lightweight profile (gemini-3.5-flash-lite via OpenRouter)
-- `normal` - Balanced model for standard tasks (gpt-5-mini)
-- `think` - Advanced model for complex reasoning (gpt-5.1) - **Often used as default**
-- `big` - Large context window model (gpt-4.1)
-- `chat` - Fast non-streaming model (deepseek-chat)
-- `code` - Specialized for coding tasks (gpt-5.1-codex)
+- `normal` - Balanced model for standard tasks (DeepSeek V4 Flash via OpenRouter)
+- `think` - Advanced model for complex reasoning (DeepSeek Flash latest via OpenRouter) - **Often used as default**
+- `chat` - Cheap and fast model (DeepSeek V4 Flash via OpenRouter; `chat-nostream` is the non-streaming deepseek-chat)
+- `code` - Specialized for coding tasks (Kimi K3 via OpenRouter)
 - `structured` - Structured building work: workflows, configs, schemas (DeepSeek V4 Flash via OpenRouter)
 
 ### Configuration
@@ -119,27 +118,27 @@ stick to the *model*, not the slot:
 
 **Semantics:**
 - Applied centrally in `resolve_llm_config_for_agent()` over the resolved
-  model config — for the **primary** models (chain position 0: default,
-  `use_advanced_model`, auto-escalation). The shared `llm_system.models`
+  model config — for every member of both chains (primary, `use_advanced_model`,
+  auto-escalation and the fallbacks). The shared `llm_system.models`
   entry is never mutated (a derived config is built per agent).
 - Keyed form resolves per profile as `merge("*", params[profile])` — the
   specific entry wins. Flat form behaves like a single `"*"` entry. The two
   forms are auto-detected (flat keys are `LLMModelConfig` field names);
   mixing them in one dict fails at config load.
-- Valid profile keys: `llm_profile[0]`, `llm_profile_advanced[0]`, `"*"`.
-  A key for a fallback entry (or a typo) would be a silent no-op and is
-  rejected at load.
+- Valid profile keys: every entry of `llm_profile` and `llm_profile_advanced`, `"*"`.
+  A key in neither chain (or a typo) would be a silent no-op and is
+  dropped at load with a warning.
 - **Type inheritance** (`type: <parent_server>`) deep-merges the parent's
   `agent_config` into the child, and `null` cannot clear inherited keys. Two
   traps fail loudly at load with a fix hint: parent *flat* + child *keyed*
   → mixed-form error (fix: express the parent's flat params as `"*"` — same
   semantics); parent *keyed to its primaries* + child overriding the chains
-  → stale profile-key error (fix: parent uses `"*"`, or move the keyed
+  → stale profile key, dropped with a warning (fix: parent uses `"*"`, or move the keyed
   params down into the child).
-- **Not** applied to fallback entries of the chains (fallbacks are often a
-  different provider and must run with their own robust tuning — e.g. Gemini
-  rejects `thinking_level: max`) and not to explicit `--llm-profile` request
-  overrides.
+- Also applied to fallback entries of the chains and to an explicit profile
+  switch (`--llm`, API `llm_profile`, the tool's `llm_profile`): flat and `"*"`
+  params reach every model, so key cross-provider values by profile (e.g. Gemini
+  rejects `thinking_level: max`).
 - Allowed keys inside a params dict: all `LLMModelConfig` fields **except**
   the identity fields `provider`, `model`, `api_key`, `base_url`,
   `batch_provider`, `ollama_mode`
@@ -223,7 +222,7 @@ llm_profile: "think"
 1. The `llm_profile` parameter is extracted from the tool call parameters
 2. Validated against `agent_config.available_llm_profiles` (agent-level validation)
 3. Validated against `system_config.llm_system.profiles` (system-level validation)
-4. A temporary `AgentConfig` is created with the requested profile
+4. `override_for_profile()` applies the agent's `llm_params` for the requested profile
 5. An LLM client override is created using `create_llm_from_profile()` (resolver + provider registry)
 6. The override is passed to `run_events()` via the `llm_override` parameter
 

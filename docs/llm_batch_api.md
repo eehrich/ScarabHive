@@ -2,7 +2,7 @@
 
 ## Overview
 
-AgentSystem supports batch processing for OpenAI and Gemini LLM APIs, providing:
+AgentSystem supports batch processing for OpenAI, Gemini and Anthropic LLM APIs, providing:
 - **50% cost reduction** compared to synchronous API calls
 - **Separate rate limits** from sync APIs
 - **Automatic request grouping** by model and provider
@@ -101,7 +101,7 @@ Models that use batch processing have `provider: batch` and specify which batch 
 | Option | Type | Description |
 |--------|------|-------------|
 | `provider` | str | Must be `"batch"` for batch models |
-| `batch_provider` | str | Which batch API: `"gemini"` or `"openai"` |
+| `batch_provider` | str | Which batch API: `"gemini"`, `"openai"`, `"openai_httpx"` or `"anthropic"` |
 | `model` | str | The underlying model name |
 | `api_key` | str | API key for the provider |
 
@@ -113,12 +113,12 @@ Central manager for batch request queuing and distribution.
 
 ```python
 from agent_system.llm.batch import BatchQueueManager
-from agent_system.config.models import BatchSystemConfig
+from agent_system.config.models import BatchSystemConfig, BatchProviderConfig
 
 # Initialize with global config
 batch_config = BatchSystemConfig(
     storage_path="data/batch_jobs",
-    providers=BatchProvidersConfig(...)
+    providers={"openai": BatchProviderConfig(...)},
 )
 manager = BatchQueueManager(batch_system_config=batch_config)
 
@@ -152,7 +152,7 @@ await manager.stop()
 Client for OpenAI Batch API operations.
 
 ```python
-from agent_system.llm.batch import OpenAIBatchClient
+from plugins.llm_openai_compat.openai_batch import OpenAIBatchClient
 
 client = OpenAIBatchClient(api_key="sk-...")
 
@@ -178,11 +178,10 @@ await client.close()
 Client for Gemini Batch API operations.
 
 ```python
-from agent_system.llm.batch import GeminiBatchClient
+from plugins.llm_gemini.gemini_batch import GeminiBatchClient
 
 client = GeminiBatchClient(
-    api_key="...",
-    use_sdk=True,  # Use Google GenAI SDK if available
+    api_key="...",  # requires the google-genai SDK
 )
 
 # Same API as OpenAIBatchClient
@@ -276,6 +275,7 @@ results = []
 for doc in documents:
     future = await manager.submit_request(
         model="gpt-4o-batch",
+        provider="openai",
         messages=[{"role": "user", "content": f"Analyze: {doc}"}],
     )
     results.append(future)
@@ -297,6 +297,7 @@ async def process_request(message, urgent=False):
         # Use batch API (50% cheaper)
         return await batch_manager.submit_request(
             model="gpt-4o-batch",
+            provider="openai",
             messages=[message],
         )
 ```
@@ -310,14 +311,15 @@ Batch processing for research pipelines:
 for query in research_queries:
     await manager.submit_request(
         model="gemini-flash-batch",
+        provider="gemini",
         messages=[{"role": "user", "content": query}],
         custom_id=f"research-{query.id}",
     )
 
 # Results distributed as they complete
 # Monitor via metrics
-while manager.get_metrics().pending_requests > 0:
-    print(f"Waiting: {manager.get_metrics().pending_requests}")
+while (m := manager.get_metrics()).total_requests > m.completed_requests + m.failed_requests:
+    print(f"Waiting: {m.total_requests - m.completed_requests - m.failed_requests}")
     await asyncio.sleep(60)
 ```
 
@@ -346,9 +348,8 @@ logging.getLogger("agent_system.llm.batch").setLevel(logging.DEBUG)
 
 Key log messages:
 - `BatchQueueManager initialized` - Manager started
-- `Batch job submitted to openai as batch_123` - Job submitted
-- `Batch job completed: 100 requests` - Job finished
-- `Batch job expired after 86400s` - Job timed out
+- `Batch job <job_id> submitted to openai as batch_123` - Job submitted
+- `Batch job <job_id> expired after 86400s` - Job timed out
 
 ## Error Handling
 
@@ -387,13 +388,19 @@ print(f"Cancelled {cancelled} batches")
 ```
 src/agent_system/llm/batch/
 ├── __init__.py         # Module exports
+├── base.py             # BatchProviderClient base class
 ├── models.py           # Data models (BatchRequest, BatchJob, etc.)
 ├── queue_manager.py    # Central queue manager
-├── openai_batch.py     # OpenAI Batch API client
-└── gemini_batch.py     # Gemini Batch API client
+├── batch_client.py     # BatchLLMClient wrapper
+├── initialization.py
+└── job_tracker.py
+
+src/plugins/llm_openai_compat/openai_batch.py   # OpenAI Batch API client
+src/plugins/llm_gemini/gemini_batch.py          # Gemini Batch API client
+src/plugins/llm_anthropic/anthropic_batch.py    # Anthropic Batch API client
 
 tests/llm/
-└── test_batch.py       # Unit tests (26 tests)
+└── test_batch.py       # Unit tests
 
 config/
 └── llm.yaml            # Batch configuration (per model)

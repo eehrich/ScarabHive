@@ -9,8 +9,8 @@ This gets ScarabHive running on one machine: the web UI at `http://127.0.0.1:800
 - **Python 3.11 or newer** (3.12 recommended; the Docker image uses it), and git. Check with
   `python --version` (`python3 --version` on Linux and macOS; on Windows `py --version` if
   `python` opens the Microsoft Store). On Debian/Ubuntu also `sudo apt-get install python3-venv`.
-- **A few GB of disk**: the dependencies include PyTorch. The first installation takes many
-  minutes.
+- **A few GB of disk**: the dependencies take about 1 GB, and on Linux without an NVIDIA GPU the
+  install script adds the CPU build of PyTorch. The first installation takes many minutes.
 - **Optional, for SVG layers in images:** the cairo library, pkg-config, a C compiler and
   Python's headers. Outside Windows, `pycairo` is built from source against them. You need not install them yourself: the
   install script does where it can, and without them everything but SVG layers works.

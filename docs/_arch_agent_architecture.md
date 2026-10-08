@@ -24,7 +24,6 @@ ToolServer (base protocol implementation)
    │
    └─ SchemaBasedAgent (adds schema.yaml loading)
       ├─ BasicAgent
-      ├─ WebResearchAgent
       └─ ... (custom intelligent agents)
 ```
 
@@ -104,7 +103,7 @@ class MyAgent(SchemaBasedAgent):
     
     # No need to override get_tools() - automatically loaded
     
-    async def handle_my_tool(self, arguments: dict) -> str:
+    async def my_tool(self, arguments: dict) -> str:
         """Handle tool defined in schema.yaml."""
         return f"Result: {arguments['input']}"
 ```
@@ -143,12 +142,12 @@ Both follow the same pattern but serve different purposes:
 ```python
 # SchemaBasedToolServer - Simple tool
 class DateTimeServer(SchemaBasedToolServer):
-    async def handle_get_current_time(self, arguments: dict) -> str:
+    async def get_current_time(self, arguments: dict) -> str:
         return datetime.now().isoformat()
 
 # SchemaBasedAgent - Intelligent agent
 class ResearchAgent(SchemaBasedAgent):
-    async def handle_research(self, arguments: dict) -> str:
+    async def research(self, arguments: dict) -> str:
         # Agent can use LLM, other tools, hooks, etc.
         context = await self.llm.analyze(arguments['topic'])
         return await self.synthesize_results(context)
@@ -184,9 +183,9 @@ class ResearchAgent(SchemaBasedAgent):
 
 ## Implementation Details
 
-### Schema Loading (SchemaBasedMixin)
+### Schema Loading (SchemaBasedToolMixin)
 
-Both `SchemaBasedToolServer` and `SchemaBasedAgent` inherit from `SchemaBasedMixin`, which provides common schema loading functionality:
+Both `SchemaBasedToolServer` and `SchemaBasedAgent` inherit from `SchemaBasedToolMixin` (built on `SchemaBaseMixin` in `src/agent_system/core/schema_base_mixin.py`), which provides common schema loading functionality:
 
 **Location:** `src/agent_system/tools/schema_mixin.py`
 
@@ -206,7 +205,7 @@ Both `SchemaBasedToolServer` and `SchemaBasedAgent` inherit from `SchemaBasedMix
 **Architecture:**
 ```python
 # Mixin provides shared functionality
-class SchemaBasedMixin:
+class SchemaBasedToolMixin(SchemaBaseMixin):
     def _init_schema_mixin()        # Initialize caches
     def _get_plugin_directory()      # Robust directory resolution
     def get_template_vars()          # Template variables (overridable)
@@ -218,10 +217,10 @@ class SchemaBasedMixin:
     async def call(tool, params)     # Generic dispatcher
 
 # Used by both:
-class SchemaBasedToolServer(ToolServer, SchemaBasedMixin):
+class SchemaBasedToolServer(SchemaBasedToolMixin, ToolServer):
     pass  # Direct tool name → method mapping
 
-class SchemaBasedAgent(Agent, SchemaBasedMixin):
+class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
     def _get_method_name(tool_name):
         # Strip agent name prefix: "basic_agent_execute_task" → "execute_task"
         return tool_name.removeprefix(f"{self.name}_")
@@ -229,7 +228,7 @@ class SchemaBasedAgent(Agent, SchemaBasedMixin):
 
 ### Automatic Method Routing
 
-The `SchemaBasedMixin.call()` dispatcher automatically routes tool calls to methods:
+The `SchemaBasedToolMixin.call()` dispatcher automatically routes tool calls to methods:
 
 **For SchemaBasedToolServer:**
 - Tool: `"search_tweets"` → Method: `search_tweets(params)`
@@ -246,7 +245,7 @@ tools:
   - name: "{{name}}_execute_task"
     # ...
 
-# Plugin implements method (no "handle_" prefix needed with SchemaBasedMixin)
+# Plugin implements method (no "handle_" prefix needed with SchemaBasedToolMixin)
 class BasicAgent(SchemaBasedAgent):
     async def execute_task(self, params: dict) -> dict:
         # Automatically called when tool is invoked
@@ -265,7 +264,7 @@ async def call(self, tool: str, params: dict):
         raise ValueError(f"Unknown tool: {tool}")
 
 # ✅ NEW WAY (automatic routing - 0 boilerplate)
-# Just implement the method - SchemaBasedMixin.call() handles routing
+# Just implement the method - SchemaBasedToolMixin.call() handles routing
 async def execute_task(self, params: dict):
     return {"status": "success"}
 ```
@@ -332,17 +331,15 @@ class MyAgent(Agent):
 
 Both agent types use the same plugin configuration:
 
-**`plugin.yaml`:**
-```yaml
-name: my_agent
-version: "1.0.0"
-description: "My custom agent"
-plugin_type: basic_agent  # or web_research_agent
-author: "Your Name"
-server_config:
-  # Agent-specific configuration
-  model: "gpt-4"
-  max_tokens: 2000
+**`plugin.toml`:**
+```toml
+[plugin]
+name = "my_agent"
+version = "1.0.0"
+description = "My custom agent"
+author = "Your Name"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server"]
 ```
 
 **Plugin configuration in `plugins:` section:**
@@ -352,9 +349,8 @@ plugins:
     research_agent_1:
       type: my_agent
       enabled: true
-      config:
-        model: "gpt-4"
-        max_tokens: 2000
+      model: "gpt-4"
+      max_tokens: 2000
 ```
 
 ## Testing
@@ -371,12 +367,12 @@ from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 def agent(mock_system_config: AgentSystemConfig):
     """Create agent instance for testing."""
     server_config = ToolServerConfig(
-        plugin_name="my_agent",
-        instance_name="test_agent",
+        type="my_agent",
         enabled=True,
         config={}
     )
     agent = MyAgent(
+        name="test_agent",
         system_config=mock_system_config,
         server_config=server_config,
         registry=None
@@ -492,10 +488,10 @@ def test_agent_full_workflow(agent: MyAgent):
     assert len(tools) > 0
     
     # 2. Verify handler exists
-    assert hasattr(agent, "handle_my_tool")
+    assert hasattr(agent, "my_tool")
     
     # 3. Test execution
-    result = await agent.handle_my_tool({"input": "test"})
+    result = await agent.my_tool({"input": "test"})
     assert result is not None
 ```
 
@@ -514,7 +510,7 @@ def test_agent_full_workflow(agent: MyAgent):
    src/plugins/my_agent/
    ├── server.py
    ├── schema.yaml  ← Must exist
-   └── plugin.yaml
+   └── plugin.toml
    ```
 
 ### Template Variables Not Replaced
@@ -531,8 +527,8 @@ def test_agent_full_workflow(agent: MyAgent):
 **Problem:** LLM claims tool doesn't exist, but `get_tools()` returns it
 
 **Solutions:**
-1. Verify tool handler method exists: `handle_{tool_name}()`
-2. Check method signature: `async def handle_tool(self, arguments: dict) -> str`
+1. Verify tool handler method exists: the tool name without the `{name}_` prefix (`_get_method_name()`)
+2. Check method signature: `async def my_tool(self, arguments: dict) -> str`
 3. Verify tool name matches exactly (case-sensitive)
 4. Check agent is registered in plugin system
 
@@ -722,15 +718,15 @@ src/agent_system/servers/agent/
 **Manages:**
 - `_sessions: Dict[str, List[ChatMessage]]` - Session message history
 - `_request_to_session: Dict[str, str]` - Request-to-session mapping
-- `_appended_messages: Dict[str, List[str]]` - Pending message queue
+- `_active_requests[request_id]["appended"]` - Pending message queue
 
 #### 2. AgentRequestManager (`request_manager.py`)
 **Purpose:** Manages active request lifecycle and cancellation
 
 **Key Methods:**
-- `cancel_request(request_id, status_bus)` - Cancel active request
+- `cancel_request(request_id)` - Cancel active request
 - `is_cancelled(request_id)` - Check cancellation status
-- `register_active_request(request_id, session_id)` - Register new request
+- `register_active_request(request_id, request_entry)` - Register new request
 - `unregister_active_request(request_id)` - Clean up completed request
 - `get_active_requests()` - List active request IDs
 - `get_request_entry(request_id)` - Get request metadata
@@ -744,10 +740,8 @@ Both components share the same `_active_requests` dictionary reference for consi
 
 ```python
 # In Agent.__init__:
-self._request_manager = AgentRequestManager(name=self.name)
-self._session_tracker = SessionTracker(
-    shared_active_requests=self._request_manager._active_requests
-)
+self._request_manager = AgentRequestManager(self.name)
+self._session_tracker = SessionTracker(self._request_manager._active_requests)
 ```
 
 This enables:
@@ -778,7 +772,7 @@ async with agent._request_lock:
     agent._active_requests[request_id]["cancel"].set()
 
 # NEW (component API):
-await agent._request_manager.cancel_request(request_id, status_bus)
+await agent._request_manager.cancel_request(request_id)
 if agent._request_manager.is_cancelled(request_id):
     # Handle cancellation
 ```

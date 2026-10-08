@@ -91,7 +91,7 @@ yield {"type": "final", **final_result}
 
 ### HTTPX Client
 
-#### Non-Streaming (`_make_request`)
+#### Non-Streaming (`_make_request_non_streaming`)
 ```python
 # Extract usage from response data
 usage = response_data.get("usage", {})
@@ -281,10 +281,10 @@ Agent.run_events()
   ├─ Accumulate usage from all LLM calls
   └─ Track in context manager
   ↓
-ContextUsageTracker
+UsageTracker (plugin context_usage_tracker)
   ├─ Sum prompt_tokens, completion_tokens
   ├─ Calculate total_tokens
-  └─ Store in data/context_usage_tracker.json
+  └─ Store in data/context_usage_tracker/usage.db (SQLite)
   ↓
 API Response
   └─ Include usage in metadata
@@ -368,7 +368,7 @@ opts = {
 3. Caching affecting token counts
 
 **Fix**:
-- Use `ContextUsageTracker` to accumulate across calls
+- Use the `context_usage_tracker` plugin (`UsageTracker`) to accumulate across calls
 - Ensure sub-agent usage is propagated upward
 - Consider cached responses may have zero prompt tokens
 

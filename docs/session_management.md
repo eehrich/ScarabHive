@@ -243,8 +243,7 @@ await manager.rename_session("username", session_id, "New Title")
 await manager.update_session_metadata(
     "username",
     session_id,
-    tags=["important"],
-    custom_field="value"
+    {"tags": ["important"], "custom_field": "value"}
 )
 ```
 
@@ -330,30 +329,19 @@ processes.
 
 ## Migration
 
-For migrating old session data:
-
-```bash
-# Dry run (show what would be migrated)
-python -m scripts.migrate_sessions --dry-run
-
-# Actual migration
-python -m scripts.migrate_sessions
-
-# Create sample sessions for testing
-python -m scripts.migrate_sessions --create-samples 5
-```
+There is no migration script for old session data (`scripts/migrate_sessions` does not exist).
 
 ## Testing
 
 ```bash
 # Unit tests (SessionManager CRUD)
-pytest tests/test_session_manager_crud.py -v
+pytest tests/session/test_session_manager_crud.py -v
 
 # Integration tests (end-to-end scenarios)
-pytest tests/test_session_integration.py -v
+pytest tests/session/test_session_integration.py -v
 
 # All session tests
-pytest tests/test_session*.py -v
+pytest tests/session/ -v
 ```
 
 ## Configuration
@@ -381,7 +369,7 @@ All exceptions include descriptive messages for debugging.
 1. **Always use user_id from authenticated user** - Never trust client-provided user_id
 2. **Call save_session after modifying messages** - Changes aren't persisted automatically
 3. **Handle exceptions appropriately** - Don't expose internal errors to end users
-4. **Use session titles wisely** - First 100 chars of task used as default
+4. **Use session titles wisely** - First 50 chars of the first user message used as default
 5. **Clean up old sessions periodically** - Implement retention policy if needed
 
 ## Limitations

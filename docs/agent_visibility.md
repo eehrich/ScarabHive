@@ -203,7 +203,7 @@ agent._tool_visible: bool   # Available in tool discovery
 When an agent queries `list_usable_tools()`, the registry is filtered:
 
 ```python
-# In Agent.list_usable_tools()
+# In ToolDiscovery._get_registry_tools() (servers/agent/tool_discovery.py), used by Agent.list_usable_tools()
 for tool_name in self.registry.list():
     server = self.registry.get(tool_name)
     if hasattr(server, '_tool_visible'):
