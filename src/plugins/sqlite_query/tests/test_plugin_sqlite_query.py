@@ -327,12 +327,16 @@ class TestCommandLine:
 
     def test_the_installed_entry_point_resolves(self):
         import importlib
-        import tomllib
+        import warnings
 
+        from setuptools.config.pyprojecttoml import read_configuration
+
+        # the commands are in console_scripts.cfg (dynamic in pyproject.toml): read as pip's build reads them
         repo = Path(__file__).resolve().parents[4]
-        target = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))[
-            "project"]["scripts"]["tool-sqlite-query"]
-        module, func = target.split(":")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            scripts = read_configuration(repo / "pyproject.toml", expand=True)["project"]["scripts"]
+        module, func = scripts["tool-sqlite-query"].split(":")
 
         assert callable(getattr(importlib.import_module(module), func))
 

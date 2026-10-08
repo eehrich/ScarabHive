@@ -297,7 +297,9 @@ class AudioOpsServer(SchemaBasedToolServer):
                 elif i < len(storage_parts):
                     break
             
-            if overlap_len > 0:
+            # The root alone is no overlap: every absolute path on the storage's drive shares it, and
+            # /etc/passwd read as <storage>/etc/passwd instead of being refused.
+            if overlap_len > (1 if filename_path.anchor else 0):
                 # Strip the overlapping storage path parts
                 filename = str(Path(*filename_parts[overlap_len:]))
         

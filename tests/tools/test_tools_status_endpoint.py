@@ -6,9 +6,7 @@ from unittest.mock import Mock, AsyncMock, patch
 
 from agent_system.app import build_app
 from agent_system.auth.security import create_access_token
-
-# Use the secret key from config/config.yaml to match what build_app() loads
-_CONFIG_SECRET_KEY = "published-signing-key-replace-with-your-own-0000000000"
+from live_accounts import signing_key
 
 
 class TestMCPStatusEndpoint:
@@ -34,7 +32,7 @@ class TestMCPStatusEndpoint:
         """
         token = create_access_token(
             data={"sub": admin.username, "user_id": admin.id, "role": "admin"},
-            secret_key=_CONFIG_SECRET_KEY
+            secret_key=signing_key()
         )
         return {"Authorization": f"Bearer {token}"}
 

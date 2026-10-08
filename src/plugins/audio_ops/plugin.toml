@@ -11,4 +11,5 @@ entrypoint = "server:PLUGIN_FACTORY"
 type = ["tool-server"]
 category = "media"
 requires = { agent_system = ">=0.6.0" }
-dependencies = ["numpy>=1.26", "pydub>=0.25.0"]
+# pydub imports audioop, gone from Python 3.13 on (PEP 594): audioop-lts is the backport.
+dependencies = ["numpy>=1.26", "pydub>=0.25.0", 'audioop-lts>=0.2.1; python_version >= "3.13"']

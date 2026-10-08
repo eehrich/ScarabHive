@@ -167,12 +167,14 @@ def recorder(root_conftest, monkeypatch):
 
 
 def pretend_setuid(monkeypatch, pid):
-    """The process runs with this user's real uid and root's effective and saved one, as login does."""
+    """The process runs with this user's real uid and root's effective and saved one, as login does. A run as root
+    pretends another user's (nobody's): root's own would change nothing, and the helper is this user's for real."""
     original = psutil.Process.uids
+    other = 0 if os.getuid() else 65534
 
     def uids(self):
         ids = original(self)
-        return ids._replace(effective=0, saved=0) if self.pid == pid else ids
+        return ids._replace(effective=other, saved=other) if self.pid == pid else ids
 
     monkeypatch.setattr(psutil.Process, "uids", uids)
 

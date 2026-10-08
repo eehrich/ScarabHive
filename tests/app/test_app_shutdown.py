@@ -84,12 +84,22 @@ def _accepted_by(server: subprocess.Popen, client: socket.socket) -> bool:
 
 
 def _config_key_names() -> set[str]:
-    """The ${VAR} names config/*.yaml expands -- the provider keys among them."""
+    """The ${VAR} names config/*.yaml expands -- the provider keys among them, not the signing key."""
     names = set()
     for path in (REPO_ROOT / "config").rglob("*.yaml"):
         names.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)",
                                 path.read_text(encoding="utf-8", errors="replace")))
-    return {name for name in names if name.endswith(("_KEY", "_TOKEN", "_SECRET"))}
+    return {name for name in names if name.endswith(("_KEY", "_TOKEN", "_SECRET"))} - {_signing_key_name()}
+
+
+def _signing_key_name() -> str | None:
+    """The variable auth.secret_key expands, where it names one: an installation's own key, as install.sh writes it
+    into config/local.yaml ("${AUTH_SECRET_KEY}"). Set empty, it is an empty key, and the API refuses to start."""
+    from agent_system.config.settings import master_section
+
+    key = (master_section(REPO_ROOT / "config" / "config.yaml", "auth") or {}).get("secret_key")
+    match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", str(key or ""))
+    return match.group(1) if match else None
 
 
 def _server_env(port: int, workdir: Path) -> dict[str, str]:

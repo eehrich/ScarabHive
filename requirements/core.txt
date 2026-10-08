@@ -48,6 +48,8 @@ sqlite-vec>=0.1.0
 onnxruntime>=1.20.0
 psutil>=5.9.0
 pydub>=0.25.0
+# ...which imports audioop, gone from Python 3.13 on (PEP 594): the backport, or pydub does not import.
+audioop-lts>=0.2.1; python_version >= "3.13"
 json-repair>=0.57.0
 # agent_system/llm/structured_output.py: an agent's final answer is checked
 # against the caller's JSON schema (structured output, F11).

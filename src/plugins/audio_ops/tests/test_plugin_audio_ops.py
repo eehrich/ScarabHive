@@ -24,11 +24,14 @@ if TYPE_CHECKING:
 # Suppress audioop deprecation warning for pydub (Python 3.12+)
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="pydub")
 
-# Check if pydub is available
+# Check if pydub is available. Only pydub's own absence skips: an installed pydub that does not import (audioop on
+# Python 3.13+ without audioop-lts) is a broken installation, and skipped it looked like a missing optional package.
 try:
     from pydub import AudioSegment
     HAS_PYDUB = True
-except ImportError:
+except ModuleNotFoundError as missing:
+    if missing.name != "pydub":
+        raise
     HAS_PYDUB = False
     AudioSegment = None
 
@@ -130,6 +133,23 @@ class TestPathValidation:
         
         assert result["status"] == "error"
         assert result["error_type"] == "SecurityError"
+
+    @pytest.mark.asyncio
+    async def test_an_absolute_path_sharing_only_the_storage_root_is_rejected(
+        self, server: "AudioOpsServer", mock_status: MagicMock, temp_storage: Path
+    ) -> None:
+        """The overlap with the storage path that gets stripped is never the file system root alone: every
+        absolute path shares that one, and /srv/x.wav (C:\\srv\\x.wav) read as <storage>/srv/x.wav."""
+        outside = Path(temp_storage.anchor) / "srv" / "x.wav"
+        (temp_storage / "srv").mkdir()
+        AudioSegment.silent(duration=100).export(str(temp_storage / "srv" / "x.wav"), format="wav")  # found re-rooted
+        result = await server.info({
+            "file": str(outside),
+            "_status": mock_status,
+        })
+
+        assert result["status"] == "error"
+        assert result["error_type"] == "SecurityError", result
     
     @pytest.mark.asyncio
     async def test_missing_file(

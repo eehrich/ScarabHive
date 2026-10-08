@@ -828,7 +828,7 @@ async def test_an_export_that_wrote_a_file_but_did_not_finish_is_not_a_success(s
     assert "timed out" in line
 
 
-@pytest.mark.parametrize("escape", ["../x.exe", "../../x.exe", "a/../../x.exe"])
+@pytest.mark.parametrize("escape", ["../x.exe", "../../x.exe", "a/../../x.exe", "C:/x.exe"])
 async def test_export_cannot_write_outside_the_output_directory(server, project, escape):
     result, _ = await run_tool(server, "godot_export", {"project": "shmup", "preset": "P", "filename": escape})
     assert result["status"] == "error" and "outside the output directory" in result["error"]

@@ -25,12 +25,10 @@ import pytest
 
 from agent_system.auth.security import create_access_token
 from agent_system.servers.agent.server import Agent
-from live_accounts import token_generation
+from live_accounts import signing_key, token_generation
 from agent_system.services.background_job_manager import get_background_job_manager
 
 pytestmark = pytest.mark.anyio
-
-DEV_SECRET = "published-signing-key-replace-with-your-own-0000000000"
 
 
 def _account(role_clause):
@@ -48,7 +46,7 @@ def _account(role_clause):
 def _headers(row):
     return {"Authorization": "Bearer " + create_access_token(
         {"sub": row[1], "user_id": row[0], "role": row[2], "gen": token_generation(row[0])},
-        secret_key=DEV_SECRET, algorithm="HS256")}
+        secret_key=signing_key(), algorithm="HS256")}
 
 
 @pytest.fixture

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import ntpath
 import os
 import re
 from pathlib import Path
@@ -1458,14 +1459,18 @@ class ComfyUIServer(SchemaBasedToolServer):
 
     @staticmethod
     def _lexically_inside(path: str, roots: list[Path]) -> bool:
-        """Is ``path`` inside one of ``roots``, judged on the text alone? Nothing here touches the file system."""
+        """Is ``path`` inside one of ``roots``, judged on the text alone? Nothing here touches the file system.
+
+        What follows the root is judged as Windows reads it on every system: a drive or a share there
+        (``C:/x.png``, ``\\\\host\\share\\x.png``) is outside, also on Linux and macOS, where the same text names a
+        folder ``C:`` or a file with backslashes in its name below the root."""
         try:
             target = os.path.normcase(os.path.abspath(path))
             for root in roots:
                 base = os.path.normcase(os.path.abspath(root))
                 try:
                     if os.path.commonpath([target, base]) == base:
-                        return True
+                        return not ntpath.splitdrive(os.path.relpath(target, base))[0]
                 except ValueError:  # another drive, or a UNC root against a drive
                     continue
         except (ValueError, TypeError):  # an embedded NUL

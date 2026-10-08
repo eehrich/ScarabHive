@@ -132,6 +132,11 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 "Local files are disabled: local_root is not set. The operator "
                 "must set local_root in the ssh_control configuration.")
         relative = Path(local_path)
+        # A drive or share (C:/..., \\host\share) is absolute wherever it is written: on POSIX it read as a file
+        # below local_root, and \\host\share was resolved there.
+        if PureWindowsPath(local_path).drive and not relative.is_absolute():
+            raise PermissionError(f"Path is outside the allowed directories: {local_path}. "
+                                  f"Allowed: {self._local_files.describe_roots()}")
         if not relative.is_absolute() and not relative.drive:
             # Joined here: the sandbox sends a relative data/... to the data directory.
             local_path = str(self._local_root / relative)

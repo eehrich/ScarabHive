@@ -431,10 +431,13 @@ async def test_a_question_that_cannot_be_put_leaves_the_caller_waiting_on(monkey
 
 
 def test_words_nested_deeper_than_the_parser_goes_are_sent_as_words():
-    """A written answer is JSON when it reads as JSON: brackets nested past the parser's depth are text, not a 500."""
+    """A written answer is JSON when it reads as JSON: brackets nested past the parser's depth are text, not a 500.
+
+    How deep the parser goes depends on the thread's stack: 5000 levels passed it on Windows (1 MB), but parsed on
+    Linux (8 MB: past 5000 on Python 3.13, past 50 000 on 3.14). A million is past it on both."""
     from plugins.stategraph.wait_questions import data_of
 
-    deep = "[" * 5000 + "]" * 5000
+    deep = "[" * 1_000_000 + "]" * 1_000_000
 
     assert data_of(deep) == deep
     assert data_of(' {"a": [1]} ') == {"a": [1]} and data_of("  ") is None
