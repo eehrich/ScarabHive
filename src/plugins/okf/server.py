@@ -21,7 +21,7 @@ import os
 import re
 import threading
 from collections import Counter
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from filelock import FileLock, Timeout
@@ -45,6 +45,12 @@ _WORD_RE = re.compile(r"\w+")
 
 def _tokens(text: str) -> List[str]:
     return [t.lower() for t in _WORD_RE.findall(text or "")]
+
+
+def _drive_or_share(path: str) -> bool:
+    """A drive or share (C:/..., \\\\server\\share) is absolute wherever it is written. remote_outside joins it onto
+    the bundle by the host's rules, and on POSIX both read as a folder below the bundle."""
+    return bool(PureWindowsPath(path).drive) and not Path(path).is_absolute()
 
 
 class _NullStatus:
@@ -301,7 +307,7 @@ class OkfServer(SchemaBasedToolServer):
         rel = (rel_path or "").lstrip("/")
         if not rel:
             raise ValueError("missing concept 'path'")
-        if remote_outside(rel, bundle_root, (bundle_root,)):
+        if remote_outside(rel, bundle_root, (bundle_root,)) or _drive_or_share(rel):
             raise ValueError(f"concept path '{rel_path}' escapes the bundle")
         p = (bundle_root / rel).resolve()
         if p != bundle_root and bundle_root not in p.parents:
@@ -313,7 +319,7 @@ class OkfServer(SchemaBasedToolServer):
         """A bundle subdirectory, or None when it leads out of the bundle."""
         if not subdir:
             return bundle_root
-        if remote_outside(subdir, bundle_root, (bundle_root,)):
+        if remote_outside(subdir, bundle_root, (bundle_root,)) or _drive_or_share(subdir):
             return None
         p = (bundle_root / subdir).resolve()
         return p if p == bundle_root or bundle_root in p.parents else None
