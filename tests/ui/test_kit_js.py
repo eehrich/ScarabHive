@@ -15,7 +15,11 @@ pytestmark = pytest.mark.skipif(BROWSER is None, reason="no Chromium-based brows
 
 @pytest.fixture(scope="module")
 def results():
-    return run_test_page(BROWSER, "tests/ui/kit_js_tests.html")
+    # The localTime check needs a zone with an offset -- in UTC a stored time read as local time would pass -- and
+    # Linux machines and CI runners often run in UTC. Chromium takes its zone from TZ.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("TZ", "Europe/Berlin")
+        return run_test_page(BROWSER, "tests/ui/kit_js_tests.html")
 
 
 EXPECTED = [
