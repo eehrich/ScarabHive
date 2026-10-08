@@ -12,9 +12,9 @@ The plugin caching system provides file-based storage for plugin operations to a
 
 Located in `src/agent_system/plugins/cache.py`, this class provides:
 
-- **File-based storage**: Cache files stored in `.cache/{plugin_name}/` directories
+- **File-based storage**: Cache files stored in `data/cache/{plugin_name}/` directories
 - **TTL support**: Automatic expiration based on configurable time-to-live values
-- **Atomic operations**: Safe concurrent access with file locking
+- **Atomic operations**: Safe concurrent access with atomic temp-file writes
 - **Automatic cleanup**: Expired cache entries are removed automatically
 - **Statistics**: Cache hit/miss tracking and storage information
 
@@ -22,13 +22,13 @@ Located in `src/agent_system/plugins/cache.py`, this class provides:
 
 #### Web Scraper Plugin (`web_scraper`)
 - **Default TTL**: 30 minutes (1800 seconds)
-- **Cache Key**: Based on URL, operation type, and extraction options
-- **Cache Location**: `.cache/web_scraper/`
+- **Cache Key**: Based on normalized URL and session
+- **Cache Location**: `data/cache/web_scraper/`
 
 #### DuckDuckGo Search Plugin (`duckduckgo_search`)
 - **Default TTL**: 15 minutes (900 seconds)
 - **Cache Key**: Based on search query and max_results
-- **Cache Location**: `.cache/duckduckgo_search/`
+- **Cache Location**: `data/cache/duckduckgo_search/`
 
 ### Runtime Cache Control
 
@@ -65,18 +65,18 @@ Both plugins support runtime cache control parameters for fine-grained caching b
 #### Web Scraper with Cache Control
 ```python
 # Use cache (default behavior)
-result = await web_scraper.call("scrape_webpage", {
+result = await web_scraper.call("web_scraper_page", {
     "url": "https://example.com"
 })
 
 # Bypass cache for fresh data
-result = await web_scraper.call("scrape_webpage", {
+result = await web_scraper.call("web_scraper_page", {
     "url": "https://example.com",
     "ignore_cache": True
 })
 
 # Cache for 1 hour (3600 seconds)
-result = await web_scraper.call("scrape_webpage", {
+result = await web_scraper.call("web_scraper_page", {
     "url": "https://example.com",
     "cache_ttl": 3600
 })
@@ -85,18 +85,18 @@ result = await web_scraper.call("scrape_webpage", {
 #### DuckDuckGo Search with Cache Control
 ```python
 # Use cache (default behavior)
-result = await search.call("web_search", {
+result = await search.call("duckduckgo_search_web_search", {
     "query": "python programming"
 })
 
 # Bypass cache for latest results
-result = await search.call("web_search", {
+result = await search.call("duckduckgo_search_web_search", {
     "query": "python programming",
     "ignore_cache": True
 })
 
 # Cache for 10 minutes (600 seconds)
-result = await search.call("web_search", {
+result = await search.call("duckduckgo_search_web_search", {
     "query": "python programming",
     "cache_ttl": 600
 })
@@ -116,7 +116,7 @@ python -m agent_system.plugins.cache_manager info
 python -m agent_system.plugins.cache_manager clean
 
 # Clear all cache data
-python -m agent_system.plugins.cache_manager clear
+python -m agent_system.plugins.cache_manager clear --all
 
 # Clear specific plugin cache
 python -m agent_system.plugins.cache_manager clear --plugin web_scraper
@@ -137,7 +137,7 @@ await cache.delete("key")
 await cache.clear()
 
 # Get cache statistics
-info = await cache.info()
+info = cache.get_cache_info()
 print(f"Cache size: {info['total_files']} files, {info['total_size_mb']:.2f} MB")
 ```
 
@@ -148,21 +148,21 @@ print(f"Cache size: {info['total_files']} files, {info['total_size_mb']:.2f} MB"
 Cache behavior can be configured per plugin:
 
 ```yaml
-# config/agent.yaml
+# config/plugins.yaml
 plugins:
-  web_scraper:
-    cache_enabled: true
-    cache_ttl: 1800  # 30 minutes
+  servers:
+    web_scraper:
+      cache_enabled: true
+      cache_ttl: 1800  # 30 minutes
 
-  duckduckgo_search:
-    cache_enabled: true
-    cache_ttl: 900   # 15 minutes
+    duckduckgo_search:
+      cache_enabled: true
+      cache_ttl: 900   # 15 minutes
 ```
 
 #### Environment Variables
 
-- `AGENT_CACHE_DISABLED`: Set to "1" to disable all caching
-- `AGENT_CACHE_DIR`: Override default cache directory location
+- None: the plugin cache reads no environment variables (root is `data/cache`)
 
 ### Performance Benefits
 
@@ -207,19 +207,15 @@ The caching system is designed to be resilient:
 
 ##### Web Scraper
 ```python
-def _create_cache_key(self, url: str, operation: str = "content", **params) -> str:
-    # Normalize URL and combine with operation and parameters
-    cache_data = {
-        "url": normalize_url(url),
-        "operation": operation,
-        **{k: v for k, v in params.items() if k not in ['_status']}
-    }
-    return json.dumps(cache_data, sort_keys=True, separators=(',', ':'))
+def _create_cache_key(url: str, session_id: str | None = None) -> str:
+    # Normalize URL (sorted query, no fragment), keyed per session
+    return json.dumps({"session": session_id or "_shared", "url": normalized},
+                      sort_keys=True, separators=(",", ":"))
 ```
 
 ##### DuckDuckGo Search
 ```python
-def _create_cache_key(self, query: str, max_results: int) -> str:
+def _cache_key(query: str, max_results: int) -> str:
     # Normalize query and combine with parameters
     cache_data = {
         "query": query.strip().lower(),
@@ -285,10 +281,11 @@ tool caching is configured in `config/mcp_servers.yaml`:
 #### config/mcp_servers.yaml
 
 ```yaml
-cache:
-  enabled: true         # Enable tool list caching
-  tool_list_ttl: 30.0  # Cache TTL in seconds (30 seconds default)
-  max_size: 1000       # Maximum cache entries (None = unlimited)
+external_servers:
+  cache:
+    enabled: true         # Enable tool list caching
+    tool_list_ttl: 30.0  # Cache TTL in seconds (30 seconds default)
+    max_size: 1000       # Maximum cache entries (None = unlimited)
 ```
 
 #### Configuration Options
@@ -337,7 +334,7 @@ Returns:
 
 #### API Endpoint
 
-Cache statistics are exposed via the API (see Task 9166 for implementation).
+Cache statistics are exposed via the API: `GET /tools/cache/statistics` (invalidate: `POST /tools/cache/invalidate`).
 
 #### Logging
 
