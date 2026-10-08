@@ -226,17 +226,19 @@ class ToolServerIntegration:
     def external_provider(self):
         """The plugin currently federating external tools, if any"""
 
-    async def retry_connect_server(self, name: str) -> bool:
+    async def retry_connect_server(self, server_name: str) -> bool:
         """Ask that plugin to connect one configured server"""
     
-    async def get_all_tools(self) -> List[ToolInfo]:
+    async def list_all_tools(self) -> Dict[str, Dict[str, List[Any]]]:
         """Get aggregated tool list from all sources"""
     
     async def call_tool(
         self,
+        server_name: str,
         tool_name: str,
-        arguments: dict
-    ) -> dict:
+        arguments: dict,
+        server_type: str = "auto"
+    ) -> Any:
         """Execute tool (routes to correct server)"""
 ```
 
@@ -272,7 +274,7 @@ class ExternalServerPool:
     async def list_tools_by_server(self, *, force_refresh: bool = False) -> dict:
         """{server: [{name, description, input_schema, blocked}]}"""
 
-    async def call_tool(self, server: str, tool: str, arguments: dict) -> Any: ...
+    async def call_tool(self, server_name: str, tool_name: str, arguments: dict) -> Any: ...
 ```
 
 One `ServerConnection` (`connection.py`) owns each session inside a single
@@ -284,29 +286,21 @@ by the task that entered them. See the plugin's README for that reasoning.
 **File:** `src/agent_system/tools/tool_cache.py`
 
 **Responsibilities:**
-- Cache tool lists from external servers
-- TTL-based invalidation
+- Cache the aggregated tool list (`ToolServerIntegration.list_all_tools()`)
+- Config-hash-based invalidation (no TTL)
 - Memory management (max size)
 
 **Key Methods:**
 ```python
 class ToolCache:
-    def get(self, server_name: str) -> Optional[List[ToolInfo]]:
-        """Get cached tool list"""
+    async def get(self, key: str, config_hash: str) -> Optional[Any]:
+        """Get cached value (None if the config hash changed)"""
     
-    def set(
-        self,
-        server_name: str,
-        tools: List[ToolInfo],
-        ttl: float = 3600.0
-    ):
-        """Cache tool list with TTL"""
+    async def set(self, key: str, value: Any, config_hash: str) -> None:
+        """Cache value under the current config hash"""
     
-    def invalidate(self, server_name: str):
-        """Invalidate cache for server"""
-    
-    def clear(self):
-        """Clear entire cache"""
+    async def invalidate(self, key: Optional[str] = None) -> None:
+        """Invalidate one key, or the entire cache"""
 ```
 
 ## 5. Connection Management
@@ -342,7 +336,9 @@ All Servers Connected (best effort)
 
 ### 5.2 Health Monitoring
 
-**Periodic Health Checks:**
+**Periodic Health Checks:** not implemented -- there is no health-check loop. A
+connection found dead is restarted on its next use (`ExternalServerPool._restart`).
+A loop would look like this:
 ```python
 async def health_check_loop():
     """Periodic health checks for connected servers"""
@@ -373,24 +369,26 @@ external_servers:
 **Implementation** (`src/plugins/mcp_client/manager.py`):
 ```python
 async def connect_all(self) -> Dict[str, Optional[str]]:
-    """Connect every enabled server; returns name -> error (None if fine).
+    """Connect every enabled startup server. Returns name -> error (None if fine).
 
     One unreachable server must not stop the others, and it must not stop
     startup either -- the result is reported, not raised.
     """
+    lazy = set(self.on_demand_servers())
+    names = [name for name in self.configured_servers if name not in lazy]
+    outcomes = await asyncio.gather(*(self.connect(name) for name in names), return_exceptions=True)
     results = {}
-    for name in list(self.configured_servers):
-        try:
-            await self.connect(name)
+    for name, outcome in zip(names, outcomes):
+        if isinstance(outcome, Exception):
+            results[name] = str(outcome)
+            logger.warning("Could not connect external MCP server '%s': %s", name, outcome)
+        else:
             results[name] = None
-        except Exception as e:
-            results[name] = str(e)
-            logger.warning("Could not connect external MCP server '%s': %s", name, e)
     return results
 ```
 
 Note: `parallel_connect` is configured and modelled but has never been read --
-connecting is sequential, here as it was before.
+connecting is always concurrent (`asyncio.gather`).
 
 ---
 
@@ -400,7 +398,7 @@ connecting is sequential, here as it was before.
 
 **Aggregated Tool List:**
 ```python
-async def get_all_tools(self) -> List[ToolInfo]:
+async def list_all_tools(self) -> Dict[str, Dict[str, List[Any]]]:
     """Get tools from all sources"""
     
     all_tools = []
@@ -426,26 +424,16 @@ async def get_all_tools(self) -> List[ToolInfo]:
 
 **Determine Tool Source:**
 ```python
-async def call_tool(self, tool_name: str, arguments: dict) -> dict:
-    """Route tool call to correct source"""
+async def call_tool(self, server_name: str, tool_name: str, arguments: dict, server_type: str = "auto") -> Any:
+    """Route tool call to correct source (by server name)"""
     
-    # Check internal plugins first
-    for plugin_name in plugin_registry.list_servers():
-        plugin_tools = await plugin_registry.get_server(plugin_name).list_tools()
-        if any(t["name"] == tool_name for t in plugin_tools):
-            return await plugin_registry.get_server(plugin_name).call_tool(
-                tool_name, arguments
-            )
+    # Plugin first, then external
+    if server_name in self.plugin_registry.list_servers():
+        return await self.plugin_registry.call_plugin_tool(server_name, tool_name, arguments)
+    if server_name in self.list_external_clients():
+        return await self.external_provider.call_external_tool(server_name, tool_name, arguments)
     
-    # Check external MCP servers
-    for server_name in client_manager.list_servers():
-        server_tools = await client_manager.list_tools(server_name)
-        if any(t["name"] == tool_name for t in server_tools):
-            return await client_manager.call_tool(
-                server_name, tool_name, arguments
-            )
-    
-    raise ToolNotFoundError(f"Tool '{tool_name}' not found")
+    raise Exception(f"Unknown server: {server_name}")
 ```
 
 ### 6.3 Tool Caching
@@ -454,7 +442,8 @@ async def call_tool(self, tool_name: str, arguments: dict) -> dict:
 
 | Item | Cache Location | TTL | Invalidation |
 |------|----------------|-----|--------------|
-| **Tool Lists** | `ToolCache` | 3600s (1 hour) | Manual, TTL |
+| **Tool Lists** | `ExternalServerPool` (mcp_client) | `cache.tool_list_ttl` (3600s in the shipped config) | Manual, TTL, config change |
+| **Aggregated List** | `ToolCache` | none | Manual, config hash |
 | **Tool Results** | Not cached | N/A | N/A |
 
 **Configuration in `external_servers:` section:**
@@ -480,8 +469,8 @@ external_servers:
 
 **Request/Response:**
 ```python
-# Client → Server (JSON-RPC over HTTP POST)
-POST /mcp/tools/call
+# Client → Server (JSON-RPC over HTTP POST to the configured url)
+POST <server url>
 Content-Type: application/json
 
 {
@@ -532,7 +521,8 @@ external_servers:
       transport: streaming  # HTTP streaming
       features:
         tools: true
-      initialization_options:
+      auth:
+        type: api_key
         api_key: ${MCP_API_KEY}
 ```
 
@@ -588,7 +578,7 @@ external_servers:
 **Rationale:**
 - Faster startup (5s → 1s with 5 servers)
 - Better user experience
-- Configurable via `parallel_connect` flag
+- Always on (`parallel_connect` is not read)
 
 **Status:** Accepted
 
@@ -617,7 +607,7 @@ remains under `/mcp/*` serves the internal plugin registry, not the protocol.
 Agent Requests Tools
     │
     ▼
-ToolServerIntegration.get_all_tools()
+ToolServerIntegration.list_all_tools()
     │
     ├─► Internal Plugins
     │   │
@@ -629,14 +619,14 @@ ToolServerIntegration.get_all_tools()
     │
     ├─► External MCP Servers
     │   │
-    │   ├─► Check ToolCache
+    │   ├─► Check pool tool-list cache
     │   │   │
     │   │   ├─► Cache HIT → Return cached
     │   │   ├─► Cache MISS → Query server
     │   │       │
-    │   │       ├─► POST /mcp/tools/list
+    │   │       ├─► tools/list (SDK session)
     │   │       ├─► Parse response
-    │   │       ├─► Cache results (TTL=3600s)
+    │   │       ├─► Cache results (TTL=tool_list_ttl)
     │   │       │
     │   │       ▼
     │   │   External Tools
@@ -657,7 +647,7 @@ Return to Agent
 Agent Calls Tool
     │
     ▼
-ToolServerIntegration.call_tool(tool_name, args)
+ToolServerIntegration.call_tool(server_name, tool_name, args)
     │
     ├─► Determine Tool Source
     │   │
@@ -687,7 +677,7 @@ Execute Tool
     │
     ├─► External MCP Server
     │   │
-    │   ├─► POST /mcp/tools/call
+    │   ├─► tools/call (SDK session)
     │   ├─► {
     │   │     "method": "tools/call",
     │   │     "params": {
@@ -715,37 +705,37 @@ Return Result to Agent
 
 | Method | Configuration | Use Case |
 |--------|---------------|----------|
-| **API Key** | `initialization_options.api_key` | Smithery.ai servers |
-| **Bearer Token** | `initialization_options.bearer_token` | Custom servers |
+| **API Key** | `auth.type: api_key`, `auth.api_key` (header `auth.api_key_header`) | Smithery.ai servers |
+| **Bearer Token** | `auth.type: bearer`, `auth.bearer_token` | Custom servers |
+| **Basic** | `auth.type: basic`, `auth.username`, `auth.password` | Custom servers |
 | **None** | No auth config | Local/trusted servers |
 
 **Example:**
 ```yaml
 remote_servers:
   smithery_server:
-    url: https://server.smithery.ai/mcp?api_key=${API_KEY}
-    initialization_options:
-      api_key: ${API_KEY}  # From environment
+    url: https://server.smithery.ai/mcp?api_key=${API_KEY}  # From environment
 ```
+
+(`initialization_options` is accepted but not sent; connecting warns about it.)
 
 ### 10.2 TLS/HTTPS
 
 **Requirements:**
 - All external connections MUST use HTTPS in production
-- Certificate validation enabled by default
-- Optional: Custom CA certificates
+- Certificate validation via `network.ssl_verify` (true in the shipped `config/config.yaml`; the model default is false)
+- Custom CA certificates: not configurable
 
 **Configuration:**
 ```yaml
-external_servers:
-  connection:
-    verify_ssl: true  # Default
-    ca_bundle: /path/to/ca-bundle.crt  # Optional
+network:
+  ssl_verify: true
 ```
 
 ### 10.3 Input Validation
 
-**Tool Arguments:**
+**Tool Arguments:** not implemented -- arguments are passed to the server
+unvalidated. A validation step would look like this:
 ```python
 async def call_tool(self, tool_name: str, arguments: dict):
     # Validate against tool schema
@@ -761,7 +751,8 @@ async def call_tool(self, tool_name: str, arguments: dict):
 
 ### 10.4 Rate Limiting
 
-**Per-Server Limits:**
+**Per-Server Limits:** not implemented -- a server entry has no `rate_limit` key.
+A sketch:
 ```yaml
 remote_servers:
   smithery_server:
@@ -776,13 +767,13 @@ remote_servers:
 
 ### 11.1 Architecture Documents
 
-- [System Architecture](agent_system_architecture.md) - Overall system
-- [Plugin Architecture](plugin_architecture.md) - Internal plugins
-- [App Architecture](app_architecture.md) - FastAPI application
+- [System Architecture](_arch_agent_system_architecture.md) - Overall system
+- [Plugin Architecture](_arch_plugin_architecture.md) - Internal plugins
+- [App Architecture](_arch_app_architecture.md) - FastAPI application
 
 ### 11.2 Design Documents
 
-- [MCP Configuration](server_configuration.md) - Configuration guide
+- [MCP Configuration](mcp_configuration.md) - Configuration guide
 - [Tool Execution](tool_execution.md) - Tool system
 - [Caching Systems](caching_systems.md) - Cache design
 
