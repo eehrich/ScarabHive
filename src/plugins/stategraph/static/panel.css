@@ -11,10 +11,10 @@
   display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; height: auto;
   padding: var(--space-2); line-height: 1.4; text-align: left; white-space: normal; --btn-fg: var(--text-primary);
 }
-.sg-item[aria-current="true"] { --btn-bg: var(--accent-subtle); }
 .sg-item-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); min-width: 0; }
 .sg-item-name { flex: 1 1 6rem; min-width: 0; font-size: var(--text-sm); font-weight: 600; overflow-wrap: anywhere; }
 .sg-item-sub { font-size: var(--text-xs); color: var(--text-muted); overflow-wrap: anywhere; }
+.sg-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 /* folders of machines: a machine's group, nested by "/" */
 .sg-folder > summary {
   display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none;
@@ -29,28 +29,34 @@
 .sg-main { min-height: 0; display: flex; flex-direction: column; }
 .sg-placeholder { padding: var(--space-6); }
 .sg-machine { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-.sg-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-3) var(--space-4) var(--space-2); }
-.sg-head-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 16rem; }
-.sg-head-name { font-size: var(--text-md); font-weight: 600; margin: 0; overflow-wrap: anywhere; }
-.sg-head-sub { font-size: var(--text-xs); color: var(--text-muted); overflow-wrap: anywhere; }
+.sg-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4) var(--space-2); }
+/* the title gives way (pk-truncate) down to 12rem, then the controls wrap below it: never past the pane's right edge,
+   where the More menu's button sat over the inspector */
+.sg-head > :not(.sg-head-title) { flex: none; }
+.sg-head-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 12rem; }
+.sg-head-name { font-size: var(--text-md); font-weight: 600; margin: 0; }
+.sg-head-sub { font-size: var(--text-xs); color: var(--text-muted); }
 .sg-tabs { flex: none; padding: 0 var(--space-3); }
 .sg-tab { flex: 1 1 auto; min-height: 0; overflow: auto; padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
 .sg-tab--graph { padding: 0; gap: 0; overflow: hidden; }
-.sg-graphbar { flex: none; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-subtle); }
-.sg-palette { display: flex; flex-wrap: wrap; gap: var(--space-1); }
-.sg-palette-toggle { display: none; }
-.sg-state-search { width: 12rem; }
-.sg-flip > svg { transform: scaleX(-1); }  /* the undo arrow, turned: the sprite has no redo icon */
-@media (max-width: 720px) {
-  .sg-palette { display: none; }
-  .sg-palette-toggle { display: inline-flex; }
-}
+.sg-graphbar { flex: none; flex-wrap: nowrap; overflow-x: auto; gap: var(--space-1); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-subtle); }
+/* the search gives way, the buttons keep their size: the bar stays one row in a narrow pane */
+.sg-graphbar > :not(.sg-state-search, .pk-grow) { flex: none; }
+.sg-state-search { flex: 1 1 12rem; min-width: 5rem; max-width: 16rem; }
 .sg-canvas-wrap { position: relative; flex: 1 1 auto; min-height: 280px; }
-.sg-hint { position: absolute; left: var(--space-3); bottom: var(--space-2); margin: 0; font-size: var(--text-xs); pointer-events: none; }
+/* only what an empty or broken machine needs said (drawGraph): a graph's gestures sit behind the bar's help icon */
+.sg-hint { position: absolute; left: var(--space-3); bottom: var(--space-2); max-width: calc(100% - 2 * var(--space-3)); margin: 0;
+  padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); background: var(--surface-1); font-size: var(--text-xs); pointer-events: none; }
+.sg-hint:empty { display: none; }
+/* shown without taking room or giving it back: the YAML tab's unsaved dot keeps its place */
+.sg-invisible { visibility: hidden; }
 
 /* the inspector on the right: a kit side pane, its drag corner on the left edge (rtl box, ltr content) */
 .sg-inspector { direction: rtl; border-right: 0; border-left: 1px solid var(--border-subtle); width: 22rem; background: var(--surface-1); display: flex; flex-direction: column; }
 .sg-inspector > * { direction: ltr; }
+/* no machine open: nothing to inspect or debug, and the middle says so already */
+.sg-layout:has(#machineView[hidden]) > .sg-inspector,
+:root:has(#machineView[hidden]) [data-pk-sidebar-toggle][aria-controls="inspectorPane"] { display: none; }
 .sg-side-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
 .sg-side-body[hidden] { display: none; }
 .sg-section { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
@@ -96,7 +102,6 @@
 .sg-code-view .token.decorator { color: var(--info); }
 .sg-yamlbar, .sg-start-options { gap: var(--space-2); flex-wrap: wrap; }
 .sg-file { width: auto; max-width: 22rem; }
-.sg-runbar { gap: var(--space-2); }
 .sg-runlist .pk-table-wrap { max-height: min(45vh, 420px); overflow: auto; }  /* the result card below stays in reach */
 .sg-answers { display: inline-flex; gap: var(--space-1); flex-wrap: wrap; }
 .sg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-2) var(--space-3); }
@@ -108,14 +113,15 @@
 .sg-preview { max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* the debug bar: the selected run and its controls, above every view */
-.sg-debugbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0 var(--space-4) var(--space-2); padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-subtle); border-left: 3px solid var(--info); border-radius: var(--radius-md); background: var(--surface-1); font-size: var(--text-sm); }
+/* one row whatever the run offers: controls that come and go scroll it sideways instead of wrapping the view below down */
+.sg-debugbar { display: flex; flex-wrap: nowrap; overflow-x: auto; align-items: center; gap: var(--space-2); margin: 0 var(--space-4) var(--space-2); padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle); border-left: 3px solid var(--info); border-radius: var(--radius-md); background: var(--surface-1); font-size: var(--text-sm); white-space: nowrap; }
+.sg-debugbar > :not(.pk-grow) { flex: none; }
 .sg-debugbar[data-status="paused"] { border-left-color: var(--warn); background: var(--warn-subtle); }
 .sg-debugbar[data-status="failed"] { border-left-color: var(--danger); }
 .sg-debugbar[data-status="succeeded"] { border-left-color: var(--ok); }
 .sg-debugbar .pk-select, .sg-debugbar .pk-input { width: auto; }
-.sg-runpick { display: inline-flex; flex-wrap: wrap; gap: var(--space-1); }
-.sg-step-input { width: 5rem !important; }
+.sg-runpick { display: inline-flex; gap: var(--space-1); }
 .sg-frame { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-2); background: var(--surface-0); display: flex; flex-direction: column; gap: var(--space-1); }
 .sg-frame-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); font-size: var(--text-xs); }
 .sg-watch { display: flex; align-items: flex-start; gap: var(--space-2); font-size: var(--text-xs); }
@@ -137,15 +143,15 @@
 
 .sg-node { cursor: pointer; }
 .sg-node:focus { outline: none; }
-.sg-box { fill: var(--surface-1); stroke: var(--border-strong); stroke-width: 1.5; }
-.sg-node--composite > .sg-box { fill: var(--surface-2); stroke: var(--border-default); }
+.sg-box { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.5; }
+.sg-node--composite > .sg-box { fill: var(--surface-1); stroke: var(--border-default); }
 .sg-node--wait > .sg-box { stroke-dasharray: 5 3; }
 .sg-rule { stroke: var(--border-default); stroke-width: 1; }
 .sg-name { font-family: var(--font-ui); font-size: 13px; font-weight: 600; fill: var(--text-primary); }
 .sg-label { font-family: var(--font-mono); font-size: 11px; fill: var(--text-muted); }
 .sg-caption { font-family: var(--font-ui); font-size: 11px; fill: var(--text-secondary); }
 .sg-icon { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; color: var(--accent-text); }
-.sg-shape { fill: var(--surface-1); stroke: var(--text-secondary); stroke-width: 1.5; }
+.sg-shape { fill: var(--surface-2); stroke: var(--text-secondary); stroke-width: 1.5; }
 .sg-shape--filled { fill: var(--text-secondary); stroke: none; }
 .sg-shape.sg-shape--failed { stroke: var(--danger); }
 .sg-shape--filled.sg-shape--failed { fill: var(--danger); }
@@ -173,12 +179,18 @@
 .sg-node.is-current > .sg-box, .sg-node.is-current > .sg-shape { stroke: var(--info); stroke-width: 3; }
 .sg-node.is-paused > .sg-box, .sg-node.is-paused > .sg-shape { stroke: var(--warn); stroke-width: 3; fill: var(--warn-subtle); }
 
+/* pk-badge's look: a subtle fill, the text in its tone (graph.js draws each text right after its rect). The fill is the
+   -subtle tint made opaque: the badge sits on the state's edge, and a see-through one showed the edge through its text */
 .sg-badge { stroke: none; }
-.sg-badge--danger { fill: var(--danger); }
-.sg-badge--warn { fill: var(--warn); }
-.sg-badge--info { fill: var(--info); }
-.sg-badge--sub { fill: var(--accent); }
-.sg-badge-text { font-family: var(--font-ui); font-size: 10px; font-weight: 600; fill: var(--text-on-accent); pointer-events: none; }
+.sg-badge--danger { fill: color-mix(in srgb, var(--danger) 15%, var(--surface-2)); }
+.sg-badge--warn { fill: color-mix(in srgb, var(--warn) 15%, var(--surface-2)); }
+.sg-badge--info { fill: color-mix(in srgb, var(--info) 15%, var(--surface-2)); }
+.sg-badge--sub { fill: color-mix(in srgb, var(--accent) 15%, var(--surface-2)); }
+.sg-badge-text { font-family: var(--font-ui); font-size: 10px; font-weight: 600; fill: var(--text-secondary); pointer-events: none; }
+.sg-badge--danger + .sg-badge-text { fill: var(--danger); }
+.sg-badge--warn + .sg-badge-text { fill: var(--warn); }
+.sg-badge--info + .sg-badge-text { fill: var(--info); }
+.sg-badge--sub + .sg-badge-text { fill: var(--accent-text); }
 .sg-breakpoint { fill: var(--danger); stroke: var(--surface-0); stroke-width: 1.5; }
 
 .sg-link { cursor: pointer; }

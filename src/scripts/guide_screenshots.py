@@ -122,7 +122,7 @@ SHOTS = {
         relative();
         new MutationObserver(relative).observe(document.body, {childList: true, subtree: true, characterData: true});"""),
                    # the README's picture: the graph alone, fitted, the run's path on it
-                   ("readme.png", "plugins.stategraph.tests.stategraph_panel_app", "panel_app",
+                   ("readme.png", "plugins.stategraph.tests.stategraph_panel_app", "readme_app",
                     "/plugins/stategraph/?machine=build_review&run=demo_run", (1400, 640), """
         const relative = () => {
           const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);

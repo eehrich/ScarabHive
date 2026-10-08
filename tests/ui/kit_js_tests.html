@@ -246,6 +246,50 @@
     }
   });
 
+  await check('scrollerOf finds the box that scrolls an element up and down, else the page', () => {
+    const outer = document.createElement('div');
+    outer.style.cssText = 'height: 100px; overflow: auto';
+    outer.innerHTML = '<div style="overflow: visible"><p>inside</p></div><div style="height: 300px"></div>';
+    // set to scroll, but as tall as what it holds: it does not scroll, the page does
+    const grown = document.createElement('div');
+    grown.style.cssText = 'overflow: auto';
+    grown.innerHTML = '<p>grown</p>';
+    const loose = document.createElement('p');
+    document.body.append(outer, grown, loose);
+    try {
+      return pk.scrollerOf(outer.querySelector('p')) === outer
+        && pk.scrollerOf(grown.querySelector('p')) === document.scrollingElement
+        && pk.scrollerOf(loose) === document.scrollingElement;
+    } finally {
+      outer.remove(); grown.remove(); loose.remove();
+    }
+  });
+
+  await check('keepInSight brings an item into sight in a list that scrolls up and down, and in the page itself', () => {
+    const list = document.createElement('div');
+    list.style.cssText = 'height: 100px; overflow: auto; width: 200px';
+    list.innerHTML = '<div style="height: 400px"></div><div style="height: 20px">far</div><div style="height: 400px"></div>';
+    const tall = document.createElement('div');
+    tall.style.cssText = 'height: 3000px';
+    const deep = document.createElement('div');
+    deep.textContent = 'deep';
+    document.body.append(list, tall, deep);
+    const page = document.scrollingElement;
+    const before = page.scrollTop;
+    try {
+      const far = list.children[1];
+      pk.keepInSight(list, far);
+      const inList = list.scrollTop > 0 && far.getBoundingClientRect().bottom <= list.getBoundingClientRect().bottom + 0.5;
+      pk.keepInSight(page, deep);  // the page's box is the viewport, not the whole document
+      const shown = deep.getBoundingClientRect();
+      const inPage = page.scrollTop > before && shown.top >= -0.5 && shown.bottom <= innerHeight + 0.5;
+      return inList && inPage;
+    } finally {
+      list.remove(); tall.remove(); deep.remove();
+      page.scrollTop = before;
+    }
+  });
+
   await check('a row of page links scrolls as tabs do: its current page in sight from the start, the wheel turns it', async () => {
     await document.fonts.ready;  // the page as it stands once Inter is in
     await nextFrame();

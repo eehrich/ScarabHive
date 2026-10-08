@@ -91,6 +91,14 @@ async def _seed(server: StateGraphServer) -> None:
     server.run_store.close()
 
 
+def readme_app(root: Path) -> FastAPI:
+    """The same, laid out left to right: the README's picture is far wider than tall, and five states top down
+    filled a third of it."""
+    (root / "machines").mkdir(parents=True, exist_ok=True)
+    (root / "machines" / "build_review.layout.json").write_text('{"auto": "classic", "version": 1}', encoding="utf-8")
+    return panel_app(root)
+
+
 def panel_app(root: Path) -> FastAPI:
     (root / "machines").mkdir(parents=True, exist_ok=True)
     (root / "machines" / "build_review.yaml").write_text(MACHINE, encoding="utf-8")

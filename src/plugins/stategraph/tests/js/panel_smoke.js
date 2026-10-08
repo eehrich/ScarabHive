@@ -54,7 +54,7 @@ await step('the machine is drawn', () => {
   if ($('machineView').hidden) throw new Error('machine view still hidden');
   if (!$('canvas').querySelectorAll('.sg-node').length) throw new Error('no nodes on the canvas');
   if ($('canvas').querySelectorAll('.sg-link').length < 4) throw new Error('too few edges');
-  if (!$('palette').innerHTML.includes('data-add-kind="agent"')) throw new Error('palette without kinds');
+  if (!$('paletteMenu').innerHTML.includes('data-add-kind="agent"')) throw new Error('palette without kinds');
   if (!$('side-inspect').innerHTML.includes('data-form="machine-fields"')) throw new Error('no machine overview');
 });
 await step('the run is shown: debug bar, pane, history, overlay', () => {
@@ -81,7 +81,7 @@ await step('choose a transition by clicking its edge', async () => {
 });
 await step('add a state from the palette (prompt answers a name)', async () => {
   ANSWERS.prompt.push('judge');
-  await $('palette').fire('click', { target: button({ 'data-add-kind': 'agent' }) });
+  await $('paletteMenu').fire('click', { target: button({ 'data-add-kind': 'agent' }) });
   const call = CALLS.find(([m, p]) => p.endsWith('/edit'));
   if (!call || call[2].op.op !== 'add_state' || call[2].op.do.agent !== '' || call[2].expected_version !== 'v1') throw new Error(JSON.stringify(call));
 });
@@ -146,10 +146,12 @@ await step('debug bar: continue, run to, fork', async () => {
   await $('debugBar').fire('click', { target: button({ 'data-control': 'run_to' }) });
   const runTo = CALLS.filter(([m, p]) => p.endsWith('/control')).pop();
   if (runTo[2].action !== 'run_to' || runTo[2].state !== 'review') throw new Error(JSON.stringify(runTo[2]));
-  $('forkStep').value = '2';
+  ANSWERS.prompt.push('2');
+  ANSWERS.dialog = 'run';
   await $('debugBar').fire('click', { target: button({ 'data-control': 'fork' }) });
+  ANSWERS.dialog = null;
   const fork = CALLS.filter(([m, p]) => p.endsWith('/control')).pop();
-  if (fork[2].action !== 'fork' || fork[2].at_step !== 2) throw new Error(JSON.stringify(fork[2]));
+  if (fork[2].action !== 'fork' || fork[2].at_step !== 2 || fork[2].pause) throw new Error(JSON.stringify(fork[2]));
 });
 await step('back to r1; debug pane: watch, evaluate, set, send event', async () => {
   await $('runList').fire('rowselect', { detail: { id: 'r1' } });
@@ -179,7 +181,8 @@ await step('YAML tab: type, validate, save with a conflict (reload offered)', as
   if (!$('yamlProblems').innerHTML.includes('SG004')) throw new Error('problems not listed');
   globalThis.SAVE_ANSWER = new ApiError(409, 'the file changed since you read it');
   ANSWERS.dialog = 'reload';
-  await $('yamlSave').fire('click', {});
+  await $('machineHead').fire('click', { target: button({ 'data-act': 'save' }) });
+  await settle();
   if (!ASKED.some(([k, t]) => k === 'dialog' && t === 'The file changed')) throw new Error('no conflict dialog');
   if (DIRTY) throw new Error('still dirty after reload');
   globalThis.SAVE_ANSWER = null;

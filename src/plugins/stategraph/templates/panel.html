@@ -25,24 +25,26 @@
       <div id="debugBar" class="sg-debugbar" hidden></div>
       <div class="pk-tabs sg-tabs" role="tablist" data-pk-tabs id="mainTabs" aria-label="Machine views">
         <button type="button" class="pk-tab" role="tab" aria-selected="true" aria-controls="tab-graph" data-tab="graph">Graph</button>
-        <button type="button" class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-yaml" data-tab="yaml">YAML <span class="pk-tab-count" id="yamlCount"></span></button>
+        <button type="button" class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-yaml" data-tab="yaml"><span class="pk-dot pk-dot--warn sg-invisible" id="yamlDot" role="img" aria-label="unsaved" title="Unsaved changes"></span> YAML</button>
         <button type="button" class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-runs" data-tab="runs">Runs <span class="pk-tab-count" id="runCount"></span></button>
       </div>
 
       <section id="tab-graph" class="sg-tab sg-tab--graph" role="tabpanel">
         <div class="pk-row sg-graphbar">
-          <div class="sg-palette" id="palette" role="group" aria-label="Add a state"></div>
-          <button type="button" class="pk-btn pk-btn--sm sg-palette-toggle" popovertarget="paletteMenu">{{ icon('plus', size='sm') }} Add a state {{ icon('chevron-down', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--sm" id="paletteToggle" popovertarget="paletteMenu" title="Add a state or a note: a new state goes into the selected composite">{{ icon('plus', size='sm') }} Add {{ icon('chevron-down', size='sm') }}</button>
           <div class="pk-menu" id="paletteMenu" popover></div>
-          <label class="pk-search sg-state-search">{{ icon('search') }}<input id="stateSearch" class="pk-input pk-input--sm" type="search" list="sgStates" placeholder="Find a state" aria-label="Find a state" autocomplete="off"></label>
+          <label class="pk-search sg-state-search">{{ icon('search') }}<input id="stateSearch" class="pk-input pk-input--sm" type="search" list="sgStates" placeholder="Find" aria-label="Find a state" autocomplete="off"></label>
           <datalist id="sgStates"></datalist>
           <span class="pk-grow"></span>
-          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="undo" title="Undo the last edit (Ctrl+Z)" disabled>{{ icon('rotate-ccw', size='sm') }} Undo</button>
-          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost sg-flip" id="redo" title="Redo what was undone (Ctrl+Shift+Z, Ctrl+Y)" disabled>{{ icon('rotate-ccw', size='sm') }} Redo</button>
-          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="zoomOut" title="Zoom out" aria-label="Zoom out">{{ icon('minus', size='sm') }}</button>
-          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="zoomIn" title="Zoom in" aria-label="Zoom in">{{ icon('plus', size='sm') }}</button>
-          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="fit" title="Fit the machine into view">{{ icon('maximize-2', size='sm') }} Fit</button>
-          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="autoLayout" title="Forget the positions dragged by hand and lay out anew">{{ icon('layout-grid', size='sm') }} Auto layout</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="undo" title="Undo the last edit (Ctrl+Z)" aria-label="Undo" disabled>{{ icon('undo-2', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="redo" title="Redo what was undone (Ctrl+Shift+Z, Ctrl+Y)" aria-label="Redo" disabled>{{ icon('redo-2', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="zoomOut" title="Zoom out" aria-label="Zoom out">{{ icon('zoom-out', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="fit" title="Fit the machine into view" aria-label="Fit">{{ icon('maximize-2', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="zoomIn" title="Zoom in" aria-label="Zoom in">{{ icon('zoom-in', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="autoLayout" title="Auto layout: forget the positions dragged by hand and lay out anew" aria-label="Auto layout">{{ icon('layout-grid', size='sm') }}</button>
+          {#- the canvas's gestures behind an icon, not over the graph: a hint there covered states in a recording; every
+              shortcut is in the inspector's Shortcuts #}
+          <span class="pk-muted" title="Drag to move · drag the handle to connect · double-click to rename · Shortcuts in the inspector">{{ icon('circle-help', size='sm', label='Canvas help') }}</span>
         </div>
         <div class="sg-canvas-wrap">
           <svg id="canvas" class="sg-canvas" tabindex="0" role="application" aria-label="State machine graph: drag from a state's handle to another state to connect them"></svg>
@@ -53,34 +55,38 @@
       <section id="tab-yaml" class="sg-tab sg-tab--yaml" role="tabpanel" hidden>
         <div class="pk-row sg-yamlbar">
           <select id="yamlFile" class="pk-select pk-select--sm sg-file" aria-label="File"></select>
-          <span id="yamlState" class="pk-muted"></span>
           <span class="pk-grow"></span>
           <button type="button" class="pk-btn pk-btn--sm" id="yamlAddModule" hidden title="Add a companion module: its public functions can be call and parse targets, its names are in scope in this machine's code">{{ icon('plus', size='sm') }} Python module</button>
           <button type="button" class="pk-btn pk-btn--sm" id="yamlRevert" title="Discard the unsaved changes of every file">{{ icon('rotate-ccw', size='sm') }} Revert</button>
           <button type="button" class="pk-btn pk-btn--sm" id="yamlValidate">{{ icon('circle-check', size='sm') }} Validate</button>
-          <button type="button" class="pk-btn pk-btn--sm pk-btn--primary" id="yamlSave">{{ icon('save', size='sm') }} Save</button>
         </div>
         <div class="sg-code"><pre class="sg-code-view" aria-hidden="true"></pre><textarea id="yamlText" class="pk-textarea pk-input--mono sg-yaml" spellcheck="false" autocomplete="off" wrap="off" aria-label="File text"></textarea></div>
         <div id="yamlProblems" class="sg-problems"></div>
       </section>
 
       <section id="tab-runs" class="sg-tab sg-tab--runs" role="tabpanel" hidden>
-        <form id="startForm" class="pk-card sg-start" novalidate>
-          <div class="pk-card-head"><h3 class="pk-card-title">Start a run</h3></div>
+        {#- folded once the machine has runs (panel.js loadRuns): the list and the result are what the tab is for then #}
+        <details class="pk-details" id="startBox" open><summary>New run</summary>
+        <form id="startForm" class="pk-stack" novalidate>
           <div id="paramFields" class="sg-grid"></div>
-          <label class="pk-field"><span class="pk-label">Mocks</span>
-            <textarea id="mocks" class="pk-textarea pk-input--mono" rows="3" spellcheck="false"
-              placeholder='{"write": "a draft", "judge": {"$visits": [{"value": 0.2}, {"value": 0.9}]}, "publish": {"$error": {"type": "tool_failed", "message": "down"}}}'></textarea>
-            <span class="pk-help">JSON: state path → the activity's out. <code class="pk-mono">$visits</code> answers per visit, <code class="pk-mono">$error</code> fails it.</span></label>
-          <div class="pk-row sg-start-options">
-            <label class="pk-check"><input type="checkbox" id="mockOnly"> Mock only</label>
-            <label class="pk-check"><input type="checkbox" id="pauseAtStart"> Pause at start</label>
-            <span id="nextPoints" class="pk-muted"></span>
-          </div>
+          <details class="pk-details" id="testOptions"><summary>Test options <span class="pk-muted" id="testOptionsHeld"></span></summary>
+            <div class="pk-stack">
+              <label class="pk-field"><span class="pk-label">Mocks</span>
+                <textarea id="mocks" class="pk-textarea pk-input--mono" rows="3" spellcheck="false" placeholder='{"state": "answer"}'></textarea>
+                <span class="pk-help">JSON: state path → the activity's out. <code class="pk-mono">$visits</code> answers per visit, <code class="pk-mono">$error</code> fails it:
+                  <code class="pk-mono">{"judge": {"$visits": [{"value": 0.2}, {"value": 0.9}]}, "publish": {"$error": {"type": "tool_failed", "message": "down"}}}</code></span></label>
+              <div class="pk-row sg-start-options">
+                <label class="pk-check"><input type="checkbox" id="mockOnly"> Mock only</label>
+                <label class="pk-check"><input type="checkbox" id="pauseAtStart"> Pause at start</label>
+              </div>
+            </div>
+          </details>
+          <span id="nextPoints" class="pk-muted"></span>
           <p id="startError" class="pk-callout pk-callout--danger" hidden></p>
           <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--primary" id="startRun">{{ icon('play', size='sm') }} Start</button></div>
         </form>
-        <div class="pk-row sg-runbar">
+        </details>
+        <div class="pk-filters">
           <select id="runStatus" class="pk-select pk-select--sm" aria-label="Runs of this status">
             <option value="">every status</option>{% for status in ['running', 'paused', 'waiting', 'interrupted', 'succeeded', 'failed', 'cancelled'] %}<option value="{{ status }}">{{ status }}</option>{% endfor %}
           </select>
@@ -113,15 +119,15 @@
         <h4 class="sg-section-title">Breakpoints <span id="dbgPointsScope" class="pk-muted"></span></h4>
         <div id="dbgPoints"></div>
       </div>
-      <div class="sg-section">
-        <h4 class="sg-section-title">Evaluate <span id="dbgEvalHint" class="pk-muted"></span></h4>
+      <div class="sg-section" id="evalSection" hidden>
+        <h4 class="sg-section-title">Evaluate</h4>
         <form class="pk-row sg-inline" id="evalForm">
           <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="expr" placeholder="ctx.draft[:200]" aria-label="Expression" autocomplete="off">
           <button type="submit" class="pk-btn pk-btn--sm">Evaluate</button>
         </form>
         <div id="dbgEval"></div>
         <form class="pk-row sg-inline" id="setForm">
-          <input class="pk-input pk-input--sm pk-input--mono sg-path" name="path" placeholder="ctx.round" aria-label="Path to set" autocomplete="off" title="A ctx path -- or out at an exit or error breakpoint: the activity completes with that out, a failed one too">
+          <input class="pk-input pk-input--sm pk-input--mono sg-path" name="path" placeholder="ctx.round" aria-label="Path to set" autocomplete="off" title="A ctx path, or out at an exit or error breakpoint: the activity completes with that out, a failed one too">
           <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="expr" placeholder="expression" aria-label="Value expression" autocomplete="off">
           <button type="submit" class="pk-btn pk-btn--sm" title="Journaled as an edit: a resumed run applies it again">Set</button>
         </form>
@@ -138,7 +144,7 @@
           <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm">{{ icon('send-horizontal', size='sm') }} Send</button></div>
         </form>
       </div>
-      <div class="sg-section"><h4 class="sg-section-title">Frames</h4><div id="dbgFrames"></div></div>
+      <div class="sg-section" id="framesSection" hidden><h4 class="sg-section-title">Frames</h4><div id="dbgFrames"></div></div>
     </div>
   </aside>
 </div>

@@ -68,6 +68,9 @@ export function textWidth(text, px, mono = false) {
   return Math.ceil(String(text ?? '').length * px * (mono ? 0.62 : 0.56));
 }
 
+/** "1 error", "2 errors": one wording for a count wherever the panel shows one (canvas, list, head, inspector). */
+export const counted = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
 export function shorten(text, max) {
   const value = String(text ?? '');
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
@@ -695,22 +698,21 @@ export function pathData(points) {
 }
 
 /**
- * Run `draw`, a redraw of `element`, keeping what the viewer chose or typed meanwhile: redrawn options reset a select
- * to its first one, and a redrawn input is empty -- a poll that changes one label is enough. The controls are
- * `element` itself (a select whose options are redrawn) or the selects and inputs with an id inside it; a value the
- * new options no longer offer is not forced back. Returns what `draw` returns.
+ * Run `draw`, a redraw of `element`, keeping what the viewer chose meanwhile: redrawn options reset a select to its
+ * first one -- a poll that changes one label is enough. The selects are `element` itself (one whose options are
+ * redrawn) or those with an id inside it; a value the new options no longer offer is not forced back. Returns what
+ * `draw` returns.
  */
 export function keepingChoices(element, draw) {
-  const controls = () => (element.tagName === 'SELECT' ? [element] : [...element.querySelectorAll('select[id], input[id]')]);
-  const kept = controls().map((c) => ({ id: c.id, value: c.value, checked: c.checked, focused: document.activeElement === c }));
+  const controls = () => (element.tagName === 'SELECT' ? [element] : [...element.querySelectorAll('select[id]')]);
+  const kept = controls().map((c) => ({ id: c.id, value: c.value, focused: document.activeElement === c }));
   const drawn = draw();
   if (!drawn) return drawn;
   const now = new Map(controls().map((c) => [c.id, c]));
-  for (const { id, value, checked, focused } of kept) {
+  for (const { id, value, focused } of kept) {
     const control = now.get(id);
     if (!control) continue;
-    if (control.type === 'checkbox') control.checked = checked;
-    else if (control.tagName !== 'SELECT' || [...control.options].some((o) => o.value === value)) control.value = value;
+    if ([...control.options].some((o) => o.value === value)) control.value = value;
     if (focused) control.focus();
   }
   return drawn;
@@ -1019,6 +1021,9 @@ function spriteIcon(parent, name, x, y, size, cls = 'sg-icon') {
  * that one, `here` in the one it is in, onRoute(way, line) when a line was bent by hand (isRoute; way: lineKeys) --
  * without it the selected line has no handles.
  */
+/** The least zoom, of fit() and of zooming out. */
+const MIN_ZOOM = 0.05;
+
 export class Canvas {
   constructor(svg, { onSelect, onConnect, onMove, onOpen, onReparent, onRoute } = {}) {
     this.svg = svg;
@@ -1027,6 +1032,10 @@ export class Canvas {
     this.takeLayout({});
     this.auto = { nodes: {}, edges: {} };
     this.view = { x: 0, y: 0, k: 1 };
+    this.fitted = null;  // the view fit() made: while it stands (nobody zoomed or moved), a resize fits anew
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(() => { if (this.view === this.fitted) this.fit(); }).observe(svg);
+    }
     this.selected = null;
     this.overlay = { problems: { states: {}, transitions: {} }, run: null, breakpoints: new Set() };
     this.elk = typeof ELK === 'function' ? new ELK() : null;  // eslint-disable-line no-undef
@@ -1327,13 +1336,13 @@ export class Canvas {
         text(badges, value, { x: x + width / 2, y: top + 3.5, class: 'sg-badge-text', 'text-anchor': 'middle' });
         x -= 3;
       };
-      if (pinned?.errors) badge(`${pinned.errors} err`, 'sg-badge--danger');
-      else if (pinned?.warnings) badge(`${pinned.warnings} warn`, 'sg-badge--warn');
+      if (pinned?.errors) badge(counted(pinned.errors, 'error'), 'sg-badge--danger');
+      else if (pinned?.warnings) badge(counted(pinned.warnings, 'warning'), 'sg-badge--warn');
       const visits = run && Object.hasOwn(run.visits, name) ? run.visits[name] : 0;
       if (visits) badge(`×${visits}`, 'sg-badge--info');
       const subruns = run?.subruns && Object.hasOwn(run.subruns, name) ? run.subruns[name] : 0;
       if (subruns) {  // on the bottom edge, right: the top row holds the problems and the visits already
-        const value = subruns === 1 ? '1 run' : `${subruns} runs`;
+        const value = counted(subruns, 'run');
         const width = textWidth(value, 10) + 10;
         const bottom = Number(badges.dataset.bottom);
         el('rect', { x: right - 4 - width, y: bottom - 8, width, height: 16, rx: 8, class: 'sg-badge sg-badge--sub' }, badges);
@@ -1375,8 +1384,10 @@ export class Canvas {
     const rect = this.svg.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     const box = this.bounds();
-    const k = clamp(Math.min((rect.width - 48) / box.w, (rect.height - 48) / box.h), 0.2, 1.5);
+    // down to the zoom's own least: a large machine in a narrow pane is shown whole, not cut at both sides
+    const k = clamp(Math.min((rect.width - 48) / box.w, (rect.height - 48) / box.h), MIN_ZOOM, 1.5);
     this.view = { k, x: (rect.width - box.w * k) / 2 - box.x * k, y: (rect.height - box.h * k) / 2 - box.y * k };
+    this.fitted = this.view;
     this.applyView();
   }
 
@@ -1384,7 +1395,7 @@ export class Canvas {
     const rect = this.svg.getBoundingClientRect();
     const px = cx ?? rect.width / 2;
     const py = cy ?? rect.height / 2;
-    const k = clamp(this.view.k * factor, 0.15, 3);
+    const k = clamp(this.view.k * factor, MIN_ZOOM, 3);
     this.view = { k, x: px - ((px - this.view.x) / this.view.k) * k, y: py - ((py - this.view.y) / this.view.k) * k };
     this.applyView();
   }

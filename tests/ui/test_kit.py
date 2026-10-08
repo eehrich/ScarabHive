@@ -127,6 +127,18 @@ def test_every_icon_named_in_code_exists_in_the_sprite():
     assert unknown == {}
 
 
+def test_the_sprite_holds_exactly_the_icons_its_generator_lists():
+    """icons.svg is built from build_icon_sprite.ICONS: an icon put into the sprite by hand is gone after the next
+    build, and the buttons that show it are empty."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("build_icon_sprite", REPO / "src" / "scripts" / "build_icon_sprite.py")
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+
+    assert sorted(sprite_icons()) == sorted(generator.ICONS)
+
+
 _NATIVE = re.compile(
     r"(?<![\w.$])(alert|confirm|prompt)\("
     r"|\b(?:window|globalThis|self|top|parent)\.(alert|confirm|prompt)\(")

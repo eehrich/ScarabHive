@@ -56,9 +56,10 @@ Every machine in the machine folders, in folders by the machine's
 A machine without a group sits in "My machines" when it lies in the
 folder new machines are saved to, else in a folder named after the plugin
 it comes with -- also when that folder is made writable.
-Each entry shows title, id, description and a badge: @{i}valid@{ui}, the
-number of errors or warnings, and @{i}read-only@{ui} for a machine outside
-the writable folders. Folders you close stay closed on your next visit; a
+Each entry shows the title, the id when it says more than the title, the
+start of the description, and badges only where there is something to
+say: the number of errors or warnings, and @{i}read-only@{ui} for a machine
+outside the writable folders. Folders you close stay closed on your next visit; a
 search (id, title, description, group) opens every folder it finds
 something in. @{b}New@{ub} asks for an id and creates
 @{tt}<id>.yaml@{utt} with two states, @{tt}start@{utt} and
@@ -66,16 +67,17 @@ something in. @{b}New@{ub} asks for an id and creates
 
 @{h2}The machine (middle)
 
-The head shows title, id and file, the problems (a click lists them all in
-the inspector), @{b}Save@{ub} and @{b}Auto-save@{ub}, and buttons to copy
-the id, @{b}Duplicate@{ub} the machine
+The head shows title, id and file name (the full path when you point at
+it), the problems (a click lists them all in the inspector), @{b}Save@{ub}
+and the @{b}Auto-save@{ub} switch. Its @{b}More@{ub} menu (the three dots)
+copies the id, makes a @{b}Duplicate@{ub} of the machine
 (a copy under a new id in the folder new machines are saved to, its Python module copied
 as @{tt}<id>.py@{utt}, even of a shipped machine -- the copy runs with that
 folder's runner, so tools only the shipped machine's runner may call are
 refused there: see @{" Runners " link setup}) and delete it (writable
 machines only: its file, its layout and its Python module unless another
 machine uses it; refused while another machine imports it; its runs stay
-readable).
+readable). A narrow head puts these controls below the title.
 
 Edits are saved by hand: what you change in the graph, the inspector and
 the YAML tab, and where you move states, stays unsaved until @{b}Save@{ub}
@@ -83,21 +85,23 @@ the YAML tab, and where you move states, stays unsaved until @{b}Save@{ub}
 changes asks first -- a run starts from the saved file; @{b}Duplicate@{ub}
 copies the saved machine, so it waits for Save or Revert. Text typed in
 the YAML tab reaches the graph with @{b}Validate@{ub}; a graph edit before
-that asks first. @{b}Auto-save@{ub}
+that asks first. The @{b}Auto-save@{ub} switch
 writes every edit and move at once instead; switched on, it saves what is
 unsaved first. The browser remembers the choice.
 
-@{b}Graph@{ub} -- the machine as a diagram. The bar adds a state of each
-activity kind, or a plain State, Choice, Junction, Final or Composite (a
-composite comes with a first state inside it); new states go into the
-selected composite. A composite keeps at least one state: its last one
+@{b}Graph@{ub} -- the machine as a diagram. @{b}Add@{ub} in the bar opens
+a menu: a state of each activity kind (Activities), a plain State, Choice,
+Junction, Final or Composite (Structure; a composite comes with a first
+state inside it), or a @{b}Note@{ub}. New states go into the selected
+composite. A composite keeps at least one state: its last one
 cannot be removed or moved out -- add or move another in first, or remove
-the composite. @{b}Find a state@{ub} selects a state by name.
+the composite. @{b}Find@{ub} selects a state by name. The icon buttons
 @{b}Undo@{ub} and @{b}Redo@{ub} put the machine back as it was before or
 after an edit (the last 20 edits): the unsaved text, or with auto-save the
 file. @{b}Fit@{ub}, the zoom buttons and
 @{b}Auto layout@{ub} (it asks before it drops positions you dragged)
-arrange the view. The automatic layout runs top down in the order of the
+arrange the view; the question mark at the end of the bar names the
+gestures, and the inspector's @{b}Shortcuts@{ub} lists them all. The automatic layout runs top down in the order of the
 file: the states as the YAML lists them (inside a composite, along its
 transitions from its start), so a transition up the canvas is a loop going
 back. A machine whose positions were dragged before this layout
@@ -123,11 +127,13 @@ The keys work while the graph has the focus. A read-only machine can be
 moved around but not changed; its layout is kept only for the open view.
 
 @{b}YAML@{ub} -- the machine's files as text: the YAML, its Python module,
-the machines it imports. Tab indents with spaces. @{b}Validate@{ub} checks
-the unsaved text, @{b}Save@{ub} writes every changed file, @{b}Revert@{ub}
-drops the changes -- without auto-save the graph's and the moves' too. @{b}Python module@{ub} gives a writable machine without
+the machines it imports. Tab indents with spaces. A dot on the tab marks
+unsaved changes. @{b}Validate@{ub} checks the unsaved text, @{b}Revert@{ub}
+drops the changes -- without auto-save the graph's and the moves' too; the
+head's @{b}Save@{ub} writes every changed file. @{b}Python module@{ub} gives a writable machine without
 one its module: a @{tt}python:@{utt} line and the file, both unsaved until
-Save. The problem list below the text leads to each problem's line.
+Save. The problem list below the text leads to each problem's line; a
+saved file without problems shows none.
 
 @{b}Runs@{ub} -- start a run and look at the machine's runs (see below).
 
@@ -138,8 +144,9 @@ how transitions are drawn (right-angled or straight; between a composite
 and a state inside it either line goes to the composite's nearest border
 but the top), every problem as a
 link to its place, a form for the machine's settings (title, description,
-group, params, events, context, vars, imports, resources, limits, finally
-...), the machines it imports, and "As an agent": which agents run this
+group and the settings it has; the others -- params, events, context,
+vars, imports, resources, limits, finally ... -- under @{b}More
+settings@{ub}), the machines it imports, and "As an agent": which agents run this
 machine, and the @{tt}agent:@{utt} block that would offer it as one (see
 @{" Machines " link machines}).
 @{bullet}A state: @{b}Rename@{ub}, @{b}Initial@{ub} (makes it the first
@@ -154,7 +161,7 @@ order they are tried; and its YAML, to edit the state as text.
 @{b}Inside@{ub} names the composite it sits in: another one, or the top
 level, moves it there -- out of a composite too, which dragging cannot.
 @{bullet}A note: its text, @{b}Apply@{ub} and @{b}Remove@{ub}. @{b}Note@{ub}
-in the bar above the graph adds one in the middle of the view. Notes are
+in the Add menu above the graph adds one in the middle of the view. Notes are
 free text in the file, under @{tt}notes:@{utt}; where each one sits is
 kept in the layout file, and the engine never reads them. A note emptied
 and applied is removed, after asking.
@@ -176,20 +183,28 @@ line, keeps its bends; Straight or the machine's style replaces them.
 @{b}Group@{ub} (puts the states into a new composite) and
 @{b}Remove@{ub}.
 
-Every form has its own @{b}Apply@{ub}; it sends only the fields you
-changed, and the file's comments stay. What you typed into the other
+Every form has its own @{b}Apply@{ub}, offered once you type into the
+form; it sends only the fields you changed, and the file's comments stay. What you typed into the other
 forms stays through an edit. The panel asks before it drops text you did
 not apply: when you select something else, reload the machine, or apply
-another edit while the state's YAML box holds text.
+another edit while the state's YAML box holds text. A read-only machine
+says so at the top of the inspector, with @{b}Duplicate@{ub} for a copy
+you can edit, and offers no edits. Every view ends in @{b}Shortcuts@{ub},
+folded: the gestures and keys of the graph.
 
 @{h2}Starting a run
 
-In the Runs tab: a field per param of the machine (the last values you
-started it with come back), @{b}Mocks@{ub} (JSON: a state path and the
-answer its activity gives instead of running, see @{" Runs " link runs}),
-@{b}Mock only@{ub} (anything not mocked fails instead of calling an agent
-or a tool) and @{b}Pause at start@{ub}. Breakpoints and watches you set
-before the run go with it. @{b}Start@{ub} shows the new run.
+In the Runs tab, under @{b}New run@{ub} (folded once the machine has
+runs): a field per param of the machine (the last values you started it
+with come back), and under @{b}Test options@{ub} @{b}Mocks@{ub} (JSON: a
+state path and the answer its activity gives instead of running, see
+@{" Runs " link runs}), @{b}Mock only@{ub} (anything not mocked fails
+instead of calling an agent or a tool) and @{b}Pause at start@{ub}. The
+mocks you last started the machine with come back; Test options then
+opens, and its title says what it holds ("mocks, mock only"), so nothing
+is sent unseen. Breakpoints and watches you set before the run go with
+it. @{b}Start@{ub} shows the new run; a run that cannot start says why in
+the form, unfolded.
 
 @{h2}Watching a run
 
@@ -200,13 +215,16 @@ the run list every 3 seconds while another of its runs is alive.
 
 @{bullet}The @{b}debug bar@{ub} above the tabs: status, where it is paused
 or ended. Other runs alive in the run list (as filtered and loaded) stand
-beside the one shown, each with its status; a click shows another.
-@{b}Continue@{ub}, @{b}Step@{ub} (to the next hook),
-@{b}Pause@{ub}, @{b}Run to@{ub} a state, @{b}Terminate@{ub} (its finally
-activities still run), @{b}Resume@{ub} for an interrupted run, and
-@{b}Fork@{ub}: a new run that replays this one up to a top-level step and
-goes on live from there (with Shift: on the machine as it is now, not as
-it was when the run started). A run waiting for an event has a button per
+beside the one shown, each with its status; a click shows another. It
+shows only the controls the run takes now: @{b}Continue@{ub},
+@{b}Step@{ub} (to the next hook) and @{b}Pause@{ub} as icon buttons,
+@{b}Run to@{ub} a state, @{b}Terminate@{ub} (its finally activities still
+run), @{b}Resume@{ub} for an interrupted run, and always
+@{b}Fork...@{ub}: a new run that replays this one up to a top-level step
+and goes on live from there. A dialog asks for the step, then whether the
+fork holds there (to look at or set @{tt}ctx@{utt} first) or runs on; with
+Shift it forks the machine as it is now, not as it was when the run
+started. A run waiting for an event has a button per
 event it takes. "in another process" marks a run another process runs --
 agent-cli, agent-run: you see its journal; its events, Pause, Continue,
 Step and Terminate reach it within a second, Run to and breakpoints only
@@ -238,9 +256,10 @@ a mock-only run, which has none, nor for another user's run).
 kind.
 @{bullet}The @{b}Debug@{ub} tab of the inspector: the run's params,
 output and error; watches (a watch pauses the run when its value
-changes); breakpoints; @{b}Evaluate@{ub} and @{b}Set@{ub} while paused
-(Set writes into @{tt}ctx@{utt} -- or, at an exit or error breakpoint,
-sets the activity's answer); @{b}Send event@{ub} with data; and every
+changes); breakpoints; @{b}Evaluate@{ub} and @{b}Set@{ub}, shown while
+the run is paused (Set writes into @{tt}ctx@{utt} -- or, at an exit or
+error breakpoint, sets the activity's answer); @{b}Send event@{ub} with
+data while the run has not ended; and, while a run is selected, every
 frame with its state, step and @{tt}ctx@{utt} (@{b}Show@{ub} shows it on
 its machine's graph).
 

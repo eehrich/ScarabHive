@@ -2,19 +2,16 @@
 {% from "kit/macros.html" import icon %}
 {% block title %}Agent Editor{% endblock %}
 {% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
-{% block toolbar %}{% if auth_enabled %}
-<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="reloadConfig" title="Apply what needs no restart to the active agents">{{ icon('rotate-ccw', size='sm') }} Reload config</button>
-<pk-refresh interval="30"></pk-refresh>
-{% endif %}{% endblock %}
+{% block toolbar %}{% if auth_enabled %}<pk-refresh interval="30"></pk-refresh>{% endif %}{% endblock %}
 {% block content %}
 {% if auth_enabled %}
 <div class="ae-layout pk-sidebar-layout">
   <nav class="ae-side pk-sidebar" aria-label="Agents">
-    <div class="pk-row ae-side-top">
-      <label class="pk-search pk-grow">{{ icon('search') }}<input id="search" class="pk-input pk-input--sm" type="search" placeholder="Search agents" aria-label="Search agents"></label>
-      <button type="button" class="pk-btn pk-btn--sm pk-btn--primary" id="create" title="New agent">{{ icon('plus', size='sm') }} New</button>
+    <div class="pk-row">
+      <label class="pk-search pk-grow">{{ icon('search') }}<input id="search" class="pk-input" type="search" placeholder="Search" aria-label="Search agents"></label>
+      <button type="button" class="pk-btn" id="create" title="New agent">{{ icon('plus') }} New</button>
     </div>
-    <select id="filter" class="pk-select pk-select--sm" aria-label="Show">
+    <select id="filter" class="pk-select" aria-label="Show">
       <option value="all">All agents</option>
       <option value="enabled">Enabled</option>
       <option value="disabled">Disabled</option>
@@ -26,8 +23,7 @@
   </nav>
 
   <section class="ae-main" aria-label="Agent">
-    <div id="placeholder"><div class="pk-empty">{{ icon('cpu') }}<div class="pk-empty-title">No agent selected</div>
-      <div>Pick an agent on the left, or create a new one.</div></div></div>
+    <div id="placeholder"><span class="pk-skeleton"></span></div>
     <div id="editor" class="pk-stack" hidden>
       <header id="head" class="ae-head"></header>
       <div id="banners" class="pk-stack"></div>
@@ -83,7 +79,7 @@
         <span class="pk-help" id="createNameHelp">Lower case letters, digits and _, starting with a letter. Saved as agents/&lt;name&gt;.yaml beside the config.</span></label>
       <fieldset class="ae-plain">
         <legend class="pk-label">Start from</legend>
-        <label class="pk-radio"><input type="radio" name="start" value="blank" checked> Blank basic_agent</label>
+        <label class="pk-radio"><input type="radio" name="start" value="blank" checked> Blank agent</label>
         <label class="pk-radio"><input type="radio" name="start" value="inherit"> Inherit from an agent</label>
         <label class="pk-radio"><input type="radio" name="start" value="copy"> Copy of an agent</label>
       </fieldset>

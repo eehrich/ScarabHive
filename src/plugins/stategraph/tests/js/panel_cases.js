@@ -9,6 +9,8 @@ import { ApiError } from './fake_kit.js';
 load('./fake_dom.js');
 // the cases edit the file at once, as with auto-save; those without it take the setting back before they boot
 localStorage.setItem('stategraph:autosave', 'true');
+// as panel.html draws it: a start error shows only once there is one (the start form's fold reads it)
+document.getElementById('startError').hidden = true;
 
 globalThis.RENDERS = []; globalThis.ICONS = new Set(); globalThis.TOASTS = []; globalThis.CALLS = []; globalThis.ASKED = [];
 globalThis.TABS = {}; globalThis.ANSWERS = { prompt: [], confirm: true, dialog: null };
@@ -51,6 +53,7 @@ let runAnswer = RUN;
 let controlAnswer = null;  // r1's control answer, when it is not runAnswer
 let runsAnswer = null;  // (query) -> the runs list, when not the two runs
 let catalogDown = null;  // (path) -> true: the catalog answers 503
+let startRefused = null;  // the answer to a run's start, when it is refused
 globalThis.SERVER = (method, path, json) => {
   const p = path.replace('/plugins/stategraph/api', '');
   if (p === '/kinds') return KINDS;
@@ -85,7 +88,7 @@ globalThis.SERVER = (method, path, json) => {
   if (p.startsWith('/runs?')) return runsAnswer ? runsAnswer(new URLSearchParams(p.split('?')[1]))
     : [...RUNS, { ...RUNS[0], id: 'r2', status: 'succeeded', final_state: 'done' }];
   if (p === '/runs/r1/events') return { accepted: true, frame: '' };
-  if (p === '/runs' && method === 'POST') return { run_id: 'r1' };
+  if (p === '/runs' && method === 'POST') return startRefused || { run_id: 'r1' };
   if (p.startsWith('/runs/r1?')) return runAnswer;
   if (p === '/runs/r1/control') return controlAnswer || runAnswer;
   if (p.startsWith('/runs/r2?')) return RUN2;
@@ -160,7 +163,12 @@ const submit = async (form, values) => {
 };
 const confirms = () => ASKED.filter(([kind]) => kind === 'confirm').length;
 const runGets = () => CALLS.filter(([, path]) => path.includes('/runs/r1?')).length;
-const headName = () => ($('machineHead').innerHTML.match(/<h2 class="sg-head-name">([^<]*)<\/h2>/) || [])[1];
+/** The head's auto-save switch: 'on', 'off', or null when it is not drawn. */
+const autosaveSwitch = () => {
+  const box = $('machineHead').innerHTML.match(/<input\b[^>]*\bdata-act="autosave"[^>]*>/)?.[0];
+  return box ? (/\bchecked\b/.test(box) ? 'on' : 'off') : null;
+};
+const headName = () => ($('machineHead').innerHTML.match(/<h2 class="sg-head-name[^"]*">([^<]*)<\/h2>/) || [])[1];
 /** A submitted inspector form: {name: [shape, shown, typed]} (shape 'kind' for the kind select). */
 function formOf(kind, controls) {
   const form = element('form', { 'data-form': kind });
@@ -203,7 +211,7 @@ const CASES = {
     editAnswer = new ApiError(409, 'the file changed since you read it');
     ANSWERS.prompt.push('judge');
     ANSWERS.dialog = 'reload';
-    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
     await settle();
     check(ASKED.some(([kind, text]) => kind === 'dialog' && text === 'The file changed'), 'no conflict dialog');
     check(confirms() === 1, `asked ${confirms()} times: ${JSON.stringify(ASKED)}`);
@@ -286,11 +294,11 @@ const CASES = {
     await choose('shared');
     const inspector = $('side-inspect').innerHTML;
     const form = inspector.slice(inspector.indexOf('data-form="set-state"'));
-    check(/<textarea[^>]*readonly/.test(form) && /<button type="submit"[^>]*disabled/.test(form), 'Apply is offered');
+    check(/<textarea[^>]*readonly/.test(form) && !/<button type="submit"/.test(form), 'Apply is offered');
     check(form.includes('description: anchored'), 'the value below the anchor is shown');
     await choose('work');
-    const plain = $('side-inspect').innerHTML;
-    check(!/<button type="submit"[^>]*disabled/.test(plain.slice(plain.indexOf('data-form="set-state"'))), 'a plain state is locked');
+    const plain = $('side-inspect').innerHTML.slice($('side-inspect').innerHTML.indexOf('data-form="set-state"'));
+    check(!/<textarea[^>]*readonly/.test(plain) && /<button type="submit"[^>]*data-apply/.test(plain), 'a plain state is locked');
   },
 
   async a_poll_tick_waits_for_the_answer_that_is_out() {
@@ -420,7 +428,7 @@ const CASES = {
     const tools = $('line-tools-write#1').innerHTML;
     // keyed per transition: redrawn with Reset line, the button clicked keeps the keyboard -- not another form's
     check(tools.includes('data-act="reset-line" data-key="reset-line:write#1"') && tools.includes('data-act="add-bend" data-key="add-bend:write#1"')
-      && tools.includes('Select the line'), `the state's form of write#0: ${tools}`);
+      && tools.includes('longest segment'), `the state's form of write#0: ${tools}`);
     // right-angled for a line drawn by hand: it is one already, its bends stay
     const bent = lineOf();
     const select = element('select', { 'data-line': 'write#0' });
@@ -710,9 +718,9 @@ const CASES = {
 
   async a_composite_from_the_palette_is_one_edit_with_its_first_state() {
     await boot('?machine=review');
-    check(/data-add-type="composite"/.test($('palette').innerHTML), 'the palette offers no composite');
+    check(/data-add-type="composite"/.test($('paletteMenu').innerHTML), 'the palette offers no composite');
     ANSWERS.prompt.push('group');
-    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'composite' }) });
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-type': 'composite' }) });
     await settle();
     const sent = lastEdit();
     check(sent?.op === 'batch' && JSON.stringify(sent.ops) === JSON.stringify([
@@ -928,7 +936,7 @@ const CASES = {
   async a_composite_named_like_its_first_state_gets_another_one() {
     await boot('?machine=review');
     ANSWERS.prompt.push('start');
-    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'composite' }) });
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-type': 'composite' }) });
     await settle();
     check(JSON.stringify(lastEdit()?.ops?.[1]) === JSON.stringify({ op: 'add_state', name: 'start_2', type: 'state', parent: 'start' }),
       `sent: ${JSON.stringify(lastEdit())}`);
@@ -1337,7 +1345,7 @@ const CASES = {
   async a_bad_state_name_is_asked_again_with_what_was_typed_and_an_unchanged_one_is_no_error() {
     await boot('?machine=review');
     ANSWERS.prompt.push('Bad Name', 'write', 'fresh_one');
-    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
     await settle();
     const prompts = ASKED.filter(([kind]) => kind === 'prompt');
     check(prompts.length === 3, `asked ${JSON.stringify(prompts)}`);
@@ -1639,7 +1647,7 @@ const CASES = {
     const block = (shown.match(/id="agentEntry">([^<]*)<\/pre>/) || [])[1] || '';
     check(block.startsWith('agent:\n  name: review_agent') && block.includes('input: json') && !block.includes('task_param')
       && block.includes('on_wait: ask') && block.includes('visibility: tool'), `the block: ${block || shown}`);
-    check(shown.includes('open><summary>agent: block'), 'the block is open where no agent runs it');
+    check(shown.includes('<details class="pk-details"><summary>agent: block'), 'the block is not there, or not folded');
     await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'copy-agent-entry' }) });
     check((globalThis.COPIED || []).some((text) => text.startsWith('agent:\n  name: review_agent')),
       `copied ${JSON.stringify(globalThis.COPIED)}`);
@@ -1728,12 +1736,20 @@ const CASES = {
 
   async a_fork_can_be_held_at_its_fork_point() {
     await boot('?machine=review&run=r1');
-    $('forkStep').value = '2';
-    $('forkPause').checked = true;
+    ANSWERS.prompt.push('two', '2');  // a step that is no number is asked again
+    ANSWERS.dialog = 'hold';
     await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
     await settle();
     const sent = CALLS.filter(([, path]) => path.endsWith('/control')).pop();
-    check(sent && sent[2].action === 'fork' && sent[2].at_step === 2 && sent[2].pause === true, `sent ${JSON.stringify(sent && sent[2])}`);
+    check(sent && sent[2].action === 'fork' && sent[2].at_step === 2 && sent[2].pause === true && sent[2].definition === 'snapshot',
+      `sent ${JSON.stringify(sent && sent[2])}`);
+    check(ASKED.filter(([kind]) => kind === 'prompt').length === 2, `asked ${JSON.stringify(ASKED)}`);
+    const forks = () => CALLS.filter(([, path, json]) => path.endsWith('/control') && json.action === 'fork').length;
+    ANSWERS.prompt.push('2');
+    ANSWERS.dialog = null;  // cancelled at the second question
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    check(forks() === 1, 'a cancelled fork was sent');
   },
 
   async a_waiting_frame_says_what_it_waits_for_and_since_when() {
@@ -1748,7 +1764,7 @@ const CASES = {
   async the_result_shows_every_activitys_answer_and_the_end_states() {
     await boot('?machine=review&run=r2');
     const result = $('runResult').innerHTML;
-    check(result.includes('Result of r2'), 'no result card');
+    check(result.includes('data-run="r2"'), 'no result card');
     check(result.includes('data-open-session="sg_r2"'), 'the session of the run is not offered');
     check(/End states[\s\S]*critique · verdict[\s\S]*failed[\s\S]*done/.test(result), `end states: ${result}`);
     check(result.includes('data-result="3"') && result.includes('data-result="5"') && !/data-result="[89]"/.test(result),
@@ -1860,11 +1876,11 @@ const CASES = {
 
   async a_run_switched_to_takes_the_result_of_the_one_left_away_at_once() {
     await boot('?machine=review&run=r2');
-    check($('runResult').innerHTML.includes('Result of r2'), 'no result of r2');
+    check($('runResult').innerHTML.includes('data-run="r2"'), 'no result of r2');
     HOLD = (method, path) => path.includes('/runs/r1');
     await $('runList').fire('rowselect', { detail: { id: 'r1' } });
     await settle();
-    check(!$('runResult').innerHTML.includes('Result of r2'), 'the result of the run left stays under the next one');
+    check(!$('runResult').innerHTML.includes('data-run="r2"'), 'the result of the run left stays under the next one');
     await release();
   },
 
@@ -1885,7 +1901,7 @@ const CASES = {
     check(confirms() === 1 && !CALLS.some(([, path]) => path.endsWith('/edit')), 'another form applied over the text unasked');
     $('yamlText').value = `${MACHINE.files['review.yaml']}\n# unsaved\n`;
     await $('yamlText').fire('input', {});
-    await $('yamlSave').fire('click', {});
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'save' }) });
     await settle();
     check(confirms() === 2 && !CALLS.some(([method]) => method === 'PUT'), 'a YAML save reloaded over the inspector unasked');
   },
@@ -1910,7 +1926,7 @@ const CASES = {
   async the_sessions_of_another_users_run_are_not_offered() {
     document.querySelector = (selector) => (selector === '.sg-layout' ? { dataset: { viewer: 'ada' } } : null);
     await boot('?machine=review&run=r2');  // r2 is nobody's: its sessions are not ada's
-    check($('runResult').innerHTML.includes('Result of r2'), 'no result of r2');
+    check($('runResult').innerHTML.includes('data-run="r2"'), 'no result of r2');
     check(!$('runResult').innerHTML.includes('data-open-session'), 'a session the chat cannot open is offered');
   },
 
@@ -1998,7 +2014,7 @@ const CASES = {
     check($('yamlText').value.startsWith('"""Companion module of plain.yaml.') && $('yamlText').dataset.lang === 'python',
       `the new module is not open as Python: ${$('yamlText').value.slice(0, 60)}`);
     check(DIRTY && $('yamlAddModule').hidden, 'the draft already names a module: no second one');
-    await $('yamlSave').fire('click', {});
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'save' }) });
     await settle();
     const put = (CALLS.find(([method, path]) => method === 'PUT' && path.endsWith('/machines/plain')) || [])[2];
     check(put, 'not saved');
@@ -2056,7 +2072,7 @@ const CASES = {
     await $('yamlAddModule').fire('click', {});
     await settle();
     ANSWERS.dialog = 'use';
-    await $('yamlSave').fire('click', {});
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'save' }) });
     await settle();
     await release();
     await settle();
@@ -2154,7 +2170,149 @@ const CASES = {
     await $('side-inspect').fire('submit', { target: formOf('state-fields', { description: ['line', '', ''] }) });
     await $('side-inspect').fire('submit', { target: formOf('activity', { kind: ['kind', 'decide', 'decide'], question: ['text', 'q', 'q'] }) });
     await settle();
-    check(!lastEdit() && TOASTS.filter(([, text]) => text === 'Nothing changed').length === 2, `sent: ${JSON.stringify(lastEdit())}`);
+    check(!lastEdit() && !TOASTS.length, `sent: ${JSON.stringify(lastEdit())}, said ${JSON.stringify(TOASTS)}`);
+  },
+
+  async typing_offers_apply_and_an_unchanged_apply_takes_it_back() {
+    await boot('?machine=fields');
+    await choose('judge');
+    // the form as drawn: its Apply disabled, not primary (rendered markup is a string here: the form is built)
+    const form = $('side-inspect').appendChild(element('form', { 'data-form': 'state-fields' }));
+    const input = form.appendChild(element('input', { name: 'max_visits' }));
+    const apply = form.appendChild(element('button', { type: 'submit', 'data-apply': '', class: 'pk-btn pk-btn--sm' }));
+    apply.disabled = true;
+    const other = $('side-inspect').appendChild(element('form', { 'data-form': 'activity' }));
+    const otherApply = other.appendChild(element('button', { type: 'submit', 'data-apply': '', class: 'pk-btn pk-btn--sm' }));
+    otherApply.disabled = true;
+    await $('side-inspect').fire('input', { target: input });
+    check(DIRTY && !apply.disabled && apply.classList.contains('pk-btn--primary'), `typing did not offer Apply: disabled ${apply.disabled}, ${apply.getAttribute('class')}`);
+    check(otherApply.disabled && !otherApply.classList.contains('pk-btn--primary'), 'typing into one form offered another form\'s Apply');
+    // typed back to what it showed: Apply sends nothing and is taken back
+    form.elements.max_visits.name = 'max_visits';
+    form.elements.max_visits.value = '';
+    form.elements.max_visits.dataset.shape = 'number';
+    form.elements.max_visits.dataset.orig = '';
+    await $('side-inspect').fire('submit', { target: form });
+    await settle();
+    check(!lastEdit() && !TOASTS.length, `sent ${JSON.stringify(lastEdit())}, said ${JSON.stringify(TOASTS)}`);
+    check(apply.disabled && !apply.classList.contains('pk-btn--primary') && !DIRTY,
+      `an unchanged Apply stays offered: disabled ${apply.disabled}, ${apply.getAttribute('class')}, dirty ${DIRTY}`);
+  },
+
+  async a_run_again_that_fails_unfolds_the_form_and_the_test_options_say_what_they_hold() {
+    localStorage.setItem('stategraph:mocks:review', JSON.stringify('{"write": "kept"}'));
+    await boot('?machine=review&run=r1');  // r1 was started without mocks
+    check($('testOptions').open === true && $('testOptionsHeld').textContent === '· mocks',
+      `the remembered mocks are folded away unsaid: open ${$('testOptions').open}, "${$('testOptionsHeld').textContent}"`);
+    check($('startBox').open === false, 'the start form is not folded with runs listed');
+    // refused, its inputs empty: only the refusal's word on mocks can unfold the test options
+    $('testOptions').open = false;
+    startRefused = new ApiError(422, 'mocks: nope is no state path');
+    await $('runResult').fire('click', { target: element('button', { 'data-act': 'rerun' }) });
+    await settle();
+    check($('startBox').open === true && !$('startError').hidden && $('startError').textContent.includes('nope is no state path'),
+      `the refusal is not shown: open ${$('startBox').open}, "${$('startError').textContent}"`);
+    check((globalThis.KEPT_IN_SIGHT || []).includes('startError'), `the refusal is not brought into sight: ${globalThis.KEPT_IN_SIGHT}`);
+    check($('testOptions').open === true && $('testOptionsHeld').textContent === '',
+      `a refusal about mocks leaves the test options folded: open ${$('testOptions').open}, "${$('testOptionsHeld').textContent}"`);
+    // started, with the run's mocks: only Run again itself can unfold them
+    runAnswer = { ...RUN, mocks: { mocks: { write: 'a draft' }, mock_only: true } };
+    POLLERS.find((p) => p.ms === 1000).fn();
+    await settle();
+    startRefused = null;
+    $('testOptions').open = false;
+    await $('runResult').fire('click', { target: element('button', { 'data-act': 'rerun' }) });
+    await settle();
+    check(CALLS.filter(([method, path]) => method === 'POST' && path.endsWith('/api/runs')).length === 2, 'the second run was not started');
+    check($('testOptions').open === true && $('testOptionsHeld').textContent === '· mocks, mock only',
+      `Run again's inputs are not shown: open ${$('testOptions').open}, "${$('testOptionsHeld').textContent}"`);
+  },
+
+  async a_status_filter_on_another_machine_does_not_unfold_new_run() {
+    runsAnswer = (query) => (query.get('status') ? [] : [...RUNS]);
+    await boot('?machine=review');
+    check($('startBox').open === false, 'the start form is not folded with runs listed');
+    $('runStatus').value = 'failed';
+    await $('runStatus').fire('change', {});
+    await settle();
+    await clickMachine('other');
+    await settle();
+    check(headName() === 'other' && $('runList').innerHTML.includes('No failed run'), `not other's failed runs: ${headName()}`);
+    check($('startBox').open === false, 'no runs of the filtered status unfolded New run');
+    // opened by hand under the filter: the whole list that comes with every status does not fold it under the typing
+    $('startBox').open = true;
+    await $('startBox').fire('toggle', {});
+    $('runStatus').value = '';
+    await $('runStatus').fire('change', {});
+    await settle();
+    check($('runList').innerHTML.includes('data-id="r1"'), 'the whole list did not come');
+    check($('startBox').open === true, 'the whole list folded New run the viewer opened');
+  },
+
+  async another_machines_start_error_is_gone_with_it() {
+    await boot('?machine=review');
+    startRefused = new ApiError(422, 'premise is required');
+    await $('startForm').fire('submit', {});
+    await settle();
+    check(!$('startError').hidden, `the refusal is not shown: ${$('startError').textContent}`);
+    startRefused = null;
+    await clickMachine('other');
+    await settle();
+    check(headName() === 'other' && $('startError').hidden, `review's refusal shows under other: "${$('startError').textContent}"`);
+  },
+
+  async a_start_error_before_the_first_run_list_keeps_new_run_open() {
+    await import('./fake_kit_held.js');  // it sets HOLD up as it loads: before the panel loads, then held
+    HOLD = (method, path) => path.includes('/runs?');  // the first run list is late
+    location.search = '?machine=review';
+    await import('./panel_copy.js');
+    await settle();
+    check(headName() === 'review' && PENDING.some((call) => call.path.includes('/runs?')), 'the run list is not held');
+    startRefused = new ApiError(422, 'premise is required');
+    await $('startForm').fire('submit', {});
+    await settle();
+    check($('startBox').open === true && !$('startError').hidden, `the refusal is not shown: ${$('startError').textContent}`);
+    HOLD = () => false;
+    await release();
+    await settle();
+    check($('runList').innerHTML.includes('data-id="r1"'), 'the run list did not come');
+    check($('startBox').open === true, 'the run list folded New run over the refusal it shows');
+  },
+
+  async an_apply_on_its_way_stays_disabled_while_another_form_is_typed_into() {
+    editAnswer = FIELDS;
+    await boot('?machine=fields');
+    await choose('judge');
+    const formWith = (kind, name) => {
+      const form = $('side-inspect').appendChild(element('form', { 'data-form': kind }));
+      const input = form.appendChild(element('input', { name }));
+      const apply = form.appendChild(element('button', { type: 'submit', 'data-apply': '', class: 'pk-btn pk-btn--sm' }));
+      apply.disabled = true;
+      return { form, input, apply };
+    };
+    const sending = formWith('state-fields', 'max_visits');
+    const other = formWith('activity', 'question');
+    await $('side-inspect').fire('input', { target: sending.input });
+    check(!sending.apply.disabled, 'typing did not offer Apply');
+    Object.assign(sending.form.elements.max_visits, { name: 'max_visits', value: '3' });
+    sending.form.elements.max_visits.dataset.shape = 'number';
+    sending.form.elements.max_visits.dataset.orig = '';
+    HOLD = (method, path) => path.endsWith('/edit');
+    const submitted = $('side-inspect').fire('submit', { target: sending.form });
+    await settle();
+    check(PENDING.length === 1 && sending.apply.disabled, `the edit is not on its way: ${PENDING.length}, disabled ${sending.apply.disabled}`);
+    await $('side-inspect').fire('input', { target: other.input });
+    check(!other.apply.disabled && sending.apply.disabled,
+      `typing elsewhere freed the Apply on its way: other ${other.apply.disabled}, sending ${sending.apply.disabled}`);
+    HOLD = () => false;
+    await release();
+    await submitted;
+    await settle();
+    check(lastEdit()?.op === 'update_state' && JSON.stringify(lastEdit().fields) === '{"max_visits":3}', `sent ${JSON.stringify(lastEdit())}`);
+    check(sending.apply.disabled && !sending.apply.classList.contains('pk-btn--primary'), 'applied, its Apply is still offered');
+    await $('side-inspect').fire('input', { target: sending.input });
+    check(!sending.apply.disabled && sending.apply.classList.contains('pk-btn--primary'),
+      `after the edit its Apply no longer follows what is typed: disabled ${sending.apply.disabled}`);
   },
 
   async a_read_only_machine_shows_its_fields_disabled() {
@@ -2357,11 +2515,11 @@ const CASES = {
     localStorage.removeItem('stategraph:autosave');
     editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
     await boot('?machine=review');
-    check(/data-act="autosave" aria-pressed="false"/.test($('machineHead').innerHTML), 'auto-save on by default');
+    check(autosaveSwitch() === 'off', `auto-save ${autosaveSwitch()} by default`);
     await $('autoLayout').fire('click', {});
     await settle();
-    check(!$('yamlSave').disabled && !$('yamlRevert').disabled, 'the YAML tab offers no Save or Revert for a move');
-    await $('yamlSave').fire('click', {});
+    check(!/data-act="save"[^>]*disabled/.test($('machineHead').innerHTML) && !$('yamlRevert').disabled, 'no Save or Revert for a move');
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'save' }) });
     await settle();
     check(CALLS.some(([method, path]) => method === 'PUT' && path.endsWith('/machines/review/layout')) && !DIRTY,
       'the YAML tab\'s Save left the layout unsaved');
@@ -2373,7 +2531,7 @@ const CASES = {
     const put = CALLS.find(([method, path]) => method === 'PUT' && path.endsWith('/machines/review'));
     check(put && put[2].files['review.yaml'] === 'drafted', `not saved first: ${JSON.stringify(put)}`);
     check(localStorage.getItem('stategraph:autosave') === 'true'
-      && /data-act="autosave" aria-pressed="true"/.test($('machineHead').innerHTML), 'auto-save not on, or not kept');
+      && autosaveSwitch() === 'on', 'auto-save not on, or not kept');
     editAnswer = null;
     await choose('write');
     await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
@@ -2399,10 +2557,10 @@ const CASES = {
     editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
     await boot('?machine=review');
     await typeDraft();
-    check(!$('yamlSave').disabled, 'typing offers no Save');
+    check(!/data-act="save"[^>]*disabled/.test($('machineHead').innerHTML) && !$('yamlDot').classList.contains('sg-invisible'), 'typing offers no Save');
     ANSWERS.confirm = false;
     ANSWERS.prompt.push('judge');
-    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
     await settle();
     check(!CALLS.some(([, path]) => path.endsWith('/edit')) && ASKED.some(([, text]) => String(text).includes('does not show yet')),
       'an edit on the graph drawn before the typed text went on unasked');
@@ -2412,7 +2570,7 @@ const CASES = {
     check(validated && validated[2].files['review.yaml'].includes('# unsaved'), 'Validate did not draw the typed text');
     const asked = confirms();
     ANSWERS.prompt.push('judge');
-    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
     await settle();
     const edit = CALLS.filter(([, path]) => path.endsWith('/edit')).pop();
     check(confirms() === asked && edit && edit[2].drafts['review.yaml'].includes('# unsaved'),
@@ -2422,14 +2580,14 @@ const CASES = {
     ANSWERS.confirm = true;
     editAnswer = new ApiError(422, 'refused');
     ANSWERS.prompt.push('judge');
-    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
     await settle();
     $('yamlFile').value = 'review.yaml';
     await $('yamlFile').fire('change', {});  // the text drawn anew from the drafts
     check($('yamlText').value.includes('# again'), 'a refused edit dropped the typed text');
     editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted twice' };
     ANSWERS.prompt.push('judge');
-    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
     await settle();
     const made = CALLS.filter(([, path]) => path.endsWith('/edit')).pop();
     check(made[2].drafts['review.yaml'] === 'drafted' && $('yamlText').value === 'drafted twice',
@@ -2516,7 +2674,7 @@ const CASES = {
     await settle();
     await release();
     await removing;
-    check(localStorage.getItem('stategraph:autosave') !== 'true' && /data-act="autosave" aria-pressed="false"/.test($('machineHead').innerHTML)
+    check(localStorage.getItem('stategraph:autosave') !== 'true' && autosaveSwitch() === 'off'
       && DIRTY && $('yamlText').value === 'drafted', 'auto-save switched while the edit was on its way, or the edit lost');
   },
   async a_selection_dragged_by_a_state_inside_its_composite_moves_the_composite_only() {
@@ -2590,7 +2748,7 @@ const CASES = {
   async a_note_from_the_bar_goes_into_the_file_and_the_middle_of_the_view() {
     await boot('?machine=review');
     editAnswer = { ...MACHINE, graph: { ...MACHINE.graph, notes: [{ name: 'note_1', text: 'New note' }] } };
-    await $('palette').fire('click', { target: element('button', { 'data-add-note': '' }) });
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-note': '' }) });
     await settle();
     check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'set_note', name: 'note_1', text: 'New note' }), `sent: ${JSON.stringify(lastEdit())}`);
     const puts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/review/layout')).map(([, , json]) => json.layout.positions);
@@ -2617,7 +2775,7 @@ const CASES = {
     await $('side-inspect').fire('input', { target: form.appendChild(element('textarea', { name: 'yaml' })) });  // not applied
     editAnswer = { ...MACHINE, graph: { ...MACHINE.graph, notes: [{ name: 'note_1', text: 'New note' }] } };
     ANSWERS.confirm = false;  // keep the state's text
-    const click = () => $('palette').fire('click', { target: element('button', { 'data-add-note': '' }) });
+    const click = () => $('paletteMenu').fire('click', { target: element('button', { 'data-add-note': '' }) });
     await Promise.all([click(), click()]);  // a double click
     await release();
     await settle();
@@ -2635,7 +2793,7 @@ const CASES = {
     await settle();
     const shown = $('side-inspect').innerHTML;
     check(shown.includes('YAML anchor') && /sg-note-input"[^>]*readonly/.test(shown) && !shown.includes('remove-note'), shown);
-    await $('palette').fire('click', { target: element('button', { 'data-add-note': '' }) });
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-note': '' }) });
     await settle();
     check(!CALLS.some(([, path]) => path.endsWith('/edit')) && TOASTS.some(([, message]) => String(message).startsWith('Notes:')),
       `a note was added to a shared block: ${JSON.stringify(TOASTS)}`);
@@ -2665,7 +2823,7 @@ const CASES = {
       'a click on the note shows its text');
     await $('side-inspect').fire('submit', { target: formOf('note', { text: ['kind', '', 'Because the review\nneeds a second look.\n'] }) });
     await settle();
-    check(!lastEdit() && TOASTS.some(([, text]) => text === 'Nothing changed'), `sent: ${JSON.stringify(lastEdit())}`);
+    check(!lastEdit() && !TOASTS.length, `sent: ${JSON.stringify(lastEdit())}, said ${JSON.stringify(TOASTS)}`);
     await $('side-inspect').fire('submit', { target: formOf('note', { text: ['kind', '', 'Look twice.'] }) });
     await settle();
     check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'set_note', name: 'why', text: 'Look twice.' }), `sent: ${JSON.stringify(lastEdit())}`);
@@ -2721,7 +2879,7 @@ const CASES = {
     reviewAnswer = { ...MACHINE, runner: 'v6_machine_runner', runner_problem: 'runners a, b both claim /m in runs_machines_in' };
     await boot('?machine=review');
     const shown = $('side-inspect').innerHTML;
-    check(/<dt>runner<\/dt><dd[^>]*>v6_machine_runner<\/dd>/.test(shown), 'the runner is not shown');
+    check(/<dt>Runner<\/dt><dd[^>]*>v6_machine_runner<\/dd>/.test(shown), 'the runner is not shown');
     check(shown.includes('both claim /m'), 'the runner problem is not shown');
     const asked = () => CALLS.filter(([, path]) => path.includes('/catalog')).map(([, path]) => path.split('/api')[1]);
     check(JSON.stringify(asked()) === JSON.stringify(['/catalog?machine_id=review']), `catalog asked: ${JSON.stringify(asked())}`);

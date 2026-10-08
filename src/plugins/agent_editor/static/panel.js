@@ -1,5 +1,8 @@
 // Agent Editor: agent definitions edited in a form and written back into the YAML files they came from.
-import { api, html, render, icon, confirm, dialog, toast, initTabs, selectTab, setDirty, yamlCode } from '/static/kit/panel-kit.js';
+import {
+  api, html, render, icon, confirm, dialog, toast, initTabs, selectTab, setDirty, yamlCode, emptyState, skeleton, placeMenu,
+  keepInSight, scrollerOf,
+} from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const RELOAD_CONFIG = new URL('../../../admin/reload-config', import.meta.url).pathname;  // the core endpoint
@@ -12,6 +15,7 @@ const VISIBILITY = {
   both: 'Shown in the UI and offered to other agents as a tool',
   private: 'Neither shown in the UI nor offered as a tool',
 };
+const VISIBILITY_LABELS = { ui: 'UI list', tool: 'Tool', both: 'UI and tool', private: 'Hidden' };
 /** How the entry on disk relates to what the app runs: dot colour and words. Active, not running: ready, not busy. */
 const STATES = {
   in_sync: ['ok', 'Active'],
@@ -112,6 +116,9 @@ let managerKept = null;
 let newManagerName = '';
 /** A reload of the config on its way. */
 let reloading = false;
+/** Folded sections the user opened or closed, for the view `view` (see shownView); the others start closed, or open
+ * when they hold a value of the agent's own. */
+const folds = { view: -1, open: new Map() };
 /** Counts what the editor showed one after another (an agent, a draft): each starts with its tabs at the top; a
  * reload of the same one (a refresh, a save, a new agent saved) keeps their places. */
 let shownView = 0;
@@ -145,8 +152,6 @@ let uid = 0;
 const nextId = () => `ae${++uid}`;
 const aborted = (error) => error?.name === 'AbortError';
 const badge = (kind, content) => html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${content}</span>`;
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 const clone = (value) => (value === undefined ? undefined : structuredClone(value));
 const isMapping = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -229,6 +234,19 @@ function keepFocus(draw) {
   }
 }
 
+/**
+ * A folded section (the kit's pk-details). What the user did with it holds for the agent shown; untouched, it starts
+ * closed, or open when `set` (it holds a value of the agent's own, which would be out of sight otherwise).
+ */
+function fold(key, title, content, { set = false, extra = '' } = {}) {
+  if (folds.view !== shownView) {
+    folds.open.clear();
+    folds.view = shownView;
+  }
+  const open = folds.open.get(key) ?? set;
+  return html`<details class="pk-details" data-fold="${key}" ${open ? 'open' : ''}><summary>${title}${extra}</summary>${content}</details>`;
+}
+
 /** Focus for a control that went away: the first of the candidates that is there and enabled. */
 function focusFirst(...candidates) {
   candidates.find((element) => element && !element.disabled)?.focus();
@@ -251,7 +269,7 @@ async function failed(error, { reload = true } = {}) {
     if (again) await loadDetail({ force: true });
     return;
   }
-  toast(error.status ? `${error.status}: ${error.message}` : error.message, { kind: 'error' });
+  toast(error.message, { kind: 'error' });
 }
 
 // ------------------------------------------------------------------------ data
@@ -355,7 +373,7 @@ async function loadDetail({ force = false } = {}) {
     detail = null;
     own = null;
     showEditor(false);
-    render($('placeholder'), empty('circle-alert', `${name} could not be loaded`, error.message));
+    render($('placeholder'), emptyState('circle-alert', `${name} could not be loaded`, withReload(error.message)));
     return;
   }
   setLoaded(value, clone(value.own));
@@ -423,7 +441,7 @@ async function refreshInherited() {
 
 function drawList() {
   if (listError) {
-    render($('list'), empty('circle-alert', 'Agents could not be loaded', listError));
+    render($('list'), emptyState('circle-alert', 'Agents could not be loaded', withReload(listError, 'list-reload')));
     return;
   }
   if (!rows) return;
@@ -439,15 +457,14 @@ function drawList() {
   const order = [...groups.keys()].sort((a, b) => (a === 'config' ? -1 : b === 'config' ? 1 : a.localeCompare(b)));
   const focused = document.activeElement?.closest('#list [data-name]')?.dataset.name;
   render($('list'), html`
-    ${listErrors.length ? html`<div class="pk-card ae-banner ae-banner--warn" role="status">${icon('triangle-alert')}
-      <div class="pk-grow">${listErrors.map((text) => html`<div>${text}</div>`)}</div></div>` : ''}
+    ${listErrors.length ? html`<div class="pk-callout pk-callout--warn" role="status">${listErrors.map((text) => html`<div>${text}</div>`)}</div>` : ''}
     ${order.length ? order.map((group) => html`
       <details class="ae-group" data-group="${group}" ${collapsed.has(group) ? '' : 'open'}>
         <summary class="ae-group-head">${icon('chevron-right', { size: 'sm' })}<span class="pk-grow">${group}</span>
           <span class="pk-tab-count" data-count="${groups.get(group).length}">${groups.get(group).length}</span></summary>
         <ul class="ae-items">${groups.get(group).map(listItem)}</ul>
       </details>`)
-    : empty('search', rows.length ? 'No agent matches' : 'No agents defined')}`);
+    : rows.length ? emptyState('search', 'No agent matches') : emptyState('cpu', 'No agents defined')}`);
   if (focused) $('list').querySelector(`[data-name="${CSS.escape(focused)}"]`)?.focus();
 }
 
@@ -487,10 +504,18 @@ async function choose(name) {
   own = null;
   resetForm();
   setDirty(false);
-  showEditor(false);
-  render($('placeholder'), html`<div class="pk-stack"><span class="pk-skeleton"></span><span class="pk-skeleton"></span></div>`);
+  // the editor stays in sight, locked, while the next agent loads (drawEditor unlocks it); a slow load shows the skeleton
+  $('formLock').disabled = true;
+  $('editor').setAttribute('aria-busy', 'true');
+  updateHead();
   drawList();
+  const slow = setTimeout(() => {
+    if (selected !== name || detail || draft) return;
+    showEditor(false);
+    render($('placeholder'), skeleton(2));
+  }, 200);
   await loadDetail({ force: true });
+  clearTimeout(slow);
 }
 
 // ---------------------------------------------------------------------- editor
@@ -501,9 +526,11 @@ function showEditor(on) {
 }
 
 function drawEditor() {
+  $('formLock').disabled = busy;
+  $('editor').removeAttribute('aria-busy');
   if (!detail) {
     showEditor(false);
-    render($('placeholder'), empty('cpu', 'No agent selected', 'Pick an agent on the left, or create a new one.'));
+    render($('placeholder'), emptyState('cpu', 'No agent selected', withReload('Pick an agent from the list, or create a new one.')));
     return;
   }
   showEditor(true);
@@ -540,26 +567,26 @@ function drawHead() {
   const noEntry = Boolean(draft) || own === null;
   const children = detail.children ?? [];
   const deleteOff = noEntry || !detail.editable || children.length > 0;
-  const dot = html`<span aria-hidden="true">·</span>`;
+  // a draft has no file and no state yet: only what it is based on
+  const meta = [
+    html`<span>based on</span>
+      ${parent ? html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" data-goto="${parent.name}" title="Open ${parent.name}">${icon('git-branch', { size: 'sm' })}${parent.name}</button>`
+    : html`<span class="pk-secondary">${base || 'unknown'}</span>`}`,
+    !draft && (file ? html`<span class="ae-file-box"><code class="pk-mono ae-file">${file}</code>
+      <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-copy="${file}" title="Copy the file path" aria-label="Copy the file path">${icon('copy', { size: 'sm' })}</button></span>`
+      : html`<span>not defined on disk</span>`),
+    !draft && detail.state && stateLabel(detail.state),
+  ].filter(Boolean);
   render($('head'), html`
     <div class="pk-grow pk-stack ae-title">
       <div class="pk-row">
         <h2 class="ae-name">${name}</h2>
         ${draft ? html`<span class="pk-badge pk-badge--info" data-draft>new, not saved yet</span>` : ''}
       </div>
-      <div class="pk-row pk-muted ae-meta">
-        <span>based on</span>
-        ${parent ? html`<button type="button" class="pk-btn pk-btn--sm" data-goto="${parent.name}" title="Open ${parent.name}">${icon('git-branch', { size: 'sm' })}${parent.name}</button>`
-    : badge('', base || 'unknown')}
-        ${dot}
-        ${file ? html`<span class="ae-file-box"><code class="pk-mono ae-file">${file}</code>
-          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-copy="${file}" title="Copy the file path" aria-label="Copy the file path">${icon('copy', { size: 'sm' })}</button></span>`
-    : html`<span>${draft ? 'saved as a new file' : 'not defined on disk'}</span>`}
-        ${!draft && detail.state ? html`${dot}${stateLabel(detail.state)}` : ''}
-      </div>
+      <div class="pk-row pk-muted ae-meta">${meta}</div>
     </div>
     <div class="pk-row">
-      <span class="pk-badge pk-badge--warn" id="dirtyMark" hidden>unsaved changes</span>
+      <span class="pk-badge pk-badge--warn" id="dirtyMark" data-dirty="false">unsaved changes</span>
       <button type="button" class="pk-btn pk-btn--sm" id="revert" disabled>${icon('rotate-ccw', { size: 'sm' })} Revert</button>
       <button type="button" class="pk-btn pk-btn--primary pk-btn--sm" id="save" disabled>${icon('save', { size: 'sm' })} Save</button>
       <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" id="more" popovertarget="moreMenu" aria-label="More actions" title="More actions">${icon('ellipsis-vertical')}</button>
@@ -567,6 +594,9 @@ function drawHead() {
         <button type="button" class="pk-menu-item" data-menu="duplicate" ${disabledIf(noEntry || Boolean(detail.form_reason))}
           title="${detail.form_reason || ''}">${icon('copy', { size: 'sm' })} Duplicate</button>
         <button type="button" class="pk-menu-item" data-menu="child" ${disabledIf(noEntry)}>${icon('git-branch', { size: 'sm' })} New child agent</button>
+        <hr class="pk-menu-separator">
+        <button type="button" class="pk-menu-item" data-menu="reload" id="reloadConfig" ${disabledIf(reloading)}
+          title="Apply what needs no restart to the active agents">${icon('upload', { size: 'sm' })} Reload config</button>
         <hr class="pk-menu-separator">
         <button type="button" class="pk-menu-item pk-menu-item--danger" data-menu="delete" ${disabledIf(deleteOff)}
           title="${children.length ? `Parent of ${children.join(', ')}` : ''}">${icon('trash-2', { size: 'sm' })} Delete</button>
@@ -583,42 +613,58 @@ function updateHead() {
   setDirty(dirty() || managerDirty());
   if (!$('save')) return;
   const changedNow = changedFromStart() || yamlDraft !== null || yamlFieldDrafts.size > 0;
+  // a read-only agent has nothing to save or revert: the banner says why (while one loads, `detail` is null)
+  const locked = Boolean(detail) && readOnly();
   $('save').disabled = busy || own === null || readOnly() || !dirty() || invalidNumber();
   $('save').title = invalidNumber() ? 'A number is outside what the agent can use: see the field marked red' : '';
   $('revert').disabled = busy || !changedNow;
-  $('more').disabled = busy;
-  $('dirtyMark').hidden = !changedNow;
+  $('more').disabled = busy || !detail;
+  $('dirtyMark').dataset.dirty = String(changedNow);  // its room stays taken: the head does not jump
+  for (const id of ['save', 'revert', 'dirtyMark']) $(id).hidden = locked;
+  // the YAML tab's buttons act on typed text only
+  for (const id of ['yamlApply', 'yamlReload']) {
+    if ($(id)) $(id).disabled = yamlDraft === null;
+  }
 }
 
-function banner(kind, name, title, lines, action = '') {
-  return html`<div class="pk-card ae-banner ae-banner--${kind}" role="status">${icon(name)}
-    <div class="pk-grow"><strong>${title}</strong>${lines.filter(Boolean).map((line) => html`<div>${line}</div>`)}</div>${action}</div>`;
+/** A message above the tabs; the state itself is in the head, so a banner says only what follows from it. */
+function banner(kind, title, lines, action = '') {
+  return html`<div class="pk-callout pk-callout--${kind} pk-row" role="status">
+    <div class="pk-grow">${title ? html`<strong>${title}</strong>` : ''}${lines.filter(Boolean).map((line) => html`<div>${line}</div>`)}</div>${action}</div>`;
 }
 
 function drawBanners() {
   const parts = [];
   if (readOnly()) {
-    parts.push(banner('warn', 'eye', 'Read-only', [detail.readonly_reason || detail.form_reason || 'This agent cannot be edited here.']));
+    parts.push(banner('warn', 'Read-only', [detail.readonly_reason || detail.form_reason || 'This agent cannot be edited here.']));
   }
-  // "off" needs no words beyond the state in the head
-  if (!draft && detail.state && !['in_sync', 'off'].includes(detail.state)) parts.push(stateBanner());
+  // "off" and "new" need no words beyond the state in the head
+  if (!draft && ['changed', 'removed'].includes(detail.state)) parts.push(stateBanner());
   render($('banners'), parts);
 }
 
+/** Reload config where no agent's menu is in reach: the banner, an empty or failed editor, a list that failed to load. */
+function reloadButton(key) {
+  return html`<button type="button" class="pk-btn pk-btn--sm" data-reload data-key="${key}" ${disabledIf(reloading)}>
+    ${icon('upload', { size: 'sm' })} Reload config</button>`;
+}
+
+/** An empty state's text with Reload config beneath it. */
+function withReload(text, key = 'placeholder-reload') {
+  return html`<div class="pk-stack"><div>${text}</div><div>${reloadButton(key)}</div></div>`;
+}
+
 function stateBanner() {
-  const operator = 'Restarting is up to the operator.';
-  if (detail.state === 'new') return banner('info', 'info', 'Not active yet', ['It starts with the next restart.', operator]);
   if (detail.state === 'removed') {
-    return banner('warn', 'triangle-alert', 'Still active', ['It is no longer defined (or disabled) on disk and goes away with the next restart.', operator]);
+    return banner('warn', '', ['No longer defined (or disabled) on disk: it goes away with the next restart.']);
   }
   const changed = detail.changed ?? [];
   const reload = detail.reload_fields ?? [];
   const restart = changed.filter((key) => !reload.includes(key));
-  const action = reload.length ? html`<button type="button" class="pk-btn pk-btn--sm" data-reload data-key="banner-reload"
-    ${disabledIf(reloading)}>${icon('rotate-ccw', { size: 'sm' })} Reload config</button>` : '';
-  return banner('warn', 'triangle-alert', 'The active agent uses older settings', [
+  const action = reload.length ? reloadButton('banner-reload') : '';
+  return banner('warn', '', [
     reload.length ? `Reload config applies: ${reload.join(', ')}.` : '',
-    restart.length || detail.restart ? `Needs a restart: ${restart.join(', ') || 'the definition'}. ${operator}` : '',
+    restart.length || detail.restart ? `Needs a restart: ${restart.join(', ') || 'the definition'}. Restarting is up to the operator.` : '',
   ], action);
 }
 
@@ -626,14 +672,15 @@ function stateBanner() {
 
 /**
  * One form field bound to a path of the entry: the own value when the path is set, else the inherited one
- * (a placeholder, or muted) with an "inherited" mark; the reset button removes the path.
+ * (a placeholder, or muted) with an "inherited" mark (`mark: false` for a key that is not inherited); the reset button
+ * removes the path.
  */
-function field(path, label, control, { help = '', group = false, helpId = '', set = hasPath(own, path) } = {}) {
+function field(path, label, control, { help = '', group = false, helpId = '', set = hasPath(own, path), mark = true } = {}) {
   const key = JSON.stringify(path);
   return html`<div class="pk-field ae-field" data-field="${key}" data-set="${String(set)}">
     <div class="ae-field-head">
       ${group ? html`<span class="pk-label">${label}</span>` : html`<label class="pk-label" for="${control.id}">${label}</label>`}
-      <span class="pk-badge ae-inherited-mark">inherited</span>
+      ${mark ? html`<span class="pk-muted ae-inherited-mark" title="Inherited">${icon('git-branch', { size: 'sm', label: 'Inherited' })}</span>` : ''}
       <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm ae-reset" data-reset
         title="Reset to inherited" aria-label="Reset ${label} to inherited">${icon('rotate-ccw', { size: 'sm' })}</button>
     </div>
@@ -820,7 +867,7 @@ function parseYamlDraft(key) {
  * does not parse, or null; its error shows at the field. */
 async function settleYaml() {
   if (yamlDraft !== null && !(await applyYaml())) {
-    toast('The YAML tab has text that does not parse: fix it or show the form’s entry again', { kind: 'error' });
+    toast('The YAML tab has text that does not parse: fix it or discard the typed text', { kind: 'error' });
     return 'yaml-text';
   }
   const keys = [...yamlFieldDrafts.keys()];
@@ -867,7 +914,7 @@ function drawGeneral() {
         <h3 class="ae-section-title" id="basicsTitle">Basics</h3>
         <div class="ae-grid">
           ${field(['enabled'], 'Enabled', toggle(['enabled'], 'Starts with the app', false),
-            { help: 'Not inherited: without a value of its own the agent stays off.' })}
+            { help: 'Not inherited: without a value of its own the agent stays off.', mark: false })}
           ${field(['type'], 'Based on', choice(['type'], html`
             ${known || !type ? '' : option(type, type)}
             <optgroup label="Agent classes">${classes.map((one) => option(one.name, type, one.name, one.description || ''))}</optgroup>
@@ -880,7 +927,8 @@ function drawGeneral() {
         <h3 class="ae-section-title" id="listingTitle">Listing</h3>
         <div class="ae-grid">
           ${field(['metadata', 'visibility'], 'Visibility', choice(['metadata', 'visibility'],
-            visibilities.map((value) => option(value, visibility))), { help: VISIBILITY[visibility] ?? '', helpId: 'visibilityHelp' })}
+            visibilities.map((value) => option(value, visibility, VISIBILITY_LABELS[value] ?? value))),
+            { help: VISIBILITY[visibility] ?? '', helpId: 'visibilityHelp' })}
           ${field(['metadata', 'category'], 'Category', input(['metadata', 'category']))}
         </div>
         ${tagsField()}
@@ -896,7 +944,7 @@ function tagsField() {
     ${tags.map((tag, index) => html`<span class="pk-badge ae-chip">${tag}<button type="button"
       class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-tag-remove="${tag}" data-index="${index}"
       data-key="tag:${tag}" aria-label="Remove the tag ${tag}" title="Remove">${icon('x', { size: 'sm' })}</button></span>`)}
-    <input id="${id}" class="pk-input pk-input--sm ae-chip-input" data-tag-add data-key="tag-add" placeholder="Add a tag, Enter" autocomplete="off">
+    <input id="${id}" class="pk-input pk-input--sm ae-chip-input" data-tag-add data-key="tag-add" placeholder="Add a tag" autocomplete="off">
   </div>` });
 }
 
@@ -915,14 +963,14 @@ function removeTag(button) {
 }
 
 function spawnRows() {
-  if (draft) return html`<p class="pk-muted">Save the agent first.</p>`;
+  if (draft) return emptyState('save', 'Save the agent first');
   const managers = detail.spawnable ?? [];
-  if (!managers.length) return html`<p class="pk-muted">No enabled sub-agent manager.</p>`;
+  if (!managers.length) return emptyState('users', 'No enabled sub-agent manager');
   return html`<div class="pk-stack">${managers.map((one) => {
     const key = `spawn:${one.sam}`;
     return html`<div class="ae-spawn">
       <label class="pk-switch"><input type="checkbox" role="switch" data-spawn="${one.sam}" data-key="${key}"
-        ${one.allowed ? 'checked' : ''} ${disabledIf(!one.editable || own === null)}> <span class="pk-mono">${one.sam}</span></label>
+        ${one.allowed ? 'checked' : ''} ${disabledIf(!one.editable || own === null)}> ${one.sam}</label>
       <span class="pk-muted" data-rule>${one.rule}</span>
       ${one.editable ? '' : html`<span class="pk-help">${one.file} cannot be edited here</span>`}
     </div>`;
@@ -999,9 +1047,9 @@ function drawSubagents() {
         Which agents a manager can start is set in the manager.</p>
       <div id="managerRows"></div>
       <fieldset class="ae-plain" ${disabledIf(readOnly())}>
-        <div class="pk-row ae-filters">
-          <input class="pk-input pk-input--sm pk-input--mono ae-chip-input" data-new-manager data-key="new-manager" autocomplete="off"
-            value="${newManagerName}" placeholder="${currentName()}_sam" aria-label="Name of a new manager">
+        <div class="pk-row">
+          <input class="pk-input pk-input--sm ae-chip-input" data-new-manager data-key="new-manager" autocomplete="off"
+            value="${newManagerName}" placeholder="New manager name" aria-label="Name of a new manager">
           <button type="button" class="pk-btn pk-btn--sm" data-create-manager>${icon('plus', { size: 'sm' })} New manager</button>
         </div>
         <p class="pk-error" id="newManagerError" hidden></p>
@@ -1009,8 +1057,11 @@ function drawSubagents() {
     </section>
     <section class="ae-section" id="managerEditor" aria-labelledby="managerTitle" hidden></section>
     <section class="ae-section" aria-labelledby="spawnTitle">
-      <h3 class="ae-section-title" id="spawnTitle">Managers that may start this agent</h3>
-      <p class="pk-help">A switch changes that manager’s own lists; it is written right away, after its diff.</p>
+      <div class="pk-row">
+        <h3 class="ae-section-title" id="spawnTitle">Managers that may start this agent</h3>
+        <span class="pk-badge pk-badge--info" title="Unlike the form, a switch here writes the manager’s file at once">saved at once</span>
+      </div>
+      <p class="pk-help">A switch changes that manager’s own list, after showing its diff.</p>
       ${spawnRows()}
     </section>`);
   drawManagerLists();
@@ -1070,7 +1121,7 @@ function drawManagerRows() {
     return;
   }
   if (!managers.length) {
-    render(box, html`<p class="pk-muted">No sub-agent manager is set up yet: create one below.</p>`);
+    render(box, emptyState('users', 'No sub-agent manager yet', 'Create one below.'));
     return;
   }
   render(box, html`<div class="pk-table-wrap"><table class="pk-table ae-managers">
@@ -1089,14 +1140,14 @@ function managerLine(row) {
     <td><label class="pk-switch" title="${use.title}"><input type="checkbox" role="switch" data-use-manager="${row.name}"
       data-key="use:${row.name}" aria-label="${currentName()} may use ${row.name}" ${use.on ? 'checked' : ''}
       ${disabledIf(readOnly() || use.locked)}></label></td>
-    <td><div class="pk-mono">${row.name}</div>
+    <td><div>${row.name}</div>
       <div class="pk-row pk-muted ae-meta">${row.file ? html`<span class="pk-mono">${row.file}</span>` : ''}
         ${running ? '' : badge('info', 'not active yet')}
         ${row.editable ? '' : html`<span class="pk-badge" title="${row.readonly_reason || ''}">read-only</span>`}</div></td>
     <td><span data-spawn-count="${row.name}">${every ? 'every agent' : plural(names.length, 'agent')}</span>
       ${every ? '' : html`<span class="pk-muted pk-truncate ae-spawn-names" title="${names.join(', ')}">${names.join(', ')}</span>`}</td>
     <td><button type="button" class="pk-btn pk-btn--sm" data-configure="${row.name}" data-key="configure:${row.name}"
-      aria-expanded="${String(open)}">${icon('settings', { size: 'sm' })} ${open ? 'Close' : 'Configure'}</button></td>
+      aria-expanded="${String(open)}">Configure ${icon(open ? 'chevron-up' : 'chevron-down', { size: 'sm' })}</button></td>
   </tr>`;
 }
 
@@ -1115,7 +1166,7 @@ function drawManagerEditor() {
   const own = managerEdit.own;
   render(box, html`
     <div class="pk-row">
-      <h3 class="ae-section-title pk-grow" id="managerTitle">Manager <span class="pk-mono">${row.name}</span></h3>
+      <h3 class="ae-section-title pk-grow" id="managerTitle">Manager ${row.name}</h3>
       <span class="pk-badge pk-badge--warn" data-manager-dirty ${managerDirty() ? '' : 'hidden'}>unsaved changes</span>
     </div>
     <p class="pk-help">${row.editable ? html`Written to <span class="pk-mono">${row.file}</span> with its own Save, apart from this agent.`
@@ -1126,10 +1177,10 @@ function drawManagerEditor() {
         ${managerAgentsField(row, own)}
       </div>
       <div class="ae-grid">${MANAGER_SETTINGS.map((setting) => managerSetting(own, setting))}</div>
-      <p class="pk-help">Other keys of the entry (hook_config, phase_filtering, …) stay as they are.</p>
+      <p class="pk-help">Settings not shown here stay as they are.</p>
       <div class="pk-row">
         <button type="button" class="pk-btn pk-btn--sm" data-revert-manager ${disabledIf(!managerDirty())}>${icon('rotate-ccw', { size: 'sm' })} Revert</button>
-        <button type="button" class="pk-btn pk-btn--primary pk-btn--sm" data-save-manager ${disabledIf(!managerDirty())}>${icon('save', { size: 'sm' })} Save manager</button>
+        <button type="button" class="pk-btn pk-btn--sm" data-save-manager ${disabledIf(!managerDirty())}>${icon('save', { size: 'sm' })} Save manager</button>
       </div>
     </fieldset>`);
 }
@@ -1147,7 +1198,7 @@ function managerAgentsField(row, own) {
   managerKept ??= new Set(managerAgents.filter((name) => list.includes(name) === (managerFilter === 'in')));
   const shown = managerAgents.filter((name) => (!query || name.includes(query)) && (managerFilter === 'all' || managerKept.has(name)));
   const count = shown.length === managerAgents.length ? plural(shown.length, 'agent') : `${shown.length} of ${plural(managerAgents.length, 'agent')}`;
-  return html`<div class="pk-row ae-filters">
+  return html`<div class="pk-filters">
       <label class="pk-search pk-grow">${icon('search')}<input type="search" class="pk-input pk-input--sm" data-manager-search
         data-key="manager-search" value="${managerQuery}" placeholder="Search agents" aria-label="Search the agents"></label>
       <select class="pk-select pk-select--sm" data-manager-filter data-key="manager-filter" aria-label="Show agents">
@@ -1156,10 +1207,10 @@ function managerAgentsField(row, own) {
     <div class="ae-checklist" role="group" aria-label="Agents ${row.name} can start">
       <span class="pk-help" data-managers-shown="${shown.length}">${count}</span>
       ${shown.length ? shown.map((name) => html`<label class="pk-check ae-check-row"><input type="checkbox" data-manager-agent="${name}"
-        data-key="manager-agent:${name}" ${list.includes(name) ? 'checked' : ''}> <span class="pk-mono">${name}</span>
+        data-key="manager-agent:${name}" ${list.includes(name) ? 'checked' : ''}> ${name}
         ${row.blocked.includes(name) ? badge('danger', 'blocked') : ''}</label>`)
-    : html`<span class="pk-muted">No agent matches.</span>`}
-      ${list.filter((name) => !managerAgents.includes(name)).map((name) => badge('warn', `${name}: no such agent`))}
+    : emptyState('search', 'No agent matches')}
+      ${list.filter((name) => !managerAgents.includes(name)).map((name) => html`<span class="pk-text--warn">${name}: no such agent</span>`)}
     </div>`;
 }
 
@@ -1219,7 +1270,8 @@ async function openManager(name) {
   managerKept = null;
   keepFocus(drawManagerLists);
   updateHead();
-  if (managerEdit) $('managerEditor').scrollIntoView({ block: 'nearest' });
+  // not scrollIntoView: it would drag every box around it along, up into the shell
+  if (managerEdit) keepInSight(scrollerOf($('tab-subagents')), $('managerEditor'));
 }
 
 function revertManager() {
@@ -1308,13 +1360,11 @@ function drawModel() {
       ${chainField(['agent_config', 'llm_profile'], 'Model chain', 'The first profile answers; the others take over, in order, when it fails.',
     'No profile: the model default “normal” applies.')}
       ${chainField(['agent_config', 'llm_profile_advanced'], 'Advanced chain', 'Used while the agent escalates.',
-    'No advanced chain: use_advanced_model runs on the model chain above, and auto-escalation stays off.')}
+    'No advanced chain: a request for the advanced model runs on the model chain above, and auto-escalation stays off.')}
       <div class="ae-grid">
         ${field(['agent_config', 'inherit_parent_llm'], 'Caller’s model',
-          toggle(['agent_config', 'inherit_parent_llm'], 'Run on the model the calling agent was switched to', false),
-          { help: 'Only when the run that starts this agent was switched to another model than its own (the chat’s model '
-            + 'picker, /model, --llm, the API’s profile, use_advanced_model). Its own parameters for that model still apply, '
-            + 'and the chains above stay the fallback, their primary first.' })}
+          toggle(['agent_config', 'inherit_parent_llm'], 'Run on the model the caller was switched to', false),
+          { help: 'Only when the caller runs on another model than its own; the chains above stay the fallback.' })}
       </div>
     </section>
     <section class="ae-section" aria-labelledby="modelSettingsTitle">
@@ -1333,9 +1383,13 @@ function drawModel() {
 
 const RUN = (...keys) => ['agent_config', ...keys];
 
-/** The core's run settings (AgentConfig): steps, escalation, loop detection, timeouts. */
+/** The core's run settings (AgentConfig): steps, escalation, loop detection, timeouts; the last three folded. */
 function drawRun() {
   const number = (path, label, help, limits = {}) => field(path, label, input(path, { type: 'number', ...limits }), { help });
+  const group = (key, title, paths, fields) => fold(`run:${key}`, title, html`<div class="ae-grid">${fields}</div>`,
+    { set: paths.some((path) => hasPath(own, path)) });
+  const loops = ['enabled', 'history_size', 'exact_match_threshold', 'sequence_threshold', 'block_after_threshold',
+    'auto_unblock_after_steps'].map((key) => RUN('loop_detection', key));
   render($('tab-run'), html`<fieldset class="ae-form" ${disabledIf(readOnly())}>
     <section class="ae-section" aria-labelledby="stepsTitle">
       <h3 class="ae-section-title" id="stepsTitle">Steps</h3>
@@ -1347,47 +1401,32 @@ function drawRun() {
       <div class="ae-grid">
         ${field(RUN('auto_escalate_on_stuck'), 'Auto-escalate', toggle(RUN('auto_escalate_on_stuck'), 'Switch to the advanced chain when stuck', false),
           { help: 'Stuck: the tool loop detector fires, or tool steps keep failing.' })}
-        ${number(RUN('escalate_error_streak'), 'Failed tool steps', 'Steps in a row in which every tool call failed, before it escalates.', { min: 1 })}
+        ${number(RUN('escalate_error_streak'), 'Failed tool steps', 'Steps in a row where every tool call failed.', { min: 1 })}
         ${number(RUN('escalate_rounds'), 'Advanced steps', 'Steps it stays on the advanced chain each time.', { min: 0 })}
-        ${number(RUN('escalate_max_calls'), 'Advanced calls per run', 'The budget: advanced calls one run may make.', { min: 0 })}
+        ${number(RUN('escalate_max_calls'), 'Advanced calls per run', 'Advanced calls one run may make.', { min: 0 })}
       </div>
     </section>
-    <section class="ae-section" aria-labelledby="toolLoopsTitle">
-      <h3 class="ae-section-title" id="toolLoopsTitle">Tool loops</h3>
-      <div class="ae-grid">
-        ${field(RUN('loop_detection', 'enabled'), 'Loop detection', toggle(RUN('loop_detection', 'enabled'), 'Watch for repeated tool calls', true))}
-        ${number(RUN('loop_detection', 'history_size'), 'Calls remembered',
-          'Recent tool calls it compares: fewer than a threshold below, and that one never fires; sequences need 4.', { min: 2 })}
-        ${number(RUN('loop_detection', 'exact_match_threshold'), 'Warn after identical calls',
-          'The same tool with the same arguments, in a row: the agent is told it repeats itself.', { min: 2 })}
-        ${number(RUN('loop_detection', 'sequence_threshold'), 'Warn after repeated sequences', 'The same series of calls, over and over.', { min: 2 })}
-        ${number(RUN('loop_detection', 'block_after_threshold'), 'Drop after identical calls',
-          'Identical calls in a row, never fewer than for the warning, after which that step’s calls to the tool are dropped instead of run.', { min: 2 })}
-        ${number(RUN('loop_detection', 'auto_unblock_after_steps'), 'Keep on the drop list (steps)',
-          'How long a tool stays on the drop list; a step drops its calls only while the same call keeps repeating.', { min: 1 })}
-      </div>
-    </section>
-    <section class="ae-section" aria-labelledby="reasoningLoopsTitle">
-      <h3 class="ae-section-title" id="reasoningLoopsTitle">Reasoning loops</h3>
-      <div class="ae-grid">
+    <section class="ae-section" aria-label="Loops and timeouts">
+      ${group('toolLoops', 'Tool loops', loops, html`
+        ${field(loops[0], 'Loop detection', toggle(loops[0], 'Watch for repeated tool calls', true))}
+        ${number(loops[1], 'Calls remembered', 'Recent calls it compares; keep it above the thresholds.', { min: 2 })}
+        ${number(loops[2], 'Warn after identical calls', 'Same tool, same arguments, in a row.', { min: 2 })}
+        ${number(loops[3], 'Warn after repeated sequences', 'The same series of calls, over and over.', { min: 2 })}
+        ${number(loops[4], 'Drop after identical calls', 'Identical calls in a row before they are dropped; not below the warning.', { min: 2 })}
+        ${number(loops[5], 'Keep on the drop list (steps)', 'How long a tool stays on the drop list.', { min: 1 })}`)}
+      ${group('reasoningLoops', 'Reasoning loops', [RUN('reasoning_loop', 'enabled'), RUN('reasoning_loop', 'repetition_threshold')], html`
         ${field(RUN('reasoning_loop', 'enabled'), 'Reasoning loop detection',
           toggle(RUN('reasoning_loop', 'enabled'), 'Watch the model’s thinking for repetition', true),
-          { help: 'Streaming calls only: a call stuck in its thinking is stopped and tried once more.' })}
+          { help: 'Streaming calls only: a stuck call is stopped and tried once more.' })}
         ${number(RUN('reasoning_loop', 'repetition_threshold'), 'Repetition threshold',
-          'Share of repeated thinking, from 0.01 up to 1, that counts as stuck. Healthy runs measured up to 0.19, stuck ones from 0.90.',
-          { step: 'any', min: 0.01, max: 1 })}
-      </div>
-    </section>
-    <section class="ae-section" aria-labelledby="timeoutsTitle">
-      <h3 class="ae-section-title" id="timeoutsTitle">Timeouts</h3>
-      <div class="ae-grid">
-        ${number(RUN('timeouts', 'session_lock_timeout'), 'Session lock (seconds)',
-          'How long a request waits for its session’s lock; a session another request holds refuses it at once.', { step: 'any', min: 0.1 })}
+          'Share of repeated thinking (0.01 to 1) that counts as stuck; healthy runs stay below 0.2.', { step: 'any', min: 0.01, max: 1 })}`)}
+      ${group('timeouts', 'Timeouts', ['session_lock_timeout', 'tool_cleanup_timeout', 'llm_task_max_iterations'].map((key) => RUN('timeouts', key)), html`
+        ${number(RUN('timeouts', 'session_lock_timeout'), 'Session lock (seconds)', 'How long a request waits for its session’s lock.',
+          { step: 'any', min: 0.1 })}
         ${number(RUN('timeouts', 'tool_cleanup_timeout'), 'Tool cleanup (seconds)', 'How long a cancelled run waits for its tools to stop.',
           { step: 'any', min: 0.1 })}
-        ${number(RUN('timeouts', 'llm_task_max_iterations'), 'Model call polls',
-          'A safety net for a stuck model call that does not stream: checks every 0.1 s (864000 = 24 hours).', { min: 1 })}
-      </div>
+        ${number(RUN('timeouts', 'llm_task_max_iterations'), 'Model call polls', 'Safety net for a stuck call that does not stream: polls, one every 0.1 s.',
+          { min: 1 })}`)}
     </section>
   </fieldset>`);
   drawEscalationNote();
@@ -1430,7 +1469,7 @@ function chainField(path, label, help, empty) {
       <label class="pk-search">${icon('search')}<input id="${id}" class="pk-input pk-input--sm" type="search" autocomplete="off"
         placeholder="Add a profile: name, provider or model" aria-label="Add a profile to the ${label.toLowerCase()}"
         data-picker="${key}" data-key="picker:${key}"></label>
-      <div class="pk-menu ae-picker-list" role="listbox" aria-label="Matching profiles" hidden></div>
+      <div class="pk-menu ae-picker-list" role="listbox" aria-label="Matching profiles" popover="manual" hidden></div>
     </div>` }, { help, group: true });
 }
 
@@ -1440,7 +1479,7 @@ function chainRow(key, name, index, count) {
     data-chain="${act}" data-index="${index}" data-key="chain:${key}:${name}:${act}" ${disabledIf(off)}
     title="${label}" aria-label="${label}">${icon(iconName, { size: 'sm' })}</button>`;
   return html`<li class="ae-chain-row" data-profile="${name}">
-    ${badge(index === 0 ? 'accent' : '', index === 0 ? '#1 Primary' : `Fallback ${index}`)}
+    ${badge(index === 0 ? 'accent' : '', index === 0 ? 'primary' : `fallback ${index}`)}
     <span class="pk-grow ae-chain-name"><span class="pk-mono">${name}</span>
       ${info ? html`<span class="pk-muted">${info.provider} · ${info.model}</span>` : badge('danger', 'unknown profile')}</span>
     ${button('up', 'arrow-up', `Move ${name} up`, index === 0)}
@@ -1487,9 +1526,19 @@ function pickerMatches(input) {
 function drawPicker(input, open = true) {
   const list = input.closest('.ae-picker').querySelector('.ae-picker-list');
   const matches = open ? pickerMatches(input) : [];
-  list.hidden = !matches.length;
   render(list, matches.map((one) => html`<button type="button" role="option" class="pk-menu-item" data-add-profile="${one.name}"
     aria-selected="false"><span class="pk-mono">${one.name}</span><span class="pk-muted pk-truncate">${one.provider} · ${one.model}</span></button>`));
+  // a popover: in the top layer, the scrolling tab does not cut it off
+  if (!matches.length && list.matches(':popover-open')) list.hidePopover();
+  list.hidden = !matches.length;
+  if (!matches.length) return;
+  if (!list.matches(':popover-open')) list.showPopover();
+  placePicker(list);
+}
+
+/** The profile list under its field, as wide as the field. */
+function placePicker(list) {
+  placeMenu(list, list.closest('.ae-picker').querySelector('[data-picker]').getBoundingClientRect(), { matchWidth: true });
 }
 
 function addProfile(input, name) {
@@ -1689,14 +1738,14 @@ function removePattern(button) {
 function drawTools() {
   render($('tab-tools'), html`
     <div id="toolSummary" class="pk-card ae-summary" aria-live="polite">${summary()}</div>
-    <div>
-      <div class="ae-list-bar">
-        <div class="pk-tabs" role="tablist" data-pk-tabs id="toolLists" aria-label="Tool lists">
-          ${Object.entries(LISTS).map(([list, label]) => html`<button type="button" class="pk-tab" role="tab" id="toolTab-${list}"
-            aria-selected="${String(list === toolList)}" aria-controls="tools-${list}" data-tab="${list}">${label}
-            <span class="pk-tab-count" data-count-for="${list}"></span></button>`)}
-        </div>
-        <label class="pk-search">${icon('search')}<input type="search" class="pk-input pk-input--sm" data-tree-search data-key="tree-search"
+    <div class="pk-stack">
+      <div class="pk-tabs" role="tablist" data-pk-tabs id="toolLists" aria-label="Tool lists">
+        ${Object.entries(LISTS).map(([list, label]) => html`<button type="button" class="pk-tab" role="tab" id="toolTab-${list}"
+          aria-selected="${String(list === toolList)}" aria-controls="tools-${list}" data-tab="${list}">${label}
+          <span class="pk-tab-count" data-count-for="${list}"></span></button>`)}
+      </div>
+      <div class="pk-filters">
+        <label class="pk-search pk-grow">${icon('search')}<input type="search" class="pk-input pk-input--sm" data-tree-search data-key="tree-search"
           placeholder="Search servers and tools" aria-label="Search servers and tools" value="${treeQuery}"></label>
         <select class="pk-select pk-select--sm" data-tree-filter data-key="tree-filter" aria-label="Show servers">
           ${TREE_FILTERS.map(([value, label]) => option(value, treeFilter, label))}</select>
@@ -1710,7 +1759,7 @@ function drawTools() {
 }
 
 function drawToolLists() {
-  if (!$('tools-allowed')) return;
+  if (!$('tools-allowed') || own === null) return;  // null: the next agent is on its way
   for (const list of Object.keys(LISTS)) {
     render($(`tools-${list}`), listSection(listModel(list)));
     const count = effective?.[list];
@@ -1737,22 +1786,27 @@ function listSection(model) {
       </div>
       ${mode === 'mixed' ? html`<p class="pk-error">This list mixes + and ! entries with plain ones, which the loader refuses. Pick a source, or fix it in the YAML tab.</p>`
     : html`<p class="pk-help">${MODE_HELP[mode]}${mode === 'inherited' ? ' Pick another source to change it.' : ''}</p>`}
-      ${mode === 'own' ? '' : html`<div class="pk-row ae-source"><span class="pk-label">Inherited</span>
-        <div class="ae-chips">${locked.length ? locked : html`<span class="pk-muted">Nothing.</span>`}</div></div>`}
     </div>
     ${catalogError ? html`<p class="pk-error">The tool catalogue could not be loaded: ${catalogError}</p>` : toolTree(model, fixed)}
-    <div class="pk-field">
-      <span class="pk-label">Patterns beyond the tree</span>
-      <div class="ae-chips">
-        ${chips.length ? chips : html`<span class="pk-muted">None.</span>`}
-        <input class="pk-input pk-input--sm ae-chip-input" data-pattern-add="${list}" data-key="pattern:${list}" autocomplete="off"
-          value="${patternDrafts[list] ?? ''}"
-          placeholder="${mode === 'extend' ? 'Add a pattern (!x removes), Enter' : 'Add a pattern, e.g. web_*, Enter'}"
-          aria-label="Add a ${list} pattern" ${disabledIf(fixed)}>
+    ${fold(`patterns:${list}`, mode === 'own' ? 'Patterns' : 'Inherited entries and patterns', html`<div class="pk-stack">
+      ${mode === 'own' ? '' : html`<div class="pk-field"><span class="pk-label">Inherited</span>
+        <div class="ae-chips">${locked.length ? locked : html`<span class="pk-muted">None</span>`}</div></div>`}
+      <div class="pk-field">
+        <span class="pk-label">Patterns beyond the tree</span>
+        <div class="ae-chips">
+          ${chips.length ? chips : html`<span class="pk-muted">None</span>`}
+          <input class="pk-input pk-input--sm ae-chip-input" data-pattern-add="${list}" data-key="pattern:${list}" autocomplete="off"
+            value="${patternDrafts[list] ?? ''}"
+            placeholder="${mode === 'extend' ? 'Add a pattern (!x removes)' : 'Add a pattern, e.g. web_*'}"
+            aria-label="Add a ${list} pattern" ${disabledIf(fixed)}>
+        </div>
+        <span class="pk-error" data-pattern-error hidden></span>
+        <span class="pk-help">${PATTERN_HELP}</span>
       </div>
-      <span class="pk-error" data-pattern-error hidden></span>
-      <details class="ae-hint"><summary>How patterns match</summary><p class="pk-help">${PATTERN_HELP}</p></details>
-    </div>
+    </div>`, {
+      set: chips.length > 0,
+      extra: html`<span class="pk-tab-count">${[mode !== 'own' && `${locked.length} inherited`, `${chips.length} beyond the tree`].filter(Boolean).join(' · ')}</span>`,
+    })}
   </fieldset>`;
 }
 
@@ -1778,13 +1832,13 @@ function toolTree(model, fixed) {
     tools: !query || serverHit(entry) ? entry.tools : entry.tools.filter(hit),
   })).filter(({ entry, tools }) => (!query || serverHit(entry) || tools.length)
     && (treeFilter === 'all' || kept.has(entry.server)));
-  if (!catalog.length) return html`<p class="pk-muted">No tool servers are running.</p>`;
+  if (!catalog.length) return emptyState('server', 'No tool servers running');
   const count = entries.length === catalog.length ? plural(catalog.length, 'server') : `${entries.length} of ${plural(catalog.length, 'server')}`;
   return html`<div class="pk-stack ae-tree-box">
     <span class="pk-help" data-tree-shown="${entries.length}">${count}</span>
     ${entries.length ? html`<ul class="ae-tree" aria-label="${LISTS[model.list]} tools">
       ${entries.map(({ entry, view, tools }) => serverNode(model, entry, view, tools, fixed, Boolean(query)))}</ul>`
-    : html`<p class="pk-muted">No server matches.</p>`}
+    : emptyState('search', 'No server matches')}
   </div>`;
 }
 
@@ -1807,7 +1861,7 @@ function serverNode(model, entry, view, tools, fixed, searching) {
         <label class="pk-check" title="${one.title}"><input type="checkbox" data-tree-tool="${tool.name}" data-server="${server}"
           data-key="${key}/${tool.name}" ${one.checked ? 'checked' : ''} ${disabledIf(fixed || one.locked)}>
           <span class="pk-mono">${tool.name}</span></label>
-        ${one.locked ? html`<span class="pk-badge" data-lock>${one.title}</span>` : ''}
+        ${one.locked ? html`<span class="pk-muted" data-lock title="${one.title}">${icon('lock', { size: 'sm' })}<span class="pk-sr-only">${one.title}</span></span>` : ''}
         <span class="pk-muted pk-truncate ae-tree-note" title="${tool.description || ''}">${tool.description || ''}</span>
       </li>`;
   })}</ul>` : ''}
@@ -1827,7 +1881,7 @@ function summary() {
   const count = effective.tools?.length ?? 0;
   return html`<span><strong data-tool-count="${count}">${plural(count, 'tool')}</strong>
       <span class="pk-muted">${count === 1 ? 'reaches' : 'reach'} this agent</span></span>
-    ${effective.allowed?.length ? '' : html`<span class="pk-badge pk-badge--warn">${icon('triangle-alert', { size: 'sm' })} No tools at all: the allowed list is empty</span>`}
+    ${effective.allowed?.length ? '' : html`<span class="pk-text--warn">${icon('triangle-alert', { size: 'sm' })} No tools at all: the allowed list is empty</span>`}
     ${counts.length || extra.length ? html`<ul class="ae-counts" aria-label="Tools per allowed pattern">
       ${counts.map(([pattern, n]) => html`<li data-pattern="${pattern}" title="${plural(n, 'tool')}"><span class="pk-mono">${pattern}</span> <span class="pk-muted">${n}</span>
         ${unmatched.includes(pattern) ? badge('warn', 'matches nothing') : outside(pattern)}</li>`)}
@@ -1928,7 +1982,7 @@ function drawPrompt() {
         <datalist id="promptFiles">${(meta?.prompt_files ?? []).map((file) => html`<option value="${file}"></option>`)}</datalist>
         <div class="pk-field">
           <div class="pk-row"><span class="pk-label">Preview</span><span id="promptState"></span></div>
-          <pre class="pk-code ae-preview" id="promptPreview" aria-label="Template preview"></pre>
+          <pre class="pk-code" id="promptPreview" aria-label="Template preview"></pre>
         </div>`
       : field(SYSTEM_PROMPT, 'Inline prompt', textarea(SYSTEM_PROMPT, { rows: 14, mono: true, keepEmpty: !parentPrompt }),
         { help: parentPrompt ? 'A Jinja template; left empty, the parent’s prompt applies.' : 'A Jinja template. It wins over a template file.' })}
@@ -1937,7 +1991,7 @@ function drawPrompt() {
   </fieldset>
   <section class="ae-section" aria-labelledby="skillsTitle">
     <h3 class="ae-section-title" id="skillsTitle">Skills</h3>
-    <div class="pk-row ae-filters">
+    <div class="pk-filters">
       <label class="pk-search pk-grow">${icon('search')}<input type="search" class="pk-input pk-input--sm" data-skill-search
         data-key="skill-search" value="${skillQuery}" placeholder="Search skills" aria-label="Search skills"></label>
       <select class="pk-select pk-select--sm" data-skill-filter data-key="skill-filter" aria-label="Show skills">
@@ -1987,7 +2041,8 @@ async function loadPreview() {
   const { current, value, error } = await newest('prompt', `${BASE}prompt?${query}`);
   if (!current || !$('promptPreview')) return;
   render($('promptPreview'), error ? '' : value.text ?? '');
-  render($('promptState'), error ? badge('danger', error.message) : value.exists ? badge('ok', 'found') : badge('warn', 'missing'));
+  render($('promptState'), error ? html`<span class="pk-text--danger">${error.message}</span>`
+    : value.exists ? badge('ok', 'found') : badge('warn', 'missing'));
 }
 
 const skillsOf = (value) => (Array.isArray(value)
@@ -2022,8 +2077,9 @@ function skillLists() {
         ${matching.length ? matching.map((one) => html`<label class="pk-check ae-check-row"><input type="checkbox" data-skill="${one.name}"
           data-kind="${kind}" data-key="skill:${kind}:${one.name}" ${list.includes(one.name) ? 'checked' : ''} ${disabledIf(locked)}>
           <span class="pk-mono">${one.name}</span><span class="pk-muted pk-truncate">${one.description || ''}</span></label>`)
-    : html`<span class="pk-muted">${known.length ? 'No skill matches.' : 'No skills found.'}</span>`}
-        ${list.filter((name) => !prefixed(name) && !known.some((one) => one.name === name)).map((name) => badge('warn', `${name}: unknown`))}
+    : known.length ? emptyState('search', 'No skill matches') : emptyState('book-open', 'No skills found')}
+        ${list.filter((name) => !prefixed(name) && !known.some((one) => one.name === name))
+    .map((name) => html`<span class="pk-text--warn">${name}: unknown</span>`)}
       </div>` }, { help: locked ? 'This list uses + or ! entries: edit it in the YAML tab.' : help, group: true,
         set: ownsSkillList(kind) });
     });
@@ -2069,7 +2125,7 @@ function drawHooks() {
       ${field([...HOOKS, 'enabled'], 'Hooks', toggle([...HOOKS, 'enabled'], 'Run lifecycle hooks for this agent', true))}
     </fieldset>
     <div class="pk-stack">
-      ${hooks.length ? html`<div class="pk-row ae-filters">
+      ${hooks.length ? html`<div class="pk-filters">
         <label class="pk-search pk-grow">${icon('search')}<input type="search" class="pk-input pk-input--sm" data-hook-search data-key="hook-search"
           value="${hookQuery}" placeholder="Search hooks" aria-label="Search hooks"></label>
         <select class="pk-select pk-select--sm" data-hook-type data-key="hook-type" aria-label="Hook type">
@@ -2092,12 +2148,12 @@ function drawHookTable() {
   const unknown = Object.keys(overrides).filter((name) => !hooks.some((hook) => hook.name === name));
   const count = matching.length === hooks.length ? plural(hooks.length, 'hook') : `${matching.length} of ${plural(hooks.length, 'hook')}`;
   render($('hookTable'), html`
-    ${!hooks.length ? empty('plug', 'No hooks registered', 'The running app has no lifecycle hooks.')
+    ${!hooks.length ? emptyState('plug', 'No hooks registered', 'The running app has no lifecycle hooks.')
     : html`<span class="pk-help" data-hooks-shown="${matching.length}">${count}</span>
       ${matching.length ? html`<div class="pk-table-wrap"><table class="pk-table ae-hooks">
         <thead><tr><th>Hook</th><th>Default</th><th>For this agent</th><th><span class="pk-sr-only">Custom settings</span></th></tr></thead>
         <tbody>${matching.map(hookRow)}</tbody>
-      </table></div>` : html`<p class="pk-muted">No hook matches.</p>`}`}
+      </table></div>` : emptyState('search', 'No hook matches')}`}
     ${unknown.length ? html`<p class="pk-help">Overrides for hooks the app does not know: ${unknown.join(', ')}. Edit them in the YAML tab.</p>` : ''}`);
   fillYaml($('hookTable'));
 }
@@ -2146,8 +2202,8 @@ function drawYaml() {
     <div class="pk-field">
       <div class="pk-row">
         <label class="pk-label pk-grow" for="yamlText">The entry as it is written to the file</label>
-        <button type="button" class="pk-btn pk-btn--sm" id="yamlReload">${icon('refresh-cw', { size: 'sm' })} Show the form’s entry</button>
-        <button type="button" class="pk-btn pk-btn--primary pk-btn--sm" id="yamlApply">${icon('check', { size: 'sm' })} Apply to form</button>
+        <button type="button" class="pk-btn pk-btn--sm" id="yamlReload" ${disabledIf(yamlDraft === null)}>${icon('rotate-ccw', { size: 'sm' })} Discard typed text</button>
+        <button type="button" class="pk-btn pk-btn--sm" id="yamlApply" ${disabledIf(yamlDraft === null)}>${icon('check', { size: 'sm' })} Apply to form</button>
       </div>
       <span class="pk-help">Leaving this tab applies what was typed. Settings without a form control (self_tool_descriptions,
         plugin settings) are edited here.</span>
@@ -2160,7 +2216,7 @@ function drawYaml() {
   refreshYaml();
 }
 
-/** The entry as YAML; typed text is never overwritten, except by "Show the form's entry" (force). */
+/** The entry as YAML; typed text is never overwritten, except by "Discard typed text" (force). */
 async function refreshYaml(force = false) {
   const area = $('yamlText');
   if (!area || own === null) return;
@@ -2439,9 +2495,10 @@ function startDraft(name, source, entry, values) {
 }
 
 async function reloadConfig() {
+  if (reloading) return;
   const fields = (meta?.reload_fields ?? []).join(', ');
   reloading = true;
-  const buttons = () => [$('reloadConfig'), ...document.querySelectorAll('[data-reload]')];
+  const buttons = () => [$('reloadConfig'), ...document.querySelectorAll('[data-reload]')].filter(Boolean);
   buttons().forEach((button) => { button.disabled = true; });
   try {
     if (!(await confirm(`Re-read the config files and apply to the active agents what needs no restart${fields ? ` (${fields})` : ''}? Everything else still needs a restart.`,
@@ -2639,14 +2696,19 @@ editor.addEventListener('click', (event) => {
   const data = target.dataset;
   if (target.id === 'save') save();
   else if (target.id === 'revert') revert();
-  else if (target.id === 'yamlApply') applyYaml();
-  else if (target.id === 'yamlReload') refreshYaml(true);
+  // both buttons are off again once the typed text is gone: the focus goes to the text, not to the page
+  else if (target.id === 'yamlApply') applyYaml().then(() => $('yamlText')?.focus());
+  else if (target.id === 'yamlReload') {
+    refreshYaml(true);
+    $('yamlText').focus();
+  }
   else if (data.reset !== undefined) resetField(target);
   else if (data.goto) choose(data.goto);
   else if (data.copy) copyPath(target);
   else if (data.menu) {
     if ($('moreMenu').matches(':popover-open')) $('moreMenu').hidePopover();
     if (data.menu === 'delete') removeAgent();
+    else if (data.menu === 'reload') reloadConfig();
     else openCreate(data.menu === 'duplicate' ? 'copy' : 'inherit', detail.name);
   } else if (data.chain) {
     chainAction(target);
@@ -2658,8 +2720,6 @@ editor.addEventListener('click', (event) => {
     const key = `${target.closest('[data-tools-list]').dataset.toolsList}:${data.expand}`;
     if (!expanded.delete(key)) expanded.add(key);
     keepFocus(drawToolLists);
-  } else if (data.reload !== undefined) {
-    reloadConfig();
   } else if (data.configure) {
     openManager(data.configure);
   } else if (data.pickAgents !== undefined) {
@@ -2717,8 +2777,18 @@ editor.addEventListener('focusout', (event) => {
   if (target.dataset.yaml !== undefined) parseYamlDraft(target.dataset.key);
 });
 
-// scroll does not bubble: caught on the way down, the coloured copy follows its textarea
-editor.addEventListener('scroll', (event) => followScroll(event.target), true);
+// scroll does not bubble: caught on the way down, the coloured copy follows its textarea, an open profile list its field
+editor.addEventListener('scroll', (event) => {
+  followScroll(event.target);
+  const list = document.querySelector('.ae-picker-list:popover-open');
+  if (list && event.target !== list) placePicker(list);
+}, true);
+
+// <details> announces its toggle on itself only: caught on the way down
+editor.addEventListener('toggle', (event) => {
+  const key = event.target.dataset?.fold;
+  if (key && event.target.isConnected) folds.open.set(key, event.target.open);
+}, true);
 
 // a click on a match must not blur the input first: the list would be gone before the click lands
 editor.addEventListener('pointerdown', (event) => {
@@ -2756,10 +2826,15 @@ $('filter').addEventListener('change', drawList);
 $('create').addEventListener('click', () => {
   if (!busy) openCreate();
 });
-$('reloadConfig').addEventListener('click', reloadConfig);
 $('createForm').addEventListener('submit', submitCreate);
 $('createForm').addEventListener('change', syncCreate);
 $('createCancel').addEventListener('click', () => $('createDialog').close());
 document.addEventListener('refresh', refreshAll);
+// every Reload config button: the banner's, the empty editor's, the failed list's
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-reload]');
+  if (button && !button.disabled) reloadConfig();
+});
 
+drawEditor();  // the empty editor, with its Reload config
 loadList();

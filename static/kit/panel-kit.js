@@ -1132,14 +1132,32 @@ function wireTabRow(row) {
 }
 
 /**
- * Scrolls a sideways row just far enough that `item` is seen whole (its start, where it is wider than the row).
+ * The box that scrolls `element` up and down: the nearest one around it that scrolls and has more than it shows,
+ * else the page -- for keepInSight, where a layout scrolls a tab when wide and lets it grow (the page scrolls) when
+ * narrow.
+ */
+export function scrollerOf(element) {
+  for (let box = element; box && box !== element.ownerDocument.body; box = box.parentElement) {
+    if (['auto', 'scroll'].includes(getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight) return box;
+  }
+  return element.ownerDocument.scrollingElement;
+}
+
+/**
+ * Scrolls a box -- a sideways row, a list, a scrolling tab, or the page itself (document.scrollingElement, whose
+ * box is the viewport) -- just far enough that `item` is seen whole (its start, where it is larger than the box).
  * Not scrollIntoView: that moves every scrolling box around it too, up to the shell.
  */
 export function keepInSight(row, item) {
-  const box = row.getBoundingClientRect();
+  // the page's box is the viewport less its scrollbars: an item behind one is not in sight
+  const box = row === row.ownerDocument.scrollingElement
+    ? { left: 0, top: 0, right: row.clientWidth, bottom: row.clientHeight }
+    : row.getBoundingClientRect();
   const it = item.getBoundingClientRect();
   if (it.left < box.left) row.scrollLeft -= box.left - it.left;
   else if (it.right > box.right) row.scrollLeft += Math.min(it.right - box.right, it.left - box.left);
+  if (it.top < box.top) row.scrollTop -= box.top - it.top;
+  else if (it.bottom > box.bottom) row.scrollTop += Math.min(it.bottom - box.bottom, it.top - box.top);
   // A tab shorter than its least width is as wide as its text, so a font still loading (the measuring above starts
   // the load) moves the tabs once it arrives: then the item is brought into sight again.
   const fonts = row.ownerDocument.fonts;
