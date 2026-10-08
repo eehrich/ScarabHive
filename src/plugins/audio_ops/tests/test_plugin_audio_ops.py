@@ -133,6 +133,23 @@ class TestPathValidation:
         
         assert result["status"] == "error"
         assert result["error_type"] == "SecurityError"
+
+    @pytest.mark.asyncio
+    async def test_an_absolute_path_sharing_only_the_storage_root_is_rejected(
+        self, server: "AudioOpsServer", mock_status: MagicMock, temp_storage: Path
+    ) -> None:
+        """The overlap with the storage path that gets stripped is never the file system root alone: every
+        absolute path shares that one, and /srv/x.wav (C:\\srv\\x.wav) read as <storage>/srv/x.wav."""
+        outside = Path(temp_storage.anchor) / "srv" / "x.wav"
+        (temp_storage / "srv").mkdir()
+        AudioSegment.silent(duration=100).export(str(temp_storage / "srv" / "x.wav"), format="wav")  # found re-rooted
+        result = await server.info({
+            "file": str(outside),
+            "_status": mock_status,
+        })
+
+        assert result["status"] == "error"
+        assert result["error_type"] == "SecurityError", result
     
     @pytest.mark.asyncio
     async def test_missing_file(
