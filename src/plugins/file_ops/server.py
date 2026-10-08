@@ -120,18 +120,15 @@ class FileOpsServer(SchemaBasedToolServer):
         super().__init__(name, system_config, server_config)
 
         # Extract configuration
-        # Only a MISSING key gets the defaults. An empty list is someone
-        # closing the sandbox, and it used to open these four folders instead.
+        # A missing key opens nothing, as an empty list does. It used to open
+        # src, docs, tests and tmp read-write: an instance defined without the
+        # key let the agent write a plugin under src/plugins/ that the next
+        # start loads.
         allowed_dirs = getattr(server_config, "allowed_directories", None)
         if allowed_dirs is None:
-            # Default to project root subdirectories
-            project_root = Path.cwd()
-            allowed_dirs = [
-                str(project_root / "src"),
-                str(project_root / "docs"),
-                str(project_root / "tests"),
-                str(project_root / "tmp")
-            ]
+            logger.warning("%s: no allowed_directories configured -- every path is refused; "
+                           "list the folders this instance may use", name)
+            allowed_dirs = []
         else:
             # Resolve relative paths relative to project root
             project_root = Path.cwd()
