@@ -28,6 +28,9 @@ def access(tmp_path):
     logger = logging.getLogger("uvicorn.access")
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
+    # An earlier test's setup_logging leaves it not propagating, and pytest (9.1+) hangs its capture handlers on
+    # such a logger in every phase: setup_logging then found handlers and gave it no console.
+    logger.propagate = True
     yield logger, tmp_path / "api.log"
     for handler in list(root.handlers):
         root.removeHandler(handler)
