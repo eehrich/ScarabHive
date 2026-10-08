@@ -23,10 +23,10 @@ from agent_system.auth.security import create_access_token
 from agent_system.config.models import AgentConfig, AgentMetadata, ToolServerConfig
 from agent_system.core.request_context import request_user_map
 from agent_system.servers.agent.server import Agent
+from live_accounts import signing_key
 
 pytestmark = pytest.mark.anyio
 
-DEV_SECRET = "published-signing-key-replace-with-your-own-0000000000"
 PROBE = "probe_gated_agent"
 
 
@@ -78,7 +78,7 @@ def api(tmp_path, monkeypatch):
     def headers(name):
         account = users.get_user_by_username(name)
         token = create_access_token({"sub": name, "user_id": account.id, "role": account.role.value},
-                                    secret_key=DEV_SECRET, algorithm="HS256")
+                                    secret_key=signing_key(), algorithm="HS256")
         return {"Authorization": f"Bearer {token}"}
 
     return SimpleNamespace(app=app, entry=app.state.agent, started=started, headers=headers)

@@ -14,9 +14,7 @@ from fastapi.testclient import TestClient
 
 from agent_system.app import build_app
 from agent_system.auth.security import create_access_token
-from live_accounts import token_generation
-
-DEV_SECRET = "published-signing-key-replace-with-your-own-0000000000"
+from live_accounts import signing_key, token_generation
 
 
 @pytest.fixture(scope="module")
@@ -79,7 +77,7 @@ def auth_headers():
     ).fetchone()
     token = create_access_token(
         {"sub": row[1], "user_id": row[0], "role": row[2], "gen": token_generation(row[0])},
-        secret_key=DEV_SECRET, algorithm="HS256",
+        secret_key=signing_key(), algorithm="HS256",
     )
     return {"Authorization": f"Bearer {token}"}
 
