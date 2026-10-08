@@ -20,7 +20,7 @@ agent-cli [OPTIONS] COMMAND [ARGS]...
 Options:
   --config PATH              Path to config file (default: AGENT_CONFIG_PATH, else config/config.yaml)
   -v, --verbose             Enable verbose logging
-  --color {auto,always,never}  Color output mode (default: auto)
+  --color {auto,always,never,ansi,html,text}  Color output mode (default: auto)
   --no-color                Disable colored output
   --show-tools                Show tool calls and their results
   --no-status               Disable status event output
@@ -98,6 +98,13 @@ agent-cli run "What's in this image?" --attach screenshot.png
                                 everything.
                                 A task that follows the flag is ignored, as
                                 before -- the listing runs and nothing else
+--list-archived [COUNT]         List this user's archived conversations
+                                (default 20, 0 = all)
+--restore-session ID            Restore an archived conversation and its
+                                sub-agent sessions
+--archive-sessions [DAYS]       Archive conversations older than DAYS (default:
+                                session_archive.retention_days); --dry-run
+                                reports without changing anything
 --vars KEY=VALUE ...            Template variables for the agent's prompt
 ```
 
@@ -161,7 +168,8 @@ agent-cli chat --list-sessions
 
 Takes the same options as `run`: `--agent`, `--llm`, `--llm-params`,
 `--attach`, `--max-steps`, `--session`, `--session-user`, `--session-title`,
-`--force`, `--list-sessions` and `--vars`, plus the global `--color` and
+`--force`, `--list-sessions`, `--list-archived`, `--restore-session`,
+`--archive-sessions`/`--dry-run` and `--vars`, plus the global `--color` and
 `--no-status`. In the chat this means:
 
 - `--no-status`, `--color never`/`text` (also `NO_COLOR`, `TERM=dumb`) or

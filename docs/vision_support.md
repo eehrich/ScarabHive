@@ -76,10 +76,10 @@ llm_system:
 
 The server validates images when the request arrives:
 - **Format**: Must be a readable image file; other file types are skipped
-- **Size**: Must not exceed `vision.image_max_size_mb` when set
+- **Size**: Not checked by the server (no size limit is applied on `/run`)
 - **Model**: The model must declare `capabilities.image_input: true`
 
-Invalid files are refused with HTTP 400 and the reason, e.g.:
+Refused attachments get HTTP 400 and the reason, e.g.:
 - "Model 'X' does not support image_input (1 attachment(s) given)"
 
 ## API Usage
@@ -170,7 +170,7 @@ The image shows a bar chart with quarterly sales data...
 
 **Error Responses:**
 
-- **400 Bad Request**: Image refused (unsupported by the model, unreadable, or too large)
+- **400 Bad Request**: Image refused (unsupported by the model or unreadable)
 ```json
 {
   "detail": "Model 'X' does not support image_input (1 attachment(s) given)"
@@ -205,7 +205,7 @@ Standard web image formats are supported:
 
 ### Size Limits
 
-Size limits vary by model (`capabilities.max_image_size` in the `llm_system:` section; global cap `vision.image_max_size_mb`):
+Size limits vary by model (`capabilities.max_image_size` in the `llm_system:` section; enforced by the provider, not by `/run`):
 - **GPT-5**: 20 MB per image
 - **GPT-5-mini**: 5 MB per image
 - **Custom models**: Check config
@@ -333,7 +333,7 @@ my-custom-vision-model:
 
 ### Error: "Image too large"
 
-**Cause:** Image exceeds the size limit (`vision.image_max_size_mb`)
+**Cause:** Image exceeds the provider's size limit
 
 **Solution:**
 - Compress image (reduce quality or resize)

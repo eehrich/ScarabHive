@@ -118,7 +118,7 @@ plugins:
 #### The shipped profiles
 
 As shipped, the default chat agent uses the profile `chat` (falling back to `or-gemini-flash-lite`),
-most other agents `normal` (falling back to `think`). These and the `or-*` profiles in
+the other agents mostly an `or-*`, `structured` or `code` profile; a few `normal` (falling back to `think`). These and the `or-*` profiles in
 `config/llm_openrouter.yaml` point at OpenRouter models; some agents fall back to DeepSeek or Gemini
 directly.
 
@@ -261,18 +261,18 @@ agent-cli run "Research quantum computing" --agent research_agent
 agent-cli plugins list
 ```
 
-### VS Code Tasks
+### VS Code Launch Configurations
 
-Use predefined VS Code tasks (`.vscode/tasks.json`):
+Use the predefined VS Code launch configurations (`.vscode/launch.json`; there is no `tasks.json`):
 
-1. Open Command Palette (Ctrl+Shift+P)
-2. Select "Tasks: Run Task"
+1. Open the Run and Debug view (Ctrl+Shift+D)
+2. Pick a configuration and start it (F5)
 3. Choose:
-   - `AgentSystem: Run API` - Start API server
-   - `AgentSystem: Run API with Debug Output` - Debug mode
-   - `Python: Run all tests (venv)` - The whole suite (20+ minutes; see [Testing](#testing))
-   - `Python: Ruff (check & fix)` - Lint code
-   - `Python: Mypy (type check)` - Type checking
+   - `API (uvicorn)` - Start API server
+   - `agent-cli` - Run the CLI
+   - `agent-run` - Run agent-run
+   - `pytest: current file` - Tests of the open file
+   - `pytest: test, file or folder` - Tests of a chosen path
 
 ---
 
