@@ -24,11 +24,14 @@ if TYPE_CHECKING:
 # Suppress audioop deprecation warning for pydub (Python 3.12+)
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="pydub")
 
-# Check if pydub is available
+# Check if pydub is available. Only pydub's own absence skips: an installed pydub that does not import (audioop on
+# Python 3.13+ without audioop-lts) is a broken installation, and skipped it looked like a missing optional package.
 try:
     from pydub import AudioSegment
     HAS_PYDUB = True
-except ImportError:
+except ModuleNotFoundError as missing:
+    if missing.name != "pydub":
+        raise
     HAS_PYDUB = False
     AudioSegment = None
 
