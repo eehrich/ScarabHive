@@ -799,6 +799,39 @@ async def _entries(service):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("renamed", [False, True], ids=["placeholder", "renamed"])
+async def test_a_parent_record_made_for_a_run_is_named_after_its_task(tmp_path, renamed):
+    """agent-cli saves its session only at the end of the run; a sub-agent started before that makes the parent's
+    record, with a placeholder title. The run's save -- and a checkpoint before it -- names it as a fresh session
+    is named, by the first 50 characters of the task. A title a person gave it stays."""
+    from types import SimpleNamespace
+
+    from agent_system.config.models import AgentConfig
+    from agent_system.llm.models import ChatMessage
+    from agent_system.servers.agent.components.session_tracking import SessionTracker
+
+    service, manager = await _stored_manager(tmp_path)
+    task = "Should our small town's library open on Sundays, given the budget and the staff?"
+    coordinator = SimpleNamespace(name="coordinator", agent_config=AgentConfig(llm_profile="normal"),
+                                  _session_tracker=SessionTracker())
+    coordinator._session_tracker.set_session_messages("cli-1", [ChatMessage(role="user", content=task)])
+
+    await manager.create_sub_session("cli-1", "worker", "task", params={"_user_id": "ada", "_agent": coordinator})
+    if renamed:
+        record = await service.session_manager.load_session("ada", "cli-1")
+        record["title"] = "Bibliothek"
+        await service.session_manager.save_session(record)
+
+    await service.checkpoint_session(coordinator, "ada", "cli-1")
+    title = (await service.session_manager.load_session("ada", "cli-1"))["title"]
+    assert title == ("Bibliothek" if renamed else task[:50]), "checkpoint"
+
+    await service.save_session(coordinator, "ada", "cli-1", "coordinator", "normal", was_new_session=True)
+    title = (await service.session_manager.load_session("ada", "cli-1"))["title"]
+    assert title == ("Bibliothek" if renamed else task[:50]), "save"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("parent", ["ephemeral-oai-1", "s-2"], ids=["throwaway", "stored"])
 async def test_a_throwaway_parent_that_is_gone_is_no_warning(tmp_path, caplog, parent):
     """A stateless call's parent record is deleted once its turn is settled (openai_api), and a sub-agent of it

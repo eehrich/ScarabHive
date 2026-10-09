@@ -103,6 +103,11 @@ def _add_estimated_tokens(messages_dicts: List[Dict[str, Any]]) -> None:
 #: (``Coordinator Session``), with their sessions below it.
 EPHEMERAL_SESSION_PREFIX = "ephemeral-"
 
+#: The title of that parent record, made before the run's first save (agent-cli
+#: saves at the end of its run): a placeholder the run's saves replace with the
+#: title a fresh session gets, from its first user message.
+PLACEHOLDER_TITLE = "Coordinator Session"
+
 
 def is_ephemeral_session(session_id: Optional[str]) -> bool:
     return bool(session_id) and str(session_id).startswith(EPHEMERAL_SESSION_PREFIX)
@@ -466,7 +471,7 @@ class SessionService:
                 else:
                     # Only update title if it's still the default auto-generated title
                     extracted_title = self._extract_session_title(messages_dicts)
-                    if session_data.get("title") == extracted_title or not session_data.get("title"):
+                    if session_data.get("title") in (extracted_title, PLACEHOLDER_TITLE, None, ""):
                         session_data["title"] = extracted_title
                 # CRITICAL: Always update agent_name and llm_profile from current request
                 session_data["agent_name"] = agent_name
@@ -654,6 +659,8 @@ class SessionService:
             session_data["messages"] = safe_messages
             if carried:
                 session_data["title"] = carried
+            elif session_data.get("title") == PLACEHOLDER_TITLE and safe_messages:
+                session_data["title"] = self._extract_session_title(safe_messages)
             if runtime_vars:
                 existing = session_data.get("context_vars")
                 if not isinstance(existing, dict):
