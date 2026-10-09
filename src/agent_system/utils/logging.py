@@ -235,7 +235,7 @@ def console_colours() -> bool:
     """Whether log lines on stdout get colours: a terminal, no NO_COLOR, not a dumb one.
 
     The TERM check is cli_utils.common.dumb_terminal's; not imported from there, as cli_utils pulls the agent
-    runtime in. agent-cli then sets its console handler after --color (agent_cli.colour_console_logs), so an
+    runtime in. agent-cli then sets its console handler after --color (cli_utils/commands/run.py: colour_console_logs), so an
     explicit --color always colours them under NO_COLOR too.
     """
     return (stdout_is_terminal() and not os.environ.get("NO_COLOR")

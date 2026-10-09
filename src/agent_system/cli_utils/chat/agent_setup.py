@@ -125,7 +125,7 @@ def _switch_model(ctx: "_ChatContext", payload: str) -> bool:
 
     The next turn reads ctx.llm_override, and the choice goes into the
     session metadata so continuing the session later starts on it again
-    (agent_cli.stored_session_settings reads it back) -- the caller writes
+    (commands/run.py: stored_session_settings reads it back) -- the caller writes
     the record at once.
     """
     profiles = _llm_profiles(ctx)

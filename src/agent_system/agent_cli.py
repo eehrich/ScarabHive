@@ -30,8 +30,6 @@ from .cli_utils.commands.mcp import run_mcp_command
 from .cli_utils.commands.plugins import run_plugins_command
 from .cli_utils.commands.reload import run_reload_command
 from .cli_utils.commands.run import run_agent_command
-# Named here by tests and by notes elsewhere (cli_utils/chat.py, utils/logging.py).
-from .cli_utils.commands.run import colour_console_logs, stored_session_settings  # noqa: F401
 
 
 def _exit_on_unknown_profile(config: AgentSystemConfig, profile: str) -> None:

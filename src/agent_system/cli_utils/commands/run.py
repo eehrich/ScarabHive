@@ -9,7 +9,7 @@ of what it needs. They were one function's body, and its closures read twenty
 of its locals; spelled out, a step says what it reads and what it hands on.
 
 ``chat`` shares every step up to the run and then hands over to the REPL
-(cli_utils/chat.py), on the same event loop. The one-shot run itself -- its
+(cli_utils/chat/), on the same event loop. The one-shot run itself -- its
 stop, its stream on the terminal, the result printed after -- is one_shot.py.
 """
 from __future__ import annotations

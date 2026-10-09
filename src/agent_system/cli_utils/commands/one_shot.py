@@ -6,7 +6,7 @@ status lines, tool calls, thinking, errors and the answer as they arrive --
 and the result is printed after. ``RunControl`` carries what the stop needs
 to reach (the request id, the presence hold) and what the printing after the
 run must not repeat (the errors the stream showed). The chat has a renderer
-of its own (cli_utils/chat.py); this is the terminal side of a single run,
+of its own (cli_utils/chat/); this is the terminal side of a single run,
 kept apart from the steps in run.py that set it up.
 """
 from __future__ import annotations
