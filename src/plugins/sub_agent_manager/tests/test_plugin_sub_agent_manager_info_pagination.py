@@ -459,7 +459,7 @@ class TestAMistakenCallIsNoErrorInTheLog:
         format: the model must not be told "not found" about a sub-agent that exists."""
         sub_id, _ = sub_session
         (temp_storage / USER / f"{sub_id}.json").write_text("{not json", encoding="utf-8")
-        session_manager._cache.clear()
+        session_manager._cache.entries.clear()
         with caplog.at_level(logging.INFO, logger="plugins.sub_agent_manager.server"):
             continued = await server._handle_continue(
                 self.continue_params(sub_id, session_service, sub_agent_manager))

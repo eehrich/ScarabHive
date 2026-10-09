@@ -13,6 +13,7 @@ import time
 
 import pytest
 
+from agent_system.services.session_cache import SessionCache
 from agent_system.services.session_manager import SessionManager
 
 
@@ -26,7 +27,7 @@ async def _saved(manager: SessionManager, messages: list[str]) -> dict:
 async def _written_by_another_process_since(manager: SessionManager, tmp_path) -> None:
     """The file written after what this manager saw, and before anything that comes next -- whatever the
     file system's clock resolution."""
-    written = manager._seen["s1"] + 0.01
+    written = manager._cache.seen["s1"] + 0.01
     os.utime(tmp_path / "alice" / "s1.json", (written, written))
     while time.time() <= written + 0.01:
         await asyncio.sleep(0.005)
@@ -59,18 +60,18 @@ async def test_what_was_seen_outlives_the_cache_and_is_bounded_on_its_own(tmp_pa
     sessions that sit in a tracker -- whose next claim then fell back to guessing by length."""
     manager = SessionManager(storage_path=str(tmp_path))
     await _saved(manager, ["first"])
-    manager._max_cache_size = 1
+    manager._cache.max_size = 1
     await manager.create_session(user_id="alice", session_id="s2", agent_name="coder", llm_profile="normal")
-    assert "s1" not in manager._cache, "fixture: s1 was not evicted"
+    assert "s1" not in manager._cache.entries, "fixture: s1 was not evicted"
     assert manager.changed_on_disk("alice", "s1") is False, "the eviction took what was seen with it"
 
-    monkeypatch.setattr(SessionManager, "SEEN_KEPT", 2)
+    monkeypatch.setattr(SessionCache, "SEEN_KEPT", 2)
     await manager.save_session(await manager.load_session("alice", "s1"))  # s1 seen again: the newest now
     await manager.create_session(user_id="alice", session_id="s3", agent_name="coder", llm_profile="normal")
-    assert list(manager._seen) == ["s1", "s3"], "not bounded, or not the one seen longest ago that went"
+    assert list(manager._cache.seen) == ["s1", "s3"], "not bounded, or not the one seen longest ago that went"
 
     manager.clear_cache()
-    assert manager._seen == {}
+    assert manager._cache.seen == {}
 
 
 async def test_a_session_read_into_a_tracker_is_seen_as_it_was_read(tmp_path):
@@ -98,7 +99,7 @@ async def test_a_deleted_session_leaves_nothing_seen(tmp_path):
 
     await manager.delete_session("alice", "s1", create_backup=False)
 
-    assert "s1" not in manager._seen
+    assert "s1" not in manager._cache.seen
 
 
 async def _renamed(manager: SessionManager) -> None:

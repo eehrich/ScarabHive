@@ -32,7 +32,7 @@ async def test_a_peek_leaves_a_change_another_process_made_a_change(tmp_path):
     record["messages"].append({"role": "user", "content": "theirs"})
     await theirs.save_session(record)
     # Written after our own save and before the peek, whatever the file system's clock resolution
-    written = ours._cache["s1"][1] + 0.01
+    written = ours._cache.entries["s1"][1] + 0.01
     os.utime(tmp_path / "alice" / "s1.json", (written, written))
     while time.time() <= written + 0.01:
         await asyncio.sleep(0.005)

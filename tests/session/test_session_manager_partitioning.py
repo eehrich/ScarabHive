@@ -17,6 +17,7 @@ import json
 import pytest
 from pathlib import Path
 
+from agent_system.services.session_index import extract_parent_id
 from agent_system.services.session_manager import SessionManager
 
 
@@ -310,7 +311,7 @@ async def test_rebuild_main_only_includes_top_level(sm):
 # ---------------------------------------------------------------------------
 
 def test_extract_parent_id_from_metadata():
-    f = SessionManager._extract_parent_id
+    f = extract_parent_id
     assert f({"parent_session": {"session_id": "P1", "created_at": "x"}}) == "P1"
     assert f({"parent_session": None}) is None
     assert f({}) is None
@@ -319,8 +320,8 @@ def test_extract_parent_id_from_metadata():
 
 
 def test_get_index_path_routing(sm):
-    main = sm._get_index_path("u1")
-    sub = sm._get_index_path("u1", parent_session_id="parent_xyz")
+    main = sm._index.path("u1")
+    sub = sm._index.path("u1", parent_session_id="parent_xyz")
     assert main.name == "index.json"
     assert sub.name == ".subs.parent_xyz.index.json"
     assert main.parent == sub.parent  # same user dir
@@ -330,7 +331,7 @@ def test_get_index_path_validates_parent_id(sm):
     """Invalid parent_session_id (not alphanumeric/underscore/dash) is rejected
     so it can't escape the user dir via path traversal."""
     with pytest.raises(ValueError):
-        sm._get_index_path("u1", parent_session_id="../escape")
+        sm._index.path("u1", parent_session_id="../escape")
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +359,7 @@ async def test_first_sub_agent_does_not_read_the_users_other_sessions(sm, monkey
         return await original(path)
 
     monkeypatch.setattr(sm, "_read_session_file_async", counting)
+    monkeypatch.setattr(sm._index, "_read_session", counting)
 
     await sm.create_session(
         user_id="u1", title="Child", session_id="c_cost", parent_session_id="p_cost",
