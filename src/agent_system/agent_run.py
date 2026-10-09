@@ -33,7 +33,9 @@ from .cli_utils.session_defaults import (
     profile_for_record,
     session_defaults,
 )
+from .cli_utils.agent_runner import exit_unless_forced, run_as_local_operator, say_cancelled
 from .cli_utils.attachments import greedy_attach_hint, sort_attachments
+from .cli_utils.cli_parser import COLOR_CHOICES
 from .cli_utils.session_listing import DEFAULT_LIMIT, parse_listing, print_sessions
 from .cli_utils.common import (
     set_color_mode,
@@ -247,12 +249,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             try:
                 presence.hold(actual_session_id, session_user, agent_name)
             except SessionBusy as busy:
-                if not force:
-                    print(f"Error: {busy}.", file=sys.stderr)
-                    print("Wait for it to finish, or pass --force if its lock is a leftover.",
-                          file=sys.stderr)
-                    sys.exit(1)
-                print(f"Warning: {busy}; running it anyway (--force).", file=sys.stderr)
+                exit_unless_forced(busy, force)
 
         # Continue on the model the session was started with (see
         # choose_llm_profile for what that does and does not outrank).
@@ -343,18 +340,10 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             result = await run_agent_request(agent, task_input, actual_session_id, llm_override, llm_profile_info)
             # Check if agent was cancelled and print message
             if result.get("cancelled", False):
-                msg = "\n✋ Cancelled by user"
-                from .cli_utils.common import supports_color, colorize
-                if supports_color():
-                    msg = colorize(msg, "33")  # yellow
-                print(msg)
+                say_cancelled()
         except (asyncio.CancelledError, KeyboardInterrupt):
             # Direct Ctrl-C (rare, usually caught by agent)
-            msg = "\n✋ Cancelled by user"
-            from .cli_utils.common import supports_color, colorize
-            if supports_color():
-                msg = colorize(msg, "33")  # yellow
-            print(msg)
+            say_cancelled()
             result = {"task": request, "cancelled": True, "summary": ""}
         finally:
             # Cancel status subscriber
@@ -448,14 +437,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
 
 
 def main() -> None:
-    """The agent-run entry point: a local process, run by whoever operates the
-    installation -- so the agent role gate takes its default user, cli_user,
-    for the local operator (auth/agent_access.local_operator_trusted). The
-    API process never does."""
-    from .auth.agent_access import local_operator_trusted
-
-    with local_operator_trusted():
-        _main()
+    """The agent-run entry point, run as the local operator
+    (cli_utils.agent_runner.run_as_local_operator)."""
+    run_as_local_operator(_main)
 
 
 def _main() -> None:
@@ -504,7 +488,7 @@ Examples:
 
     parser.add_argument(
         "--color",
-        choices=["auto", "always", "never", "ansi", "html", "text"],
+        choices=COLOR_CHOICES,
         # Default "auto", not "always": "always" emitted escape sequences into
         # redirected output (agent_cli.py fixed this first).
         default="auto",

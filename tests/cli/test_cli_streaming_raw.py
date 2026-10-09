@@ -4,6 +4,7 @@ import sys
 import pytest
 
 from agent_system import agent_cli as cli
+from agent_system.cli_utils.commands import run as run_cmd
 
 
 class DummyAgent:
@@ -217,9 +218,9 @@ def stubbed_cli(monkeypatch):
     async def nothing(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(cli, "setup_role_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "setup_role_logging", lambda *args, **kwargs: None)
     for name in ("initialize_tools", "init_batch_system", "shutdown_tools", "shutdown_batch_system"):
-        monkeypatch.setattr(cli, name, nothing)
+        monkeypatch.setattr(run_cmd, name, nothing)
     monkeypatch.setattr('agent_system.servers.agent.server.Agent', AgentStub)
     monkeypatch.setattr('agent_system.servers.agent.entry.Agent', AgentStub)
     registry = MagicMock()

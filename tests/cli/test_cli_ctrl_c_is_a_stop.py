@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import agent_system.agent_cli as agent_cli
+from agent_system.cli_utils.commands import run as run_cmd
 from agent_system.cli_utils.event_loop import close_cli_loop
 from agent_system.config.models import (
     AgentConfig,
@@ -73,12 +74,12 @@ def cli(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(agent_cli, "load_settings", lambda path=None: config)
-    monkeypatch.setattr(agent_cli, "setup_role_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "setup_role_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(InitializationService, "initialize_for_cli", initialize_for_cli)
     monkeypatch.setattr(InitializationService, "session_manager", property(lambda self: manager))
     for name in ("initialize_tools", "init_batch_system", "shutdown_tools", "shutdown_batch_system"):
-        monkeypatch.setattr(agent_cli, name, nothing)
-    monkeypatch.setattr(agent_cli, "entry_agent", lambda *args, **kwargs: agent)
+        monkeypatch.setattr(run_cmd, name, nothing)
+    monkeypatch.setattr(run_cmd, "entry_agent", lambda *args, **kwargs: agent)
     woken = []
     monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "run", "--session", "s1", "do it"])

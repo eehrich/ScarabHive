@@ -1,12 +1,20 @@
-"""Hook management commands for the CLI."""
+"""Hook management commands for the CLI: `hooks list` and `hooks inspect`.
+
+Hooks register while the plugins load, so ``run_hooks_command`` loads them
+(``ToolServerIntegration.initialize``) before ``handle_hooks_command`` reads
+the registry, and shuts them down after.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+import sys
 from typing import Any
 
+from agent_system.cli_utils.event_loop import run_async
 from agent_system.hooks import get_hook_registry, HookType
+from agent_system.tools.integration import ToolServerIntegration
 
 try:
     from tabulate import tabulate  # optional dependency for pretty tables
@@ -99,3 +107,30 @@ def handle_hooks_command(args: Any) -> bool:
         return _hooks_inspect(hook_name, args)
     print(json.dumps({"error": f"Unknown hooks action: {action}"}, ensure_ascii=False))
     return False
+
+
+def run_hooks_command(args: Any, config: Any) -> None:
+    """Load the plugins, run the hooks action, exit 1 when it failed."""
+    # Hooks register while the plugins load. Without loading them the
+    # registry was empty, and `hooks list` answered "No hooks registered"
+    # on every installation. Costs about two seconds (measured 2026-09-14).
+    # Enabled external MCP servers get connected on the way, which adds
+    # their connect time.
+    async def handle_hooks_with_plugins() -> bool:
+        tool_integration = ToolServerIntegration(config=config)
+        try:
+            try:
+                await tool_integration.initialize(config)
+            except Exception as e:
+                # Not "continue anyway" as in `mcp`: nothing of what
+                # registers would be trustworthy. A SINGLE plugin that
+                # fails is skipped and logged as an error on stderr --
+                # the list then shows what the server would register too.
+                print(f"Error: loading the plugins failed: {e}", file=sys.stderr)
+                return False
+            return handle_hooks_command(args)
+        finally:
+            await tool_integration.shutdown()
+
+    if not run_async(handle_hooks_with_plugins()):
+        sys.exit(1)

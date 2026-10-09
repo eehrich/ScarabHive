@@ -71,7 +71,7 @@ class TestCLIMCP:
     """Test CLI MCP external server management commands."""
 
     @patch('agent_system.agent_cli.load_settings')
-    @patch('agent_system.agent_cli.ToolServerIntegration')
+    @patch('agent_system.cli_utils.commands.mcp.ToolServerIntegration')
     @patch('builtins.print')
     def test_mcp_list_no_servers(self, mock_print, mock_integration_class, mock_load_settings, mock_config):
         """Test mcp list command when no servers are configured."""
@@ -93,7 +93,7 @@ class TestCLIMCP:
         assert any("No external MCP servers configured" in arg for arg in printed_args)
 
     @patch('agent_system.agent_cli.load_settings')
-    @patch('agent_system.agent_cli.ToolServerIntegration')
+    @patch('agent_system.cli_utils.commands.mcp.ToolServerIntegration')
     @patch('builtins.print')
     def test_mcp_list_json_format(self, mock_print, mock_integration_class, mock_load_settings, mock_config, mock_tool_integration):
         """Test mcp list command with JSON format."""
@@ -101,7 +101,7 @@ class TestCLIMCP:
         mock_integration_class.return_value = mock_tool_integration
         
         # Call the _mcp_list_servers helper directly to avoid full CLI bootstrapping
-        from agent_system.agent_cli import _mcp_list_servers
+        from agent_system.cli_utils.commands.mcp import _mcp_list_servers
         args_obj = type('Args', (), {'out_format': 'json'})()
         import asyncio
         asyncio.run(_mcp_list_servers(mock_tool_integration, args_obj))
@@ -123,7 +123,7 @@ class TestCLIMCP:
         assert not json_output[0]['connected']
 
     @patch('agent_system.agent_cli.load_settings')
-    @patch('agent_system.agent_cli.ToolServerIntegration')
+    @patch('agent_system.cli_utils.commands.mcp.ToolServerIntegration')
     def test_mcp_without_action_prints_help(self, mock_integration_class, mock_load_settings, mock_config, capsys):
         """A bare `mcp` used to connect everything and then print nothing."""
         mock_load_settings.return_value = mock_config
@@ -135,7 +135,7 @@ class TestCLIMCP:
         mock_integration_class.assert_not_called()
 
     @patch('agent_system.agent_cli.load_settings')
-    @patch('agent_system.agent_cli.ToolServerIntegration')
+    @patch('agent_system.cli_utils.commands.mcp.ToolServerIntegration')
     def test_mcp_tools_lists_through_the_tool_service(self, mock_integration_class, mock_load_settings, mock_config, mock_tool_integration, capsys):
         mock_load_settings.return_value = mock_config
         mock_integration_class.return_value = mock_tool_integration
@@ -144,7 +144,7 @@ class TestCLIMCP:
                    "effective_tools": ["hello"],
                    "filtering": {"blocked_tools": ["secret"]}}
 
-        with patch('agent_system.agent_cli.ToolService.list_tools', AsyncMock(return_value=listing)) as list_tools, \
+        with patch('agent_system.cli_utils.commands.mcp.ToolService.list_tools', AsyncMock(return_value=listing)) as list_tools, \
                 patch('sys.argv', ['cli', 'mcp', 'tools', 'test_server', '--format', 'json']):
             main()
 
@@ -154,7 +154,7 @@ class TestCLIMCP:
 
         # The default table read a key the service does not have and
         # reported every server as having no tools.
-        with patch('agent_system.agent_cli.ToolService.list_tools', AsyncMock(return_value=listing)), \
+        with patch('agent_system.cli_utils.commands.mcp.ToolService.list_tools', AsyncMock(return_value=listing)), \
                 patch('sys.argv', ['cli', 'mcp', 'tools', 'test_server']):
             main()
         table = capsys.readouterr().out
@@ -162,13 +162,13 @@ class TestCLIMCP:
         assert "No tools available" not in table
 
     @patch('agent_system.agent_cli.load_settings')
-    @patch('agent_system.agent_cli.ToolServerIntegration')
+    @patch('agent_system.cli_utils.commands.mcp.ToolServerIntegration')
     def test_mcp_tools_table_shows_an_error_as_an_error(self, mock_integration_class, mock_load_settings, mock_config, mock_tool_integration, capsys):
         mock_load_settings.return_value = mock_config
         mock_integration_class.return_value = mock_tool_integration
         error = {"error": "Server nope not found in configuration"}
 
-        with patch('agent_system.agent_cli.ToolService.list_tools', AsyncMock(return_value=error)), \
+        with patch('agent_system.cli_utils.commands.mcp.ToolService.list_tools', AsyncMock(return_value=error)), \
                 patch('sys.argv', ['cli', 'mcp', 'tools', 'nope']), \
                 pytest.raises(SystemExit) as exit_info:
             main()
@@ -177,7 +177,7 @@ class TestCLIMCP:
         assert json.loads(capsys.readouterr().out) == error
 
     @patch('agent_system.agent_cli.load_settings')  
-    @patch('agent_system.agent_cli.ToolServerIntegration')
+    @patch('agent_system.cli_utils.commands.mcp.ToolServerIntegration')
     @patch('builtins.print')
     def test_mcp_status_specific_server(self, mock_print, mock_integration_class, mock_load_settings, mock_config, mock_tool_integration):
         """Test mcp status command for specific server."""
@@ -205,7 +205,7 @@ class TestCLIMCP:
         assert 'url' in status_output
 
     @patch('agent_system.agent_cli.load_settings')
-    @patch('agent_system.agent_cli.ToolServerIntegration')
+    @patch('agent_system.cli_utils.commands.mcp.ToolServerIntegration')
     @patch('builtins.print')
     def test_mcp_test_server_disabled(self, mock_print, mock_integration_class, mock_load_settings, mock_config, mock_tool_integration):
         """Test mcp test command with disabled server."""
@@ -246,7 +246,7 @@ class TestCLIMCP:
         assert 'is disabled' in error_output['error']
 
     @patch('agent_system.agent_cli.load_settings')
-    @patch('agent_system.agent_cli.ToolServerIntegration')
+    @patch('agent_system.cli_utils.commands.mcp.ToolServerIntegration')
     def test_mcp_status_of_an_unknown_server_is_an_error(self, mock_integration_class, mock_load_settings, mock_config, mock_tool_integration, capsys):
         """The service answers None for an unknown name; the CLI printed `null`."""
         mock_load_settings.return_value = mock_config

@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 import agent_system.agent_cli as cli
+from agent_system.cli_utils.commands import run as run_cmd
 from agent_system.config.models import (
     AgentConfig,
     AgentSystemConfig,
@@ -374,8 +375,8 @@ class TestSessionPresence:
         async def mcp():
             shut.append("mcp")
 
-        monkeypatch.setattr(cli, "shutdown_batch_system", batch)
-        monkeypatch.setattr(cli, "shutdown_tools", mcp)
+        monkeypatch.setattr(run_cmd, "shutdown_batch_system", batch)
+        monkeypatch.setattr(run_cmd, "shutdown_tools", mcp)
         return shut
 
     def test_stepping_aside_for_the_holder_still_shuts_the_runtime_down(
