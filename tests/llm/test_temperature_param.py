@@ -1,16 +1,16 @@
-"""Tests für den konfigurierbaren ``temperature``-Parameter.
+"""Tests for the configurable ``temperature`` parameter.
 
-Hintergrund: bis 2026-07 war Sampling-Temperatur framework-seitig überhaupt
-nicht setzbar — gemessen liefen alle Prosa-Konverter-Requests mit
-Provider-Default (~1,0), also voller Sampling-Varianz für eine mechanische
-Kopier-Aufgabe. Die Tests sichern die drei Kanten ab, an denen so eine
-Durchreichung typischerweise bricht:
+Background: until 2026-07 the sampling temperature could not be set at all on
+the framework side — measured, all prose-converter requests ran with the
+provider default (~1.0), i.e. full sampling variance for a mechanical copy
+task. The tests secure the three edges where such a pass-through typically
+breaks:
 
-1. ``0.0`` ist ein GÜLTIGER Wert und darf nicht als „nicht gesetzt" gelten.
+1. ``0.0`` is a VALID value and must not count as "not set".
 2. ``None`` must NOT land in ``extra_params``: without a configured value
    no sampling field goes to the provider.
-3. Reasoning-Modelle lehnen den Param ab → bei ``thinking_level``/-budget
-   wird er nicht gesendet (statt 400er zu riskieren).
+3. Reasoning models reject the param → with ``thinking_level``/-budget
+   it is not sent (instead of risking 400s).
 """
 
 from __future__ import annotations
@@ -65,8 +65,8 @@ class TestClientWiring:
             provider="openai_responses", model="gpt-5.6", api_key="k", temperature=0.2)
         assert client.temperature == 0.2
 
-    # Jeder Provider hat einen eigenen Übergabe-Kanal — der Wert darf in
-    # keinem davon verloren gehen (und ohne Konfiguration nirgends auftauchen).
+    # Each provider has its own hand-over channel — the value must not get
+    # lost in any of them (and without configuration must show up in none).
     PROVIDERS = [
         ("openai_httpx", {}, "attr"),
         ("openai_responses", {}, "attr"),
@@ -98,9 +98,9 @@ class TestClientWiring:
 class TestPayload:
     def _payload(self, **kwargs) -> dict:
         client = make_llm(provider="openai_httpx", model="m", api_key="k", **kwargs)
-        # Der Payload-Aufbau liegt inline in _make_request_non_streaming
-        # (kein öffentlicher Builder). Geprüft wird deshalb der Zustand, den
-        # der Payload-Zweig liest, plus die Reasoning-Unterdrückung.
+        # The payload is built inline in _make_request_non_streaming
+        # (no public builder). So what is checked is the state the payload
+        # branch reads, plus the reasoning suppression.
         return {
             "temperature": client.temperature,
             "thinking_level": client.thinking_level,
@@ -114,19 +114,19 @@ class TestPayload:
 
     def test_reasoning_model_keeps_thinking_level(self):
         state = self._payload(temperature=0.2, thinking_level="high")
-        # Der Payload-Zweig unterdrückt temperature genau dann, wenn eines der
-        # Reasoning-Felder gesetzt ist.
+        # The payload branch suppresses temperature exactly when one of the
+        # reasoning fields is set.
         assert state["thinking_level"] == "high"
-        assert state["temperature"] == 0.2  # gespeichert, aber nicht gesendet
+        assert state["temperature"] == 0.2  # stored, but not sent
 
-    # #697c: Diese beiden Tests prüften vorher ``_build_payload_for_test`` —
-    # eine Methode, die es NIRGENDS gibt. Der hasattr-Zweig fiel also immer auf
-    # „nur den Zustand prüfen" zurück, und der eigentliche Riegel (temperature
-    # NICHT im Payload bei Reasoning-Modellen) war komplett ungetestet. Der
-    # echte Builder heißt ``_build_payload``.
+    # These two tests used to check ``_build_payload_for_test`` — a method
+    # that exists NOWHERE. The hasattr branch therefore always fell back to
+    # "only check the state", and the actual guard (temperature NOT in the
+    # payload for reasoning models) was completely untested. The real builder
+    # is called ``_build_payload``.
 
     def test_responses_payload_omits_temperature_for_reasoning(self):
-        # Die o-/gpt-5.x-Serie antwortet mit 400, wenn temperature mitkommt.
+        # The o-/gpt-5.x series answers with a 400 if temperature is included.
         client = make_llm(provider="openai_responses", model="gpt-5.6", api_key="k",
                           temperature=0.2, thinking_level="high")
         payload = client._build_payload([{"role": "user", "content": "hi"}], None)
@@ -137,7 +137,7 @@ class TestPayload:
         client = make_llm(provider="openai_responses", model="gpt-4o", api_key="k",
                           temperature=0.0)
         payload = client._build_payload([{"role": "user", "content": "hi"}], None)
-        # 0.0 ist ein GÜLTIGER Wert — der Guard prüft auf None, nicht auf falsy
+        # 0.0 is a VALID value — the guard checks for None, not for falsy
         assert payload["temperature"] == 0.0
         assert "reasoning" not in payload
 

@@ -1,23 +1,23 @@
-"""Kommt an, was in der Konfiguration steht — und ist der Prompt nicht leer?
+"""Does what is in the configuration arrive — and is the prompt non-empty?
 
-Der Server hielt eine ZWEITE Default-Tabelle und kopierte danach jeden Wert auf
-die Hook-Implementierung, also NACH dem Aufloesen der schema.yaml-Defaults. Zwei
-seiner Fallbacks waren falsch, und weil ``plugins.yaml`` beide Schluessel nicht
-setzt, war der falsche Fallback immer der wirksame Wert:
+The server kept a SECOND default table and afterwards copied every value onto
+the hook implementation, i.e. AFTER the schema.yaml defaults were resolved. Two
+of its fallbacks were wrong, and because ``plugins.yaml`` sets neither key, the
+wrong fallback was always the effective value:
 
-* ``llm_profile`` fiel auf ``'fast'`` — ein Profil, das ``config/llm.yaml`` gar
-  nicht kennt und das ``schema.yaml`` nicht einmal im Enum fuehrt. Die
-  Client-Erzeugung scheiterte daran still, und der Summarizer benutzte
-  stattdessen die LLM des Agenten.
-* ``summary_prompt_template`` fiel auf ``''``. Der Prompt entsteht als
-  ``template.replace('{messages}', …)`` — bei leerem Template ist das Ergebnis
-  leer, die Nachrichten werden nicht einmal eingesetzt. Am Produktionspfad
-  gemessen: Laenge 0. Der Summarizer rief das LLM mit einer leeren
-  Nutzernachricht auf und setzte die Antwort an die Stelle echter Konversation.
+* ``llm_profile`` fell back to ``'fast'`` — a profile ``config/llm.yaml`` does
+  not know at all and ``schema.yaml`` does not even list in its enum. Client
+  creation failed silently because of it, and the summarizer used the agent's
+  LLM instead.
+* ``summary_prompt_template`` fell back to ``''``. The prompt is built as
+  ``template.replace('{messages}', …)`` — with an empty template the result
+  is empty, the messages are not even inserted. Measured on the production
+  path: length 0. The summarizer called the LLM with an empty user message and
+  put the answer in the place of the real conversation.
 
-Die Tests fahren deshalb die ECHTE ``config/plugins.yaml`` durch den ECHTEN
-Server. Mit selbstgebauter Config waeren beide Luecken unsichtbar geblieben —
-ein solcher Test setzt genau die Schluessel, an die der Autor gerade denkt.
+The tests therefore run the REAL ``config/plugins.yaml`` through the REAL
+server. With a hand-built config both gaps would have stayed invisible —
+such a test sets exactly the keys the author is thinking of at that moment.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from plugins.context_summarizer.server import ContextSummarizerServer
 PLUGINS_YAML = Path("config/plugins.yaml")
 PLUGIN_DIR = Path(__file__).parent.parent
 
-#: yaml-Schluessel -> Attribut am Hook. Nur wo die Namen abweichen.
+#: yaml key -> attribute on the hook. Only where the names differ.
 _ALIASES = {
     "summarization_trigger_percentage": "trigger_percentage",
     "summarization_chunk_size": "chunk_size",
@@ -59,68 +59,69 @@ def _hook(config: dict):
         "context_summarizer", SimpleNamespace(), mcp)._hooks_impl
 
 
-@pytest.mark.skipif(not PLUGINS_YAML.exists(), reason="kein config/plugins.yaml")
+@pytest.mark.skipif(not PLUGINS_YAML.exists(), reason="no config/plugins.yaml")
 def test_every_shipped_setting_reaches_the_plugin():
-    """Der Test, der die Luecke gefunden haette."""
+    """The test that would have found the gap."""
     shipped = _shipped()
-    assert shipped, "der context_summarizer-Block ist leer — Test waere gegenstandslos"
+    assert shipped, "the context_summarizer block is empty — test would be vacuous"
 
     hook = _hook(shipped)
     ignored = []
     for key, want in shipped.items():
         attr = _ALIASES.get(key, key)
         if not hasattr(hook, attr):
-            ignored.append(f"{key}: kein Attribut '{attr}' am Plugin")
+            ignored.append(f"{key}: no attribute '{attr}' on the plugin")
             continue
         got = getattr(hook, attr)
         same = (float(got) == float(want)
                 if isinstance(want, (int, float)) and not isinstance(want, bool)
                 else got == want)
         if not same:
-            ignored.append(f"{key}: gesetzt {want!r}, wirksam {got!r}")
+            ignored.append(f"{key}: set {want!r}, effective {got!r}")
 
     assert not ignored, (
-        "Werte aus config/plugins.yaml erreichen den Plugin nicht:\n  "
+        "Values from config/plugins.yaml do not reach the plugin:\n  "
         + "\n  ".join(ignored))
 
 
 def test_the_summarisation_prompt_is_never_empty():
-    """Ein leeres Template macht den GANZEN Prompt leer.
+    """An empty template makes the WHOLE prompt empty.
 
-    ``template.replace('{messages}', msgs)`` laeuft AUF dem Template — ist es
-    leer, bleibt auch nach dem Ersetzen nichts uebrig. Geprueft wird am echten
-    Server mit der echten Konfiguration, denn genau dort entstand der Schaden.
+    ``template.replace('{messages}', msgs)`` runs ON the template — if it is
+    empty, nothing is left after the replacement either. This is checked on the
+    real server with the real configuration, because that is where the damage
+    happened.
     """
     hook = _hook(_shipped())
     assert hook.prompt_template.strip(), (
-        "prompt_template ist leer — der Summarizer wuerde das LLM mit einer "
-        "leeren Nachricht aufrufen und die Antwort an die Stelle echter "
-        "Konversation setzen")
+        "prompt_template is empty — the summarizer would call the LLM with an "
+        "empty message and put the answer in the place of the real "
+        "conversation")
     assert "{messages}" in hook.prompt_template, (
-        "ohne den Platzhalter landen die Nachrichten nie im Prompt")
+        "without the placeholder the messages never reach the prompt")
 
 
 def test_the_configured_profile_exists():
-    """Ein Profil, das es nicht gibt, schaltet die Funktion still ab.
+    """A profile that does not exist silently switches the feature off.
 
-    Bei ``'fast'`` scheiterte die Client-Erzeugung und der Summarizer benutzte
-    ersatzweise die LLM des Agenten — ohne dass irgendetwas rot wurde.
+    With ``'fast'`` client creation failed and the summarizer used the agent's
+    LLM instead — without anything turning red.
     """
     hook = _hook(_shipped())
     declared = yaml.safe_load((PLUGIN_DIR / "schema.yaml").read_text(encoding="utf-8"))
     allowed = declared.get("config", {}).get("llm_profile", {}).get("enum")
-    assert allowed, "schema.yaml fuehrt kein Enum fuer llm_profile — Test waere gegenstandslos"
+    assert allowed, "schema.yaml lists no enum for llm_profile — test would be vacuous"
     assert hook.llm_profile in allowed, (
-        f"llm_profile={hook.llm_profile!r} steht nicht im Enum {allowed}")
+        f"llm_profile={hook.llm_profile!r} is not in the enum {allowed}")
 
-    # Ueber load_settings, nicht config/llm.yaml direkt: die Profile leben in
-    # MEHREREN Dateien (llm.yaml + llm_openrouter.yaml), und genau die
-    # zusammengefuehrte Sicht entscheidet, ob die Client-Erzeugung gelingt.
-    # Der Direktlese-Weg wurde rot, als das Profil auf or-deepseek-flash
-    # wechselte — ein Fehlalarm des Tests, kein Fehler der Config.
+    # Via load_settings, not config/llm.yaml directly: the profiles live in
+    # SEVERAL files (llm.yaml + llm_openrouter.yaml), and exactly the merged
+    # view decides whether client creation succeeds. The direct-read approach
+    # turned red when the profile switched to or-deepseek-flash — a false
+    # alarm of the test, not a config error.
     from agent_system.config.settings import load_settings
     known = set(load_settings().llm_system.profiles)
-    assert len(known) >= 20, "Config kam nicht an — Test waere gegenstandslos"
+    assert len(known) >= 20, "config did not arrive — test would be vacuous"
     assert hook.llm_profile in known, (
-        f"llm_profile={hook.llm_profile!r} existiert in keiner Profil-Datei "
-        f"— die Client-Erzeugung faellt still auf die Agenten-LLM zurueck")
+        f"llm_profile={hook.llm_profile!r} exists in no profile file "
+        f"— client creation silently falls back to the agent's LLM")

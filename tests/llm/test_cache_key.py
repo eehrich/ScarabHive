@@ -1,4 +1,4 @@
-"""Tests fuer llm/cache_key.py — prompt_cache_key "auto"-Ableitung + Breakpoints."""
+"""Tests for llm/cache_key.py -- prompt_cache_key "auto" derivation + breakpoints."""
 
 import pytest
 
@@ -50,10 +50,10 @@ class TestPrefixGrouping:
         assert a != b
 
     def test_long_system_prompt_does_not_mask_task(self):
-        # Kern-Fall (User-Einwand): System-Prompt allein >PREFIX_CHARS
-        # (z.B. scene_planner). Das Fenster zaehlt erst AB der ersten
-        # Nicht-System-Message — verschiedene Buecher muessen trotz
-        # identischem Riesen-System-Prompt verschiedene Keys bekommen.
+        # Core case (user objection): the system prompt alone is >PREFIX_CHARS.
+        # The window only counts FROM the first non-system message --
+        # different books must get different keys despite an identical,
+        # huge system prompt.
         big_sys = "regelwerk " * 800  # ~8000 Zeichen
         a = derive_prompt_cache_key("auto", _chat(big_sys, "Buch A Synopsis"))
         b = derive_prompt_cache_key("auto", _chat(big_sys, "Buch B Synopsis"))
@@ -65,17 +65,17 @@ class TestPrefixGrouping:
         assert a != b
 
     def test_divergence_behind_prefix_window_same_key(self):
-        # Divergenz JENSEITS der ersten PREFIX_CHARS Zeichen der
-        # Task-Message trennt die Keys absichtlich nicht.
+        # Divergence BEYOND the first PREFIX_CHARS characters of the task
+        # message deliberately does not separate the keys.
         stable_task = "x" * PREFIX_CHARS
         a = derive_prompt_cache_key("auto", _chat("sys", stable_task + "Szene 1"))
         b = derive_prompt_cache_key("auto", _chat("sys", stable_task + "Szene 2 anders"))
         assert a == b
 
     def test_appended_messages_keep_key(self):
-        # Folge-Turns derselben Session (auch nachgeschobene System-
-        # Injections) aendern den Key nie — nur fuehrender System-Prompt
-        # + erste Task-Message zaehlen.
+        # Follow-up turns of the same session (including later system
+        # injections) never change the key -- only the leading system prompt
+        # + the first task message count.
         msgs = _chat("sys", "task")
         a = derive_prompt_cache_key("auto", msgs)
         longer = msgs + [
@@ -88,13 +88,13 @@ class TestPrefixGrouping:
 
 
 class TestInjectedBlocksDoNotMoveTheKey:
-    """Ein pro Call neu gebauter Block im Kopf darf den Key nicht verschieben.
+    """A block rebuilt on every call at the head must not move the key.
 
-    Wer dort etwas einhaengt, baut es jeden Schritt neu — die Todo-Liste war
-    der gemessene Fall, heute steht dort noch die Restoration des
-    context_engineer. Mitgehasht wanderte der Key mit dem Text: jede Abhakung
-    eine neue Shard, und damit war auch der System-Prompt DAVOR nicht mehr
-    lesbar.
+    Whoever hangs something there rebuilds it every step -- the todo list was
+    the measured case, today the context_engineer restoration still sits
+    there. Hashed along, the key moved with the text: every ticked item a
+    new shard, and with it the system prompt BEFORE it was no longer
+    readable from the cache.
     """
 
     @staticmethod
@@ -116,17 +116,17 @@ class TestInjectedBlocksDoNotMoveTheKey:
         assert a == b
 
     def test_an_unmarked_block_is_part_of_the_prompt(self):
-        # Gegenprobe: ohne Marker hat sie jemand bewusst gesetzt, niemand baut
-        # sie neu — das IST ein anderer Prompt und gehoert in eine andere
-        # Gruppe. Ohne diese Haelfte wuerde ein Key, der gar nichts mehr
-        # unterscheidet, genauso gruen aussehen.
+        # Control: without a marker someone set it deliberately, nobody
+        # rebuilds it -- that IS a different prompt and belongs in a different
+        # group. Without this half, a key that distinguishes nothing at all
+        # would look just as green.
         a = derive_prompt_cache_key("auto", self._with_block("Regel A", marker=None))
         b = derive_prompt_cache_key("auto", self._with_block("Regel B", marker=None))
         assert a != b
 
     def test_the_prompt_behind_the_block_still_counts(self):
-        # Und der Block verdeckt nicht, was hinter ihm steht: zwei Agenten mit
-        # demselben Block bleiben getrennt.
+        # And the block does not hide what stands behind it: two agents with
+        # the same block stay apart.
         a = self._with_block("- [ ] Kapitel 1")
         b = self._with_block("- [ ] Kapitel 1")
         b[0] = {"role": "system", "content": "ein anderer agent"}
@@ -155,12 +155,12 @@ class TestTheKeyTheRequestReallyCarries:
 
     @classmethod
     def _list_history(cls, prompt: str, task: str):
-        """Dieselbe Historie, aber als Content-LISTE.
+        """The same history, but as a content LIST.
 
-        ChatMessage.content ist ``List[ContentItem]`` — pydantic macht daraus
-        TextContent-Objekte, keine Dicts. Der alte Aufrufpunkt sah nur Dicts
-        (model_dump hatte sie plattgemacht); wer die Objekte nur als Dict liest,
-        hasht von so einer Message nichts als den Rollen-Marker.
+        ChatMessage.content is ``List[ContentItem]`` -- pydantic turns that
+        into TextContent objects, not dicts. The old call site only saw dicts
+        (model_dump had flattened them); whoever reads the objects only as
+        dicts hashes nothing but the role marker from such a message.
         """
         from agent_system.llm.models import ChatMessage
         return [ChatMessage(role="system", content=[{"type": "text", "text": prompt}]),
@@ -229,7 +229,7 @@ class TestTheKeyTheRequestReallyCarries:
                     pass
             else:
                 await client._make_request_non_streaming(messages, None)
-        assert "payload" in seen, "der Test hat den Request nie erreicht und misst nichts"
+        assert "payload" in seen, "the test never reached the request and measures nothing"
         return seen["payload"]["prompt_cache_key"]
 
     @staticmethod
@@ -248,25 +248,24 @@ class TestTheKeyTheRequestReallyCarries:
         a = await self._httpx_payload(self._history("- [ ] Kapitel 1"))
         b = await self._httpx_payload(self._history("- [x] Kapitel 1\n- [ ] Kapitel 2"))
         other = await self._httpx_payload(self._history("- [ ] Kapitel 1", prompt="Ein ANDERER Agent."))
-        assert a == b, "der Key wandert mit der Todo-Liste"
-        assert a != other, "zwei Agenten teilen sich eine Shard"
+        assert a == b, "the key moves with the todo list"
+        assert a != other, "two agents share a shard"
 
     @pytest.mark.asyncio
     async def test_list_shaped_content_still_tells_two_agents_apart(self):
-        """Der Fall, der diese Regel fast unbrauchbar gemacht haette.
+        """The case that almost made this rule unusable.
 
-        polish_pipeline, paragraph_breaks, metadata_enrichment und die
-        Audio-Pipeline bauen ihre Messages mit ``content=[TextContent(...)]``.
-        Werden nur Dict-Parts gelesen, bleibt davon der Rollen-Marker uebrig —
-        und JEDER Agent mit Listen-Content bekommt denselben Key, dauerhaft,
-        nicht nur einmal."""
+        Several pipelines, among them the audio pipeline, build their
+        messages with ``content=[TextContent(...)]``. If only dict parts are
+        read, nothing but the role marker is left -- and EVERY agent with
+        list content gets the same key, permanently, not just once."""
         a = await self._httpx_payload(self._list_history("Du bist der Polisher.",
                                                          "Pruefe Szene 3 (Buch 7)."))
         b = await self._httpx_payload(self._list_history("Ein GANZ anderer Agent.",
                                                          "Pruefe Szene 3 (Buch 99)."))
-        assert a != b, "zwei fremde Agenten auf einer Shard"
-        # Und dieselben Texte als String muessen denselben Key ergeben: das
-        # Format darf die Gruppe nicht trennen (s. TestFormats).
+        assert a != b, "two unrelated agents on one shard"
+        # And the same texts as a string must give the same key: the format
+        # must not split the group (see TestFormats).
         from agent_system.llm.models import ChatMessage
         plain = [ChatMessage(role="system", content="Du bist der Polisher."),
                  ChatMessage(role="user", content="Pruefe Szene 3 (Buch 7).")]
@@ -274,9 +273,9 @@ class TestTheKeyTheRequestReallyCarries:
 
     @pytest.mark.asyncio
     async def test_streaming_and_non_streaming_agree_on_the_key(self):
-        """Beide Wege gruppieren dieselbe Konversation — sonst sitzt ein Agent
-        je nach Aufruf auf zwei Shards. Der Streaming-Pfad ist der, den die
-        meisten Agenten wirklich fahren."""
+        """Both paths group the same conversation -- otherwise an agent sits
+        on two shards depending on the call. The streaming path is the one
+        most agents actually use."""
         history = self._history("- [ ] Kapitel 1")
         assert (await self._httpx_payload(history, streaming=True)
                 == await self._httpx_payload(history, streaming=False))
@@ -285,8 +284,8 @@ class TestTheKeyTheRequestReallyCarries:
         a = self._responses_payload(self._history("- [ ] Kapitel 1"))
         b = self._responses_payload(self._history("- [x] Kapitel 1\n- [ ] Kapitel 2"))
         other = self._responses_payload(self._history("- [ ] Kapitel 1", prompt="Ein ANDERER Agent."))
-        assert a == b, "der Key wandert mit der Todo-Liste"
-        assert a != other, "zwei Agenten teilen sich eine Shard"
+        assert a == b, "the key moves with the todo list"
+        assert a != other, "two agents share a shard"
 
     @classmethod
     def _noted_task(cls, task: str, note: bool = True):
@@ -294,7 +293,7 @@ class TestTheKeyTheRequestReallyCarries:
         head = [ChatMessage(role="system", content=cls.PROMPT)]
         if note:
             head.append(ChatMessage(role="user", content="Schon oft gelesen: Akten, Stempel.",
-                                    injected_by="oft_gelesen_inject"))
+                                    injected_by="often_read_inject"))
         return head + [ChatMessage(role="user", content=task)]
 
     @pytest.mark.asyncio
@@ -327,8 +326,8 @@ class TestTheKeyTheRequestReallyCarries:
 
 class TestFormats:
     def test_chat_and_responses_format_extract_same_text(self):
-        # Beide Serialisierungen desselben Prompts -> gleicher Key
-        # (Format-Wechsel Chat <-> Responses darf die Gruppe nicht trennen).
+        # Both serializations of the same prompt -> same key
+        # (switching format Chat <-> Responses must not split the group).
         a = derive_prompt_cache_key("auto", _chat("sys-prompt", "task-text"))
         b = derive_prompt_cache_key("auto", _responses("sys-prompt", "task-text"))
         assert a == b
@@ -337,7 +336,7 @@ class TestFormats:
         msgs = [
             {"role": "system", "content": "sys"},
             "kein-dict",
-            42,  # und auch nichts, was eine Rolle haette
+            42,  # and nothing that would have a role either
             None,
             {
                 "role": "user",
@@ -357,10 +356,10 @@ class TestFormats:
 
 
 class TestSegmentLadder:
-    """Kumulative Segment-Leiter: [static]S[append]S[volatile] + Rung-Registry.
+    """Cumulative segment ladder: [static]S[append]S[volatile] + rung registry.
 
-    GPT-5.6-Regel (E2E-kartiert): Struktur des Vorgaengers exakt
-    reproduzieren, nur anhaengen; wandernde/entfernte Marker brechen Reads.
+    GPT-5.6 rule (mapped end to end): reproduce the predecessor's structure
+    exactly, only append; moving/removed markers break reads.
     """
 
     def _task(self, static, append, volatile):
@@ -368,7 +367,7 @@ class TestSegmentLadder:
         return static + S + append + S + volatile
 
     def _big(self, tag, n=1):
-        # >= MIN_RUNG_CHARS (4096), damit eine neue Rung entsteht
+        # >= MIN_RUNG_CHARS (4096), so that a new rung is created
         return (tag + " zeile. ") * (600 * n)
 
     def test_first_call_marks_static_and_first_rung(self):
@@ -380,12 +379,12 @@ class TestSegmentLadder:
             self._task("STAT", "APP1", "VOL"),
             mode="task_sequence", key="k1", registry=reg,
         )
-        # Erste Rung = append-Ende; volatile bleibt unmarkiert
+        # First rung = end of append; volatile stays unmarked
         assert out == [("STAT", True), ("APP1", True), ("VOL", False)]
 
     def test_small_growth_repeats_structure(self):
-        # Delta < MIN_RUNG: KEINE neue Rung — der Zuwachs verschmilzt
-        # unmarkiert mit volatile, die Struktur bleibt exakt reproduziert.
+        # Delta < MIN_RUNG: NO new rung -- the growth merges unmarked with
+        # volatile, the structure stays exactly reproduced.
         from agent_system.llm.cache_key import (
             CacheBoundaryRegistry, plan_cache_blocks,
         )
@@ -407,9 +406,9 @@ class TestSegmentLadder:
         delta = self._big("b")
         out = plan_cache_blocks(self._task("STAT", a1 + delta, "VOL2"),
                                 mode="task_sequence", key="k1", registry=reg)
-        # Alte Rung reproduziert + neue Rung angehaengt
+        # Old rung reproduced + new rung appended
         assert out == [("STAT", True), (a1, True), (delta, True), ("VOL2", False)]
-        # Call 3 ohne Wachstum: identische Struktur wie Call 2
+        # Call 3 without growth: identical structure to call 2
         out3 = plan_cache_blocks(self._task("STAT", a1 + delta, "VOL3"),
                                  mode="task_sequence", key="k1", registry=reg)
         assert out3 == [("STAT", True), (a1, True), (delta, True), ("VOL3", False)]
@@ -421,7 +420,7 @@ class TestSegmentLadder:
         reg = CacheBoundaryRegistry()
         plan_cache_blocks(self._task("STAT", "APP1", "VOL"),
                           mode="task_sequence", key="k1", registry=reg)
-        # Bruch: append beginnt anders -> Rung-Liste reset, neue erste Rung
+        # Break: append starts differently -> rung list reset, new first rung
         out = plan_cache_blocks(self._task("STAT", "ANDERS", "VOL"),
                                 mode="task_sequence", key="k1", registry=reg)
         assert out == [("STAT", True), ("ANDERS", True), ("VOL", False)]
@@ -435,11 +434,11 @@ class TestSegmentLadder:
             out = plan_cache_blocks(self._task("STAT", "APP", "VOL"),
                                     mode=mode, key="k2", registry=reg)
             assert out == [("STAT", True), ("APP", True), ("VOL", False)], mode
-        # Registry blieb unberuehrt
+        # The registry stayed untouched
         assert reg.rungs_for("k2", "APPx") == []
 
     def test_budget_caps_declared_markers_without_ladder(self):
-        # Nicht-Leiter-Pfad (z.B. Anthropic): Budget von hinten, BP0 faellt.
+        # Non-ladder path (e.g. Anthropic): budget from the back, BP0 drops.
         from agent_system.llm.cache_key import CACHE_BP_SENTINEL as S
         from agent_system.llm.cache_key import plan_cache_blocks
         text = "A" + S + "B" + S + "C" + S + "D"
@@ -478,8 +477,8 @@ class TestBreakpointSplit:
         assert strip_cache_breakpoints(text) == "stabilvariabel"
 
     def test_strip_preserves_explicit_newline_separator(self):
-        # Konstruktions-Muster der Pipeline: "\n" VOR dem Sentinel, damit
-        # der Strip exakt den Join ohne Marker ergibt.
+        # Construction pattern of the pipeline: "\n" BEFORE the sentinel, so
+        # that the strip yields exactly the join without a marker.
         text = "zeile1\n" + CACHE_BP_SENTINEL + "zeile2"
         assert strip_cache_breakpoints(text) == "zeile1\nzeile2"
 
@@ -495,8 +494,8 @@ class TestBreakpointSplit:
         assert split_cache_breakpoint_blocks(text) == ["inhalt"]
 
     def test_auto_key_ignores_sentinel_position(self):
-        # Der auto-Key wird aus dem POST-Split-Payload gehasht — mit und
-        # ohne Sentinel muss derselbe Key entstehen (Split strippt ihn).
+        # The auto key is hashed from the POST-split payload -- with and
+        # without the sentinel the same key must result (the split strips it).
         raw = "instruktion " * 200
         with_sent = [
             {"role": "system", "content": "sys"},

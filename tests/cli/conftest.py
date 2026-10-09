@@ -1,6 +1,6 @@
 """Shared guards for the CLI tests.
 
-Deutsch mit dem Nutzer, Code und Testnamen englisch.
+German with the user, code and test names in English.
 """
 from __future__ import annotations
 

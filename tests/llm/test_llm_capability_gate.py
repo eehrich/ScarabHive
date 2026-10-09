@@ -30,8 +30,8 @@ def registry(monkeypatch):
     """A registry with exactly what the test says — no config, no disk."""
     def install(**models):
         monkeypatch.setattr(caps_mod, "_capabilities_registry", dict(models))
-        # Ohne das laedt der Gate beim ersten Aufruf die echte Config nach und
-        # ueberschreibt genau die Tabelle, die der Test gerade gestellt hat.
+        # Without this the gate loads the real config on its first call and
+        # overwrites exactly the table the test has just set up.
         monkeypatch.setattr(caps_mod, "_registry_loaded", True)
     return install
 
@@ -143,10 +143,10 @@ class TestOneDefinition:
 
 
 class TestAProviderStringWithTwoOwners:
-    """Mehrere Config-Eintraege zeigen routinemaessig auf dasselbe Modell —
-    batch, nostream, unlimited. Solange sie sich ueber die Eingaenge einig
-    sind, ist der Alias eindeutig; sind sie es nicht, entschied bisher die
-    Reihenfolge im dict, welche Antwort der Gate gibt."""
+    """Several config entries routinely point at the same model --
+    batch, nostream, unlimited. As long as they agree on the inputs, the
+    alias is unambiguous; if they do not, the order in the dict used to
+    decide which answer the gate gives."""
 
     def _registry_from(self, entries, monkeypatch):
         from types import SimpleNamespace
@@ -159,10 +159,10 @@ class TestAProviderStringWithTwoOwners:
         return caps_mod.load_capabilities_from_config()
 
     def test_an_entry_name_outranks_someone_elses_alias(self, monkeypatch):
-        """'claude-sonnet-5' ist ein eigener Eintrag UND der model-String von
-        '-thinking' und '-batch'. Deren Alias hat den echten Eintrag
-        ueberschrieben — der Gate antwortete fuer 'claude-sonnet-5' mit den
-        Faehigkeiten eines anderen Modells."""
+        """'claude-sonnet-5' is an entry of its own AND the model string of
+        '-thinking' and '-batch'. Their alias overwrote the real entry --
+        the gate answered for 'claude-sonnet-5' with the capabilities of
+        another model."""
         reg = self._registry_from({
             "sonnet": ("sonnet", {"image_input": True}),
             "sonnet-thinking": ("sonnet", {"image_input": False}),

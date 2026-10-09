@@ -261,11 +261,11 @@ class TestToolCallLoopDetector:
 
 
 class TestLoopDetectorConstruction:
-    """Konstruktion wie im Produktionspfad: Agent._create_loop_detector baut
-    den Detector via ToolCallLoopDetector(**config-dict)."""
+    """Construction as on the production path: Agent._create_loop_detector builds
+    the detector via ToolCallLoopDetector(**config-dict)."""
 
     def test_default_config(self):
-        """Detector mit Default-Parametern."""
+        """Detector with default parameters."""
         detector = ToolCallLoopDetector()
 
         assert detector.exact_match_threshold == 3
@@ -273,7 +273,7 @@ class TestLoopDetectorConstruction:
         assert detector.history_size == 20
 
     def test_custom_config(self):
-        """Detector aus Config-Dict (Produktions-Pattern: **config)."""
+        """Detector from a config dict (production pattern: **config)."""
         config = {
             "history_size": 10,
             "exact_match_threshold": 5,
@@ -430,8 +430,8 @@ class TestPerRequestIsolation:
         )
 
     def test_construction_produces_independent_instances(self):
-        """Zwei Detector-Konstruktionen aus demselben Config-Dict teilen keinen
-        Zustand (Produktions-Pattern: per-Request-Detector via **config)."""
+        """Two detectors constructed from the same config dict share no
+        state (production pattern: per-request detector via **config)."""
         config = {
             "exact_match_threshold": 2,
             "block_after_threshold": 4,

@@ -1828,7 +1828,7 @@ class TestPersistence:
 
 
 # ---------------------------------------------------------------------------
-# stats (Saettigungs-Analyse, writer O9c)
+# stats (saturation analysis)
 # ---------------------------------------------------------------------------
 
 class TestStats:
@@ -1850,9 +1850,9 @@ class TestStats:
         assert res["status"] == "ok"
         assert res["n_children"] == 3
         terms = {e["term"]: e["children"] for e in res["recurring_terms"]}
-        # Stoffmaus traegt B01+B02 (2 Kinder), NICHT B03
+        # Stoffmaus is carried by B01+B02 (2 children), NOT B03
         assert terms.get("stoffmaus") == 2
-        # Einmal-Begriffe erscheinen nicht
+        # Terms that occur only once do not appear
         assert "bauhof" not in terms
 
     @pytest.mark.asyncio
@@ -1907,7 +1907,7 @@ class TestStats:
         await self._seed_beats(server)
         res = await server.stats({**SID, "operation": "stats", "doc": "beats",
                                   "path": "beats", "exclude": ["", "mo"]})
-        # ""/Kurzst-Eintraege duerfen NICHT alles wegfiltern
+        # ""/very short entries must NOT filter everything away
         assert any(e["term"] == "stoffmaus" for e in res["recurring_terms"])
 
     @pytest.mark.asyncio
@@ -2012,8 +2012,8 @@ class TestRequireNamespace:
     async def test_every_operation_is_covered_not_just_write(
         self, shared_only_server,
     ):
-        """Ein Lesen im falschen Namespace ist genauso still wie ein
-        Schreiben — der Riegel sitzt deshalb vor dem Dispatch."""
+        """A read in the wrong namespace is just as silent as a write — so
+        the guard sits in front of the dispatch."""
         for op in ("read", "list", "outline", "stats", "delete_doc", "undo"):
             res = await shared_only_server.manage_json(
                 {"operation": op, "doc": "d", **SID},
@@ -2022,20 +2022,20 @@ class TestRequireNamespace:
             assert "namespace" in res["error"], op
 
     @pytest.mark.asyncio
-    async def test_leerer_namespace_zaehlt_als_fehlend(self, shared_only_server):
+    async def test_empty_namespace_counts_as_missing(self, shared_only_server):
         res = await shared_only_server.manage_json(
             {"operation": "write", "namespace": "", "data": {"a": 1}, **SID},
         )
         assert res["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_mit_namespace_laeuft_es_durch(self, shared_only_server):
+    async def test_with_namespace_it_goes_through(self, shared_only_server):
         wrote = await shared_only_server.manage_json(
             {"operation": "write", "namespace": "16459", "data": {"a": 1}, **SID},
         )
         assert wrote["status"] == "ok", wrote
-        # Der gemeldete Doc-Name muss auch auflösbar sein — genau das war
-        # im Fehlerfall nicht so.
+        # The reported doc name must also be resolvable — which is exactly
+        # what it was not in the failure case.
         back = await shared_only_server.manage_json(
             {"operation": "read", "namespace": "16459",
              "doc": wrote["doc"], **SID},
@@ -2044,9 +2044,9 @@ class TestRequireNamespace:
         assert json.loads(back["json"]) == {"a": 1}
 
     @pytest.mark.asyncio
-    async def test_ohne_flag_bleibt_das_alte_verhalten(self, server):
-        """Der generische Store darf sich nicht ändern — die
-        Session-Skopierung ist dort ein Feature."""
+    async def test_without_the_flag_the_old_behaviour_stays(self, server):
+        """The generic store must not change — session scoping is a feature
+        there."""
         res = await server.manage_json(
             {"operation": "write", "data": {"a": 1}, **SID},
         )

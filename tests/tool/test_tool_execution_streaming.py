@@ -129,7 +129,7 @@ class TestStreamingToolExecution:
     
     @pytest.mark.asyncio
     async def test_wrapper_compatibility(self, manager_with_streaming):
-        """execute_tools_collect (Test-Helper) liefert dieselben Ergebnisse wie Streaming"""
+        """execute_tools_collect (test helper) returns the same results as streaming"""
         manager, forwarder = manager_with_streaming
         
         tool_calls = [{
@@ -194,7 +194,7 @@ class TestStreamingToolExecution:
     
     @pytest.mark.asyncio
     async def test_wrapper_and_streaming_produce_same_results(self, manager_with_streaming):
-        """Collector-Helper und Streaming-Version liefern identische Ergebnisse"""
+        """The collector helper and the streaming version return identical results"""
         manager, forwarder = manager_with_streaming
         
         tool_calls = [

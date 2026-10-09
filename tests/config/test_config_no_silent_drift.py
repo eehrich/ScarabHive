@@ -1,24 +1,24 @@
-"""Zwei Zusicherungen gegen still verschluckte Konfiguration.
+"""Two assertions against silently swallowed configuration.
 
-Beide Prüfungen fanden je zwei Defekte, die keiner der bestehenden Tests
-bemerkt hat — weil ein verschluckter Wert nichts kaputt macht, das ein Test
-ansieht: die Anwendung startet, die Tabelle ist da, nur der Schalter fehlt.
+Both checks found two defects each that none of the existing tests had
+noticed — because a swallowed value breaks nothing a test looks at: the
+application starts, the table is there, only the switch is missing.
 
-**Doppelte YAML-Schlüssel.** ``yaml.safe_load`` behält wortlos den letzten.
-So verschwand ``mode: pipeline`` aus ``repair_pipeline.yaml`` (der Agent kam
-als reiner Tool-Server hoch statt als Orchestrator), ein kompletter
-Tool-Server aus ``mcp_servers.yaml`` (sein Block landete in ``localhost`` und
-überschrieb dessen URL), und eine Parameterbeschreibung aus
+**Duplicate YAML keys.** ``yaml.safe_load`` silently keeps the last one.
+That is how ``mode: pipeline`` vanished from ``repair_pipeline.yaml`` (the
+agent came up as a plain tool server instead of an orchestrator), a complete
+tool server from ``mcp_servers.yaml`` (its block ended up in ``localhost`` and
+overwrote its URL), and a parameter description from
 ``json_store/schema.yaml``.
 
-**Profilreferenzen ins Leere.** Ein Profil, das es nicht gibt, ist kein
-Fehler beim Laden — es fällt erst zur Laufzeit auf, und als Fallback-Glied
-womöglich nie. So blieb ``or-gmini-flash-unlimited`` (ein fehlendes „e")
-unbemerkt und nahm zwei Panel-Agenten ihren Fallback.
+**Profile references into the void.** A profile that does not exist is no
+error at load time — it only shows up at runtime, and as a fallback entry
+possibly never. That is how ``or-gmini-flash-unlimited`` (a missing "e") went
+unnoticed and took the fallback away from two panel agents.
 
-Beide Tests sichern ihre GRUNDMENGE ab: eine leere Menge erfüllt jede
-All-Aussage, ein Scanner der nichts mehr findet wäre sonst von einem
-funktionierenden nicht zu unterscheiden.
+Both tests secure their BASE SET: an empty set satisfies every all-statement,
+and a scanner that finds nothing any more could not be told apart from a
+working one.
 """
 from __future__ import annotations
 
@@ -36,15 +36,15 @@ REPO_ROOT = Path(__file__).parents[2]
 PRIVATE_ROOTS = any(d.is_dir() and d.name.isidentifier() for d in (REPO_ROOT / "src").glob("plugins_*"))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-#: Wo Konfiguration lebt. `docs` ist ausgenommen — dort stehen Beispiele.
+#: Where configuration lives. `docs` is excluded — it holds examples.
 SCAN_ROOTS = ("config", "src")
 
-#: Verzeichnisse, die nie Betriebs-Konfiguration enthalten.
+#: Directories that never contain operational configuration.
 SKIP_PARTS = frozenset({"docs", "node_modules", "__pycache__", ".venv"})
 
 
 class _DuplicateKeyLoader(yaml.SafeLoader):
-    """SafeLoader, der doppelte Mapping-Schluessel meldet statt sie zu schlucken."""
+    """SafeLoader that reports duplicate mapping keys instead of swallowing them."""
 
 
 def _mapping_without_duplicates(loader, node, deep=False):
@@ -54,13 +54,13 @@ def _mapping_without_duplicates(loader, node, deep=False):
         try:
             hash(key)
         except TypeError:
-            # YAML erlaubt zusammengesetzte Schluessel (`? {a: b}`). Selten,
-            # aber sie kollidieren genauso — ueber ihre Darstellung vergleichen.
+            # YAML allows composite keys (`? {a: b}`). Rare, but they collide
+            # just the same — compare them by their representation.
             key = repr(key)
         if key in seen:
             raise ValueError(
-                f"doppelter Schluessel {key!r} in Zeile "
-                f"{key_node.start_mark.line + 1} (zuerst in Zeile {seen[key]})")
+                f"duplicate key {key!r} on line "
+                f"{key_node.start_mark.line + 1} (first on line {seen[key]})")
         seen[key] = key_node.start_mark.line + 1
     return yaml.SafeLoader.construct_mapping(loader, node, deep)
 
@@ -94,16 +94,16 @@ def test_no_yaml_file_has_a_duplicate_key():
         except ValueError as exc:
             duplicates.append(f"{path.relative_to(REPO_ROOT)}: {exc}")
         except yaml.YAMLError:
-            # Nicht jede .yaml im Baum ist gueltiges YAML (Fixtures, Vorlagen
-            # mit Platzhaltern). Die zaehlen nicht als geprueft.
+            # Not every .yaml in the tree is valid YAML (fixtures, templates
+            # with placeholders). Those do not count as checked.
             pass
 
     assert parsed >= (100 if PRIVATE_ROOTS else 60), (
         f"only {parsed} of {len(files)} files parsed -- the test no longer "
         f"measures what it should")
     assert not duplicates, (
-        "doppelte YAML-Schluessel — der letzte gewinnt, der erste ist "
-        "wortlos weg:\n  " + "\n  ".join(duplicates))
+        "duplicate YAML keys — the last one wins, the first is "
+        "silently gone:\n  " + "\n  ".join(duplicates))
 
 
 #: A stategraph template that is one machine param and nothing else: ``{{ params.model }}``.
@@ -124,11 +124,11 @@ def _profile_names(value: str, machine_params: dict | None) -> list[str]:
 
 def _profile_references(node, where: str, out: list[tuple[str, str]],
                         machine_params: dict | None = None) -> None:
-    """Jede Stelle einsammeln, die einen llm_profile-NAMEN nennt.
+    """Collect every place that names an llm_profile NAME.
 
-    Nur Strings und String-Listen zaehlen. In den ``schema.yaml`` der Plugins
-    ist ``llm_profile`` ein deklariertes Config-FELD — sein Wert ist dort ein
-    Mapping (``type``/``default``/``enum``), kein Profilname.
+    Only strings and string lists count. In the plugins' ``schema.yaml``,
+    ``llm_profile`` is a declared config FIELD — its value there is a mapping
+    (``type``/``default``/``enum``), not a profile name.
 
     ``machine_params``: the ``params`` of a stategraph machine (``{}`` without
     any), None for any other file. In a machine ``llm_params`` is a flat param
@@ -148,7 +148,7 @@ def _profile_references(node, where: str, out: list[tuple[str, str]],
                 else:
                     _profile_references(value, f"{where}.{key}", out, machine_params)
             elif key == "llm_params" and isinstance(value, dict) and machine_params is None:
-                # Profil-gekeyte Overrides: der SCHLUESSEL ist der Profilname.
+                # Profile-keyed overrides: the KEY is the profile name.
                 out.extend((k, f"{where}.llm_params[{k!r}]")
                            for k in value if k != "*")
             elif key == "machines" and machine_params is not None and isinstance(value, dict):
@@ -197,8 +197,8 @@ def test_every_profile_reference_resolves():
 
     known = set(load_settings().llm_system.profiles)
     assert len(known) >= 20, (
-        f"nur {len(known)} Profile geladen — die echte Konfiguration kam "
-        f"nicht an, der Test waere gegenstandslos")
+        f"only {len(known)} profiles loaded — the real configuration did not "
+        f"arrive, the test would be vacuous")
 
     references: list[tuple[str, str]] = []
     for path in _config_files():
@@ -216,8 +216,8 @@ def test_every_profile_reference_resolves():
     dangling = sorted({(name, where) for name, where in references
                        if name not in known})
     assert not dangling, (
-        "diese Profilnamen gibt es nicht (Tippfehler oder umbenannt) — als "
-        "Fallback-Glied faellt das im Betrieb womoeglich nie auf:\n  "
+        "these profile names do not exist (typo or renamed) — as a fallback "
+        "entry this may never show up in operation:\n  "
         + "\n  ".join(f"{name!r} <- {where}" for name, where in dangling))
 
 
@@ -260,11 +260,11 @@ def test_every_allowed_sub_agent_exists():
 
 
 @pytest.mark.parametrize("bad_yaml,expected", [
-    ("a: 1\na: 2\n", "doppelter Schluessel"),
-    ("top:\n  x: 1\n  x: 2\n", "doppelter Schluessel"),
+    ("a: 1\na: 2\n", "duplicate key"),
+    ("top:\n  x: 1\n  x: 2\n", "duplicate key"),
 ])
 def test_the_duplicate_detector_actually_detects(bad_yaml, expected):
-    """Der Detektor selbst — sonst gruent der Scanner, weil er nichts sieht."""
+    """The detector itself — otherwise the scanner stays green because it sees nothing."""
     with pytest.raises(ValueError, match=expected):
         yaml.load(bad_yaml, Loader=_DuplicateKeyLoader)
 

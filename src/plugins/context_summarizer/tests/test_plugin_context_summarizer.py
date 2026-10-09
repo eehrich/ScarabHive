@@ -92,11 +92,10 @@ async def test_plugin_initialization(summarizer_plugin):
     assert summarizer_plugin.trigger_percentage == 0.60  # Changed from trigger_tokens
     assert summarizer_plugin.chunk_size == 10
     assert summarizer_plugin.preserve_recent == 10
-    # schema.yaml deklariert 'turbo' (enum: turbo/normal/chat/think). Der Test
-    # stand auf 'fast' — dem zweiten, falschen Default in server.py, den es in
-    # config/llm.yaml gar nicht gibt. Die ungueltige Profilangabe liess die
-    # Client-Erzeugung scheitern und den Summarizer still auf die Agenten-LLM
-    # zurueckfallen.
+    # schema.yaml declares 'turbo' (enum: turbo/normal/chat/think). The test
+    # used to say 'fast' -- the second, wrong default in server.py, which does
+    # not exist in config/llm.yaml. The invalid profile made client creation
+    # fail and the summarizer silently fell back to the agent LLM.
     assert summarizer_plugin.llm_profile == 'turbo'
 
 

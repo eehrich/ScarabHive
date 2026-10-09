@@ -62,41 +62,41 @@ def agent_config_with_fallbacks():
 
 
 def test_agent_config_fallback_profiles():
-    """Ketten-Semantik: llm_profile = [primär, fallback1, ...]."""
+    """Chain semantics: llm_profile = [primary, fallback1, ...]."""
     # No fallbacks
     config = AgentConfig(llm_profile="gemini")
     assert config.fallback_profiles == []
     assert config.advanced_llm_profile is None
 
-    # With fallbacks (Kette)
+    # With fallbacks (chain)
     config = AgentConfig(llm_profile=["gemini", "openai", "openai_secondary"])
     assert config.default_llm_profile == "gemini"
     assert config.fallback_profiles == ["openai", "openai_secondary"]
 
 
 def test_agent_config_advanced_chain():
-    """Advanced-Kette + Sicherheitsnetz-Fallback-Reihenfolge."""
+    """Advanced chain + safety-net fallback order."""
     config = AgentConfig(
         llm_profile=["gemini", "openai"],
         llm_profile_advanced=["openai_secondary", "openai"],
     )
     assert config.advanced_llm_profile == "openai_secondary"
-    # normal: eigene Rest-Kette + komplette Advanced-Kette als Netz (dedupliziert)
+    # normal: own remaining chain + the complete advanced chain as a net (deduplicated)
     assert config.fallback_chain(False) == ["openai", "openai_secondary"]
-    # advanced: eigene Rest-Kette + komplette normale Kette als Netz (dedupliziert)
+    # advanced: own remaining chain + the complete normal chain as a net (deduplicated)
     assert config.fallback_chain(True) == ["openai", "gemini"]
-    # ohne Advanced-Kette ist use_advanced ein No-Op → normale Fallbacks
+    # without an advanced chain use_advanced is a no-op -> normal fallbacks
     config2 = AgentConfig(llm_profile=["gemini", "openai"], llm_profile_advanced=[])
     assert config2.advanced_llm_profile is None
     assert config2.fallback_chain(True) == ["openai"]
-    # exclude: tatsächlich aktives Modell (Eskalation/Override) fliegt aus
-    # der Kette — sonst würde es als sein eigener Fallback erneut versucht
+    # exclude: the model actually in use (escalation/override) drops out of
+    # the chain -- otherwise it would be retried as its own fallback
     assert config.fallback_chain(False, exclude="openai_secondary") == ["openai"]
     assert config.fallback_chain(True, exclude="gemini") == ["openai"]
 
 
 def test_agent_config_legacy_fallbacks_rejected():
-    """Altes llm_profile_fallbacks muss laut scheitern (Migrations-Hinweis)."""
+    """The old llm_profile_fallbacks must fail loudly (migration hint)."""
     with pytest.raises(Exception, match="migrate_llm_profiles"):
         AgentConfig(llm_profile="gemini", llm_profile_fallbacks=["openai"])
 

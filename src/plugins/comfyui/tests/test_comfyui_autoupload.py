@@ -1,11 +1,11 @@
-"""Auto-Upload für LoadImage-Parameter (Strukturfix für "Invalid image file").
+"""Auto-upload for LoadImage parameters (structural fix for "Invalid image file").
 
-Agents referenzierten frisch generierte Outputs per Dateiname, aber LoadImage
-liest nur ComfyUIs INPUT-Ordner — und manuelles upload_image landet auf dem
-Primary, während execute den least-loaded Server wählt. _op_execute löst
-lokale Bilder jetzt selbst auf (Allowlist-sicher) und lädt sie auf den
-Exec-Server hoch; Queue-Validation-Fehler erreichen den Agenten mit
-node_errors + actionable hint statt als nackte Fehlermeldung.
+Agents referenced freshly generated outputs by file name, but LoadImage only
+reads ComfyUI's INPUT folder — and a manual upload_image lands on the primary,
+while execute picks the least-loaded server. _op_execute now resolves local
+images itself (allowlist-safe) and uploads them to the exec server;
+queue validation errors reach the agent with node_errors + actionable hint
+instead of as a bare error message.
 """
 from __future__ import annotations
 
@@ -81,8 +81,8 @@ class TestResolveLocalImageSource:
         assert server._resolve_local_image_source(str(bad)) is None
 
     def test_missing_path_with_separator_not_hunted(self, mock_system_config, tmp_path: Path):
-        """Ein nicht existenter PFAD (mit Separator) darf nicht per
-        Basename-Suche auf eine andere Datei umgebogen werden."""
+        """A non-existent PATH (with a separator) must not be redirected to
+        another file by a basename search."""
         server = _make_server(mock_system_config, tmp_path)
         f = tmp_path / "outputs" / "real.png"
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -93,8 +93,8 @@ class TestResolveLocalImageSource:
 class TestExecuteAutoUpload:
     @pytest.mark.asyncio
     async def test_auto_uploads_loadimage_param(self, mock_system_config, tmp_path: Path):
-        """E2E durch _op_execute: lokaler Output-Dateiname wird auf den
-        Exec-Server hochgeladen und der Upload-Name injiziert."""
+        """E2E through _op_execute: a local output file name is uploaded to
+        the exec server and the upload name is injected."""
         server = _make_server(mock_system_config, tmp_path, workflows=CAPTION_WF)
         _write_caption_workflow(tmp_path)
         local = tmp_path / "outputs" / "cover932_v1_sdxl_refined_00051_.png"
@@ -123,8 +123,8 @@ class TestExecuteAutoUpload:
 
     @pytest.mark.asyncio
     async def test_leaves_unknown_filename_untouched(self, mock_system_config, tmp_path: Path):
-        """Name ohne lokale Entsprechung (bereits im ComfyUI-input) wird
-        unverändert injiziert, kein Upload-Versuch."""
+        """A name without a local counterpart (already in the ComfyUI input)
+        is injected unchanged, no upload attempt."""
         server = _make_server(mock_system_config, tmp_path, workflows=CAPTION_WF)
         _write_caption_workflow(tmp_path)
 
@@ -144,9 +144,9 @@ class TestExecuteAutoUpload:
 
     @pytest.mark.asyncio
     async def test_queue_failure_surfaces_node_errors_and_hint(self, mock_system_config, tmp_path: Path):
-        """Validation-Fehler: node_errors + actionable hint erreichen den
-        Agenten (vorher sah er nur 'prompt_outputs_failed_validation' und
-        loopte blind)."""
+        """Validation error: node_errors + actionable hint reach the agent
+        (before, it saw only 'prompt_outputs_failed_validation' and looped
+        blindly)."""
         server = _make_server(mock_system_config, tmp_path, workflows=CAPTION_WF)
         _write_caption_workflow(tmp_path)
 

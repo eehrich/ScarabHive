@@ -202,9 +202,8 @@ class TestRepairJsonColonValuePattern:
 
 
 # ---------------------------------------------------------------------------
-# strip_markdown_fences — Konsolidierung aus 3 historischen Implementierungen
-# (pipeline_agent._parse_json_result, polish_pipeline.extract_json_from_text,
-# metadata_enrichment._extract_json — 2026-06-06).
+# strip_markdown_fences — consolidation of 3 historical implementations
+# (several ad-hoc JSON extraction helpers merged into one, 2026-06-06).
 # ---------------------------------------------------------------------------
 
 from agent_system.utils.json_utils import strip_markdown_fences
@@ -213,8 +212,8 @@ from agent_system.utils.json_utils import strip_markdown_fences
 class TestStripMarkdownFences:
     """Wraps three legacy patterns:
 
-    1. Line-based: split-by-newline, drop first + last (pipeline_agent)
-    2. Regex with optional ``json``-language tag (metadata_enrichment)
+    1. Line-based: split-by-newline, drop first + last
+    2. Regex with optional ``json``-language tag
     3. Embedded fence in surrounding prose
     """
 

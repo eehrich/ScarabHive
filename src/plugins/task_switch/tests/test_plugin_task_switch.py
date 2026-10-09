@@ -537,9 +537,9 @@ class TestSetContext:
 
     @pytest.mark.asyncio
     async def test_set_context_vars_payload_is_sanitized(self, server, mock_agent):
-        """Review-Befund: der vars-Zweig braucht dieselbe Hygiene wie der
-        Legacy-Zweig — _-Keys/Framework-Params im vars-Payload dürfen nicht
-        als template_vars landen (sie erben sonst in alle Sub-Agents)."""
+        """Review finding: the vars branch needs the same hygiene as the
+        legacy branch -- _-keys/framework params in the vars payload must not
+        end up as template_vars (they would otherwise inherit into all sub-agents)."""
         result = await server.set_context({
             "vars": '{"_agent": "x", "request_id": "r", "book_id": 42}',
             "_agent": mock_agent
@@ -551,9 +551,9 @@ class TestSetContext:
 
     @pytest.mark.asyncio
     async def test_set_context_mixed_form_merges_flat_keys(self, server, mock_agent):
-        """Review-Befund: flache Keys neben vars dürfen nicht still verworfen
-        werden (Mixed-Form-Call meldete success, obwohl Werte fehlten) —
-        vars gewinnt bei Konflikt."""
+        """Review finding: flat keys next to vars must not be dropped silently
+        (a mixed-form call reported success although values were missing) --
+        vars wins on conflict."""
         result = await server.set_context({
             "vars": '{"phase": "review"}',
             "book_id": 42,
