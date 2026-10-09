@@ -13,6 +13,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI
 
+from .. import app_state
 from ..plugins import capabilities
 from ..plugins.tool_adapter import plugin_tool_registry
 from .tool_cache import ToolCache
@@ -408,12 +409,9 @@ def get_tool_integration(app: Optional[FastAPI] = None, config: Optional[AgentSy
     """Get or create the global tool integration instance"""
     global tool_integration
     # First check if the API has an initialized instance and prefer it
-    try:
-        from agent_system.app import _tool_integration as api_integration
-        if api_integration is not None and api_integration.initialized:
-            return api_integration
-    except (ImportError, AttributeError):
-        pass  # API module not available or not initialized
+    api_integration = app_state.tool_integration
+    if api_integration is not None and api_integration.initialized:
+        return api_integration
 
     # Return existing global instance if available
     if tool_integration is not None:

@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from agent_system import app_state
 from agent_system.auth.dependencies import get_optional_user
 from agent_system.auth.models import User
 from agent_system.plugins.schema_router import create_schema_router
@@ -51,10 +52,10 @@ def own_sub_sessions(sessions, user_id: str, instance_ids) -> set[str]:
 
 def get_session_service():
     """The app's session service: sub-agents are sessions linked to their parent."""
-    from agent_system.app import _session_service
-    if not _session_service:
+    session_service = app_state.session_service
+    if not session_service:
         raise HTTPException(status_code=503, detail="The session service is not running")
-    return _session_service
+    return session_service
 
 
 def _usage_tracker():

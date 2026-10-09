@@ -23,6 +23,7 @@ import uuid
 import httpx
 import pytest
 
+from agent_system import app_state
 from agent_system.auth.security import create_access_token
 from agent_system.servers.agent.server import Agent
 from live_accounts import signing_key, token_generation
@@ -208,10 +209,9 @@ async def test_a_session_another_users_run_holds_takes_no_message_from_anyone_el
 
 async def test_a_message_for_a_run_without_a_job_goes_to_the_agent_it_runs_on(app, admin, monkeypatch):
     # A /run with files or a sub-agent's session: no job, only the agent's session lock says so.
-    from agent_system import app as app_mod
 
     default_name = app.state.agent.name
-    runs_it = next((a for a in map(app_mod._app_registry.get, app_mod._app_registry.list())
+    runs_it = next((a for a in map(app_state.app_registry.get, app_state.app_registry.list())
                     if isinstance(a, Agent) and a.name != default_name), None)
     if runs_it is None:
         pytest.skip("no registered agent besides the default one")
@@ -307,10 +307,9 @@ async def test_a_message_through_a_finished_requests_session_reaches_the_run_on_
     # The request named ran on another agent; the session's run now is one started without an
     # agent_name, on the app's default agent. Asked for "default", the resolver answered with
     # the agent it was handed -- the named request's.
-    from agent_system import app as app_mod
 
     default_agent = app.state.agent
-    other = next((a for a in map(app_mod._app_registry.get, app_mod._app_registry.list())
+    other = next((a for a in map(app_state.app_registry.get, app_state.app_registry.list())
                   if isinstance(a, Agent) and a.name != default_agent.name), None)
     if other is None:
         pytest.skip("no registered agent besides the default one")

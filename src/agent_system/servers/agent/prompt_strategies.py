@@ -290,17 +290,12 @@ class PromptRenderer:
         if not wanted and not on_demand:
             return system_prompt
 
-        from agent_system.skills import get_skill_registry
-        from agent_system.skills.registry import default_skill_dirs
+        from agent_system.skills.registry import configured_skill_registry
 
         # Roots come from config (skills.skill_dirs), falling back to the
-        # default. ensure_discovered only touches the filesystem when the roots
-        # changed — this runs on every LLM call.
-        configured = list(
-            getattr(getattr(context.system_config, "skills", None), "skill_dirs", []) or []
-        )
-        registry = get_skill_registry()
-        registry.ensure_discovered(configured or list(default_skill_dirs()))
+        # default; this runs on every LLM call, and only a change of the roots
+        # touches the filesystem.
+        registry = configured_skill_registry(context.system_config)
         parts = [system_prompt.rstrip()] if system_prompt.strip() else []
 
         for name in wanted:

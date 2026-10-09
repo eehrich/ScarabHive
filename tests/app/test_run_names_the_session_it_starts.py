@@ -18,6 +18,7 @@ import contextlib
 import httpx
 import pytest
 
+from agent_system import app_state
 from agent_system.llm.models import ChatMessage
 from agent_system.servers.agent.server import Agent
 from agent_system.services.session_manager import SessionManager
@@ -51,7 +52,7 @@ def api(tmp_path, monkeypatch):
     app = app_mod.build_app()
     manager = SessionManager(storage_path=str(tmp_path))
     service = SessionService(manager)
-    monkeypatch.setattr(app_mod, "_session_service", service)
+    monkeypatch.setattr(app_state, "session_service", service)
     monkeypatch.setattr(app.state.agent, "_session_service", service)
 
     started = []

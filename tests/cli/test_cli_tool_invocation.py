@@ -35,6 +35,7 @@ import pytest
 import yaml
 
 import agent_system.agent_cli as agent_cli
+from agent_system.cli_utils.event_loop import close_cli_loop
 from agent_system.llm import registry as llm_registry
 
 REPO = Path(__file__).resolve().parents[2]
@@ -195,7 +196,7 @@ def cli_run(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "--color", "never",
                                       "--show-tools", TASK])
     yield {"llm": llm_log, "fetched": fetched, "outbound": outbound}
-    agent_cli.close_cli_loop()
+    close_cli_loop()
 
 
 def test_cli_run_calls_the_tool_the_model_asks_for_and_shows_it(cli_run, capsys, monkeypatch):

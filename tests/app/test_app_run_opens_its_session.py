@@ -17,6 +17,7 @@ import asyncio
 import httpx
 import pytest
 
+from agent_system import app_state
 from agent_system.core.request_context import request_user_map
 from agent_system.servers.agent.server import Agent
 from agent_system.services.background_job_manager import BackgroundJobManager
@@ -46,7 +47,7 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
     app = app_mod.build_app()
     manager = SessionManager(storage_path=str(tmp_path))
-    monkeypatch.setattr(app_mod, "_session_service", SessionService(manager))
+    monkeypatch.setattr(app_state, "session_service", SessionService(manager))
     monkeypatch.setattr(app.state.agent.agent_config, "template_vars", dict(OWN_VARS))
     at_run = {}
 
@@ -161,7 +162,6 @@ async def test_a_run_refused_before_it_started_saves_nothing(api, endpoint, erro
     wrote what the tracker holds, which is the other run's live state (a tool call without its result, say). The
     same for a run the agent's role gate refuses, or one in a session held for another user: refused before it
     started, it has nothing to save."""
-    from agent_system import app as app_mod
 
     async def refused(self, task, request_id=None, session_id=None, **kwargs):
         yield {"type": "error", "message": f"Session {session_id} refused ({error_type})",
@@ -173,7 +173,7 @@ async def test_a_run_refused_before_it_started_saves_nothing(api, endpoint, erro
                                                llm_profile="default")
     session["messages"] = [{"role": "user", "content": "on disk"}]
     await api.manager.save_session(session)
-    service, saves = app_mod._session_service, []
+    service, saves = app_state.session_service, []
     save = service.save_session
 
     async def counted(*args, **kwargs):
@@ -199,7 +199,6 @@ async def test_a_session_another_run_took_after_this_one_is_not_saved_over(api, 
     lessons_learned) and before "end". A run that takes the session there writes its live state into the tracker
     (an assistant tool call without its result), and the save the endpoint makes after the first run wrote that
     to disk: the next resume found a tool call nobody answered."""
-    from agent_system import app as app_mod
     from agent_system.llm.models import ChatMessage
 
     session = await api.manager.create_session(user_id="anonymous", session_id="s-taken", agent_name="chat_agent",
@@ -214,7 +213,7 @@ async def test_a_session_another_run_took_after_this_one_is_not_saved_over(api, 
         tracker.set_session_messages(session_id, [
             ChatMessage(role="user", content="on disk"), ChatMessage(role="user", content="go"),
             ChatMessage(role="assistant", content="done")])
-        assert await app_mod._session_service.save_session(self, "anonymous", session_id, self.name, "default",
+        assert await app_state.session_service.save_session(self, "anonymous", session_id, self.name, "default",
                                                            False)
         await tracker.release_session_lock(session_id, request_id)
         # ...and in the session-end hooks another run takes the session and is mid-step
@@ -273,7 +272,6 @@ async def test_a_client_that_leaves_as_the_run_is_saved_still_has_it_saved_and_l
     """A client that leaves cancels the stream's whole scope. The save after the run was cancelled at its first
     await, and what came after it in the same finally -- letting go of the session (presence), the request's
     ownership, the uploaded files -- was skipped: nothing saved, and the session held for the life of the process."""
-    from agent_system import app as app_mod
     from agent_system.config.models import SessionPresenceConfig
     from agent_system.core.session_presence import presence_for
     from agent_system.llm.models import ChatMessage
@@ -294,7 +292,7 @@ async def test_a_client_that_leaves_as_the_run_is_saved_still_has_it_saved_and_l
         yield {"type": "end"}
 
     monkeypatch.setattr(Agent, "run_events", run)
-    service, leave = app_mod._session_service, asyncio.Event()
+    service, leave = app_state.session_service, asyncio.Event()
     save = service.save_session
 
     async def the_client_leaves_now(*args, **kwargs):

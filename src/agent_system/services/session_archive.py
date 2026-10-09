@@ -44,6 +44,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Set
 from filelock import FileLock
 from filelock import Timeout as LockTimeout
 
+from ..utils.io import atomic_write_json, read_json_object
+
 logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = "index.json"
@@ -155,24 +157,13 @@ def _parse_iso(value: Any) -> Optional[float]:
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
-    """A JSON object from disk, or {} for anything unreadable."""
-    try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
-    except FileNotFoundError:
-        return {}  # no manifest yet is the normal state, not a problem
-    except (OSError, ValueError) as exc:
-        logger.warning("session archive: could not read %s (%s)", path, exc)
-        return {}
-    return data if isinstance(data, dict) else {}
+    """A JSON object from disk, or {} for anything unreadable (no manifest yet is the normal state)."""
+    return read_json_object(path, what="session archive")
 
 
 def _write_json_atomic(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    atomic_write_json(path, data)
 
 
 class SessionArchive:

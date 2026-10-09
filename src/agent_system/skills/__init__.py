@@ -8,9 +8,9 @@ edited to give an agent domain knowledge, and the same skill can be shared by
 many agents, or with any other tool that speaks the standard.
 """
 from .invocation import expand, invoke, split_arguments
-from .registry import Skill, SkillRegistry, get_skill_registry
+from .registry import Skill, SkillRegistry, configured_skill_registry, get_skill_registry
 
 __all__ = [
-    "Skill", "SkillRegistry", "get_skill_registry",
+    "Skill", "SkillRegistry", "configured_skill_registry", "get_skill_registry",
     "expand", "invoke", "split_arguments",
 ]

@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import shutil
 import time
 from datetime import datetime, timezone
@@ -20,6 +19,7 @@ from filelock import FileLock
 from filelock import Timeout as LockTimeout
 
 from ..paths import data_path
+from ..utils.io import atomic_write_json, read_json_retrying
 
 logger = logging.getLogger(__name__)
 
@@ -30,30 +30,6 @@ INDEX_LOCK_TIMEOUT = 30.0
 
 #: What an edit of an index file does after ``change`` has seen it.
 _WRITE, _DELETE, _SKIP = "write", "delete", "skip"
-
-
-def _read_json_retrying(path: Path) -> Any:
-    """``json.load`` that rides out Windows' "being replaced" window.
-
-    Every write here is a temp file plus ``os.replace``. While another PROCESS
-    replaces a file, Windows refuses to open it -- PermissionError, for a few
-    milliseconds. The writers already retried that; the readers did not, so
-    with several agent-cli processes on one user, ``create_session`` died on
-    reading ``index.json`` (measured 21.09.2026: 8 processes x 25 sessions,
-    a crashed process in both runs), and ``list_sessions`` read the moment
-    as "no index" and started a full rebuild. FileNotFoundError is not
-    retried: the callers rely on it meaning "not there".
-    """
-    delay = 0.005
-    for attempt in range(10):
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except PermissionError:
-            if attempt == 9:
-                raise
-            time.sleep(delay)
-            delay = min(delay * 2, 0.2)
 
 
 class SessionNotFoundError(Exception):
@@ -380,58 +356,13 @@ class SessionManager:
                 raise ValueError(f"Message {i} missing role or content")
 
     def _atomic_write(self, path: Path, data: Dict[str, Any]) -> None:
-        """Write data to file atomically with retry on Windows file lock conflicts.
-        
+        """Write a session or index file atomically (``utils.io.atomic_write_json``).
+
         NOTE: This is a synchronous method. Use _atomic_write_async() in async contexts
         to avoid blocking the event loop.
-        
-        Args:
-            path: Target file path
-            data: Data to write (will be JSON-serialized)
-        
-        Raises:
-            IOError: If write fails after retries
         """
-        # Use unique temp file per write to avoid conflicts between parallel writes
-        temp_path = path.parent / f".{path.name}.{uuid4().hex[:8]}.tmp"
-        
-        max_retries = 5
-        retry_delay = 0.01  # Start with 10ms
-        
-        for attempt in range(max_retries):
-            try:
-                # Write to temporary file
-                with open(temp_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                
-                # Atomic move (overwrites target)
-                # On Windows, this can fail with PermissionError if another process holds the file
-                os.replace(temp_path, path)
-                logger.debug("Atomically wrote session to %s", path)
-                return  # Success!
-                
-            except (PermissionError, OSError) as e:
-                # Windows file lock conflict - retry with exponential backoff
-                if attempt < max_retries - 1:
-                    logger.debug(
-                        "File lock conflict writing %s (attempt %d/%d), retrying in %.2fms: %s",
-                        path, attempt + 1, max_retries, retry_delay * 1000, e
-                    )
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    # Final attempt failed
-                    if temp_path.exists():
-                        temp_path.unlink()
-                    logger.error("Failed to write session %s after %d retries: %s", path, max_retries, e)
-                    raise IOError(f"Failed to write session after {max_retries} retries: {e}") from e
-            
-            except Exception as e:
-                # Other errors (JSON encoding, disk full, etc.) - fail immediately
-                if temp_path.exists():
-                    temp_path.unlink()
-                logger.error("Failed to write session %s: %s", path, e)
-                raise IOError(f"Failed to write session: {e}") from e
+        atomic_write_json(path, data)
+        logger.debug("Atomically wrote session to %s", path)
 
     def is_deleted(self, session_id: str) -> bool:
         """Whether this manager has deleted the session and its file is still gone: nothing here writes it again.
@@ -509,7 +440,7 @@ class SessionManager:
             raise SessionNotFoundError(f"Session file not found: {path}")
         
         try:
-            data = _read_json_retrying(path)
+            data = read_json_retrying(path)
             self._validate_session_data(data)
             return data
             
@@ -539,7 +470,7 @@ class SessionManager:
 
         def read_one(path: Path) -> Dict[str, Dict[str, Any]]:
             try:
-                data = _read_json_retrying(path)
+                data = read_json_retrying(path)
                 return data if isinstance(data, dict) else {}
             except Exception as e:  # noqa: BLE001 — skip broken index
                 logger.warning("Failed to read index file %s: %s", path, e)
@@ -608,7 +539,7 @@ class SessionManager:
                 f"(waited {INDEX_LOCK_TIMEOUT:.0f}s)") from exc
         try:
             try:
-                data = _read_json_retrying(path)
+                data = read_json_retrying(path)
                 if not isinstance(data, dict):
                     raise ValueError(f"{path.name} is not an object")
             except FileNotFoundError:
@@ -1479,7 +1410,7 @@ class SessionManager:
 
         def read_one() -> Optional[Dict[str, Dict[str, Any]]]:
             try:
-                data = _read_json_retrying(path)
+                data = read_json_retrying(path)
                 return data if isinstance(data, dict) else None
             except Exception as e:  # noqa: BLE001 — a broken index must not 500
                 logger.warning("Failed to read main index %s: %s", path, e)
@@ -1550,7 +1481,7 @@ class SessionManager:
 
         def read_one() -> Dict[str, Dict[str, Any]]:
             try:
-                data = _read_json_retrying(path)
+                data = read_json_retrying(path)
                 return data if isinstance(data, dict) else {}
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to read sub-index %s: %s", path, e)

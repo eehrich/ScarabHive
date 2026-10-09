@@ -513,7 +513,7 @@ class TestPromptMerge:
         reg = SkillRegistry()
         reg.discover([str(skill_root)])
         (gone / "SKILL.md").unlink()          # vanished after discovery
-        monkeypatch.setattr("agent_system.skills.get_skill_registry", lambda *a, **k: reg)
+        monkeypatch.setattr("agent_system.skills.registry.get_skill_registry", lambda *a, **k: reg)
 
         cfg = AgentConfig(system_prompt="BASE-PROMPT", skills=["alpha", "broken"])
         out = PromptRenderer().render(_context(cfg, [skill_root]))[0]

@@ -847,20 +847,10 @@ def _reset_all_global_state():
     except ImportError:
         pass
     
-    # Reset app registry and all app-level globals
+    # Reset the API's shared services (app registry, session service, ...)
     try:
-        from agent_system import app as app_module
-        app_module._app_registry = None
-        app_module._tool_integration = None
-        app_module._config_service = None
-        app_module._tool_server_service = None
-        app_module._tool_service = None
-        app_module._agent_service = None
-        app_module._initialization_service = None
-        app_module._session_manager = None
-        app_module._session_service = None
-        app_module._shutdown_event = None
-        app_module._app_start_time = None
+        from agent_system import app_state
+        app_state.reset()
     except ImportError:
         pass
     

@@ -12,6 +12,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
 from pydantic import BaseModel
 
+from agent_system import app_state
 from agent_system.api.auth_endpoints import renew_own_login
 from agent_system.auth.models import User, UserCreate, UserUpdate, UserRole
 from agent_system.auth.database import get_db, PasswordChangedMeanwhile, UserDatabase
@@ -579,7 +580,6 @@ async def list_active_sessions(
         List of active sessions with details
     """
     # Import here to avoid circular imports
-    from agent_system.app import _app_registry
     from agent_system.core.request_context import request_user_map as _request_user_map
     from agent_system.servers.agent.server import Agent
     
@@ -587,9 +587,9 @@ async def list_active_sessions(
     
     try:
         # Iterate through all agents in registry
-        for agent_name in _app_registry.list():
+        for agent_name in app_state.app_registry.list():
             try:
-                srv = _app_registry.get(agent_name)
+                srv = app_state.app_registry.get(agent_name)
                 if not isinstance(srv, Agent):
                     continue
                 

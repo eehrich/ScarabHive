@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from agent_system import app_state
 from agent_system.config.models import SessionPresenceConfig
 from agent_system.core.session_presence import presence_for
 from agent_system.llm.models import ChatMessage
@@ -54,7 +55,7 @@ def api(tmp_path, monkeypatch):
     app.state.config.session_presence = SessionPresenceConfig(enabled=True)
     manager = SessionManager(storage_path=str(tmp_path))
     service = SessionService(manager)
-    monkeypatch.setattr(app_mod, "_session_service", service)  # never the real data/sessions
+    monkeypatch.setattr(app_state, "session_service", service)  # never the real data/sessions
     presence = presence_for(app.state.config)
     at_save = []
     save = service.save_session
@@ -204,14 +205,13 @@ async def test_an_append_to_a_session_this_process_saved_and_let_go_of_reads_it_
     """A settled API turn (openai_api) saves its conversation and takes it out of the agent's tracker. The file has
     not moved since this process wrote it, so the claim does not read it again -- and the append found no session:
     a 404 for a conversation that is plainly there."""
-    from agent_system import app as app_mod
 
     agent = api.app.state.agent
     tracker = agent._session_tracker
     tracker.set_session_messages("s1", [ChatMessage(role="user", content="first question"),
                                         ChatMessage(role="assistant", content="the answer")])
     tracker.set_session_metadata("s1", {"user_id": USER, "agent_name": agent.name, "llm_profile": "default"})
-    assert await app_mod._session_service.save_session(agent, USER, "s1", agent.name, "default",
+    assert await app_state.session_service.save_session(agent, USER, "s1", agent.name, "default",
                                                        was_new_session=True)
     tracker.discard_session("s1")
     assert api.manager.changed_on_disk(USER, "s1") is False, "fixture: the claim would read the session again"
@@ -227,14 +227,13 @@ async def test_an_append_to_a_session_this_process_saved_and_let_go_of_reads_it_
 async def test_an_append_whose_save_fails_says_so_and_keeps_nothing(api, monkeypatch):
     """A save that comes back False was answered "appended" -- and the message stayed in memory, for the next
     run's save to write after all: a client that retried had it twice."""
-    from agent_system import app as app_mod
 
     await _stored(api, messages=[{"role": "user", "content": "first question"}])
 
     async def fails(*args, **kwargs):
         return False
 
-    monkeypatch.setattr(app_mod._session_service, "save_session", fails)
+    monkeypatch.setattr(app_state.session_service, "save_session", fails)
     async with _client(api.app) as client:
         response = await client.post("/sessions/s1/append", json={"content": "follow-up"}, timeout=60.0)
 
@@ -267,7 +266,6 @@ async def test_an_append_goes_to_the_agent_the_session_runs_on(api, monkeypatch)
     """A conversation of openai_api runs on the agent its model names and lives in that agent's SessionTracker.
     Appended through the entry agent's, the message went into a copy read back there, which no run of the
     conversation looks at: the conversation's own turn put it back or saved over it."""
-    from agent_system import app as app_mod
 
     coder = _another_agent("coder")
     registry = api.app.state.tool_registry
@@ -277,7 +275,7 @@ async def test_an_append_goes_to_the_agent_the_session_runs_on(api, monkeypatch)
     tracker.set_session_messages("s1", [ChatMessage(role="user", content="first question"),
                                         ChatMessage(role="assistant", content="the answer")])
     tracker.set_session_metadata("s1", {"user_id": USER, "agent_name": "coder", "llm_profile": "normal"})
-    assert await app_mod._session_service.save_session(coder, USER, "s1", "coder", "normal", was_new_session=True)
+    assert await app_state.session_service.save_session(coder, USER, "s1", "coder", "normal", was_new_session=True)
 
     async with _client(api.app) as client:
         response = await client.post("/sessions/s1/append", json={"content": "follow-up"}, timeout=60.0)
@@ -291,13 +289,12 @@ async def test_an_append_hands_its_message_to_a_run_that_took_the_session_meanwh
     """Which sessions run is asked before the append claims the session; a run that takes the agent's session lock
     after that got the session read back from under it, or the message written beside it -- and its save, of its
     own message list, dropped it. The append holds that lock itself now, and one a run has gets the message."""
-    from agent_system import app as app_mod
 
     await _stored(api, messages=[{"role": "user", "content": "first question"}])
     tracker = api.app.state.agent._session_tracker
     tracker.register_request("run_1", "s1", {"cancel": asyncio.Event(), "appended": [],
                                              "message_event": asyncio.Event()})
-    service = app_mod._session_service
+    service = app_state.session_service
     load = service.load_and_restore_session
 
     async def read_and_then_a_run_takes_it(*args, **kwargs):  # the claim's read, after the question
@@ -345,11 +342,10 @@ async def test_a_second_append_waits_for_the_first(api):
 async def test_a_run_that_starts_while_an_append_saves_waits_for_it(api, monkeypatch):
     """The append holds the session lock through its save. A run of this process that asked for it then -- the
     web chat's, an API turn's -- was refused as if another run had the session."""
-    from agent_system import app as app_mod
 
     await _stored(api, messages=[{"role": "user", "content": "first question"}])
     tracker = api.app.state.agent._session_tracker
-    service = app_mod._session_service
+    service = app_state.session_service
     save, saving, go_on = service.save_session, asyncio.Event(), asyncio.Event()
 
     async def slow_save(*args, **kwargs):
@@ -378,7 +374,6 @@ async def test_an_append_goes_to_the_agent_whose_turn_settles_the_session(api, m
     """The record names the agent of the last SAVED run. A turn on another agent whose run saved nothing (it
     failed on its way in) puts its copy back over the session -- the append went to the record's agent, and was
     gone with that put back."""
-    from agent_system import app as app_mod
 
     coder = _another_agent("coder")
     registry = api.app.state.tool_registry
@@ -386,7 +381,7 @@ async def test_an_append_goes_to_the_agent_whose_turn_settles_the_session(api, m
     monkeypatch.setattr(registry, "get", lambda name: coder if name == "coder" else get(name))
     monkeypatch.setattr(registry, "list", lambda: [*names(), "coder"])
     await _stored(api, messages=[{"role": "user", "content": "first question"}])  # the record: chat_agent's
-    await app_mod._session_service.load_and_restore_session(coder, USER, "s1")
+    await app_state.session_service.load_and_restore_session(coder, USER, "s1")
     seen = coder._session_tracker.watch_appends("s1")  # a turn of coder settles it
 
     try:

@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import agent_system.agent_cli as agent_cli
+from agent_system.cli_utils.event_loop import close_cli_loop
 from agent_system.config.models import (
     AgentConfig,
     AgentSystemConfig,
@@ -89,7 +90,7 @@ def cli(tmp_path, monkeypatch):
         loop.close()
     monkeypatch.setattr(sp, "_stops", set())
     yield SimpleNamespace(llm=llm, woken=woken, presence=sp.presence_for(config))
-    agent_cli.close_cli_loop()
+    close_cli_loop()
 
 
 def _input_comes_in(cli):
@@ -126,7 +127,7 @@ def test_a_ctrl_c_out_of_the_loop_leaves_the_session_marked_when_the_run_unwinds
         agent_cli.main()
     assert cli.presence.status("s1", USER) == "running", "fixture: the run let go before exit"
 
-    agent_cli.close_cli_loop()   # what atexit does
+    close_cli_loop()   # what atexit does
 
     assert cli.woken == []
     assert cli.presence.notify("s1", USER)[0] == "queued"
@@ -154,7 +155,7 @@ def test_a_ctrl_c_between_the_runs_events_with_raw_output_leaves_the_session_mar
     monkeypatch.setattr(sys, "argv", sys.argv[:1] + ["--raw"] + sys.argv[1:])
     agent_cli.main()
     assert asked, "fixture: the run never asked its model"
-    agent_cli.close_cli_loop()   # what atexit does
+    close_cli_loop()   # what atexit does
 
     assert cli.woken == []
     assert cli.presence.notify("s1", USER)[0] == "queued"

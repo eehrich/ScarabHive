@@ -24,6 +24,7 @@ from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
 
+from . import app_state
 from .api.endpoints import router as api_router
 from .ui.resources import STATIC_DIR, revalidated, ui_templates
 from .ui.routes import router as ui_router
@@ -39,8 +40,8 @@ from .tools.integration import initialize_tools, shutdown_tools
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system, start_batch_queue_manager
 
 # Import services
-from .services import ConfigService, ToolServerService, ToolService, AgentService
-from .services.session_manager import SessionManager, SessionPermissionError
+from .services import ConfigService, ToolServerService, ToolService
+from .services.session_manager import SessionPermissionError
 from .servers.agent.components.status_forwarding import in_line_with_a_live_run
 from .core.session_presence import SessionBusy, forget_stop, presence_for
 from .services.background_job_manager import (
@@ -52,22 +53,16 @@ from .services.background_job_manager import (
 )
 
 
-# Global registry for the tool endpoints
-# (No _app_config next to it: a module global belongs to whichever build_app
-# ran last, and a reload writes app.state.config -- _live_config() is the one
-# source. The global had exactly one reader left, answering from process start.)
-_app_registry: Optional[ToolServerRegistry] = None
-_tool_integration = None
+def __getattr__(name: str) -> Any:
+    """The API's shared services under the names they had here (app_state.LEGACY_APP_NAMES).
 
-# Global services (initialized in build_app)
-_config_service: Optional[ConfigService] = None
-_tool_server_service: Optional[ToolServerService] = None
-_tool_service: Optional[ToolService] = None
-_agent_service: Optional[AgentService] = None
-_initialization_service: Optional[Any] = None  # InitializationService
-_session_manager: Optional[SessionManager] = None
-_session_service: Optional[Any] = None  # SessionService, imported at runtime to avoid circular import
-_session_archive: Optional[Any] = None  # SessionArchive, see services/session_archive.py
+    For code outside this repository that still reads them from this module;
+    everything here reads ``app_state``.
+    """
+    legacy = app_state.LEGACY_APP_NAMES.get(name)
+    if legacy is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(app_state, legacy)
 
 
 # Security: Track request_id -> user_id mapping for status stream authorization.
@@ -155,9 +150,6 @@ def _sse_response(stream, **kwargs) -> StreamingResponse:
 
     return StreamingResponse(stream, background=BackgroundTask(close), **kwargs)
 
-# Shutdown event for graceful stream termination
-_shutdown_event: Optional[asyncio.Event] = None
-
 
 async def resolve_agent_for_request(
     request_id: str,
@@ -202,9 +194,6 @@ from .llm.capabilities import capability_model_name  # noqa: E402,F401
 
 templates = ui_templates()
 static_path = STATIC_DIR
-
-# Global application state
-_app_start_time = None
 
 # Batch queue manager - uses centralized initialization from llm.batch.initialization
 
@@ -374,12 +363,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     early_logger.debug(f"Early logging initialized, loading config from {cfg_path}")
 
     # Create ConfigService
-    global _config_service
-    _config_service = ConfigService()
-    config = _config_service.load_config(config_path=cfg_path)
+    app_state.config_service = ConfigService()
+    config = app_state.config_service.load_config(config_path=cfg_path)
 
     # Setup full logging via ConfigService (may reconfigure handlers)
-    _config_service.setup_logging()
+    app_state.config_service.setup_logging()
     unblock_console()  # a console that stops reading must not stop the server
     
     # Get logger AFTER logging is configured
@@ -422,15 +410,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Initialize centralized initialization service
     # This handles SessionManager, SessionService, and dependency injection
     from .services.initialization_service import InitializationService
-    global _initialization_service, _session_manager, _session_service, _session_archive
-    _initialization_service = InitializationService(config)
-    _session_manager = _initialization_service.session_manager
-    _session_service = _initialization_service.session_service
+    app_state.initialization_service = InitializationService(config)
+    app_state.session_manager = app_state.initialization_service.session_manager
+    app_state.session_service = app_state.initialization_service.session_service
     logger.info("InitializationService created (SessionManager and SessionService ready)")
 
     # Initialize tool integration
     async def _init_mcp_for_app(app: FastAPI):
-        global _tool_integration, _tool_server_service, _tool_service, _agent_service
         logger = logging.getLogger(__name__)
         logger.info("Starting tool integration initialization...")
         try:
@@ -439,24 +425,24 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             await start_batch_queue_manager(config, custom_logger=logger)
             
             tool_integration = await initialize_tools(config, app)
-            _tool_integration = tool_integration
+            app_state.tool_integration = tool_integration
 
             # Mark that bootstrap_servers() was already called by initialize_tools
             tool_integration.servers_bootstrapped = True
 
             # Initialize services
-            _tool_server_service = ToolServerService(tool_integration, config)
-            _tool_service = ToolService(tool_integration, config)
+            app_state.tool_server_service = ToolServerService(tool_integration, config)
+            app_state.tool_service = ToolService(tool_integration, config)
 
             # CRITICAL: Inject session_service into ALL agents in plugin_registry
             # This ensures hooks and tools can access session management
             # Must be done AFTER bootstrap_servers() in initialize_tools() created agents
-            _initialization_service.initialize_for_api(
+            app_state.initialization_service.initialize_for_api(
                 plugin_registry=tool_integration.plugin_registry,
             )
 
             # Store session manager in app state for dependency injection (after initialization)
-            app.state.session_manager = _session_manager
+            app.state.session_manager = app_state.session_manager
             logger.info("SessionManager stored in app.state for dependency injection")
 
             # Session archive: old conversation trees move to data/session_archive
@@ -471,8 +457,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 return set(await get_background_job_manager().active_sessions())
 
             archive_config = config.session_archive
-            _session_archive = SessionArchive(
-                _session_manager,
+            app_state.session_archive = SessionArchive(
+                app_state.session_manager,
                 archive_path=archive_config.archive_path,
                 retention_days=archive_config.retention_days,
                 sweep_interval_hours=archive_config.sweep_interval_hours,
@@ -481,7 +467,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 presence=presence_for(config),
                 busy_sessions=_busy_sessions,
             )
-            app.state.session_archive = _session_archive
+            app.state.session_archive = app_state.session_archive
             logger.info(
                 "SessionArchive initialized (retention %d days, sweep %s)",
                 archive_config.retention_days,
@@ -509,8 +495,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @asynccontextmanager
     async def custom_lifespan(app: FastAPI):
         # Startup
-        global _app_start_time, _shutdown_event
-        _app_start_time = time.time()
+        app_state.app_start_time = time.time()
         # The commit this process starts from: the System panel compares it
         # with the checked-out one to say a restart would deploy newer code.
         from .services.system_status import record_start
@@ -529,7 +514,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     ASYNC_EXECUTOR_MAX_WORKERS)
 
         # Create shutdown event for graceful SSE stream termination
-        _shutdown_event = _asyncio.Event()
+        app_state.shutdown_event = _asyncio.Event()
 
         logger.info("Lifespan startup: Initializing tool integration...")
         await _init_mcp_for_app(app)
@@ -580,9 +565,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         
         try:
             # Signal all SSE streams to terminate gracefully
-            if _shutdown_event:
+            if app_state.shutdown_event:
                 logger.info("Signaling SSE streams to terminate...")
-                _shutdown_event.set()
+                app_state.shutdown_event.set()
                 # Give streams a brief moment to notice and exit
                 await asyncio.sleep(0.1)
 
@@ -643,7 +628,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return None, None
         # A session deleted in this process takes no run: nothing writes it again, so what the run answers would
         # be lost without a word (force does not change that).
-        if _session_service and _session_service.session_manager and _session_service.session_manager.is_deleted(sid):
+        if app_state.session_service and app_state.session_service.session_manager and app_state.session_service.session_manager.is_deleted(sid):
             return f"Session {sid} has been deleted", None
         presence = presence_for(getattr(target_agent, "system_config", None))
         if presence is not None:
@@ -674,7 +659,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         conversation wins: re-reading unasked undoes a run of this process whose
         save is still to come, and that run's answer is nowhere else.
         """
-        if not _session_service:
+        if not app_state.session_service:
             return
         tracker = getattr(target_agent, "_session_tracker", None)
         if tracker is not None and tracker.check_session_locked(sid)[0]:
@@ -683,7 +668,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # -- read back, the running turn lost what it had not saved yet, and
             # its metadata named the asker (as open_for_run leaves it, in_use).
             return
-        manager = _session_service.session_manager
+        manager = app_state.session_service.session_manager
         changed = manager.changed_on_disk(user_id, sid)
         if changed is None:
             tracker = getattr(target_agent, "_session_tracker", None)
@@ -696,7 +681,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 stored = {}
             changed = len(stored.get("messages") or []) >= in_memory
         if changed:
-            await _session_service.load_and_restore_session(target_agent, user_id, sid)
+            await app_state.session_service.load_and_restore_session(target_agent, user_id, sid)
 
     def _hold_fresh_session(target_agent: Any, sid: str, user_id: str) -> Optional[str]:
         """Hold a session the running request just created: nothing to re-read
@@ -915,28 +900,28 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # This handles bootstrap_servers() and session_service injection
     # Note: Batch queue manager is created lazily by LLMFactory when first needed
     registry = ToolServerRegistry()
-    if not _tool_integration or not _tool_integration.servers_bootstrapped:
+    if not app_state.tool_integration or not app_state.tool_integration.servers_bootstrapped:
         # Use InitializationService for consistent bootstrap + injection
-        registry = _initialization_service.bootstrap_and_inject(
+        registry = app_state.initialization_service.bootstrap_and_inject(
             registry=registry,
             inject_sessions=True
         )
         # Mark as bootstrapped to prevent duplicate calls
-        if _tool_integration:
-            _tool_integration.servers_bootstrapped = True
+        if app_state.tool_integration:
+            app_state.tool_integration.servers_bootstrapped = True
         logging.getLogger(__name__).info("Bootstrapped servers using InitializationService")
     else:
         # Servers already bootstrapped by initialize_tools, just populate local registry
         # by copying from plugin_registry and inject sessions
-        for server_name in _tool_integration.plugin_registry.list_servers():
-            server_adapter = _tool_integration.plugin_registry.get_server(server_name)
+        for server_name in app_state.tool_integration.plugin_registry.list_servers():
+            server_adapter = app_state.tool_integration.plugin_registry.get_server(server_name)
             if server_adapter and hasattr(server_adapter, 'plugin_server'):
                 registry.register(server_name, server_adapter.plugin_server)
         logging.getLogger(__name__).debug(f"Populated local registry with {len(registry.list())} servers from plugin_registry")
 
         # Inject session_service into local registry agents
         from .services.agent_injection import inject_session_service_into_agents
-        inject_session_service_into_agents(registry, _session_service)
+        inject_session_service_into_agents(registry, app_state.session_service)
 
     # Get entry agent from config
     entry_name = config.default_agent or 'agent'
@@ -946,7 +931,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # (bootstrap built it without one), or a build. No server overrides are
     # applied on top: the Runtime built it from the MERGED server config,
     # which is where those overrides come from.
-    agent = _build_entry_agent(entry_name, config, registry, _session_service)
+    agent = _build_entry_agent(entry_name, config, registry, app_state.session_service)
 
     # Wire the BackgroundJobManager with the registry + default agent
     # so cancel_job can walk every Agent-typed server that may own a
@@ -973,10 +958,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     app.state.config = config
     # The Runtime that built the registry: it knows every DECLARED server, not
     # just the built ones, and is the only place that builds one.
-    app.state.runtime = _initialization_service.runtime if _initialization_service else None
+    app.state.runtime = app_state.initialization_service.runtime if app_state.initialization_service else None
     # For the deliberate config reload (POST /admin/reload-config, `agent-cli
     # reload`): the service + path let the endpoint re-parse the on-disk config.
-    app.state.config_service = _config_service
+    app.state.config_service = app_state.config_service
     app.state.config_path = cfg_path
     # The auth this process enforces -- the enforcer and the middleware were built
     # from it, and a reload (which replaces app.state.config) does not rebuild
@@ -995,8 +980,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 len(gated_agents), ", ".join(gated_agents))
 
     # Store registry globally
-    global _app_registry
-    _app_registry = registry
+    app_state.app_registry = registry
 
     # Include API router
     app.include_router(api_router)
@@ -1107,9 +1091,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Health check endpoint
     @app.get("/health")
     def health():
-        global _app_start_time
-
-        uptime_seconds = time.time() - _app_start_time if _app_start_time else 0
+        uptime_seconds = time.time() - app_state.app_start_time if app_state.app_start_time else 0
 
         agent_config = {}
         try:
@@ -1199,7 +1181,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=403,
                                 detail=f"Permission denied: session {session_id} belongs to another user")
         try:
-            return await _session_service.open_for_run(
+            return await app_state.session_service.open_for_run(
                 selected_agent, user_id, session_id,
                 llm_profile or selected_agent.agent_config.default_llm_profile,
                 in_use=running is not None, llm_choice=llm_choice)
@@ -1286,13 +1268,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # job-row goes 'failed' with a useful error.
         if agent_name and agent_name != selected_agent.name:
             try:
-                selected_agent = _app_registry.get(agent_name)  # type: ignore[attr-defined]
+                selected_agent = app_state.app_registry.get(agent_name)  # type: ignore[attr-defined]
                 from .servers.agent.server import Agent as _Agent
                 if not isinstance(selected_agent, _Agent):
                     raise HTTPException(status_code=400, detail=f"'{agent_name}' is not an agent")
-                # CRITICAL: Inject _session_service (same as CLI line 1252 and build_app line 354-357)
+                # CRITICAL: Inject app_state.session_service (same as CLI line 1252 and build_app line 354-357)
                 # ALWAYS inject, even if attribute exists, to refresh the reference
-                selected_agent._session_service = _session_service
+                selected_agent._session_service = app_state.session_service
                 logger.debug(f"Injected SessionService into agent '{agent_name}' via /run endpoint")
             except KeyError:
                 logger.warning(
@@ -1358,7 +1340,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         #: name -> min_role of every listed agent that carries a gate
         gated: dict[str, str] = {}
         try:
-            for name in _app_registry.list():  # type: ignore[attr-defined]
+            for name in app_state.app_registry.list():  # type: ignore[attr-defined]
                 try:
                     # describe() first: it answers "is this an agent, is it
                     # public" from the instance when there is one and from the
@@ -1367,7 +1349,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # isinstance, not "is not None": a Mock registry answers
                     # describe() with a truthy Mock whose attributes are all
                     # truthy, which would list every server as a public agent.
-                    view = _app_registry.describe(name)  # type: ignore[attr-defined]
+                    view = app_state.app_registry.describe(name)  # type: ignore[attr-defined]
                     if isinstance(view, ServerView):
                         if view.is_agent and view.tool_public:
                             agents.append(name)
@@ -1379,7 +1361,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                     # Unbound registry, or a declaration that cannot answer for
                     # its instance: the instance is the only source.
-                    srv = _app_registry.get(name)  # type: ignore[attr-defined]
+                    srv = app_state.app_registry.get(name)  # type: ignore[attr-defined]
                     from .servers.agent.server import Agent as _Agent
                     if isinstance(srv, _Agent):
                         # Filter by _tool_public flag (visibility control)
@@ -1516,7 +1498,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         a gated agent can reach is part of what the gate keeps from them.
         """
         try:
-            srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
+            srv = app_state.app_registry.get(agent_name)  # type: ignore[attr-defined]
         except Exception as e:
             logger.debug(f"Failed to get agent {agent_name}: {e}")
             return {"error": "agent not found", "agent": agent_name}
@@ -1563,7 +1545,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         from .chat_commands import group_tools_by_server
         from .servers.agent.server import Agent as _Agent
 
-        registry = getattr(request.app.state, "tool_registry", None) or _app_registry
+        registry = getattr(request.app.state, "tool_registry", None) or app_state.app_registry
         try:
             srv = registry.get(agent_name) if registry is not None else None
         except Exception as e:
@@ -1608,7 +1590,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         Note: This endpoint is admin-only (requires admin role).
         """
         try:
-            srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
+            srv = app_state.app_registry.get(agent_name)  # type: ignore[attr-defined]
         except Exception as e:
             logger.debug(f"Failed to get agent {agent_name}: {e}")
             return {"error": "agent not found", "agent": agent_name}
@@ -1698,7 +1680,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         Note: This endpoint is admin-only (requires admin role).
         """
         try:
-            srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
+            srv = app_state.app_registry.get(agent_name)  # type: ignore[attr-defined]
         except Exception as e:
             logger.warning(f"Failed to get agent {agent_name}: {e}", exc_info=True)
             return {"error": "agent not found", "agent": agent_name}
@@ -1929,10 +1911,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # Save session after execution (if session_id was provided or created) --
                 # not one the run was refused, nor one somebody holds after it
                 # (after_run): another run of this process, or an append saving it.
-                if session_id and _session_service and not refused:
+                if session_id and app_state.session_service and not refused:
                     effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                     was_new_session = not session_exists
-                    await _session_service.save_session(
+                    await app_state.session_service.save_session(
                         selected_agent,
                         user_id,
                         session_id,
@@ -2096,11 +2078,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         # client that leaves cancels the stream's whole scope, the run in
                         # it and its last save too, and here every await was cancelled
                         # again -- nothing saved, and the steps below skipped.
-                        if _session_service and actual_session_id and not refused:
+                        if app_state.session_service and actual_session_id and not refused:
                             # Use actual agent name and effective llm_profile (respecting overrides)
                             effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                             with anyio.CancelScope(shield=True):
-                                await _session_service.save_session(
+                                await app_state.session_service.save_session(
                                     selected_agent,
                                     user_id,
                                     actual_session_id,
@@ -2254,7 +2236,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Try to load the specific agent if it's different from the default
             if existing_job.agent_name and existing_job.agent_name != reconnect_agent.name:
                 try:
-                    reconnect_agent = _app_registry.get(existing_job.agent_name)  # type: ignore[attr-defined]
+                    reconnect_agent = app_state.app_registry.get(existing_job.agent_name)  # type: ignore[attr-defined]
                 except Exception as e:
                     logger.warning(f"Could not load agent '{existing_job.agent_name}': {e}, using default")
             
@@ -2317,7 +2299,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         async def event_stream():
             # Check if server is already shutting down
-            if _shutdown_event and _shutdown_event.is_set():
+            if app_state.shutdown_event and app_state.shutdown_event.is_set():
                 yield ":server_shutdown\n\n"
                 return
             
@@ -2438,12 +2420,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # call without its result, say), or an append that saves it itself.
                 try:
                     if job.status in (JobStatus.COMPLETED, JobStatus.FAILED) and not refused:
-                        if actual_session_id and _session_service:
+                        if actual_session_id and app_state.session_service:
                             effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                             # Shielded: a client that leaves cancels the stream's scope,
                             # and the save was cancelled again at its first await.
                             with anyio.CancelScope(shield=True):
-                                await _session_service.save_session(
+                                await app_state.session_service.save_session(
                                     selected_agent,
                                     user_id,
                                     actual_session_id,
@@ -2731,9 +2713,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 owner = meta.get("user_id")
         except Exception:
             owner = None
-        if owner is None and _session_service and getattr(_session_service, "session_manager", None):
+        if owner is None and app_state.session_service and getattr(app_state.session_service, "session_manager", None):
             try:
-                owner = await _session_service.session_manager._find_session_owner_async(sid)
+                owner = await app_state.session_service.session_manager._find_session_owner_async(sid)
             except Exception:
                 owner = None
         if owner is not None and owner != current_user.username:
@@ -2790,7 +2772,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # runs started with agent_name execute on that agent, not on the
         # default agent this endpoint is bound to.
         target_agent = await resolve_agent_for_request(
-            request_id, get_background_job_manager(), _app_registry, agent
+            request_id, get_background_job_manager(), app_state.app_registry, agent
         )
         await _refuse_foreign_request(request_id, current_user)
 
@@ -2853,7 +2835,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """The agent with a turn settling the session (openai_api's AgentTurn watches for appends while it does),
         or None. It comes before the record, which names the agent of the last SAVED run: a turn whose run saved
         nothing -- it failed on its way in -- puts back its own copy over whatever another agent's tracker took."""
-        registry = getattr(request.app.state, "tool_registry", None) or _app_registry
+        registry = getattr(request.app.state, "tool_registry", None) or app_state.app_registry
         try:
             names = list(registry.list()) if registry is not None else []
         except Exception as e:  # noqa: BLE001 - no registry to ask, the record decides
@@ -2903,7 +2885,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             run_id = running["request_id"]
             # `agent`, not owner_agent: a job on "default" runs on the app's default agent,
             # and owner_agent is the agent of the request the caller named -- its last run.
-            run_agent = await resolve_agent_for_request(run_id, job_manager, _app_registry, agent,
+            run_agent = await resolve_agent_for_request(run_id, job_manager, app_state.app_registry, agent,
                                                         agent_name=running.get("agent_name"))
             if await run_agent.append_user_message(run_id, content):
                 return True
@@ -2926,17 +2908,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         detail=f"Session {sid} is running -- what it saves would drop the message. "
                                f"Try again once it is done.")
                 tracker = owner_agent._session_tracker
-                if not tracker.has_session(sid) and _session_service:
+                if not tracker.has_session(sid) and app_state.session_service:
                     # Not in memory, and the file unmoved since this process wrote it, so the claim read nothing: a
                     # session this process saved and let go of (a settled openai_api turn does). Appended to
                     # nothing, the conversation on screen was "not found".
-                    await _session_service.load_and_restore_session(owner_agent, user_id, sid)
+                    await app_state.session_service.load_and_restore_session(owner_agent, user_id, sid)
                 if not await owner_agent.append_to_session(sid, content):
                     return False
                 appended = tracker.get_session_messages(sid)[-1]
-                if _session_service:
+                if app_state.session_service:
                     metadata = tracker.get_session_metadata(sid) or {}
-                    saved = await _session_service.save_session(
+                    saved = await app_state.session_service.save_session(
                         owner_agent,
                         user_id,
                         sid,
@@ -2963,10 +2945,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         profile it runs on, its messages. Two helpers doing their own
         load_session read the same file twice for one command.
         """
-        if not _session_service or not _session_service.session_manager:
+        if not app_state.session_service or not app_state.session_service.session_manager:
             return {}
         try:
-            record = await _session_service.session_manager.load_session(user_id, sid)
+            record = await app_state.session_service.session_manager.load_session(user_id, sid)
         except Exception as e:
             logging.getLogger(__name__).debug("No record for %s: %s", sid, e)
             return {}
@@ -2984,10 +2966,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         copy's last exchange, an append was written onto it, and both saved it
         over the other process's turn.
         """
-        if not _session_service or not _session_service.session_manager:
+        if not app_state.session_service or not app_state.session_service.session_manager:
             return None
         try:
-            record = await _session_service.session_manager.peek_session(user_id, sid)
+            record = await app_state.session_service.session_manager.peek_session(user_id, sid)
         except Exception as e:  # noqa: BLE001 - a record that does not read names no agent, as _session_record
             logging.getLogger(__name__).debug("No record for %s: %s", sid, e)
             return None
@@ -3039,13 +3021,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         detail=f"Session {sid} is running -- {why}. Try again once it is done.")
                 tracker = owner_agent._session_tracker
                 messages = list(tracker.get_session_messages(sid) or [])
-                if not messages and _session_service:
+                if not messages and app_state.session_service:
                     # The copy in memory can be empty although the record is not:
                     # _claim_session re-reads only when the FILE moved, and a
                     # session this process wrote and no longer holds looks
                     # unchanged to it. Cutting that would answer "nothing to take
                     # back" about a conversation that is plainly on screen.
-                    await _session_service.load_and_restore_session(owner_agent, user_id, sid)
+                    await app_state.session_service.load_and_restore_session(owner_agent, user_id, sid)
                     messages = list(tracker.get_session_messages(sid) or [])
                 yield messages
         finally:
@@ -3105,13 +3087,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     overwrite=bool(files.get("overwrite")))
                 _rewind_refusal(report)
             tracker.set_session_messages(sid, kept)
-            if _session_service:
+            if app_state.session_service:
                 metadata = tracker.get_session_metadata(sid) or {}
                 # The agent's own default only where the record has none, and
                 # read defensively: Agent.agent_config may be None (the agent
                 # guards it itself), and reaching through it eagerly turns a
                 # /undo into a 500.
-                saved = await _session_service.save_session(
+                saved = await app_state.session_service.save_session(
                     owner_agent,
                     user_id,
                     sid,
@@ -3265,25 +3247,24 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger = logging.getLogger(__name__)
 
             # Use ToolServerService for comprehensive status
-            global _tool_server_service, _app_registry, _tool_integration
 
-            if not _tool_server_service:
+            if not app_state.tool_server_service:
                 return {"error": "tool server service not initialized"}
 
-            if not _app_registry:
+            if not app_state.app_registry:
                 return {"error": "Registry not initialized"}
 
             # If force_refresh requested, invalidate cache first
-            if force_refresh and _tool_integration:
+            if force_refresh and app_state.tool_integration:
                 try:
-                    await _tool_integration.invalidate_tools_cache()
+                    await app_state.tool_integration.invalidate_tools_cache()
                     logger.debug("Cache invalidated due to force_refresh=True")
                 except Exception as e:
                     logger.warning(f"Failed to invalidate cache: {e}")
 
             # Delegate to ToolServerService
-            status = await _tool_server_service.get_comprehensive_status(
-                registry=_app_registry,
+            status = await app_state.tool_server_service.get_comprehensive_status(
+                registry=app_state.app_registry,
                 check_connectivity=True  # Always check connectivity for accurate status
             )
 
@@ -3300,13 +3281,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def tools_cache_statistics():
         """Get tool cache statistics for monitoring."""
         try:
-            global _tool_integration
 
-            if not _tool_integration:
+            if not app_state.tool_integration:
                 return {"error": "tool integration not initialized"}
 
             # Get cache statistics from tool integration
-            stats = await _tool_integration.get_cache_statistics()
+            stats = await app_state.tool_integration.get_cache_statistics()
             return {
                 "success": True,
                 "cache": stats
@@ -3323,13 +3303,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def tools_cache_invalidate():
         """Manually invalidate the tool cache."""
         try:
-            global _tool_integration
 
-            if not _tool_integration:
+            if not app_state.tool_integration:
                 return {"error": "tool integration not initialized"}
 
             # Invalidate the cache
-            await _tool_integration.invalidate_tools_cache()
+            await app_state.tool_integration.invalidate_tools_cache()
 
             return {
                 "success": True,
@@ -3354,15 +3333,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     def _skill_registry_for_app():
         """Registry scanned with the roots the CONFIG resolves to."""
-        from agent_system.skills import get_skill_registry
-        from agent_system.skills.registry import default_skill_dirs
+        from agent_system.skills.registry import configured_skill_registry
 
-        configured = list(
-            getattr(getattr(_live_config(), "skills", None), "skill_dirs", []) or []
-        )
-        registry = get_skill_registry()
-        registry.ensure_discovered(configured or list(default_skill_dirs()))
-        return registry
+        return configured_skill_registry(_live_config())
 
     def _chat_agent(request: Request, agent_name: Optional[str]):
         """The agent a chat surface is talking to, or None.
@@ -3378,7 +3351,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not agent_name:
             entry = getattr(request.app.state, "agent", None)
             return entry if isinstance(entry, _Agent) else None
-        registry = getattr(request.app.state, "tool_registry", None) or _app_registry
+        registry = getattr(request.app.state, "tool_registry", None) or app_state.app_registry
         try:
             candidate = registry.get(agent_name) if registry is not None else None
         except Exception as e:
@@ -3556,7 +3529,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         at startup and on /resume.
         """
         merged: dict = {}
-        manager = getattr(_session_service, "session_manager", None)
+        manager = getattr(app_state.session_service, "session_manager", None)
         if manager is not None and user_id:
             try:
                 stored = (await manager.load_session(user_id, session_id)) or {}
@@ -3635,7 +3608,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         persisted = False
         if not parsed.is_query:
             current = apply_vars(current, parsed)
-            manager = getattr(_session_service, "session_manager", None)
+            manager = getattr(app_state.session_service, "session_manager", None)
             persisted = await store_vars(tracker, manager, owner, session_id, current)
         return {"session_id": session_id, "vars": current, "errors": [],
                 "changed": not parsed.is_query, "persisted": persisted}
@@ -3910,18 +3883,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         current_user = await _enforce_endpoint_security(request)
         user_id = current_user.username if current_user else "anonymous"
-        if not _session_service or not _session_service.session_manager:
+        if not app_state.session_service or not app_state.session_service.session_manager:
             raise HTTPException(status_code=503, detail="No session storage")
         try:
             # A name no session can have is the caller's mistake -- load_session
             # raises the same ValueError for a corrupt FILE, which is not. And
             # before the owner lookup, which builds a path from it unchecked.
-            _session_service.session_manager._validate_session_id(session_id)
+            app_state.session_service.session_manager._validate_session_id(session_id)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Not a session id: '{session_id}'")
         await _verify_session_owner(session_id, current_user)
         try:
-            return await _session_service.session_manager.load_session(user_id, session_id)
+            return await app_state.session_service.session_manager.load_session(user_id, session_id)
         except SessionNotFoundError:
             raise HTTPException(status_code=404, detail=f"No session '{session_id}'")
         except SessionPermissionError:
@@ -4106,7 +4079,7 @@ def run() -> None:
     app_obj = build_app()
 
     # Get config from global ConfigService (already loaded in build_app)
-    config = _config_service.get_config()
+    config = app_state.config_service.get_config()
 
     # Get server configuration
     host = os.getenv("HOST") or config.network.host or "127.0.0.1"
@@ -4135,7 +4108,7 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    # python -m agent_system.app runs this file as __main__, a module the rest of the code never imports: run()
-    # here would serve from globals (_session_service, ...) its lazy imports of agent_system.app never see.
+    # python -m agent_system.app runs this file as __main__, a second copy of the module beside the
+    # agent_system.app the rest of the code imports: start the server the way agent-api does instead.
     from agent_system.own_console import api
     api()

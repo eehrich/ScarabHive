@@ -18,6 +18,7 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 
+from agent_system import app_state
 from agent_system.auth.models import User, UserRole
 
 
@@ -61,8 +62,7 @@ async def may_see_session(request: Request, current_user: Optional[User], sessio
     running = (await get_background_job_manager().active_sessions()).get(session_id)
     if running is not None and running.get("user_id") is not None:
         return running["user_id"] == user_id
-    from agent_system.app import _session_service
-    sessions = getattr(_session_service, "session_manager", None)
+    sessions = getattr(app_state.session_service, "session_manager", None)
     if sessions is None:
         raise HTTPException(status_code=503, detail="The session store is not available in this process.")
     return sessions.belongs_to(user_id, session_id)

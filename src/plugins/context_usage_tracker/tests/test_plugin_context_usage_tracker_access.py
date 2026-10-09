@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from agent_system import app_state
 from agent_system.auth.models import UserRole
 from plugins.context_usage_tracker.plugin import ContextUsageTrackerPlugin
 from tests.session_owners import two_users, user, viewed_by
@@ -126,10 +127,9 @@ def test_with_authentication_off_everything_is_shown(served):
 
 
 def test_without_a_session_store_it_says_so(served, monkeypatch):
-    from agent_system import app as app_mod
 
     client, viewer, _ = served
-    monkeypatch.setattr(app_mod, "_session_service", None)
+    monkeypatch.setattr(app_state, "session_service", None)
     viewer["user"] = user("alice")
 
     assert client.get(f"{PREFIX}/history?session_id=s-alice").status_code == 503

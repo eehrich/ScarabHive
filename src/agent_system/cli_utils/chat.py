@@ -45,6 +45,7 @@ from .session_listing import (DEFAULT_LIMIT, in_chat_selector, newest_of, parse_
 from .session_defaults import load_session_llm_params, session_defaults
 from ..core.session_presence import WAKE_TASK, SessionBusy, note_stop, presence_for
 from .agent_runner import wake_message
+from .event_loop import shut_down_loop
 
 logger = logging.getLogger(__name__)
 
@@ -2685,20 +2686,10 @@ def _server_names(ctx: "_ChatContext") -> list:
 
 
 def _skill_registry(ctx: "_ChatContext"):
-    """The registry, scanned with the roots the CONFIG resolves to.
+    """The registry, scanned with the roots the agent's CONFIG resolves to."""
+    from agent_system.skills.registry import configured_skill_registry
 
-    Never a hardcoded path: ``skills.skill_dirs`` may use wildcards
-    (``skills/*/``) and the operator decides how deep that goes. Falling back
-    to the defaults only when nothing is configured mirrors the skills plugin.
-    """
-    from agent_system.skills import get_skill_registry
-    from agent_system.skills.registry import default_skill_dirs
-
-    system_config = getattr(ctx.agent, "system_config", None)
-    configured = list(getattr(getattr(system_config, "skills", None), "skill_dirs", []) or [])
-    registry = get_skill_registry()
-    registry.ensure_discovered(configured or list(default_skill_dirs()))
-    return registry
+    return configured_skill_registry(getattr(ctx.agent, "system_config", None))
 
 
 def _available_skills(ctx: "_ChatContext") -> list[str]:
@@ -3558,23 +3549,7 @@ def _close_own_loop(loop: asyncio.AbstractEventLoop) -> None:
             loop.run_until_complete(shutdown_tools())
         except Exception:
             logger.debug("MCP shutdown on the chat loop failed", exc_info=True)
-
-        # Mirror asyncio.run's teardown: background tasks spawned during
-        # the turns (e.g. the cancellation manager's timeout monitor) must
-        # be cancelled, or close() logs "Task was destroyed but it is
-        # pending" through a half-torn-down logging stack.
-        pending_tasks = asyncio.all_tasks(loop)
-        for task_obj in pending_tasks:
-            task_obj.cancel()
-        if pending_tasks:
-            loop.run_until_complete(
-                asyncio.gather(*pending_tasks, return_exceptions=True)
-            )
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        # Subprocess transports are torn down by the executor thread pool;
-        # without this the interpreter can outrun it and __del__ still
-        # lands on a closed loop.
-        loop.run_until_complete(loop.shutdown_default_executor())
+        shut_down_loop(loop)
     except Exception:
         logger.debug("Event loop teardown failed", exc_info=True)
     loop.close()

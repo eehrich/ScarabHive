@@ -18,6 +18,7 @@ import shlex
 from pathlib import Path
 from typing import Any, Optional
 
+from agent_system import app_state
 from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
@@ -125,13 +126,8 @@ class StateGraphServer(SchemaBasedToolServer):
                 found.append(runtime.registry)
         except Exception:
             pass
-        try:
-            import agent_system.app as app
-
-            if getattr(app, "_app_registry", None) is not None:
-                found.append(app._app_registry)
-        except Exception:
-            pass
+        if app_state.app_registry is not None:
+            found.append(app_state.app_registry)
         return found
 
     def _agent_names(self) -> list[str]:

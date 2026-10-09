@@ -370,7 +370,7 @@ def tool_config(tmp_path: Path, **extra: Any) -> Any:
 
 # ------------------------------------------------------------------ environment
 
-#: The root conftest's autouse ``reset_global_state`` imports ``agent_system.app``;
+#: A test that imports ``agent_system.app`` (to build the app) builds FastAPI routes;
 #: under Python 3.14 FastAPI 0.115 calls the deprecated ``asyncio.iscoroutinefunction``
 #: while building its routes, and ``filterwarnings = error`` turns that into a setup
 #: error for EVERY test of the repo on this machine. Ignored for exactly this message

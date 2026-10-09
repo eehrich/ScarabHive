@@ -13,6 +13,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
+from agent_system import app_state
 from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
 from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_tool_registry
@@ -838,8 +839,8 @@ async def update_session(
             # In turn with the session's saves (SessionService.save_lock): a
             # rename landing while one runs is written over by the copy that
             # save loaded -- a /title during a run's first save, or any later.
-            from agent_system.app import _session_service  # the app imports this module
-            async with (_session_service.save_lock(session_id) if _session_service is not None
+            session_service = app_state.session_service
+            async with (session_service.save_lock(session_id) if session_service is not None
                         else contextlib.nullcontext()):
                 # A record can be there before its run's first save (a
                 # sub-agent's parent record): the title that run carries would

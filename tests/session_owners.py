@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
+from agent_system import app_state
 from agent_system.auth.dependencies import get_optional_user
 from agent_system.auth.models import User, UserRole
 from agent_system.services.session_manager import SessionManager
@@ -21,7 +22,6 @@ def admin() -> User:
 
 
 def two_users(tmp_path, monkeypatch) -> None:
-    from agent_system import app as app_mod
 
     manager = SessionManager(storage_path=str(tmp_path / "sessions"))
     for user_id, session_id in (("alice", "s-alice"), ("bob", "s-bob")):
@@ -29,7 +29,7 @@ def two_users(tmp_path, monkeypatch) -> None:
                                                      agent_name="chat", llm_profile="p"))
         session["messages"] = [{"role": "user", "content": "hi"}]
         asyncio.run(manager.save_session(session))
-    monkeypatch.setattr(app_mod, "_session_service", SessionService(manager))
+    monkeypatch.setattr(app_state, "session_service", SessionService(manager))
 
 
 def viewed_by(app) -> dict:

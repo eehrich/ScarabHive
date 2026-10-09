@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
-from agent_system.skills import get_skill_registry
+from agent_system.skills import configured_skill_registry
 from agent_system.skills.registry import DEFAULT_ENTRY, TEXT_ENCODING
 from agent_system.utils.suggest import suggest_path
 
@@ -47,14 +47,7 @@ class SkillsServer(SchemaBasedToolServer):
         ``ensure_discovered`` only touches the filesystem when the roots
         changed, so repeated tool calls stay cheap.
         """
-        from agent_system.skills.registry import default_skill_dirs
-
-        configured = list(
-            getattr(getattr(self._system_config, "skills", None), "skill_dirs", []) or []
-        )
-        registry = get_skill_registry()
-        registry.ensure_discovered(configured or list(default_skill_dirs()))
-        return registry
+        return configured_skill_registry(self._system_config)
 
     async def list(self, params: dict[str, Any]) -> dict[str, Any]:
         """List skills (name + description); with ``name`` one skill in detail."""

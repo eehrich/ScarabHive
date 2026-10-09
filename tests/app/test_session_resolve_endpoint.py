@@ -21,6 +21,7 @@ from types import SimpleNamespace as NS
 import httpx
 import pytest
 
+from agent_system import app_state
 from agent_system.auth.security import create_access_token
 from agent_system.services.session_manager import SessionManager
 from live_accounts import signing_key, token_generation
@@ -326,14 +327,13 @@ async def test_a_title_during_the_first_save_is_not_written_over(api, account, h
     (named after the first message) over it, and the PATCH had said 200."""
     import asyncio
 
-    from agent_system import app as app_mod
     from agent_system.llm.models import ChatMessage
     from agent_system.services.session_service import SessionService
 
     app, manager = api
     agent, user = app.state.agent, account[1]
     service = SessionService(manager)
-    monkeypatch.setattr(app_mod, "_session_service", service)  # the one every run saves through
+    monkeypatch.setattr(app_state, "session_service", service)  # the one every run saves through
     tracker = agent._session_tracker
     tracker.set_session_metadata("s1", {"user_id": user, "agent_name": agent.name, "llm_profile": "p"})
     tracker.set_session_messages("s1", [ChatMessage(role="user", content="hallo")])
@@ -373,11 +373,10 @@ async def test_an_id_that_is_a_path_is_refused_before_any_lookup(api, headers, t
     """/chat/last_answer checks the id before the owner lookup, which builds a
     path from it: '../x' answered 403 for a file that exists there and 400 for
     one that does not -- whether a file exists, told to anyone signed in."""
-    from agent_system import app as app_mod
     from agent_system.services.session_service import SessionService
 
     app, manager = api
-    monkeypatch.setattr(app_mod, "_session_service", SessionService(manager))
+    monkeypatch.setattr(app_state, "session_service", SessionService(manager))
     await _titled(manager, "alice", "irgendwas", "s-alice")  # a user directory to walk
     (tmp_path / "outside.json").write_text('{"user_id": "somebody"}', encoding="utf-8")
 
