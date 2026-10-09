@@ -94,6 +94,26 @@
     return Boolean(listed) && kept;
   });
 
+  await check('a link to a channel (?channel=) shows it and opens its group; an unknown one says so, a malformed one is ignored', async () => {
+    await go('/plugins/debate_forum/?channel=3');
+    await until('the linked channel', () => text('#name') === '<img src=x onerror=parent.__xss=1> #3' && !$('#open').hidden);
+    await until('its group open', () => groupNamed('<b>Markup group</b>').open);
+    await autoOff();
+    const shown = channel(3).getAttribute('aria-current') === 'true' && groupNamed('Schema review').open && !groupNamed('Ungrouped').open;
+    groupNamed('<b>Markup group</b>').querySelector('summary').click();  // closed again for the checks after this
+    await sleep(100);
+    await go('/plugins/debate_forum/?channel=999');
+    await until('the unknown channel', () => text('#placeholder').startsWith('The channel could not be loaded'));
+    await until('the groups', () => all('.df-group').length === 3);
+    await autoOff();
+    const unknown = $('#open').hidden && !groupNamed('<b>Markup group</b>').open && !$('[aria-current="true"]');
+    await go('/plugins/debate_forum/?channel=abc');
+    await until('the groups', () => all('.df-group').length === 3);
+    await autoOff();
+    const ignored = text('#placeholder') === 'No channel chosen Choose a channel to read its debate.';
+    return shown && unknown && ignored;
+  });
+
   await check('the channel list keeps the width it was resized to across a reload, and a narrow panel still stacks it full width', async () => {
     const width = () => Math.round($('.df-sidebar').getBoundingClientRect().width);
     const before = width();
