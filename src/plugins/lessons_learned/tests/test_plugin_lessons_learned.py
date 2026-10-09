@@ -1217,12 +1217,12 @@ class TestWithoutAnEmbeddingModel:
 
     @pytest.fixture
     def no_model(self, monkeypatch):
-        from agent_system.utils import vector_store
+        from agent_system.utils.vector_store import embeddings
 
         def missing():
             raise RuntimeError("no embedding model")
 
-        monkeypatch.setattr(vector_store, "get_embedding_model", missing)
+        monkeypatch.setattr(embeddings, "get_embedding_model", missing)
 
     async def test_the_duplicate_check_says_it_did_not_run(self, server, no_model):
         result = await server.check_duplicate("a", "Title", "Content")
@@ -1397,12 +1397,12 @@ class TestTheIndexHeals:
 
     @staticmethod
     def break_model(monkeypatch):
-        from agent_system.utils import vector_store
+        from agent_system.utils.vector_store import embeddings
 
         def missing():
             raise RuntimeError("no embedding model")
 
-        monkeypatch.setattr(vector_store, "get_embedding_model", missing)
+        monkeypatch.setattr(embeddings, "get_embedding_model", missing)
 
     async def test_a_lesson_stored_without_the_model_is_found_once_it_is_back(self, server, monkeypatch):
         self.break_model(monkeypatch)

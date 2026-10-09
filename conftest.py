@@ -969,9 +969,10 @@ def _reset_all_global_state():
     
     # Reset vector store backend cache
     try:
-        from agent_system.utils import vector_store as vector_store_module
-        vector_store_module._VECTOR_BACKEND = None
-        vector_store_module._ONNX_PROVIDERS = None
+        from agent_system.utils.vector_store import base as vector_store_base
+        from agent_system.utils.vector_store import embeddings as vector_store_embeddings
+        vector_store_base._VECTOR_BACKEND = None
+        vector_store_embeddings._ONNX_PROVIDERS = None
     except ImportError:
         pass
 
