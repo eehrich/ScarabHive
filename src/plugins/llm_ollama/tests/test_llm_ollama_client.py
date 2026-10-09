@@ -735,7 +735,7 @@ class TestOllamaCancelAndErrorShape:
 
     @pytest.mark.asyncio
     async def test_a_failed_stream_reports_an_error_the_server_can_read(self):
-        """agent_system/servers/agent/server.py reads error.message and error.type."""
+        """agent_system/servers/agent/mixins/llm_loop.py reads error.message and error.type."""
         with patch("httpx.AsyncClient") as mock_client_class:
             client = OllamaNativeAsyncClient(model="llama2")
             mock_client_class.side_effect = ValueError("boom")

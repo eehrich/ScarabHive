@@ -129,7 +129,7 @@ async def on_post_llm_call(self, context: HookContext) -> HookResult:
 ### LLM_PROGRESS
 
 **Trigger:** During a streaming LLM call, every 2000 characters of reasoning
-(`_REASONING_PROGRESS_TICK` in `server.py`)
+(`_REASONING_PROGRESS_TICK` in `servers/agent/mixins/llm_loop.py`)
 **Use Cases:** Observing a call that is stuck thinking
 **Can Modify:** nothing — the call is already running
 

@@ -1008,7 +1008,7 @@ Where | What
 @{tt}config/@{utt} | @{tt}models/@{utt} (the Pydantic models, root @{tt}AgentSystemConfig@{utt}), @{tt}settings.py@{utt} (@{tt}load_settings@{utt}, @{tt}get_tool_server_config@{utt}) with its steps beside it: @{tt}layers.py@{utt} (includes, the local layer), @{tt}environment.py@{utt} (secrets files, @{tt}${NAME}@{utt}), @{tt}merging.py@{utt}, @{tt}inheritance.py@{utt}
 @{tt}plugins/@{utt} | discovery, manifests (@{tt}plugin.toml@{utt}), @{tt}schema.yaml@{utt} loading, the tool and web adapters, the schema router
 @{tt}tools/@{utt} | tool server base classes (@{tt}SchemaBasedToolServer@{utt}), @{tt}ToolServerRegistry@{utt}, status lines, the tool cache
-@{tt}servers/agent/@{utt} | the @{tt}Agent@{utt} and its step loop (@{tt}server.py@{utt}, @{tt}run_events@{utt}), prompt strategies, tool discovery and the allowlist, the components for hooks, tool execution, session tracking and status
+@{tt}servers/agent/@{utt} | the @{tt}Agent@{utt} (@{tt}server.py@{utt}; its responsibilities one mixin each in @{tt}mixins/@{utt}: @{tt}run_events@{utt} in @{tt}run.py@{utt}, the step loop in @{tt}llm_loop.py@{utt}), prompt strategies, tool discovery and the allowlist, the components for hooks, tool execution, session tracking and status
 @{tt}hooks/@{utt} | @{tt}HookType@{utt}, @{tt}SchemaBasedPluginHook@{utt}, @{tt}HookRegistry@{utt}
 @{tt}llm/@{utt} | @{tt}ChatMessage@{utt} and the other models, the provider registry, @{tt}create_llm_from_profile@{utt} (@{tt}factory.py@{utt}), pricing, token counting
 @{tt}services/@{utt} | session manager and service, agent service, configuration service and reload, the session archive, background jobs, system status

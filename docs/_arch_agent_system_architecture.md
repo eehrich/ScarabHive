@@ -219,6 +219,11 @@ class AgentService:
 
 #### 4.2.3 Agent (`servers/agent/server.py`)
 
+The class is assembled from one mixin per responsibility (`servers/agent/mixins/`: the run and
+its phases, the step loop, LLM selection, prompts, usable tools, live state, persistence, the
+tool session, access); `server.py` keeps the constructor, the config reload and the ToolServer
+interface. See `_arch_agent_architecture.md`, "Component Structure".
+
 **Responsibilities:**
 - Multi-step reasoning loop
 - Tool discovery and execution

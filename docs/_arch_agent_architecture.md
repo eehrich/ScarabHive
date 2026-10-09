@@ -31,7 +31,8 @@ ToolServer (base protocol implementation)
 
 ### `Agent` - Core Agent Logic
 
-**Location:** `src/agent_system/servers/agent/server.py`
+**Location:** `src/agent_system/servers/agent/server.py`, its responsibilities one mixin each in
+`src/agent_system/servers/agent/mixins/` (see [Component Structure](#component-structure))
 
 **Purpose:** Provides core functionality for intelligent agents:
 - LLM integration (conversation management, streaming)
@@ -682,7 +683,19 @@ The `Agent` class has been refactored into a modular component-based architectur
 
 ```
 src/agent_system/servers/agent/
-├── server.py (core agent orchestration: request lifecycle, LLM loop, fallback chain)
+├── server.py (Agent: constructor, config reload, ToolServer interface; re-exports the module-level API)
+├── refusals.py (the error_types a run or a call as a tool is refused with: SESSION_LOCKED, AGENT_ROLE_GATE, ...)
+├── mixins/ (Agent's responsibilities, one mixin each)
+│   ├── run.py (run_events, the run's entry; _run_events, which drives the three phases; session presence)
+│   ├── run_phases.py (Phase 1 _initialize_request_and_conversation, Phase 3 _finalize_request; ConversationContext)
+│   ├── llm_loop.py (Phase 2: the step loop _execute_llm_loop, fallback chain, the LLM call of a step)
+│   ├── llm_selection.py (fallback, escalation and caller clients; stuck escalator, tool-call loop detector)
+│   ├── prompts.py (system prompt rendering; step-budget, output-cap and structured-output notes)
+│   ├── usable_tools.py (tool discovery, the LLM schemas, programmatic dispatch_tool_call)
+│   ├── live_state.py (cancel, mid-run messages, the per-session live state readers see)
+│   ├── persistence.py (tracker and disk saves of a session, checkpoint loop)
+│   ├── tool_session.py (the session an agent called as a tool runs on, tool_session_id)
+│   └── access.py (role gate metadata.min_role, the user a session is held for)
 ├── schema_based.py (SchemaBasedAgent - schema.yaml tool loading)
 ├── components/
 │   ├── session_tracking.py (session & message management, session locks, compaction marker)
@@ -701,6 +714,24 @@ src/agent_system/servers/agent/
 ├── escalation.py (stuck-triggered auto-escalation to advanced profile)
 └── result_utils.py (result extraction & formatting)
 ```
+
+### Mixins of `Agent`
+
+`Agent` (`server.py`) is `class Agent(RunMixin, RunPhasesMixin, LLMLoopMixin, LLMSelectionMixin,
+PromptsMixin, UsableToolsMixin, LiveStateMixin, PersistenceMixin, ToolSessionMixin, AccessMixin,
+ToolServer)`. The split is by responsibility, and it is mixins rather than components on purpose:
+every method is part of the class's contract -- subclasses override them (stategraph's `MachineAgent`
+overrides `run_events` and `call`), plugins call private ones (`BasicAgent` calls
+`_list_usable_tools_with_details`, the sub-agent manager `_presence_hold`), tests patch them on the class
+or the instance -- and they all work on the instance state `Agent.__init__` sets up. Each method keeps its
+name and is found on `Agent` as before; the module-level API (`SESSION_LOCKED`, `refused_before_the_run`,
+`tool_session_id`, `TOOL_SESSION_ID_MAX`, `ConversationContext`, `FORMAT_NOTE` ...) is still imported from
+`servers/agent/server.py`.
+
+A mixin never imports `server.py` at run time; its methods annotate `self` as `Agent` for the type
+checker only, and its docstring names the attributes of `Agent.__init__` it relies on. A module-level
+name a mixin looks up is patched in that mixin's module: `status_scope` in `mixins/run.py`,
+`_REASONING_PROGRESS_TICK` in `mixins/llm_loop.py`.
 
 ### Core Components
 

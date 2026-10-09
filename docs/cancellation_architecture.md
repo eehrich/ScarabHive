@@ -2,7 +2,7 @@
 
 **Status**: Active Design  
 **Last Updated**: October 24, 2025  
-**Component**: `src/agent_system/servers/agent/server.py`, `src/agent_system/core/cancellation.py`
+**Component**: `src/agent_system/servers/agent/server.py` (with its mixins in `servers/agent/mixins/`), `src/agent_system/core/cancellation.py`
 
 ---
 
@@ -46,7 +46,7 @@ async def long_running_tool(params, cancellation_token):
 
 ### 2. Per-Agent Event System (Request-Level)
 
-**Location**: `src/agent_system/servers/agent/server.py` 
+**Location**: `src/agent_system/servers/agent/mixins/live_state.py` (`cancel_request`, `_is_cancelled`), checked by the step loop in `mixins/llm_loop.py`
 
 **Purpose**: Immediate termination of agent's conversation loop
 
@@ -163,6 +163,7 @@ Potential unification approach (if needed):
 
 **Related Files**:
 - `src/agent_system/core/cancellation.py` - CancellationManager implementation
-- `src/agent_system/servers/agent/server.py` - Agent cancel_request(), _is_cancelled(), _run_events()
+- `src/agent_system/servers/agent/mixins/live_state.py` - Agent cancel_request(), _is_cancelled()
+- `src/agent_system/servers/agent/mixins/run.py` - Agent _run_events(); the step loop's checks in `mixins/llm_loop.py`
 - `tests/other/test_cancellation_system.py` - Unit tests
 - `tests/app/test_webui_cancellation.py` - Integration tests
