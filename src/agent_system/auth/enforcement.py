@@ -42,6 +42,83 @@ ROLE_HIERARCHY = {
 }
 
 
+#: The methods a rule or an allowed endpoint may name in front of its path.
+_PATTERN_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "*")
+
+
+def split_method_prefix(pattern: str) -> tuple[str, str]:
+    """``(method, path_pattern)`` of an endpoint pattern such as "POST /run".
+
+    Without a leading method this reads as ``("*", pattern)``; so does a
+    leading word that is not one of _PATTERN_METHODS.
+    """
+    method = "*"
+    path_pattern = pattern
+
+    parts = pattern.split(" ", 1)
+    if len(parts) == 2 and parts[0].upper() in _PATTERN_METHODS:
+        method = parts[0].upper()
+        path_pattern = parts[1]
+    return method, path_pattern
+
+
+def compile_endpoint_rules(
+    rules: "list[EndpointSecurityRule]",
+) -> list[tuple[re.Pattern, str, "EndpointSecurityRule"]]:
+    """Compile endpoint patterns into regex for efficient matching.
+
+    One ``(regex, method, rule)`` per rule, in config order. Both readers of
+    ``endpoint_security.rules`` -- EndpointSecurityEnforcer here and the
+    EndpointSecurityMiddleware in auth/middleware.py -- compile through this,
+    so the two layers cannot read one rule two ways again.
+    """
+    compiled_rules: list[tuple[re.Pattern, str, "EndpointSecurityRule"]] = []
+
+    for rule in rules:
+        pattern = rule.pattern.strip()
+
+        # Parse method prefix if present (e.g., "POST /run")
+        method, path_pattern = split_method_prefix(pattern)
+
+        # Convert glob pattern to regex
+        regex_pattern = fnmatch.translate(path_pattern)
+
+        # Only remove \Z for wildcard patterns (to allow prefix matching).
+        # For exact patterns keep \Z — unconditional removal degraded
+        # every exact rule to a prefix match ("GET /" matched ALL paths).
+        # auth/middleware.py fixed this first; the enforcer had its own copy
+        # of this loop until both compiled through here.
+        if '*' in path_pattern or '?' in path_pattern:
+            regex_pattern = regex_pattern.replace(r'\Z', '')
+
+        try:
+            compiled = re.compile(regex_pattern, re.IGNORECASE)
+            compiled_rules.append((compiled, method, rule))
+        except re.error as e:
+            logger.warning(f"Invalid pattern '{pattern}': {e}")
+    return compiled_rules
+
+
+def first_matching_rule(
+    compiled_rules: list[tuple[re.Pattern, str, "EndpointSecurityRule"]],
+    method: str,
+    path: str,
+) -> Optional["EndpointSecurityRule"]:
+    """The first rule, in config order, whose method and path match; None if none does.
+
+    ``method`` is expected upper-case.
+    """
+    for compiled_pattern, rule_method, rule in compiled_rules:
+        # Check method match
+        if rule_method != "*" and rule_method != method:
+            continue
+
+        # Check path match
+        if compiled_pattern.match(path):
+            return rule
+    return None
+
+
 @dataclass
 class EndpointPolicy:
     """Security policy for an endpoint."""
@@ -135,35 +212,7 @@ class EndpointSecurityEnforcer:
     
     def _compile_patterns(self) -> None:
         """Compile endpoint patterns into regex for efficient matching."""
-        self._compiled_patterns = []
-        
-        for rule in self.config.endpoint_security.rules:
-            pattern = rule.pattern.strip()
-            
-            # Parse method prefix if present (e.g., "POST /run")
-            method = "*"
-            path_pattern = pattern
-            
-            parts = pattern.split(" ", 1)
-            if len(parts) == 2 and parts[0].upper() in ("GET", "POST", "PUT", "DELETE", "PATCH", "*"):
-                method = parts[0].upper()
-                path_pattern = parts[1]
-            
-            # Convert glob pattern to regex
-            regex_pattern = fnmatch.translate(path_pattern)
-
-            # Only remove \Z for wildcard patterns (to allow prefix matching).
-            # For exact patterns keep \Z — unconditional removal degraded
-            # every exact rule to a prefix match ("GET /" matched ALL paths).
-            # Mirrors auth/middleware.py, which fixed this first.
-            if '*' in path_pattern or '?' in path_pattern:
-                regex_pattern = regex_pattern.replace(r'\Z', '')
-            
-            try:
-                compiled = re.compile(regex_pattern, re.IGNORECASE)
-                self._compiled_patterns.append((compiled, method, rule))
-            except re.error as e:
-                logger.warning(f"Invalid pattern '{pattern}': {e}")
+        self._compiled_patterns = compile_endpoint_rules(self.config.endpoint_security.rules)
     
     def get_endpoint_policy(self, method: str, path: str) -> EndpointPolicy:
         """Get the security policy for an endpoint.
@@ -187,20 +236,15 @@ class EndpointSecurityEnforcer:
         method = method.upper()
         
         # Check configured rules in order
-        for compiled_pattern, rule_method, rule in self._compiled_patterns:
-            # Check method match
-            if rule_method != "*" and rule_method != method:
-                continue
-            
-            # Check path match
-            if compiled_pattern.match(path):
-                requires_auth = rule.policy == "require_auth"
-                return EndpointPolicy(
-                    requires_auth=requires_auth,
-                    min_role=rule.min_role if requires_auth else None,
-                    rule_description=rule.description,
-                    matched_pattern=rule.pattern,
-                )
+        rule = first_matching_rule(self._compiled_patterns, method, path)
+        if rule is not None:
+            requires_auth = rule.policy == "require_auth"
+            return EndpointPolicy(
+                requires_auth=requires_auth,
+                min_role=rule.min_role if requires_auth else None,
+                rule_description=rule.description,
+                matched_pattern=rule.pattern,
+            )
         
         # No rule matched, use default policy
         default_requires_auth = self.config.endpoint_security.default_policy == "require_auth"
@@ -233,13 +277,7 @@ class EndpointSecurityEnforcer:
             allowed = allowed.strip()
             
             # Parse method prefix
-            allowed_method = "*"
-            allowed_path = allowed
-            
-            parts = allowed.split(" ", 1)
-            if len(parts) == 2 and parts[0].upper() in ("GET", "POST", "PUT", "DELETE", "PATCH", "*"):
-                allowed_method = parts[0].upper()
-                allowed_path = parts[1]
+            allowed_method, allowed_path = split_method_prefix(allowed)
             
             # Check method
             if allowed_method != "*" and allowed_method != method:

@@ -21,20 +21,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send, Message
 
+from agent_system.auth.enforcement import (
+    ROLE_HIERARCHY,
+    compile_endpoint_rules,
+    first_matching_rule,
+)
 from agent_system.utils.logging import KeyInPathFilter, loggable_path
 
 if TYPE_CHECKING:
     from agent_system.config import AuthConfig
 
 logger = logging.getLogger(__name__)
-
-
-# Role hierarchy: higher value = more permissions
-ROLE_HIERARCHY = {
-    "guest": 1,
-    "user": 2,
-    "admin": 3,
-}
 
 
 class EndpointSecurityMiddleware:
@@ -76,36 +73,7 @@ class EndpointSecurityMiddleware:
     
     def _compile_patterns(self) -> None:
         """Compile endpoint patterns into regex for efficient matching."""
-        import fnmatch
-        import re
-        
-        self._compiled_patterns = []
-        
-        for rule in self.auth_config.endpoint_security.rules:
-            pattern = rule.pattern.strip()
-            
-            # Parse method prefix if present (e.g., "POST /run")
-            method = "*"
-            path_pattern = pattern
-            
-            parts = pattern.split(" ", 1)
-            if len(parts) == 2 and parts[0].upper() in ("GET", "POST", "PUT", "DELETE", "PATCH", "*"):
-                method = parts[0].upper()
-                path_pattern = parts[1]
-            
-            # Convert glob pattern to regex
-            regex_pattern = fnmatch.translate(path_pattern)
-            
-            # Only remove \Z for wildcard patterns (to allow prefix matching)
-            # For exact matches (no wildcards), keep \Z for exact match
-            if '*' in path_pattern or '?' in path_pattern:
-                regex_pattern = regex_pattern.replace(r'\Z', '')
-            
-            try:
-                compiled = re.compile(regex_pattern, re.IGNORECASE)
-                self._compiled_patterns.append((compiled, method, rule))
-            except re.error as e:
-                logger.warning(f"Invalid pattern '{pattern}': {e}")
+        self._compiled_patterns = compile_endpoint_rules(self.auth_config.endpoint_security.rules)
     
     def _normalize_path(self, path: str) -> str:
         """Normalize path to prevent traversal attacks.
@@ -157,14 +125,11 @@ class EndpointSecurityMiddleware:
         path = self._normalize_path(path)
         
         # Check configured rules in order
-        for compiled_pattern, rule_method, rule in self._compiled_patterns:
-            if rule_method != "*" and rule_method != method:
-                continue
-            
-            if compiled_pattern.match(path):
-                requires_auth = rule.policy == "require_auth"
-                min_role = rule.min_role if requires_auth else None
-                return (requires_auth, min_role, rule.pattern)
+        rule = first_matching_rule(self._compiled_patterns, method, path)
+        if rule is not None:
+            requires_auth = rule.policy == "require_auth"
+            min_role = rule.min_role if requires_auth else None
+            return (requires_auth, min_role, rule.pattern)
         
         # No rule matched, use default policy
         default_requires_auth = self.auth_config.endpoint_security.default_policy == "require_auth"
