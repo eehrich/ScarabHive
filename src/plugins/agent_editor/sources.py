@@ -2,7 +2,6 @@
 state of the running app. Everything is read from the registries the app itself uses."""
 from __future__ import annotations
 
-import fnmatch
 from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
@@ -13,7 +12,8 @@ from agent_system.runtime import VISIBILITIES, ServerDecl
 from agent_system.servers.agent import server as agent_server
 from agent_system.servers.agent.components.server_resolution import resolve_registry_server
 from agent_system.servers.agent.tool_discovery import ToolDiscoveryService
-from agent_system.servers.agent.tool_schema_builder import ToolSchemaBuilder, server_matches_patterns, tool_matches_patterns
+from agent_system.servers.agent.tool_schema_builder import (ToolSchemaBuilder, external_reach, server_matches_patterns,
+                                                             tool_matches_patterns)
 from agent_system.skills.registry import SkillRegistry, default_skill_dirs
 
 from .store import MANAGER_TYPE, PROMPT_SUFFIXES, Snapshot, Store, catalog_for, resolve_with
@@ -285,30 +285,6 @@ def problems(store: Store, snap: Snapshot, name: str, skill_names: set[str],
         found += [f"External server is off: {pattern}" for pattern, on in result["external"].items()
                   if not on and pattern in result["allowed"]]
     return found
-
-
-def external_reach(pattern: str, servers: dict[str, bool]) -> Optional[bool]:
-    """Whether a pattern can grant a tool of a server in `servers` ({name: enabled}): None when it cannot, else
-    whether one of the servers it can reach is enabled.
-
-    An external tool is `server.tool` to discovery and `server.tool` + `server_tool` to the tool filter
-    (tool_schema_builder). Measured against both: only the exact dotted name and a pattern ending in `*` pass both --
-    `*.echo` and `everything.ech?` pass discovery and die in the filter, a `/` never matches at all. Which tools a
-    server has is unknown here, so a pattern that ends in `*` counts as reaching every server its head can match
-    (fnmatch, as the runtime matches, case included).
-    """
-    if "/" in pattern:
-        return None
-    if not any(character in pattern for character in "*?["):
-        head, dot, tool = pattern.partition(".")
-        return servers.get(head) if dot and tool else None
-    if not pattern.endswith("*"):
-        return None
-    head, dot, _ = pattern.partition(".")
-    # with a dot the head faces the server name, without one the whole pattern faces `server.` and the `*` takes the rest
-    reached = [on for name, on in servers.items()
-               if (fnmatch.fnmatch(name, head) if dot else fnmatch.fnmatch(f"{name}.", pattern))]
-    return any(reached) if reached else None
 
 
 def effective_tools(catalog: list[dict], allowed: list[str], blocked: list[str],
