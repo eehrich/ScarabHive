@@ -54,6 +54,25 @@ SUPPORTED_TEXT_EXTENSIONS = {
 }
 
 
+def _existing_file(file_path: Path | str, error: type[Exception], kind: str) -> Path:
+    """``file_path`` as a Path, once it names an existing regular file.
+
+    The first check of validate_image_file, validate_audio_file and
+    validate_text_file: ``error`` is the caller's exception class, ``kind``
+    starts its "<kind> file not found" message.
+    """
+    # Convert string to Path if needed
+    if isinstance(file_path, str):
+        file_path = Path(file_path)
+
+    if not file_path.exists():
+        raise error(f"{kind} file not found: {file_path}")
+
+    if not file_path.is_file():
+        raise error(f"Not a file: {file_path}")
+    return file_path
+
+
 def validate_image_file(file_path: Path | str) -> tuple[str, tuple[int, int]]:
     """
     Validate that a file is a valid image.
@@ -68,15 +87,7 @@ def validate_image_file(file_path: Path | str) -> tuple[str, tuple[int, int]]:
     Raises:
         ImageProcessingError: If file doesn't exist, isn't a file, or can't be opened as image
     """
-    # Convert string to Path if needed
-    if isinstance(file_path, str):
-        file_path = Path(file_path)
-    
-    if not file_path.exists():
-        raise ImageProcessingError(f"Image file not found: {file_path}")
-    
-    if not file_path.is_file():
-        raise ImageProcessingError(f"Not a file: {file_path}")
+    file_path = _existing_file(file_path, ImageProcessingError, "Image")
     
     try:
         with PILImage.open(file_path) as img:
@@ -217,14 +228,7 @@ def validate_audio_file(file_path: Path | str) -> tuple[str, int]:
     Raises:
         AudioProcessingError: If file doesn't exist, isn't a file, or isn't a supported audio format
     """
-    if isinstance(file_path, str):
-        file_path = Path(file_path)
-    
-    if not file_path.exists():
-        raise AudioProcessingError(f"Audio file not found: {file_path}")
-    
-    if not file_path.is_file():
-        raise AudioProcessingError(f"Not a file: {file_path}")
+    file_path = _existing_file(file_path, AudioProcessingError, "Audio")
     
     # Check extension
     ext = file_path.suffix.lower().lstrip('.')
@@ -321,14 +325,7 @@ def validate_text_file(file_path: Path | str) -> tuple[str, int]:
     Raises:
         TextFileProcessingError: If file doesn't exist, isn't a file, or isn't a supported text format
     """
-    if isinstance(file_path, str):
-        file_path = Path(file_path)
-    
-    if not file_path.exists():
-        raise TextFileProcessingError(f"Text file not found: {file_path}")
-    
-    if not file_path.is_file():
-        raise TextFileProcessingError(f"Not a file: {file_path}")
+    file_path = _existing_file(file_path, TextFileProcessingError, "Text")
     
     # Check extension
     ext = file_path.suffix.lower()
