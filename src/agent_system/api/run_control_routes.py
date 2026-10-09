@@ -22,6 +22,7 @@ from agent_system.api.session_writes import (
     session_agent_name,
     settling_agent,
 )
+from agent_system.auth.session_access import viewer
 from agent_system.core.request_context import get_request_user, request_user_map
 from agent_system.services.background_job_manager import JobStatus, get_background_job_manager
 from agent_system.utils.id import short_id
@@ -225,7 +226,7 @@ async def append_event(
     # SECURITY: Enforce endpoint authentication
     # ========================================
     current_user = await ctx.enforce_endpoint_security(request)
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
 
     body = await parse_json_body(request)
 
@@ -307,7 +308,7 @@ async def append_to_session_endpoint(session_id: str, request: Request,
     # SECURITY: Enforce endpoint authentication
     # ========================================
     current_user = await ctx.enforce_endpoint_security(request)
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
 
     body = await parse_json_body(request)
     try:

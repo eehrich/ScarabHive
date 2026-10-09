@@ -30,6 +30,7 @@ from agent_system.api.session_writes import (
     session_record,
     settling_agent,
 )
+from agent_system.auth.session_access import viewer
 from agent_system.core.session_presence import presence_for
 
 router = APIRouter()
@@ -259,7 +260,7 @@ async def chat_vars(request: Request, ctx: AppContext = Depends(app_context)):
     if tracker is None:
         raise HTTPException(status_code=404, detail="No such agent")
     await ctx.verify_session_owner(session_id, current_user, tracker)
-    owner = current_user.username if current_user else "anonymous"
+    owner = viewer(current_user)
     return {"session_id": session_id,
             "vars": await _effective_vars(tracker, owner, session_id)}
 
@@ -294,7 +295,7 @@ async def chat_vars_update(request: Request, ctx: AppContext = Depends(app_conte
     await ctx.verify_session_owner(session_id, current_user, tracker)
 
     parsed = parse_vars(payload)
-    owner = current_user.username if current_user else "anonymous"
+    owner = viewer(current_user)
     # The persisted set has to be in the base, or an unset computed from an
     # empty tracker would persist an empty set over a full file.
     current = await _effective_vars(tracker, owner, session_id)
@@ -420,7 +421,7 @@ async def chat_undo(request: Request, force: bool = Query(default=False),
     from agent_system.chat_actions import message_text, message_role
 
     current_user = await ctx.enforce_endpoint_security(request)
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     body = await _json_object(request)
 
     session_id = body.get("session_id")
@@ -465,7 +466,7 @@ async def chat_checkpoints(request: Request, session_id: str = Query(...),
     record has it, which is what the browser shows.
     """
     current_user = await ctx.enforce_endpoint_security(request)
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     rewinder = file_rewinder_or_503()
     await _session_agent_for(ctx, request, session_id, user_id, agent_name, current_user)
     record = await session_record(session_id, user_id)
@@ -488,7 +489,7 @@ async def chat_rewind(request: Request, force: bool = Query(default=False),
     a number that names no checkpoint.
     """
     current_user = await ctx.enforce_endpoint_security(request)
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     body = await parse_json_body(request)
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Body must be a JSON object")
@@ -532,7 +533,7 @@ async def chat_context(request: Request, session_id: str = Query(...),
         profile_context_window)
 
     current_user = await ctx.enforce_endpoint_security(request)
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     # One read: the agent it ran with, the profile its next call goes out
     # on, and the conversation itself all live in the same record.
     record = await session_record(session_id, user_id)
@@ -585,7 +586,7 @@ async def _chat_record(ctx: AppContext, request: Request, session_id: str) -> di
     from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
 
     current_user = await ctx.enforce_endpoint_security(request)
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     if not app_state.session_service or not app_state.session_service.session_manager:
         raise HTTPException(status_code=503, detail="No session storage")
     try:

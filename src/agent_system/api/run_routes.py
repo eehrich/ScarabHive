@@ -35,6 +35,7 @@ from agent_system.api.run_start import (
     validate_client_request_id,
 )
 from agent_system.api.session_writes import claim_session, hold_fresh_session, let_go
+from agent_system.auth.session_access import viewer
 from agent_system.core.request_context import (
     register_request_user,
     release_request_user_tree,
@@ -137,7 +138,7 @@ async def run(
     ctx.validate_llm_access(current_user, is_llm_request=True)
 
     # Determine user_id for session management
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
 
     # Try to parse task and files from the request in a flexible way
     task = None

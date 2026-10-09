@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from agent_system import app_state
+from agent_system.auth.session_access import viewer
 from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
 from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_tool_registry
@@ -262,7 +263,7 @@ async def create_session(
     # session_manager injected via dependency
 
     # Determine user_id: use username if authenticated, otherwise "anonymous"
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     # The session's user is who will run its agent: the account, or "anonymous".
     _refuse_gated_agent(http_request, request.agent_name,
                         current_user if current_user is not None else user_id)
@@ -294,7 +295,7 @@ async def list_sessions(
     # session_manager injected via dependency
 
     # Determine user_id: use username if authenticated, otherwise "anonymous"
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
 
     try:
         sessions = await session_manager.list_sessions(user_id)
@@ -364,7 +365,7 @@ async def list_sessions_hierarchy(
     which meant reading every per-parent sub-index and serialising tens of
     thousands of nodes that stay hidden until a node is expanded.
     """
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     try:
         roots = await session_manager.list_root_sessions(user_id)
         return {
@@ -491,7 +492,7 @@ async def list_active_sessions(
     wanted = [s for s in (i.strip() for i in ids.split(",")) if s][:_ACTIVE_IDS_LIMIT]
     if not wanted:
         return {"active": {}}
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     try:
         active = await get_background_job_manager().active_sessions()
     except Exception as e:
@@ -526,7 +527,7 @@ async def list_session_children(
     session_manager=Depends(get_session_manager),
 ):
     """Direct sub-sessions of one parent — reads exactly that parent's sub-index."""
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     try:
         children = await session_manager.list_child_sessions(user_id, session_id)
         return {"sessions": [_session_node(s) for s in children], "count": len(children)}
@@ -550,7 +551,7 @@ async def resolve_session(
     in the browser finds a session by the name its person gave it exactly as
     the terminal does.
     """
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     others: List[str] = []
     found = await session_manager.resolve_session_ref(user_id, ref, others=others)
     if not found:
@@ -582,7 +583,7 @@ async def list_sessions_for_chat(
     if complaint is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail=f"count must be a number or 'all', got {complaint!r}")
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
     sessions = await session_manager.list_root_sessions(user_id)
     shown = None if everything else in_chat_selector(
         getattr(request.app.state, "runtime", None), keep=(agent,))
@@ -623,7 +624,7 @@ async def get_session(
     same session at a different URL and that is fine -- it opens nothing.
     """
     # Determine user_id: use username if authenticated, otherwise "anonymous"
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
 
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
@@ -829,7 +830,7 @@ async def update_session(
     # session_manager injected via dependency
 
     # Determine user_id: use username if authenticated, otherwise "anonymous"
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
 
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
@@ -910,7 +911,7 @@ async def delete_session(
     # session_manager injected via dependency
 
     # Determine user_id: use username if authenticated, otherwise "anonymous"
-    user_id = current_user.username if current_user else "anonymous"
+    user_id = viewer(current_user)
 
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError

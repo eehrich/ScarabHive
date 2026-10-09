@@ -23,7 +23,8 @@ from agent_system.auth.models import User, UserRole
 
 
 def viewer(current_user: Optional[User]) -> str:
-    """Whose sessions a request may see: the signed-in user, else "anonymous" -- the rule of /sessions."""
+    """The user a request acts as: the signed-in user, else "anonymous" -- whose sessions it
+    sees (the rule of /sessions) and whose runs, chats and appends it makes."""
     return current_user.username if current_user else "anonymous"
 
 
