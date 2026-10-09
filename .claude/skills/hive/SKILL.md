@@ -40,11 +40,11 @@ Name of the System is ScarabHive
 | `services/` | Business logic services |
 | `hooks/` | Hook system for lifecycle events |
 | `auth/` | Authentication & user management |
-| `cli_utils/` | CLI helper utilities |
+| `cli_utils/` | CLI helpers; agent-cli's parser (`cli_parser.py`) and commands (`commands/`) |
 | `servers/` | Server implementations |
 | `utils/` | Shared utilities |
 | `app.py` | FastAPI application factory |
-| `agent_cli.py` | CLI entry point |
+| `agent_cli.py` | CLI entry point (parse, load config, dispatch) |
 | `agent_run.py` | Agent run execution logic |
 
 ### Plugin Categories (`src/plugins/`)

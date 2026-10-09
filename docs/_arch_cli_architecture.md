@@ -29,7 +29,10 @@ have been removed; `allow/block` had rewritten `mcp_servers.yaml` via
 
 ## 2. Argument Parsing (`agent_cli.main`)
 
-Three stages, each for a measured reason:
+`agent_cli.py` holds the entry point only: it reads the line, loads the
+config and hands over to the command. The two parsers and `--llm-params` are
+built in `cli_utils/cli_parser.py`, next to each other because their pitfall
+(below) is a pair. Three stages, each for a measured reason:
 
 1. **Pre-parser** (`parse_known_args`): picks up the global options (`--config`,
    `-v`, `--color`, `--no-color`, `--show-tools`, `--no-status`, `--raw`) from
@@ -60,6 +63,10 @@ subcommands.
 
 ## 3. Subcommands and What They Start Up
 
+Each command lives in `cli_utils/commands/`: `run.py` (`run` and `chat`),
+`plugins.py`, `mcp.py`, `hooks.py`, `reload.py`; `users` is the Typer app in
+`cli_utils/users.py`.
+
 | Subcommand | Bootstrap | Note |
 |------------|-----------|---------|
 | `plugins` | only `discover_all_plugins` over `plugins.plugin_dirs` | `enabled` raw from `plugins.servers` — as `ToolServerIntegration` does when registering; the type follows the `type:` chain down to the plugin. A plugin counts as enabled if one of its instances is |
@@ -76,7 +83,8 @@ and `ToolService.list_tools`; the API serves both services as well.
 
 ## 4. Flow of `run` and `chat`
 
-In this order, all in `main`:
+In this order, in `cli_utils/commands/run.py`: `run_agent_command` calls one
+function per step, each with what it reads and what it hands on.
 
 1. **Logging** into a role-specific file (`logging.file_cli`, otherwise
    `<logfile>-cli.log`), so that CLI and API do not write to the same file.
@@ -146,7 +154,8 @@ In this order, all in `main`:
 9. **Open the session** via `SessionService.open_for_run`, like `/run` and
    agent-run: a saved one is restored, a new one starts with
    the `template_vars` of the agent config; `--vars` on top.
-10. **Run**: `chat` hands over to `cli_utils/chat.py:run_chat_loop`. `--raw` and
+10. **Run**: `chat` hands over to `cli_utils/chat.py:run_chat_loop`. The
+    one-shot run is `cli_utils/commands/one_shot.py`: `--raw` and
     stream mode both collect via `collect_final_result`. In
     stream mode, `on_event` shows tool calls (`--show-tools`),
     the thinking (gray), errors (`ERROR:`) and the answer as soon as they arrive —
@@ -175,12 +184,19 @@ stderr.
 |-------|--------|
 | `common.py` | color mode (`set_color_mode`, `supports_color`), Windows VT mode, status lines, `show_answer` (answer as Markdown with colors, raw into a pipe), `render_with_rich` |
 | `chat.py` | the REPL: renderer, input/keyboard, slash commands, usage totals |
+| `cli_parser.py` | agent-cli's preliminary and main parser, `parse_llm_params_args` |
+| `commands/run.py` | `run` and `chat`: the steps of section 4 up to the run, the session hold, open and save |
+| `commands/one_shot.py` | the one-shot run: its stop (`RunControl`), the streamed display, the result printed after |
+| `commands/plugins.py` | `plugins list` / `info` / `search` |
+| `commands/mcp.py` | `mcp list` / `status` / `test` / `tools` |
+| `commands/reload.py` | `reload` |
+| `commands/table.py` | the table `plugins list` and `mcp list` print (tabulate, or a plain fallback) |
 | `session_defaults.py` | agent/LLM of a resumed session |
 | `session_listing.py` | `--list-sessions` |
 | `attachments.py` | sort attachments by file kind |
-| `agent_runner.py` | agent creation for `agent-run` |
+| `agent_runner.py` | what both entry points share: running as the local operator, agent creation for `agent-run`, the woken run's task, the busy-session and cancelled lines |
 | `users.py` | Typer app for `agent-cli users` |
-| `commands/hooks.py` | `hooks list` / `hooks inspect` |
+| `commands/hooks.py` | `hooks list` / `hooks inspect`, with the plugins loaded |
 
 The chat's slash commands live elsewhere: `agent_system/chat_commands.py`
 (built in) and `agent_system/plugin_commands.py` (declared by plugins,

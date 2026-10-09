@@ -18,6 +18,7 @@ import sys
 import pytest
 
 import agent_system.agent_cli as agent_cli
+from agent_system.cli_utils.commands import run as run_cmd
 from agent_system.core.request_context import register_request_user, request_user_map
 from agent_system.servers.agent.server import Agent
 from test_cli_ctrl_c_is_a_stop import USER, cli  # noqa: F401 - the harness fixture
@@ -89,7 +90,7 @@ async def test_an_agent_run_request_leaves_nothing_registered(cli, runs):
     from agent_system.agent_run import run_agent_request
 
     _answers(cli)
-    agent = agent_cli.entry_agent()
+    agent = run_cmd.entry_agent()
 
     await run_agent_request(agent, "do it", "s1")
 

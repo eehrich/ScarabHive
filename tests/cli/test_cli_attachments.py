@@ -555,7 +555,7 @@ class TestNoAttachmentErrorLeavesWithZero:
                 handlers.extend(node.handlers)
         return handlers
 
-    @pytest.mark.parametrize("module", ["agent_cli.py", "agent_run.py"])
+    @pytest.mark.parametrize("module", ["cli_utils/commands/run.py", "agent_run.py"])
     def test_every_branch_ends_the_process(self, module):
         from pathlib import Path as _P
 

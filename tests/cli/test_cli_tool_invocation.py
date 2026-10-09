@@ -35,6 +35,7 @@ import pytest
 import yaml
 
 import agent_system.agent_cli as agent_cli
+from agent_system.cli_utils.commands import run as run_cmd
 from agent_system.cli_utils.event_loop import close_cli_loop
 from agent_system.llm import registry as llm_registry
 
@@ -206,7 +207,7 @@ def test_cli_run_calls_the_tool_the_model_asks_for_and_shows_it(cli_run, capsys,
     console = logging.StreamHandler(io.StringIO())
     console.setFormatter(ColorizedFormatter("%(message)s", use_colors=True))
     monkeypatch.setattr(logging.getLogger(), "handlers", [*logging.getLogger().handlers])
-    monkeypatch.setattr(agent_cli, "setup_role_logging",
+    monkeypatch.setattr(run_cmd, "setup_role_logging",
                         lambda logging_config, role: logging.getLogger().addHandler(console))
     agent_cli.main()
     out = capsys.readouterr().out
