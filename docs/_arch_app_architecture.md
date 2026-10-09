@@ -63,9 +63,9 @@ sees which session), `agent_access.py` (an agent's `min_role`), `database.py`
 |---------|------|
 | `InitializationService` | One bootstrap for API, `agent-cli` and `agent-run`: builds and starts the `Runtime`, creates `SessionManager`/`SessionService` lazily and injects the session service into the agents (`agent_injection`) |
 | `ConfigService` | `load_config(config_path=None, force_reload=False)` -- delegates to `config.settings.load_settings` (includes, `${VAR}` expansion, models) |
-| `SessionManager` | Session files, one directory per user; async, works on dicts: `create_session`, `load_session`, `save_session`, `list_sessions`, `delete_session` |
+| `SessionManager` | Session files, one directory per user; async, works on dicts: `create_session`, `load_session`, `save_session`, `list_sessions`, `delete_session`. The facade over two components it owns: `SessionIndex` (`session_index.py`, the per-user index partitions and the listings read from them) and `SessionCache` (`session_cache.py`, recent copies and what this process has seen of each file); `session_paths.py` holds the id and path rules |
 | `SessionService` | What a run does with its session: `open_for_run`, `load_and_restore_session`, `save_session` |
-| `SessionArchive` | Archiving old sessions (a periodic sweep started in the lifespan) |
+| `SessionArchive` | Archiving old sessions (a periodic sweep started in the lifespan): which trees go and when; the archive's format on disk -- manifest under its lock, the zips -- is `ArchiveStore` (`session_archive_store.py`) |
 | `BackgroundJobManager` | Every streamed run is a job: its event buffer, followers, reconnect, `cancel_job` |
 | `ToolServerService` | Status of tool servers and tools (`GET /tools/status`, `agent-cli mcp list`, `status`, `test`) |
 | `ToolService` | `list_tools` for `agent-cli mcp tools`; unused by the API |

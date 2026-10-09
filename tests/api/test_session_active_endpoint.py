@@ -904,8 +904,8 @@ async def test_a_sub_index_naming_a_session_further_up_does_not_loop(tmp_path):
     # grandkid's sub-index claims kid-a, its own parent -- the shape a stale partition
     # leaves. Pointed at the middle of the tree and not at the root on purpose: a guard
     # that only refused to walk the root again would pass that and still hang here.
-    path = manager._get_index_path("ada", "grandkid")
-    template = json.loads(manager._get_index_path("ada", "kid-a").read_text(encoding="utf-8"))
+    path = manager._index.path("ada", "grandkid")
+    template = json.loads(manager._index.path("ada", "kid-a").read_text(encoding="utf-8"))
     entry = next(iter(template.values()))
     path.write_text(json.dumps({"kid-a": {**entry, "session_id": "kid-a",
                                           "parent_session": {"session_id": "grandkid"}}}),

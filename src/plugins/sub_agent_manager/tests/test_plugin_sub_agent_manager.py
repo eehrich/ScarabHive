@@ -1092,7 +1092,7 @@ async def test_the_list_reads_the_viewers_copy_of_an_id_two_users_hold(tmp_path)
     with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
         listed = await factory.get_sub_agents(MagicMock(), session_id="dup", current_user=mallory)
         # the transcript too: the lookup of whose it is read the other copy, and the cache kept it under the id
-        service.session_manager._cache.clear()
+        service.session_manager._cache.entries.clear()
         read = await factory.get_sub_agent(MagicMock(), agent_id=mine, session_id="dup", offset=None, limit=None,
                                            current_user=mallory)
 

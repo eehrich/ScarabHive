@@ -498,7 +498,7 @@ class AgentTurn:
 
     @staticmethod
     def _runs(row: dict[str, Any]) -> list[str]:
-        """The runs that wrote a sub-session, by their request ids (its index row, SessionManager._index_metadata)."""
+        """The runs that wrote a sub-session, by their request ids (its index row, SessionIndex.row)."""
         return [run for run in row.get("runs") or [] if isinstance(run, str)]
 
     def _ours(self, run: str) -> bool:

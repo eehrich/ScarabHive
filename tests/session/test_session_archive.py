@@ -30,6 +30,7 @@ from agent_system.services.session_archive import (
     ArchiveNotFound,
     SessionArchive,
 )
+from agent_system.services.session_archive_store import ArchiveStore
 from agent_system.services.session_manager import SessionManager
 
 USER = "u1"
@@ -365,7 +366,7 @@ async def test_a_failed_archive_leaves_the_sessions_alone(sm, archive, monkeypat
     def boom(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(SessionArchive, "_write_zip", staticmethod(boom))
+    monkeypatch.setattr(ArchiveStore, "write_zip", staticmethod(boom))
 
     report = await archive.archive_user(USER)
 
@@ -792,7 +793,7 @@ async def test_the_refusal_is_per_user_not_for_everybody(sm, archive):
 async def test_a_leftover_of_a_killed_pass_is_cleared(sm, archive, tmp_path):
     """A pass that is killed mid-write leaves a .tmp nobody comes back to.
 
-    `_write_zip` clears the one it is about to use, so a tree that is archived
+    `write_zip` clears the one it is about to use, so a tree that is archived
     again heals itself. One whose conversation was resumed is never archived
     again -- and its half-written copy would sit there for good.
     """
@@ -1000,7 +1001,7 @@ async def test_an_archived_session_leaves_no_presence_file_behind_but_its_stop(s
 
 @pytest.mark.asyncio
 async def test_a_broken_presence_check_does_not_stop_the_sweep(sm, tmp_path, caplog):
-    """Presence is optional, so its failure degrades -- see _held_sessions."""
+    """Presence is optional, so its failure degrades -- see _held_in."""
     await _make_tree(sm, "root_aa", [])
     _age(sm, ["root_aa"], days=60)
     (_user_dir(sm) / "root_aa.lock").write_text("", encoding="utf-8")
@@ -1601,7 +1602,7 @@ async def test_an_index_held_by_another_process_is_an_answer_not_a_hang(
     for the same lock once per tree -- on a real backlog, hours of nothing.
     """
     monkeypatch.setattr(
-        "agent_system.services.session_archive.MANIFEST_LOCK_TIMEOUT", 0.3)
+        "agent_system.services.session_archive_store.MANIFEST_LOCK_TIMEOUT", 0.3)
     await _make_tree(sm, "root_idx1", [])
     await _make_tree(sm, "root_idx2", [])
     _age(sm, ["root_idx1", "root_idx2"], days=60)
