@@ -8,7 +8,8 @@ Agent is built from one mixin per responsibility (mixins/, the package docstring
   the session presence a request holds
 - mixins/run_phases.py: Phase 1 (the conversation a run starts with) and Phase 3 (its end and
   final save)
-- mixins/llm_loop.py: Phase 2, the step loop, and the LLM call of a step
+- mixins/llm_loop/: Phase 2, the step loop, one module per part of a step, and the LLM call of a
+  step
 - mixins/llm_selection.py: the clients a run switches to (fallback, escalation, the caller's) and
   the per-request guards
 - mixins/prompts.py: the system prompt and the notes a run writes for the model
@@ -62,11 +63,9 @@ from .refusals import (  # noqa: F401 - re-exported: the error_types of the refu
 )
 from .mixins.tool_session import TOOL_SESSION_ID_MAX  # noqa: F401 - re-exported
 from .mixins.run_phases import ConversationContext  # noqa: F401 - re-exported
-from .mixins.llm_loop import (  # noqa: F401 - re-exported
-    FORMAT_NOTE,
-    _instruction_head,
-    _name_the_model,
-)
+from .mixins.llm_loop.fallback import FORMAT_NOTE  # noqa: F401 - re-exported
+from .mixins.llm_loop.llm_call import _name_the_model  # noqa: F401 - re-exported
+from .mixins.llm_loop.tool_step import _instruction_head  # noqa: F401 - re-exported
 #: STRUCTURED_OUTPUT_UNSUPPORTED and STRUCTURED_OUTPUT_INVALID are the
 #: ``error_type``s of a structured run's error events; llm/structured_output.py says when.
 from ...llm.structured_output import (  # noqa: F401 - re-exported

@@ -688,7 +688,7 @@ class TestOpenAIClientStreamingUsageTracking:
 
 
 async def test_a_failed_stream_reports_an_error_the_server_can_read(openai_client):
-    """agent_system/servers/agent/mixins/llm_loop.py reads error.message and error.type."""
+    """agent_system/servers/agent/mixins/llm_loop/fallback.py reads error.message and error.type."""
     from unittest.mock import AsyncMock
 
     client, mock_instance = openai_client

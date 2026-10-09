@@ -4,7 +4,7 @@ run_events is how every caller runs the agent: the role gate before anything is 
 session's metadata, the LLM the run goes out on (an override, the advanced model, the caller's), the
 status forwarder and the run's context variables. _run_events registers the request, takes the
 session's lock and drives Phase 1 and Phase 3 (run_phases.py) around Phase 2, the step loop
-(llm_loop.py). With them: the session presence the request holds for as long as it runs, and the
+(llm_loop/). With them: the session presence the request holds for as long as it runs, and the
 request ids a run hands out.
 """
 from __future__ import annotations
