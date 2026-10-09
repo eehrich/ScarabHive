@@ -12,6 +12,10 @@ import re
 from pathlib import Path
 from typing import Iterator, Optional
 
+#: What a session id may be: letters, digits, underscores and hyphens -- it
+#: becomes a file name (``<id>.json``, ``<id>.lock``, ``.subs.<id>.index.json``).
+SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
 
 def sanitize_user_id(user_id: str) -> str:
     """Sanitize user_id to prevent directory traversal.
@@ -38,7 +42,7 @@ def validate_session_id(session_id: str) -> str:
         ValueError: If session ID contains invalid characters
     """
     # Session IDs should be alphanumeric with underscores/hyphens only
-    if not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
+    if not SESSION_ID_PATTERN.match(session_id):
         raise ValueError(f"Invalid session ID format: {session_id!r}")
     return session_id
 

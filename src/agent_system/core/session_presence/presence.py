@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -30,13 +29,13 @@ from typing import Any, Optional
 
 from ...config.models import SessionPresenceConfig
 from ...paths import PROJECT_ROOT, data_path
+from ...services.session_paths import SESSION_ID_PATTERN, user_dir_of
 from .lockfile import _BINARY, _drop, _lock, _open_locked, _read, _unlink, _unlock_and_close, _write
 from .process import _own_start, alive, spawn_wake, wake_depth
 
 logger = logging.getLogger(__name__)
 
 # SessionManager's rule for session ids; anything else names no session file.
-_SESSION_ID = re.compile(r"^[a-zA-Z0-9_-]+$")
 # A wake holds the lock file for the length of a process start; whoever wants
 # the session meanwhile waits that out rather than being turned away. The
 # patience is only ever spent while notify() has the file -- a session nobody
@@ -208,11 +207,10 @@ class SessionPresence:
         self._guard = threading.Lock()
 
     def _user_dir(self, user_id: str) -> Path:
-        # SessionManager._sanitize_user_id
-        return self.root / user_id.replace("..", "_").replace("/", "_").replace("\\", "_")
+        return user_dir_of(self.root, user_id)  # the session store's own rule
 
     def _lock_path(self, session_id: str, user_id: str) -> Optional[Path]:
-        if not session_id or not user_id or not _SESSION_ID.match(session_id):
+        if not session_id or not user_id or not SESSION_ID_PATTERN.match(session_id):
             return None
         return self._user_dir(user_id) / f"{session_id}.lock"
 
