@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 from ..paths import resolve_data_path
 from .models import ChatMessage
@@ -154,11 +154,11 @@ class _MediaDurationCache:
 _duration_cache = _MediaDurationCache(max_size=1000, ttl_seconds=3600.0)
 
 
-def _get_audio_duration_seconds(path: Path) -> float | None:
-    """Get audio duration in seconds using pydub.
-    
-    Results are cached for 1 hour to avoid repeatedly loading audio files.
-    Falls back to None if pydub is not available or file cannot be read.
+def _cached_duration(path: Path, measure: Callable[[Path], float | None]) -> float | None:
+    """``measure(path)``, cached in _duration_cache per path and mtime.
+
+    The cache step _get_audio_duration_seconds and _get_video_duration_seconds
+    share; None if the file cannot be stat'ed.
     """
     path_str = str(path)
     
@@ -174,6 +174,24 @@ def _get_audio_duration_seconds(path: Path) -> float | None:
         return cached
     
     # Cache miss - compute duration
+    duration = measure(path)
+    
+    # Store in cache (including None results)
+    _duration_cache.set(path_str, mtime, duration)
+    return duration
+
+
+def _get_audio_duration_seconds(path: Path) -> float | None:
+    """Get audio duration in seconds using pydub.
+    
+    Results are cached for 1 hour to avoid repeatedly loading audio files.
+    Falls back to None if pydub is not available or file cannot be read.
+    """
+    return _cached_duration(path, _measure_audio_duration)
+
+
+def _measure_audio_duration(path: Path) -> float | None:
+    """Audio duration in seconds read with pydub, uncached; None when it cannot be read."""
     duration: float | None = None
     try:
         from pydub import AudioSegment
@@ -182,9 +200,6 @@ def _get_audio_duration_seconds(path: Path) -> float | None:
     except Exception as e:
         logger.debug(f"Could not get audio duration for {path}: {e}")
         duration = None
-    
-    # Store in cache (including None results)
-    _duration_cache.set(path_str, mtime, duration)
     return duration
 
 
@@ -193,20 +208,11 @@ def _get_video_duration_seconds(path: Path) -> float | None:
     
     Results are cached for 1 hour. Falls back to None if video cannot be analyzed.
     """
-    path_str = str(path)
-    
-    # Get file mtime for cache validation
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return None
-    
-    # Check cache
-    cached = _duration_cache.get(path_str, mtime)
-    if cached is not _CacheEntry:
-        return cached
-    
-    # Cache miss - compute duration
+    return _cached_duration(path, _measure_video_duration)
+
+
+def _measure_video_duration(path: Path) -> float | None:
+    """Video duration in seconds read with ffprobe, uncached; None when it cannot be read."""
     duration: float | None = None
     try:
         import subprocess
@@ -225,9 +231,6 @@ def _get_video_duration_seconds(path: Path) -> float | None:
     except Exception as e:
         logger.debug(f"ffprobe failed for {path}: {e}")
         duration = None
-    
-    # Store in cache
-    _duration_cache.set(path_str, mtime, duration)
     return duration
 
 

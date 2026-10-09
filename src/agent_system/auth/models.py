@@ -133,6 +133,27 @@ class UserInDB(User):
     api_key: Optional[str] = None
 
 
+def public_user(user_in_db: User) -> User:
+    """The User a client may see of an account row: every User field, no secrets.
+
+    Built field by field on purpose: ``User.model_validate`` of a UserInDB
+    returns that same UserInDB (pydantic does not revalidate an instance of
+    a subclass), password hash and API key included. The admin and auth
+    routes and the auth dependencies each had their own copy of this.
+    """
+    return User(
+        id=user_in_db.id,
+        username=user_in_db.username,
+        email=user_in_db.email,
+        full_name=user_in_db.full_name,
+        is_active=user_in_db.is_active,
+        role=user_in_db.role,
+        created_at=user_in_db.created_at,
+        updated_at=user_in_db.updated_at,
+        last_login=user_in_db.last_login,
+    )
+
+
 class Token(BaseModel):
     """JWT token response schema."""
     access_token: str

@@ -50,7 +50,9 @@ true.
 `security.py` (passwords with bcrypt, JWTs, API key hashing),
 `dependencies.py` (`get_current_user`, `require_admin`), `middleware.py`
 (rate limiting, security audit), `enforcement.py` (`EndpointSecurityEnforcer`,
-route security from `auth.endpoint_security`), `remote_paths.py` (which paths
+route security from `auth.endpoint_security`; `compile_endpoint_rules` and
+`first_matching_rule` read those rules for it and for the
+`EndpointSecurityMiddleware` alike), `remote_paths.py` (which paths
 a client off loopback may reach), `session_access.py` (who
 sees which session), `agent_access.py` (an agent's `min_role`), `database.py`
 (the user store).

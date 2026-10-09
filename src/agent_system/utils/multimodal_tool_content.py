@@ -34,7 +34,7 @@ import io
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 # A stored data/... path (session history, a media store's index) lands in
 # the data directory, wherever it is configured.
@@ -432,6 +432,102 @@ def _get_audio_format(mime_type: str) -> str:
 # caller to trust; the list was already stale (`gemini_sdk` was missing).
 
 
+def _item_line(item_type: Any, desc: Optional[str], path: Optional[str]) -> str:
+    """One item's line in the text-only note: its description, else its path, else its type alone."""
+    if desc:
+        return f"- {item_type}: {desc}"
+    elif path:
+        return f"- {item_type}: {path}"
+    else:
+        return f"- {item_type}"
+
+
+def _text_only_injection(
+    tool_name: str,
+    item_count: int,
+    items_info: List[str],
+    error_items: Sequence[Dict[str, Any]] = (),
+) -> Dict[str, Any]:
+    """The injected user message for a model without vision: a note naming what was generated.
+
+    ``items_info`` are the _item_line lines; ``error_items`` (the ChatMessage
+    path checks files, the dict path does not) list the missing files.
+    """
+    text_content = f"📎 [TOOL OUTPUT: {tool_name}]\n"
+    text_content += f"Generated {item_count} multimodal item(s):\n"
+    text_content += "\n".join(items_info)
+
+    # Add error items info
+    if error_items:
+        text_content += "\n\n⚠️ Missing files:\n"
+        for item in error_items:
+            text_content += f"- {item['type']}: {item['error']}\n"
+
+    text_content += "\n\n⚠️ Note: The current model does not support vision/multimodal input. "
+    text_content += "The generated content is available at the file paths above but cannot be displayed to you."
+
+    return {"role": "user", "content": text_content}
+
+
+def _anthropic_injection(
+    multimodal_content: List[Any],
+    tool_name: str,
+    tool_call_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """The injected user message in Anthropic format for a vision model; None if nothing encodes.
+
+    Images become ``source.type="base64"`` blocks behind one text prefix.
+    Shared by create_anthropic_multimodal_injection (ChatMessage) and
+    create_anthropic_multimodal_injection_from_dict (serialized batch dict);
+    each catches and logs what this raises under its own message.
+    """
+    content_blocks: List[Dict[str, Any]] = []
+
+    # Add text prefix
+    prefix = f"📎 [TOOL OUTPUT: {tool_name}"
+    if tool_call_id:
+        prefix += f", call_id={tool_call_id}"
+    prefix += "]"
+
+    descriptions = []
+    encoded_items = []
+
+    for item in multimodal_content:
+        encoded = encode_multimodal_item(item)
+        if encoded:
+            encoded_items.append(encoded)
+            if encoded.description:
+                descriptions.append(encoded.description)
+
+    if not encoded_items:
+        return None
+
+    if descriptions:
+        prefix += "\n" + "\n".join(descriptions)
+
+    content_blocks.append({"type": "text", "text": prefix})
+
+    # Add images in Anthropic format
+    for item in encoded_items:
+        if item.type == "image":
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": item.mime_type,
+                    "data": item.data
+                }
+            })
+        # Audio/Video: Anthropic doesn't support these yet, add as text note
+        else:
+            content_blocks.append({
+                "type": "text",
+                "text": f"\n[{item.type.title()} file: {item.description or 'attached'}]"
+            })
+
+    return {"role": "user", "content": content_blocks}
+
+
 def create_multimodal_injection(
     tool_msg: Any,
     supports_vision: bool,
@@ -484,12 +580,7 @@ def create_multimodal_injection(
             })
         else:
             # Normal item
-            if desc:
-                items_info.append(f"- {item_type}: {desc}")
-            elif path:
-                items_info.append(f"- {item_type}: {path}")
-            else:
-                items_info.append(f"- {item_type}")
+            items_info.append(_item_line(item_type, desc, path))
     
     if not supports_vision:
         # Model doesn't support vision - inject text note about available content
@@ -497,20 +588,7 @@ def create_multimodal_injection(
             "Model %s doesn't support vision - injecting text note instead of multimodal",
             model_name
         )
-        text_content = f"📎 [TOOL OUTPUT: {tool_name}]\n"
-        text_content += f"Generated {len(multimodal_content)} multimodal item(s):\n"
-        text_content += "\n".join(items_info)
-        
-        # Add error items info
-        if error_items:
-            text_content += "\n\n⚠️ Missing files:\n"
-            for item in error_items:
-                text_content += f"- {item['type']}: {item['error']}\n"
-        
-        text_content += "\n\n⚠️ Note: The current model does not support vision/multimodal input. "
-        text_content += "The generated content is available at the file paths above but cannot be displayed to you."
-        
-        return {"role": "user", "content": text_content}
+        return _text_only_injection(tool_name, len(multimodal_content), items_info, error_items)
     
     # Model supports vision - encode and inject images
     try:
@@ -590,51 +668,7 @@ def create_anthropic_multimodal_injection(
     
     # Model supports vision - encode in Anthropic format
     try:
-        content_blocks: List[Dict[str, Any]] = []
-        
-        # Add text prefix
-        prefix = f"📎 [TOOL OUTPUT: {tool_name}"
-        if tool_call_id:
-            prefix += f", call_id={tool_call_id}"
-        prefix += "]"
-        
-        descriptions = []
-        encoded_items = []
-        
-        for item in multimodal_content:
-            encoded = encode_multimodal_item(item)
-            if encoded:
-                encoded_items.append(encoded)
-                if encoded.description:
-                    descriptions.append(encoded.description)
-        
-        if not encoded_items:
-            return None
-        
-        if descriptions:
-            prefix += "\n" + "\n".join(descriptions)
-        
-        content_blocks.append({"type": "text", "text": prefix})
-        
-        # Add images in Anthropic format
-        for item in encoded_items:
-            if item.type == "image":
-                content_blocks.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": item.mime_type,
-                        "data": item.data
-                    }
-                })
-            # Audio/Video: Anthropic doesn't support these yet, add as text note
-            else:
-                content_blocks.append({
-                    "type": "text",
-                    "text": f"\n[{item.type.title()} file: {item.description or 'attached'}]"
-                })
-        
-        return {"role": "user", "content": content_blocks}
+        return _anthropic_injection(multimodal_content, tool_name, tool_call_id)
         
     except Exception as e:
         logger.warning("Failed to create Anthropic multimodal injection: %s", e)
@@ -706,20 +740,9 @@ def create_multimodal_injection_from_dict(
             item_type = item.get('type', 'unknown')
             desc = item.get('description')
             path = item.get('path')
-            if desc:
-                items_info.append(f"- {item_type}: {desc}")
-            elif path:
-                items_info.append(f"- {item_type}: {path}")
-            else:
-                items_info.append(f"- {item_type}")
+            items_info.append(_item_line(item_type, desc, path))
         
-        text_content = f"📎 [TOOL OUTPUT: {tool_name}]\n"
-        text_content += f"Generated {len(multimodal_content)} multimodal item(s):\n"
-        text_content += "\n".join(items_info)
-        text_content += "\n\n⚠️ Note: The current model does not support vision/multimodal input. "
-        text_content += "The generated content is available at the file paths above but cannot be displayed to you."
-        
-        return {"role": "user", "content": text_content}
+        return _text_only_injection(tool_name, len(multimodal_content), items_info)
     
     # Model supports vision - encode and inject images
     try:
@@ -777,51 +800,7 @@ def create_anthropic_multimodal_injection_from_dict(
     
     # Model supports vision - encode in Anthropic format
     try:
-        content_blocks: List[Dict[str, Any]] = []
-        
-        # Add text prefix
-        prefix = f"📎 [TOOL OUTPUT: {tool_name}"
-        if tool_call_id:
-            prefix += f", call_id={tool_call_id}"
-        prefix += "]"
-        
-        descriptions = []
-        encoded_items = []
-        
-        for item in multimodal_content:
-            encoded = encode_multimodal_item(item)
-            if encoded:
-                encoded_items.append(encoded)
-                if encoded.description:
-                    descriptions.append(encoded.description)
-        
-        if not encoded_items:
-            return None
-        
-        if descriptions:
-            prefix += "\n" + "\n".join(descriptions)
-        
-        content_blocks.append({"type": "text", "text": prefix})
-        
-        # Add images in Anthropic format
-        for item in encoded_items:
-            if item.type == "image":
-                content_blocks.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": item.mime_type,
-                        "data": item.data
-                    }
-                })
-            # Audio/Video: Anthropic doesn't support these yet, add as text note
-            else:
-                content_blocks.append({
-                    "type": "text",
-                    "text": f"\n[{item.type.title()} file: {item.description or 'attached'}]"
-                })
-        
-        return {"role": "user", "content": content_blocks}
+        return _anthropic_injection(multimodal_content, tool_name, tool_call_id)
         
     except Exception as e:
         logger.warning("Failed to create Anthropic multimodal injection from dict: %s", e)

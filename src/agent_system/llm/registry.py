@@ -30,7 +30,7 @@ import logging
 import sys
 import threading
 from pathlib import Path
-from typing import Callable, Dict, Optional, TYPE_CHECKING
+from typing import Callable, Dict, Optional, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from agent_system.config.models import LLMModelConfig
@@ -233,87 +233,86 @@ def _load_plugin(dir_name: str) -> None:
             _exports[key].setdefault(name, factory)
 
 
-def get_provider(provider: str) -> ProviderFactory:
+def _factory(key: str, name: str, noun: str,
+             unknown: Optional[str]) -> Optional[Callable]:
+    """The factory one seam's plugin exports for ``name``, importing that plugin on first use.
+
+    The one lookup behind ``get_provider`` and its batch/TTS/decisions
+    siblings, which were four copies of it. ``key`` is the seam's manifest
+    key; ``noun`` names the seam in the import and export errors ("TTS
+    provider"); ``unknown`` starts the error for a name no manifest declares
+    ("Unknown TTS provider") -- or is None, and such a name returns None,
+    which is what the batch seam's callers expect (they log a skip).
+    """
     with _lock:
-        factory = _exports["provides"].get(provider)
+        factory = _exports[key].get(name)
         if factory is not None:
             return factory
         _scan_manifests()
-        dir_name = _owners["provides"].get(provider)
+        dir_name = _owners[key].get(name)
         if dir_name is None:
-            known = sorted(_owners["provides"])
+            if unknown is None:
+                return None
+            known = sorted(_owners[key])
             raise ProviderNotFoundError(
-                f"Unknown LLM provider: {provider} (known: {', '.join(known)})")
+                f"{unknown}: {name} (known: {', '.join(known)})")
         try:
             _load_plugin(dir_name)
         except ImportError as e:
             raise ImportError(
                 f"LLM provider plugin '{dir_name}' failed to import for "
-                f"provider '{provider}' — are its plugin.toml dependencies "
-                f"installed? ({e})") from e
-        factory = _exports["provides"].get(provider)
+                f"{noun} '{name}' — are its plugin.toml "
+                f"dependencies installed? ({e})") from e
+        factory = _exports[key].get(name)
         if factory is None:
+            # For the batch seam None means "nobody declares this" — but here
+            # somebody DID and then failed to export it. Returning None made
+            # the caller report "Unknown batch provider", which sends the
+            # operator looking for a config typo that isn't there.
             raise ProviderNotFoundError(
-                f"Plugin '{dir_name}' declares provider '{provider}' in its "
-                f"manifest but its PROVIDERS dict does not export it")
+                f"Plugin '{dir_name}' declares {noun} '{name}' in its "
+                f"manifest but its {SEAMS[key][0]} dict does not export it")
         return factory
+
+
+def _construct(factory: Callable, cfg, key: str, noun: str, **kwargs):
+    """``factory(cfg, **kwargs)``; an ImportError on the way names the plugin.
+
+    The construction step ``build_client``, ``build_tts_client`` and
+    ``build_decisions_client`` share. ``key`` and ``noun`` as for _factory.
+    """
+    try:
+        return factory(cfg, **kwargs)
+    except ImportError as e:
+        # The SDK imports are LAZY inside the client constructors, so a
+        # missing dependency surfaces here — at the factory call, not at
+        # plugin import. Name the plugin, or the operator only sees a bare
+        # "No module named 'anthropic'". ImportError, not just its
+        # ModuleNotFoundError subclass: a broken compiled extension or a DLL
+        # that won't load raises the parent, and that is the case where
+        # knowing which plugin was being built matters most.
+        dir_name = _owners[key].get(cfg.provider, "?")
+        raise ImportError(
+            f"LLM provider plugin '{dir_name}' failed while building "
+            f"{noun} '{cfg.provider}' — are its plugin.toml dependencies "
+            f"installed? ({e})") from e
+
+
+def get_provider(provider: str) -> ProviderFactory:
+    # Never None: an undeclared name raises.
+    return cast(ProviderFactory, _factory(
+        "provides", provider, "provider", unknown="Unknown LLM provider"))
 
 
 def get_batch_backend(batch_provider: str) -> Optional[BatchBackendFactory]:
     """Batch backend factory for one provider, or None if none is declared."""
-    with _lock:
-        factory = _exports["provides_batch"].get(batch_provider)
-        if factory is not None:
-            return factory
-        _scan_manifests()
-        dir_name = _owners["provides_batch"].get(batch_provider)
-        if dir_name is None:
-            return None
-        try:
-            _load_plugin(dir_name)
-        except ImportError as e:
-            raise ImportError(
-                f"LLM provider plugin '{dir_name}' failed to import for "
-                f"batch provider '{batch_provider}' — are its plugin.toml "
-                f"dependencies installed? ({e})") from e
-        factory = _exports["provides_batch"].get(batch_provider)
-        if factory is None:
-            # None means "nobody declares this" — but here somebody DID and
-            # then failed to export it. Returning None made the caller report
-            # "Unknown batch provider", which sends the operator looking for
-            # a config typo that isn't there.
-            raise ProviderNotFoundError(
-                f"Plugin '{dir_name}' declares batch provider "
-                f"'{batch_provider}' in its manifest but its BATCH_BACKENDS "
-                f"dict does not export it")
-        return factory
+    return _factory("provides_batch", batch_provider, "batch provider", unknown=None)
 
 
 def get_tts_provider(tts_provider: str) -> Callable:
     """TTS factory for one provider name (manifest key ``provides_tts``)."""
-    with _lock:
-        factory = _exports["provides_tts"].get(tts_provider)
-        if factory is not None:
-            return factory
-        _scan_manifests()
-        dir_name = _owners["provides_tts"].get(tts_provider)
-        if dir_name is None:
-            known = sorted(_owners["provides_tts"])
-            raise ProviderNotFoundError(
-                f"Unknown TTS provider: {tts_provider} (known: {', '.join(known)})")
-        try:
-            _load_plugin(dir_name)
-        except ImportError as e:
-            raise ImportError(
-                f"LLM provider plugin '{dir_name}' failed to import for "
-                f"TTS provider '{tts_provider}' — are its plugin.toml "
-                f"dependencies installed? ({e})") from e
-        factory = _exports["provides_tts"].get(tts_provider)
-        if factory is None:
-            raise ProviderNotFoundError(
-                f"Plugin '{dir_name}' declares TTS provider '{tts_provider}' "
-                f"in its manifest but its TTS_PROVIDERS dict does not export it")
-        return factory
+    return cast(Callable, _factory(
+        "provides_tts", tts_provider, "TTS provider", unknown="Unknown TTS provider"))
 
 
 def build_tts_client(cfg) -> "TTSClient":
@@ -322,15 +321,7 @@ def build_tts_client(cfg) -> "TTSClient":
     Same lazy-SDK caveat as build_client: a missing dependency surfaces at
     the factory call, so it gets the plugin-naming wrapper here too.
     """
-    factory = get_tts_provider(cfg.provider)
-    try:
-        return factory(cfg)
-    except ImportError as e:
-        dir_name = _owners["provides_tts"].get(cfg.provider, "?")
-        raise ImportError(
-            f"LLM provider plugin '{dir_name}' failed while building TTS "
-            f"provider '{cfg.provider}' — are its plugin.toml dependencies "
-            f"installed? ({e})") from e
+    return _construct(get_tts_provider(cfg.provider), cfg, "provides_tts", "TTS provider")
 
 
 def known_tts_providers() -> frozenset:
@@ -342,31 +333,9 @@ def known_tts_providers() -> frozenset:
 
 def get_decisions_provider(decisions_provider: str) -> Callable:
     """Decisions factory for one provider (manifest key ``provides_decisions``)."""
-    with _lock:
-        factory = _exports["provides_decisions"].get(decisions_provider)
-        if factory is not None:
-            return factory
-        _scan_manifests()
-        dir_name = _owners["provides_decisions"].get(decisions_provider)
-        if dir_name is None:
-            known = sorted(_owners["provides_decisions"])
-            raise ProviderNotFoundError(
-                f"Unknown decisions provider: {decisions_provider} "
-                f"(known: {', '.join(known)})")
-        try:
-            _load_plugin(dir_name)
-        except ImportError as e:
-            raise ImportError(
-                f"LLM provider plugin '{dir_name}' failed to import for "
-                f"decisions provider '{decisions_provider}' — are its "
-                f"plugin.toml dependencies installed? ({e})") from e
-        factory = _exports["provides_decisions"].get(decisions_provider)
-        if factory is None:
-            raise ProviderNotFoundError(
-                f"Plugin '{dir_name}' declares decisions provider "
-                f"'{decisions_provider}' in its manifest but its "
-                f"DECISION_PROVIDERS dict does not export it")
-        return factory
+    return cast(Callable, _factory(
+        "provides_decisions", decisions_provider, "decisions provider",
+        unknown="Unknown decisions provider"))
 
 
 def build_decisions_client(cfg):
@@ -376,15 +345,8 @@ def build_decisions_client(cfg):
     surfaces at the factory call, so it gets the plugin-naming wrapper here
     too.
     """
-    factory = get_decisions_provider(cfg.provider)
-    try:
-        return factory(cfg)
-    except ImportError as e:
-        dir_name = _owners["provides_decisions"].get(cfg.provider, "?")
-        raise ImportError(
-            f"LLM provider plugin '{dir_name}' failed while building "
-            f"decisions provider '{cfg.provider}' — are its plugin.toml "
-            f"dependencies installed? ({e})") from e
+    return _construct(get_decisions_provider(cfg.provider), cfg,
+                      "provides_decisions", "decisions provider")
 
 
 def known_decisions_providers() -> frozenset:
@@ -459,22 +421,8 @@ def build_client(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
     logger.debug(
         "build_client provider=%s model=%s api_key_set=%s base_url=%s",
         cfg.provider, cfg.model, bool(cfg.api_key), cfg.base_url)
-    factory = get_provider(cfg.provider)
-    try:
-        return factory(cfg, ssl_verify=ssl_verify)
-    except ImportError as e:
-        # The SDK imports are LAZY inside the client constructors, so a
-        # missing dependency surfaces here — at the factory call, not at
-        # plugin import. Name the plugin, or the operator only sees a bare
-        # "No module named 'anthropic'". ImportError, not just its
-        # ModuleNotFoundError subclass: a broken compiled extension or a DLL
-        # that won't load raises the parent, and that is the case where
-        # knowing which plugin was being built matters most.
-        dir_name = _owners["provides"].get(cfg.provider, "?")
-        raise ImportError(
-            f"LLM provider plugin '{dir_name}' failed while building "
-            f"provider '{cfg.provider}' — are its plugin.toml dependencies "
-            f"installed? ({e})") from e
+    return _construct(get_provider(cfg.provider), cfg, "provides", "provider",
+                      ssl_verify=ssl_verify)
 
 
 def reset_for_tests() -> None:
