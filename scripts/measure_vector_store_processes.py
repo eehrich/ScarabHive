@@ -1,7 +1,7 @@
 """Do documents survive several processes writing one chroma store at once?
 
 The evidence behind the cross-process guards in
-``agent_system/utils/vector_store.py`` (_CHROMA_INIT_LOCK, _CHROMA_WRITE_LOCK,
+``agent_system/utils/vector_store/chroma.py`` (_CHROMA_INIT_LOCK, _CHROMA_WRITE_LOCK,
 _ChromaAccess). It is a MEASUREMENT, not a unit test: the loss is a race that
 needs 16 writers x 200 documents to show reliably -- minutes per run, and at
 test sizes it simply does not happen, with or without the guards (tried with
@@ -62,20 +62,20 @@ READER_TIMEOUT = 300  # a sound store answers 640 queries in well under a minute
 WRITER = r"""
 import random, sys
 sys.path.insert(0, sys.argv[4])
-from agent_system.utils import vector_store as vs
-from agent_system.utils.vector_store import VectorStore
+from agent_system.utils.vector_store import VectorStore, chroma
+from agent_system.utils.vector_store import store as vs_store
 if "--nofix" in sys.argv:
     import contextlib
-    VectorStore._chroma_write = lambda self: contextlib.nullcontext()
+    chroma.ChromaBackend._write = lambda self: contextlib.nullcontext()
 if "--lockonly" in sys.argv:
     from filelock import FileLock
-    VectorStore._chroma_write = lambda self: FileLock(str(self.persist_path / vs._CHROMA_WRITE_LOCK))
+    chroma.ChromaBackend._write = lambda self: FileLock(str(self.persist_path / chroma._CHROMA_WRITE_LOCK))
 if "--per-instance" in sys.argv:
     def _own(persist_path):
-        access = vs._ChromaAccess()
+        access = chroma._ChromaAccess()
         access.users = 1
         return access, str(id(access))
-    vs._acquire_access = _own
+    vs_store._acquire_access = _own
 path, tag, k = sys.argv[1], sys.argv[2], int(sys.argv[3])
 twin = None
 if "--twin" in sys.argv:
