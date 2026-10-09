@@ -19,8 +19,8 @@ Everyone who walks the store pays for this: a directory listing, the
 `iterdir` in `delete_session`, an index rebuild. The most expensive case was
 measured at **7 min 31 s** — that is how long `create_session` hung on the
 first sub-agent of a request, because a missing sub-index was read as "index
-lost" and all 60k files were read (fixed, see
-`services/session_manager.py`). As long as the directory stays this large,
+lost" and all 60k files were read (fixed, see `SessionIndex.update_entry`
+in `services/session_index.py`). As long as the directory stays this large,
 every such spot remains a trap.
 
 ## What moves
@@ -49,6 +49,12 @@ data/session_archive/
     .sweep.lock                 lock for a whole sweep
     2026-08/<root_id>.zip       the tree as a ZIP
 ```
+
+The code is split the same way: `services/session_archive_store.py`
+(`ArchiveStore`) is this layout — the paths, the manifest and its lock,
+writing, verifying and reading a ZIP — and `services/session_archive.py`
+(`SessionArchive`) is the policy over it: which trees go and when, the guards,
+the order of a sweep, restore and forget.
 
 **Two processes, one archive.** The API archives on a timer, the CLI on
 demand — both write the same `<root>.zip.tmp` and register in the same
