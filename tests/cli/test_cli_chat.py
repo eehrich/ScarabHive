@@ -622,7 +622,7 @@ class TestVtReassertion:
     def test_ansi_paints_reassert_vt(self, monkeypatch):
         import agent_system.cli_utils.chat as chat_mod
         calls = []
-        monkeypatch.setattr(chat_mod, "reassert_vt", lambda: calls.append(1))
+        monkeypatch.setattr(chat_mod.display, "reassert_vt", lambda: calls.append(1))
         r, _t = _renderer()
         r.handle_status(_ev(message="run"))                       # _open
         r.handle_status(_ev(message="done", phase=StatusPhase.END))  # _final
@@ -635,7 +635,7 @@ class TestVtReassertion:
         def _boom():
             raise AssertionError("non-ANSI output must not call reassert_vt")
 
-        monkeypatch.setattr(chat_mod, "reassert_vt", _boom)
+        monkeypatch.setattr(chat_mod.display, "reassert_vt", _boom)
         r, _t = _renderer(ansi=False)
         r.handle_status(_ev(message="run"))
         r.println("x")
@@ -1114,25 +1114,25 @@ def drive_chat_repl(monkeypatch, lines, initial_task=None, turn_probe=None,
         editor.suggest = suggest
         return editor
 
-    monkeypatch.setattr(chat, "_build_prompt_editor", _editor)
-    monkeypatch.setattr(chat, "collect_plugin_commands",
+    monkeypatch.setattr(chat.prompt_input, "_build_prompt_editor", _editor)
+    monkeypatch.setattr(chat.repl, "collect_plugin_commands",
                         lambda agent_: list(plugin_commands))
-    monkeypatch.setattr(chat, "_available_skills", lambda ctx: list(skills))
+    monkeypatch.setattr(chat.agent_setup, "_available_skills", lambda ctx: list(skills))
     monkeypatch.setattr(
-        chat, "_execute_turn",
+        chat.turn, "_execute_turn",
         turn_probe or (lambda loop, ctx, task, renderer, editor=None: {}))
     async def _saved(ctx):
         return True
 
-    monkeypatch.setattr(chat, "_save_session", _saved)
-    monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True, raising=False)
-    monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(chat.context, "_save_session", _saved)
+    monkeypatch.setattr(chat.repl.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(chat.repl.sys.stdout, "isatty", lambda: True, raising=False)
 
     async def _resumed(ctx, session_id):
         ctx.session_id = session_id
         return True
 
-    monkeypatch.setattr(chat, "_resume_session", resume or _resumed)
+    monkeypatch.setattr(chat.sessions, "_resume_session", resume or _resumed)
 
     loop = asyncio.new_event_loop()
     try:
@@ -1209,11 +1209,11 @@ class TestReplKeepsTheHistoryOnTheLiveSession:
         import agent_system.cli_utils.chat as chat
 
         built = []
-        monkeypatch.setattr(chat, "_build_prompt_editor",
+        monkeypatch.setattr(chat.prompt_input, "_build_prompt_editor",
                             lambda seed, **kw: built.append(seed))
-        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
-        monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True, raising=False)
-        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: False, raising=False)
+        monkeypatch.setattr(chat.repl, "collect_plugin_commands", lambda agent_: [])
+        monkeypatch.setattr(chat.repl.sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(chat.repl.sys.stdout, "isatty", lambda: False, raising=False)
         monkeypatch.setattr(builtins, "input", _feed([]))
 
         tracker = SimpleNamespace(get_session_messages=lambda sid: [])
@@ -1248,11 +1248,11 @@ class TestPipedInputFromPowerShell:
         import agent_system.cli_utils.chat as chat
 
         piped = _pipe("\ufeff/exit\n".encode("utf-8"), "utf-8")
-        monkeypatch.setattr(chat.sys, "stdin", piped)
-        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: False, raising=False)
-        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
+        monkeypatch.setattr(chat.repl.sys, "stdin", piped)
+        monkeypatch.setattr(chat.repl.sys.stdout, "isatty", lambda: False, raising=False)
+        monkeypatch.setattr(chat.repl, "collect_plugin_commands", lambda agent_: [])
         turns = []
-        monkeypatch.setattr(chat, "_execute_turn",
+        monkeypatch.setattr(chat.turn, "_execute_turn",
                             lambda loop, ctx, task, renderer, editor=None: turns.append(task) or {})
 
         tracker = SimpleNamespace(get_session_messages=lambda sid: [])
@@ -1272,9 +1272,9 @@ class TestPipedInputFromPowerShell:
         import agent_system.cli_utils.chat as chat
 
         piped = _pipe("\ufeffa\ufeffb\n".encode("utf-8"), "utf-8")
-        monkeypatch.setattr(chat.sys, "stdin", piped)
+        monkeypatch.setattr(chat.prompt_input.sys, "stdin", piped)
         chat._skip_piped_bom()
-        assert chat.sys.stdin.readline() == "a\ufeffb\n"
+        assert chat.prompt_input.sys.stdin.readline() == "a\ufeffb\n"
 
     def test_the_mark_goes_without_utf8_mode_too(self, monkeypatch):
         """Without PYTHONUTF8 Windows decodes a pipe as cp1252: the mark read
@@ -1282,18 +1282,18 @@ class TestPipedInputFromPowerShell:
         import agent_system.cli_utils.chat as chat
 
         piped = _pipe("\ufeff/compact\n".encode("utf-8"), "cp1252")
-        monkeypatch.setattr(chat.sys, "stdin", piped)
+        monkeypatch.setattr(chat.prompt_input.sys, "stdin", piped)
         chat._skip_piped_bom()
-        assert chat.sys.stdin.readline() == "/compact\n"
+        assert chat.prompt_input.sys.stdin.readline() == "/compact\n"
 
     def test_a_pipe_without_the_mark_keeps_its_encoding(self, monkeypatch):
         """An ANSI file piped in without UTF-8 mode stays readable."""
         import agent_system.cli_utils.chat as chat
 
         piped = _pipe("K\xe4se\n".encode("cp1252"), "cp1252")
-        monkeypatch.setattr(chat.sys, "stdin", piped)
+        monkeypatch.setattr(chat.prompt_input.sys, "stdin", piped)
         chat._skip_piped_bom()
-        assert chat.sys.stdin.readline() == "K\xe4se\n"
+        assert chat.prompt_input.sys.stdin.readline() == "K\xe4se\n"
 
     def test_a_stray_byte_does_not_end_the_chat(self, monkeypatch):
         """agent_cli sets errors="replace" on stdin; switching the encoding
@@ -1301,9 +1301,9 @@ class TestPipedInputFromPowerShell:
         import agent_system.cli_utils.chat as chat
 
         piped = _pipe(b"\xef\xbb\xbfK\xe4se\n", "utf-8")
-        monkeypatch.setattr(chat.sys, "stdin", piped)
+        monkeypatch.setattr(chat.prompt_input.sys, "stdin", piped)
         chat._skip_piped_bom()
-        assert chat.sys.stdin.readline() == "K\ufffdse\n"
+        assert chat.prompt_input.sys.stdin.readline() == "K\ufffdse\n"
 
 
 class TestCallPricingKey:
@@ -1352,7 +1352,7 @@ class TestSessionsCommand:
             seen.update(kwargs)
             seen["user_id"] = user_id
 
-        monkeypatch.setattr(chat, "print_sessions", fake_print)
+        monkeypatch.setattr(chat.sessions, "print_sessions", fake_print)
         drive_chat_repl(monkeypatch, [line], **run_kwargs)
         return seen
 
@@ -1543,8 +1543,8 @@ class TestSwitchModel:
         import agent_system.cli_utils.chat as chat
 
         saved = []
-        monkeypatch.setattr(chat, "_switch_model", lambda ctx, payload: True)
-        monkeypatch.setattr(chat, "_save_now",
+        monkeypatch.setattr(chat.agent_setup, "_switch_model", lambda ctx, payload: True)
+        monkeypatch.setattr(chat.context, "_save_now",
                             lambda loop, ctx: saved.append(ctx.session_id))
         drive_chat_repl(monkeypatch, ["/model profile_b"])
 
@@ -1558,8 +1558,8 @@ class TestSwitchModel:
         import agent_system.cli_utils.chat as chat
 
         saved = []
-        monkeypatch.setattr(chat, "_switch_model", lambda ctx, payload: True)
-        monkeypatch.setattr(chat, "_save_now",
+        monkeypatch.setattr(chat.agent_setup, "_switch_model", lambda ctx, payload: True)
+        monkeypatch.setattr(chat.context, "_save_now",
                             lambda loop, ctx: saved.append(ctx.session_id))
         drive_chat_repl(monkeypatch, ["/model profile_b"], was_new_session=True)
 
@@ -1569,8 +1569,8 @@ class TestSwitchModel:
         import agent_system.cli_utils.chat as chat
 
         saved = []
-        monkeypatch.setattr(chat, "_switch_model", lambda ctx, payload: False)
-        monkeypatch.setattr(chat, "_save_now",
+        monkeypatch.setattr(chat.agent_setup, "_switch_model", lambda ctx, payload: False)
+        monkeypatch.setattr(chat.context, "_save_now",
                             lambda loop, ctx: saved.append(ctx.session_id))
         drive_chat_repl(monkeypatch, ["/model"])
 
@@ -1605,7 +1605,7 @@ class TestSwitchModel:
         import agent_system.cli_utils.chat as chat
 
         seen = []
-        monkeypatch.setattr(chat, "_switch_model",
+        monkeypatch.setattr(chat.agent_setup, "_switch_model",
                             lambda ctx, payload: seen.append(payload))
         drive_chat_repl(monkeypatch, ["/model profile_b", "/llm"])
 
@@ -2351,12 +2351,12 @@ class TestKeyReaderBuffer:
         text = "Grüße aus Köln\n".encode("utf-8")
         cut = text.index("ü".encode("utf-8")) + 1       # inside the ü
         chunks = [text[:cut], text[cut:]]
-        monkeypatch.setattr(chat.sys, "stdin",
+        monkeypatch.setattr(chat.typeahead.sys, "stdin",
                             SimpleNamespace(encoding="utf-8", fileno=lambda: 99))
-        monkeypatch.setattr(chat.os, "name", "posix")
+        monkeypatch.setattr(chat.typeahead.os, "name", "posix")
         monkeypatch.setattr(_select, "select",
                             lambda r, w, x, t: (r if chunks else [], [], []))
-        monkeypatch.setattr(chat.os, "read", lambda fd, n: chunks.pop(0))
+        monkeypatch.setattr(chat.typeahead.os, "read", lambda fd, n: chunks.pop(0))
 
         r = _KeyReader(active=False)
         r.enabled = True
@@ -2370,7 +2370,7 @@ class TestKeyReaderBuffer:
 
         # Built from the code units: a literal would be one code point.
         keys = list("ok ") + [chr(0xD83D), chr(0xDE00), "\r"]
-        monkeypatch.setattr(chat.os, "name", "nt")
+        monkeypatch.setattr(chat.typeahead.os, "name", "nt")
         monkeypatch.setattr(msvcrt, "kbhit", lambda: bool(keys))
         monkeypatch.setattr(msvcrt, "getwch", lambda: keys.pop(0))
 
@@ -2914,7 +2914,7 @@ class TestContextCommand:
         async def fake(ctx, renderer):
             seen.append(ctx.session_id)
 
-        monkeypatch.setattr(chat, "_show_context", fake)
+        monkeypatch.setattr(chat.agent_setup, "_show_context", fake)
         drive_chat_repl(monkeypatch, ["/context"])
 
         assert seen == ["s1"]
@@ -2927,7 +2927,7 @@ class TestContextCommand:
         async def fake(ctx, renderer):
             seen.append("ran")
 
-        monkeypatch.setattr(chat, "_show_context", fake)
+        monkeypatch.setattr(chat.agent_setup, "_show_context", fake)
         drive_chat_repl(monkeypatch, ["/ctx"])
 
         assert seen == ["ran"]
@@ -3188,7 +3188,7 @@ class TestChatHoldsTheOpenSession:
         from agent_system.core.session_presence import SessionPresence
 
         store = SessionPresence(tmp_path)
-        monkeypatch.setattr(chat, "presence_for", lambda config: store)
+        monkeypatch.setattr(chat.context, "presence_for", lambda config: store)
         # The caller hands the session over held (agent_cli holds it before it
         # is loaded); the REPL takes that hold with it from here.
         store.hold("s1", "u", "a")
@@ -3214,7 +3214,7 @@ class TestChatHoldsTheOpenSession:
         from agent_system.core.session_presence import SessionBusy, SessionPresence
 
         store = SessionPresence(tmp_path)
-        monkeypatch.setattr(chat, "presence_for", lambda config: store)
+        monkeypatch.setattr(chat.context, "presence_for", lambda config: store)
         store.hold("s1", "u", "a")
         taken = store.hold
 
@@ -3276,7 +3276,7 @@ class TestCtrlCOutsideATurn:
             finished.append(True)
 
         turns = []
-        monkeypatch.setattr(chat, "_list_sessions", slow_listing)
+        monkeypatch.setattr(chat.sessions, "_list_sessions", slow_listing)
         drive_chat_repl(monkeypatch, ["/sessions", "danach"],
                         turn_probe=lambda loop, ctx, task, renderer, editor=None:
                         turns.append(task) or {})
@@ -3295,9 +3295,9 @@ class TestCtrlCOutsideATurn:
             return True
 
         held, released = [], []
-        monkeypatch.setattr(chat, "_hold_session",
+        monkeypatch.setattr(chat.context, "_hold_session",
                             lambda ctx, sid: held.append(sid) or True)
-        monkeypatch.setattr(chat, "_release_session",
+        monkeypatch.setattr(chat.context, "_release_session",
                             lambda ctx, sid: released.append(sid))
         drive_chat_repl(monkeypatch, ["/resume s2"], resume=slow_resume)
 
@@ -3315,7 +3315,7 @@ class TestCtrlCOutsideATurn:
             written.append(ctx.session_id)
             return True
 
-        monkeypatch.setattr(chat, "_save_session", slow_save)
+        monkeypatch.setattr(chat.context, "_save_session", slow_save)
         ctx = _inject_ctx(None)
         ctx.was_new_session = True
         loop = asyncio.new_event_loop()
@@ -3417,7 +3417,7 @@ class TestWhatACtrlCStops:
     def test_a_hard_cancel_keeps_what_the_turn_spent(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
 
-        monkeypatch.setattr(chat, "_CANCEL_GRACE_S", 0.01)
+        monkeypatch.setattr(chat.turn, "_CANCEL_GRACE_S", 0.01)
         loop = asyncio.new_event_loop()
         try:
             turn = loop.create_task(asyncio.sleep(10))
@@ -3453,14 +3453,14 @@ class TestTheChatLetsGoOfItsSession:
         import agent_system.cli_utils.chat as chat
 
         released = []
-        monkeypatch.setattr(chat, "_release_session",
+        monkeypatch.setattr(chat.context, "_release_session",
                             lambda ctx, sid: released.append(sid))
 
         def broken(agent):
             raise RuntimeError("plugin commands broke")
 
-        monkeypatch.setattr(chat, "collect_plugin_commands", broken)
-        monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: False, raising=False)
+        monkeypatch.setattr(chat.repl, "collect_plugin_commands", broken)
+        monkeypatch.setattr(chat.repl.sys.stdin, "isatty", lambda: False, raising=False)
         loop = asyncio.new_event_loop()
         try:
             with pytest.raises(RuntimeError, match="plugin commands broke"):
@@ -3525,7 +3525,7 @@ class TestWhatTheCommandLineHandsTheRepl:
 
         seen = {}
         monkeypatch.setattr(
-            chat, "_task_with_attachments",
+            chat.sessions, "_task_with_attachments",
             lambda ctx, task, renderer: seen.update(
                 attachments=list(ctx.attachments)) or task)
         drive_chat_repl(
@@ -3624,8 +3624,8 @@ class TestResumeBringsTheSessionAlong:
 
         ctx, loads = self._ctx(monkeypatch, "coder", "profile_b")
         held, released = [], []
-        monkeypatch.setattr(chat, "_hold_session", lambda ctx, sid: held.append(sid) or True)
-        monkeypatch.setattr(chat, "_release_session", lambda ctx, sid: released.append(sid))
+        monkeypatch.setattr(chat.context, "_hold_session", lambda ctx, sid: held.append(sid) or True)
+        monkeypatch.setattr(chat.context, "_release_session", lambda ctx, sid: released.append(sid))
 
         assert await chat._resume_into(ctx, "Der Blitter", "s1") is True
 
@@ -3749,7 +3749,7 @@ class TestSkillsThatCannotRun:
 
         registry = SimpleNamespace(list_skills=lambda: [
             SimpleNamespace(name=name) for name in ("writer", "3d-print", "tools")])
-        monkeypatch.setattr(chat, "_skill_registry", lambda ctx: registry)
+        monkeypatch.setattr(chat.agent_setup, "_skill_registry", lambda ctx: registry)
 
         assert chat._available_skills(None) == ["writer"]
 
@@ -3759,7 +3759,7 @@ class TestSkillsThatCannotRun:
         import agent_system.skills as skills
 
         registry = SimpleNamespace(get=lambda name: SimpleNamespace(name=name))
-        monkeypatch.setattr(chat, "_skill_registry", lambda ctx: registry)
+        monkeypatch.setattr(chat.agent_setup, "_skill_registry", lambda ctx: registry)
 
         def unreadable(skill, arguments):
             raise UnicodeDecodeError("utf-8", b"\xe4", 0, 1, "invalid start byte")
@@ -3826,7 +3826,7 @@ class TestTheFooterFollowsTheModelThatRan:
         import agent_system.cli_utils.chat as chat
 
         priced = []
-        monkeypatch.setattr(chat, "_accumulate_usage",
+        monkeypatch.setattr(chat.token_usage, "_accumulate_usage",
                             lambda total, usage, model=None, is_batch=False:
                             priced.append((model, is_batch)))
         agent = _FakeAgent([
@@ -3883,17 +3883,17 @@ class TestTheFooterFollowsTheModelThatRan:
         ])
         agent.llm = self._Client("agent-model", 1_000_000)
         r, _ = _renderer()
-        original = chat._accumulate_usage
+        original = chat.token_usage._accumulate_usage
 
         def record(total, usage, model=None, is_batch=False):
             priced.append(model)
             return original(total, usage, model, is_batch)
 
-        chat._accumulate_usage = record
+        chat.token_usage._accumulate_usage = record
         try:
             result = await run_chat_turn(agent, "q", "s", r)
         finally:
-            chat._accumulate_usage = original
+            chat.token_usage._accumulate_usage = original
 
         assert priced == ["escalated-model"], "a call without usage was priced"
         assert "context_window" not in result
@@ -3937,12 +3937,12 @@ class TestInterruptsInsideTheWork:
 
         ctx = _inject_ctx(None)
         loop = asyncio.new_event_loop()
-        original = chat._save_session
-        chat._save_session = save_that_is_hit
+        original = chat.context._save_session
+        chat.context._save_session = save_that_is_hit
         try:
             assert chat._save_now(loop, ctx) is False
         finally:
-            chat._save_session = original
+            chat.context._save_session = original
             loop.close()
         assert ctx.last_saved is None
         assert "(save interrupted)" in capsys.readouterr().err
@@ -3962,7 +3962,7 @@ class TestInterruptsInsideTheWork:
                 raise KeyboardInterrupt
             return real_resolve(task, *args)
 
-        monkeypatch.setattr(chat, "resolve_chat_input", resolve_hit_once)
+        monkeypatch.setattr(chat.repl, "resolve_chat_input", resolve_hit_once)
         turns = []
 
         def probe(loop, ctx, task, renderer, editor=None):
@@ -3985,7 +3985,7 @@ class TestInterruptsInsideTheWork:
                 raise KeyboardInterrupt
             return real_render(renderer, summary)
 
-        monkeypatch.setattr(chat, "_render_answer", render_hit)
+        monkeypatch.setattr(chat.turn, "_render_answer", render_hit)
 
         def probe(loop, ctx, task, renderer, editor=None):
             turns.append(task)
@@ -4030,9 +4030,9 @@ class TestWhatSurvivesAReseed:
         command = chat.PluginCommand(plugin="context_engineer", name="compact",
                                      summary="", tool="context_engineer_compact",
                                      argument="keep")
-        monkeypatch.setattr(chat, "_run_plugin_command",
+        monkeypatch.setattr(chat.repl, "_run_plugin_command",
                             lambda loop, ctx, commands, qualified, payload: None)
-        monkeypatch.setattr(chat, "_expand_skill", lambda ctx, name, payload: "skill text")
+        monkeypatch.setattr(chat.agent_setup, "_expand_skill", lambda ctx, name, payload: "skill text")
         editor = _RecordingEditor(["/context_engineer:compact", "/todo:milch kaufen",
                                    "/writer los", "/sessions", "/nonsense"])
 
@@ -4171,7 +4171,7 @@ class TestWorkThatGotThroughAsTheInterruptLanded:
         import agent_system.cli_utils.chat as chat
 
         released = []
-        monkeypatch.setattr(chat, "_release_session",
+        monkeypatch.setattr(chat.context, "_release_session",
                             lambda ctx, sid: released.append(sid))
 
         async def resume_that_finished(ctx, session_id):
@@ -4229,12 +4229,12 @@ class TestWorkThatGotThroughAsTheInterruptLanded:
 
         ctx = _inject_ctx(None)
         loop = asyncio.new_event_loop()
-        original = chat._save_session
-        chat._save_session = save_cancelled_as_the_interrupt_lands
+        original = chat.context._save_session
+        chat.context._save_session = save_cancelled_as_the_interrupt_lands
         try:
             assert chat._save_now(loop, ctx) is False
         finally:
-            chat._save_session = original
+            chat.context._save_session = original
             loop.close()
         assert ctx.last_saved is None
         assert "(save interrupted)" in capsys.readouterr().err
@@ -4268,12 +4268,12 @@ class TestASaveThatWonTheRace:
         ctx = _inject_ctx(None)
         ctx.was_new_session = True
         loop = asyncio.new_event_loop()
-        original = chat._save_session
-        chat._save_session = save_that_finished
+        original = chat.context._save_session
+        chat.context._save_session = save_that_finished
         try:
             assert chat._save_now(loop, ctx) is True
         finally:
-            chat._save_session = original
+            chat.context._save_session = original
             loop.close()
 
         assert ctx.last_saved == "s"
@@ -4551,7 +4551,7 @@ class TestResumeWithoutAnId:
             ctx.session_id = session_id
             return True
 
-        monkeypatch.setattr(chat, "_resume_session", resume)
+        monkeypatch.setattr(chat.sessions, "_resume_session", resume)
         ctx = _completion_ctx(monkeypatch)
         ctx.session_manager = SimpleNamespace(resolve_session_ref=_own_id, list_root_sessions=_sessions_of(
             [{"session_id": "s1", "title": "die offene"},
@@ -4593,7 +4593,7 @@ class TestResumeWithoutAnId:
             ctx.session_id = session_id
             return True
 
-        monkeypatch.setattr(chat, "_resume_session", resume)
+        monkeypatch.setattr(chat.sessions, "_resume_session", resume)
         ctx = _completion_ctx(monkeypatch)          # entry_name="coder"
         ctx.session_manager = SimpleNamespace(resolve_session_ref=_own_id, list_root_sessions=_sessions_of([
             {"session_id": "ff00", "title": "des writers", "agent_name": "writer"},
@@ -4648,14 +4648,14 @@ class TestResumeWithoutAnId:
         import agent_system.cli_utils.chat as chat
 
         released = []
-        monkeypatch.setattr(chat, "_hold_session", lambda ctx, sid: True)
-        monkeypatch.setattr(chat, "_release_session",
+        monkeypatch.setattr(chat.context, "_hold_session", lambda ctx, sid: True)
+        monkeypatch.setattr(chat.context, "_release_session",
                             lambda ctx, sid: released.append(sid))
 
         async def refused(ctx, session_id):
             return False
 
-        monkeypatch.setattr(chat, "_resume_session", refused)
+        monkeypatch.setattr(chat.sessions, "_resume_session", refused)
         ctx = _completion_ctx(monkeypatch)
 
         loop = asyncio.new_event_loop()
@@ -4670,15 +4670,15 @@ class TestResumeWithoutAnId:
         import agent_system.cli_utils.chat as chat
 
         released = []
-        monkeypatch.setattr(chat, "_hold_session", lambda ctx, sid: True)
-        monkeypatch.setattr(chat, "_release_session",
+        monkeypatch.setattr(chat.context, "_hold_session", lambda ctx, sid: True)
+        monkeypatch.setattr(chat.context, "_release_session",
                             lambda ctx, sid: released.append(sid))
 
         async def slow(ctx, session_id):
             await asyncio.sleep(10)
             return True
 
-        monkeypatch.setattr(chat, "_resume_session", slow)
+        monkeypatch.setattr(chat.sessions, "_resume_session", slow)
         ctx = _completion_ctx(monkeypatch)
 
         loop = asyncio.new_event_loop()
@@ -4814,13 +4814,13 @@ class TestSwitchAgent:
         import agent_system.cli_utils.chat as chat
 
         monkeypatch.setattr(
-            chat, "_agent_for",
+            chat.agent_setup, "_agent_for",
             lambda ctx, name: built or SimpleNamespace(
                 agent_config=SimpleNamespace(default_llm_profile="deep"),
                 llm=SimpleNamespace(model="model-of-" + name),
                 _session_tracker=ctx.agent._session_tracker,
                 system_config=ctx.agent.system_config))
-        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent: [])
+        monkeypatch.setattr(chat.agent_setup, "collect_plugin_commands", lambda agent: [])
 
     def test_a_bare_call_lists_the_agents(self, monkeypatch, capsys):
         import agent_system.cli_utils.chat as chat
@@ -4852,7 +4852,7 @@ class TestSwitchAgent:
         import agent_system.cli_utils.chat as chat
 
         self._patch_factory(monkeypatch)
-        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent: [
+        monkeypatch.setattr(chat.agent_setup, "collect_plugin_commands", lambda agent: [
             chat.PluginCommand(plugin="p", name="only-writer-has-this",
                                summary="s", tool="p_t")])
         ctx = _completion_ctx(monkeypatch)
@@ -4911,7 +4911,7 @@ class TestSwitchAgent:
         def refuses(ctx, name):
             raise NotAnAgent(f"'{name}' is a tool server, not an agent.", ["coder"])
 
-        monkeypatch.setattr(chat, "_agent_for", refuses)
+        monkeypatch.setattr(chat.agent_setup, "_agent_for", refuses)
         ctx = _completion_ctx(monkeypatch)
 
         assert chat._switch_agent(ctx, "writer") is False
@@ -4926,7 +4926,7 @@ class TestSwitchAgent:
             ctx.plugin_commands = ["marker"]
             return True
 
-        monkeypatch.setattr(chat, "_switch_agent", switch)
+        monkeypatch.setattr(chat.agent_setup, "_switch_agent", switch)
         seen = []
         editor = _RecordingEditor(["/agent writer", "frage"])
         drive_chat_repl(
@@ -4953,7 +4953,7 @@ class TestSwitchAgent:
             ctx.plugin_commands = [command]
             return True
 
-        monkeypatch.setattr(chat, "_switch_agent", switch)
+        monkeypatch.setattr(chat.agent_setup, "_switch_agent", switch)
         drive_chat_repl(monkeypatch, ["/agent writer", "/help"])
 
         assert "only-writer-has-this" in capsys.readouterr().out
@@ -5063,8 +5063,8 @@ class TestTakingTheLastExchangeBack:
         import agent_system.cli_utils.chat as chat
 
         saved = []
-        monkeypatch.setattr(chat, "_save_now", lambda loop, ctx: saved.append(True))
-        monkeypatch.setattr(chat, "_drop_last_exchange", lambda ctx: "die frage")
+        monkeypatch.setattr(chat.context, "_save_now", lambda loop, ctx: saved.append(True))
+        monkeypatch.setattr(chat.transcript, "_drop_last_exchange", lambda ctx: "die frage")
         turns = []
         drive_chat_repl(monkeypatch, ["/undo"],
                         turn_probe=lambda loop, ctx, task, renderer, editor=None:
@@ -5076,8 +5076,8 @@ class TestTakingTheLastExchangeBack:
     def test_retry_asks_the_same_thing_again(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
 
-        monkeypatch.setattr(chat, "_save_now", lambda loop, ctx: True)
-        monkeypatch.setattr(chat, "_drop_last_exchange",
+        monkeypatch.setattr(chat.context, "_save_now", lambda loop, ctx: True)
+        monkeypatch.setattr(chat.transcript, "_drop_last_exchange",
                             lambda ctx: _Msg("user", "schreib die routine"))
         turns = []
         drive_chat_repl(monkeypatch, ["/retry"],
@@ -5097,8 +5097,8 @@ class TestTakingTheLastExchangeBack:
         parts = [{"type": "text", "text": "was ist das?"},
                  {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}]
         dropped = ChatMessage(role="user", content=parts)
-        monkeypatch.setattr(chat, "_save_now", lambda loop, ctx: True)
-        monkeypatch.setattr(chat, "_drop_last_exchange", lambda ctx: dropped)
+        monkeypatch.setattr(chat.context, "_save_now", lambda loop, ctx: True)
+        monkeypatch.setattr(chat.transcript, "_drop_last_exchange", lambda ctx: dropped)
         turns = []
         drive_chat_repl(monkeypatch, ["/retry"],
                         turn_probe=lambda loop, ctx, task, renderer, editor=None:
@@ -5117,8 +5117,8 @@ class TestTakingTheLastExchangeBack:
         tell the user the turn is gone while `--session <id>` brings it back."""
         import agent_system.cli_utils.chat as chat
 
-        monkeypatch.setattr(chat, "_save_now", lambda loop, ctx: False)
-        monkeypatch.setattr(chat, "_drop_last_exchange",
+        monkeypatch.setattr(chat.context, "_save_now", lambda loop, ctx: False)
+        monkeypatch.setattr(chat.transcript, "_drop_last_exchange",
                             lambda ctx: _Msg("user", "die einzige frage"))
         drive_chat_repl(monkeypatch, ["/undo"])
 
@@ -5127,7 +5127,7 @@ class TestTakingTheLastExchangeBack:
     def test_nothing_to_take_back_starts_no_turn(self, monkeypatch, capsys):
         import agent_system.cli_utils.chat as chat
 
-        monkeypatch.setattr(chat, "_drop_last_exchange", lambda ctx: None)
+        monkeypatch.setattr(chat.transcript, "_drop_last_exchange", lambda ctx: None)
         turns = []
         drive_chat_repl(monkeypatch, ["/retry"],
                         turn_probe=lambda loop, ctx, task, renderer, editor=None:
@@ -5286,7 +5286,7 @@ class TestExport:
         import agent_system.cli_utils.chat as chat
 
         asked = []
-        monkeypatch.setattr(chat, "_export_transcript",
+        monkeypatch.setattr(chat.transcript, "_export_transcript",
                             lambda ctx, payload: asked.append(payload))
         drive_chat_repl(monkeypatch, ["/export /tmp/x.md"])
 
@@ -5558,8 +5558,8 @@ class TestComposeInEditor:
         import agent_system.cli_utils.chat as chat
 
         started = []
-        monkeypatch.setattr(chat, "_editor_needs_a_terminal", lambda: True)
-        monkeypatch.setattr(chat, "_compose_in_editor",
+        monkeypatch.setattr(chat.prompt_input, "_editor_needs_a_terminal", lambda: True)
+        monkeypatch.setattr(chat.prompt_input, "_compose_in_editor",
                             lambda seed, loop=None: started.append(seed))
         seen = []
 
@@ -5576,13 +5576,13 @@ class TestComposeInEditor:
         """The gate itself, on the real streams: both ends or nothing."""
         import agent_system.cli_utils.chat as chat
 
-        monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True,
+        monkeypatch.setattr(chat.prompt_input.sys.stdin, "isatty", lambda: True,
                             raising=False)
-        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: True,
+        monkeypatch.setattr(chat.prompt_input.sys.stdout, "isatty", lambda: True,
                             raising=False)
         assert not _editor_needs_a_terminal()
 
-        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: False,
+        monkeypatch.setattr(chat.prompt_input.sys.stdout, "isatty", lambda: False,
                             raising=False)
         assert _editor_needs_a_terminal()
 
@@ -5609,7 +5609,7 @@ class TestCopyLastAnswer:
 
     def _catch(self, monkeypatch):
         copied = {}
-        monkeypatch.setattr("agent_system.cli_utils.chat._copy_to_clipboard",
+        monkeypatch.setattr("agent_system.cli_utils.chat.transcript._copy_to_clipboard",
                             lambda text: copied.setdefault("text", text))
         return copied
 
@@ -5631,13 +5631,13 @@ class TestCopyLastAnswer:
         assert copied["text"] == "die antwort"
 
     def test_nothing_to_copy_says_so(self, capsys, monkeypatch):
-        monkeypatch.setattr("agent_system.cli_utils.chat._copy_to_clipboard",
+        monkeypatch.setattr("agent_system.cli_utils.chat.transcript._copy_to_clipboard",
                             lambda text: pytest.fail("nothing should be copied"))
         _copy_last_answer(_ctx_with([_Msg("user", "frage")]))
         assert "No answer to copy" in capsys.readouterr().out
 
     def test_a_failing_clipboard_tool_is_reported(self, capsys, monkeypatch):
-        monkeypatch.setattr("agent_system.cli_utils.chat._copy_to_clipboard",
+        monkeypatch.setattr("agent_system.cli_utils.chat.transcript._copy_to_clipboard",
                             lambda text: "xclip: not here")
         _copy_last_answer(_ctx_with(_TURN))
         assert "xclip: not here" in capsys.readouterr().out
@@ -5754,7 +5754,7 @@ class TestTheWokenTurnInTheLoop:
             watched.append(ctx.session_id)
             yield
 
-        monkeypatch.setattr(chat, "_watch_for_wake", _watch)
+        monkeypatch.setattr(chat.context, "_watch_for_wake", _watch)
         drive_chat_repl(monkeypatch, ["/exit"])
 
         assert watched == ["s1"]
@@ -5782,7 +5782,7 @@ class TestTheWokenTurnInTheLoop:
 
         merged = []
         monkeypatch.setattr(
-            chat, "_task_with_attachments",
+            chat.sessions, "_task_with_attachments",
             lambda ctx, task, renderer: merged.append(task) or task)
         png = tmp_path / "bild.png"
         png.write_bytes(b"x")
@@ -5815,7 +5815,7 @@ class TestTheWokenTurnInTheLoop:
 
         merged = []
         monkeypatch.setattr(
-            chat, "_task_with_attachments",
+            chat.sessions, "_task_with_attachments",
             lambda ctx, task, renderer: merged.append(task) or task)
         png = tmp_path / "bild.png"
         png.write_bytes(b"x")
@@ -5833,7 +5833,7 @@ class TestEditAndCopyAreDispatched:
         import agent_system.cli_utils.chat as chat
 
         copied = []
-        monkeypatch.setattr(chat, "_copy_last_answer",
+        monkeypatch.setattr(chat.transcript, "_copy_last_answer",
                             lambda ctx: copied.append(ctx.session_id))
         seen = []
 
@@ -5854,7 +5854,7 @@ class TestEditAndCopyAreDispatched:
             asked.append(seed)
             return "die lange nachricht"
 
-        monkeypatch.setattr(chat, "_compose_in_editor", _compose)
+        monkeypatch.setattr(chat.prompt_input, "_compose_in_editor", _compose)
         seen = []
 
         editor = drive_chat_repl(
@@ -5870,7 +5870,7 @@ class TestEditAndCopyAreDispatched:
     def test_an_empty_edit_sends_nothing(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
 
-        monkeypatch.setattr(chat, "_compose_in_editor",
+        monkeypatch.setattr(chat.prompt_input, "_compose_in_editor",
                             lambda seed, loop=None: "")
         seen = []
 
@@ -5888,7 +5888,7 @@ class TestEditAndCopyAreDispatched:
         which is why it answers None there and "" for an empty file."""
         import agent_system.cli_utils.chat as chat
 
-        monkeypatch.setattr(chat, "_compose_in_editor",
+        monkeypatch.setattr(chat.prompt_input, "_compose_in_editor",
                             lambda seed, loop=None: None)
         seen = []
 
@@ -5959,11 +5959,11 @@ class TestTheLoopKeepsTurningAtThePrompt:
             seen["loop"] = loop
             return _RecordingEditor(["/exit"])
 
-        monkeypatch.setattr(chat, "_build_prompt_editor", _factory)
-        monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
-        monkeypatch.setattr(chat, "_available_skills", lambda ctx: [])
-        monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True, raising=False)
-        monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(chat.prompt_input, "_build_prompt_editor", _factory)
+        monkeypatch.setattr(chat.repl, "collect_plugin_commands", lambda agent_: [])
+        monkeypatch.setattr(chat.agent_setup, "_available_skills", lambda ctx: [])
+        monkeypatch.setattr(chat.repl.sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(chat.repl.sys.stdout, "isatty", lambda: True, raising=False)
 
         loop = asyncio.new_event_loop()
         try:

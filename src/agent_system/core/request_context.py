@@ -77,7 +77,7 @@ def release_request_user_tree(request_id: str) -> None:
 #: Runs whose client shows a person what the run asks while it runs, and lets
 #: that person answer: the web chat says so when it starts a run (``attended``
 #: on POST /events and on /run with files), and ``agent-cli chat`` for a turn
-#: whose status and typed lines it shows (cli_utils/chat.py ``_execute_turn``).
+#: whose status and typed lines it shows (cli_utils/chat/turn.py ``_execute_turn``).
 #: Nothing else is: the openai_api plugin, agent-run, a one-shot agent-cli, a
 #: run woken in a process of its own (--woken) and the writer's dispatches read
 #: the stream as programs. A hook that would ask a person (tool_approval) asks

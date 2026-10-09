@@ -586,7 +586,7 @@ def test_the_person_at_the_terminal_answers_a_waiting_machine_in_agent_cli_chat(
 
         env = loop.run_until_complete(made())
         out = io.StringIO()
-        monkeypatch.setattr(chat, "_KeyReader", lambda active: Typist(out, ["approve"]))
+        monkeypatch.setattr(chat.typeahead, "_KeyReader", lambda active: Typist(out, ["approve"]))
         renderer = ChatRenderer(ansi=False, out=out, width_override=200, height_override=30)
         ctx = _ChatContext(agent=env.agent, entry_name=env.agent.name, session_service=None, session_user="u",
                            session_id="s", was_new_session=False, llm_profile="p", llm_override=None,

@@ -80,7 +80,7 @@ def test_a_chat_turn_refused_before_it_ran_saves_nothing(cli, tmp_path, monkeypa
         raise EOFError
 
     monkeypatch.setattr(Agent, "run_events", _refused)
-    monkeypatch.setattr(chat, "_read_input", prompt)
+    monkeypatch.setattr(chat.prompt_input, "_read_input", prompt)
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
 
     agent_cli.main()
@@ -106,7 +106,7 @@ def test_a_ctrl_c_in_a_refused_chat_turn_saves_nothing(cli, tmp_path, monkeypatc
         raise EOFError
 
     monkeypatch.setattr(Agent, "run_events", refused_then_ctrl_c)
-    monkeypatch.setattr(chat, "_read_input", prompt)
+    monkeypatch.setattr(chat.prompt_input, "_read_input", prompt)
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
 
     agent_cli.main()

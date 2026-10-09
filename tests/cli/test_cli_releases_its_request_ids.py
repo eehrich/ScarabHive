@@ -77,7 +77,7 @@ def test_a_chat_turn_leaves_nothing_registered_by_the_next_prompt(cli, runs, mon
         at_the_prompt.append([_left_behind(request_id) for request_id in runs])
         raise EOFError
 
-    monkeypatch.setattr(chat, "_read_input", prompt)
+    monkeypatch.setattr(chat.prompt_input, "_read_input", prompt)
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
 
     agent_cli.main()
