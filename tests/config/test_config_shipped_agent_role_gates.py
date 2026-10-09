@@ -85,7 +85,8 @@ def shipped():
 @pytest.fixture(scope="module")
 def default_file_dirs():
     """The directories a file_ops instance without allowed_directories gets -- read from the plugin, not
-    copied: it builds one and asks its path validator (construction starts no indexing)."""
+    copied: it builds one and asks its path validator (construction starts no indexing). None today: the
+    missing key fails closed (it used to open src, docs, tests and tmp, writable)."""
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
     from plugins.file_ops.server import FileOpsServer
 
@@ -93,9 +94,7 @@ def default_file_dirs():
         patch.chdir(REPO)  # the plugin resolves its default against the working directory
         server = FileOpsServer("role_gate_guard_probe", AgentSystemConfig(),
                                ToolServerConfig(type="file_ops", enabled=True))
-    directories = [str(path) for path in server.validator.allowed_dirs]
-    assert directories, "fixture: file_ops gave an instance without allowed_directories no directory at all"
-    return directories
+    return [str(path) for path in server.validator.allowed_dirs]
 
 
 def _within(path: Path, root: Path) -> bool:
@@ -166,7 +165,7 @@ def test_the_detector_sees_the_shipped_shells(shipped, default_file_dirs):
     ({"allowed_directories": ["config/agents"]}, True),
     ({"allowed_directories": ["src/plugins/x/skills"]}, True),           # writable code
     ({"allowed_directories": ["src/plugins/x/skills"], "read_only": True}, False),
-    ({}, True),                                                          # the plugin's default: writable src/
+    ({}, False),                                                         # the plugin's default: nothing
     ({"allowed_directories": ["."], "read_only": True}, True),           # the checkout, read-only or not
 ])
 def test_the_file_detector_by_directory(default_file_dirs, server, flagged):

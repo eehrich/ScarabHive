@@ -34,6 +34,7 @@ from bs4 import BeautifulSoup
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.cache import PluginCache
+from agent_system.utils.params import bool_param
 from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
 
 if TYPE_CHECKING:
@@ -714,7 +715,11 @@ class WebScraperServer(SchemaBasedToolServer):
             return {"error": str(e)}
         if target.is_dir():
             return {"error": f"path names a directory: {path}. Give the file name to write."}
-        if target.exists() and not params.get("overwrite", False):
+        try:
+            overwrite = bool_param(params, "overwrite")  # "false" as text is a true value in Python
+        except ValueError as e:
+            return {"error": str(e)}
+        if target.exists() and not overwrite:
             return {"error": f"File exists: {path}. Pass overwrite=true to replace it."}
         try:
             await self._assert_url_safe(url)

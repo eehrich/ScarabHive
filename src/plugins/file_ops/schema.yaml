@@ -238,7 +238,7 @@ tools:
 config:
   # DOCUMENTATION, not defaults: a tool server does not read this block. The
   # values are what server.py falls back to when the server entry in
-  # plugins.yaml leaves a key out.
+  # plugins.yaml leaves a key out -- except allowed_directories, see there.
 
   # Read-only mode: the write tools (manage, replace_string_in_file) are not
   # rendered, and the server refuses them if one is called anyway.
@@ -246,7 +246,8 @@ config:
 
   # The sandbox: every path a tool takes must resolve inside one of these.
   # Relative entries count from the project; "." is the folder the CLI was
-  # started in. Without the key: src, docs, tests and tmp of the project.
+  # started in. Without the key nothing is allowed (fail closed); the list
+  # below is an example, not a default.
   allowed_directories:
     - src
     - docs

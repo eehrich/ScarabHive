@@ -114,6 +114,9 @@ agent serves. Without it an agent runs for every account. Details:
      two different keys in both headers are refused)
    - Plugin routes take a key only when the plugin declares `accept_api_keys`
      in its security config (`openai_api` does); all others stay tokens-only
+   - A plugin type that declares `min_role` in its security config
+     (`log_viewer`, `ssh_control`: `admin`) keeps that role under any instance
+     name; a rule in `plugin_security` may ask for more, never for less
    - Routes that check their admin themselves (`user_management`,
      `agent_editor`) use `get_token_user`: a token only, no key in either
      header — `get_current_user` takes a Bearer key even when called with

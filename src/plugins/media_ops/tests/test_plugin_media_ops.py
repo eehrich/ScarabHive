@@ -468,6 +468,21 @@ class TestSave:
         assert forced["status"] == "success", forced
         assert target.read_bytes() == context_media.anthropic
 
+    @pytest.mark.parametrize("overwrite, kind", [("false", "FileExists"), ("maybe", "ValidationError")])
+    async def test_overwrite_as_text_keeps_the_file(
+            self, server, media_root, context_media, overwrite, kind):
+        # A model sends booleans as text too, and "false" is a true value in Python.
+        media_id = await self._first_inline(server, context_media,
+                                            context_media.anthropic)
+        target = media_root / "taken.png"
+        target.write_bytes(b"do not lose me")
+
+        refused = await server.call("media_ops_save",
+                                    _params(context_media, id=media_id,
+                                            path=str(target), overwrite=overwrite))
+        assert refused["error_type"] == kind, refused
+        assert target.read_bytes() == b"do not lose me"
+
     async def test_unknown_id_is_an_error(self, server, media_root, context_media):
         res = await server.call("media_ops_save",
                                 _params(context_media, id="mdeadbeef0000",

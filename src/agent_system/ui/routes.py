@@ -66,7 +66,8 @@ def plugin_panels(auth_config) -> list[Panel]:
             # Loud: the panel is missing from the launcher until the schema is fixed.
             logger.error("Panel of plugin %s left out of the catalogue: %s", instance, error)
             continue
-        plugin_policy = plugin_security.get_plugin_policy(instance, panel.url, "GET")
+        # As the route guard reads it: a plugin type's own role holds under any instance name
+        plugin_policy = plugin_web_registry.effective_policy(plugin_security, instance, panel.url, "GET")
         endpoint_policy = endpoint_security.get_endpoint_policy("GET", panel.url)
         panel.roles = roles_allowed((plugin_policy["requires_auth"], plugin_policy["min_role"]),
                                     (endpoint_policy.requires_auth, endpoint_policy.min_role))

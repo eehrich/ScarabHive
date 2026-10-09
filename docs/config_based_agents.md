@@ -501,7 +501,7 @@ by such hooks, not by an agent field. See [Plugin Hooks](plugin_hooks.md).
 | `GET /agents` | Agents with `visibility` `ui` or `both` |
 | `GET /agents/{name}/tools`, `GET /agents/{name}/allowed-tools` | Its tools, and its allow patterns |
 | `GET /agents/debug/{name}/system-prompt` (admin) | The rendered system prompt |
-| `GET /admin/config` (admin) | The loaded configuration |
+| `GET /admin/config` (admin) | The loaded configuration, credentials masked (`***`) |
 
 ## Troubleshooting
 
