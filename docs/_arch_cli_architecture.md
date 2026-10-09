@@ -100,7 +100,8 @@ In this order, all in `main`:
    from the flag. The message and the capability check are built by
    `message_with_attachments` (`utils/multimodal_processor.py`), the same
    place as for the API and the chat; error → exit 1.
-8. **Session presence** (`core/session_presence.py`): the session is
+8. **Session presence** (`core/session_presence/`: the rules in
+   `presence.py`, the wake command in `process.py`): the session is
    *held before* it is loaded. Occupied → error (exit 1), `--force`
    overrides an orphaned hold, `--woken` (set by the wake command) steps back
    silently. Ctrl+C is a stop: the session is marked released, and
@@ -134,6 +135,7 @@ In this order, all in `main`:
    reaches an LLM call does not trigger an endless loop) and starts a
    turn with `WAKE_TASK`, just as an input would. It takes it with
    `take_for_wake`, which also changes `<session>.woken`: `wake_session`
+   (`core/session_presence/wake.py`)
    repeats its ring while the session is held, and the chat holds it for the
    whole REPL — without the stamp every repeat was a woken turn of its own
    (up to 30, ten seconds apart). A woken `agent-cli run --woken` takes the

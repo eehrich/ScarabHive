@@ -1,4 +1,4 @@
-"""agent-cli: a Ctrl-C is its user stopping the run (core/session_presence.py).
+"""agent-cli: a Ctrl-C is its user stopping the run (core/session_presence/).
 
 The session is let go marked, so input that came in meanwhile does not start it
 again by itself. Drives the real main() on a real Agent -- only the LLM, the
@@ -80,7 +80,7 @@ def cli(tmp_path, monkeypatch):
         monkeypatch.setattr(agent_cli, name, nothing)
     monkeypatch.setattr(agent_cli, "entry_agent", lambda *args, **kwargs: agent)
     woken = []
-    monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+    monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "run", "--session", "s1", "do it"])
 
     loop = asyncio.new_event_loop()
@@ -88,7 +88,7 @@ def cli(tmp_path, monkeypatch):
         loop.run_until_complete(manager.create_session(user_id=USER, session_id="s1", agent_name="test_agent"))
     finally:
         loop.close()
-    monkeypatch.setattr(sp, "_stops", set())
+    monkeypatch.setattr(sp.presence, "_stops", set())
     yield SimpleNamespace(llm=llm, woken=woken, presence=sp.presence_for(config))
     close_cli_loop()
 

@@ -225,7 +225,7 @@ class TestBareResume:
 
 
 class TestSessionPresence:
-    """core/session_presence.py through the real main()."""
+    """core/session_presence/ through the real main()."""
 
     def test_the_wake_command_continues_the_session_of_its_user_on_its_agent_and_profile(
             self, cli_env, monkeypatch):
@@ -432,7 +432,7 @@ class TestSessionPresence:
         sessions = self._presence_on(cli_env, monkeypatch, tmp_path)
         (sessions / "cli_user").mkdir(parents=True, exist_ok=True)
         (sessions / "cli_user" / "s1.pending").touch()
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: (0, 0.0))
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: (0, 0.0))
         seen = self._records_the_task(monkeypatch)
 
         self._wake(monkeypatch)
@@ -479,7 +479,7 @@ class TestSessionPresence:
         (sessions / "cli_user").mkdir(parents=True, exist_ok=True)
         (sessions / "cli_user" / "s1.pending").touch()
         spawned = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda *args: spawned.append(args) or (0, 0.0))
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda *args: spawned.append(args) or (0, 0.0))
 
         self._wake(monkeypatch)
 

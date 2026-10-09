@@ -1,4 +1,4 @@
-"""Session presence in the API (core/session_presence.py).
+"""Session presence in the API (core/session_presence/).
 
 The API saves a session after its run -- /run right after it, the streams in
 their finally -- so it holds the session until that save: a woken run must not

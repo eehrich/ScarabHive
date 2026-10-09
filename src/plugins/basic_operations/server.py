@@ -85,7 +85,7 @@ class BasicOperationsServer(SchemaBasedToolServer):
         blocked = wake_blocked(self.system_config, session_id, user_id)
         if blocked:
             return blocked
-        # wake_blocked leaves this out on purpose (session_presence.py): reading
+        # wake_blocked leaves this out on purpose (session_presence/wake.py): reading
         # it parses the session file, so it is asked here, off the loop.
         presence = presence_for(self.system_config)
         try:

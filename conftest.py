@@ -430,31 +430,32 @@ def relative_data_dir(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def never_wake_a_session_for_real():
-    """Session presence (agent_system/core/session_presence.py) wakes an idle
+    """Session presence (agent_system/core/session_presence/) wakes an idle
     session by STARTING agent-cli -- a real run, with real LLM calls and real
     money. A test that reaches that path by accident has to fail, not spend.
 
-    Tests that mean to wake replace spawn_wake themselves; their patch wins for
-    as long as they run, and this puts the refusal back afterwards.
+    Tests that mean to wake replace spawn_wake themselves, in
+    session_presence/presence.py -- where notify() looks it up; their patch
+    wins for as long as they run, and this puts the refusal back afterwards.
     """
     try:
-        from agent_system.core import session_presence
+        from agent_system.core.session_presence import presence
     except Exception:  # the module is not part of every checkout state
         yield
         return
 
-    original = session_presence.spawn_wake
+    original = presence.spawn_wake
 
     def refuse(session_id, user_id, depth):
         raise WokeForReal(
             f"a test tried to wake session {session_id} for real -- spawn_wake "
             "starts agent-cli. Replace spawn_wake in the test.")
 
-    session_presence.spawn_wake = refuse
+    presence.spawn_wake = refuse
     try:
         yield
     finally:
-        session_presence.spawn_wake = original
+        presence.spawn_wake = original
 
 
 @pytest.fixture(autouse=True)

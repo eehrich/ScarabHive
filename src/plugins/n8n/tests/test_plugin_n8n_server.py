@@ -1279,7 +1279,7 @@ async def test_the_real_wake_check_is_asked_with_our_arguments(no_pause):
 
 
 async def test_a_sub_agent_session_is_told_it_is_never_woken(monkeypatch, no_pause):
-    """wake_blocked does not look (core/session_presence.py); notify() would
+    """wake_blocked does not look (core/session_presence/wake.py); notify() would
     answer 'queued' at the end and nobody would hear of the run."""
     server = make_server()
     server._client.workflows["w1"] = published()
