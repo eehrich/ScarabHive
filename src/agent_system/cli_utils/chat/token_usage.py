@@ -23,6 +23,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _short(n: float) -> str:
+    """A token count the way the footer and /costs print it: 1.2k from a thousand on."""
+    return f"{n / 1000:.1f}k" if n >= 1000 else f"{int(n)}"
+
+
 def _call_pricing_key(agent: Any, override: Any = None,
                       event: Any = None) -> tuple[Optional[str], bool]:
     """(model, is_batch) of the client that just ran -- read per call.
@@ -103,9 +108,6 @@ def _format_usage(totals: dict, elapsed: float, sym: dict,
     `context` is (tokens_in_window, window_size) for a single turn; the
     session total has no such thing and passes None.
     """
-    def _short(n: float) -> str:
-        return f"{n / 1000:.1f}k" if n >= 1000 else f"{int(n)}"
-
     prompt = totals.get("prompt_tokens", 0) or 0
     completion = totals.get("completion_tokens", 0) or 0
     cached = totals.get("cached_tokens", 0) or 0
@@ -200,9 +202,6 @@ def _show_costs(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
     if not totals:
         print("No LLM calls recorded for this session yet.")
         return
-
-    def _short(n: float) -> str:
-        return f"{n / 1000:.1f}k" if n >= 1000 else f"{int(n)}"
 
     known = totals.get("cost_known_calls", 0)
     estimated = totals.get("cost_estimated_calls", 0)

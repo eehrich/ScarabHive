@@ -80,6 +80,11 @@ def _render_tool_call(renderer: ChatRenderer, call: Any, full: bool) -> None:
         for line in str(arguments or "").splitlines():
             renderer.println(f"    {line}", color="90")
         return
+    _render_fields(renderer, data, "90")
+
+
+def _render_fields(renderer: ChatRenderer, data: dict, color: str) -> None:
+    """A tool call's arguments or its result in full: one key per line."""
     for key, value in data.items():
         # Escaped newlines are what made this a wall of text -- render the
         # value as the lines it actually is.
@@ -88,11 +93,11 @@ def _render_tool_call(renderer: ChatRenderer, call: Any, full: bool) -> None:
         if len(lines) <= 1:
             # The LINE, not the raw text: a value ending in "\n" is one line,
             # and printing it whole put a blank line under it.
-            renderer.println(f"    {key}: {lines[0] if lines else ''}", color="90")
+            renderer.println(f"    {key}: {lines[0] if lines else ''}", color=color)
         else:
-            renderer.println(f"    {key}:", color="90")
+            renderer.println(f"    {key}:", color=color)
             for line in lines:
-                renderer.println(f"      {line}", color="90")
+                renderer.println(f"      {line}", color=color)
 
 
 def _render_tool_result(renderer: ChatRenderer, message: Any, full: bool) -> None:
@@ -109,16 +114,7 @@ def _render_tool_result(renderer: ChatRenderer, message: Any, full: bool) -> Non
         return
 
     if isinstance(data, dict):
-        for key, value in data.items():
-            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-            lines = text.splitlines()
-            if len(lines) <= 1:
-                # see _render_tool_call: the line, not the raw text
-                renderer.println(f"    {key}: {lines[0] if lines else ''}", color="32")
-            else:
-                renderer.println(f"    {key}:", color="32")
-                for line in lines:
-                    renderer.println(f"      {line}", color="32")
+        _render_fields(renderer, data, "32")
     else:
         for line in raw.splitlines():
             renderer.println(f"    {line}", color="32")

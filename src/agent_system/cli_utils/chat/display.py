@@ -18,7 +18,8 @@ import shutil
 import sys
 import time
 import unicodedata
-from typing import Any, Optional, TextIO
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional, TextIO
 
 from ..common import reassert_vt
 
@@ -180,22 +181,37 @@ class ChatRenderer:
         continues further down instead of corrupting the viewport.
         """
         if not self.ansi:
-            self.out.write(text + "\n")
-            self.out.flush()
+            self._write_plain(text)
             return
+        with self._region_write():
+            offset = self._total - self._lines[key] if key in self._lines else None
+            if offset is not None and offset <= self._usable_height():
+                self.out.write(f"\x1b[{offset}A\r\x1b[K{text}\x1b[{offset}B\r")
+            else:
+                self._lines[key] = self._total
+                self._total += 1
+                self.out.write(text + "\n")
+
+    def _write_plain(self, text: str) -> None:
+        """Non-ANSI output: the line as it comes, chronologically."""
+        self.out.write(text + "\n")
+        self.out.flush()
+
+    @contextmanager
+    def _region_write(self) -> Iterator[None]:
+        """Around every write into the live region (_paint, println).
+
+        Before it the console is made fit for escapes, a resized terminal ends
+        the region, and the input row is blanked so the write starts on a
+        clean line; after it the input row is drawn again and all is flushed.
+        """
         # Any subprocess a tool spawned may have reset the console's VT flag
         # (MSYS bash does, on every start) -- re-assert before painting, or
         # everything from here on renders as literal escapes.
         reassert_vt()
         self._check_resize()
         self._erase_input_row()
-        offset = self._total - self._lines[key] if key in self._lines else None
-        if offset is not None and offset <= self._usable_height():
-            self.out.write(f"\x1b[{offset}A\r\x1b[K{text}\x1b[{offset}B\r")
-        else:
-            self._lines[key] = self._total
-            self._total += 1
-            self.out.write(text + "\n")
+        yield
         self._draw_input_row()
         self.out.flush()
 
@@ -258,20 +274,15 @@ class ChatRenderer:
         colour is applied per chunk AFTER slicing so no escape is ever cut.
         """
         if not self.ansi:
-            self.out.write(text + "\n")
-            self.out.flush()
+            self._write_plain(text)
             return
-        reassert_vt()  # see _paint
-        self._check_resize()
-        self._erase_input_row()
-        width = max(self._width() - 1, 10)
-        for logical in text.splitlines() or [""]:
-            for chunk in self._wrap(logical.expandtabs(4), width):
-                self.out.write(self._colored(chunk, color) if chunk else "")
-                self.out.write("\n")
-                self._total += 1
-        self._draw_input_row()
-        self.out.flush()
+        with self._region_write():
+            width = max(self._width() - 1, 10)
+            for logical in text.splitlines() or [""]:
+                for chunk in self._wrap(logical.expandtabs(4), width):
+                    self.out.write(self._colored(chunk, color) if chunk else "")
+                    self.out.write("\n")
+                    self._total += 1
 
     @staticmethod
     def _wrap(line: str, width: int) -> list[str]:
