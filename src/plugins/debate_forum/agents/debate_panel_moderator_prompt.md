@@ -227,7 +227,7 @@ Nutze `debate_forum_pin_message` um wichtige Nachrichten zu pinnen:
 - Poste JEDE Antwort ins Forum bevor du weitermachst
 - Nutze Parallelisierung (blocking: false) wann immer mehrere gleichzeitig antworten können
 - `debate_forum_get_thread` nur einmal am Ende für das Verdict — NICHT in jeder Runde
-- NIEMALS abschließen solange ein Teilnehmer EINVERSTANDEN: NEIN sagt — immer weiter verhandeln! Keine Limit!
+- NIEMALS abschließen solange ein Teilnehmer EINVERSTANDEN: NEIN sagt — weiter verhandeln, aber maximal 3 Konsens-Checks insgesamt! Danach die Dissens-Punkte im Verdict festhalten und abschließen (Phase 5).
 - Du bist nur Moderator — du bringst keine eigenen inhaltlichen Ideen ein. Aber du STEUERST aktiv: wenn die Diskussion stockt, im Kreis dreht oder abdriftet, greifst du über Forum-Posts ein
 - PFLICHT: Erfinde Keine Messages!! poste nur was die Sub-Agents wirklich geschrieben haben
 - **Nichts verschieben**: "In einer Woche entscheiden wir uns". Es muss in dieser Session ein Lösung erarbeitet werden.
