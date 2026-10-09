@@ -78,7 +78,7 @@ def _literal_strings(annotation: Any) -> frozenset:
 
 
 def _coerce_cli_value(value: str, keep: frozenset = frozenset()) -> Any:
-    """Auto-type a CLI KEY=VALUE value: int/float/bool/none, sonst String.
+    """Auto-type a CLI KEY=VALUE value: int/float/bool/none, otherwise string.
 
     ``keep`` holds spellings the target field accepts as a literal STRING;
     those win over the generic coercion. Without it ``thinking_level=none``
@@ -108,20 +108,20 @@ def _coerce_cli_value(value: str, keep: frozenset = frozenset()) -> Any:
 def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, Any]]:
     """Parse ``--llm-params KEY=VALUE ...`` into a flat llm_params dict.
 
-    Werte werden auto-getypt (``max_tokens=1000`` → int, ``stream=false`` →
-    bool, ``thinking_level=max`` → str) — die LLM-Params-Validierung
-    (LLMModelConfig-Re-Validierung in ``resolve_llm_config_for_agent``)
-    braucht echte Typen, keine Strings. Leeres Ergebnis → ``None``.
+    Values are auto-typed (``max_tokens=1000`` → int, ``stream=false`` →
+    bool, ``thinking_level=max`` → str) — the LLM-params validation
+    (LLMModelConfig re-validation in ``resolve_llm_config_for_agent``)
+    needs real types, not strings. Empty result → ``None``.
 
-    Zwei harte Fehler (``ValueError``) statt stiller Drift (Review-Befunde):
-    - Eintrag ohne ``=``: das ist fast immer der vom greedy ``nargs='+'``
-      verschluckte TASK-String — still überspringen hieße, der Agent läuft
-      lautlos mit dem Default-Task.
-    - Unbekannter Key (kein ``LLMModelConfig``-Feld): ``resolve_llm_params``
-      würde ein Dict aus lauter Fremd-Keys als profil-gekeyte Form deuten
-      und den Override LAUTLOS zu ``None`` mergen — ein Tippfehler
-      (``temperatur=``) verschwände wirkungslos, während die CLI ihn als
-      angewandt anzeigt.
+    Two hard errors (``ValueError``) instead of silent drift (review findings):
+    - Entry without ``=``: this is almost always the TASK string swallowed
+      by the greedy ``nargs='+'`` — skipping it silently would make the agent
+      run quietly with the default task.
+    - Unknown key (not an ``LLMModelConfig`` field): ``resolve_llm_params``
+      would read a dict made up entirely of foreign keys as the profile-keyed
+      form and merge the override SILENTLY to ``None`` — a typo
+      (``temperatur=``) would vanish without effect while the CLI displays it
+      as applied.
     """
     if not raw_items:
         return None
@@ -132,8 +132,8 @@ def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, 
         if "=" not in item:
             raise ValueError(
                 f"invalid --llm-params entry (expected KEY=VALUE): {item!r}. "
-                f"Steht --llm-params VOR dem Task? Task zuerst angeben oder "
-                f"--llm-params ans Ende stellen."
+                f"Is --llm-params placed BEFORE the task? Give the task first or "
+                f"put --llm-params at the end."
             )
         key, _, value = item.partition("=")
         key = key.strip()
@@ -438,16 +438,16 @@ def _main() -> None:
     # all over the plugin configs. What the person meant by "." is kept by
     # paths.launch_dir() for the arguments THEY typed.
     enter_project()
-    # Windows-Konsolen/Pipes laufen oft mit cp1252 — Unicode in Ausgaben
-    # (Box-Zeichen der Plugin-Tabelle, Emojis in Beschreibungen) crashte dann
-    # mit UnicodeEncodeError.
-    # - Terminal (tty): Encoding beibehalten, nicht darstellbare Zeichen
-    #   ersetzen (Anzeige degradiert sichtbar statt zu crashen).
-    # - Pipe/Datei (non-tty): UTF-8 erzwingen — Maschinen-Konsum (z.B.
-    #   `agent-cli mcp status | jq`) bekommt byte-treue Daten statt stiller
-    #   '?'-Korruption. Gleiche Konvention wie utils/logging.py.
-    # - stdin: nur errors="replace" (kein Encoding-Wechsel) — verhindert
-    #   UnicodeDecodeError bei Paste/Pipe-Input in Chat-Modi.
+    # Windows consoles/pipes often run with cp1252 — Unicode in output
+    # (box characters of the plugin table, emojis in descriptions) then crashed
+    # with UnicodeEncodeError.
+    # - Terminal (tty): keep the encoding, replace characters that cannot be
+    #   displayed (the display degrades visibly instead of crashing).
+    # - Pipe/file (non-tty): force UTF-8 — machine consumers (e.g.
+    #   `agent-cli mcp status | jq`) get byte-exact data instead of silent
+    #   '?' corruption. Same convention as utils/logging.py.
+    # - stdin: only errors="replace" (no encoding change) — prevents
+    #   UnicodeDecodeError on paste/pipe input in chat modes.
     for _stream in (sys.stdout, sys.stderr):
         if _stream is not None and hasattr(_stream, "reconfigure"):
             try:
@@ -456,7 +456,7 @@ def _main() -> None:
                 else:
                     _stream.reconfigure(encoding="utf-8", errors="replace")
             except Exception:
-                pass  # exotische Streams (Tests, Pipes) — Verhalten wie bisher
+                pass  # exotic streams (tests, pipes) -- behaviour as before
     if sys.stdin is not None and hasattr(sys.stdin, "reconfigure"):
         try:
             sys.stdin.reconfigure(errors="replace")
@@ -752,9 +752,9 @@ def _main() -> None:
         _exit_on_unknown_profile(config, args.llm_profile_override)
     # If user requested plugin listing, handle and exit early (no heavy bootstrap)
     if args.subcommand == "reload":
-        # NB: kein lokales `import os` hier — das würde `os` zu einer lokalen
-        # Variable von main() machen und den Modul-Import fuer ALLE nested
-        # Funktionen shadowen (NameError bei jedem anderen Subcommand).
+        # NB: no local `import os` here — that would make `os` a local
+        # variable of main() and shadow the module import for ALL nested
+        # functions (NameError in every other subcommand).
         try:
             import httpx
             from .llm.tls import httpx_verify
@@ -1722,8 +1722,8 @@ def _main() -> None:
                     else:
                         vprint(f"[cli] created new session: {actual_session_id}")
                         logger.info(f"Created new session {actual_session_id}")
-                        # stderr: stdout traegt das Ergebnis (`>out.json` darf
-                        # keine Meta-Zeilen einsammeln); im Terminal weiter sichtbar.
+                        # stderr: stdout carries the result (`>out.json` must not
+                        # collect meta lines); still visible in the terminal.
                         print(f"\nSession saved: {actual_session_id}", file=sys.stderr)
                 else:
                     logger.warning("Session save returned False")

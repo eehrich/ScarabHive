@@ -468,9 +468,9 @@ class _ConsoleQueue:
                         self._write(stream, text)
                 if self.dropped and (self._queue.empty() or time.monotonic() - self._told > 10):
                     dropped, self._told = self.dropped, time.monotonic()
-                    why = self.failure or "die Konsole las nicht"
-                    if self._write(stream, f"[console] {dropped} Ausgaben ausgelassen ({why});"
-                                           f" die Log-Zeilen stehen in der Logdatei unter logs/\n", lost=0):
+                    why = self.failure or "the console did not read"
+                    if self._write(stream, f"[console] {dropped} outputs dropped ({why});"
+                                           f" the log lines are in the log file under logs/\n", lost=0):
                         self.dropped, self.failure = self.dropped - dropped, ""
                 try:
                     stream.flush()

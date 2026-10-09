@@ -444,7 +444,7 @@ export function dialog({ title, message = '', actions, input = null }) {
   return inShell ? request('pk:dialog', { dialog: spec }) : showDialog(document, spec);
 }
 
-// The kit's own words, in the language the page declares (<html lang>; the writer panels are German).
+// The kit's own words, in the language the page declares (<html lang>; panels that declare lang=de get German).
 const WORDS = {
   en: {
     notice: 'Notice', confirm: 'Confirm', input: 'Input', cancel: 'Cancel',

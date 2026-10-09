@@ -353,14 +353,14 @@ def _around(content: str, needle: str, context_chars: int) -> str:
     end = min(len(text), idx + len(needle) + context_chars)
     return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
 
-#: Markiert die eigene System-Injektion ("Stored Information"), damit sie beim
-#: naechsten Turn ERSETZT statt ein zweites Mal eingefuegt wird. Gleiche
-#: Konvention wie ``debate_forum`` (INJECTION_MARKER + ChatMessage.injected_by).
+#: Marks the plugin's own system injection ("Stored Information") so that it
+#: is REPLACED on the next turn instead of inserted a second time. Same
+#: convention as ``debate_forum`` (INJECTION_MARKER + ChatMessage.injected_by).
 _RESTORATION_MARKER = "context_engineer_restoration"
 
-#: Ueberschrift des Blocks — Fallback fuer Sessions, deren Historie noch
-#: unmarkierte Kopien aus der Zeit vor dem Marker enthaelt. Muss zum Text in
-#: ``LayeredCompactionStrategy.get_restoration_context`` passen.
+#: Heading of the block -- fallback for sessions whose history still holds
+#: unmarked copies from before the marker existed. Must match the text in
+#: ``LayeredCompactionStrategy.get_restoration_context``.
 _RESTORATION_HEADER = "# Context Engineer - Stored Information"
 
 
@@ -1248,20 +1248,20 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             while len(self._shown_blocks) > _MAX_HYSTERESIS_MARKS:
                 self._shown_blocks.popitem(last=False)
             
-            # Vorherige Injektion ENTFERNEN, bevor neu eingefuegt wird
-            # (Konvention wie debate_forum: ueber `injected_by` markiert).
-            # Ohne das wuchs der Block mit: die kompaktierten Messages werden
-            # persistiert, also ist die Injektion des letzten Turns beim
-            # naechsten schon Teil der Historie -- und weil sie selbst eine
-            # system-Message ist, wandert die Einfuegestelle jedes Mal eins
-            # weiter. Gemessen an einem Sub-Agenten mit 109 Aufrufen:
-            # Request 21 = 15 Kopien, Request 61 = 55, Request 109 = 103
-            # Kopien in 201 Messages. Folge: halber Kontext war Duplikat, und
-            # die verschobene Einfuegestelle brach den Prompt-Cache in 103 von
-            # 108 Turns (Cache-Quote 8-13 % statt 50-65 %).
-            # Der Inhalts-Treffer ist NICHT redundant: Sessions, die vor
-            # diesem Fix liefen, tragen unmarkierte Kopien in ihrer
-            # persistierten Historie -- ohne ihn blieben die dort stehen.
+            # REMOVE the previous injection before inserting anew
+            # (convention as in debate_forum: marked via `injected_by`).
+            # Without this the block grew: the compacted messages are
+            # persisted, so the injection of the last turn is already part of
+            # the history on the next one -- and since it is itself a system
+            # message, the insertion point moves on by one every time.
+            # Measured on a sub-agent with 109 calls: request 21 = 15 copies,
+            # request 61 = 55, request 109 = 103 copies in 201 messages.
+            # Result: half the context was duplicates, and the shifted
+            # insertion point broke the prompt cache in 103 of 108 turns
+            # (cache rate 8-13 % instead of 50-65 %).
+            # The content match is NOT redundant: sessions that ran before
+            # this fix carry unmarked copies in their persisted history --
+            # without it those would stay there.
             for i in range(len(new_messages) - 1, -1, -1):
                 msg = new_messages[i]
                 # The legacy copies were system messages, and only those match

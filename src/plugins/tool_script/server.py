@@ -145,14 +145,13 @@ class ToolScriptServer(SchemaBasedToolServer):
         # dispatch_tool_call regardless.
         self._allowed_tools: List[str] = list(config_dict.get("allowed_tools") or [])
         self._blocked_tools: List[str] = list(config_dict.get("blocked_tools") or [])
-        # Server-seitige Param-Injection: {tool-pattern: {param: value}}.
-        # Für Secrets (write_key, ...), die NIE durchs LLM fließen sollen —
-        # LLM-getippte Werte sind transpositions-anfällig (v6-Befund: der
-        # Coordinator vertippte den write_key als WC_x9K_mP statt ***REMOVED***).
-        # Config gewinnt IMMER über Script-Werte (ein vertippter Key wird
-        # ersetzt, nicht nur ergänzt); Injection VOR der Schema-Validierung,
-        # damit Scripts den Param komplett weglassen dürfen. Werte kommen aus
-        # der Server-Config → trusted; Patterns wie bei allowed_tools (fnmatch).
+        # Server-side param injection: {tool-pattern: {param: value}}.
+        # For secrets (write_key, ...) that must NEVER pass through the LLM --
+        # values a model types get mistyped (transposed characters).
+        # Config ALWAYS wins over script values (a mistyped key is replaced,
+        # not just completed); injection runs BEFORE schema validation, so
+        # scripts may leave the param out entirely. Values come from the
+        # server config, so they are trusted; patterns as for allowed_tools (fnmatch).
         raw_inject = config_dict.get("inject_params") or {}
         if not isinstance(raw_inject, dict):
             logger.warning(
@@ -166,9 +165,9 @@ class ToolScriptServer(SchemaBasedToolServer):
             for pattern, extra in raw_inject.items()
             if isinstance(extra, dict)
         }
-        # Review-Befund: still verworfene Einträge machen die Injection
-        # lautlos wirkungslos — Scripts lassen den Param bewusst weg und
-        # scheitern dann erst zur Laufzeit an der Ziel-Tool-Validierung.
+        # Silently dropped entries would make the injection ineffective
+        # without notice -- scripts deliberately leave the param out and
+        # then fail only at runtime in the target tool's validation.
         _dropped = sorted(
             str(p) for p, e in raw_inject.items() if not isinstance(e, dict)
         )

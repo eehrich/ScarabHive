@@ -1,55 +1,53 @@
-"""Ableitung des OpenAI ``prompt_cache_key`` aus dem Prompt-Praefix.
+"""Derivation of the OpenAI ``prompt_cache_key`` from the prompt prefix.
 
-GPT-5.6+ matcht den Prompt-Cache praktisch nur noch, wenn ein
-``prompt_cache_key`` gesetzt ist (OpenAI-Doku, belegt Testlauf B936:
-byte-identischer 10k-Prefix, 0 cached_tokens ohne Key). Der Key ist ein
-Routing-Hint: Requests mit demselben Key landen auf derselben Cache-Shard,
-~15 req/min pro Key sustained.
+GPT-5.6+ practically only matches the prompt cache when a
+``prompt_cache_key`` is set (OpenAI docs, measured: byte-identical
+10k prefix, 0 cached_tokens without a key). The key is a routing hint:
+requests with the same key land on the same cache shard,
+~15 req/min per key sustained.
 
-Ein statischer Key pro Agent kollidiert, sobald mehrere Buecher/Stories
-parallel laufen: verschiedene Prefixe teilen sich dann eine Shard
-(Eviction-Thrash) und reissen das Rate-Limit. Session-IDs taugen auch
-nicht — die Pipeline erzeugt pro Schritt neue Sessions, der Cache-Verbund
-wuerde zerrissen.
+A static key per agent collides as soon as several jobs/stories run in
+parallel: different prefixes then share one shard (eviction thrash) and
+blow the rate limit. Session IDs are no good either — the pipeline
+creates new sessions per step, the cache group would be torn apart.
 
-Loesung ``prompt_cache_key: "auto"`` — der Key wird zur Laufzeit gehasht
-aus:
+Solution ``prompt_cache_key: "auto"`` — the key is hashed at runtime
+from:
 
-1. den FUEHRENDEN System-/Developer-Messages, komplett — ausser den
-   INJIZIERTEN (``injected_by`` gesetzt). Der System-Prompt ist pro Agent
-   konstant; ihn voll zu hashen ist deterministisch und verhindert, dass
-   ein langer System-Prompt (>4k, z.B. scene_planner) das Fenster
-   auffrisst, bevor buchspezifischer Inhalt sichtbar wird. Ein injizierter
-   Block dort ist das Gegenteil von konstant: er wird jeden Call neu
-   gebaut, und mitgehasht wanderte der Key mit jedem abgehakten
-   Todo-Punkt auf eine neue Shard. Das eigentliche Heilmittel ist die
-   STELLE — ein Block am Ende laesst den Prefix davor byte-identisch —,
-   diese Regel deckt, was trotzdem im Kopf steht.
+1. the LEADING system/developer messages, in full — except the
+   INJECTED ones (``injected_by`` set). The system prompt is constant
+   per agent; hashing it in full is deterministic and prevents a long
+   system prompt (>4k) from eating up the window before run-specific
+   content becomes visible. An injected block there is the opposite of
+   constant: it is rebuilt on every call, and hashed along, the key
+   would move to a new shard with every checked-off todo item. The real
+   remedy is the POSITION — a block at the end leaves the prefix before
+   it byte-identical —, this rule covers what still sits in the head.
 
-   ⚠️ Der Umkehrschluss: was markiert ist, traegt keine Identitaet mehr.
-   Ein injizierter Block, der pro Buch/Story verschiedenen Text haette
-   (z.B. ein ``simple_prompt_inject`` mit buchspezifischer
-   ``template_vars``-Variable), faellt damit aus dem Key und legt zwei
-   Laeufe auf dieselbe Shard. Was ein Lauf vom anderen unterscheidet,
-   gehoert in den System-Prompt oder in die Task-Message.
-2. der ERSTEN Nicht-System-Message, auf ``PREFIX_CHARS`` Zeichen gekappt.
-   Nur die erste: spaeter angehaengte Turns derselben Session aendern den
-   Key damit nie — alle Calls einer Konversation bleiben in derselben
-   Cache-Gruppe. Injected messages are skipped here too: a note behind the
-   system prompt is the same for every run and names no book. Only when no
+   ⚠️ The converse: what is marked no longer carries identity.
+   An injected block that would have different text per run/story
+   (e.g. a ``simple_prompt_inject`` with a run-specific
+   ``template_vars`` variable) drops out of the key and puts two
+   runs on the same shard. What distinguishes one run from another
+   belongs in the system prompt or in the task message.
+2. the FIRST non-system message, truncated to ``PREFIX_CHARS`` characters.
+   Only the first: turns of the same session appended later never
+   change the key — all calls of a conversation stay in the same
+   cache group. Injected messages are skipped here too: a note behind the
+   system prompt is the same for every run and names no run. Only when no
    user task follows does the first injected one count, as before.
 
-Damit gilt automatisch: gleicher stabiler Prefix <-> gleicher Key.
+This automatically gives: same stable prefix <-> same key.
 
-- scene_planner u.ae. (buchstabiler Block frueh im Task): Key ist
-  implizit pro Buch — parallele Buecher kollidieren nicht.
-- Agents mit generischem Kickoff-Task: Key degeneriert zum Agent-Key
-  (System-Hash) — exakt das Verhalten des statischen Keys, kein Verlust.
+- Agents with a run-specific block early in the task: the key is
+  implicitly per run — parallel runs do not collide.
+- Agents with a generic kickoff task: the key degenerates to the agent key
+  (system hash) — exactly the behaviour of the static key, no loss.
 
-PREFIX_CHARS = 4096 Zeichen entspricht grob der minimalen cachebaren
-Einheit von 1024 Tokens: Wer System-Prompt + diesen Task-Anfang teilt,
-gehoert in dieselbe Cache-Gruppe; was erst spaeter divergiert, trennt
-die Keys absichtlich nicht.
+PREFIX_CHARS = 4096 characters corresponds roughly to the minimum cacheable
+unit of 1024 tokens: whoever shares the system prompt + this task start
+belongs in the same cache group; what only diverges later does not
+separate the keys, on purpose.
 """
 
 from __future__ import annotations
@@ -62,30 +60,30 @@ PREFIX_CHARS = 4096
 
 _SYSTEM_ROLES = {"system", "developer"}
 
-# --- Explizite Cache-Breakpoints (GPT-5.6+) ----------------------------------
+# --- Explicit cache breakpoints (GPT-5.6+) ----------------------------------
 #
-# Empirisch kartiert (2026-07-21, 15 Experimente via OpenRouter /responses):
-# Implizites 5.6-Caching matcht NUR Exakt-Wiederholungen und Konversations-
-# Fortsetzungen — ein Request, der einen langen Prefix teilt und dann mitten
-# im letzten Item divergiert, cached IMMER 0 (auch bei 29k Tokens identischem
-# Prefix). Fix lt. OpenAI-Doku: `prompt_cache_breakpoint` am Content-Part
-# markiert das Ende eines wiederverwendbaren Prefix; Hit = laengster Prefix
-# aus byte-identischen KOMPLETTEN Breakpoint-Bloecken. Max 4 Cache-Writes
-# pro Request (impliziter Breakpoint belegt einen Slot -> max 3 explizite).
+# Mapped empirically (2026-07-21, 15 experiments via OpenRouter /responses):
+# Implicit 5.6 caching ONLY matches exact repetitions and conversation
+# continuations — a request that shares a long prefix and then diverges in the
+# middle of the last item ALWAYS caches 0 (even with 29k tokens of identical
+# prefix). Fix per OpenAI docs: `prompt_cache_breakpoint` on the content part
+# marks the end of a reusable prefix; hit = longest prefix made of
+# byte-identical COMPLETE breakpoint blocks. Max 4 cache writes
+# per request (the implicit breakpoint takes a slot -> max 3 explicit).
 #
-# Pipelines markieren Block-Grenzen im Task-Text mit diesem Sentinel; die
-# OpenAI-faehigen Clients splitten daran in Content-Parts mit Breakpoint-
-# Markern, alle anderen Provider-Pfade STRIPPEN den Sentinel rueckstandsfrei.
+# Pipelines mark block boundaries in the task text with this sentinel; the
+# OpenAI-capable clients split on it into content parts with breakpoint
+# markers, all other provider paths STRIP the sentinel without residue.
 CACHE_BP_SENTINEL = "\n<<<CACHE_BREAKPOINT>>>\n"
 MAX_EXPLICIT_BREAKPOINTS = 3
 
 
 def split_cache_breakpoint_blocks(text: str) -> list[str]:
-    """Text an CACHE_BP_SENTINEL in Bloecke teilen (Sentinel entfaellt).
+    """Split text at CACHE_BP_SENTINEL into blocks (the sentinel is dropped).
 
-    Hoechstens MAX_EXPLICIT_BREAKPOINTS Grenzen bleiben erhalten; weitere
-    Sentinels werden in den letzten Block gemergt. Leere Bloecke (Sentinel
-    am Anfang/Ende, Doppel-Sentinel) fallen weg. Ohne Sentinel: [text].
+    At most MAX_EXPLICIT_BREAKPOINTS boundaries are kept; further
+    sentinels are merged into the last block. Empty blocks (sentinel
+    at the start/end, double sentinel) are dropped. Without a sentinel: [text].
     """
     if CACHE_BP_SENTINEL not in text:
         return [text]
@@ -101,80 +99,80 @@ def split_cache_breakpoint_blocks(text: str) -> list[str]:
 
 
 def strip_cache_breakpoints(text: str) -> str:
-    """Sentinel rueckstandsfrei entfernen (fuer Provider ohne Breakpoint-Support)."""
+    """Remove the sentinel without residue (for providers without breakpoint support)."""
     if CACHE_BP_SENTINEL not in text:
         return text
     return "".join(text.split(CACHE_BP_SENTINEL))
 
 
-# --- Segment-Leiter -----------
+# --- Segment ladder -----------
 #
-# Task-Sequenz-Agenten (viele Einzel-Calls, wachsender gemeinsamer Prefix)
-# deklarieren im Task: [static] S [append_only] S [volatile]. Der Client
-# ergaenzt aus einer Prozess-Registry einen dritten Marker (BP1) an der
-# append_only-Grenze des VORGAENGER-Calls — dessen gespeicherter Prefix ist
-# byte-identisch -> Read-Hit ab Call 2. BP2 (deklariertes append-Ende)
-# schreibt den laengeren Prefix fuer den Folgecall; BP0 (static-Ende) macht
-# Prefix-Brueche billig. Live validiert (Probe L): Hit ab Call 2, Writes nur
-# Delta, Bruch = 1 Miss + sofortiges Relearn.
+# Task-sequence agents (many single calls, growing shared prefix)
+# declare in the task: [static] S [append_only] S [volatile]. The client
+# adds a third marker (BP1) from a process registry at the
+# append_only boundary of the PREDECESSOR call — its stored prefix is
+# byte-identical -> read hit from call 2. BP2 (declared append end)
+# writes the longer prefix for the follow-up call; BP0 (static end) makes
+# prefix breaks cheap. Live validated (probe L): hit from call 2, writes only
+# the delta, break = 1 miss + immediate relearn.
 
-#: Marker-Stile pro Modell (LLMModelConfig.prompt_cache_marker_style)
+#: Marker styles per model (LLMModelConfig.prompt_cache_marker_style)
 MARKER_STYLE_OPENAI = "openai"        # prompt_cache_breakpoint (GPT-5.6+)
 MARKER_STYLE_ANTHROPIC = "anthropic"  # cache_control ephemeral
-MARKER_STYLE_NONE = "none"            # Marker strippen (deepseek/gemini/...)
+MARKER_STYLE_NONE = "none"            # strip markers (deepseek/gemini/...)
 
-#: prompt_cache_mode-Werte (AgentConfig, docs §4)
+#: prompt_cache_mode values (AgentConfig, docs §4)
 CACHE_MODE_AUTO = "auto"
 CACHE_MODE_MULTI_TURN = "multi_turn"
 CACHE_MODE_TASK_SEQUENCE = "task_sequence"
 CACHE_MODE_ONE_SHOT = "one_shot"
 CACHE_MODE_OFF = "off"
 
-#: Leiter-Mindestwachstum: unterhalb ~1024 Tokens (4096 Zeichen) kann der
-#: naechste Call keinen eigenen cachebaren Read auf dem Delta bilden.
+#: Minimum ladder growth: below ~1024 tokens (4096 characters) the
+#: next call cannot form a cacheable read of its own on the delta.
 LADDER_MIN_PREFIX_CHARS = 4096
 
 
 class CacheBoundaryRegistry:
-    """Prozess-globale Registry fuer die KUMULATIVE Segment-Leiter.
+    """Process-global registry for the CUMULATIVE segment ladder.
 
-    GPT-5.6-Match-Regel (E2E-kartiert 2026-07-21): Ein gespeicherter
-    Breakpoint-Prefix trifft nur, wenn der neue Request die Block- UND
-    Marker-Struktur des Vorgaengers bis dorthin EXAKT reproduziert; erlaubt
-    ist nur ANHAENGEN. Ein wandernder oder entfernter Marker bricht alle
-    dahinter verankerten Reads (gemessen: konstant nur Static-Hit bzw. 0%).
-    Die API akzeptiert dabei problemlos 6+ Marker — das 4er-Limit gilt nur
-    fuer NEUE Cache-Writes pro Request (unsere sind <=2).
+    GPT-5.6 match rule (mapped end-to-end 2026-07-21): a stored
+    breakpoint prefix only hits if the new request reproduces the block AND
+    marker structure of its predecessor up to that point EXACTLY; only
+    APPENDING is allowed. A moving or removed marker breaks all reads
+    anchored behind it (measured: constantly only the static hit, or 0%).
+    The API accepts 6+ markers without trouble — the limit of 4 only applies
+    to NEW cache writes per request (ours are <=2).
 
-    Deshalb speichert die Registry pro Key die RUNG-LISTE (Offsets im
-    append_only-Block): jeder Call reproduziert alle bisherigen Rungs als
-    markierte Bloecke und haengt hoechstens eine neue ans Ende
-    (MIN_RUNG_CHARS verduennt). Validierung per Hash bis zur letzten Rung;
-    Bruch -> Liste reset, Relearn ab dem naechsten Call.
+    Therefore the registry stores the RUNG LIST per key (offsets in the
+    append_only block): every call reproduces all previous rungs as
+    marked blocks and appends at most one new one at the end
+    (MIN_RUNG_CHARS thins them out). Validation by hash up to the last rung;
+    break -> list reset, relearn from the next call.
 
-    Commit passiert zur PLAN-Zeit: sequenziell korrekt, parallel kostet es
-    hoechstens einen Miss mit Selbstheilung — nie Korrektheit.
+    The commit happens at PLAN time: correct when sequential, in parallel it costs
+    at most one miss with self-healing — never correctness.
     """
 
-    _MAX_KEYS = 128  # > parallele Buecher x GPT-Task-Sequenz-Agenten (~10)
-    #: Neue Rung erst ab diesem Zuwachs (~1024 Tokens) — verduennt die
-    #: Marker-Zahl; zwischen Rungs wiederholen Calls exakt dieselbe Struktur.
+    _MAX_KEYS = 128  # > parallel jobs x GPT task-sequence agents (~10)
+    #: New rung only from this growth on (~1024 tokens) — thins out the
+    #: marker count; between rungs calls repeat exactly the same structure.
     MIN_RUNG_CHARS = 4096
-    #: Sicherheits-Cap: alte Rungs duerfen NIE entfernt werden (bricht die
-    #: Struktur-Reproduktion), also stoppt das Anhaengen — Wachstum bleibt
-    #: dann im unmarkierten Tail, Hits bis zur letzten Rung bleiben stabil.
+    #: Safety cap: old rungs must NEVER be removed (breaks the
+    #: structure reproduction), so appending stops — growth then stays
+    #: in the unmarked tail, hits up to the last rung remain stable.
     MAX_RUNGS = 64
 
     def __init__(self) -> None:
         self._entries: dict[str, tuple[list[int], str]] = {}
-        self._order: list[str] = []  # LRU, aeltester zuerst
+        self._order: list[str] = []  # LRU, oldest first
 
     @staticmethod
     def _digest(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
 
     def rungs_for(self, key: str, append_text: str) -> list[int]:
-        """Gueltige Rung-Liste fuer den aktuellen append-Block (sonst [])."""
+        """Valid rung list for the current append block (else [])."""
         entry = self._entries.get(key)
         if not entry:
             return []
@@ -187,10 +185,10 @@ class CacheBoundaryRegistry:
         return []
 
     def commit(self, key: str, append_text: str, rungs: list[int]) -> list[int]:
-        """Rung-Liste fortschreiben (Plan-Zeit) und zurueckgeben.
+        """Advance the rung list (plan time) and return it.
 
-        Haengt eine neue Rung ans append-Ende, wenn seit der letzten
-        mindestens MIN_RUNG_CHARS gewachsen ist.
+        Appends a new rung at the append end if it has grown by
+        at least MIN_RUNG_CHARS since the last one.
         """
         if not append_text:
             return rungs
@@ -210,8 +208,8 @@ class CacheBoundaryRegistry:
         return rungs
 
 
-#: Modulweite Registry — Agent/Client sind prozessweite Singletons, die
-#: Leiter braucht den Zustand ueber Client-Instanzen hinweg.
+#: Module-wide registry — agent/client are process-wide singletons, the
+#: ladder needs the state across client instances.
 boundary_registry = CacheBoundaryRegistry()
 
 
@@ -223,17 +221,17 @@ def plan_cache_blocks(
     max_markers: int = MAX_EXPLICIT_BREAKPOINTS,
     registry: CacheBoundaryRegistry | None = None,
 ) -> list[tuple[str, bool]] | None:
-    """Sentinel-Text in (Block, markiert?)-Liste uebersetzen.
+    """Translate sentinel text into a (block, marked?) list.
 
-    Rueckgabe None = kein Sentinel enthalten (Caller laesst Content
-    unangetastet). mode=off -> Sentinels strippen, keine Marker.
-    mode=task_sequence + Registry -> Leiter: zusaetzlicher BP1-Split an
-    der Vorgaenger-Grenze im append-Block (= mittlerer deklarierter Block
-    bei [static]S[append]S[volatile]) + Plan-Zeit-Commit der neuen Grenze.
-    Budget: hoechstens ``max_markers`` markierte Bloecke; vergeben von
-    HINTEN (BP2 Write-Anker > BP1 Read-Anker > BP0), damit bei knappem
-    Budget (Anthropic: System/Tool-Marker zaehlen mit) die wertvollen
-    Anker ueberleben.
+    Returns None = no sentinel contained (the caller leaves the content
+    untouched). mode=off -> strip sentinels, no markers.
+    mode=task_sequence + registry -> ladder: additional BP1 split at
+    the predecessor boundary in the append block (= middle declared block
+    for [static]S[append]S[volatile]) + plan-time commit of the new boundary.
+    Budget: at most ``max_markers`` marked blocks; assigned from
+    the BACK (BP2 write anchor > BP1 read anchor > BP0), so that with a tight
+    budget (Anthropic: system/tool markers count too) the valuable
+    anchors survive.
     """
     if CACHE_BP_SENTINEL not in text:
         return None
@@ -243,9 +241,9 @@ def plan_cache_blocks(
     if len(blocks) < 2:
         return [(blocks[0] if blocks else "", False)]
 
-    # Kumulative Leiter (nur task_sequence, nur bei genau 2 deklarierten
-    # Grenzen [static]S[append]S[volatile] — mehr deklarierte Grenzen =
-    # Pipeline weiss es besser):
+    # Cumulative ladder (task_sequence only, only with exactly 2 declared
+    # boundaries [static]S[append]S[volatile] — more declared boundaries =
+    # the pipeline knows better):
     if (
         mode == CACHE_MODE_TASK_SEQUENCE
         and registry is not None
@@ -255,22 +253,22 @@ def plan_cache_blocks(
         static_text, append_text, volatile_text = blocks
         rungs = registry.rungs_for(key, append_text)
         rungs = registry.commit(key, append_text, rungs)
-        # Struktur: [static(BP)] + eine markierte Scheibe pro Rung + der
-        # unmarkierte Rest (append-Tail hinter der letzten Rung + volatile
-        # VERSCHMOLZEN — das wandernde append-Ende darf NIE markiert werden,
-        # sonst bricht die Struktur-Reproduktion beim naechsten Call).
+        # Structure: [static(BP)] + one marked slice per rung + the
+        # unmarked rest (append tail behind the last rung + volatile
+        # MERGED — the moving append end must NEVER be marked,
+        # otherwise the structure reproduction breaks on the next call).
         out: list[tuple[str, bool]] = [(static_text, True)]
         prev_r = 0
         for r in rungs:
             out.append((append_text[prev_r:r], True))
             prev_r = r
         out.append((append_text[prev_r:] + volatile_text, False))
-        # Leere Scheiben (Rung exakt am Ende) rausfiltern, Reihenfolge stabil
+        # Filter out empty slices (rung exactly at the end), order stable
         return [(blk, m) for blk, m in out if blk]
 
-    # Ohne Leiter: alle deklarierten Grenzen markieren; Budget von HINTEN
-    # vergeben (BP0 zuerst opfern — relevant fuer Anthropic, wo System-/
-    # Tool-Marker bereits 2 der 4 Slots belegen).
+    # Without the ladder: mark all declared boundaries; assign the budget from
+    # the BACK (sacrifice BP0 first — relevant for Anthropic, where system/
+    # tool markers already occupy 2 of the 4 slots).
     n_boundaries = len(blocks) - 1
     marked_from = max(0, n_boundaries - max_markers)
     return [
@@ -294,17 +292,17 @@ def _key_field(msg: Any, name: str) -> Any:
 
 
 def _iter_msg_texts(msg: Any) -> Iterator[str]:
-    """Textfragmente EINER Message (Rollen-Marker + Text-Parts).
+    """Text fragments of ONE message (role marker + text parts).
 
-    Versteht beide Formate:
+    Understands both formats:
     - Chat Completions: ``{"role": ..., "content": str | [{"type": "text",
       "text": ...}, ...]}``
     - Responses API input items: ``{"role": ..., "content":
-      [{"type": "input_text"|"output_text", "text": ...}]}`` sowie
-      function_call-Items (name/arguments/output).
+      [{"type": "input_text"|"output_text", "text": ...}]}`` as well as
+      function_call items (name/arguments/output).
 
-    Nicht-Text-Parts (Bilder/Audio) werden uebersprungen; die Rolle geht
-    mit ein, damit Rollen-Grenzen den Hash beeinflussen.
+    Non-text parts (images/audio) are skipped; the role is included
+    so that role boundaries influence the hash.
     """
     role = _key_field(msg, "role")
     if role:
@@ -314,12 +312,12 @@ def _iter_msg_texts(msg: Any) -> Iterator[str]:
         yield content
     elif isinstance(content, list):
         for part in content:
-            # Dict ODER pydantic-Modell: ChatMessage.content ist
-            # List[ContentItem], die Parts sind dort TextContent/ImageContent,
-            # keine Dicts. Nur-Dict gelesen blieb von so einer Message der
-            # Rollen-Marker uebrig — der Key war fuer JEDEN Agenten mit
-            # Listen-Content derselbe, also eine geteilte Shard statt einer
-            # pro Buch.
+            # Dict OR pydantic model: ChatMessage.content is
+            # List[ContentItem], the parts there are TextContent/ImageContent,
+            # not dicts. Reading dicts only left just the role marker of such
+            # a message — the key was the same for EVERY agent with
+            # list content, i.e. one shared shard instead of one
+            # per run.
             text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
             if isinstance(text, str):
                 yield text
@@ -331,12 +329,12 @@ def _iter_msg_texts(msg: Any) -> Iterator[str]:
 
 
 def derive_prompt_cache_key(configured: str, messages: list) -> str:
-    """Effektiven prompt_cache_key bestimmen.
+    """Determine the effective prompt_cache_key.
 
-    Statische Werte gehen unveraendert durch (explizites Override).
-    ``"auto"`` -> ``auto-<sha256[:16]>`` ueber fuehrende System-Messages
-    (voll) + erste Nicht-System-Message (auf PREFIX_CHARS gekappt) —
-    Details im Modul-Docstring.
+    Static values pass through unchanged (explicit override).
+    ``"auto"`` -> ``auto-<sha256[:16]>`` over the leading system messages
+    (in full) + the first non-system message (truncated to PREFIX_CHARS) —
+    details in the module docstring.
     """
     if configured != PROMPT_CACHE_KEY_AUTO:
         return configured
@@ -344,11 +342,11 @@ def derive_prompt_cache_key(configured: str, messages: list) -> str:
     first: Any = None      # the message that names the run
     injected: Any = None   # the first injected one, if no task follows it
     for msg in messages:
-        # Was keine Message ist, wird uebersprungen — wie vorher, nur dass ein
-        # ChatMessage-Objekt jetzt eine ist. Ohne die zweite Haelfte faellt so
-        # ein Fremdkoerper in den Zweig unten, hasht nichts und BRICHT: die
-        # Task-Message danach ginge nicht mehr in den Key ein, und zwei Buecher
-        # teilten sich eine Shard.
+        # Whatever is not a message is skipped — as before, except that a
+        # ChatMessage object is now one. Without the second half such a
+        # foreign body falls into the branch below, hashes nothing and BREAKS:
+        # the task message after it would no longer enter the key, and two
+        # runs would share a shard.
         if not isinstance(msg, dict) and not hasattr(msg, "role"):
             continue
         role = str(_key_field(msg, "role") or "")
@@ -383,9 +381,9 @@ def derive_prompt_cache_key(configured: str, messages: list) -> str:
         break
     else:
         first = injected
-    # Erste Nicht-System-Message: gekapptes Fenster, dann Schluss —
-    # spaetere Messages (auch nachgeschobene System-Injections) sind
-    # nicht Teil des stabilen Prefix.
+    # First non-system message: truncated window, then stop —
+    # later messages (also system injections pushed in afterwards) are
+    # not part of the stable prefix.
     taken = 0
     for frag in _iter_msg_texts(first) if first is not None else ():
         if taken >= PREFIX_CHARS:
@@ -398,55 +396,55 @@ def derive_prompt_cache_key(configured: str, messages: list) -> str:
 
 # --- Anthropic cache_control (ephemeral breakpoints) -------------------------
 #
-# GETEILTE Single-Source-of-Truth fuer ALLE Claude-Pfade (nativ Anthropic-SDK,
-# Anthropic-via-OpenRouter im httpx-Client, kuenftig Responses-Client). Anthropic
-# cached alles BIS EINSCHLIESSLICH eines ``cache_control``-Markers; EIN Breakpoint
-# am Prefix-Ende deckt den ganzen Prefix davor ab. Hartes Limit: hoechstens
-# ANTHROPIC_MAX_CACHE_BLOCKS Bloecke mit cache_control pro Request (System +
-# Tools + Messages ZUSAMMEN) — Ueberschreiten = HTTP 400.
+# SHARED single source of truth for ALL Claude paths (native Anthropic SDK,
+# Anthropic-via-OpenRouter in the httpx client, future Responses client). Anthropic
+# caches everything UP TO AND INCLUDING a ``cache_control`` marker; ONE breakpoint
+# at the prefix end covers the whole prefix before it. Hard limit: at most
+# ANTHROPIC_MAX_CACHE_BLOCKS blocks with cache_control per request (system +
+# tools + messages TOGETHER) — exceeding it = HTTP 400.
 #
-# Jeder Client bringt sein eigenes Nachrichtenformat mit (Chat-Completions-Dicts
-# vs. native Anthropic-Bloecke vs. Responses-input_items); die POLICY (was, wie
-# oft, in welcher Reihenfolge markiert wird) ist identisch und lebt hier. Die
-# Clients komponieren nur die granularen Helfer an den Stellen, wo ihre Daten
-# verfuegbar sind (System frueh, Tools spaet).
+# Each client brings its own message format (chat-completions dicts
+# vs. native Anthropic blocks vs. Responses input_items); the POLICY (what, how
+# often, in which order to mark) is identical and lives here. The
+# clients only compose the granular helpers at the places where their data is
+# available (system early, tools late).
 
-#: Anthropic-Cache-Marker. Bewusst pro Aufruf kopiert (``dict(...)``), damit
-#: kein geteiltes Objekt versehentlich mutiert wird.
+#: Anthropic cache marker. Deliberately copied per call (``dict(...)``) so that
+#: no shared object is mutated by accident.
 ANTHROPIC_EPHEMERAL: dict = {"type": "ephemeral"}
 
-#: Hartes API-Limit: max. so viele cache_control-Bloecke pro Request.
+#: Hard API limit: at most this many cache_control blocks per request.
 ANTHROPIC_MAX_CACHE_BLOCKS = 4
 
-#: Text-Block-Typen ueber die Formate: Chat-Completions ``text``,
-#: Responses-API ``input_text``/``output_text``. System-/Tool-Marker gehoeren
-#: immer auf einen Textblock (nie auf image).
+#: Text block types across the formats: chat-completions ``text``,
+#: Responses API ``input_text``/``output_text``. System/tool markers belong
+#: always on a text block (never on an image).
 _ANTHROPIC_TEXT_TYPES = ("text", "input_text", "output_text")
 
-#: Blocktypen, die am Konversations-TAIL cache_control tragen duerfen: Text
-#: plus ``tool_result``. Ein Agent-Turn endet oft auf einem tool_result-Block
-#: (nativer Anthropic-Pfad: ``{"role":"user","content":[{"type":"tool_result",
-#: ...}]}``) — den zu markieren laesst den Breakpoint auch dann ans Turn-Ende
-#: wandern. Ohne das cachte der native Multi-Turn-Pfad tool-endende Turns nicht
-#: (der OpenRouter-Pfad tut es, weil dort Tool-Ergebnisse String-Text sind, der
-#: zu einem Textblock gehoben wird) — diese Menge stellt die Paritaet her.
-#: Anthropic erlaubt cache_control auf text/image/tool_use/tool_result/document.
+#: Block types allowed to carry cache_control at the conversation TAIL: text
+#: plus ``tool_result``. An agent turn often ends on a tool_result block
+#: (native Anthropic path: ``{"role":"user","content":[{"type":"tool_result",
+#: ...}]}``) — marking it lets the breakpoint move to the turn end in that
+#: case too. Without it the native multi-turn path did not cache tool-ending
+#: turns (the OpenRouter path does, because there tool results are string text
+#: that is lifted into a text block) — this set establishes parity.
+#: Anthropic allows cache_control on text/image/tool_use/tool_result/document.
 _ANTHROPIC_TAIL_TYPES = _ANTHROPIC_TEXT_TYPES + ("tool_result",)
 
-#: Rollen, deren Vorhandensein eine ECHTE laufende Konversation belegt.
+#: Roles whose presence proves a REAL ongoing conversation.
 _HISTORY_ROLES = ("assistant", "tool")
 
 
 def anthropic_cache_conversation(mode: str | None, has_history: bool) -> bool:
-    """Ob der wachsende Konversations-Tail als cache_control-Breakpoint markiert
-    wird (Anthropic-Multi-Turn-Pattern: der Marker wandert jede Runde ans Ende;
-    der Vorgaenger-Prefix ist ein Byte-Prefix des neuen Requests und wird
-    gelesen statt voll bezahlt).
+    """Whether the growing conversation tail is marked as a cache_control
+    breakpoint (Anthropic multi-turn pattern: the marker moves to the end every
+    round; the predecessor prefix is a byte prefix of the new request and is
+    read instead of paid in full).
 
-    - ``multi_turn``: ab Runde 1 (deklarierte Konversation).
-    - ``auto`` / ``None``: erst wenn echte Historie existiert (>=1 assistant/
-      tool-Message) — kein verschwendeter Write auf echten Einzel-Calls.
-    - ``task_sequence`` (Leiter) / ``one_shot`` / ``off``: nein.
+    - ``multi_turn``: from round 1 (declared conversation).
+    - ``auto`` / ``None``: only once real history exists (>=1 assistant/
+      tool message) — no wasted write on genuine single calls.
+    - ``task_sequence`` (ladder) / ``one_shot`` / ``off``: no.
     """
     if mode == CACHE_MODE_MULTI_TURN:
         return True
@@ -456,7 +454,7 @@ def anthropic_cache_conversation(mode: str | None, has_history: bool) -> bool:
 
 
 def messages_have_history(message_dicts: list) -> bool:
-    """>=1 assistant/tool-Message => laufende Konversation (kein Einzel-Call)."""
+    """>=1 assistant/tool message => ongoing conversation (not a single call)."""
     return any(
         isinstance(m, dict) and m.get("role") in _HISTORY_ROLES
         for m in message_dicts
@@ -464,10 +462,10 @@ def messages_have_history(message_dicts: list) -> bool:
 
 
 def mark_last_text_block(blocks: list) -> bool:
-    """cache_control: ephemeral auf den LETZTEN Textblock einer Block-Liste.
+    """cache_control: ephemeral on the LAST text block of a block list.
 
-    Gibt zurueck, ob markiert wurde. Idempotent auf demselben Block. Versteht
-    Chat-Completions- und Responses-Textblock-Typen (_ANTHROPIC_TEXT_TYPES).
+    Returns whether something was marked. Idempotent on the same block. Understands
+    chat-completions and Responses text block types (_ANTHROPIC_TEXT_TYPES).
     """
     if not isinstance(blocks, list):
         return False
@@ -480,8 +478,8 @@ def mark_last_text_block(blocks: list) -> bool:
 
 
 def mark_message_tail(msg: dict) -> bool:
-    """cache_control auf den letzten Textblock EINER Message; bare-string-Content
-    wird zuvor in einen Textblock gehoben. Gibt zurueck, ob markiert wurde."""
+    """cache_control on the last text block of ONE message; bare-string content
+    is lifted into a text block first. Returns whether something was marked."""
     if not isinstance(msg, dict):
         return False
     content = msg.get("content")
@@ -498,9 +496,9 @@ def mark_message_tail(msg: dict) -> bool:
 
 
 def mark_last_system(message_dicts: list) -> bool:
-    """cache_control auf die LETZTE System-Message (deren Marker den gesamten
-    System-Prefix abdeckt). Nur die letzte — jede zu markieren sprengt zusammen
-    mit Tool-/Tail-Markern das 4-Block-Limit. Gibt zurueck, ob markiert wurde."""
+    """cache_control on the LAST system message (whose marker covers the entire
+    system prefix). Only the last — marking every one blows the 4-block limit together
+    with tool/tail markers. Returns whether something was marked."""
     last_system = None
     for msg in message_dicts:
         if isinstance(msg, dict) and msg.get("role") == "system":
@@ -511,10 +509,10 @@ def mark_last_system(message_dicts: list) -> bool:
 
 
 def mark_last_cacheable_block(blocks: list) -> bool:
-    """cache_control: ephemeral auf den LETZTEN cachebaren Block einer Liste
-    (Text ODER tool_result, s. _ANTHROPIC_TAIL_TYPES). Fuer den Konversations-
-    Tail, damit ein tool_result-endender Turn den Breakpoint trotzdem ans Ende
-    zieht. Gibt zurueck, ob markiert wurde."""
+    """cache_control: ephemeral on the LAST cacheable block of a list
+    (text OR tool_result, see _ANTHROPIC_TAIL_TYPES). For the conversation
+    tail, so that a turn ending in a tool_result still pulls the breakpoint to
+    the end. Returns whether something was marked."""
     if not isinstance(blocks, list):
         return False
     for i in range(len(blocks) - 1, -1, -1):
@@ -526,20 +524,20 @@ def mark_last_cacheable_block(blocks: list) -> bool:
 
 
 def mark_conversation_tail(message_dicts: list) -> bool:
-    """cache_control auf den Tail der LETZTEN Message (wachsender Konversations-
-    Prefix, Multi-Turn-Pattern). Aufrufer gated via anthropic_cache_conversation.
-    Gibt zurueck, ob markiert wurde.
+    """cache_control on the tail of the LAST message (growing conversation
+    prefix, multi-turn pattern). The caller gates via anthropic_cache_conversation.
+    Returns whether something was marked.
 
-    Anders als System/Tools markiert der Tail auch einen tool_result-Block (nicht
-    nur Text), damit tool-endende Agent-Turns den Breakpoint ans Ende ziehen
-    (Paritaet nativer Pfad <-> OpenRouter-Pfad). bare-string-Content (OpenAI-
-    Format-Tool-/User-Message) wird zuvor in einen Textblock gehoben.
+    Unlike system/tools, the tail also marks a tool_result block (not
+    only text), so that tool-ending agent turns pull the breakpoint to the end
+    (parity of native path <-> OpenRouter path). Bare-string content (OpenAI-format
+    tool/user message) is lifted into a text block first.
 
-    Byte-Stabilitaets-Vorbehalt: mit ``reasoning_details_mode=keep_last`` (Default)
-    werden aeltere Reasoning-Bloecke eines THINKING-Modells jede Runde entfernt —
-    das aendert den Prefix und bricht das Konversations-Caching ab dem ersten
-    reasoning-tragenden Turn. Nicht-Thinking-Modelle und ``keep_all`` halten den
-    Prefix stabil; Thinking-Agents mit vollem Multi-Turn-Cache brauchen
+    Byte-stability caveat: with ``reasoning_details_mode=keep_last`` (default)
+    older reasoning blocks of a THINKING model are removed every round —
+    that changes the prefix and breaks conversation caching from the first
+    reasoning-bearing turn. Non-thinking models and ``keep_all`` keep the
+    prefix stable; thinking agents with full multi-turn caching need
     ``reasoning_details_mode: keep_all``."""
     if not message_dicts:
         return False
@@ -567,8 +565,8 @@ def mark_conversation_tail(message_dicts: list) -> bool:
 
 
 def mark_last_tool(tools: list) -> bool:
-    """cache_control auf die letzte Tool-Definition (deckt den ganzen Tool-Block
-    ab). Gibt zurueck, ob markiert wurde."""
+    """cache_control on the last tool definition (covers the whole tool block).
+    Returns whether something was marked."""
     if not tools:
         return False
     last = tools[-1]
@@ -579,8 +577,8 @@ def mark_last_tool(tools: list) -> bool:
 
 
 def _iter_cache_carriers(container: Any) -> Iterator[dict]:
-    """cache_control-tragende Dicts aus einem Container (Message-Dict mit
-    content-Liste, Tool-Dict, oder roher Textblock)."""
+    """cache_control-bearing dicts from a container (message dict with a
+    content list, tool dict, or raw text block)."""
     if not isinstance(container, dict):
         return
     content = container.get("content")
@@ -596,16 +594,16 @@ def cap_cache_control(
     ordered_groups: list,
     max_blocks: int = ANTHROPIC_MAX_CACHE_BLOCKS,
 ) -> None:
-    """Defense-in-depth: ueber alle ``ordered_groups`` (in Anthropic-Prefix-
-    Reihenfolge: Tools, dann System, dann Messages) nur die LETZTEN
-    ``max_blocks`` cache_control-Bloecke behalten; cache_control von den
-    frueheren in-place entfernen.
+    """Defense in depth: across all ``ordered_groups`` (in Anthropic prefix
+    order: tools, then system, then messages) keep only the LAST
+    ``max_blocks`` cache_control blocks; remove cache_control from the
+    earlier ones in place.
 
-    Ein spaeterer Breakpoint cached alles, was ein frueherer wuerde — die
-    fruehesten zu opfern verliert keine Coverage, garantiert aber, dass keine
-    Marker-Kombination (System + Tools + Tail + Sentinel-Splits) je das harte
-    HTTP-400-Limit reisst. ``ordered_groups`` ist eine Liste von Container-Listen
-    (jede Gruppe wird der Reihe nach abgelaufen)."""
+    A later breakpoint caches everything an earlier one would — sacrificing the
+    earliest loses no coverage, but guarantees that no marker combination
+    (system + tools + tail + sentinel splits) ever breaks the hard
+    HTTP 400 limit. ``ordered_groups`` is a list of container lists
+    (each group is walked in order)."""
     carriers: list[dict] = []
     for group in ordered_groups:
         for container in group or []:

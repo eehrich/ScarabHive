@@ -9,10 +9,10 @@ from __future__ import annotations
 from .server import BasicAgent
 from agent_system.plugins.factory_utils import make_agent_plugin_factory
 
-# Einheitliches Pattern: generische Factory statt handgeschriebener Boilerplate.
+# Uniform pattern: generic factory instead of handwritten boilerplate.
 PLUGIN_FACTORY = make_agent_plugin_factory(BasicAgent)
 
-# Optional: Direkter Klassen-Export für seltene Sonderfälle / Tests.
+# Optional: direct class export for rare special cases / tests.
 BasicAgentServer = BasicAgent  # backward friendly alias
 
 __all__ = ["PLUGIN_FACTORY", "BasicAgentServer", "BasicAgent"]

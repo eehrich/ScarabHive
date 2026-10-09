@@ -764,17 +764,17 @@ class VectorStore:
 
     @_synchronized
     def list_ids(self, collection: str) -> List[str]:
-        """Alle IDs einer Collection.
+        """All IDs of a collection.
 
-        Gebraucht fuer inkrementelles Indizieren: wer wissen will, WAS
-        fehlt, braucht die Menge des Vorhandenen — ``count()`` allein
-        sagt nur, wie viel. Ohne diese Methode musste jeder Aufrufer
-        entweder alles neu indizieren oder am Backend vorbei selbst in
-        die Ablage greifen.
+        Needed for incremental indexing: whoever wants to know WHAT is
+        missing needs the set of what exists — ``count()`` alone
+        only says how many. Without this method every caller had to
+        either re-index everything or reach into the storage
+        behind the backend's back.
 
-        Existiert die Collection nicht, ist die Antwort eine leere Liste
-        (kein Fehler): "noch nichts indiziert" ist ein gueltiger Zustand,
-        kein Ausnahmefall.
+        If the collection does not exist, the answer is an empty list
+        (no error): "nothing indexed yet" is a valid state,
+        not an exceptional case.
         """
         if self._backend == "chromadb":
             try:
@@ -1133,15 +1133,15 @@ class VectorStore:
         conn = self._get_sqlite_conn()
         
         # Create vec0 virtual table
-        # ``distance_metric=cosine`` ist TRAGEND, nicht Geschmack: ohne die
-        # Angabe rechnet vec0 mit L2, ChromaDB aber mit Cosinus. Beide
-        # Backends lieferten dann Distanzen auf VERSCHIEDENEN Skalen, und
-        # jeder Konsument, der daraus eine Aehnlichkeit macht, bekommt beim
-        # Fallback stillschweigend falsche Werte. Gemessen 2026-08-06:
-        # dieselbe Suche ergab unter Chroma Distanz ~0,46 (Aehnlichkeit
-        # 0,77) und unter sqlite-vec ~1,36 (0,32) — unter einem
-        # Mindest-Schwellwert von 0,5 fiel im Fallback JEDER Treffer weg.
-        # Die Suche meldete dann null Ergebnisse statt eines Fehlers.
+        # ``distance_metric=cosine`` is LOAD-BEARING, not taste: without it
+        # vec0 computes L2 while ChromaDB uses cosine. The two backends
+        # would then return distances on DIFFERENT scales, and every consumer
+        # that turns them into a similarity silently gets wrong values on
+        # fallback. Measured 2026-08-06: the same search gave a Chroma
+        # distance of ~0.46 (similarity 0.77) and a sqlite-vec distance of
+        # ~1.36 (0.32) — under a minimum threshold of 0.5 EVERY hit was
+        # dropped on fallback. The search then reported zero results
+        # instead of an error.
         conn.execute(f'''
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_{collection} USING vec0(
                 item_id TEXT PRIMARY KEY,

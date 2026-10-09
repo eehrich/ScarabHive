@@ -49,8 +49,8 @@ the Chat Completions route, ``google-gemini-v1`` thought signatures) are
 IGNORED when building input — after a provider/route switch the chain restarts
 fresh instead of replaying artifacts that cannot verify here.
 
-STATUS: built 2026-07-16; seit 3baf994b BREIT AKTIV — alle openai/gpt-5.x-
-Profile in config/llm_openrouter.yaml fahren ``provider: openai_responses``.
+STATUS: built 2026-07-16; widely active since 3baf994b -- all openai/gpt-5.x
+profiles in config/llm_openrouter.yaml run ``provider: openai_responses``.
 """
 
 from __future__ import annotations
@@ -516,9 +516,9 @@ class OpenAIResponsesClient(LLMClient):
             # must be able to tell a run note from the conversation. The rung
             # is applied at the very end of _build_payload.
             if role in (SYSTEM, USER, DEVELOPER):
-                # Cache-Breakpoint-Sentinels bleiben hier im String erhalten —
-                # der Split passiert in _build_payload NACH der Key-Ableitung
-                # (die Segment-Leiter braucht den aufgeloesten Key).
+                # Cache breakpoint sentinels stay in the string here --
+                # the split happens in _build_payload AFTER the key derivation
+                # (the segment ladder needs the resolved key).
                 item = {
                     "type": "message",
                     "role": role,
@@ -670,10 +670,10 @@ class OpenAIResponsesClient(LLMClient):
     def _apply_cache_blocks(self, items: list, resolved_key: Optional[str]) -> None:
         """Cache-Breakpoint-Sentinels in input-Items verarbeiten (in place).
 
-        Dieser Client bedient nur OpenAI-Modelle -> Marker-Stil ist openai
-        (prompt_cache_breakpoint), sofern nicht per Config auf none gestellt.
-        Bei prompt_cache_mode=task_sequence ergaenzt die Segment-Leiter den
-        BP1-Read-Anker aus der Prozess-Registry (s. cache_key.py).
+        This client serves OpenAI models only -> marker style is openai
+        (prompt_cache_breakpoint), unless set to none in the config.
+        With prompt_cache_mode=task_sequence the segment ladder adds the
+        BP1 read anchor from the process registry (see cache_key.py).
         """
         style = self.prompt_cache_marker_style or MARKER_STYLE_OPENAI
         ladder_used = False
@@ -686,8 +686,8 @@ class OpenAIResponsesClient(LLMClient):
             if style == MARKER_STYLE_NONE or not resolved_key:
                 item["content"] = strip_cache_breakpoints(content)
                 continue
-            # Leiter nur fuer die ERSTE Sentinel-Message pro Request — zwei
-            # Messages wuerden sonst denselben Registry-Key thrashen.
+            # Ladder only for the FIRST sentinel message per request -- two
+            # messages would otherwise thrash the same registry key.
             item_mode = self.prompt_cache_mode
             if item_mode == CACHE_MODE_TASK_SEQUENCE:
                 if ladder_used:
@@ -789,11 +789,11 @@ class OpenAIResponsesClient(LLMClient):
         }
         if self.thinking_level:
             payload["reasoning"] = {"effort": self.thinking_level}
-        # Sampling-Temperatur nur ohne Reasoning: die o-/gpt-5.x-Serie
-        # akzeptiert den Param nicht (400 "temperature is not supported"),
-        # dort steuert reasoning.effort. 0.0 ist gültig → auf None prüfen.
-        # BEWUSST auch bei thinking_level="none" unterdrückt: OpenAI-Hybride
-        # lehnen temperature≠1 auch mit abgeschaltetem Thinking ab.
+        # Sampling temperature only without reasoning: the o-/gpt-5.x series
+        # does not accept the param (400 "temperature is not supported"),
+        # reasoning.effort steers there. 0.0 is valid -> check for None.
+        # Suppressed ON PURPOSE for thinking_level="none" too: OpenAI hybrids
+        # reject temperature != 1 even with thinking switched off.
         if self.temperature is not None and not self.thinking_level:
             payload["temperature"] = self.temperature
         if self.max_tokens:
@@ -809,10 +809,10 @@ class OpenAIResponsesClient(LLMClient):
                 {"category": category, "threshold": threshold}
                 for category, threshold in self.safety_settings.items()
             ]
-        # GPT-5.6+: ohne prompt_cache_key praktisch kein Cache-Matching
-        # (OpenAI-Doku: "you must set prompt_cache_key ..."). "auto" =
-        # Praefix-Hash, kollisionsfrei bei parallelen Buechern
-        # (s. cache_key.py); kein Extended-Retention-Opt-in.
+        # GPT-5.6+: practically no cache matching without prompt_cache_key
+        # (OpenAI docs: "you must set prompt_cache_key ..."). "auto" =
+        # prefix hash, collision-free for parallel runs
+        # (see cache_key.py); no extended-retention opt-in.
         resolved_key = None
         if self.prompt_cache_key:
             # From the ORIGINAL messages, not payload["input"]: its items are
@@ -1263,10 +1263,10 @@ class OpenAIResponsesClient(LLMClient):
 
         url = f"{self.base_url}/responses"
         _enc_retried = False
-        # Muss VOR der Schleife stehen: gesetzt wird es nur in den 429-Zweigen,
-        # gelesen aber in der Encrypted-Reasoning-400-Heilung — ein 400 ohne
-        # vorheriges 429 lief sonst in UnboundLocalError (Live-Fund 2026-07-25,
-        # gemini-3.6-flash-Lauf: "cannot access local variable '_tier_dropped'").
+        # Must stand BEFORE the loop: it is only set in the 429 branches but
+        # read in the encrypted-reasoning 400 recovery -- a 400 without a
+        # prior 429 otherwise ran into an UnboundLocalError (found live
+        # 2026-07-25: "cannot access local variable '_tier_dropped'").
         _tier_dropped = False
 
         # One end report per request, as in the Chat Completions client: set by

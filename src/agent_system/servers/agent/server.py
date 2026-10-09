@@ -1027,8 +1027,8 @@ class Agent(ToolServer):
         config flag is off, no advanced profile exists, or the run is already on
         the advanced model (nothing to escalate to)."""
         cfg = self.agent_config
-        # Gleichheits-Guard spiegelt _get_escalation_llm: advanced == default
-        # kann keinen anderen Client bauen — Escalator wäre ein toter Trigger.
+        # Equality guard mirrors _get_escalation_llm: advanced == default
+        # cannot build a different client — the escalator would be a dead trigger.
         has_advanced = bool(
             cfg and cfg.advanced_llm_profile
             and cfg.advanced_llm_profile != cfg.default_llm_profile)
@@ -1177,10 +1177,10 @@ class Agent(ToolServer):
         try:
             from ...llm.factory import create_llm_from_profile
 
-            # Fallbacks laufen mit DERSELBEN llm_params-Semantik wie das
-            # Primaermodell — create_llm_from_profile loest die profil-
-            # gekeyten Params selbst auf ("*"/flat fuer die ganze Kette,
-            # exakter Eintrag gewinnt). Keine Sonderbehandlung hier.
+            # Fallbacks run with the SAME llm_params semantics as the
+            # primary model — create_llm_from_profile resolves the profile-
+            # keyed params itself ("*"/flat for the whole chain,
+            # exact entry wins). No special handling here.
             fallback_llm = create_llm_from_profile(
                 config=self.system_config,
                 llm_profile=fallback_profile,
@@ -2165,9 +2165,9 @@ class Agent(ToolServer):
         if use_advanced_model and not llm_override:
             from agent_system.llm.factory import override_for_profile
 
-            # Ketten-Semantik: Advanced-Modell = llm_profile_advanced[0].
-            # Keine Advanced-Kette konfiguriert oder advanced == default
-            # (kein echtes Upgrade) → no-op (normale Kette läuft).
+            # Chain semantics: advanced model = llm_profile_advanced[0].
+            # No advanced chain configured or advanced == default
+            # (no real upgrade) → no-op (the normal chain runs).
             advanced_profile = self.agent_config.advanced_llm_profile if self.agent_config else None
             if advanced_profile and self.agent_config and \
                     advanced_profile == self.agent_config.default_llm_profile:
@@ -3255,11 +3255,11 @@ class Agent(ToolServer):
                 block is lifted is a switch like any other, stripped below.
                 """
                 llm = active_llm
-                # Profil des TATSÄCHLICH aktiven Modells, wenn es vom Config-
-                # Primär abweicht: Eskalations-Swap oder explizites Override
-                # (llm_profile_info_override = "profil:provider/model"). Wird
-                # aus der Fallback-Kette exkludiert, sonst würde das gerade
-                # fehlschlagende Modell als sein eigener Fallback erneut laufen.
+                # Profile of the model that is ACTUALLY active, when it differs
+                # from the config primary: escalation swap or explicit override
+                # (llm_profile_info_override = "profile:provider/model"). It is
+                # excluded from the fallback chain, otherwise the model that
+                # just failed would run again as its own fallback.
                 active_profile_override = None
                 if base_profile is not None:
                     active_profile_override = base_profile
@@ -3285,10 +3285,10 @@ class Agent(ToolServer):
                         # Blocked for now: this step runs on standard, the
                         # window stays open for a step after the block.
                         escalate = False
-                # Ketten-Semantik: llm_profile = [primär, fallback1, ...],
-                # llm_profile_advanced analog. fallback_chain() liefert die
-                # passende Reihenfolge (advanced-Kette zuerst, dann die
-                # normale Kette als letztes Sicherheitsnetz).
+                # Chain semantics: llm_profile = [primary, fallback1, ...],
+                # llm_profile_advanced likewise. fallback_chain() returns the
+                # matching order (advanced chain first, then the
+                # normal chain as the last safety net).
                 profiles = (
                     self.agent_config.fallback_chain(
                         use_advanced_model, exclude=active_profile_override)

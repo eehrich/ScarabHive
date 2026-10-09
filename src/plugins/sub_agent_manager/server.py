@@ -218,12 +218,12 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         self.allowed_agents = list(getattr(server_config, 'allowed_agents', ['*']))
         self.blocked_agents = list(getattr(server_config, 'blocked_agents', []))
 
-        # Kosten-Riegel: darf der AUFRUFER use_advanced_model=true setzen?
-        # LLM-Caller setzen das Flag gern aus Eigeninitiative (Prod-Befund
-        # 2026-07-20: der v6-Coordinator spawnte JEDES Panel mit
-        # use_advanced_model=true, ohne dass sein Prompt es verlangt — der
-        # komplette Moderator-Run lief still auf der advanced-Kette).
-        # False = Flag wird ignoriert (mit Log); Default True = Bestand.
+        # Cost guard: may the CALLER set use_advanced_model=true?
+        # LLM callers like to set the flag on their own initiative (seen in
+        # production 2026-07-20: a coordinator spawned EVERY panel with
+        # use_advanced_model=true although its prompt did not ask for it --
+        # the whole run silently ran on the advanced chain).
+        # False = flag is ignored (with a log); default True = existing behavior.
         self.allow_advanced_model = bool(getattr(server_config, 'allow_advanced_model', True))
 
         # Same class of guard, one notch finer: for these agent types the
@@ -333,15 +333,15 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         return changes
 
     def _effective_use_advanced(self, params: dict[str, Any]) -> bool:
-        """Vom Aufrufer angefordertes ``use_advanced_model`` gegen den
-        Instanz-Riegel ``allow_advanced_model`` prüfen. Unterdrückung wird
-        geloggt (kein stilles Umbiegen) — der Sub-Agent läuft dann auf
-        seiner normalen Profil-Kette."""
+        """Check the caller's requested ``use_advanced_model`` against the
+        instance guard ``allow_advanced_model``. Suppression is logged (no
+        silent override) -- the sub-agent then runs on its normal profile
+        chain."""
         requested = bool(params.get("use_advanced_model", False))
         if requested and not self.allow_advanced_model:
             logger.info(
-                "[%s] use_advanced_model angefordert, aber per Config "
-                "unterdrückt (allow_advanced_model=false) — Standard-Profil.",
+                "[%s] use_advanced_model requested but suppressed by config "
+                "(allow_advanced_model=false) -- default profile.",
                 self.name,
             )
             return False
