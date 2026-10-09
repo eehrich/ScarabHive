@@ -3179,7 +3179,7 @@ class TestVarsCommand:
 
 
 class TestChatHoldsTheOpenSession:
-    """Session presence (core/session_presence.py): chat keeps the conversation
+    """Session presence (core/session_presence/): chat keeps the conversation
     in memory between turns, so it holds the session it has open -- and lets go
     of one it leaves."""
 

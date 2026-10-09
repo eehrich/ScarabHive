@@ -280,7 +280,7 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     if request_id:
         # Its user stopped it: noted, so the session is let go marked and nothing
         # starts it again by itself -- not the prompt's wake watcher, not leaving
-        # the chat (core/session_presence.py). Also when the Ctrl-C landed in the
+        # the chat (core/session_presence/). Also when the Ctrl-C landed in the
         # run's own frames and it let go before this.
         note_stop(request_id)
         # Graceful: flips the cancellation token, the agent unwinds and

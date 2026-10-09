@@ -37,7 +37,7 @@ class RunControl:
     errors the stream already showed.
 
     Ctrl-C is its user stopping the run. The hold says so as it lets go
-    (core/session_presence.py): the session is marked, and nothing starts it
+    (core/session_presence/): the session is marked, and nothing starts it
     again by itself -- whenever the run lets go, in its own frames before this
     hears of it or at exit after. The run's token stops its tool calls and
     sub-agents.

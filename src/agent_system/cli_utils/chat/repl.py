@@ -334,7 +334,7 @@ def run_chat_loop(
     the tests).
 
     ``session_id`` comes in held by the caller (session presence,
-    core/session_presence.py) and the REPL takes that over: it holds what /new
+    core/session_presence/) and the REPL takes that over: it holds what /new
     and /resume switch to, and lets go of the open session however it ends,
     from its first line on.
 

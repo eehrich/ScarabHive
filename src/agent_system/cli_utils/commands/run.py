@@ -389,7 +389,7 @@ def hold_session(presence: Any, *, session_id: str, session_user: str, entry_nam
     """Hold the session before it is loaded. False: a woken run steps aside
     (the runtime is shut down already); busy without --force exits 1.
 
-    Session presence (core/session_presence.py): the session is held BEFORE
+    Session presence (core/session_presence/): the session is held BEFORE
     it is loaded. A run that reads the file first can be overtaken by the
     process that holds it, and would then write its own copy over that run.
     Chat takes the hold over and lets go of it itself (run_chat_loop).

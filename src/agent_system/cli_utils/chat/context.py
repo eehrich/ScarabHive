@@ -5,7 +5,7 @@ agent, the session, the LLM it answers on, what is queued for the next
 message. Around it lives what acts on that session as a whole rather than
 for one command: its messages and the prompt history they seed, the
 metadata the chat records for it, moving onto a fresh one, saving it, and
-session presence (core/session_presence.py) -- holding the open session,
+session presence (core/session_presence/) -- holding the open session,
 letting go of one left behind, claiming a turn, and the wake watch at the
 prompt.
 
@@ -235,7 +235,7 @@ def _init_fresh_session(ctx: _ChatContext) -> str:
 
 
 def _hold_session(ctx: "_ChatContext", session_id: str) -> bool:
-    """Session presence (core/session_presence.py): chat holds the session it
+    """Session presence (core/session_presence/): chat holds the session it
     has open. The conversation stays in memory between turns, so no woken run
     may take the session up meanwhile; its input waits for the next turn.
 
@@ -260,7 +260,7 @@ def _release_session(ctx: "_ChatContext", session_id: Optional[str]) -> None:
 
 
 def _claim_turn(ctx: "_ChatContext", request_id: str) -> Optional[Any]:
-    """The turn is the session's last run from its start (core/session_presence.py),
+    """The turn is the session's last run from its start (core/session_presence/),
     not only once its run takes the session: a stop noted in between (_cancel_turn)
     would otherwise be the previous turn's business. Nested in the chat's own hold;
     the run's hold under the same id nests in this one."""

@@ -362,7 +362,7 @@ class SessionPresence:
     def take_for_wake(self, session_id: str, user_id: str) -> None:
         """A turn starts now BECAUSE input is waiting: a woken run (agent_cli), a chat's woken prompt.
 
-        The chat's is cli_utils/chat.py. Takes the mark and changes <session>.woken. Such a turn is told that input waits, as a woken
+        The chat's is cli_utils/chat/context.py (_take_wake_mark). Takes the mark and changes <session>.woken. Such a turn is told that input waits, as a woken
         process is, so whatever waited when it began counts as delivered: wake_session stops ringing
         when it sees the stamp change. A held chat turns every ring into a turn of its own -- without
         the stamp one finished command cost a turn per ring, up to WAKE_RETRIES of them.
