@@ -16,7 +16,7 @@ must reach every reader.
 All of them belong to whichever ``build_app`` ran last in the process -- the
 same as before; the per-application state is ``app.state``. That is why the
 configuration is not here: a reload writes ``app.state.config``, which is the
-one source (``_live_config()`` in ``build_app``). The global it once had
+one source (``AppContext.live_config()``, api/app_context.py). The global it once had
 answered from process start to its one remaining reader.
 """
 from __future__ import annotations

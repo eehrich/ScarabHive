@@ -748,7 +748,7 @@ async def test_a_put_back_leaves_a_tool_session_another_agents_run_made(world):
 
 
 async def _append_beside_the_runs(world, agent, session_id, content):
-    """What the append endpoint does with a session no run has (app._append_and_persist): under the writer lock,
+    """What the append endpoint does with a session no run has (api/session_writes.append_and_persist): under the writer lock,
     appended to what the tracker holds, and saved."""
     tracker = agent._session_tracker
     assert await tracker.acquire_session_lock(session_id, "rq-append", timeout=5.0, writer=True)

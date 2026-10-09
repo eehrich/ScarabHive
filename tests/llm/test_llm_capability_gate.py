@@ -80,7 +80,7 @@ class TestEveryEntryPointAsks:
     """
 
     ENTRY_POINTS = [
-        "src/agent_system/app.py",
+        "src/agent_system/api/run_routes.py",
         "src/agent_system/cli_utils/commands/run.py",
         "src/agent_system/agent_run.py",
         "src/agent_system/cli_utils/chat/sessions.py",

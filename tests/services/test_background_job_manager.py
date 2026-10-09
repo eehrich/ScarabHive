@@ -159,7 +159,7 @@ class TestBackgroundJobManager:
     ):
         """Check-and-register must be ONE atomic step.
 
-        The callers' duplicate guard (app.py's _validate_client_request_id)
+        The callers' duplicate guard (api/run_start.py's validate_client_request_id)
         is a check-then-act with a wide window — it runs in the request
         handler while create_job only runs once the SSE body streams — so
         two concurrent requests both passed it and both started a full

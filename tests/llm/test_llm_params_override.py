@@ -157,7 +157,7 @@ class TestEveryRunOverrideCarriesThem:
     """
 
     RUN_CLIENT_MODULES = (
-        "agent_system/app.py",
+        "agent_system/api/run_start.py",
         "agent_system/cli_utils/commands/run.py",
         "agent_system/agent_run.py",
         "agent_system/cli_utils/chat/agent_setup.py",

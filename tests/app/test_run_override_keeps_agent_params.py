@@ -1,6 +1,6 @@
 """A profile chosen for a RUN still runs with the agent's own llm_params.
 
-An override picks another MODEL, not another agent. ``_get_agent_with_overrides``
+An override picks another MODEL, not another agent. ``get_agent_with_overrides``
 built the client without ``agent_config.llm_params``, so everything the agent
 says about every model it runs on was silently gone for that run -- measured on
 the coder, whose ``context_window: 200000`` and ``prompt_cache_mode`` never

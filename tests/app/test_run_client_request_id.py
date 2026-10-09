@@ -102,11 +102,12 @@ async def test_run_returns_409_when_request_id_already_active(
     of silently starting a second concurrent agent run."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod
+    from agent_system.api import run_start
 
     mgr = MagicMock()
     mgr.is_request_active_anywhere = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        app_mod, "get_background_job_manager", lambda: mgr,
+        run_start, "get_background_job_manager", lambda: mgr,
     )
 
     app = app_mod.build_app()
@@ -174,13 +175,15 @@ async def test_events_returns_409_when_request_id_active_elsewhere(
     two concurrent runs share ownership/cancellation keys."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod
+    from agent_system.api import event_routes, run_start
 
     mgr = MagicMock()
     mgr.get_job = AsyncMock(return_value=None)  # no reconnect target
     mgr.is_request_active_anywhere = AsyncMock(return_value=True)
-    monkeypatch.setattr(
-        app_mod, "get_background_job_manager", lambda: mgr,
-    )
+    for module in (event_routes, run_start):
+        monkeypatch.setattr(
+            module, "get_background_job_manager", lambda: mgr,
+        )
 
     app = app_mod.build_app()
     async with _client(app) as client:
@@ -223,7 +226,7 @@ async def test_events_adopts_client_request_id(
                 lines.append(line)
 
     # Prove the stub actually ran: without this the test would stay green
-    # if a refactor made _get_agent_with_overrides hand out a different
+    # if a refactor made get_agent_with_overrides hand out a different
     # agent instance — and would then quietly do a real LLM call.
     assert any("stub-run" in line for line in lines), (
         "run_events stub did not run — the test hit a different agent "

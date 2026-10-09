@@ -1,6 +1,6 @@
 """SessionManager.peek_session reads a record without counting it as seen.
 
-A caller that only asks the record something before it claims the session (app._session_agent_name: which agent
+A caller that only asks the record something before it claims the session (api/session_writes.session_agent_name: which agent
 it ran with) loaded it -- and a load stamps the manager's cache, so changed_on_disk then took what another process
 had written for this manager's own, and the claim kept the stale copy in memory.
 """
