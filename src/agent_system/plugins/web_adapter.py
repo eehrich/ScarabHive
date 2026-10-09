@@ -147,14 +147,12 @@ class PluginEndpointSecurityEnforcer:
         pattern = pattern.strip()
         method = method.upper()
         
-        # Parse method prefix if present
-        pattern_method = "*"
-        pattern_path = pattern
-        
-        parts = pattern.split(" ", 1)
-        if len(parts) == 2 and parts[0].upper() in ("GET", "POST", "PUT", "DELETE", "PATCH", "*"):
-            pattern_method = parts[0].upper()
-            pattern_path = parts[1]
+        # Parse method prefix if present -- the same reading the app routes'
+        # rules get (auth/enforcement.py). Imported here like every auth name
+        # in this module; the auth package imports its database and security
+        # modules on first import.
+        from agent_system.auth.enforcement import split_method_prefix
+        pattern_method, pattern_path = split_method_prefix(pattern)
         
         # Check method match
         if pattern_method != "*" and pattern_method != method:
