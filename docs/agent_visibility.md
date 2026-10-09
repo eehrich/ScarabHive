@@ -392,7 +392,7 @@ the order above: instance metadata, then the plugin manifest, else private):
 
 ## Schema Validation
 
-The config model (`AgentMetadata` in `src/agent_system/config/models.py`) and the
+The config model (`AgentMetadata` in `src/agent_system/config/models/agent.py`) and the
 JSON schemas generated from it (`schemas/plugins-config.schema.json`,
 `schemas/main-config.schema.json`, `schemas/config-part.schema.json`) accept
 these values:

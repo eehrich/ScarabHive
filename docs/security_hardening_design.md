@@ -143,7 +143,7 @@ Legend: ✅ Open = No auth needed, 🔐 = Requires authentication, ⚙️ = Conf
 ### 4.1 Configuration Model Changes
 
 ```python
-# In config/models.py
+# In config/models/auth.py
 
 class AnonymousAccessConfig(BaseModel):
     """Configuration for anonymous (unauthenticated) access."""

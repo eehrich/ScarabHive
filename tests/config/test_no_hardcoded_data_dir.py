@@ -28,7 +28,8 @@ ALLOWED = {
     "agent_system/paths.py",
     # config-form defaults of the models, shown in the JSON schemas; their
     # consumers resolve them (UserDatabase, BatchQueueManager)
-    "agent_system/config/models.py",
+    "agent_system/config/models/auth.py",
+    "agent_system/config/models/llm.py",
 }
 
 MARKER = re.compile(r"#\s*not-the-data-dir:\s*\S")
