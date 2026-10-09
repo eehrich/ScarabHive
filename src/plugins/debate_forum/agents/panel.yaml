@@ -64,7 +64,7 @@ plugins:
     panel_participant:
       type: basic_agent
       enabled: true
-      description: "panel panel teilnehmer"
+      description: "panel participant"
 
       agent_config:        
         llm_profile: [or-deepseek-flash, deepseek-chat-nostream, or-gemini-flash-unlimited]

@@ -87,7 +87,7 @@ cur > avg * factor    // factor 2 → FEWER signals (stricter) — intuitive
 Rule of thumb: for a "X times above the baseline" signal, multiply the
 **baseline**, not the current value, so a higher factor makes the condition
 stricter (less red / fewer alerts). State the direction explicitly in the
-input tooltip ("höher = strenger") and sanity-check both extremes
+input tooltip ("higher = stricter") and sanity-check both extremes
 (factor 0.5 vs 2.0) before shipping.
 
 ### 1d. Realtime ticks hammer `var` accumulators (the "always red at 15:30" bug)
