@@ -160,7 +160,7 @@ class TestEveryRunOverrideCarriesThem:
         "agent_system/app.py",
         "agent_system/agent_cli.py",
         "agent_system/agent_run.py",
-        "agent_system/cli_utils/chat.py",
+        "agent_system/cli_utils/chat/agent_setup.py",
         "agent_system/servers/agent/server.py",
         "agent_system/llm/factory.py",
     )

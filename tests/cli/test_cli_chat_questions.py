@@ -174,7 +174,7 @@ class _Typist:
 
 
 def _turn(monkeypatch, agent, typist, show_status=True):
-    monkeypatch.setattr(chat, "_KeyReader", lambda active: typist)
+    monkeypatch.setattr(chat.typeahead, "_KeyReader", lambda active: typist)
     out = io.StringIO()
     renderer = ChatRenderer(ansi=False, out=out, width_override=200, height_override=30)
     ctx = _ChatContext(agent=agent, entry_name="a", session_service=None, session_user="u", session_id="s",

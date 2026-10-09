@@ -115,7 +115,7 @@ In this order, all in `main`:
    was what turned the loop again. So `wake_when_done` could not work in the
    chat at all: the job that sets the marker was frozen, so the marker
    never appeared. `_PromptEditor._ask` therefore runs
-   `prompt_async` under `run_until_complete` (`cli_utils/chat.py`). The same
+   `prompt_async` under `run_until_complete` (`cli_utils/chat/prompt_input.py`). The same
    applies to `/edit`: the editor runs via `run_in_executor`, because writing
    a message in vim takes minutes, and that is exactly when a
    background job would have the most time. Not affected and still blocking
@@ -129,7 +129,7 @@ In this order, all in `main`:
    and no call runs at the prompt — a sub-agent finished with `wake_when_done`
    would sit there until the user happens to type something. While the prompt
    waits, a watcher thread (`_watch_for_wake` in
-   `cli_utils/chat.py`) therefore polls `presence.pending(...)` every half second and
+   `cli_utils/chat/context.py`) therefore polls `presence.pending(...)` every half second and
    cuts off the input; the REPL takes the marker (so that a turn that never
    reaches an LLM call does not trigger an endless loop) and starts a
    turn with `WAKE_TASK`, just as an input would. It takes it with
@@ -146,7 +146,7 @@ In this order, all in `main`:
 9. **Open the session** via `SessionService.open_for_run`, like `/run` and
    agent-run: a saved one is restored, a new one starts with
    the `template_vars` of the agent config; `--vars` on top.
-10. **Run**: `chat` hands over to `cli_utils/chat.py:run_chat_loop`. `--raw` and
+10. **Run**: `chat` hands over to `cli_utils/chat/repl.py:run_chat_loop`. `--raw` and
     stream mode both collect via `collect_final_result`. In
     stream mode, `on_event` shows tool calls (`--show-tools`),
     the thinking (gray), errors (`ERROR:`) and the answer as soon as they arrive —
@@ -174,7 +174,7 @@ stderr.
 | Module | Contents |
 |-------|--------|
 | `common.py` | color mode (`set_color_mode`, `supports_color`), Windows VT mode, status lines, `show_answer` (answer as Markdown with colors, raw into a pipe), `render_with_rich` |
-| `chat.py` | the REPL: renderer, input/keyboard, slash commands, usage totals |
+| `chat/` | the REPL, a package (below) |
 | `session_defaults.py` | agent/LLM of a resumed session |
 | `session_listing.py` | `--list-sessions` |
 | `attachments.py` | sort attachments by file kind |
@@ -182,9 +182,29 @@ stderr.
 | `users.py` | Typer app for `agent-cli users` |
 | `commands/hooks.py` | `hooks list` / `hooks inspect` |
 
-The chat's slash commands live elsewhere: `agent_system/chat_commands.py`
-(built in) and `agent_system/plugin_commands.py` (declared by plugins,
-always run via `dispatch_tool_call`).
+`chat/` is cut by responsibility; `chat/__init__.py` re-exports
+`run_chat_loop`, `run_chat_turn`, `ChatRenderer` and `display_width`:
+
+| Module | Contents |
+|-------|--------|
+| `repl.py` | `run_chat_loop`: reads a line, resolves it, hands a built-in command to its handler through one table (`_COMMANDS`) or runs a turn; what Tab completion offers |
+| `turn.py` | `run_chat_turn`, `_execute_turn` on the REPL's loop, the two-stage Ctrl-C (`_cancel_turn`) |
+| `display.py` | `ChatRenderer` (the live region), `display_width`, muting console logging while the region is drawn |
+| `prompt_input.py` | the prompt: `"""` and a trailing `\` for several lines, `_PromptEditor` (prompt_toolkit, history, completion), piped stdin, `/edit` in `$EDITOR` |
+| `typeahead.py` | what is typed while a turn runs (`_KeyReader`, `_poll_typed_input`) |
+| `context.py` | `_ChatContext` and the open session: its messages and the history seed, hold/release/claim (session presence), the wake watch, a fresh session, `_save_now` |
+| `interruptible.py` | work on the REPL's loop that Ctrl-C cancels instead of the chat (`_run_interruptible`, `_drain`) |
+| `token_usage.py` | tokens and cost per call and per chat, the footer line, `/costs` |
+| `sessions.py` | `/new`, `/session`, `/sessions`, `/resume`, `/title`, `/vars`, `/attach` |
+| `agent_setup.py` | `/agent`, `/model`, `/think`, `/tools`, `/skills`, `/context`, running a skill |
+| `transcript.py` | `/history`, `/last`, `/undo`, `/retry`, `/rewind`, `/export`, `/copy` |
+
+Inside the package a module calls a sibling's function through the module
+(`context._save_now(...)`), so a test patches it once, where it is defined.
+The commands themselves are declared elsewhere: `agent_system/chat_commands.py`
+(built in: the catalogue and the parser, shared with the web UI) and
+`agent_system/plugin_commands.py` (declared by plugins, always run via
+`dispatch_tool_call`).
 
 ---
 

@@ -45,18 +45,18 @@ def _drive(monkeypatch, agent, lines):
 
     editor = _Lines(lines)
     started = []
-    monkeypatch.setattr(chat, "_build_prompt_editor", lambda seed, suggest=None, loop=None: editor)
-    monkeypatch.setattr(chat, "collect_plugin_commands", lambda agent_: [])
-    monkeypatch.setattr(chat, "_available_skills", lambda ctx: [])
-    monkeypatch.setattr(chat, "_execute_turn",
+    monkeypatch.setattr(chat.prompt_input, "_build_prompt_editor", lambda seed, suggest=None, loop=None: editor)
+    monkeypatch.setattr(chat.repl, "collect_plugin_commands", lambda agent_: [])
+    monkeypatch.setattr(chat.agent_setup, "_available_skills", lambda ctx: [])
+    monkeypatch.setattr(chat.turn, "_execute_turn",
                         lambda loop, ctx, task, renderer, editor=None: started.append(task) or {})
 
     async def _saved(ctx):
         return True
 
-    monkeypatch.setattr(chat, "_save_session", _saved)
-    monkeypatch.setattr(chat.sys.stdin, "isatty", lambda: True, raising=False)
-    monkeypatch.setattr(chat.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(chat.context, "_save_session", _saved)
+    monkeypatch.setattr(chat.repl.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(chat.repl.sys.stdout, "isatty", lambda: True, raising=False)
     loop = asyncio.new_event_loop()
     try:
         chat.run_chat_loop(agent=agent, entry_name=agent.name, session_service=None,

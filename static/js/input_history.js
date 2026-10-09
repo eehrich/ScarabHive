@@ -3,7 +3,7 @@
 // There is no store of its own. The history IS the session's user messages,
 // rebuilt whenever a session is loaded, so a resumed conversation brings its
 // history back and nothing can drift apart from the transcript. The terminal
-// chat seeds itself from the same place (cli_utils/chat.py:_history_seed).
+// chat seeds itself from the same place (cli_utils/chat/context.py:_history_seed).
 //
 // The hard part is not the history, it is not stealing the arrow keys. The
 // composer is a textarea, so Up/Down are also ordinary caret movement, and a
@@ -32,7 +32,7 @@
 
   // A stored message longer than this is not a thing anyone wants back in the
   // composer: a /skill turn stores the EXPANDED skill body as its user
-  // message, 6-33 KB of it. Mirrors _HISTORY_MAX_CHARS in cli_utils/chat.py.
+  // message, 6-33 KB of it. Mirrors _HISTORY_MAX_CHARS in cli_utils/chat/context.py.
   var MAX_CHARS = 2000;
 
   // The exact inverse of the "//" unescape in chat_commands.parse_chat_command

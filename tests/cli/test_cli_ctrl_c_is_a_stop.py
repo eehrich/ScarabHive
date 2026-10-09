@@ -175,7 +175,7 @@ def test_a_ctrl_c_in_a_chat_turn_leaves_the_session_marked(cli, monkeypatch):
         raise EOFError
 
     monkeypatch.setattr(Agent, "_presence_step", step)
-    monkeypatch.setattr(chat, "_read_input", prompt)
+    monkeypatch.setattr(chat.prompt_input, "_read_input", prompt)
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
     agent_cli.main()
 
@@ -216,7 +216,7 @@ def test_a_ctrl_c_before_the_turns_run_takes_the_session_is_a_stop(cli, monkeypa
         raise EOFError
 
     monkeypatch.setattr(Agent, "run_events", not_yet)
-    monkeypatch.setattr(chat, "_read_input", prompt)
+    monkeypatch.setattr(chat.prompt_input, "_read_input", prompt)
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
     agent_cli.main()
 
@@ -241,7 +241,7 @@ def test_a_chat_turn_is_named_before_it_starts(cli, monkeypatch):
 
     cli.llm.chat_tools = chat_tools
     monkeypatch.setattr(Agent, "run_events", recorded)
-    monkeypatch.setattr(chat, "_read_input", lambda *args, **kwargs: (_ for _ in ()).throw(EOFError()))
+    monkeypatch.setattr(chat.prompt_input, "_read_input", lambda *args, **kwargs: (_ for _ in ()).throw(EOFError()))
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
     agent_cli.main()
 
@@ -256,7 +256,7 @@ def test_a_chat_that_ends_after_a_normal_turn_is_woken_by_input_that_came_meanwh
         return {"assistant": {"role": "assistant", "content": "done"}}
 
     cli.llm.chat_tools = chat_tools
-    monkeypatch.setattr(chat, "_read_input", lambda *args, **kwargs: (_ for _ in ()).throw(EOFError()))
+    monkeypatch.setattr(chat.prompt_input, "_read_input", lambda *args, **kwargs: (_ for _ in ()).throw(EOFError()))
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
     agent_cli.main()
 
