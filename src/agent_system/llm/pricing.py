@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from agent_system.paths import PROJECT_ROOT
 from agent_system.utils import yaml_io
 
 logger = logging.getLogger(__name__)
@@ -23,8 +24,7 @@ logger = logging.getLogger(__name__)
 # Resolved against the repo root, not the process CWD: a relative default made
 # the whole estimate silently disappear (load_pricing returns {} on OSError)
 # whenever a tool ran from another directory.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_PRICING_PATH = _REPO_ROOT / "config" / "llm_pricing.yaml"
+DEFAULT_PRICING_PATH = PROJECT_ROOT / "config" / "llm_pricing.yaml"
 
 #: mtime-based cache — the table is read at most once per file change.
 _cache: dict = {"path": None, "mtime": None, "table": {}}

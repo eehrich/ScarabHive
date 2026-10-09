@@ -19,9 +19,10 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from ..paths import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
 _LEVELS = ("ok", "warn", "error")
 
 #: When this process started and which commit it runs; set by record_start().
@@ -34,7 +35,7 @@ _started: dict[str, Any] = {"at": None, "commit": None}
 _ARCHIVE_COMMIT = Path(__file__).resolve().parents[1] / "_commit.json"
 
 
-def git_commit(cwd: Path = _REPO_ROOT, archive: Path = _ARCHIVE_COMMIT) -> Optional[dict]:
+def git_commit(cwd: Path = PROJECT_ROOT, archive: Path = _ARCHIVE_COMMIT) -> Optional[dict]:
     """The checked-out commit: hash, committer date, subject. Without a git
     checkout, the commit an archive of it names; None when neither says.
 
