@@ -12,6 +12,7 @@ from typing import Any
 
 from agent_system.tools.integration import ToolServerIntegration
 from agent_system.config.models import AgentSystemConfig
+from agent_system.services.tool_server_service import external_client_or_none
 
 
 logger = logging.getLogger(__name__)
@@ -121,17 +122,6 @@ class ToolService:
         Tolerates a coroutine and a missing provider: callers here must degrade
         to "not connected", never raise.
         """
-        try:
-            provider = getattr(self._mcp, "external_provider", None)
-            pool = getattr(provider, "pool", None) if provider else None
-            if pool is None:
-                return None
-            client = pool.get(server_name)
-            if hasattr(client, '__await__'):
-                client = await client
-            return client
-        except Exception as e:
-            logger.debug(f"Exception getting client for {server_name}: {e}")
-            return None
+        return await external_client_or_none(self._mcp, server_name)
 
 
