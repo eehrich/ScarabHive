@@ -87,7 +87,7 @@ that on three counts:
 2. **Allowlist semantics:** the *effective* filter is
    `ToolSchemaBuilder._is_tool_allowed(tool, server, patterns)` matching the
    full path `server/tool` — plus **blocked patterns** applied after allowed.
-   The agent-level 2-arg `_is_tool_allowed` (server.py) matches server names
+   The agent-level 2-arg `_is_tool_allowed` (servers/agent/mixins/usable_tools.py) matches server names
    and returns `False` for every flat tool name against the standard
    `server/*` config form. Re-implementing this in a plugin would both
    over-block (unusable) and under-block (`tools.blocked` bypass).

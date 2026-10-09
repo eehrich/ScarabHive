@@ -376,7 +376,7 @@ class TestATransportFailureIsNotAFormatProblem:
     #: provider's error body as if the sub-agent had answered it -- and the
     #: caller's ``parsed.get("issues", [])`` then read "0 findings" with no
     #: exception and no retry. Sources: sub_agent_manager/server.py wraps the
-    #: agent's message, servers/agent/server.py stringifies the provider
+    #: agent's message, servers/agent/mixins/run.py stringifies the provider
     #: exception, and provider SDKs stringify with their JSON body.
     ERROR_BODIES_THAT_USED_TO_PARSE = [
         "Error: Agent execution failed: Error code: 429 - "

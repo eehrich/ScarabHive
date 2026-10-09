@@ -18,7 +18,7 @@ The Agent System implements real-time streaming of status events during parallel
    - Provides `get_pending_events()` for polling
    - Automatically resets state between requests
 
-3. **Agent Server** (`src/agent_system/servers/agent/server.py`)
+3. **Agent Server** (`src/agent_system/servers/agent/server.py`; the step loop in `mixins/llm_loop.py`)
    - Integrates components
    - Uses `execute_tools_streaming()` for real-time status delivery
    - Yields status events to SSE stream

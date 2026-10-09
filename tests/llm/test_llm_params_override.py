@@ -162,6 +162,8 @@ class TestEveryRunOverrideCarriesThem:
         "agent_system/agent_run.py",
         "agent_system/cli_utils/chat.py",
         "agent_system/servers/agent/server.py",
+        "agent_system/servers/agent/mixins/llm_selection.py",
+        "agent_system/servers/agent/mixins/run.py",
         "agent_system/llm/factory.py",
     )
 

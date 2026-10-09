@@ -14,8 +14,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent_system.plugins.discovery import _add_plugins
-from agent_system.servers.agent import server as server_mod
 from agent_system.servers.agent.prompt_strategies import PromptContext, build_context_values
+from agent_system.servers.agent.tool_schema_builder import ToolSchemaBuilder
 from agent_system.tools.base import ToolServerRegistry
 
 
@@ -150,7 +150,7 @@ def _agent_with_tools(monkeypatch):
         return None
 
     monkeypatch.setattr(agent, "list_usable_tools", usable)
-    monkeypatch.setattr(server_mod.ToolSchemaBuilder, "build_schemas", build_schemas)
+    monkeypatch.setattr(ToolSchemaBuilder, "build_schemas", build_schemas)
     monkeypatch.setattr(agent._tool_integration_manager, "setup_tool_integration", no_setup)
     agent._tool_integration_manager.tool_integration = SimpleNamespace(
         configured_external_servers={"github": object()})

@@ -74,9 +74,9 @@ triggers the same move (`'note'` instead of `'message'`), but never on `final`.
 |---|---|
 | Append endpoint + agent resolution | `src/agent_system/app.py` (`append_event`, `resolve_agent_for_request`) |
 | Queue + drain | `servers/agent/components/session_tracking.py` (`append_user_message`, `drain_appended_messages`) |
-| Pre-step drain | `servers/agent/server.py` (`_execute_llm_loop`, step start) |
-| Pre-final drain ("never finalize past fresh user input") | `servers/agent/server.py` (no-tool-call branch before final) |
-| Late-message flush | `servers/agent/server.py` (`_finalize_request`) |
+| Pre-step drain | `servers/agent/mixins/llm_loop.py` (`_execute_llm_loop`, step start) |
+| Pre-final drain ("never finalize past fresh user input") | `servers/agent/mixins/llm_loop.py` (no-tool-call branch before final) |
+| Late-message flush | `servers/agent/mixins/run_phases.py` (`_finalize_request`, through `_take_in_late_messages` in `mixins/live_state.py`) |
 | Frontend append + block rebind | `static/js/chat_module.js` (submit handler) |
 
 ## Tests
