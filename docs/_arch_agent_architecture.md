@@ -690,6 +690,8 @@ src/agent_system/servers/agent/
 │   ├── hook_integration.py (hook execution at all lifecycle points, LLM transport hooks)
 │   ├── tool_integration.py (MCP protocol handling, external tool schemas)
 │   ├── tool_execution.py (tool call execution: parallel, cancellable, streaming)
+│   ├── tool_invocation.py (one tool call on its server: plugin or external MCP, its tool message)
+│   ├── tool_call_contract.py (runtime params, result conventions, ToolDispatchError)
 │   ├── server_resolution.py (shared server/tool-name resolution building blocks)
 │   └── status_forwarding.py (status event streaming)
 ├── prompt_strategies.py (prompt rendering, strategy pattern)

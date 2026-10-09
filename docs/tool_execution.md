@@ -158,6 +158,23 @@ plugins:
 
 ## Tool Execution
 
+Three modules in `servers/agent/components/` share the work:
+
+- `tool_execution.py` -- `ToolExecutionManager`: runs the calls of one step in
+  phases (check the calls, pre_tool_call hooks in call order, start, stream
+  status until all are done, post_tool_call hooks and the answers in call
+  order), each call under the cancellation system.
+- `tool_invocation.py` -- `ToolInvoker`: runs a single call on its server
+  (external MCP server, or plugin / config agent / the agent's own tool) and
+  turns its answer into the tool message; also the bare call behind
+  `Agent.call_tool`.
+- `tool_call_contract.py` -- the rules every tool call follows: the runtime
+  params (`drop_runtime_params`, `inject_runtime_params`), the result
+  conventions (`tool_result_is_error`, `tool_message_never_ran`,
+  `pop_multimodal_content`), `ToolDispatchError` and the error messages the
+  model reads. `tool_execution` re-exports the names other modules import
+  from it.
+
 ### 1. Execution Flow
 
 ```python
@@ -174,7 +191,7 @@ async def execute_tools_streaming(
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Execute all tool calls, streaming status/tool events + final results."""
     
-    # 1. Parse and validate tool calls
+    # 1. Parse and validate tool calls (_check_calls)
     valid_tool_executions = []
     for tc in tool_calls:
         openai_name = tc["function"]["name"]
@@ -195,7 +212,11 @@ async def execute_tools_streaming(
         
         valid_tool_executions.append((tc, tool_name, openai_name, params))
     
-    # 2. Start all tools as tasks
+    # pre_tool_call hooks, one call after the other in call order, before
+    # any call starts (_ask_pre_hooks_in_call_order); a blocked call is
+    # answered there and does not start
+    
+    # 2. Start all tools as tasks (_start_calls)
     tasks = []
     for i, (tc, tool_name, openai_name, params) in enumerate(valid_tool_executions):
         # Tool-specific request_id via the agent counter
@@ -206,6 +227,7 @@ async def execute_tools_streaming(
             session_id, user_id, main_request_id=request_id)))
     
     # 3. Poll (asyncio.wait, 50 ms) and pass status events through meanwhile
+    #    (_stream_until_done)
     pending = set(tasks)
     while pending:
         done, pending = await asyncio.wait(pending, timeout=0.05,
@@ -214,7 +236,9 @@ async def execute_tools_streaming(
             yield {"type": "status", "event": status_event}
         # collect finished tasks; Exception/CancelledError → error message
     
-    # 4. Sort messages in call order (Gemini requires this)
+    # 4. Sort messages in call order (Gemini requires this); post_tool_call
+    #    hooks per message in that order, once all calls are done
+    #    (_answer_in_call_order)
     yield {"type": "tool_events", "events": events}
     yield {"type": "complete", "messages": tool_messages, "results": results}
 ```
@@ -235,18 +259,17 @@ async def _execute_single_tool(
     if request_id:
         # With a request ID always via the cancellation path (see below)
         return await self._execute_with_cancellation(...)
-    if "." in tool_name:
-        # External tool
-        return await self._execute_external_tool(...)
-    else:
-        # Internal plugin tool
-        return await self._execute_plugin_tool(...)
+    # ToolInvoker.execute_tool (tool_invocation.py): a dotted name is an
+    # external tool (execute_external_tool), anything else a plugin tool
+    # (execute_plugin_tool)
+    return await self._invoker.execute_tool(...)
 ```
 
 ### 3. Plugin Tool Execution
 
 ```python
-async def _execute_plugin_tool(
+# ToolInvoker (tool_invocation.py)
+async def execute_plugin_tool(
     tc: Dict,
     tool_name: str,
     openai_tool_name: str,
@@ -295,7 +318,8 @@ Besides the model arguments, a plugin tool thus sees (each only if the value is 
 ### 4. External Tool Execution
 
 ```python
-async def _execute_external_tool(
+# ToolInvoker (tool_invocation.py)
+async def execute_external_tool(
     tc: Dict,
     tool_name: str,
     openai_tool_name: str,
@@ -312,7 +336,7 @@ async def _execute_external_tool(
     # 2. Call external server via the agent's tool integration.
     #    Only JSON-serializable parameters without "_" keys leave the
     #    process -- no runtime parameters, no status object, no token.
-    serializable_params = self._make_params_serializable(params)
+    serializable_params = make_params_serializable(params)
     tool_integration = self._agent._tool_integration_manager.tool_integration
     result = await tool_integration.call_tool(
         server_name,
@@ -482,9 +506,9 @@ async def _execute_with_cancellation(
         params_with_token = params.copy()
         params_with_token["_cancellation_token"] = tool_token
         
-        # 4. Execute tool (_execute_plugin_tool or _execute_external_tool)
+        # 4. Execute tool (ToolInvoker.execute_tool: plugin or external)
         task = asyncio.create_task(
-            self._execute_plugin_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id, session_id, user_id)
+            self._invoker.execute_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id, session_id, user_id)
         )
         
         # 5. Register task for forced cancellation
@@ -528,7 +552,7 @@ async def long_running_tool(self, params: Dict[str, Any]) -> Any:
     return {"processed": 100}
 ```
 
-No `raise CancellationError(...)` in the tool: the constructor requires `request_id`, and on the plugin path `_execute_plugin_tool` catches every exception generically — the model would only get `{"error": "<exception text>"}`. If a tool does not react at all, the manager aborts the task after `tool_cleanup_timeout` (default 30s).
+No `raise CancellationError(...)` in the tool: the constructor requires `request_id`, and on the plugin path `ToolInvoker.execute_plugin_tool` catches every exception generically — the model would only get `{"error": "<exception text>"}`. If a tool does not react at all, the manager aborts the task after `tool_cleanup_timeout` (default 30s).
 
 ## Error Handling
 
@@ -642,7 +666,8 @@ message = ChatMessage(
 Events contain only JSON-serializable data:
 
 ```python
-def _make_params_serializable(self, params: Dict[str, Any]) -> Dict[str, Any]:
+# tool_call_contract.py
+def make_params_serializable(params: Dict[str, Any]) -> Dict[str, Any]:
     """Create JSON-serializable copy of params."""
     serializable_params = {}
     for key, value in params.items():

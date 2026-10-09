@@ -3,7 +3,7 @@
 Loading: real files (PNG written by PIL, WAV written by the stdlib wave
 module) go through the REAL server, dispatched through the REAL schema.yaml
 tool names, and the returned ``_multimodal_content`` is fed to the REAL
-``MultimodalToolContent`` model — the same line tool_execution.py runs.
+``MultimodalToolContent`` model — the same line tool_call_contract.py runs.
 
 Saving: real ``ChatMessage`` objects carrying media in all four inline shapes
 plus a file-path item, read back out and compared byte for byte.
@@ -179,7 +179,7 @@ class TestLoad:
         assert res["status"] == "success", res
         items = res["_multimodal_content"]
         assert len(items) == 1
-        # The exact line tool_execution.py runs on the tool result.
+        # The exact line tool_call_contract.py runs on the tool result.
         attached = MultimodalToolContent(**items[0])
         assert attached.type == "image"
         assert attached.mime_type == "image/png"

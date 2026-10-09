@@ -12,6 +12,7 @@ The Agent System implements real-time streaming of status events during parallel
    - Manages parallel tool execution
    - Streams status events in real-time via `execute_tools_streaming()`
      (the sole production interface; the old `execute_tools()` wrapper was removed)
+   - Runs each single call through `ToolInvoker` (`components/tool_invocation.py`)
 
 2. **StatusEventForwarder** (`src/agent_system/servers/agent/components/status_forwarding.py`)
    - Collects status events from `status_bus` via a direct handler (no background task)
@@ -31,11 +32,15 @@ User Request → Agent.run_events()
 LLM Streaming (yields chunks)
   ↓
 ToolExecutionManager.execute_tools_streaming()
-  ├─ Start parallel tasks (asyncio.create_task)
-  ├─ Poll loop (50ms interval):
+  ├─ Check the calls (_check_calls)
+  ├─ pre_tool_call hooks, in call order (_ask_pre_hooks_in_call_order);
+  │  status events keep flowing while a hook waits
+  ├─ Start parallel tasks (asyncio.create_task) (_start_calls)
+  ├─ Poll loop (50ms interval) (_stream_until_done):
   │  ├─ await asyncio.wait(tasks, timeout=0.05)
   │  ├─ Yield pending status events ← StatusEventForwarder
   │  └─ Process completed tasks
+  ├─ post_tool_call hooks and answers, in call order (_answer_in_call_order)
   └─ Yield final results
   ↓
 Continue conversation loop
