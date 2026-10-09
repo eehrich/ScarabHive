@@ -1,7 +1,7 @@
 """forge tool server: GitLab and GitHub for the coder, one set of tools for both.
 
 The backend a repository uses is its configuration's business, never the
-model's (docs/konzept.md E2). This module knows no platform: it checks the
+model's (docs/concept.md E2). This module knows no platform: it checks the
 arguments, resolves the repository, lays the policy on top and bounds what
 goes back --
 
@@ -190,7 +190,7 @@ class ForgeServer(SchemaBasedToolServer):
         self._locks: dict[str, asyncio.Lock] = {}
         self._hosts = getattr(server_config, "hosts", None) or {}
         self._load(self._hosts, getattr(server_config, "repos", None) or {})
-        # The webhook (docs/konzept.md §7): its inbox is read in every process a
+        # The webhook (docs/concept.md §7): its inbox is read in every process a
         # session runs in -- the hook -- and its route only in the API's.
         self.webhook = WebhookConfig.read(getattr(server_config, "webhook", None))
         if self.webhook is not None and self.webhook.user not in self.allowed_users:

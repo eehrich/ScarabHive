@@ -901,7 +901,7 @@ The clones under @{tt}data/workspace/forge/<name>@{utt} (the coder's file
 tools reach @{tt}data/workspace/@{utt}); the webhook's bindings, inbox,
 delivery keys and hourly counts in @{tt}data/forge/events.db@{utt}, shared
 by the API and every @{tt}agent-cli@{utt} process. Design and measured
-platform facts: @{" docs/konzept.md " link docs/konzept.md},
+platform facts: @{" docs/concept.md " link docs/concept.md},
 @{" docs/facts.md " link docs/facts.md}. The live tests run against a
 GitLab test instance (@{tt}tests/live/gitlab/@{utt}) or a GitHub
 repository, only with their environment set; the rest runs against fakes.

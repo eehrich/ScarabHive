@@ -3,7 +3,7 @@
 Lets agents build and test games in Godot 4 on this machine, over two channels: the Godot binary as a headless
 process (create a project, parse-check scripts, play a scene for N frames, run a GDScript against the project,
 export), and a running editor through the vendored `godot_mcp` addon (scene tree, node properties, playing with a
-frozen clock, injected input, screenshots, the error log). Why it is built this way: `docs/konzept.md`.
+frozen clock, injected input, screenshots, the error log). Why it is built this way: `docs/concept.md`.
 
 - **Tools** -- `godot_status`, `godot_setup`, `godot_import_assets`, `godot_check`, `godot_run`, `godot_script`,
   `godot_export` (headless); `godot_scene`, `godot_node`, `godot_play`, `godot_observe`, `godot_command` (editor).

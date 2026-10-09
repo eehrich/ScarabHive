@@ -1,4 +1,4 @@
-"""GitLab REST v4, read into the plugin's common shapes (docs/konzept.md §2).
+"""GitLab REST v4, read into the plugin's common shapes (docs/concept.md §2).
 
 A merge request is a "pr" here; ``number`` is its project-scoped ``iid``, the
 number people write as !12 -- never the global ``id``.

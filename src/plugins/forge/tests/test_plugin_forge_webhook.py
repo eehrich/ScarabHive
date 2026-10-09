@@ -1,4 +1,4 @@
-"""The webhook (docs/konzept.md §7): GitLab's events read, authenticated,
+"""The webhook (docs/concept.md §7): GitLab's events read, authenticated,
 bound to the session that works on them, handed over by the hook. The store
 lives on tmp_path; the platform, the session manager and the wake are fakes."""
 import asyncio
