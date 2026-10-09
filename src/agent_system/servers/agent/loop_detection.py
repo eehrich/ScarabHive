@@ -110,7 +110,8 @@ class ToolCallLoopDetector:
         exact_match_threshold: int = 3,
         sequence_threshold: int = 2,
         block_after_threshold: int = 5,
-        auto_unblock_after_steps: int = 3
+        auto_unblock_after_steps: int = 3,
+        enabled: bool = True,
     ):
         """Initialize the loop detector.
         
@@ -120,7 +121,10 @@ class ToolCallLoopDetector:
             sequence_threshold: Trigger after N repeated sequences
             block_after_threshold: Block tool after N consecutive repetitions
             auto_unblock_after_steps: Unblock tools after N steps without that tool
+            enabled: Off means every check returns an empty result: no
+                detection, no intervention, no blocking.
         """
+        self.enabled = enabled
         self.history_size = history_size
         self.exact_match_threshold = exact_match_threshold
         self.sequence_threshold = sequence_threshold
@@ -186,6 +190,8 @@ class ToolCallLoopDetector:
         Returns:
             LoopDetectionResult with detection info and suggested intervention
         """
+        if not self.enabled:
+            return LoopDetectionResult()
         self._current_step = step
         record = ToolCallRecord.from_tool_call(tool_call, step)
         signature = record.signature()

@@ -290,6 +290,24 @@ class TestLoopDetectorConstruction:
         assert detector.block_after_threshold == 8
         assert detector.auto_unblock_after_steps == 5
 
+    def test_disabled_detects_nothing(self):
+        """enabled=False (loop_detection.enabled: false) switches every
+        strategy off: no sequence, no exact match, no note, no blocking."""
+        detector = ToolCallLoopDetector(enabled=False)
+        a = {"function": {"name": "a", "arguments": "{}"}}
+        b = {"function": {"name": "b", "arguments": "{}"}}
+
+        results = [detector.record_and_check(c, step=i)
+                   for i, c in enumerate([a, b, a, b, a, b])]
+        results += [detector.record_and_check(a, step=6 + i) for i in range(8)]
+        results.append(detector.record_batch_and_check([a, b, a, b], step=14))
+
+        for result in results:
+            assert not result.is_loop
+            assert not result.intervention
+            assert not result.should_block_tool
+            assert not result.blocked_tools
+
 
 class TestInterventionMessages:
     """Tests for intervention message generation."""
