@@ -688,7 +688,15 @@ src/agent_system/servers/agent/
 ├── mixins/ (Agent's responsibilities, one mixin each)
 │   ├── run.py (run_events, the run's entry; _run_events, which drives the three phases; session presence)
 │   ├── run_phases.py (Phase 1 _initialize_request_and_conversation, Phase 3 _finalize_request; ConversationContext)
-│   ├── llm_loop.py (Phase 2: the step loop _execute_llm_loop, fallback chain, the LLM call of a step)
+│   ├── llm_loop/ (Phase 2: the step loop, one mixin per part of a step, gathered by LLMLoopMixin)
+│   │   ├── loop.py (_execute_llm_loop: the run's setup and its steps; _run_step, the order of a step's phases)
+│   │   ├── state.py (LoopState: what lives across the steps; StepState: one step; StepEnd)
+│   │   ├── step.py (the phases around the call: open the step, pre-/post-LLM hooks, the answer, an empty answer)
+│   │   ├── step_llm.py (which LLM answers the step: pick, re-pick after the hooks, the next fallback)
+│   │   ├── fallback.py (the call with its retries: what each error means, blocks, fallback switches)
+│   │   ├── llm_call.py (_call_llm_with_streaming: the streaming and the polled path of one call)
+│   │   ├── answer.py (an answer without tool calls: continue, or the final answer)
+│   │   └── tool_step.py (an answer with tool calls: loop detection, the tools, the history after them)
 │   ├── llm_selection.py (fallback, escalation and caller clients; stuck escalator, tool-call loop detector)
 │   ├── prompts.py (system prompt rendering; step-budget, output-cap and structured-output notes)
 │   ├── usable_tools.py (tool discovery, the LLM schemas, programmatic dispatch_tool_call)
@@ -731,7 +739,13 @@ name and is found on `Agent` as before; the module-level API (`SESSION_LOCKED`, 
 A mixin never imports `server.py` at run time; its methods annotate `self` as `Agent` for the type
 checker only, and its docstring names the attributes of `Agent.__init__` it relies on. A module-level
 name a mixin looks up is patched in that mixin's module: `status_scope` in `mixins/run.py`,
-`_REASONING_PROGRESS_TICK` in `mixins/llm_loop.py`.
+`_REASONING_PROGRESS_TICK` in `mixins/llm_loop/llm_call.py`.
+
+The step loop (`mixins/llm_loop/`) is a sequence of phases, each a method taking the run's state
+(`LoopState`) and the step's (`StepState`). What belongs to the request lives on those state objects,
+never on the agent, which serves concurrent requests. A phase that ends a step early sets
+`StepState.end` (`StepEnd.NEXT_STEP` or `StepEnd.RUN`), and `_run_step` runs no further phase of it.
+The entry points stay `_execute_llm_loop` and `_call_llm_with_streaming`.
 
 ### Core Components
 

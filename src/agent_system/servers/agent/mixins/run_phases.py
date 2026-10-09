@@ -5,7 +5,7 @@ cancellation token, the run's context variables, the tools and their schemas, th
 the session's history and the opening message. _finalize_request takes it all down in the order that
 keeps the session whole: the checkpoint loop stopped, late messages taken in, the final save under
 the session's lock, then the session end hooks, the context variables and the final status. Phase 2,
-the step loop, is llm_loop.py; run.py drives the three.
+the step loop, is llm_loop/; run.py drives the three.
 """
 from __future__ import annotations
 

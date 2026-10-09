@@ -12,7 +12,7 @@ import pytest
 
 from agent_system.hooks import HookResult, HookType, PluginHook
 from agent_system.hooks.registry import get_hook_registry
-from agent_system.servers.agent.mixins import llm_loop
+from agent_system.servers.agent.mixins.llm_loop import llm_call
 from agent_system.servers.agent.server import Agent
 
 from test_reasoning_loop_wiring import (
@@ -38,7 +38,7 @@ class TestTheStreamTicks:
 
         await _drive(_ScriptedLLM(thinking(text) + [FINAL]), on_progress)
 
-        tick = llm_loop._REASONING_PROGRESS_TICK
+        tick = llm_call._REASONING_PROGRESS_TICK
         assert len(calls) == len(text) // tick
         for so_far, chars, previous in calls:
             assert so_far == text[:chars]

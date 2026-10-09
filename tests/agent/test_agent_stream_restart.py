@@ -55,14 +55,14 @@ async def test_the_loop_windows_and_progress_buffers_start_over():
     async def on_progress(text, chars, previous):
         ticks.append(text)
 
-    import agent_system.servers.agent.mixins.llm_loop as llm_loop
-    old_tick = llm_loop._REASONING_PROGRESS_TICK
-    llm_loop._REASONING_PROGRESS_TICK = 1
+    import agent_system.servers.agent.mixins.llm_loop.llm_call as llm_call
+    old_tick = llm_call._REASONING_PROGRESS_TICK
+    llm_call._REASONING_PROGRESS_TICK = 1
     try:
         events = [e async for e in agent._call_llm_with_streaming(
             _llm(), [], [], cancellation_token=None, step=0,
             yield_pending_status_fn=lambda: [], on_reasoning_progress=on_progress)]
     finally:
-        llm_loop._REASONING_PROGRESS_TICK = old_tick
+        llm_call._REASONING_PROGRESS_TICK = old_tick
     assert ticks[-1] == "second try"
     assert any(e.get("type") == "thinking_complete" for e in events)

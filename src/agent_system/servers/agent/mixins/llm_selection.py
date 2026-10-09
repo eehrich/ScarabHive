@@ -3,7 +3,7 @@
 The clients besides the agent's own -- the caller's profile (inherit_parent_llm), the advanced
 profile of stuck escalation, the fallback profiles -- built and kept here; the client answering a
 session's running step (llm_for_session); and the guards a run builds per request: the stuck
-escalator and what it counts, the tool-call loop detector. The step loop (llm_loop.py) decides when
+escalator and what it counts, the tool-call loop detector. The step loop (llm_loop/) decides when
 to switch; this module answers with what. Kept apart from the loop: plugins ask llm_for_session, and
 tests patch these methods one by one.
 """
