@@ -3430,7 +3430,9 @@ class Agent(ToolServer):
                         request_id=request_id,
                         session_id=session_id,
                         llm=current_llm,
-                        cancellation_token=main_token
+                        cancellation_token=main_token,
+                        max_steps=max_steps,
+                        final_call=final_call,
                     )
                 )
 
@@ -4001,7 +4003,11 @@ class Agent(ToolServer):
                         session_id=session_id,
                         # The client that produced this response — after a
                         # fallback switch in the retry loop, not the run's base.
-                        llm=current_llm
+                        llm=current_llm,
+                        # A continuation on the final call is dropped (below);
+                        # the hook reads this before it counts a nudge.
+                        max_steps=max_steps,
+                        final_call=final_call,
                     )
                 )
 
@@ -4490,6 +4496,13 @@ class Agent(ToolServer):
                 }
                 consecutive_no_tool_calls = 0  # Reset — hook evaluated this
                 continue
+            if hook_metadata.get("continue") and content and content.strip():
+                # final_call: the hook asked for a step that does not exist.
+                logger.info(
+                    f"[{self.name}] Continuation from "
+                    f"{hook_metadata.get('continue_injected_by') or 'post_llm_call_hook'} "
+                    f"dropped: final call after the step budget"
+                )
 
             # A user message may have been injected while the LLM produced this
             # response (mid-run append). Never finalize past fresh user input —

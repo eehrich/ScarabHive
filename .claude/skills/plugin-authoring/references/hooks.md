@@ -9,9 +9,9 @@ step loop in `servers/agent/server.py`.
 | Type | Fires | What takes effect |
 |---|---|---|
 | `session_start` | new session only, before history and user input | `messages` (in practice: extra system messages at the front) |
-| `pre_llm_call` | every step before the LLM call (including the final call after max_steps) | `messages` — the changed list is sent as-is and mirrored into the session; receives `tools_schema`, `llm`, `step`, `cancellation_token` |
+| `pre_llm_call` | every step before the LLM call (including the final call after max_steps) | `messages` — the changed list is sent as-is and mirrored into the session; receives `tools_schema`, `llm`, `step`, `max_steps`, `final_call`, `cancellation_token` |
 | `llm_progress` | while streaming, every 2000 chars of thinking | nothing |
-| `post_llm_call` | after the assistant message is appended | only `assistant.content`/`tool_calls`; metadata `continue`, `continue_message`, `continue_injected_by`, `content_format` |
+| `post_llm_call` | after the assistant message is appended | only `assistant.content`/`tool_calls`; metadata `continue`, `continue_message`, `continue_injected_by`, `content_format`; receives `step`, `max_steps`, `final_call` |
 | `session_end` | after saving | nothing; `metadata`: `persisted`, `cancelled`, `errors`, `completed` |
 | `pre_llm_request` / `post_llm_response` | at client level | read-only, errors swallowed |
 | `pre_tool_call` | before each tool call of the model — one by one, in call order, before any starts — and each call of a tool_script script (`dispatch_tool_call(hook_source=...)`) | `tool_call["arguments"]` (dict, `modified=True`); `metadata["block"] = "<what to do>"` blocks: the call does not run, the model reads `{"status":"error","error":...,"type":"ToolCallBlocked"}`, the run goes on, no later hook runs for the call |
@@ -163,4 +163,8 @@ A hook that breaks this pays for the whole context again on every step.
   find "the last human message" by it.
 - A `post_llm_call` hook that sets `continue` also sets `continue_injected_by`, so it
   can count its own nudges; without one the loop marks the nudge `post_llm_call_hook`.
+- On the final call (`context.final_call`, the one call after `max_steps`; `step` is
+  0-based, so it is `step == max_steps`) the loop drops a `continue`; on a text answer
+  it logs that at INFO with the `continue_injected_by` name. Check `context.final_call` before
+  recording or acting on a nudge.
 - Mark system messages a hook inserts as well (so it can replace them).

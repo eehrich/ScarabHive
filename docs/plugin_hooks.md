@@ -110,6 +110,10 @@ loop reads: `content_format`, `continue`, `continue_message`,
 A hook that sets `continue` should also set `continue_injected_by`, so it can
 count its own nudges; without one the loop marks the nudge `post_llm_call_hook`
 (see [Cache Safety](#cache-safety)).
+On the final call after `max_steps` the loop drops a `continue` (no step
+follows; on a text answer it logs that at INFO). `context.final_call` says so up front (also
+`context.max_steps`; both set for `pre_llm_call` too): a hook checks it before
+recording or acting on a nudge.
 
 ```python
 async def on_post_llm_call(self, context: HookContext) -> HookResult:
