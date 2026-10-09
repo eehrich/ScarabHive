@@ -72,7 +72,7 @@ triggers the same move (`'note'` instead of `'message'`), but never on `final`.
 
 | Piece | Location |
 |---|---|
-| Append endpoint + agent resolution | `src/agent_system/app.py` (`append_event`, `resolve_agent_for_request`) |
+| Append endpoint + agent resolution | `src/agent_system/api/run_control_routes.py` (`append_event`), `src/agent_system/api/session_writes.py` (`resolve_agent_for_request`) |
 | Queue + drain | `servers/agent/components/session_tracking.py` (`append_user_message`, `drain_appended_messages`) |
 | Pre-step drain | `servers/agent/server.py` (`_execute_llm_loop`, step start) |
 | Pre-final drain ("never finalize past fresh user input") | `servers/agent/server.py` (no-tool-call branch before final) |

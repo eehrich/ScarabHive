@@ -17,6 +17,7 @@ from agent_system import app_state
 from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
 from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_tool_registry
+from agent_system.api.session_writes import resolve_agent_for_request
 from agent_system.cli_utils.session_listing import (
     in_chat_selector,
     most_left_out,
@@ -787,7 +788,6 @@ async def _carry_title_to_run(session_id: str, user_id: str, title: str, registr
     if not info or info.get("user_id") != user_id:
         return False
     # A run started without an agent name has "default" on its job
-    from agent_system.app import resolve_agent_for_request  # the app imports this module
     agent = await resolve_agent_for_request(info.get("request_id"), jobs, registry, default_agent,
                                             info.get("agent_name"))
     tracker = getattr(agent, "_session_tracker", None)

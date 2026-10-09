@@ -184,8 +184,9 @@ API only for `reload`), and the "Agent Service" box is the agents' own run loop
 - CORS, authentication, rate limiting
 
 **Key Files:**
-- `src/agent_system/app.py` - Application factory (`build_app`), most routes and the SSE endpoints
-- `src/agent_system/api/` - Routers for auth, admin, sessions, debug, health/version
+- `src/agent_system/app.py` - Application factory (`build_app`): setup, middleware, lifespan, router inclusion
+- `src/agent_system/api/*_routes.py` - The app's own routes: runs and SSE (`run_routes`, `event_routes`), run status/cancel/appends (`run_control_routes`), agents and LLM profiles, chat commands, pages, tools, hooks -- sharing an `AppContext` (`api/app_context.py`)
+- `src/agent_system/api/` - Further routers for auth, admin, sessions, debug, health/version
 
 **Dependencies:**
 - FastAPI framework
@@ -194,7 +195,7 @@ API only for `reload`), and the "Agent Service" box is the agents' own run loop
 
 #### 4.2.2 Agent Service (`services/agent_service.py`) -- unused stub
 
-Not wired in: `app.py` keeps `_agent_service = None`, and
+Not wired in: `app_state.agent_service` stays `None`, and
 `services/__init__.py` lists it as "STUB - TODO". `/run` and `/events` call
 `Agent.run_events()` on the selected agent directly; agent-cli runs agents
 in-process. The interface below is what the stub declares.

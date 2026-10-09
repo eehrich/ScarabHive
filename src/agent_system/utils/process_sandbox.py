@@ -513,7 +513,7 @@ class _Seatbelt:
       directory passed as TMPDIR would not reach mktemp(1). That directory is
       shared with the user's other processes, which a confined process can
       therefore disturb there -- ScarabHive's own included: the API stages
-      multipart uploads there (``tempfile.mkdtemp`` in ``app.py``), so under
+      multipart uploads there (``tempfile.mkdtemp`` in ``api/run_routes.py``), so under
       the API a confined command can alter another request's upload while it
       is being processed. That is why this backend reports
       ``enforcement="partial"``.

@@ -13,13 +13,14 @@ Related: [Agent system architecture](_arch_agent_system_architecture.md),
 ## 1. Overview
 
 There is one application, built by `build_app(config_path=None)` in
-`src/agent_system/app.py`. Most routes -- `/run`, `/events`, the agent and chat
-routes, the status pages -- are closures inside `build_app`; the rest come from
-routers in `api/` and `ui/` and from the plugins' web routers.
+`src/agent_system/app.py`. Every route comes from a router: the app's own --
+`/run`, `/events`, the agent and chat routes, the status pages -- from
+`api/*_routes.py`, the rest from the other routers in `api/` and `ui/` and from
+the plugins' web routers.
 
 | Feature | Where |
 |---------|-------|
-| Agent runs, answered as JSON or streamed as SSE | `POST /run`, `GET`/`POST /events` in `app.py` |
+| Agent runs, answered as JSON or streamed as SSE | `POST /run` (`api/run_routes.py`), `GET`/`POST /events` (`api/event_routes.py`) |
 | Markdown answers, drawn by the web chat and agent-cli | [Multi-format output](multi_format_output.md) |
 | Authentication: JWT (header or cookie) and per-user API keys | `auth/`, `api/auth_endpoints.py` |
 | Per-user sessions | `services/session_manager.py`, `services/session_service.py` |
@@ -32,7 +33,17 @@ routers in `api/` and `ui/` and from the plugins' web routers.
 
 | Module | Contents |
 |--------|----------|
-| `app.py` | `build_app`, its lifespan, and most routes (see [Routes](#4-routes)) |
+| `app.py` | `build_app` (configuration, logging, bootstrap, authentication, middleware, the lifespan, the routers) and `run()` |
+| `api/app_context.py` | `AppContext`, what the app's own routes share (below); `parse_json_body` |
+| `api/run_routes.py` | `POST /run` |
+| `api/event_routes.py` | `GET`/`POST /events`, and the reconnect to a running job |
+| `api/run_start.py` | What `/run` and `/events` share around a run: the request id check, the agent and LLM choice (`get_agent_with_overrides`), opening, naming and saving the session |
+| `api/session_writes.py` | Holding a session (session presence, `claim_session`/`let_go`) and writing it beside the runs: appends, `/undo`'s cut, the file rewind |
+| `api/run_control_routes.py` | `/api/requests/{request_id}/status` and `/cancel`, `/events/{request_id}/append`, `POST /sessions`, `/sessions/{session_id}/append`, the `force_optimize` routes |
+| `api/agent_routes.py` | `/agents...`, `/llm/profiles`, `GET /admin/config` |
+| `api/chat_routes.py` | `/chat/...` |
+| `api/page_routes.py` | `/health`, `/`, `/login`, `/status`, `/status/meta`, `/favicon.ico` |
+| `api/tool_routes.py`, `api/hook_routes.py` | `/tools/...`, `/hooks...` |
 | `api/endpoints.py` | `/api/debug/messages`, `/api/debug/context-stats`, `/api/health`, `/api/version` |
 | `api/session_endpoints.py` | `/api/sessions...` -- list, get, update, delete, restore, messages, hierarchy |
 | `api/auth_endpoints.py` | `/auth/...` -- login, logout, refresh, me, register, API key, password reset |
@@ -43,7 +54,22 @@ routers in `api/` and `ui/` and from the plugins' web routers.
 | `ui/routes.py` | `/ui/...`, the panel catalog `/api/ui/catalog`, help |
 
 The session, auth and admin routers are included only when `auth.enabled` is
-true.
+true. The app's own routers come after them, in the order their routes were
+always registered: FastAPI matches in order, and `/agents/{name}/...` stays
+before `/agents/debug/{name}/...`.
+
+**`AppContext`.** `build_app` stores one per app in `app.state.context`; a
+handler takes it as `ctx: AppContext = Depends(app_context)`. It holds the entry
+agent, the endpoint security enforcer and two configurations, kept apart on
+purpose: `ctx.config` is the one `build_app` started with -- the enforcer and the
+middleware were built from it and a reload does not rebuild them, so the auth
+checks (`enforce_endpoint_security`, `validate_llm_access`) and the agent role
+gate (`gate_refuses`) judge by it -- and `ctx.live_config()` is the one the app
+runs on now (`POST /admin/reload-config` replaces `app.state.config`): whatever
+answers a question about the configuration (profiles, the LLM override, the
+agent details, `/admin/config`) reads that one. The services shared across the
+process -- the session service, the registry, the tool integration -- are not
+in it: handlers read them from `app_state` at call time.
 
 ### Authentication (`auth/`)
 
@@ -87,10 +113,12 @@ and tool calls -- hooks, parallel execution -- run in `ToolExecutionManager`
    session service into the agents. (Skipped only when an earlier `build_app`
    in the same process left a bootstrapped `ToolServerIntegration`.)
 3. `app.state` gets `agent`, `tool_registry`, `config`, `runtime`,
-   `config_service`, `config_path` and `auth_config`.
+   `config_service`, `config_path`, `auth_config` and `context` (the
+   `AppContext`).
 4. The routers are included: the API router, the UI router, the debug router;
    with authentication on also the auth, admin and session routers, plus CORS,
-   rate limiting and the auth middleware. The profiling middleware comes with
+   rate limiting and the auth middleware; then the app's own routers
+   (`api/*_routes.py`). The profiling middleware comes with
    `AGENT_ENABLE_PROFILING=1`. Last and outermost, `auth/remote_paths.install`:
    with `network.remote_paths` set, a client not on loopback gets 404 for every
    path not listed.
@@ -144,9 +172,9 @@ run.
 
 ### Request bodies
 
-**Error contract for body parsing:** the routes in `app.py` that read a JSON
+**Error contract for body parsing:** the app's own routes that read a JSON
 body (`POST /run`, `POST /events`, the append routes, the `/chat/...` POSTs)
-parse it with `_parse_json_body()` and answer syntactically broken JSON with
+parse it with `parse_json_body()` (`api/app_context.py`) and answer syntactically broken JSON with
 **HTTP 400** `{"detail": "Invalid JSON body: could not be parsed"}`; a broken
 multipart body sent to `/run` gets a 400 as well. Routes with a Pydantic body
 model (auth, admin, sessions) answer it with FastAPI's 422.
@@ -166,18 +194,18 @@ the stream and may be asked (see `request_context.set_run_attended`).
 
 ### 5.1 `POST /run`
 
-1. `_enforce_endpoint_security` -- the route security of `auth.endpoint_security`
-   (`EndpointSecurityEnforcer`) -- and `_validate_llm_access`
-   (`auth.llm_security`: may this caller, an anonymous one say, start an LLM
-   run at all).
-2. `_get_agent_with_overrides` picks the agent; an unknown name answers 404
-   (`agent_not_found:<name>`).
-3. `_open_session_for_run` -> `SessionService.open_for_run` opens the session
+1. `AppContext.enforce_endpoint_security` -- the route security of
+   `auth.endpoint_security` (`EndpointSecurityEnforcer`) -- and
+   `AppContext.validate_llm_access` (`auth.llm_security`: may this caller, an
+   anonymous one say, start an LLM run at all).
+2. `get_agent_with_overrides` (`api/run_start.py`) picks the agent; an unknown
+   name answers 404 (`agent_not_found:<name>`).
+3. `open_session_for_run` -> `SessionService.open_for_run` opens the session
    (403 for another user's).
 4. `_mirror_run_as_job` registers the run as a job, so it can be followed and
    cancelled like a streamed one (409 if a job already runs under that
    request id).
-5. `_claim_session` holds the session through session presence
+5. `claim_session` (`api/session_writes.py`) holds the session through session presence
    (`core/session_presence.py`, an OS lock next to the session file): a session
    another process runs (an open `agent-cli chat`, a woken run) or one deleted
    in this process answers 409; `force=true` runs it anyway, for the lock of a
@@ -190,7 +218,7 @@ the stream and may be asked (see `request_context.set_run_attended`).
 
 ### 5.2 `GET`/`POST /events`
 
-1. The same checks as above, then `_handle_events`.
+1. The same checks as above, then `_handle_events` (`api/event_routes.py`).
 2. `BackgroundJobManager.create_job` runs `agent.run_events(...)` as a job.
    Status lines of tools and plugins (the status bus) join the run's own
    events through the `StatusEventForwarder`.
@@ -323,11 +351,18 @@ user store -- there is no list of keys in the configuration.
   run goes through ordinary POSTs (`/events/{request_id}/append`).
 - **JWT with refresh tokens:** stateless, nothing stored per token; the cookie
   serves the web UI, the header the CLI and clients.
-- **Run logic in `app.py`:** `/run` and `/events` are closures inside
-  `build_app` and use module state (the job manager, session holds). The
-  `AgentService` that was meant to hold this logic is a stub; reuse between API
-  and CLI happens one level lower, in `InitializationService`, `SessionService`
-  and `Agent.run_events`.
+- **Run logic in the route modules:** `/run` and `/events` call
+  `Agent.run_events` themselves and share their steps through
+  `api/run_start.py` and `api/session_writes.py`, with process state in the job
+  manager and session presence. The `AgentService` that was meant to hold this
+  logic is a stub; reuse between API and CLI happens one level lower, in
+  `InitializationService`, `SessionService` and `Agent.run_events`.
+- **Routers and an `AppContext`, not closures:** the routes were closures in
+  `build_app` (some 3700 lines of it) and shared what they captured there. They
+  are module-level handlers in `api/*_routes.py` now, and what they shared is
+  per app on `app.state.context` -- per app, because a process (a test run) builds
+  several apps, and module state would make one answer with another's agent or
+  auth.
 
 ## 11. Related documents
 

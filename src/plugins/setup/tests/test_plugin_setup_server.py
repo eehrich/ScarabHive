@@ -383,7 +383,7 @@ def settings_file(master):
 
 class TestTheKeyEndpoints:
     def test_a_key_is_written_to_local_env_and_the_next_chat_uses_it(self, machine):
-        """The chat's next message builds its client from app.state.config (app.py _live_config): the reload after
+        """The chat's next message builds its client from app.state.config (AppContext.live_config): the reload after
         the write is what carries the key there, and os.environ what carries it to a session the API wakes."""
         app, master = machine
         value = "sk-or-v1-" + secrets.token_hex(16)

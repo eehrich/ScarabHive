@@ -378,7 +378,7 @@ class BackgroundJobManager:
                         own_job.changed.notify_all()
 
         # Check-and-register in ONE lock block. The callers' own duplicate
-        # guard (app.py's _validate_client_request_id) is a check-then-act
+        # guard (api/run_start.py's validate_client_request_id) is a check-then-act
         # with a wide window — it runs in the request handler while
         # create_job only runs once the SSE body is being streamed — so two
         # concurrent requests carrying the same caller-supplied request_id

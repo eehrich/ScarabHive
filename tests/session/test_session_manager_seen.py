@@ -1,6 +1,6 @@
 """What counts as seen of a session's file: what this process wrote, and a load it read into a tracker.
 
-SessionManager.changed_on_disk tells the claim of a session (app._bring_the_copy_up_to_date) whether another
+SessionManager.changed_on_disk tells the claim of a session (api/session_writes._bring_the_copy_up_to_date) whether another
 process wrote the file since this one last had it -- then the copy in memory is read again. A load only to show
 or ask the session (the web UI opening it, a check of its record) used to count as seen as well: what another
 process wrote before it was hidden, and the stale copy was saved over that turn.

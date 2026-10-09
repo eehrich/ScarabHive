@@ -279,7 +279,7 @@ class SessionTracker:
             session_id: The session ID to lock
             request_id: The request ID acquiring the lock
             timeout: Maximum time to wait for lock (seconds)
-            writer: A write no run makes -- an append, /undo's cut (app._beside_the_runs) --
+            writer: A write no run makes -- an append, /undo's cut (api/session_writes.beside_the_runs) --
                 held from before it reads the session until its save is done. A request that
                 meets one waits for it (up to ``timeout``) rather than being refused: it is
                 over in a moment, while a run is not. A writer that meets a run is refused.

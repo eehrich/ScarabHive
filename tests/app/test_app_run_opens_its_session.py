@@ -128,7 +128,7 @@ async def test_another_users_running_session_answers_403(api, endpoint, monkeypa
 @pytest.mark.parametrize("endpoint", ENDPOINTS)
 async def test_a_session_a_run_of_this_agent_holds_is_not_read_back_under_it(api, endpoint):
     """/run and /events open the session (open_for_run, in_use: the lock owner is listed as running) and bring its
-    copy up to date (_claim_session) before their own run is refused at the agent's session lock. Neither may read
+    copy up to date (claim_session) before their own run is refused at the agent's session lock. Neither may read
     it back under the run that has it: with the session gone from the manager's cache (a bounded LRU), the copy
     check compared lengths and read it back -- the run's copy replaced, its metadata naming the asker."""
     from agent_system.llm.models import ChatMessage

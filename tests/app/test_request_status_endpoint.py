@@ -58,6 +58,7 @@ async def test_status_fallback_returns_unknown_not_completed(
     truth instead of treating it as a successful run."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod
+    from agent_system.api import run_control_routes
 
     # Stub the background job manager to always say "I don't know".
     empty_mgr = MagicMock()
@@ -66,7 +67,7 @@ async def test_status_fallback_returns_unknown_not_completed(
     # also misses — all lookup layers return nothing.
     empty_mgr.is_request_active_anywhere = AsyncMock(return_value=False)
     monkeypatch.setattr(
-        app_mod, "get_background_job_manager", lambda: empty_mgr,
+        run_control_routes, "get_background_job_manager", lambda: empty_mgr,
     )
 
     app = app_mod.build_app()
@@ -99,11 +100,12 @@ async def test_status_returns_running_when_session_tracker_has_it(
     must still work."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod
+    from agent_system.api import run_control_routes
 
     empty_mgr = MagicMock()
     empty_mgr.get_job = AsyncMock(return_value=None)
     monkeypatch.setattr(
-        app_mod, "get_background_job_manager", lambda: empty_mgr,
+        run_control_routes, "get_background_job_manager", lambda: empty_mgr,
     )
     app = app_mod.build_app()
     app.state.agent._session_tracker.is_request_active = AsyncMock(
@@ -127,6 +129,7 @@ async def test_status_returns_completed_when_bg_job_has_it(
     'this is a real completion' (vs the lying fallback)."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod
+    from agent_system.api import run_control_routes
     from agent_system.services.background_job_manager import JobStatus
 
     # Use a real JobStatus enum value so the endpoint's
@@ -141,7 +144,7 @@ async def test_status_returns_completed_when_bg_job_has_it(
     mgr = MagicMock()
     mgr.get_job = AsyncMock(return_value=fake_job)
     monkeypatch.setattr(
-        app_mod, "get_background_job_manager", lambda: mgr,
+        run_control_routes, "get_background_job_manager", lambda: mgr,
     )
 
     app = app_mod.build_app()
@@ -168,13 +171,14 @@ async def test_status_registry_walk_finds_subagent_request(
     re-queues it for resume (double-run)."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod
+    from agent_system.api import run_control_routes
 
     mgr = MagicMock()
     mgr.get_job = AsyncMock(return_value=None)
     # The walk DOES find the request on a sub-agent server.
     mgr.is_request_active_anywhere = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        app_mod, "get_background_job_manager", lambda: mgr,
+        run_control_routes, "get_background_job_manager", lambda: mgr,
     )
 
     app = app_mod.build_app()

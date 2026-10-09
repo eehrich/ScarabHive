@@ -694,7 +694,7 @@ class TestBatchModelsFailAtConfigLoad:
             # Package version report, not provider dispatch: it reads
             # `anthropic.__version__` / `openai.__version__` from the INSTALLED
             # DISTRIBUTIONS, whose names happen to match provider names.
-            core / "app.py",
+            core / "api" / "page_routes.py",
         }
         files = [p for p in sorted(core.rglob("*.py")) if p not in skip]
         assert len(files) > 50, "core modules not found — check would be vacuous"

@@ -193,7 +193,7 @@ optional; it stays for the wire OpenAI sends).
       -> test_session_open_for_run.py::test_another_user_is_refused_a_session_a_run_of_this_agent_holds
 - session_service: open_for_run: exists from disk only (was: `exists` always True)
       -> test_session_open_for_run.py::test_a_session_a_run_of_this_agent_holds_is_left_to_that_run
-- app: app._bring_the_copy_up_to_date: the lock guard removed
+- app: session_writes._bring_the_copy_up_to_date: the lock guard removed
       -> test_app_run_opens_its_session.py::test_a_session_a_run_of_this_agent_holds_is_not_read_back_under_it
 - turns: events: the read-back guard removed
       -> test_a_turn_whose_conversation_was_opened_under_it_does_not_run
@@ -217,7 +217,7 @@ optional; it stays for the wire OpenAI sends).
       -> test_app_run_opens_its_session.py::test_a_run_refused_before_it_started_saves_nothing
 - app: /events: saved after a refusal
       -> test_app_run_opens_its_session.py::test_a_run_refused_before_it_started_saves_nothing
-- app: app._refused_before_the_run (was _refused_at_the_lock): never
+- app: run_start.refused_before_the_run (was _refused_at_the_lock): never
       -> test_app_run_opens_its_session.py::test_a_run_refused_before_it_started_saves_nothing
 - plugin: Responses stream: the conflict answered as response.failed
       -> test_a_stream_whose_conversation_was_read_back_under_it_ends_on_a_conflict
@@ -267,7 +267,7 @@ and compared by hash. Every one turned the named tests red:
       -> test_agent_role_gate.py::test_a_plain_users_run_is_refused_before_anything_of_it_exists
 - facade: MachineAgent.run_events: the refusal without its error_type
       -> test_plugin_stategraph_facade.py::test_a_run_in_a_session_held_for_another_user_starts_no_machine_run
-- app: app._refused_before_the_run: SESSION_LOCKED only
+- app: run_start.refused_before_the_run: SESSION_LOCKED only
       -> test_app_run_opens_its_session.py::test_a_run_refused_before_it_started_saves_nothing
 - SAM: continue: a refused run reported as a completed instance
       -> test_plugin_sub_agent_manager_role_gate.py::test_a_continue_the_agent_refuses_after_the_sams_gate_passed_is_an_error
@@ -555,7 +555,7 @@ def presence_on(agent: ScriptedAgent, tmp_path, monkeypatch) -> Any:
 
 
 async def a_web_chat_opens(agent: ScriptedAgent, session_id: str) -> None:
-    """What /events and /run do with the conversation before their own run (app._open_session_for_run): the session
+    """What /events and /run do with the conversation before their own run (run_start.open_session_for_run): the session
     counts as in use when this process lists it as running -- its jobs and the agents' session-lock owners
     (BackgroundJobManager.active_sessions, with the agent as the app's default one) -- and
     SessionService.open_for_run opens it so."""
@@ -1328,7 +1328,7 @@ async def stored_contents(service: Any, session: str) -> list[str]:
 
 
 async def test_a_message_appended_as_a_failed_turn_ends_stays_and_the_turn_goes(tmp_path):
-    """/sessions/{id}/append writes a session no run has (app._append_and_persist: Agent.append_to_session, then a
+    """/sessions/{id}/append writes a session no run has (session_writes.append_and_persist: Agent.append_to_session, then a
     save) -- and the turn's run lets go of the agent's session lock before its generator ends (the session-end hooks
     come after, Agent._finalize_request). Appended there, the message was part of what the turn took for what its
     run left, and the put back restored the conversation over it: answered "appended", and gone. It is the user's,
@@ -1365,7 +1365,7 @@ async def test_a_message_appended_after_what_the_run_left_was_taken_stays_and_th
         ended = agent.running == 0 and request_id == agent.calls[-1]["request_id"]
         if ended and not appended:  # the put back asks for the lock: the run is over, what it left taken
             appended.append(request_id)
-            assert await acquire(session_id, "write_1")  # as app._append_and_persist writes
+            assert await acquire(session_id, "write_1")  # as session_writes.append_and_persist writes
             try:
                 assert await tracker.append_to_session(session_id, "appended meanwhile")
                 assert await service.save_session(agent, "anonymous", session_id, agent.name, "normal",
@@ -1401,7 +1401,7 @@ async def test_the_put_back_waits_for_an_append_still_saving(tmp_path):
 
     async def appended_meanwhile() -> None:
         agent.let_go = None
-        assert await tracker.acquire_session_lock(session, "write_1", writer=True)  # as app._beside_the_runs
+        assert await tracker.acquire_session_lock(session, "write_1", writer=True)  # as session_writes.beside_the_runs
         assert await tracker.append_to_session(session, "appended meanwhile")
         saving.append(asyncio.ensure_future(still_saving()))
 
@@ -1452,7 +1452,7 @@ async def test_a_message_appended_as_the_turn_is_put_back_waits_for_it_and_stays
     session, service, tracker = agent.calls[0]["session"], agent._session_service, agent._session_tracker
     save, saves, appending = service.save_session, [], []
 
-    async def the_append() -> bool:  # what app._append_and_persist does under _beside_the_runs
+    async def the_append() -> bool:  # what session_writes.append_and_persist does under beside_the_runs
         if not await tracker.acquire_session_lock(session, "write_1", timeout=5.0, writer=True):
             return False
         try:
@@ -1558,7 +1558,7 @@ async def test_a_message_appended_as_the_turn_is_kept_waits_for_it_and_is_saved(
     """The append saved a few awaits after its message went in, and a turn settling in between took the
     conversation out of the agent's tracker: the save found nothing to write. The turn keeps it under the agent's
     session lock now, as a writer: the append waits for that, finds the conversation gone from the tracker, reads
-    it back (app._append_and_persist) and saves it with its message."""
+    it back (session_writes.append_and_persist) and saves it with its message."""
     agent = ScriptedAgent("chat_agent", "noted")
     app, _ = build(tmp_path, agent)
     service, tracker = agent._session_service, agent._session_tracker
@@ -1566,7 +1566,7 @@ async def test_a_message_appended_as_the_turn_is_kept_waits_for_it_and_is_saved(
     session = agent.calls[0]["session"]
     save, saves, appending = service.save_session, [], []
 
-    async def the_append() -> bool:  # what app._append_and_persist does under _beside_the_runs
+    async def the_append() -> bool:  # what session_writes.append_and_persist does under beside_the_runs
         if not await tracker.acquire_session_lock(session, "write_1", timeout=5.0, writer=True):
             return False
         try:
