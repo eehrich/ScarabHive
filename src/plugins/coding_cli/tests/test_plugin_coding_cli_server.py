@@ -357,6 +357,40 @@ async def test_only_listed_users_start_runs(repo, data_root):
     assert not (data_root / "runs").exists()
 
 
+async def test_a_missing_claude_code_is_named_not_a_type_error(repo, data_root):
+    """A machine calls run_task by name, offered or not: without the executable it crashed in build_command
+    (TypeError: Value after * must be an iterable, not NoneType) -- on a Mac whose API had no ~/.local/bin."""
+    server = make_server(repo)
+    server.command, server._command_name = None, "no-such-claude-executable"
+    result, status = await call(server, "run_task", task="WRITE b.txt hello")
+    assert result["error"] == ("Claude Code is not installed here: 'no-such-claude-executable' is not on this "
+                               "process's PATH (coding_cli command: its full path)")
+    assert status.closing[0][0] == "error" and len(result["error"]) <= 140
+    assert not (data_root / "runs").exists()
+    # A configured path is not looked up on PATH: the hint to name the full path would be the wrong one.
+    server._command_name = str(repo / "no" / "claude")
+    result, _ = await call(server, "run_task", task="WRITE b.txt hello")
+    assert result["error"] == f"Claude Code is not installed here: no executable at {str(repo / 'no' / 'claude')!r} (coding_cli command)"
+
+
+async def test_claude_code_installed_after_the_start_is_found_by_the_next_run(repo, monkeypatch):
+    server = make_server(repo)
+    server.command, server._command_name = None, "my-claude"
+    monkeypatch.setattr(cli, "find_claude", lambda command: [sys.executable, str(FAKE)] if command == "my-claude" else None)
+    result, _ = await call(server, "run_task", task="WRITE b.txt hello")
+    assert result["state"] == "done", result
+    assert server.command == [sys.executable, str(FAKE)]
+
+
+async def test_a_call_by_name_without_a_usable_workdir_says_so(repo, data_root):
+    """Not offered without a workdir, but a machine calls by name: the answer named an empty list of workdirs."""
+    server = make_server(repo)
+    server.workdirs = {}
+    result, status = await call(server, "run_task", task="WRITE b.txt hello")
+    assert result["error"].startswith("no usable workdir") and status.closing[0][0] == "error"
+    assert not (data_root / "runs").exists()
+
+
 @pytest.mark.parametrize("resets_in, refused", [(3600, True), (-60, False)])
 async def test_a_full_window_refuses_new_runs_until_it_resets(repo, data_root, resets_in, refused):
     data_root.mkdir(parents=True)

@@ -370,6 +370,9 @@ characters each), and @{tt}wake@{utt} with @{tt}wake_note@{utt} (see
 @{table}
 Error | Cause
 Claude Code runs on the operator's subscription: this user may not start runs (coding_cli allowed_users) | the user is not listed
+Claude Code is not installed here: <command> is not on this process's PATH (coding_cli command: its full path) | no executable by that name -- looked up again on each call, so a later install is found
+Claude Code is not installed here: no executable at <path> (coding_cli command) | command names a path that holds none
+no usable workdir (coding_cli workdirs: a git repository each -- the log at the start says why) | every configured workdir was skipped at the start
 task: the complete task as text | task empty or not a string
 task: at most <max_task_chars> characters | too long
 task: not valid text (a broken character escape) -- send it again | a lone surrogate in the text
@@ -449,7 +452,10 @@ instance: the names carry the instance name
 (@{tt}coding_cli_run_task@{utt}, ...), and @{tt}workdir@{utt} is an enum of
 the configured workdirs. Without a Claude Code executable or a usable
 workdir the instance offers @{b}no@{ub} tools -- an installation without
-Claude Code loses nothing by the plugin being enabled. The
+Claude Code loses nothing by the plugin being enabled. A state machine
+calls @{tt}<instance>_run_task@{utt} by name anyway: it gets the errors
+above, and a Claude Code installed later is found by the next call (the
+tools themselves are offered only after a restart). The
 @{tt}run_task@{utt} description tells the model that Claude Code sees nothing
 of the conversation, that nothing is merged, what to do with a run id, and
 that the untrusted fields are data.
