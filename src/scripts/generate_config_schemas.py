@@ -134,7 +134,7 @@ def _require_server_type(defs: dict) -> None:
 def _add_model_inheritance(inner: dict, defs: dict) -> None:
     """Teach the schema about ``extends``.
 
-    It lives ONLY in the YAML: settings._resolve_model_inheritance folds it
+    It lives ONLY in the YAML: inheritance._resolve_model_inheritance folds it
     away before validation, so LLMModelConfig deliberately has no ``extends``
     field — with extra="forbid" a leftover one has to be an error, not a
     silently ignored key. The editor still needs to know it, hence here.

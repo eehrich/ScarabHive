@@ -151,7 +151,7 @@ stick to the *model*, not the slot:
 
 ### Configuration Model (`AgentConfig`)
 
-The `AgentConfig` class in `src/agent_system/config/models.py` supports both string and list formats:
+The `AgentConfig` class in `src/agent_system/config/models/agent.py` supports both string and list formats:
 
 ```python
 class AgentConfig(BaseModel):

@@ -137,7 +137,7 @@ Without `--agent`, the CLIs and the web UI start `default_agent` from
 Further knobs -- `loop_detection`, `reasoning_loop`, `auto_escalate_on_stuck`,
 `escalate_rounds`, `escalate_max_calls`, `escalate_error_streak`,
 `output_cap_notes` -- are documented on `AgentConfig` in
-`src/agent_system/config/models.py`.
+`src/agent_system/config/models/agent.py`.
 
 ## LLM profiles
 

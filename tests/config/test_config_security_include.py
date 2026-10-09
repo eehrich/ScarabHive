@@ -112,17 +112,17 @@ def test_the_shipped_config_keeps_its_route_rules_in_security_yaml():
 def test_a_named_file_being_replaced_is_read_once_it_is_there(config_dir, monkeypatch):
     """Windows refuses a read while another process replaces the file (the Agent Editor saving): a named file that
     fails to load now fails the start, so the moment is waited out."""
-    from agent_system.config import settings
+    from agent_system.config import layers
     write(config_dir / "security.yaml", {"auth": RULES})
-    real, refused = settings.Path.read_bytes, []
+    real, refused = layers.Path.read_bytes, []
 
     def replacing(self):
         if self.name == "security.yaml" and len(refused) < 3:
             refused.append(self)
             raise PermissionError(13, "The process cannot access the file because it is being used by another process")
         return real(self)
-    monkeypatch.setattr(settings.Path, "read_bytes", replacing)
-    monkeypatch.setattr(settings.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(layers.Path, "read_bytes", replacing)
+    monkeypatch.setattr(layers.time, "sleep", lambda seconds: None)
 
     auth = load_settings(str(config_dir / "config.yaml")).auth
 

@@ -126,7 +126,7 @@ that Python-Markdown needs (like GitHub).
   already have three buttons at a minimum width of 150 px.
 - The source is the catalogue: `Panel.help` carries the guide id, `panel_guides()` in
   `ui/help.py` sets it via the plugin type that the loader resolves for the instance
-  (`settings._resolve_server_inheritance`: the `type` of the entry, followed through other entries;
+  (`inheritance._resolve_server_inheritance`: the `type` of the entry, followed through other entries;
   without an entry the instance name; if inheritance fails, as with the loader
   the entry's own `type`) -- `skills_sam` finds the README of
   `sub_agent_manager`. A plugin folder the API cannot read costs only its

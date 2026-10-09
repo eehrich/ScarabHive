@@ -932,8 +932,8 @@ def _reset_all_global_state():
     
     # Reset config settings cache
     try:
-        from agent_system.config import settings as settings_module
-        settings_module._plugins_cache = None
+        from agent_system.config import inheritance as inheritance_module
+        inheritance_module._plugins_cache = None
     except ImportError:
         pass
     

@@ -2,7 +2,7 @@
 
 `config/llm.yaml` and `config/llm_openrouter.yaml` are **data**: model names,
 windows, knobs. What a field means is documented on the field itself in
-`agent_system/config/models.py`. What is written here is what you cannot tell
+`agent_system/config/models/llm.py`. What is written here is what you cannot tell
 from the values.
 
 ## What an endpoint speaks is stated by its entry — not by its name
@@ -426,7 +426,7 @@ when no profile can be resolved.
 ## What is NOT in the catalogue
 
 * **No field explanations.** Those are on the Pydantic field in
-  `agent_system/config/models.py`.
+  `agent_system/config/models/llm.py`.
 * **No change log.** Whoever wants to know when and why a value was set
   reads `git log -p config/llm*.yaml` — it is all there, and without
   clogging up the file.

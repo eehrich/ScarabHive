@@ -552,6 +552,7 @@ class TestStaleLlmParamKeysAreDroppedLoudly:
         """Every entry point loads the config BEFORE configuring logging, so an
         error raised during the load has no handler to go to and never reaches
         the file the operator reads. setup_logging replays it."""
+        import agent_system.config.llm_checks as llm_checks
         import agent_system.config.settings as settings_mod
         from agent_system.utils.logging import setup_logging
 
@@ -559,8 +560,8 @@ class TestStaleLlmParamKeysAreDroppedLoudly:
         saved = root.handlers[:]
         for handler in saved:
             root.removeHandler(handler)
-        settings_mod._deferred_config_errors.clear()
-        settings_mod._reported_stale_llm_params.clear()
+        llm_checks._deferred_config_errors.clear()
+        llm_checks._reported_stale_llm_params.clear()
         log_file = tmp_path / "agent.log"
         try:
             (tmp_path / "config.yaml").write_text(
@@ -576,7 +577,7 @@ class TestStaleLlmParamKeysAreDroppedLoudly:
                 "            thinking_level: high\n",
                 encoding="utf-8")
             settings_mod.load_settings(str(tmp_path / "config.yaml"))
-            assert settings_mod._deferred_config_errors, \
+            assert llm_checks._deferred_config_errors, \
                 "nothing was kept for replay — the error is lost with the handlers"
             setup_logging(enabled=True, level="INFO", file_path=str(log_file),
                           rotation_enabled=False)
