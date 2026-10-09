@@ -1,6 +1,16 @@
 """
 Tool Execution Manager for Agent Server
 Handles execution of both internal plugin tools and external tools.
+
+ToolExecutionManager runs the tool calls of one step of the model
+(execute_tools_streaming), phase after phase: check the calls, ask the
+pre_tool_call hooks in call order, start the calls as parallel tasks under the
+cancellation system, stream status events until all are done, ask the
+post_tool_call hooks in call order, answer in call order. Running a single
+call on its server is ToolInvoker's (tool_invocation.py). The rules every tool
+call follows -- runtime params, error and never-ran results, multimodal items
+-- are in tool_call_contract.py and re-exported here for the modules that
+import them from this one.
 """
 from __future__ import annotations
 
@@ -9,6 +19,7 @@ import json
 import logging
 import time
 from contextlib import aclosing
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, TYPE_CHECKING, AsyncGenerator, Callable, Tuple
 
@@ -19,149 +30,78 @@ if TYPE_CHECKING:
     from .status_forwarding import StatusEventForwarder
 
 from ....core.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
-from ....core.request_context import register_request_user
 from ....hooks.plugin_hook import HookType
-from .server_resolution import resolve_longest_prefix
-from ..deferred_tools import NOT_LOADED_TYPE
 from ....llm.caller_llm import context_for_tool
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
-from ....tools.integration import get_tool_integration
 from ....utils.json_utils import parse_tool_arguments
+from .tool_call_contract import (
+    BLOCKED_CALL_TYPE,
+    ToolDispatchError,
+    call_id_or,
+    drop_runtime_params,
+    execution_failed_message,
+    inject_runtime_params,
+    pop_multimodal_content,
+    tool_error_message,
+    tool_message_never_ran,
+    tool_result_is_error,
+)
+from .tool_invocation import CallOutcome, ToolInvoker
+
+# The agent server, plugins and tests import these from here.
+__all__ = [
+    "ToolExecutionManager",
+    "ToolDispatchError",
+    "drop_runtime_params",
+    "inject_runtime_params",
+    "pop_multimodal_content",
+    "tool_message_never_ran",
+    "tool_result_is_error",
+]
 
 logger = logging.getLogger(__name__)
 
-# Per-tool request ids the framework sets on every call (see execute_tools_streaming).
-FRAMEWORK_REQUEST_ID_KEYS = frozenset({"request_id", "requestId"})
 
-#: "type" of the result the model reads for a call a pre_tool_call hook blocked.
-BLOCKED_CALL_TYPE = "ToolCallBlocked"
-#: Result types of calls that never ran (tool_message_never_ran).
-NEVER_RAN_TYPES = (BLOCKED_CALL_TYPE, NOT_LOADED_TYPE)
+@dataclass
+class _StepCalls:
+    """The model's tool calls of one step and what has become of each so far:
+    what execute_tools_streaming hands from phase to phase. One per call of
+    it, never manager state -- concurrent requests share the manager."""
 
-
-class ToolDispatchError(Exception):
-    """Programmatic tool dispatch failed (unknown tool, not allowed, unsupported
-    tool type, blocked by a pre_tool_call hook). The message is agent-actionable
-    — callers (e.g. the tool_script plugin) surface it verbatim to the LLM."""
-
-
-def drop_runtime_params(params: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
-    """``params`` without the keys the framework owns, and the keys it dropped.
-
-    Runtime params (``_session_id``, ``_agent``, ... -- see inject_runtime_params)
-    identify the CALLER, and request_id/requestId route status and cancellation.
-    Whatever hands in arguments -- the model, a script, a pre_tool_call hook --
-    must not be able to supply them: a forged ``_session_id`` survives injection
-    whenever the run has none (injection only overwrites truthy values) and lets
-    a tool impersonate another agent.
-    """
-    dropped = [k for k in params if str(k).startswith("_") or k in FRAMEWORK_REQUEST_ID_KEYS]
-    if not dropped:
-        return params, []
-    return {k: v for k, v in params.items() if k not in dropped}, dropped
-
-
-def tool_result_is_error(result: Any) -> bool:
-    """Whether a tool result reports a failure, in either shape tools use:
-    ``{"status": "error", ...}`` or a bare ``{"error": ...}`` without a status."""
-    if not isinstance(result, dict):
-        return False
-    if result.get("status") == "error":
-        return True
-    return "status" not in result and bool(result.get("error"))
-
-
-def tool_message_never_ran(message: Any) -> bool:
-    """Whether a tool-result message stands for a call that never ran: one a
-    pre_tool_call hook blocked, or a deferred tool called before it was loaded."""
-    content = getattr(message, "content", None)
-    if not isinstance(content, str) or not any(kind in content for kind in NEVER_RAN_TYPES):
-        return False
-    try:
-        data = json.loads(content)
-    except ValueError:
-        return False
-    return isinstance(data, dict) and data.get("type") in NEVER_RAN_TYPES
-
-
-def inject_runtime_params(params: Dict[str, Any], *,
-                          session_id: Optional[str] = None,
-                          user_id: Optional[str] = None,
-                          request_id: Optional[str] = None,
-                          agent: Optional["Agent"] = None) -> Dict[str, Any]:
-    """Return a copy of ``params`` with the runtime context params injected.
-
-    THE single place that defines which runtime params a tool call receives
-    (_session_id, _user_id, _request_id, _agent_name, _agent). Used by the LLM
-    tool path (_execute_plugin_tool) and by programmatic dispatch
-    (Agent.dispatch_tool_call, e.g. tool-scripting) so the two can never drift.
-
-    Injection happens unconditionally for present values and OVERWRITES any
-    caller-supplied keys of the same name — callers outside the trusted path
-    (e.g. script-provided params) must not be able to forge runtime context.
-    """
-    params = params.copy()
-
-    if session_id:
-        params["_session_id"] = session_id
-
-    if user_id:
-        params["_user_id"] = user_id
-        # Register user_id for this request_id so sub-agents can find it:
-        # when a tool spawns a sub-agent, the sub-agent generates a new
-        # session and needs to know the user_id.
-        if request_id:
-            register_request_user(request_id, user_id)
-
-    if request_id:
-        params["_request_id"] = request_id
-
-    if agent is not None and hasattr(agent, 'name'):
-        params["_agent_name"] = agent.name
-
-    # Inject the agent instance itself for tools that need it
-    # (session service, registry access, programmatic dispatch, ...)
-    if agent is not None:
-        params["_agent"] = agent
-
-    return params
-
-
-def pop_multimodal_content(tool_result: Any, tool_name: str) -> Optional[List[Any]]:
-    """Take ``_multimodal_content`` ([{type, path, mime_type, description}]) out of a result.
-
-    The items ride on the tool message as real image/audio parts; left in the
-    result they reach the model as a JSON list of paths. External MCP results
-    carry them too (mcp_client persists image blocks) -- that path used to
-    skip this, and a screenshot never reached a model as an image.
-    """
-    if not isinstance(tool_result, dict):
-        return None
-    raw_multimodal = tool_result.pop("_multimodal_content", None)
-    if not raw_multimodal:
-        return None
-    from pydantic import ValidationError
-    from ....llm.models import MultimodalToolContent
-    # An invalid item is dropped on its own: raising here would replace the
-    # whole tool result -- a job that already ran -- with an error, and the
-    # model would run it again.
-    multimodal_content: List[Any] = []
-    items = raw_multimodal if isinstance(raw_multimodal, list) else [raw_multimodal]
-    for item in items:
-        if isinstance(item, dict):
-            try:
-                multimodal_content.append(MultimodalToolContent(**item))
-            except ValidationError as exc:
-                logger.warning(
-                    "Dropping invalid multimodal item from tool %s: %s",
-                    tool_name, exc.errors(include_url=False),
-                )
-        elif isinstance(item, MultimodalToolContent):
-            multimodal_content.append(item)
-    if multimodal_content:
-        logger.debug("Extracted %d multimodal items from tool %s", len(multimodal_content), tool_name)
-    return multimodal_content or None
+    step: int
+    request_id: str | None
+    session_id: str | None
+    user_id: str | None
+    # Per-request status forwarder (see execute_tools_streaming)
+    status_forwarder: Optional[StatusEventForwarder]
+    # (tc, tool_name, openai_tool_name, params) of the calls that passed the checks
+    valid_tool_executions: List[Tuple[Dict, str, str, Dict[str, Any]]] = field(default_factory=list)
+    positions: List[int] = field(default_factory=list)  # valid call index -> position among tool_calls
+    # (position among the model's calls, message, events, results). Every
+    # answer is sorted into the order of the calls before it joins the
+    # history -- the rejected ones as well.
+    # IMPORTANT: Gemini API requires function_response parts to be in the same
+    # order as the original function_call parts to avoid MALFORMED_FUNCTION_CALL errors
+    indexed_results: List[Tuple[int, ChatMessage, List[Dict], List[Dict]]] = field(default_factory=list)
+    events_to_yield: List[Dict] = field(default_factory=list)
+    results_to_add: List[Dict] = field(default_factory=list)
+    tool_messages: List[ChatMessage] = field(default_factory=list)  # the answers, in call order
+    # Whether pre_tool_call / post_tool_call hooks run for this step, and the
+    # run's cancellation token they get.
+    run_pre_hooks: bool = False
+    run_post_hooks: bool = False
+    hook_token: Any = None
+    hooked_calls: Dict[int, Dict[str, Any]] = field(default_factory=dict)  # position -> the call as the hooks see it
+    # position -> when the call itself started / ended (time.time()). The
+    # post hooks run once every call of the step is done; their own clock
+    # says when the step ended, so each call's span is handed to them.
+    call_started: Dict[int, float] = field(default_factory=dict)
+    call_finished: Dict[int, float] = field(default_factory=dict)
+    blocked: set[int] = field(default_factory=set)  # valid call indices
+    # Store task -> tool_info mapping for error handling
+    task_tool_info: Dict[asyncio.Task, tuple] = field(default_factory=dict)  # task -> (tc, tool_name, openai_tool_name)
+    task_indices: Dict[asyncio.Task, int] = field(default_factory=dict)  # task -> original index (for ordering responses)
 
 
 class ToolExecutionManager:
@@ -175,87 +115,17 @@ class ToolExecutionManager:
         # The agent's hooks: pre_tool_call / post_tool_call fire around every
         # call of the model when one is given (the Agent passes its own).
         self._hook_manager = hook_manager
+        # Runs a single call on its server, with the same registry as its
+        # legacy fallback (tool_invocation.py).
+        self._invoker = ToolInvoker(registry, agent)
         # NOTE: session_id/user_id are deliberately NOT instance state — they are
         # passed through the call chain per request (see execute_tools_streaming)
         # to avoid races when concurrent requests share this manager.
 
-    def _make_params_serializable(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a JSON-serializable copy of params by excluding non-serializable objects.
-
-        This is needed because params may contain StatusScope objects or other non-JSON-serializable
-        objects that are added for internal use but shouldn't be included in event data.
-        """
-        serializable_params = {}
-        for key, value in params.items():
-            # Skip parameters starting with "_" (internal objects)
-            if key.startswith('_'):
-                continue
-            # Try to serialize the value to check if it's JSON-serializable
-            try:
-                json.dumps(value)
-                serializable_params[key] = value
-            except (TypeError, ValueError):
-                # Skip non-serializable values
-                continue
-        return serializable_params
-
     async def _invoke_tool(self, tool_name: str, params: Dict[str, Any]):
-        """Execute a tool call against the registry and return results.
-
-        Modern interface: tool_name IS the function/method to call.
-        No separate action_name needed - the tool name identifies the exact operation.
-        """
-
-        # First, try to get plugin adapter (important for status forwarding)
-        plugin_adapter = None
-        if self._agent and hasattr(self._agent, '_tool_integration_manager'):
-            tool_integration = self._agent._tool_integration_manager.tool_integration
-            if tool_integration is not None:  # type: ignore[unreachable]
-                if tool_integration.initialized:  # type: ignore[unreachable]
-                    # First try exact match (legacy behavior)
-                    plugin_adapter = tool_integration.plugin_registry.get_server(tool_name)
-
-                    # If not found, resolve the server name embedded in the flat
-                    # tool name (servername_toolname) via the shared prefix walk.
-                    if not plugin_adapter:
-                        plugin_adapter, adapter_server_name = resolve_longest_prefix(
-                            tool_integration.plugin_registry.get_server, tool_name)
-                        if plugin_adapter:
-                            logger.debug(f"Found plugin adapter for {tool_name} via server name {adapter_server_name}")
-
-        if plugin_adapter:
-            # Use the PluginToolAdapter which handles tool routing and status forwarding correctly
-            try:
-                # Call through the PluginToolAdapter with the tool name directly
-                result = await plugin_adapter.call_tool(tool_name, params)
-                return result
-            except Exception as e:
-                logger.exception("Plugin tool %s invocation failed: %s", tool_name, e)
-                raise
-
-        # If no plugin adapter, try to get server directly (for config agents)
-        server = None
-        if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
-            server = self._agent._get_server_from_any_registry(tool_name)
-
-        # Final fallback to legacy registry (though it's usually empty)
-        if not server:
-            server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
-
-        if not server:
-            raise RuntimeError(f"Unknown tool: {tool_name}")
-
-        try:
-            # Check if server has call_with_status (tool server interface)
-            if hasattr(server, 'call_with_status'):
-                result = await server.call_with_status(tool_name, params)
-            else:
-                # Fallback to regular call method
-                result = await server.call(tool_name, params)
-            return result
-        except Exception as e:
-            logger.exception("Tool %s invocation failed: %s", tool_name, e)
-            raise
+        """Execute a tool call against the registry and return results -- the
+        bare call behind Agent.call_tool (ToolInvoker.invoke_tool)."""
+        return await self._invoker.invoke_tool(tool_name, params)
 
     # NOTE: the former execute_tools() convenience wrapper (collect-to-tuple)
     # was test-only production code and was removed (Review G5). Production
@@ -303,25 +173,89 @@ class ToolExecutionManager:
             - {"type": "status", "event": {...}} - Status event to forward
             - {"type": "tool_events", "events": [...]} - Tool execution events
             - {"type": "complete", "messages": [...], "results": [...]} - Final results
+
+        The phases, in this order: _check_calls, _ask_pre_hooks_in_call_order
+        (before any call starts), _start_calls, _stream_until_done,
+        _answer_in_call_order (the post hooks, once all calls are done), then
+        the last status events and the results.
         """
         # NOTE: session_id and user_id are passed as parameters through the call chain
         # to avoid race conditions when multiple requests share the same ToolExecutionManager.
         # DO NOT store them as instance variables (self._current_session_id/user_id)!
+        calls = _StepCalls(step, request_id, session_id, user_id, status_forwarder)
 
-        tool_messages = []
-        events_to_yield = []
-        results_to_add: List[Dict] = []
-        # (position among the model's calls, message, events, results). Every
-        # answer is sorted into the order of the calls before it joins the
-        # history -- the rejected ones below as well.
-        # IMPORTANT: Gemini API requires function_response parts to be in the same
-        # order as the original function_call parts to avoid MALFORMED_FUNCTION_CALL errors
-        indexed_results: List[tuple[int, ChatMessage, List[Dict], List[Dict]]] = []
+        self._check_calls(calls, tool_calls, tool_name_mapping, available_tools, intercept)
+
+        # pre_tool_call / post_tool_call. Only for an agent some hook of the type
+        # would run for: without one no context is built and nothing is copied.
+        # Calls the framework already rejected above (malformed arguments,
+        # unknown tool) never ran and reach no hook.
+        hooks = self._hook_manager
+        calls.run_pre_hooks = (bool(calls.valid_tool_executions) and hooks is not None
+                               and hooks.wants_hooks(HookType.PRE_TOOL_CALL))
+        calls.run_post_hooks = (bool(calls.valid_tool_executions) and hooks is not None
+                                and hooks.wants_hooks(HookType.POST_TOOL_CALL))
+        calls.hook_token = (get_cancellation_manager().get_token(request_id)
+                            if request_id and (calls.run_pre_hooks or calls.run_post_hooks) else None)
+        if calls.run_pre_hooks or calls.run_post_hooks:
+            async with aclosing(self._ask_pre_hooks_in_call_order(calls)) as phase:
+                async for item in phase:
+                    yield item
+
+        # Execute all valid tools in parallel with real-time status streaming
+        if calls.valid_tool_executions:
+            tasks = await self._start_calls(calls, assistant_message, llm_profile)
+            async with aclosing(self._stream_until_done(calls, tasks)) as phase:
+                async for item in phase:
+                    yield item
+
+        async with aclosing(self._answer_in_call_order(calls)) as phase:
+            async for item in phase:
+                yield item
+
+        if calls.valid_tool_executions:
+            # Drain any remaining status events after all tools complete
+            # This ensures .end() events are not lost due to timing issues
+            if status_forwarder:
+                # Use drain to ensure all events are consumed
+                # Reduced timeout for faster response
+                drained_events = await status_forwarder.drain_pending_events(max_wait_ms=30)
+                for status_event in drained_events:
+                    yield {"type": "status", "event": status_event}
+
+            # Final check for any remaining status events
+            if status_forwarder:
+                status_events = status_forwarder.get_pending_events()
+                for status_event in status_events:
+                    yield {"type": "status", "event": status_event}
+
+        # Yield tool execution events
+        if calls.events_to_yield:
+            yield {"type": "tool_events", "events": calls.events_to_yield}
+
+        # Yield final completion with all results
+        yield {
+            "type": "complete",
+            "messages": calls.tool_messages,
+            "results": calls.results_to_add
+        }
+
+    def _check_calls(
+        self,
+        calls: _StepCalls,
+        tool_calls: List[Dict],
+        tool_name_mapping: Dict[str, str],
+        available_tools: List[str],
+        intercept: Optional[Callable[[Optional[str], Any, int], Optional[Dict[str, Any]]]],
+    ) -> None:
+        """Parse each call's arguments and answer at once, in call order, the
+        calls that do not run: malformed arguments, a call ``intercept``
+        answers, an unknown tool. The others go on to the hooks and the tool
+        servers (calls.valid_tool_executions)."""
+        step = calls.step
+        request_id = calls.request_id
 
         # Prepare tool executions (same as execute_tools())
-        valid_tool_executions = []
-        positions: List[int] = []  # valid call index -> position among tool_calls
-
         for pos, tc in enumerate(tool_calls):
             func = tc.get("function", {})
             openai_tool_name = func.get("name")
@@ -369,7 +303,7 @@ class ToolExecutionManager:
             if json_parse_failed:
                 if intercept is not None:
                     intercept(openai_tool_name, None, step)  # loads an unloaded deferred tool, in call order
-                tool_call_id = tc.get("id") or f"parse-error-{int(time.time()*1000)}"
+                call_id = call_id_or(tc, "parse-error")
                 error_content = json.dumps({
                     "error": (
                         f"Invalid tool arguments for '{tool_name}': {parse_problem}. "
@@ -380,14 +314,14 @@ class ToolExecutionManager:
                     ),
                     "type": "JSONParseError",
                 })
-                events_to_yield.append({
+                calls.events_to_yield.append({
                     "type": "tool_error",
                     "tool": tool_name,
                     "error": f"Invalid JSON arguments for {tool_name}",
                 })
-                indexed_results.append((pos, ChatMessage(
+                calls.indexed_results.append((pos, ChatMessage(
                     role="tool",
-                    tool_call_id=tool_call_id,
+                    tool_call_id=call_id,
                     name=openai_tool_name or "unknown",
                     content=error_content,
                     timestamp=datetime.now(timezone.utc),
@@ -396,14 +330,14 @@ class ToolExecutionManager:
 
             answer = intercept(openai_tool_name, params, step) if intercept is not None else None
             if answer is not None:
-                indexed_results.append((pos, ChatMessage(
+                calls.indexed_results.append((pos, ChatMessage(
                     role="tool",
-                    tool_call_id=tc.get("id") or f"{openai_tool_name}-call-{int(time.time()*1000)}",
+                    tool_call_id=call_id_or(tc, f"{openai_tool_name}-call"),
                     name=sanitize_for_llm(openai_tool_name),
                     content=json.dumps(answer, ensure_ascii=False),
                     timestamp=datetime.now(timezone.utc),
                 ), [], []))
-                events_to_yield.extend([
+                calls.events_to_yield.extend([
                     {"type": "tool_call", "step": step + 1, "server": tool_name, "action": openai_tool_name,
                      "params": params, "request_id": request_id},
                     {"type": "tool_result", "step": step + 1, "server": tool_name, "action": openai_tool_name,
@@ -414,252 +348,209 @@ class ToolExecutionManager:
             if not tool_name or tool_name not in available_tools:
                 logger.warning("Unknown tool requested: %s (OpenAI name: %s)", tool_name, openai_tool_name)
                 # Use tool_error type instead of error - error type causes frontend to abort
-                events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": f"Unknown tool: {tool_name}"})
-                tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                calls.events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": f"Unknown tool: {tool_name}"})
+                call_id = call_id_or(tc, "error-call")
                 # Return detailed error message so LLM can recover
                 error_content = json.dumps({
                     "error": f"Unknown tool: '{tool_name}'. The tool does not exist. Please check available tools and try again.",
                     "type": "ToolNotFoundError"
                 })
-                indexed_results.append((pos, ChatMessage(
+                calls.indexed_results.append((pos, ChatMessage(
                     role="tool",
-                    tool_call_id=tool_call_id,
+                    tool_call_id=call_id,
                     name=openai_tool_name or "unknown",
                     content=error_content,
                     timestamp=datetime.now(timezone.utc)
                 ), [], []))
                 continue
 
-            valid_tool_executions.append((tc, tool_name, openai_tool_name, params))
-            positions.append(pos)
+            calls.valid_tool_executions.append((tc, tool_name, openai_tool_name, params))
+            calls.positions.append(pos)
 
-        # pre_tool_call / post_tool_call. Only for an agent some hook of the type
-        # would run for: without one no context is built and nothing is copied.
-        # Calls the framework already rejected above (malformed arguments,
-        # unknown tool) never ran and reach no hook.
-        hooks = self._hook_manager
-        run_pre_hooks = (bool(valid_tool_executions) and hooks is not None
-                         and hooks.wants_hooks(HookType.PRE_TOOL_CALL))
-        run_post_hooks = (bool(valid_tool_executions) and hooks is not None
-                          and hooks.wants_hooks(HookType.POST_TOOL_CALL))
-        hook_token = (get_cancellation_manager().get_token(request_id)
-                      if request_id and (run_pre_hooks or run_post_hooks) else None)
-        hooked_calls: Dict[int, Dict[str, Any]] = {}  # position -> the call as the hooks see it
-        # position -> when the call itself started / ended (time.time()). The
-        # post hooks run once every call of the step is done; their own clock
-        # says when the step ended, so each call's span is handed to them.
-        call_started: Dict[int, float] = {}
-        call_finished: Dict[int, float] = {}
-        blocked: set[int] = set()  # valid call indices
-        if run_pre_hooks or run_post_hooks:
-            for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
-                # tool_name is what the mapping resolved: the server (for an
-                # external MCP tool "<server>.<tool>"); the model called the tool.
-                call = {"id": tc.get("id"), "name": openai_tool_name, "server": tool_name,
-                        "arguments": params, "source": "model"}
-                # A cancelled run asks nobody: the call reports itself cancelled
-                # below without having started, and no hook -- post included --
-                # takes it for one that ran.
-                if hook_token is not None and hook_token.is_cancelled:
+    async def _ask_pre_hooks_in_call_order(self, calls: _StepCalls) -> AsyncGenerator[Dict[str, Any], None]:
+        """Put each call the way the hooks see it into calls.hooked_calls, and
+        ask the pre_tool_call hooks about it first when there are any: a call
+        they block is answered here and does not start, one whose arguments
+        they change runs with those."""
+        for i, (tc, tool_name, openai_tool_name, params) in enumerate(calls.valid_tool_executions):
+            # tool_name is what the mapping resolved: the server (for an
+            # external MCP tool "<server>.<tool>"); the model called the tool.
+            call = {"id": tc.get("id"), "name": openai_tool_name, "server": tool_name,
+                    "arguments": params, "source": "model"}
+            # A cancelled run asks nobody: the call reports itself cancelled
+            # below without having started, and no hook -- post included --
+            # takes it for one that ran.
+            if calls.hook_token is not None and calls.hook_token.is_cancelled:
+                continue
+            if calls.run_pre_hooks:
+                # One call after the other, in the order the model sent them,
+                # before any of them starts: a hook that asks a person asks
+                # one question at a time, and blocking one call leaves the
+                # calls around it as they are.
+                outcome: List[Any] = []
+                async with aclosing(self._forwarding_status(
+                        self._run_pre_tool_hooks(call, calls.step, calls.request_id, calls.session_id,
+                                                 calls.hook_token),
+                        calls.status_forwarder, outcome)) as forwarded:
+                    async for item in forwarded:
+                        yield item
+                arguments, block = outcome[0]
+                # A run cancelled while its hooks were asked reports the call
+                # cancelled below, not blocked: a hook that stopped waiting on
+                # the cancel (and failed, under on_error: block) checked nothing.
+                if calls.hook_token is not None and calls.hook_token.is_cancelled:
                     continue
-                if run_pre_hooks:
-                    # One call after the other, in the order the model sent them,
-                    # before any of them starts: a hook that asks a person asks
-                    # one question at a time, and blocking one call leaves the
-                    # calls around it as they are.
-                    outcome: List[Any] = []
-                    async with aclosing(self._forwarding_status(
-                            self._run_pre_tool_hooks(call, step, request_id, session_id, hook_token),
-                            status_forwarder, outcome)) as forwarded:
-                        async for item in forwarded:
-                            yield item
-                    arguments, block = outcome[0]
-                    # A run cancelled while its hooks were asked reports the call
-                    # cancelled below, not blocked: a hook that stopped waiting on
-                    # the cancel (and failed, under on_error: block) checked nothing.
-                    if hook_token is not None and hook_token.is_cancelled:
-                        continue
-                    if block is not None:
-                        blocked.add(i)
-                        indexed_results.append(
-                            (positions[i], self._create_blocked_response(tc, openai_tool_name, block), [], []))
-                        events_to_yield.append({"type": "tool_error", "tool": tool_name,
-                                                "error": block, "blocked": True})
-                        continue
-                    call = {**call, "arguments": arguments}
-                    valid_tool_executions[i] = (tc, tool_name, openai_tool_name, arguments)
-                hooked_calls[positions[i]] = call
-
-        # Execute all valid tools in parallel with real-time status streaming
-        if valid_tool_executions:
-            # Create tasks for parallel execution with unique request_id suffixes
-            # Store task -> tool_info mapping for error handling
-            tasks = []
-            task_tool_info: Dict[asyncio.Task, tuple] = {}  # task -> (tc, tool_name, openai_tool_name)
-            task_indices: Dict[asyncio.Task, int] = {}  # task -> original index (for ordering responses)
-            request_ids: Dict[str, str] = {}  # call id -> the id its tool runs under
-            for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
-                if i in blocked:
+                if block is not None:
+                    calls.blocked.add(i)
+                    calls.indexed_results.append(
+                        (calls.positions[i], self._create_blocked_response(tc, openai_tool_name, block), [], []))
+                    calls.events_to_yield.append({"type": "tool_error", "tool": tool_name,
+                                                  "error": block, "blocked": True})
                     continue
-                # Create tool-specific request_id (same logic as execute_tools)
-                original_request_id = request_id
-                if original_request_id:
-                    if self._agent is not None:
-                        try:
-                            tool_specific_request_id = await self._agent.next_internal_tool_request_id(original_request_id)
-                        except Exception:
-                            tool_specific_request_id = f"{original_request_id}_{i+1:03d}"
-                    else:
-                        tool_specific_request_id = f"{original_request_id}_{i+1:03d}"
+                call = {**call, "arguments": arguments}
+                calls.valid_tool_executions[i] = (tc, tool_name, openai_tool_name, arguments)
+            calls.hooked_calls[calls.positions[i]] = call
 
-                    params_with_suffix = params.copy()
-                    params_with_suffix["request_id"] = tool_specific_request_id
-                    params_with_suffix["requestId"] = tool_specific_request_id
-                else:
-                    params_with_suffix = params
-                    tool_specific_request_id = None
-
-                call_started[positions[i]] = time.time()
-                task = asyncio.create_task(
-                    self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id, session_id, user_id,
-                                              main_request_id=original_request_id),
-                    # Its own context copy, holding the run's profile: set here, it
-                    # cannot leak into the run or a sibling call.
-                    context=context_for_tool(llm_profile),
-                )
-                # Stamped by the loop when the task ends, not when this poll
-                # gets to it: the poll hands status events on in between, and
-                # a slow consumer of the stream would lengthen the call.
-                task.add_done_callback(
-                    lambda _task, pos=positions[i]: call_finished.setdefault(pos, time.time()))
-                tasks.append(task)
-                task_tool_info[task] = (tc, tool_name, openai_tool_name)
-                task_indices[task] = positions[i]  # Store original position for ordering
-                if tc.get("id") and tool_specific_request_id:
-                    request_ids[tc["id"]] = tool_specific_request_id
-            if assistant_message is not None and request_ids:
-                # Before any tool answers: the live list holds this same message, so a
-                # viewer who joins while a call still waits finds its runs already.
-                assistant_message.tool_request_ids = request_ids
-
-            # Poll for completion while streaming status events
-            # NOTE: No hard iteration limit - tools can run as long as needed
-            # (e.g., sub_agent_manager may run for hours)
-            # Tools are cancelled via cancellation_token if request is cancelled by user
-            pending = set(tasks)
-            
-            while pending:
-                # Wait for any task completion or timeout (50ms polling interval)
-                done, pending = await asyncio.wait(pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED)
-
-                # Yield any pending status events from sub-agents
-                # CRITICAL: Use the passed status_forwarder parameter, NOT self._status_forwarder
-                # to avoid race conditions when multiple requests share the same agent instance
-                if status_forwarder:
-                    status_events = status_forwarder.get_pending_events()
-                    for status_event in status_events:
-                        yield {"type": "status", "event": status_event}
-
-                # Process completed tasks
-                for task in done:
-                    original_index = task_indices.get(task, 999)  # Default high index if not found
+    async def _start_calls(self, calls: _StepCalls, assistant_message: Optional[ChatMessage],
+                           llm_profile: Optional[str]) -> List[asyncio.Task]:
+        """Start each call the hooks did not block as a task of its own, under a
+        request id of its own; returns the tasks."""
+        # Create tasks for parallel execution with unique request_id suffixes
+        tasks = []
+        request_ids: Dict[str, str] = {}  # call id -> the id its tool runs under
+        for i, (tc, tool_name, openai_tool_name, params) in enumerate(calls.valid_tool_executions):
+            if i in calls.blocked:
+                continue
+            # Create tool-specific request_id (same logic as execute_tools)
+            original_request_id = calls.request_id
+            if original_request_id:
+                if self._agent is not None:
                     try:
-                        # task.result() RAISES on failure (asyncio.wait, not
-                        # gather(return_exceptions=True)) -- errors land in the
-                        # except blocks below, which build the error ChatMessage.
-                        tool_message, events, tool_results = task.result()
-                        # Store with original index for later sorting
-                        indexed_results.append((original_index, tool_message, events, tool_results))
-                        events_to_yield.extend(events)
-                        results_to_add.extend(tool_results)
-                    except asyncio.CancelledError:
-                        logger.debug("Tool task was cancelled")
-                        # Task was cancelled, this is expected during request cancellation
-                        # Create a cancelled response to avoid orphaned tool_calls
-                        if task in task_tool_info:
-                            tc, tool_name, openai_tool_name = task_tool_info[task]
-                            tool_call_id = tc.get("id") or f"cancelled-call-{int(time.time()*1000)}"
-                            cancelled_msg = ChatMessage(
-                                role="tool",
-                                tool_call_id=tool_call_id,
-                                name=sanitize_for_llm(openai_tool_name),
-                                content=json.dumps({"error": f"Tool '{tool_name}' was cancelled."}),
-                                timestamp=datetime.now(timezone.utc)
-                            )
-                            indexed_results.append((original_index, cancelled_msg, [], []))
-                            events_to_yield.append({"type": "tool_cancelled", "tool": tool_name})
-                    except Exception as e:
-                        # CRITICAL: Create error response to avoid orphaned tool_calls
-                        # Without this, the LLM will crash because it expects a tool response for every tool_call
-                        logger.exception("Error processing tool result: %s", e)
-                        if task in task_tool_info:
-                            tc, tool_name, openai_tool_name = task_tool_info[task]
-                            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
-                            error_content = json.dumps({
-                                "error": f"Tool '{tool_name}' execution failed: {str(e)}",
-                                "type": type(e).__name__
-                            })
-                            error_msg = ChatMessage(
-                                role="tool",
-                                tool_call_id=tool_call_id,
-                                name=sanitize_for_llm(openai_tool_name),
-                                content=sanitize_json_content(error_content),
-                                timestamp=datetime.now(timezone.utc)
-                            )
-                            indexed_results.append((original_index, error_msg, [], []))
-                            events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": str(e)})
+                        tool_specific_request_id = await self._agent.next_internal_tool_request_id(original_request_id)
+                    except Exception:
+                        tool_specific_request_id = f"{original_request_id}_{i+1:03d}"
+                else:
+                    tool_specific_request_id = f"{original_request_id}_{i+1:03d}"
 
+                params_with_suffix = params.copy()
+                params_with_suffix["request_id"] = tool_specific_request_id
+                params_with_suffix["requestId"] = tool_specific_request_id
+            else:
+                params_with_suffix = params
+                tool_specific_request_id = None
+
+            calls.call_started[calls.positions[i]] = time.time()
+            task = asyncio.create_task(
+                self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, calls.step,
+                                          tool_specific_request_id, calls.session_id, calls.user_id,
+                                          main_request_id=original_request_id),
+                # Its own context copy, holding the run's profile: set here, it
+                # cannot leak into the run or a sibling call.
+                context=context_for_tool(llm_profile),
+            )
+            # Stamped by the loop when the task ends, not when this poll
+            # gets to it: the poll hands status events on in between, and
+            # a slow consumer of the stream would lengthen the call.
+            task.add_done_callback(
+                lambda _task, pos=calls.positions[i]: calls.call_finished.setdefault(pos, time.time()))
+            tasks.append(task)
+            calls.task_tool_info[task] = (tc, tool_name, openai_tool_name)
+            calls.task_indices[task] = calls.positions[i]  # Store original position for ordering
+            if tc.get("id") and tool_specific_request_id:
+                request_ids[tc["id"]] = tool_specific_request_id
+        if assistant_message is not None and request_ids:
+            # Before any tool answers: the live list holds this same message, so a
+            # viewer who joins while a call still waits finds its runs already.
+            assistant_message.tool_request_ids = request_ids
+        return tasks
+
+    async def _stream_until_done(self, calls: _StepCalls,
+                                 tasks: List[asyncio.Task]) -> AsyncGenerator[Dict[str, Any], None]:
+        """Pass the run's status events on while the calls run, and collect each
+        call's answer -- or an error or cancellation in its place -- as its task
+        ends."""
+        # Poll for completion while streaming status events
+        # NOTE: No hard iteration limit - tools can run as long as needed
+        # (e.g., sub_agent_manager may run for hours)
+        # Tools are cancelled via cancellation_token if request is cancelled by user
+        pending = set(tasks)
+
+        while pending:
+            # Wait for any task completion or timeout (50ms polling interval)
+            done, pending = await asyncio.wait(pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED)
+
+            # Yield any pending status events from sub-agents
+            # CRITICAL: Use the passed status_forwarder parameter, NOT self._status_forwarder
+            # to avoid race conditions when multiple requests share the same agent instance
+            if calls.status_forwarder:
+                status_events = calls.status_forwarder.get_pending_events()
+                for status_event in status_events:
+                    yield {"type": "status", "event": status_event}
+
+            # Process completed tasks
+            for task in done:
+                original_index = calls.task_indices.get(task, 999)  # Default high index if not found
+                try:
+                    # task.result() RAISES on failure (asyncio.wait, not
+                    # gather(return_exceptions=True)) -- errors land in the
+                    # except blocks below, which build the error ChatMessage.
+                    tool_message, events, tool_results = task.result()
+                    # Store with original index for later sorting
+                    calls.indexed_results.append((original_index, tool_message, events, tool_results))
+                    calls.events_to_yield.extend(events)
+                    calls.results_to_add.extend(tool_results)
+                except asyncio.CancelledError:
+                    logger.debug("Tool task was cancelled")
+                    # Task was cancelled, this is expected during request cancellation
+                    # Create a cancelled response to avoid orphaned tool_calls
+                    if task in calls.task_tool_info:
+                        tc, tool_name, openai_tool_name = calls.task_tool_info[task]
+                        cancelled_msg = ChatMessage(
+                            role="tool",
+                            tool_call_id=call_id_or(tc, "cancelled-call"),
+                            name=sanitize_for_llm(openai_tool_name),
+                            content=json.dumps({"error": f"Tool '{tool_name}' was cancelled."}),
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        calls.indexed_results.append((original_index, cancelled_msg, [], []))
+                        calls.events_to_yield.append({"type": "tool_cancelled", "tool": tool_name})
+                except Exception as e:
+                    # CRITICAL: Create error response to avoid orphaned tool_calls
+                    # Without this, the LLM will crash because it expects a tool response for every tool_call
+                    logger.exception("Error processing tool result: %s", e)
+                    if task in calls.task_tool_info:
+                        tc, tool_name, openai_tool_name = calls.task_tool_info[task]
+                        error_msg = execution_failed_message(tc, tool_name, openai_tool_name, e)
+                        calls.indexed_results.append((original_index, error_msg, [], []))
+                        calls.events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": str(e)})
+
+    async def _answer_in_call_order(self, calls: _StepCalls) -> AsyncGenerator[Dict[str, Any], None]:
+        """The answers in the order of the calls (calls.tool_messages), each
+        handed to the post_tool_call hooks before it joins them."""
         # Sort results by original position and extract messages
         # CRITICAL: Gemini API requires function_response parts to match the order
         # of the original function_call parts. Without this sorting, parallel tool
         # execution can produce responses in completion order (not call order),
         # causing MALFORMED_FUNCTION_CALL errors.
-        indexed_results.sort(key=lambda x: x[0])
-        for pos, msg, _, _ in indexed_results:
-            if run_post_hooks and pos in hooked_calls:
+        calls.indexed_results.sort(key=lambda x: x[0])
+        for pos, msg, _, _ in calls.indexed_results:
+            if calls.run_post_hooks and pos in calls.hooked_calls:
                 # In call order, after all of them are done, and before the
                 # result joins the history: nothing already sent changes.
                 async with aclosing(self._forwarding_status(
-                        self._run_post_tool_hooks(hooked_calls[pos], msg, step, request_id,
-                                                  session_id, hook_token,
-                                                  started_at=call_started.get(pos),
-                                                  finished_at=call_finished.get(pos)),
-                        status_forwarder, [])) as forwarded:
+                        self._run_post_tool_hooks(calls.hooked_calls[pos], msg, calls.step, calls.request_id,
+                                                  calls.session_id, calls.hook_token,
+                                                  started_at=calls.call_started.get(pos),
+                                                  finished_at=calls.call_finished.get(pos)),
+                        calls.status_forwarder, [])) as forwarded:
                     async for item in forwarded:
                         yield item
-            tool_messages.append(msg)
-
-        if valid_tool_executions:
-            # Drain any remaining status events after all tools complete
-            # This ensures .end() events are not lost due to timing issues
-            if status_forwarder:
-                # Use drain to ensure all events are consumed
-                # Reduced timeout for faster response
-                drained_events = await status_forwarder.drain_pending_events(max_wait_ms=30)
-                for status_event in drained_events:
-                    yield {"type": "status", "event": status_event}
-
-            # Final check for any remaining status events
-            if status_forwarder:
-                status_events = status_forwarder.get_pending_events()
-                for status_event in status_events:
-                    yield {"type": "status", "event": status_event}
-
-        # Yield tool execution events
-        if events_to_yield:
-            yield {"type": "tool_events", "events": events_to_yield}
-
-        # Yield final completion with all results
-        yield {
-            "type": "complete",
-            "messages": tool_messages,
-            "results": results_to_add
-        }
+            calls.tool_messages.append(msg)
 
     async def _execute_single_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                  params: Dict[str, Any], step: int, request_id: str | None = None,
                                  session_id: str | None = None, user_id: str | None = None,
-                                 main_request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                 main_request_id: str | None = None) -> CallOutcome:
         """Execute a single tool and return the result message, events, and results."""
         # Use cancellation system if request_id is available
         if request_id:
@@ -668,31 +559,17 @@ class ToolExecutionManager:
         else:
             # Legacy execution without cancellation - wrap in try/except for robustness
             try:
-                if "." in tool_name:
-                    return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
-                else:
-                    return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
+                return await self._invoker.execute_tool(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
             except Exception as e:
                 # Handle unknown tool errors gracefully - return error message instead of crashing
                 logger.exception("Tool %s execution failed (legacy path): %s", tool_name, e)
-                tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
-                error_content = json.dumps({
-                    "error": f"Tool '{tool_name}' execution failed: {str(e)}",
-                    "type": type(e).__name__
-                })
-                message = ChatMessage(
-                    role="tool",
-                    tool_call_id=tool_call_id,
-                    name=sanitize_for_llm(openai_tool_name),
-                    content=sanitize_json_content(error_content),
-                    timestamp=datetime.now(timezone.utc)
-                )
+                message = execution_failed_message(tc, tool_name, openai_tool_name, e)
                 return message, [{"type": "tool_error", "tool": tool_name, "error": str(e)}], []
 
     async def _execute_with_cancellation(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                        params: Dict[str, Any], step: int, request_id: str,
                                        session_id: str | None = None, user_id: str | None = None,
-                                       main_request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                       main_request_id: str | None = None) -> CallOutcome:
         """Execute tool with cancellation support."""
         cancellation_manager = get_cancellation_manager()
 
@@ -728,14 +605,9 @@ class ToolExecutionManager:
 
             # Execute the tool
             try:
-                if "." in tool_name:
-                    task = asyncio.create_task(
-                        self._execute_external_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id, session_id, user_id)
-                    )
-                else:
-                    task = asyncio.create_task(
-                        self._execute_plugin_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id, session_id, user_id)
-                    )
+                task = asyncio.create_task(
+                    self._invoker.execute_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id, session_id, user_id)
+                )
 
                 # Register task for forced cancellation with tool-specific ID
                 cancellation_manager.register_task(tool_request_id, task)
@@ -750,18 +622,7 @@ class ToolExecutionManager:
                 except Exception as e:
                     # Tool execution failed with exception - CRITICAL: Must return error response to avoid orphaned tool_calls
                     logger.exception("Tool %s execution failed (request_id: %s): %s", tool_name, request_id, e)
-                    tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
-                    error_content = json.dumps({
-                        "error": f"Tool '{tool_name}' execution failed: {str(e)}",
-                        "type": type(e).__name__
-                    })
-                    message = ChatMessage(
-                        role="tool",
-                        tool_call_id=tool_call_id,
-                        name=sanitize_for_llm(openai_tool_name),
-                        content=sanitize_json_content(error_content),
-                        timestamp=datetime.now(timezone.utc)
-                    )
+                    message = execution_failed_message(tc, tool_name, openai_tool_name, e)
                     return message, [{"type": "tool_error", "tool": tool_name, "error": str(e), "request_id": request_id}], []
 
             except CancellationError as e:
@@ -770,9 +631,9 @@ class ToolExecutionManager:
                 return self._create_cancelled_response(tc, tool_name, openai_tool_name, request_id, forced=e.forced)
 
     def _create_cancelled_response(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                 request_id: str, forced: bool = False) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                 request_id: str, forced: bool = False) -> CallOutcome:
         """Create a cancelled tool response."""
-        tool_call_id = tc.get("id") or f"cancelled-call-{int(time.time()*1000)}"
+        call_id = call_id_or(tc, "cancelled-call")
         cancel_type = "force-cancelled" if forced else "cancelled"
         cancel_content = json.dumps({
             "error": f"Tool '{tool_name}' was {cancel_type}.",
@@ -780,13 +641,7 @@ class ToolExecutionManager:
             "forced": forced
         })
 
-        message = ChatMessage(
-            role="tool",
-            tool_call_id=tool_call_id,
-            name=sanitize_for_llm(openai_tool_name),
-            content=sanitize_json_content(cancel_content),
-            timestamp=datetime.now(timezone.utc)
-        )
+        message = tool_error_message(call_id, openai_tool_name, cancel_content)
 
         event_type = "tool_force_cancelled" if forced else "tool_cancelled"
         return message, [{"type": event_type, "tool": tool_name, "request_id": request_id}], []
@@ -870,226 +725,6 @@ class ToolExecutionManager:
     def _create_blocked_response(self, tc: Dict, openai_tool_name: str, reason: str) -> ChatMessage:
         """The result of a call a pre_tool_call hook blocked: an error the model
         reads in place of the result, in the shape tools report one."""
-        return ChatMessage(
-            role="tool",
-            tool_call_id=tc.get("id") or f"blocked-call-{int(time.time()*1000)}",
-            name=sanitize_for_llm(openai_tool_name),
-            content=sanitize_json_content(json.dumps(
-                {"status": "error", "error": reason, "type": BLOCKED_CALL_TYPE}, ensure_ascii=False)),
-            timestamp=datetime.now(timezone.utc),
-        )
-
-    async def _execute_external_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                   params: Dict[str, Any], step: int, request_id: str | None = None,
-                                   session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
-        """Execute an external tool."""
-        server_name, actual_tool_name = tool_name.split(".", 1)
-
-        # NOTE: no session-context injection here. External servers are
-        # foreign processes -- internal runtime keys (_session_id/_user_id)
-        # must not leave the process. The old injection block was dead code
-        # anyway: _make_params_serializable strips every "_"-prefixed key
-        # before the call, so the values never reached the server.
-
-        # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
-        serializable_params = self._make_params_serializable(params)
-
-        # Emit tool call event (include request_id for correlation)
-        # Prefer tool-specific request_id from params over the general request_id
-        event_request_id = serializable_params.get('request_id') or request_id
-        call_event = {"type": "tool_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, "params": serializable_params, "request_id": event_request_id}
-        events = [call_event]
-        results = []
-
-        try:
-            logger.info("Invoking external tool %s on server %s with params %s", actual_tool_name, server_name, params)
-            # Use the integration the agent already set up.
-            #
-            # This used to call get_tool_integration(config=agent_config) --
-            # an AgentConfig where an AgentSystemConfig is expected. It only
-            # ever worked because the lookup returns the existing global
-            # instance before it looks at config at all; the moment it had to
-            # build one, it died with AttributeError on external_servers.
-            manager = getattr(self._agent, "_tool_integration_manager", None) if self._agent else None
-            tool_integration = getattr(manager, "tool_integration", None) if manager else None
-            if tool_integration is None:
-                system_config = getattr(self._agent, "system_config", None) if self._agent else None
-                if system_config is None:
-                    raise RuntimeError("Cannot access tool integration without system config")
-                tool_integration = get_tool_integration(config=system_config)
-            # Use serializable_params to avoid passing non-JSON-serializable objects (like CancellationToken) to external servers
-            tool_result = await tool_integration.call_tool(server_name, actual_tool_name, serializable_params, "external")
-            logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])
-            multimodal_content = pop_multimodal_content(tool_result, tool_name)
-
-            results.append({
-                "server": tool_name,
-                "action": actual_tool_name,
-                "params": serializable_params,
-                "result": tool_result
-            })
-
-            # Emit MCP result event (include request_id for correlation)
-            result_event = {"type": "tool_result", "step": step + 1, "server": tool_name, "action": actual_tool_name, "result": tool_result, "request_id": event_request_id}
-            events.append(result_event)
-
-            # Create tool result message
-            tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
-            tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
-            # Sanitize tool result content before adding to messages
-            tool_msg_content = sanitize_json_content(tool_msg_content)
-            message = ChatMessage(
-                role="tool",
-                tool_call_id=tool_call_id,
-                name=sanitize_for_llm(openai_tool_name),
-                content=tool_msg_content,
-                timestamp=datetime.now(timezone.utc),
-                multimodal_content=multimodal_content,
-            )
-            return message, events, results
-        except (Exception, GeneratorExit) as e:
-            # Handle both normal exceptions and GeneratorExit (when async generator tools are closed)
-            if isinstance(e, GeneratorExit):
-                logger.warning("Tool %s closed with GeneratorExit (request_id: %s)", tool_name, request_id)
-                # Treat GeneratorExit as cancellation
-                tool_call_id = tc.get("id") or f"{tool_name}-cancelled-{int(time.time()*1000)}"
-                error_content = json.dumps({"error": "Tool execution was cancelled (GeneratorExit)"})
-            else:
-                logger.exception("External tool %s invocation failed: %s", tool_name, e)
-                tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
-                error_content = json.dumps({"error": f"Tool invocation failed: {str(e)}"})
-
-            message = ChatMessage(
-                role="tool",
-                tool_call_id=tool_call_id,
-                name=sanitize_for_llm(openai_tool_name),
-                content=sanitize_json_content(error_content),
-                timestamp=datetime.now(timezone.utc)
-            )
-            return message, events, results
-
-    async def _execute_plugin_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                 params: Dict[str, Any], step: int, request_id: str | None = None,
-                                 session_id: str | None = None, user_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
-        """Execute a plugin tool (or config agent tool)."""
-        # CRITICAL FIX: Check if tool_name exists as a registered server FIRST
-        # This prevents prefix-based false positives where "sysadmin_agent_manager"
-        # incorrectly matches "sysadmin_agent_" prefix check
-        server = None
-
-        # Try to get server from registries first
-        if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
-            server = self._agent._get_server_from_any_registry(tool_name)
-
-        # If not found in registry, check if it's an own tool using prefix check
-        if not server and self._agent and tool_name.startswith(f"{self._agent.name}_"):
-            # This is likely an own tool - use the agent itself as the server
-            server = self._agent
-            logger.debug(f"Tool '{tool_name}' is agent's own tool (prefix match), using self as server")
-
-        # Legacy fallback paths (for systems not using _get_server_from_any_registry)
-        if not server:
-            # Get plugin server from tool integration plugin registry
-            if self._agent and hasattr(self._agent, '_tool_integration_manager'):
-                tool_integration = self._agent._tool_integration_manager.tool_integration
-                if tool_integration is not None:  # type: ignore[unreachable]
-                    if tool_integration.initialized:  # type: ignore[unreachable]
-                        plugin_adapter = tool_integration.plugin_registry.get_server(tool_name)
-                        if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
-                            server = plugin_adapter.plugin_server
-
-            if not server:
-                # Fallback to agent's registry (for config agents and other servers)
-                if self._agent and hasattr(self._agent, 'registry'):
-                    agent_registry = self._agent.registry
-                    if agent_registry and tool_name in agent_registry.list():
-                        server = agent_registry.get(tool_name)
-
-                # Final fallback to legacy registry (though it may be empty)
-                if not server:
-                    server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
-
-        if not server:
-            # Return error response instead of raising - allows agent to recover from hallucinated tool names
-            logger.warning("Server not found for tool: %s (hallucinated tool call?)", tool_name)
-            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
-            error_content = json.dumps({
-                "error": f"Unknown tool: '{tool_name}'. The tool does not exist. Please check available tools and try again.",
-                "type": "ToolNotFoundError"
-            })
-            message = ChatMessage(
-                role="tool",
-                tool_call_id=tool_call_id,
-                name=sanitize_for_llm(openai_tool_name),
-                content=sanitize_json_content(error_content),
-                timestamp=datetime.now(timezone.utc)
-            )
-            return message, [{"type": "tool_error", "tool": tool_name, "error": f"Unknown tool: {tool_name}"}], []
-
-        serializable_params = self._make_params_serializable(params)
-        event_request_id = serializable_params.get('request_id') or request_id
-        call_event = {"type": "tool_call", "step": step + 1, "server": tool_name, "action": openai_tool_name, "params": serializable_params, "request_id": event_request_id}
-        events = [call_event]
-        results = []
-
-        try:
-            logger.info("Invoking tool %s with params %s", openai_tool_name, params)
-
-            # Inject session context (shared with Agent.dispatch_tool_call — see
-            # inject_runtime_params; passed through the call chain to avoid races)
-            params = inject_runtime_params(
-                params, session_id=session_id, user_id=user_id,
-                request_id=request_id, agent=self._agent)
-
-            if hasattr(server, 'call_with_status'):
-                tool_result = await server.call_with_status(openai_tool_name, params)
-            else:
-                tool_result = await server.call(openai_tool_name, params)
-
-            logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
-
-            multimodal_content = pop_multimodal_content(tool_result, tool_name)
-
-            results.append({
-                "server": tool_name,
-                "action": openai_tool_name,
-                "params": serializable_params,
-                "result": tool_result
-            })
-
-            result_event = {"type": "tool_result", "step": step + 1, "server": tool_name, "action": openai_tool_name, "result": tool_result, "request_id": event_request_id}
-            events.append(result_event)
-
-            # Create tool result message with optional multimodal content
-            tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
-            # default=str: a plugin may hand back a set or a date; the model gets
-            # it as text instead of "invocation failed: not JSON serializable".
-            tool_msg_content = sanitize_json_content(json.dumps(tool_result, ensure_ascii=False, default=str))
-            message = ChatMessage(
-                role="tool",
-                tool_call_id=tool_call_id,
-                name=openai_tool_name,
-                content=tool_msg_content,
-                timestamp=datetime.now(timezone.utc),
-                multimodal_content=multimodal_content  # Attach multimodal content
-            )
-            return message, events, results
-
-        except (Exception, GeneratorExit) as e:
-            if isinstance(e, GeneratorExit):
-                logger.warning("Tool %s closed with GeneratorExit (request_id: %s)", tool_name, request_id)
-                tool_call_id = tc.get("id") or f"{tool_name}-cancelled-{int(time.time()*1000)}"
-                error_content = json.dumps({"error": "Tool execution was cancelled (GeneratorExit)"})
-            else:
-                logger.exception("Tool %s invocation failed: %s", tool_name, e)
-                tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
-                error_content = json.dumps({"error": sanitize_for_llm(str(e))})
-
-            message = ChatMessage(
-                role="tool",
-                tool_call_id=tool_call_id,
-                name=sanitize_for_llm(openai_tool_name),
-                content=sanitize_json_content(error_content),
-                timestamp=datetime.now(timezone.utc)
-            )
-            return message, events, results
+        return tool_error_message(
+            call_id_or(tc, "blocked-call"), openai_tool_name,
+            json.dumps({"status": "error", "error": reason, "type": BLOCKED_CALL_TYPE}, ensure_ascii=False))

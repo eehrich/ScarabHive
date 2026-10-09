@@ -109,7 +109,8 @@ async def dispatch_tool_call(self, tool_name: str, params: dict,
     agent-actionable message on unknown tool / not allowed."""
 ```
 
-`tool_execution._execute_plugin_tool` is refactored to use the same helper
+`tool_execution._execute_plugin_tool` (now `ToolInvoker.execute_plugin_tool` in
+`components/tool_invocation.py`) is refactored to use the same helper
 (single source of truth — no drift), which is the main cost and the main
 benefit of the core change. The plugin itself stays thin: sandbox embedding +
 `call_tool` bridging + result shaping.
