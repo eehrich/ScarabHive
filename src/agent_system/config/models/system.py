@@ -115,7 +115,7 @@ class StatusConfig(BaseModel):
 
 
 class SessionPresenceConfig(BaseModel):
-    """Which sessions run right now, and waking idle ones (core/session_presence.py)."""
+    """Which sessions run right now, and waking idle ones (core/session_presence/)."""
     enabled: bool = False  # Lock files next to the session files in data/sessions
     max_wake_depth: int = 3  # A run woken this deep in a chain wakes nobody; 0 = never wake
 

@@ -85,7 +85,7 @@ async def validate_client_request_id(client_request_id: str) -> str:
             ),
         )
     # A new run under an id that was stopped before (writer_jobs dispatches a run
-    # again under its id): that stop was the earlier run's (core/session_presence.py).
+    # again under its id): that stop was the earlier run's (core/session_presence/).
     # Here and nowhere else -- the ids every other caller mints are new, and a stop
     # noted before their run registers is theirs.
     forget_stop(rid)

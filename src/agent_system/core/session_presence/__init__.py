@@ -1,7 +1,7 @@
 """Session presence: which sessions run right now, and waking an idle one.
 
 A process holds a session while the conversation is in its hands: the agent
-loop for each request (servers/agent/server.py), agent-cli run and agent-run
+loop for each request (servers/agent/mixins/run.py), agent-cli run and agent-run
 through their save after the run, agent-cli chat while the session is open.
 Holding is an OS lock on <sessions>/<user>/<session>.lock, next to the
 session file. The OS lets go of it however the process ends, so a crashed run

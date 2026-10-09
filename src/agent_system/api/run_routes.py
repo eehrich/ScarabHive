@@ -288,7 +288,7 @@ async def run(
             # all validations and inside the try whose finally releases it.
             # Registered earlier, every 4xx above leaked the entry.
             register_request_user(request_id, user_id)
-            # Session presence (core/session_presence.py): held through the save
+            # Session presence (core/session_presence/): held through the save
             # after the run, so no woken run has its turn overwritten.
             refusal, held = await claim_session(selected_agent, session_id, user_id, force)
             if refusal:
@@ -409,7 +409,7 @@ async def run(
             was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
             refused = False  # the run was refused at the agent's session lock
-            # Session presence (core/session_presence.py): held before the
+            # Session presence (core/session_presence/): held before the
             # run through the save after it; a session this run creates
             # comes with the start event.
             refusal, held = await claim_session(

@@ -126,7 +126,7 @@ class AccessMixin:
 
     def tool_user(self: Agent, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
         """The user this run's tool calls run for -- injected as ``_user_id``, and the
-        owner their request ids are registered under (tool_execution.py). THE one
+        owner their request ids are registered under (tool_call_contract.inject_runtime_params). THE one
         answer for every way a run dispatches a tool: the LLM's calls, and calls
         made for the run beside the model (tool_preload).
 

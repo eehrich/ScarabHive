@@ -240,7 +240,7 @@ async def _handle_events(
         actual_session_id = session_id
         refused = False  # the run was refused at the agent's session lock
 
-        # Session presence (core/session_presence.py): held before the job
+        # Session presence (core/session_presence/): held before the job
         # starts through the save after it; a session the job creates comes
         # with the start event.
         refusal, held = await claim_session(

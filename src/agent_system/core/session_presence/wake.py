@@ -57,7 +57,7 @@ def wake_blocked(system_config: Any, session_id: str, user_id: str) -> str:
         return PRESENCE_OFF
     if not session_id or not user_id:
         # Both are injected per tool call (servers/agent/components/
-        # tool_execution.py). Missing means there is no session behind this.
+        # tool_call_contract.py, inject_runtime_params). Missing means there is no session behind this.
         return "this call belongs to no session, so there is nobody to wake"
     # Free to ask -- an env var and an int -- and it covers the setting that
     # turns waking off entirely (max_wake_depth: 0, "0 = never wake"), which

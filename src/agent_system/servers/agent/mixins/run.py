@@ -490,7 +490,7 @@ class RunMixin:
             yield {"type": "end"}
 
     def _presence_hold(self: Agent, session_id: str, request_id: str) -> None:
-        """Session presence (core/session_presence.py): the request holds its
+        """Session presence (core/session_presence/): the request holds its
         session for as long as it runs -- from its start, not from its first
         LLM call. A client that disconnects while the run is still setting
         itself up lets go of the endpoint's hold, and the session would look

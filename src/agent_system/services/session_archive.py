@@ -571,7 +571,7 @@ class SessionArchive:
             except Exception as exc:  # noqa: BLE001 - the archive already has it
                 failures.append(f"{session_id}: {exc}")
                 continue
-            # Its presence files (core/session_presence.py) went nowhere else. Not .stopped: the user's stop
+            # Its presence files (core/session_presence/) went nowhere else. Not .stopped: the user's stop
             # outlives the archive, and a restored session still waits for them to start it.
             for suffix in (".lock", ".pending", ".woken"):
                 try:

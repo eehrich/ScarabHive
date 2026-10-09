@@ -5,7 +5,7 @@ last save wins. What keeps them apart is here, shared by the run routes
 (run_routes, event_routes), the appends (run_control_routes) and the chat
 commands (chat_routes):
 
-- session presence (core/session_presence.py), across processes:
+- session presence (core/session_presence/), across processes:
   ``claim_session``, ``hold_fresh_session``, ``let_go``;
 - the agent's session lock, inside this process, for a write no run makes:
   ``beside_the_runs``, ``held_for_a_write``;
@@ -40,7 +40,7 @@ async def claim_session(target_agent: Any, sid: Optional[str], user_id: str,
     in memory up to date. Returns (refusal, held): the refusal goes to the
     client, ``held`` names what let_go has to release afterwards.
 
-    Session presence (core/session_presence.py) refuses a session another
+    Session presence (core/session_presence/) refuses a session another
     process runs -- both would write the conversation and the last save
     would win; ``force`` runs it anyway, for the lock of a process that
     hangs. The session is loaded before this (ownership, metadata), so
@@ -268,7 +268,7 @@ async def append_and_persist(owner_agent: Any, sid: str, content: str, user_id: 
     """Append a user message to a session no request of this process runs, and save it.
 
     The session is held for the append (session presence,
-    core/session_presence.py), and its copy in memory is re-read when
+    core/session_presence/), and its copy in memory is re-read when
     another process wrote the file -- a run woken by a direct message
     continues the session from disk, while re-reading unasked would undo
     what a run of this process has not saved yet -- or when there is none:

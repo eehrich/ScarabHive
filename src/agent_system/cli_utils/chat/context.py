@@ -286,7 +286,7 @@ def _take_wake_mark(ctx: "_ChatContext") -> None:
     """Clear the wake mark BEFORE the turn the REPL starts for it.
 
     ``_presence_step`` clears it on the turn's first LLM call anyway
-    (servers/agent/server.py), so this is not what makes the mark go away --
+    (servers/agent/mixins/run.py), so this is not what makes the mark go away --
     it is what keeps a turn that never GETS to an LLM call (a config error, a
     refused hold) from leaving the mark set: the watcher would see it again a
     tick later and start another billed turn, and another. And it stamps the
