@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The modules of `src/agent_system` above 1000 lines are split along their
+  responsibilities; every name other code imports stays importable from where
+  it was. `Agent` is built from mixins (`servers/agent/mixins/`, the step loop
+  a package of phases in `mixins/llm_loop/`), the app's own routes are routers
+  in `api/` sharing an `AppContext`, and `config/models`, `cli_utils/chat`,
+  `core/session_presence`, `utils/vector_store` and
+  `llm/batch/queue_manager` are packages; `agent_cli.py`, `config/settings.py`,
+  the session manager and archive, and `tool_execution.py` hand their parts
+  to modules beside them. The API's shared services moved from globals of
+  `app.py` to `agent_system.app_state` (`agent_system.app` still answers a
+  read of the old names). For code outside this repository: log records of
+  moved code carry the new module names, and a test that patches a moved
+  name patches the module that now looks it up.
+
 - `openai_api` passes a request's own tools over instead of refusing it:
   clients with function calling on (Open WebUI's native mode, n8n, LibreChat)
   send their tools with every request, and the agent calls its own.
