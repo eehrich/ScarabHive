@@ -2133,7 +2133,44 @@ async function saveYaml(force, layout = null) {
 
 // ------------------------------------------------------------------ runs: start
 
-/** A param's field, showing `given` (what the machine was last started with) or else its default. */
+const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const hasDefault = (p) => p.default !== undefined && p.default !== null;
+
+/** Only what differs from its param's default -- the default the machine has, or had when `defaults` (a run's
+ * param_defaults) say so. A default sent as a value would outlive a change of the machine's default: the form drew
+ * every default, sent it, and kept it for the next start. */
+function choices(params, defaults) {
+  return Object.fromEntries(Object.entries(params).filter(([name, value]) =>
+    !Object.hasOwn(defaults, name) || !sameValue(value, defaults[name])));
+}
+
+/** What a param's field sends when it is left as drawn: its default, else what the browser takes -- a checkbox
+ * false, a required enum its first option. */
+function untouched(p) {
+  if (hasDefault(p)) return p.default;
+  if (Array.isArray(p.enum)) return p.required ? p.enum[0] : undefined;  // paramField draws a select first
+  return p.type === 'boolean' ? false : undefined;
+}
+
+/** The choices of a machine's last start, for its form: the values sent there, less those that were what their
+ * field sends untouched then -- those show the param's default now, a changed one too. The values a panel kept before
+ * (params:<id>) held every default it sent, a choice and a default alike: they go unread. */
+function keptParams(machineId) {
+  forget(`params:${machineId}`);
+  const kept = recall(`start-params:${machineId}`, null);
+  const values = kept?.values && typeof kept.values === 'object' ? kept.values : {};
+  const then = kept?.defaults && typeof kept.defaults === 'object' ? kept.defaults : {};
+  // without a prototype: a param named like an Object property (constructor) finds nothing kept
+  return Object.assign(Object.create(null), choices(values, then));
+}
+
+function keepParams(machine, params) {
+  const now = Object.fromEntries(Object.entries(machine.graph?.params || {})
+    .map(([name, p]) => [name, untouched(p)]).filter(([, value]) => value !== undefined));
+  remember(`start-params:${machine.id}`, { values: params, defaults: now });
+}
+
+/** A param's field, showing `given` (what the machine was last started with, keptParams) or else its default. */
 function paramField(name, p, given) {
   const id = `param-${name}`;
   const label = html`<span class="pk-label">${name}${p.required ? ' *' : ''} <span class="pk-muted">${p.type || 'any'}</span></span>`;
@@ -2149,7 +2186,7 @@ function paramField(name, p, given) {
     return html`<label class="pk-check"><input type="checkbox" id="${id}" data-param="${name}" data-type="boolean" ${shown ? 'checked' : ''}> ${name} ${help}</label>`;
   }
   if (p.type === 'integer' || p.type === 'number') {
-    return html`<label class="pk-field">${label}<input class="pk-input pk-input--sm" type="number" id="${id}" data-param="${name}" data-type="${p.type}" value="${value}" ${p.type === 'integer' ? 'step="1"' : 'step="any"'}>${help}</label>`;
+    return html`<label class="pk-field">${label}<input class="pk-input pk-input--sm" type="number" id="${id}" data-param="${name}" data-type="${p.type}" value="${value}" step="${p.type === 'integer' ? '1' : 'any'}">${help}</label>`;
   }
   if (p.type === 'string') {
     return html`<label class="pk-field">${label}<textarea class="pk-textarea" rows="2" id="${id}" data-param="${name}" data-type="string">${value}</textarea>${help}</label>`;
@@ -2164,8 +2201,8 @@ function drawStartForm() {
   const signature = `${S.machine.id} ${JSON.stringify(g.params || {})}`;
   if (fields.dataset.signature !== signature) {  // typed values stay while the machine and its params stay the same
     fields.dataset.signature = signature;
-    const kept = recall(`params:${S.machine.id}`, {});
-    render(fields, params.length ? params.map(([name, p]) => paramField(name, p, kept?.[name]))
+    const kept = keptParams(S.machine.id);
+    render(fields, params.length ? params.map(([name, p]) => paramField(name, p, kept[name]))
       : html`<p class="pk-help">This machine takes no params.</p>`);
   }
   const points = S.nextBreakpoints.map((p) => `${p.state}@${p.at || 'enter'}`);
@@ -2197,7 +2234,14 @@ function readParams() {
       try { params[name] = JSON.parse(raw); } catch { throw new Error(`${name}: not valid JSON`); }
     } else params[name] = raw;
   }
-  return params;
+  // a default is not sent: the run takes the machine's default as it starts (choices). With drafts the form shows
+  // the draft's defaults, the run starts from the saved file: what the form shows is sent
+  return hasDrafts() ? params : choices(params, defaultsOf(S.machine.graph.params));
+}
+
+/** The params' declared defaults (the ones bind_params applies to a param not given). */
+function defaultsOf(params) {
+  return Object.fromEntries(Object.entries(params || {}).filter(([, p]) => hasDefault(p)).map(([name, p]) => [name, p.default]));
 }
 
 $('startForm').addEventListener('submit', (event) => {
@@ -2226,7 +2270,7 @@ async function startRun(params, mocks, mockOnly) {
   if (hasDrafts() && !await confirm('The machine has unsaved changes: the run starts from the saved file. Start anyway?',
     { confirmLabel: 'Start' })) return;
   remember(`mocks:${S.machine.id}`, $('mocks').value);
-  remember(`params:${S.machine.id}`, params);
+  keepParams(S.machine, params);
   // a point on a state the file no longer has (removed, renamed in the YAML tab) would be refused by the server
   const stale = keepNextPoints((p) => (hooksOf(stateOf(p.state) || { type: 'choice' }).hooks.includes(p.at || 'enter') ? p : null));
   if (stale.length) {
@@ -2277,7 +2321,9 @@ async function rerun(run) {
   $('mocks').value = mocks ? JSON.stringify(mocks) : '';
   $('mockOnly').checked = Boolean(run.mocks?.mock_only);
   drawTestOptions({ open: true });
-  await startRun(run.params || {}, mocks, Boolean(run.mocks?.mock_only));
+  // what was its param's default when the run started is no choice (a panel sent every default): the machine's
+  // default now applies, a changed one too
+  await startRun(choices(run.params || {}, run.param_defaults || {}), mocks, Boolean(run.mocks?.mock_only));
   $('paramFields').dataset.signature = '';  // drawn anew with the params startRun kept
   drawStartForm();
 }
@@ -2652,6 +2698,14 @@ async function control(action, extra = {}) {
 // ------------------------------------------------------------------ runs: debug pane
 
 /** The debug pane's forms are part of the page; a poll redraws only the lists and values beside them. */
+/** The params the run took by default: the root frame's bound params that were not given (the form sends only
+ * choices, so a run's own params can leave out what it ran with). */
+function defaulted(run) {
+  const bound = run?.view?.frames?.[0]?.params || {};
+  return Object.fromEntries(Object.entries(bound).filter(([name, value]) =>
+    !Object.hasOwn(run.params || {}, name) && value !== null && value !== undefined));
+}
+
 function drawDebugPane() {
   const run = S.run;
   const live = liveRun();
@@ -2664,6 +2718,7 @@ function drawDebugPane() {
         <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="copy-run" title="Copy the run id" aria-label="Copy the run id">${icon('copy', { size: 'sm' })}</button></div>
       <dl class="pk-kv"><dt>Id</dt><dd class="pk-mono">${run.id}</dd>
         ${run.params && Object.keys(run.params).length ? html`<dt>Params</dt><dd>${jsonView(run.params)}</dd>` : ''}
+        ${Object.keys(defaulted(run)).length ? html`<dt>Defaults</dt><dd>${jsonView(defaulted(run))}</dd>` : ''}
         ${debug.paused ? html`<dt>Paused</dt><dd>${debug.paused.reason}</dd>` : ''}
         ${debug.paused?.out !== undefined && debug.paused?.out !== null ? html`<dt>Out</dt><dd>${jsonView(debug.paused.out)}</dd>` : ''}
         ${debug.paused?.error ? html`<dt>Error</dt><dd>${jsonView(debug.paused.error)}</dd>` : ''}
@@ -3006,7 +3061,7 @@ function drawResult() {
       ${run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span>${reason && reason !== run.status ? html` (${reason})` : ''}</span>` : ''}
       <span class="pk-grow"></span>
       ${run.machine_id === S.machine?.id ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="rerun"
-        title="A new run with this run's params and mocks (they go into the start form too)">${icon('rotate-cw', { size: 'sm' })} Run again</button>` : ''}
+        title="A new run with this run's params and mocks (they go into the start form too); a param that had its default then takes the machine's default now">${icon('rotate-cw', { size: 'sm' })} Run again</button>` : ''}
       ${run.mocks?.mock_only || !ownSessions(run) ? '' : html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${run.session_id || `sg_${run.id}`}"
         title="The run's session in the chat: what it was asked, how it ended, its agents' conversations below it">${icon('message-square', { size: 'sm' })} Session</button>`}</div>
     ${run.error ? errorView(run.error) : ''}
@@ -3247,7 +3302,8 @@ async function deleteMachine(m) {
   S.machine = null;
   S.selection = null;
   // what this panel kept for the machine would come back with a new one of the same id
-  for (const key of ['breakpoints', 'watch', 'mocks', 'params']) forget(`${key}:${m.id}`);
+  for (const key of ['breakpoints', 'watch', 'mocks', 'params', 'start-params']) forget(`${key}:${m.id}`);
+  $('paramFields').dataset.signature = '';  // the form, too: one of the same id and params would keep its values
   S.undo = S.redo = [];  // a new machine of that id would take them for its own
   drawUndo();
   selectRun(null);

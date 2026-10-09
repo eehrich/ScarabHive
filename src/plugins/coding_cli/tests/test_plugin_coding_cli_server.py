@@ -1358,7 +1358,7 @@ async def test_a_schema_that_is_no_object_or_too_long_is_refused(repo, data_root
 async def test_max_task_chars_bounds_the_task(repo):
     result, _ = await call(make_server(repo, max_task_chars=1_500), "run_task", task="x" * 1_501)
     assert result["error"] == "task: at most 1500 characters"
-    assert [make_server(repo, max_task_chars=v).max_task_chars for v in (None, 10, 10**9)] == [20_000, 1_000, 100_000]
+    assert [make_server(repo, max_task_chars=v).max_task_chars for v in (None, 10, 10**9)] == [20_000, 1_000, 200_000]
 
 
 async def test_max_output_chars_bounds_the_structured_output(repo):

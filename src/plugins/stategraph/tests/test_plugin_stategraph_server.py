@@ -16,6 +16,7 @@ Mutation checks run (each turned the named tests red, then was restored from a c
 
 from __future__ import annotations
 
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -488,6 +489,83 @@ async def test_a_runs_row_leaves_out_the_hand_over_between_processes(server):
     row = server.run_manager.describe("held")
 
     assert "control_answer" not in row and "control" not in row, sorted(row)
+
+
+async def test_a_runs_row_names_the_defaults_its_params_had_when_it_started(server):
+    """The panel's Run again leaves out a value that was its param's default when the run started (a panel sent every
+    default): the machine's default now applies. Read from the run's definition, once; a definition that does not
+    load names none instead of failing the row."""
+    from plugins.stategraph.tests.stategraph_testkit import seed_run, utc_at
+
+    params = "params:\n  engine: {type: string, default: agent, enum: [agent, claude_code]}\n  topic: {type: string}\n"
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval\n", "id: m\n" + params)},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+    seed_run(server.run_store, "plain", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+    for run_id, definition in (("broken", {"root": "m.yaml", "files": {"m.yaml": "stategraph: 1\nparams: [\n"}}),
+                               ("rootless", {"files": {}})):
+        server.run_store.create_run(run_id, "m", definition, params={}, mocks={}, owner="elsewhere:1:x",
+                                    lease_until=utc_at(60), status="waiting", session_id=f"sg_{run_id}")
+
+    for _ in range(2):  # read, then kept: neither answer is the kept one a caller could change
+        server.run_manager.describe("held")["param_defaults"]["engine"] = "changed by a caller"
+
+    assert server.run_manager.describe("held")["param_defaults"] == {"engine": "agent"}
+    assert server.run_manager.describe("plain")["param_defaults"] == {}
+    assert server.run_manager.describe("broken")["param_defaults"] == {}
+    assert server.run_manager.describe("rootless")["param_defaults"] == {}
+    assert {"broken", "rootless"} <= set(server.run_manager._defaults), "a definition that does not load: read once"
+
+
+async def test_a_fork_names_the_defaults_its_origin_was_started_under(server, monkeypatch):
+    """A fork takes its source's params as they are -- onto the current file too, whose default may have changed: the
+    defaults those params were given under are the origin's. Each run's are read once, and no companion module runs
+    for it."""
+    import builtins
+
+    import plugins.stategraph.engine.runner as runner_module
+    from plugins.stategraph.tests.stategraph_testkit import runnable, utc_at
+
+    def snapshot(default: str) -> dict:
+        text = APPROVAL.replace("id: approval\n", f"id: m\npython: m.py\nparams:\n  engine: {{type: string, default: {default}}}\n")
+        return runnable({"m.yaml": text, "m.py": "import builtins\nbuiltins.SG_COMPANION_RAN = True\n"}).snapshot()
+
+    for run_id, default, parent in (("origin", "agent", None), ("fork", "claude_code", "origin"),
+                                    ("fork2", "claude_code", "fork")):
+        server.run_store.create_run(run_id, "m", snapshot(default), params={"engine": "agent"}, mocks={},
+                                    owner="elsewhere:1:x", lease_until=utc_at(60), status="waiting",
+                                    session_id=f"sg_{run_id}", parent_run=parent)
+    monkeypatch.setattr(builtins, "SG_COMPANION_RAN", False, raising=False)
+    reads = []
+    real = runner_module.load_snapshot
+    monkeypatch.setattr(runner_module, "load_snapshot", lambda *a, **k: reads.append(1) or real(*a, **k))
+
+    assert server.run_manager.describe("fork2")["param_defaults"] == {"engine": "agent"}
+    assert server.run_manager.describe("fork2")["param_defaults"] == {"engine": "agent"}
+    assert len(reads) == 1, "read again"
+    assert builtins.SG_COMPANION_RAN is False, "the companion module ran"
+
+
+async def test_the_kept_param_defaults_stay_bounded_and_a_store_error_is_not_kept(server, monkeypatch):
+    """A process reads many runs: the oldest defaults read go. A store that fails a moment is asked again."""
+    import plugins.stategraph.engine.runner as runner_module
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    params = "params:\n  engine: {type: string, default: agent}\n"
+    for run_id in ("a", "b", "c"):
+        seed_run(server.run_store, run_id, {"m.yaml": APPROVAL.replace("id: approval\n", "id: m\n" + params)},
+                 owner="elsewhere:1:x", lease=60, status="waiting")
+    monkeypatch.setattr(runner_module, "DEFAULTS_KEPT", 2)
+    manager = server.run_manager
+    assert [manager.describe(r)["param_defaults"] for r in ("a", "b", "c")] == [{"engine": "agent"}] * 3
+    assert sorted(manager._defaults) == ["b", "c"], manager._defaults
+
+    real = manager._origin
+    monkeypatch.setattr(manager, "_origin", lambda run_id: (_ for _ in ()).throw(sqlite3.OperationalError("locked")))
+    manager._defaults.clear()
+    assert manager.describe("a")["param_defaults"] == {} and "a" not in manager._defaults, "a store error kept"
+    monkeypatch.setattr(manager, "_origin", real)
+    assert manager.describe("a")["param_defaults"] == {"engine": "agent"}
 
 
 async def test_the_answer_to_an_event_is_kept_under_its_request_with_the_last_few(server):

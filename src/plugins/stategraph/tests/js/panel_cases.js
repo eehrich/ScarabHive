@@ -1486,8 +1486,131 @@ const CASES = {
     const started = CALLS.filter(([method, path]) => method === 'POST' && path.endsWith('/runs')).map(([, , json]) => json);
     check(started.length === 1 && JSON.stringify(started[0].params) === '{"premise":"x"}'
       && JSON.stringify(started[0].mocks) === '{"write":"a draft"}' && started[0].mock_only === true, `started ${JSON.stringify(started)}`);
-    check(JSON.parse(localStorage.getItem('stategraph:params:review')).premise === 'x', 'params not kept');
+    check(JSON.parse(localStorage.getItem('stategraph:start-params:review')).values.premise === 'x', 'params not kept');
     check($('paramFields').innerHTML.includes('data-type="string">x</textarea>'), `form: ${$('paramFields').innerHTML}`);
+  },
+
+  async a_kept_default_follows_the_machine_s_default_and_a_choice_stays() {
+    // A value kept as what its field sent untouched then is no choice: the form shows the param's default now. A
+    // machine's engine param went from agent to claude_code, and a browser that kept agent sent it again at every
+    // start. The values kept before (params:<id>) held every default sent, a choice and a default alike: unread.
+    const engine = { type: 'string', default: 'claude_code', enum: ['agent', 'claude_code'] };
+    const ratio = { type: 'number' };
+    const named = { type: 'string' };  // a param named like an Object property finds nothing kept
+    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, params: { ...MACHINE.graph.params, engine, ratio,
+      constructor: named } } };
+    OTHER.graph = { ...MACHINE.graph, params: { ...MACHINE.graph.params, engine, rounds: { type: 'integer', default: 4 },
+      quiet: { type: 'boolean', default: true } } };
+    localStorage.setItem('stategraph:params:review', '{"premise":"old","engine":"agent"}');
+    localStorage.setItem('stategraph:params:other', '{"premise":"older"}');
+    localStorage.setItem('stategraph:start-params:other', JSON.stringify({
+      values: { premise: 'x', engine: 'agent', rounds: 7, quiet: false }, defaults: { engine: 'agent', rounds: 3, quiet: false } }));
+    await boot('?machine=review');
+    let form = $('paramFields').innerHTML;
+    check(form.includes('value="1" selected>claude_code') && !form.includes('selected>agent'), `the old key's engine: ${form}`);
+    check(form.includes('data-type="string"></textarea>'), `the old key's premise: ${form}`);
+    check(localStorage.getItem('stategraph:params:review') === null, 'the old key stays');
+    check(!form.includes('native code'), `an Object property in the form: ${form}`);
+    // a step is an attribute, not text the kit escapes: step=&quot;any&quot; is no step, the browser takes 1
+    check(form.includes('value="3" step="1">') && form.includes('data-type="number" value="" step="any">'),
+      `the number fields' steps: ${form}`);
+    await clickMachine('other');
+    await settle();
+    form = $('paramFields').innerHTML;
+    check(form.includes('value="1" selected>claude_code') && !form.includes('selected>agent'), `a kept default: ${form}`);
+    check(form.includes('data-type="boolean" checked'), `an unchecked box kept as the machine's default now: ${form}`);
+    check(form.includes('data-type="integer" value="7"') && form.includes('data-type="string">x</textarea>'),
+      `the choices are not shown: ${form}`);
+    await $('startForm').fire('submit', {});
+    await settle();
+    const kept = JSON.parse(localStorage.getItem('stategraph:start-params:other'));
+    check(JSON.stringify(kept.defaults) === '{"rounds":4,"engine":"claude_code","quiet":true}', `kept under: ${JSON.stringify(kept)}`);
+  },
+
+  async the_form_sends_no_default_so_the_run_takes_the_machine_s_own() {
+    // A default sent as a value outlives a change of the machine's default: the run binds the old one, and a tab
+    // drawn before the change sends it still. Sent only what differs, the run takes the default the machine has as
+    // it starts. A box without a default is sent unchecked all the same (false, not none) and kept as untouched.
+    const engine = { type: 'string', default: 'claude_code', enum: ['agent', 'claude_code'] };
+    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, params: { ...MACHINE.graph.params, engine,
+      teaser: { type: 'boolean', default: true }, quiet: { type: 'boolean' },
+      mode: { type: 'string', enum: ['a', 'b'], required: true }, tags: { type: 'array', default: [] },
+      // a boolean with an enum is drawn as a select (paramField asks enum first): untouched, it sends its first
+      // option when required and nothing when not -- not a checkbox's false
+      strict: { type: 'boolean', enum: [true, false], required: true }, loose: { type: 'boolean', enum: [true, false] } } } };
+    await boot('?machine=review');
+    const field = (param, type, value, checked = false) => {
+      const input = element('input', { 'data-param': param, 'data-type': type });
+      input.value = value;
+      input.checked = checked;
+      return $('paramFields').appendChild(input);
+    };
+    const fields = { premise: field('premise', 'string', 'p'), rounds: field('rounds', 'integer', '3'),
+      engine: field('engine', 'enum', '1'), teaser: field('teaser', 'boolean', '', true), quiet: field('quiet', 'boolean', ''),
+      mode: field('mode', 'enum', '0'), tags: field('tags', 'json', '[]') };
+    const start = async () => {
+      await $('startForm').fire('submit', {});
+      await settle();
+      return CALLS.filter(([method, path]) => method === 'POST' && path.endsWith('/runs')).map(([, , json]) => json.params).pop();
+    };
+    let sent = await start();
+    check(JSON.stringify(sent) === '{"premise":"p","quiet":false,"mode":"a"}', `the defaults are sent: ${JSON.stringify(sent)}`);
+    fields.engine.value = '0';
+    fields.rounds.value = '5';
+    fields.teaser.checked = false;
+    sent = await start();
+    check(JSON.stringify(sent) === '{"premise":"p","rounds":5,"engine":"agent","teaser":false,"quiet":false,"mode":"a"}',
+      `the choices: ${JSON.stringify(sent)}`);
+    const kept = JSON.parse(localStorage.getItem('stategraph:start-params:review'));
+    check(JSON.stringify(kept.values) === JSON.stringify(sent) && kept.defaults.quiet === false
+      && kept.defaults.engine === 'claude_code' && kept.defaults.mode === 'a' && kept.defaults.strict === true
+      && !('loose' in kept.defaults), `kept: ${JSON.stringify(kept)}`);
+  },
+
+  async with_drafts_the_form_sends_what_it_shows() {
+    // Unsaved, the form draws the draft's defaults while the run starts from the saved file: left out, a default
+    // the draft changed would not be the one the run takes. So with drafts every value shown is sent.
+    localStorage.removeItem('stategraph:autosave');
+    await boot('?machine=review');
+    await typeDraft();
+    const input = element('input', { 'data-param': 'rounds', 'data-type': 'integer' });
+    input.value = '3';
+    $('paramFields').appendChild(input);
+    await $('startForm').fire('submit', {});
+    await settle();
+    const sent = CALLS.filter(([method, path]) => method === 'POST' && path.endsWith('/runs')).map(([, , json]) => json.params).pop();
+    check(JSON.stringify(sent) === '{"rounds":3}', `not what the form shows: ${JSON.stringify(sent)}`);
+  },
+
+  async the_run_box_says_which_defaults_the_run_took() {
+    // The form sends only choices: the run's own params leave out what it ran with by default. Its root frame's
+    // bound params show it.
+    const root = { ...RUN.view.frames[0], params: { premise: 'x', rounds: 3, engine: 'claude_code', none: null } };
+    runAnswer = { ...RUN, params: { premise: 'x' }, view: { ...RUN.view, frames: [root, ...RUN.view.frames.slice(1)] } };
+    await boot('?machine=review&run=r1');
+    const box = $('dbgRun').innerHTML;
+    const defaults = box.split('<dt>Defaults</dt>')[1] || '';
+    check(defaults.includes('claude_code') && defaults.includes('rounds') && !defaults.includes('premise')
+      && !defaults.includes('none'), `the run box: ${box}`);
+  },
+
+  async run_again_leaves_out_what_was_the_run_s_default_then() {
+    // A run a panel started before held every default it sent. Run again sends only what differed from the
+    // defaults the run had (param_defaults, from its definition): the machine's default now applies, a changed one
+    // too, and the form does not keep the old default as a choice.
+    const engine = { type: 'string', default: 'claude_code', enum: ['agent', 'claude_code'] };
+    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, params: { ...MACHINE.graph.params, engine } } };
+    runAnswer = { ...RUN, params: { premise: 'x', rounds: 7, engine: 'agent' }, param_defaults: { rounds: 3, engine: 'agent' } };
+    await boot('?machine=review&run=r1');
+    await $('runResult').fire('click', { target: element('button', { 'data-act': 'rerun' }) });
+    await settle();
+    const started = CALLS.filter(([method, path]) => method === 'POST' && path.endsWith('/runs')).map(([, , json]) => json);
+    check(started.length === 1 && JSON.stringify(started[0].params) === '{"premise":"x","rounds":7}',
+      `started ${JSON.stringify(started)}`);
+    const form = $('paramFields').innerHTML;
+    check(form.includes('value="1" selected>claude_code') && !form.includes('selected>agent'), `the form's engine: ${form}`);
+    check(form.includes('data-type="string">x</textarea>') && form.includes('data-type="integer" value="7"'),
+      `the run's choices are not in the form: ${form}`);
   },
 
   async an_apply_keeps_what_another_field_form_holds_without_asking() {
@@ -1909,16 +2032,20 @@ const CASES = {
   async a_deleted_machine_leaves_nothing_of_itself_behind() {
     localStorage.setItem('stategraph:breakpoints:review', '[{"state":"write","at":"enter"}]');
     localStorage.setItem('stategraph:params:review', '{"premise":"secret"}');
+    localStorage.setItem('stategraph:start-params:review', '{"values":{"premise":"secret"},"defaults":{}}');
     await boot('?machine=review');
+    check($('paramFields').innerHTML.includes('>secret</textarea>'), 'the kept params are not in the form');
     await choose('write');
     await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'initial' }) });  // an undo step
     await settle();
     await $('machineHead').fire('click', { target: element('button', { 'data-act': 'delete-machine' }) });
     await settle();
     check(!$('side-inspect').innerHTML.includes('sg-inspect-name'), 'the inspector still shows the deleted machine');
-    check(localStorage.getItem('stategraph:params:review') === null, 'its params stay');
+    check(localStorage.getItem('stategraph:params:review') === null
+      && localStorage.getItem('stategraph:start-params:review') === null, 'its params stay');
     await clickMachine('review');  // a machine of the same id again (made anew): the old steps are not its own
     await settle();
+    check(!$('paramFields').innerHTML.includes('secret'), 'its form keeps the params');
     check($('undo').disabled, 'its undo steps stay');
     check(localStorage.getItem('stategraph:breakpoints:review') === null, 'its breakpoints wait for a machine of the same id');
   },

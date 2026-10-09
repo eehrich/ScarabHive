@@ -195,8 +195,9 @@ folded: the gestures and keys of the graph.
 @{h2}Starting a run
 
 In the Runs tab, under @{b}New run@{ub} (folded once the machine has
-runs): a field per param of the machine (the last values you started it
-with come back), and under @{b}Test options@{ub} @{b}Mocks@{ub} (JSON: a
+runs): a field per param of the machine (your last choices come back; a
+field left at its default is not sent, and the run takes the default the
+machine has as it starts), and under @{b}Test options@{ub} @{b}Mocks@{ub} (JSON: a
 state path and the answer its activity gives instead of running, see
 @{" Runs " link runs}), @{b}Mock only@{ub} (anything not mocked fails
 instead of calling an agent or a tool) and @{b}Pause at start@{ub}. The
@@ -250,7 +251,8 @@ frame, and every finished activity folded -- open one for its full answer,
 its input, failed attempts, the agent's session (@{b}Open@{ub} shows the
 conversation in the chat) and the request id (the message debugger finds
 the LLM calls by it). @{b}Run again@{ub} starts a new run with the same
-params and mocks; @{b}Session@{ub} opens the run's own session (not for
+params and mocks, less those that had their default when the run
+started: the machine's default now applies; @{b}Session@{ub} opens the run's own session (not for
 a mock-only run, which has none, nor for another user's run).
 @{bullet}The @{b}History@{ub} card: the last 200 journal rows, filtered by
 kind.

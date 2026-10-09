@@ -46,7 +46,7 @@ plugins:
       max_run_minutes: 60
       # Runs going at the same time; every one spends the subscription.
       max_parallel: 1
-      # The longest task run_task takes, in characters (1000 to 100000).
+      # The longest task run_task takes, in characters (1000 to 200000).
       max_task_chars: 20000
       # Claude Code's model; empty: the subscription's default.
       model: ""

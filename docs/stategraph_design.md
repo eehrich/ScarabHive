@@ -1060,7 +1060,8 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
   those imports are gone. Its runs keep their definition snapshot and stay readable.
 - **Palette.** `GET /api/kinds`.
 - **Runs.** `GET|POST /api/runs`; `GET /api/runs/{id}` (`?steps=`; with `frames_started`, the submachine
-  frames the run started -- the tool's `get_run` leaves them out); `GET /api/runs/{id}/journal`;
+  frames the run started -- the tool's `get_run` leaves them out -- and `param_defaults`, the defaults its
+  params were given under: its own definition's, a fork's origin's); `GET /api/runs/{id}/journal`;
   `POST /api/runs/{id}/control` (`steps`: the journal rows of the answer);
   `POST /api/runs/{id}/events`. `GET /api/runs/{id}`, control and events follow the owner rule
   (§8.3); the run list and the journal endpoint do not filter.
@@ -1108,8 +1109,14 @@ YAML box is asked about: the edit changes the state it shows). A name that is no
 asked again with what was typed. A waiting run has a button per event it takes in the debug bar (an
 event with data, or one several frames wait for, opens the event form, which picks the event the
 wait takes and says what it is). The runs list scrolls, filters by status and loads older runs;
-**Run again** on the Result card starts the run's params and mocks anew, and the start form keeps a
-machine's last params. With a run selected, a state that started submachine runs carries a badge
+The start form sends only what differs from its param's default (with unsaved drafts: all it shows): the
+run binds the default the machine has as it starts -- a default sent as a value outlived a change of it,
+in the run and in the form's memory. The form keeps a machine's last choices; a value that was what its
+field sends untouched shows the param's default now (a choice equal to the default is no different from
+it). The Run box lists the params a run took by default (its root frame's bound params), as does its
+session. **Run again** on the Result card starts the run's params and mocks anew, less the values that
+were their param's default when they were given (`param_defaults`: the definition of the run started
+with them -- a fork's origin). With a run selected, a state that started submachine runs carries a badge
 ("2 runs") and its inspector ends with the folded list of them, each with **Show**: the
 submachine's graph with that frame on it (an ended one drawn from its journal); the debug bar
 picks among its frames and goes back to the run's machine. A submachine's runs list holds the

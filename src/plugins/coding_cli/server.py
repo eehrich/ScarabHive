@@ -58,6 +58,10 @@ logger = logging.getLogger(__name__)
 DATA_ROOT: Optional[Path] = None
 DATA_ROOT_ENV = "CODING_CLI_DATA_ROOT"
 MAX_TASK_CHARS = 20_000
+#: The most max_task_chars may be: a task goes in on stdin, and a long video's revision (its sources and the
+#: script so far) came to ~112k characters, ~120k with the largest script and findings seen (scarab_videos,
+#: 2026-10-09).
+MAX_TASK_CHARS_CAP = 200_000
 # A json_schema as it stands on the command line, Windows quoting included (an
 # escaped quote counts up to four times): the rest of the line stays far below
 # Windows' 32,767 characters.
@@ -227,7 +231,7 @@ class CodingCliServer(SchemaBasedToolServer):
         self.max_run_s = 60 * (_bounded(getattr(server_config, "max_run_minutes", None), 60, 1, 24 * 60) or 60)
         self.max_parallel = int(_bounded(getattr(server_config, "max_parallel", None), 1, 1, 8) or 1)
         self.max_task_chars = int(_bounded(getattr(server_config, "max_task_chars", None), MAX_TASK_CHARS, 1_000,
-                                           100_000) or MAX_TASK_CHARS)
+                                           MAX_TASK_CHARS_CAP) or MAX_TASK_CHARS)
         self.max_output_chars = int(_bounded(getattr(server_config, "max_output_chars", None), CAP_RESULT, 1_000,
                                              100_000) or CAP_RESULT)
         self._monitors: dict[str, asyncio.Task] = {}

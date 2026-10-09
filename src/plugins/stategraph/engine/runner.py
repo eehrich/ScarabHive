@@ -12,6 +12,7 @@ journal cut at a top-level step (§5.6).
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 import re
@@ -44,6 +45,8 @@ CONTROL_POLL_SECONDS = 1.0
 REMOTE_CONTROLS = ("pause", "continue", "step", "terminate")
 #: Pauses between the tries of a run's end write: the view may fail to store, the end must not (§5.7).
 END_WRITE_DELAYS = (0.5, 1.0, 2.0, 4.0, 8.0)
+#: the runs whose param defaults describe() keeps read (a panel polls one run: each poll would parse its definition)
+DEFAULTS_KEPT = 256
 _STEP = re.compile(r"s(\d+)")
 #: A frame's keys without a step of their own: its resources (``r.<name>``) and its end (``end.<reason>...``).
 #: A submachine frame below one of them still counts its steps.
@@ -775,6 +778,7 @@ class RunManager:
         #: where a callback URL points (the callback kind): the stategraph instance's route, under its public URL
         self.callback_base = "/plugins/stategraph/callback"
         self.live: dict[str, LiveRun] = {}
+        self._defaults: dict[str, dict[str, Any]] = {}  # run id -> its params' defaults when it started (describe)
         self._stopping = False
         self._heartbeat: Optional[asyncio.Task] = None
         self._controls: Optional[asyncio.Task] = None
@@ -1012,8 +1016,8 @@ class RunManager:
             began = getattr(ctx.backend, "run_began", None)
             if began is not None:
                 spec = ctx.machine.spec
-                await began(machine=spec.id, title=spec.title,
-                            params=(ctx.store.get_run(ctx.id) or {}).get("params") or {})
+                # the params bound: a param left out shows the default the run took (the panel sends only choices)
+                await began(machine=spec.id, title=spec.title, params=root.params)
             result = await root.execute()
             fields = {"status": result.status, "output": result.output, "final_state": result.final_state,
                       "error": result.error}
@@ -1304,13 +1308,42 @@ class RunManager:
         row = self.store.get_run(run_id)
         if row is None:
             raise KeyError(run_id)
-        row.pop("definition", None)
+        row["param_defaults"] = self._param_defaults(run_id, row.pop("definition", None))
         # the hand-over between processes, not the run: the answers keep refusals with the data they refused
         row.pop("control", None)
         row.pop("control_answer", None)
         row["active"] = run_id in self.live
         row["terminal"] = row["status"] in TERMINAL_STATUSES
         return row
+
+    def _param_defaults(self, run_id: str, definition: Any) -> dict[str, Any]:
+        """The defaults its params were given under (the definition of the run that was started with them, not the
+        file now): who starts it again can tell a value that was the default then from one chosen -- the panel's
+        form sent every default, and a default the machine changed since would come back as a choice. A fork
+        takes its source's params as they are, also onto the current file: its origin's definition is the one.
+        Read once per run (a definition never changes); {} when it cannot be read -- kept, unless the store failed:
+        that is asked again next time."""
+        if run_id in self._defaults:
+            return copy.deepcopy(self._defaults[run_id])
+        defaults: dict[str, Any] = {}
+        try:
+            origin = self._origin(run_id)
+            if origin != run_id:
+                definition = (self.store.get_run(origin) or {}).get("definition", definition)
+        except Exception:  # the store, not the definition: asked again next time
+            logger.debug("run %s: its origin's definition not read", run_id, exc_info=True)
+            return {}
+        try:
+            tree = load_snapshot(definition, execute_python=False)
+            spec = tree.files[tree.root].spec if tree.root in tree.files else None
+            if spec is not None:
+                defaults = {name: param.default for name, param in spec.params.items() if param.default is not None}
+        except Exception:  # a definition from before snapshots, or one that does not load: no defaults to tell
+            logger.debug("run %s: the defaults of its definition do not read", run_id, exc_info=True)
+        if len(self._defaults) >= DEFAULTS_KEPT:
+            self._defaults.pop(next(iter(self._defaults)))
+        self._defaults[run_id] = defaults
+        return copy.deepcopy(defaults)
 
 
 __all__ = ["ACTIVE_STATUSES", "JOURNAL_FORMAT", "TRANSIENT_ERRORS", "LiveRun", "RunContext", "RunManager",
