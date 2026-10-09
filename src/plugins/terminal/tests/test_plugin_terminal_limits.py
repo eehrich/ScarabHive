@@ -344,15 +344,15 @@ async def test_a_finished_background_process_lets_go_of_its_job():
 def a_secret_from_the_file(monkeypatch):
     """TERMINAL_PROBE_SECRET as if the server had read it from secrets.env,
     TERMINAL_PROBE_PLAIN as set by the real environment."""
-    from agent_system.config import settings
+    from agent_system.config import environment
 
     monkeypatch.setenv("TERMINAL_PROBE_SECRET", "s3cret")
     monkeypatch.setenv("TERMINAL_PROBE_PLAIN", "plain")
-    monkeypatch.setitem(settings._secrets_from_file, settings._env_name("TERMINAL_PROBE_SECRET"),
-                        settings._fingerprint("s3cret"))
+    monkeypatch.setitem(environment._secrets_from_file, environment._env_name("TERMINAL_PROBE_SECRET"),
+                        environment._fingerprint("s3cret"))
     # The list a start hands on of the file's names, with value fingerprints.
-    monkeypatch.setenv(settings.SECRETS_FROM_FILE_ENV,
-                       f"TERMINAL_PROBE_SECRET:{settings._fingerprint('s3cret')}")
+    monkeypatch.setenv(environment.SECRETS_FROM_FILE_ENV,
+                       f"TERMINAL_PROBE_SECRET:{environment._fingerprint('s3cret')}")
 
 
 @pytest.mark.asyncio

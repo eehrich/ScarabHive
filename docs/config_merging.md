@@ -130,9 +130,12 @@ includes:
 
 ## Implementation
 
-See `src/agent_system/config/settings.py`:
-- `deep_merge()` function handles recursive dictionary merging
-- Wildcard expansion using Python's `glob` module
+`load_settings()` in `src/agent_system/config/settings.py` runs the load; the files are read and merged by
+the modules beside it:
+- `layers.py` (`read_layers()`) reads the master config, its includes and the local layer, and decides which
+  file may set what
+- `merging.py`: the `deep_merge()` function handles recursive dictionary merging
+- Wildcard expansion using Python's `glob` module (`layers._expand_includes()`)
 - Applied to every top-level section an include sets (`plugins`, `llm_system`, `hooks`, ...), except `external_servers`, which the last include replaces; `paths`, `auth` (apart from route rules), `includes` and `files` are read from the master config only
 
 ## Testing

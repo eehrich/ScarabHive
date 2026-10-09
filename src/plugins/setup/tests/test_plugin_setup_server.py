@@ -352,10 +352,10 @@ class TestThePanelEndpoints:
 def machine(tmp_path, monkeypatch):
     """An installation of this test's own: a master naming ${SETUP_TEST_KEY} in a server entry, loaded as the API
     loads it, with the config service a reload reads from. What the test takes into the environment goes with it."""
-    from agent_system.config import settings
+    from agent_system.config import environment, settings
     from agent_system.services.config_service import ConfigService
-    monkeypatch.setattr(settings, "_secrets_from_file", {})
-    monkeypatch.setattr(settings, "_secrets_loaded", set())  # the load below marks local.env read before it exists
+    monkeypatch.setattr(environment, "_secrets_from_file", {})
+    monkeypatch.setattr(environment, "_secrets_loaded", set())  # the load below marks local.env read before it exists
     monkeypatch.setenv(settings.SECRETS_FROM_FILE_ENV, "")
     for name in ("SETUP_TEST_KEY", "AUTH_SECRET_KEY", "SETUP_UNNAMED_KEY"):
         monkeypatch.setenv(name, "")
@@ -519,7 +519,7 @@ class TestTheKeyEndpoints:
         assert not (master.parent / "local.env").exists()
 
     def test_an_own_signing_key_is_made_for_the_next_start(self, machine, monkeypatch):
-        from agent_system.config import settings
+        from agent_system.config import environment
         app, master = machine
 
         answer = TestClient(app).post("/plugins/setup/signing-key", json={})
@@ -527,7 +527,7 @@ class TestTheKeyEndpoints:
         assert answer.status_code == 200, answer.text
         auth = answer.json()["state"]["auth"]
         assert auth["configured_signing_key_known"] is False, auth
-        monkeypatch.setattr(settings, "_secrets_loaded", set())  # the next start: a process that has read nothing yet
+        monkeypatch.setattr(environment, "_secrets_loaded", set())  # the next start: a process that has read nothing yet
         assert load_settings(str(master)).auth.secret_key == settings_file(master)["AUTH_SECRET_KEY"]
 
     def test_a_signing_key_that_cannot_be_written_says_why(self, machine):

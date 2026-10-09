@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_system.config import settings
+from agent_system.config import environment, settings
 from agent_system.config.settings import (_expand_includes, config_files, environment_at_restart, load_settings,
                                           master_data_dir)
 
@@ -118,7 +118,7 @@ def test_a_local_layer_that_is_no_mapping_fails_the_start(config_dir):
 @pytest.fixture
 def own_process(monkeypatch):
     """What this test takes from secrets files goes with it."""
-    monkeypatch.setattr(settings, "_secrets_from_file", {})
+    monkeypatch.setattr(environment, "_secrets_from_file", {})
     monkeypatch.setenv(settings.SECRETS_FROM_FILE_ENV, os.environ.get(settings.SECRETS_FROM_FILE_ENV, ""))
     for name in ("LOCAL_TEST_KEY", "LOCAL_TEST_OTHER"):
         monkeypatch.setenv(name, "")

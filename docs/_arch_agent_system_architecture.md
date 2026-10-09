@@ -314,6 +314,16 @@ timed-out hook is logged and skipped. Global `hooks.overrides` accept an exact
 - Schema validation
 - Pydantic model binding
 
+**Modules (`src/agent_system/config/`):**
+- `models/` - the Pydantic models, a module per part of the configuration: `llm` (`llm_system:`), `agent` (`agent_config` and the `plugins:` server entries that carry it), `external_servers`, `auth`, `system` (every other section, and the root `AgentSystemConfig`); every name is importable from `agent_system.config.models`
+- `settings.py` - the entry points: `load_settings`, `get_tool_server_config`, `master_data_dir`
+- `environment.py` - the secrets files (`local.env`, `secrets.env`) read into the environment, `${VAR}` expansion
+- `layers.py` - the master config, its includes and `local.yaml`: what each file may set and how they stack
+- `merging.py` - `deep_merge` for stacking files; `_deep_merge_dict` and the `+item`/`!pattern` list syntax for inheritance
+- `inheritance.py` - `extends` between model entries, `type` between server entries
+- `llm_checks.py` - the loud but not fatal reports on agents' `llm_params` and LLM chains
+- `local_layer.py` - writes this machine's layer: a credential into `local.env`, the signing key named in `local.yaml`
+
 **Configuration System:**
 - `config/config.yaml` - Main config with includes mechanism
 - **`llm_system:`** - LLM profiles and model configurations
