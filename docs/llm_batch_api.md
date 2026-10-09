@@ -391,7 +391,13 @@ src/agent_system/llm/batch/
 ├── __init__.py         # Module exports
 ├── base.py             # BatchProviderClient base class
 ├── models.py           # Data models (BatchRequest, BatchJob, etc.)
-├── queue_manager.py    # Central queue manager
+├── queue_manager/      # Central queue manager (BatchQueueManager)
+│   ├── manager.py      # BatchQueueManager: start, job recovery, stop, metrics
+│   ├── core.py         # Shared state, status reports, access to the batch clients
+│   ├── clients.py      # BatchClientRegistry: which client serves which provider
+│   ├── submission.py   # Queuing, collection window, batch submission, stalled queues
+│   ├── polling.py      # Polling loop, job status, retries
+│   └── outcome.py      # Results, job completion, cancellation
 ├── batch_client.py     # BatchLLMClient wrapper
 ├── initialization.py
 └── job_tracker.py
