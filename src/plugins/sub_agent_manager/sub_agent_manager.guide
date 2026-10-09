@@ -52,7 +52,9 @@ button it is pinned to that session instead; the toolbar says so and lets
 go of it again. With no session open it says so and asks for nothing. It
 reloads every 10 seconds; the menu next to the reload button sets another
 interval or turns it off. Only your own sessions are shown: a session of
-another user reads as one without sub-agents.
+another user reads as one without sub-agents. An admin -- and everyone
+while authentication is off -- sees every user's sessions, as in the other
+plugin panels.
 
 @{h2}The map
 
@@ -439,7 +441,8 @@ starting sub-agents in the same session at the same moment can pass them.
 
 Under @{tt}/plugins/<instance>/@{utt}, for the panel. Each takes the parent
 session as @{tt}session_id@{utt} and answers only for the signed-in user's
-own sessions ("anonymous" without a login).
+own sessions ("anonymous" without a login); for an admin, and for everyone
+while authentication is off, for every user's (@{tt}auth/session_access.py@{utt}).
 
 @{table}
 Method and path | Answers

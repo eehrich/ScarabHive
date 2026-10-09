@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from agent_system.auth.dependencies import get_optional_user
 from agent_system.auth.models import User
+from agent_system.auth.session_access import sees_everything, viewer
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
 from plugins.sub_agent_manager.manager import message_counts
@@ -28,11 +29,24 @@ MAP_READS = 60
 MAP_DEPTH = 20
 
 
-def viewer(current_user: Optional[User]) -> str:
-    """Whose sessions the request may see -- the rule of ``/sessions``. Every lookup below goes by it: a session of
-    another user is simply not found. The panel used to ask the session directories whose session an id is, and
-    answered anyone who named one -- its sub-agents, their transcripts, and an archive of them."""
-    return current_user.username if current_user else "anonymous"
+async def reader(request: Request, current_user: Optional[User], session_id: str) -> str:
+    """Under whose user the request reads ``session_id``. Every lookup below goes by it: a session of another user is
+    simply not found. The viewer (``/sessions``' rule) -- or, for one who sees every session (``sees_everything``: an
+    admin, or anyone while authentication is off), the owner of a session that is not the viewer's own, so another
+    user's session is found under hers; a session no directory holds yet stays the viewer's. Her own copy first: an
+    id can sit in two directories, and the scan takes whichever it meets first. The panel used to ask the session
+    directories whose session an id is for anyone who named one -- its sub-agents, their transcripts, an archive."""
+    own = viewer(current_user)
+    if not sees_everything(request, current_user):
+        return own
+    sessions = get_session_service().session_manager
+    if hers(sessions, own, session_id):
+        return own
+    try:
+        sessions._validate_session_id(session_id)  # the scan joins the bare id onto every user's directory
+    except ValueError:
+        return own
+    return await sessions._find_session_owner_async(session_id) or own
 
 
 def hers(sessions, user_id: str, session_id: str) -> bool:
@@ -177,7 +191,7 @@ class SubAgentManagerWebFactory:
         every ten seconds, of its own accord, in whichever process happens to serve it -- so it writes nothing."""
         session_service = get_session_service()
         sessions = session_service.session_manager
-        user_id = viewer(current_user)
+        user_id = await reader(request, current_user, session_id)
         if not hers(sessions, user_id, session_id):  # not hers, or not saved yet
             return {"instances": [], "phase": await self._phase(session_service, user_id, session_id)}
         try:
@@ -231,7 +245,7 @@ class SubAgentManagerWebFactory:
         """
         session_service = get_session_service()
         sessions = session_service.session_manager
-        user_id = viewer(current_user)
+        user_id = await reader(request, current_user, session_id)
         remaining = MAP_NODES
         reads = MAP_READS
         truncated = False
@@ -304,7 +318,7 @@ class SubAgentManagerWebFactory:
                             current_user: Optional[User] = Depends(get_optional_user)) -> dict[str, Any]:
         """A sub-agent's transcript, paged as the tool's ``info`` pages it: the tail without an offset. Answered by the
         instance that spawned it (``_spawned_by``)."""
-        user_id = viewer(current_user)
+        user_id = await reader(request, current_user, session_id)
         self._require_hers(user_id, session_id, agent_id)
         owner = await self._owner_of(session_id, agent_id, user_id)
         return answered(await owner._handle_info({
@@ -315,7 +329,7 @@ class SubAgentManagerWebFactory:
                                 current_user: Optional[User] = Depends(get_optional_user)) -> dict[str, Any]:
         """Archive a sub-agent, as the tool's ``delete`` does -- the delete of the instance that spawned it, which holds
         its job (``_spawned_by``)."""
-        user_id = viewer(current_user)
+        user_id = await reader(request, current_user, session_id)
         self._require_hers(user_id, session_id, agent_id)
         owner = await self._owner_of(session_id, agent_id, user_id)
         return answered(await owner._handle_delete({
