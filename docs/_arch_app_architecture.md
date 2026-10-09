@@ -178,7 +178,7 @@ the stream and may be asked (see `request_context.set_run_attended`).
    cancelled like a streamed one (409 if a job already runs under that
    request id).
 5. `_claim_session` holds the session through session presence
-   (`core/session_presence.py`, an OS lock next to the session file): a session
+   (`core/session_presence/presence.py`, an OS lock next to the session file): a session
    another process runs (an open `agent-cli chat`, a woken run) or one deleted
    in this process answers 409; `force=true` runs it anyway, for the lock of a
    hung process -- a dead process's lock is released by the OS. A second run of

@@ -195,7 +195,7 @@ async def test_a_wake_that_worked_does_not_read_like_a_failure(config, notified,
 @pytest.fixture
 def instant_retry(monkeypatch):
     """The retry sleeps ten seconds in production; here it must not."""
-    monkeypatch.setattr(presence_module, "WAKE_RETRY_SECONDS", 0)
+    monkeypatch.setattr(presence_module.wake, "WAKE_RETRY_SECONDS", 0)
 
 
 @pytest.mark.asyncio
@@ -264,7 +264,7 @@ async def test_the_ringing_asks_a_guard_that_has_to_look_it_up(config, monkeypat
 async def test_a_guard_that_fails_to_answer_keeps_it_ringing(config, monkeypatch, instant_retry):
     """Its look-up can fail -- a file read half-written. Ringing on costs at most
     a woken run; it used to end the wake, and the news was never delivered."""
-    monkeypatch.setattr(presence_module, "WAKE_RETRIES", 2)
+    monkeypatch.setattr(presence_module.wake, "WAKE_RETRIES", 2)
     rung = []
 
     def notify(self, session_id, user_id):
@@ -284,7 +284,7 @@ async def test_a_guard_that_fails_to_answer_keeps_it_ringing(config, monkeypatch
 async def test_the_ringing_is_bounded(config, monkeypatch, instant_retry):
     """A turn that outlasts the budget ends with the marker in place, and
     release() wakes the session on that -- but the ringing itself stops."""
-    monkeypatch.setattr(presence_module, "WAKE_RETRIES", 3)
+    monkeypatch.setattr(presence_module.wake, "WAKE_RETRIES", 3)
     rung = []
 
     def never_lets_go(self, session_id, user_id):
@@ -302,8 +302,8 @@ async def test_the_rings_are_spaced_out(config, monkeypatch):
     """Without the wait the whole budget is spent in microseconds and the
     session never gets the chance to let go -- the ringing would look like it
     happened and reach nobody."""
-    monkeypatch.setattr(presence_module, "WAKE_RETRY_SECONDS", 0.05)
-    monkeypatch.setattr(presence_module, "WAKE_RETRIES", 2)
+    monkeypatch.setattr(presence_module.wake, "WAKE_RETRY_SECONDS", 0.05)
+    monkeypatch.setattr(presence_module.wake, "WAKE_RETRIES", 2)
     monkeypatch.setattr(SessionPresence, "notify",
                         lambda self, s, u: ("delivered_next_step", ""))
 
@@ -359,7 +359,7 @@ async def test_the_guard_is_read_fresh_before_each_ring(config, monkeypatch):
     tenfold and the assertion one-sided, so a loaded machine cannot fail it; if
     it ever flickers, the fix is an injectable wait, not a longer one.
     """
-    monkeypatch.setattr(presence_module, "WAKE_RETRY_SECONDS", 0.2)
+    monkeypatch.setattr(presence_module.wake, "WAKE_RETRY_SECONDS", 0.2)
     rung = []
     delivered = []
 
@@ -389,7 +389,7 @@ def held_chat(config, monkeypatch):
     from agent_system.cli_utils import chat
 
     spawned = []
-    monkeypatch.setattr(presence_module, "spawn_wake",
+    monkeypatch.setattr(presence_module.presence, "spawn_wake",
                         lambda *args: spawned.append(args) or (0, 0.0))
     presence = presence_module.presence_for(config)
     assert presence.hold("sess-1", "someone", "agent"), "the fixture holds nothing"
@@ -407,7 +407,7 @@ async def test_a_held_chat_gets_one_turn_for_the_news_not_one_per_ring(config, h
     """agent-cli chat holds its session for the whole REPL, and its prompt turns the wake mark into a turn
     (_watch_for_wake). The ring is repeated while the session is held -- so every repeat became a turn of
     its own: a finished wait started a "you were woken" turn every ten seconds (session m7dkazgsge)."""
-    monkeypatch.setattr(presence_module, "WAKE_RETRIES", 5)
+    monkeypatch.setattr(presence_module.wake, "WAKE_RETRIES", 5)
     presence, take_at_the_prompt = held_chat
     turns = []
 
@@ -433,7 +433,7 @@ async def test_only_a_turn_woken_after_the_first_ring_ends_the_ringing(config, h
     """A stamp from an earlier wake is no delivery of this news, and neither is a mark a running turn takes
     on its next LLM step (_presence_step): nothing there tells the model. The ringing goes on until the
     chat is back at its prompt and a turn is woken for it."""
-    monkeypatch.setattr(presence_module, "WAKE_RETRIES", 5)
+    monkeypatch.setattr(presence_module.wake, "WAKE_RETRIES", 5)
     presence, take_at_the_prompt = held_chat
     take_at_the_prompt()                      # a turn woken an hour ago left its stamp
     real_notify = SessionPresence.notify

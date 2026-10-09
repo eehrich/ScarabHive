@@ -460,7 +460,7 @@ class BackgroundJobManager:
         # Somebody stopped it -- the web chat's Stop, an admin, a deleted session,
         # writer_jobs. Noted first: the run may be past the point where the
         # layers below reach it (its finalize), and its session is let go marked
-        # all the same, so nothing starts it again by itself (core/session_presence.py).
+        # all the same, so nothing starts it again by itself (core/session_presence/).
         from ..core.session_presence import note_stop
         note_stop(request_id)
 

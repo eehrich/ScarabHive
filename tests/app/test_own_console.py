@@ -406,7 +406,7 @@ def test_the_runs_meant_to_outlive_the_server_start_through_popen_outliving(monk
     # spawn_wake in a process of its own: the suite's conftest refuses to wake for real
     probe = ("import subprocess, sys; from agent_system import own_console; "
              "from agent_system.core import session_presence as presence; "
-             "presence._wake_log = lambda: subprocess.DEVNULL; "
+             "presence.process._wake_log = lambda: subprocess.DEVNULL; "
              "own_console.popen_outliving = lambda *args, **kwargs: print('outliving') or sys.exit(0); "
              "presence.spawn_wake('s', 'u', 0)")
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120)

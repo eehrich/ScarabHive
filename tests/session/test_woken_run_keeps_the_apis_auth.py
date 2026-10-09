@@ -79,8 +79,8 @@ def _spawned_env(monkeypatch) -> dict:
         seen.update(kwargs["env"])
         return Started()
 
-    monkeypatch.setattr(sp.subprocess, "Popen", popen)
-    monkeypatch.setattr(sp, "_wake_log", lambda: subprocess.DEVNULL)
+    monkeypatch.setattr(sp.process.subprocess, "Popen", popen)
+    monkeypatch.setattr(sp.process, "_wake_log", lambda: subprocess.DEVNULL)
     SPAWN_WAKE("s-1", "ada", 1)
     return seen
 

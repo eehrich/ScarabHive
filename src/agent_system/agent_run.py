@@ -175,7 +175,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         force: Run the session even though another process holds it
     """
     presence = None
-    stopped = False   # Ctrl-C: its user stopped the run (core/session_presence.py)
+    stopped = False   # Ctrl-C: its user stopped the run (core/session_presence/)
     try:
         # Handle --list-sessions flag (needs session_manager only)
         if list_sessions is not None:
@@ -239,7 +239,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         from .utils.id import short_id
         actual_session_id = session_id or short_id()
 
-        # Session presence (core/session_presence.py): the session is held
+        # Session presence (core/session_presence/): the session is held
         # BEFORE it is loaded -- a run that reads the file first can be
         # overtaken by the process holding it and would write its own copy back
         # over that run. Held through the save after the run (see the finally).

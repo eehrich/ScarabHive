@@ -5,7 +5,7 @@ calling user: a stored one (the Responses API continues it by
 ``previous_response_id``) or a throwaway one (Chat Completions, ``store:
 false``).
 
-A stored conversation is held (session presence, core/session_presence.py) from
+A stored conversation is held (session presence, core/session_presence/) from
 before it is opened until its turn is settled, as /run and /events hold theirs:
 a run of it in another process -- an agent-cli run woken by a sub-agent -- would
 write it too, and the last save would win. One that another run has in hand, in

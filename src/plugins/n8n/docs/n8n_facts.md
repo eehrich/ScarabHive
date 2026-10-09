@@ -621,7 +621,7 @@ Knotenwissen kommt jetzt aus `search_nodes` und `get_node_types` des Instanz-MCP
 - **F-OUR9 ÜBERHOLT → F-DEP5** Früher: eine `.env` in `docs/deploy/` wäre nicht git-ignored.
 - **F-OUR10 [dokumentiert]** Allowlists: `tools.allowed: ["+…"]` ergänzt die Liste, ohne `+` ersetzt sie. Ein Agent mit visibility `tool`/`both` erscheint für Aufrufer mit `<agent>/*` als `<agent>_execute_task`. Quelle: `config/agents/agents.yaml:6-32`; `runtime.py:154-159`; `tool_discovery.py:156-222`.
 - **F-OUR11 [gemessen]** Den Root-SAM `sub_agent_manager` erreicht kein aktiver Agent. Quelle: probe_sam.py.
-- **F-OUR12 [dokumentiert]** `wake_blocked()` liefert "" oder einen Grund. `wake_session()` startet einen **neuen** Prozess und wirkt nur, solange der Prozess lebt, der die Arbeit hält. Quelle: `core/session_presence.py`; Muster `terminal/server.py:306-340,441-462`.
+- **F-OUR12 [dokumentiert]** `wake_blocked()` liefert "" oder einen Grund. `wake_session()` startet einen **neuen** Prozess und wirkt nur, solange der Prozess lebt, der die Arbeit hält. Quelle: `core/session_presence/wake.py`; Muster `terminal/server.py:306-340,441-462`.
 - **F-OUR13 [dokumentiert]** Der einzige Teardown ist `stop_plugin` auf dem Objekt aus `PLUGIN_FACTORY`. Quelle: `plugins/capabilities.py:182-190`; `test_pluginsystem_teardown_hook.py:59`.
 - **F-OUR14 [dokumentiert]** Die API bindet `127.0.0.1:8000`. Quelle: `config/config.yaml:56-57`.
 - **F-OUR15 [dokumentiert]** `/run` antwortet immer mit `text/event-stream`. Quelle: `app.py`, Suchbegriff `media_type="text/event-stream"`.

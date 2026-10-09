@@ -293,9 +293,9 @@ class TestSessionPresence:
         monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path / "sessions"))
         run_env.config.session_presence = SessionPresenceConfig(enabled=True)
         presence = sp.presence_for(run_env.config)
-        monkeypatch.setattr(sp, "_stops", set())
+        monkeypatch.setattr(sp.presence, "_stops", set())
         woken = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
 
         async def run(agent, request, session_id, llm_override=None, llm_profile_info=None):
             # holds and lets go of the session as the agent loop does, never told of the stop
@@ -317,9 +317,9 @@ class TestSessionPresence:
         monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path / "sessions"))
         run_env.config.session_presence = SessionPresenceConfig(enabled=True)
         presence = sp.presence_for(run_env.config)
-        monkeypatch.setattr(sp, "_stops", set())
+        monkeypatch.setattr(sp.presence, "_stops", set())
         woken = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
 
         async def interrupted_load(agent, user_id, session_id):
             assert sp.SessionPresence(tmp_path / "sessions").notify(session_id, user_id)[0] == "delivered_next_step"

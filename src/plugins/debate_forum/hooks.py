@@ -27,7 +27,7 @@ Flow:
 4. Old post batches stay in the conversation and get optimised automatically
 
 Direct messages between sessions (deliver_direct_messages) need no channel
-var; who runs where and waking idle sessions are core/session_presence.py.
+var; who runs where and waking idle sessions are core/session_presence/.
 """
 from __future__ import annotations
 

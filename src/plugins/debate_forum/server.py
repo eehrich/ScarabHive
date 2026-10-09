@@ -377,7 +377,7 @@ class DebateForumServer(SchemaBasedToolServer):
         return {"status": action, "message_id": message_id}
 
     # ── Tools: direct messages between sessions ───────────────
-    # Who runs where and waking idle sessions are core (core/session_presence.py);
+    # Who runs where and waking idle sessions are core (core/session_presence/);
     # the forum keeps the conversation and hands it over (hooks.py).
 
     async def list_sessions(self, params: dict[str, Any]) -> dict[str, Any]:

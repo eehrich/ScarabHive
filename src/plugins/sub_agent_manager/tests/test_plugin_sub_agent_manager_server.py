@@ -1967,7 +1967,7 @@ class TestCancelReachesABlockingRun:
 
 class TestTheCallerIsWokenWhenItsJobIsDone:
     """A background job can wake the session that started it, so its caller may end its turn over it
-    instead of polling. Waking itself is core (core/session_presence.py); what is tested here is who
+    instead of polling. Waking itself is core (core/session_presence/wake.py); what is tested here is who
     the manager tells about which session, and that the job's own ending never depends on it."""
 
     @staticmethod

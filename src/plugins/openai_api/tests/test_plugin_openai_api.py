@@ -543,7 +543,7 @@ async def leave_during(app: FastAPI, path: str, body: dict[str, Any], leave: Cal
 
 
 def presence_on(agent: ScriptedAgent, tmp_path, monkeypatch) -> Any:
-    """Session presence as the shipped config has it (core/session_presence.py), its lock files beside the
+    """Session presence as the shipped config has it (core/session_presence/), its lock files beside the
     test's sessions -- and waking off (max_wake_depth 0), so a session let go never starts an agent-cli run.
     Returns this process's presence store."""
     from agent_system.config.models import SessionPresenceConfig

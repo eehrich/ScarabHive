@@ -1094,7 +1094,7 @@ class CodingCliServer(SchemaBasedToolServer):
                                            f"agent-cli run is never woken -- there, wait with {self.name}_get_run wait_s"}
 
     async def _is_sub_agent(self, session_id: str, user_id: str) -> bool:
-        """wake_blocked leaves this out (core/session_presence.py): a sub-agent's
+        """wake_blocked leaves this out (core/session_presence/wake.py): a sub-agent's
         session is never woken. Asked off the loop, as it parses the session file."""
         presence = presence_for(self.system_config)
         if presence is None or not session_id:
