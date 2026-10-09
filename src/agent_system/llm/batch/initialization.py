@@ -48,6 +48,83 @@ def _normalize_batch_provider(batch_provider: str) -> str:
     return batch_provider
 
 
+def _enabled_batch_config(
+    config: "AgentSystemConfig",
+    log: logging.Logger,
+    skipping: str,
+) -> Optional[Any]:
+    """The global BatchSystemConfig when batch can run at all, else None.
+
+    The first checks of setup_batch_queue_manager_sync and init_batch_system:
+    an LLM system, a batch section, at least one enabled provider. Each
+    "no" is logged at debug level; ``skipping`` names what the caller skips
+    ("batch queue manager", "batch initialization").
+    """
+    if not config.llm_system:
+        log.debug("No LLM system configured, skipping batch initialization")
+        return None
+
+    # Check for global batch config
+    batch_system_config = config.llm_system.batch
+    if not batch_system_config:
+        log.debug("No batch system config, skipping %s", skipping)
+        return None
+
+    # Check if any provider is enabled
+    providers_config = batch_system_config.providers
+    if not any(p.enabled for p in providers_config.values()):
+        log.debug("No batch providers enabled, skipping %s", skipping)
+        return None
+    return batch_system_config
+
+
+def _install_job_tracker(batch_system_config: Any, log: logging.Logger) -> Path:
+    """Install the job tracker for the batch storage path; returns that path."""
+    storage_path = Path(batch_system_config.storage_path)
+    job_tracker = BatchJobTracker(storage_path)
+    set_job_tracker(job_tracker)
+    log.debug("Job tracker initialized at %s", storage_path)
+    return storage_path
+
+
+async def _start_and_settle_jobs(
+    manager: "BatchQueueManager",
+    providers_needing_clients: dict,
+    providers_cancel_on_startup: set,
+    log: logging.Logger,
+) -> None:
+    """Start the manager, then cancel or recover each provider's existing jobs.
+
+    The last step of start_batch_queue_manager and init_batch_system:
+    providers with cancel_on_startup lose their pending jobs, every other
+    provider's active jobs are recovered.
+    """
+    # Start the batch queue manager
+    await manager.start()
+    log.info("Batch queue manager started (providers: %s)",
+             list(providers_needing_clients.keys()))
+
+    # Handle existing jobs from providers - per-provider cancel_on_startup
+    if providers_cancel_on_startup:
+        # Cancel pending jobs only for providers with cancel_on_startup=true
+        cancelled = await _cancel_provider_batches(
+            manager,
+            providers_cancel_on_startup,
+            log
+        )
+        if cancelled > 0:
+            log.info("Cancelled %d pending batch jobs from providers: %s",
+                     cancelled, list(providers_cancel_on_startup))
+
+    # Recover jobs for providers that don't cancel on startup
+    providers_to_recover = set(providers_needing_clients.keys()) - providers_cancel_on_startup
+    if providers_to_recover:
+        recovered = await manager.recover_jobs(providers_to_recover)
+        if recovered > 0:
+            log.info("Recovered %d active batch jobs from providers: %s",
+                     recovered, list(providers_to_recover))
+
+
 def setup_batch_queue_manager_sync(
     config: "AgentSystemConfig",
     custom_logger: Optional[logging.Logger] = None,
@@ -72,20 +149,8 @@ def setup_batch_queue_manager_sync(
         log.debug("Batch queue manager already created, skipping")
         return _batch_queue_manager
     
-    if not config.llm_system:
-        log.debug("No LLM system configured, skipping batch initialization")
-        return None
-    
-    # Check for global batch config
-    batch_system_config = config.llm_system.batch
-    if not batch_system_config:
-        log.debug("No batch system config, skipping batch queue manager")
-        return None
-    
-    # Check if any provider is enabled
-    providers_config = batch_system_config.providers
-    if not any(p.enabled for p in providers_config.values()):
-        log.debug("No batch providers enabled, skipping batch queue manager")
+    batch_system_config = _enabled_batch_config(config, log, "batch queue manager")
+    if batch_system_config is None:
         return None
     
     # Check if any model uses provider='batch'
@@ -104,14 +169,10 @@ def setup_batch_queue_manager_sync(
         from .queue_manager import BatchQueueManager
         from ..factory import set_batch_queue_manager
         
-        # Create batch queue manager with global config
-        storage_path = Path(batch_system_config.storage_path)
-        
         # Initialize job tracker for tracking our submitted jobs
-        job_tracker = BatchJobTracker(storage_path)
-        set_job_tracker(job_tracker)
-        log.debug("Job tracker initialized at %s", storage_path)
+        storage_path = _install_job_tracker(batch_system_config, log)
         
+        # Create batch queue manager with global config
         _batch_queue_manager = BatchQueueManager(
             batch_system_config=batch_system_config,
             storage_path=storage_path
@@ -165,10 +226,7 @@ async def start_batch_queue_manager(
         # Initialize job tracker if not already set (needed for cancel_all_pending_batches)
         from .job_tracker import get_job_tracker
         if not get_job_tracker():
-            storage_path = Path(batch_system_config.storage_path)
-            job_tracker = BatchJobTracker(storage_path)
-            set_job_tracker(job_tracker)
-            log.debug("Job tracker initialized at %s", storage_path)
+            _install_job_tracker(batch_system_config, log)
         
         # Collect batch providers from models with provider='batch'
         providers_needing_clients: dict = {}  # batch_provider -> model_config
@@ -192,30 +250,8 @@ async def start_batch_queue_manager(
             log
         )
         
-        # Start the batch queue manager
-        await manager.start()
-        
-        log.info("Batch queue manager started (providers: %s)", 
-                 list(providers_needing_clients.keys()))
-        
-        # Handle existing jobs from providers - per-provider cancel_on_startup
-        if providers_cancel_on_startup:
-            cancelled = await _cancel_provider_batches(
-                manager, 
-                providers_cancel_on_startup, 
-                log
-            )
-            if cancelled > 0:
-                log.info("Cancelled %d pending batch jobs from providers: %s", 
-                        cancelled, list(providers_cancel_on_startup))
-        
-        # Recover jobs for providers that don't cancel on startup
-        providers_to_recover = set(providers_needing_clients.keys()) - providers_cancel_on_startup
-        if providers_to_recover:
-            recovered = await manager.recover_jobs(providers_to_recover)
-            if recovered > 0:
-                log.info("Recovered %d active batch jobs from providers: %s", 
-                        recovered, list(providers_to_recover))
+        await _start_and_settle_jobs(
+            manager, providers_needing_clients, providers_cancel_on_startup, log)
                 
     except Exception as e:
         log.error("Failed to start batch queue manager: %s", e, exc_info=True)
@@ -251,21 +287,10 @@ async def init_batch_system(
     global _batch_queue_manager
     log = custom_logger or logger
     
-    if not config.llm_system:
-        log.debug("No LLM system configured, skipping batch initialization")
+    batch_system_config = _enabled_batch_config(config, log, "batch initialization")
+    if batch_system_config is None:
         return None
-    
-    # Check for global batch config
-    batch_system_config = config.llm_system.batch
-    if not batch_system_config:
-        log.debug("No batch system config, skipping batch initialization")
-        return None
-    
-    # Check if any provider is enabled
     providers_config = batch_system_config.providers
-    if not any(p.enabled for p in providers_config.values()):
-        log.debug("No batch providers enabled, skipping batch initialization")
-        return None
     
     # Check for models with provider='batch' and collect their batch_provider info
     batch_models = []
@@ -296,14 +321,10 @@ async def init_batch_system(
         from .queue_manager import BatchQueueManager
         from ..factory import set_batch_queue_manager
         
-        # Create batch queue manager with global config
-        storage_path = Path(batch_system_config.storage_path)
-        
         # Initialize job tracker for tracking our submitted jobs
-        job_tracker = BatchJobTracker(storage_path)
-        set_job_tracker(job_tracker)
-        log.debug("Job tracker initialized at %s", storage_path)
+        storage_path = _install_job_tracker(batch_system_config, log)
         
+        # Create batch queue manager with global config
         _batch_queue_manager = BatchQueueManager(
             batch_system_config=batch_system_config,
             storage_path=storage_path
@@ -320,30 +341,8 @@ async def init_batch_system(
         # Register globally so LLMFactory can access it
         set_batch_queue_manager(_batch_queue_manager)
         
-        # Start the batch queue manager
-        await _batch_queue_manager.start()
-        log.info("Batch queue manager started (providers: %s)",
-                 list(providers_needing_clients.keys()))
-        
-        # Handle existing jobs from providers - per-provider cancel_on_startup
-        if providers_cancel_on_startup:
-            # Cancel pending jobs only for providers with cancel_on_startup=true
-            cancelled = await _cancel_provider_batches(
-                _batch_queue_manager, 
-                providers_cancel_on_startup, 
-                log
-            )
-            if cancelled > 0:
-                log.info("Cancelled %d pending batch jobs from providers: %s", 
-                        cancelled, list(providers_cancel_on_startup))
-        
-        # Recover jobs for providers that don't cancel on startup
-        providers_to_recover = set(providers_needing_clients.keys()) - providers_cancel_on_startup
-        if providers_to_recover:
-            recovered = await _batch_queue_manager.recover_jobs(providers_to_recover)
-            if recovered > 0:
-                log.info("Recovered %d active batch jobs from providers: %s", 
-                        recovered, list(providers_to_recover))
+        await _start_and_settle_jobs(
+            _batch_queue_manager, providers_needing_clients, providers_cancel_on_startup, log)
         
         return _batch_queue_manager
                     
