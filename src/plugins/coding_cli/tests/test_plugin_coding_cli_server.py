@@ -583,6 +583,29 @@ async def test_the_time_limit_stops_a_run(repo):
     assert result["state"] == "cancelled" and "time limit" in result["note"]
 
 
+async def test_a_call_may_give_its_run_a_shorter_limit(repo):
+    """run_task's max_run_minutes: a shorter limit for this run -- a quick research hands over to its agent in
+    time -- recorded with the run (a sweep in another process holds it to the same), never above the
+    instance's, and kept by a resume that names none. A run that asked none resumes under the instance's
+    limit as it is now: an operator who raised it after a run was cut means the resume too."""
+    server = make_server(repo, max_run_minutes=60)
+    result, _ = await call(server, "run_task", task="SLEEP 30", max_run_minutes=0.5 / 60)
+    assert result["state"] == "cancelled" and "time limit" in result["note"], result
+    assert server._load(result["run_id"])["max_run_s"] == 0.5
+    again, _ = await call(server, "run_task", task="SLEEP 30", resume=result["run_id"])
+    assert again["state"] == "cancelled" and server._load(again["run_id"])["max_run_s"] == 0.5, again
+    longer, _ = await call(server, "run_task", task="WRITE b.txt x", max_run_minutes=600)
+    assert longer["state"] == "done" and server._load(longer["run_id"])["max_run_s"] == 3600, longer
+    assert server._load(longer["run_id"])["asked_run_s"] == 36000, "kept as asked: a raised instance limit applies"
+    plain, _ = await call(server, "run_task", task="WRITE c.txt x")
+    server.max_run_s = 7200                        # raised meanwhile
+    resumed, _ = await call(server, "run_task", task="WRITE d.txt x", resume=plain["run_id"])
+    assert server._load(resumed["run_id"])["max_run_s"] == 7200, server._load(resumed["run_id"])
+    for bad in (0, -1, "20", True):
+        refused, _ = await call(server, "run_task", task="x", max_run_minutes=bad)
+        assert refused["status"] == "error" and "max_run_minutes" in refused["error"], (bad, refused)
+
+
 async def test_a_run_nobody_watches_is_ended_by_the_next_look(repo):
     """The API restarted while the run went on: the process is detached, and
     the next get_run in any process finds its end on disk."""
@@ -1244,7 +1267,7 @@ async def test_a_workdirs_mcp_servers_load_and_their_auth_is_only_in_the_childs_
                                           auth=MCPAuthConfig(type="bearer", bearer_token=TOKEN)),
                "events": RemoteMCPConfig(url="http://events.example/sse", enabled=True, transport="sse")}
     server = mcp_server(repo, servers, ["scarab4", "events"], wait_s=0.2, allowed_commands=["pytest:*"])
-    started, _ = await call(server, "run_task", task="SLEEP 30", workdir="repo")
+    started, _ = await call(server, "run_task", task="SLEEP 30", workdir="repo", max_run_minutes=30)
     try:
         proc = psutil.Process(server._load(started["run_id"])["pid"])
         argv, env = proc.cmdline(), proc.environ()
@@ -1256,9 +1279,16 @@ async def test_a_workdirs_mcp_servers_load_and_their_auth_is_only_in_the_childs_
             await asyncio.sleep(0.1)
     finally:
         answer, _ = await call(server, "cancel_run", run_id=started["run_id"])
+    # A run that asks no limit: the instance's.
+    plain, _ = await call(server, "run_task", task="SLEEP 30", workdir="repo")
+    try:
+        plain_env = psutil.Process(server._load(plain["run_id"])["pid"]).environ()
+    finally:
+        await call(server, "cancel_run", run_id=plain["run_id"])
+    assert plain_env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] == str(round(server.max_run_s * 1000)), plain_env
     assert env["CODING_CLI_MCP_0"] == f"Bearer {TOKEN}" and "CODING_CLI_MCP_1" not in env
-    # A tool may stay silent as long as the run may last, not Claude Code's 5 min.
-    assert env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] == str(round(server.max_run_s * 1000))
+    # A tool may stay silent as long as the run may last -- here the call's 30 min --, not Claude Code's 5 min.
+    assert env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] == str(30 * 60 * 1000) != str(round(server.max_run_s * 1000))
     # Read at the start; once the run ended, a key in a url's path is no longer on disk.
     assert mcp == server._file(started["run_id"], "mcp.json") and not mcp.exists()
     assert config == {"mcpServers": {

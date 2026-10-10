@@ -33,6 +33,10 @@ tools:
             type: boolean
             default: true
             description: "false: a run still going when this answers wakes nobody -- the caller waits for its end with get_run itself"
+          max_run_minutes:
+            type: number
+            exclusiveMinimum: 0
+            description: "A shorter time limit for this run than the instance's (which it never exceeds); a resume without one keeps the prior run's"
         required: [task]
         additionalProperties: false
 

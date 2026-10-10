@@ -9,7 +9,8 @@ background and wakes the session that started it.
 
 - **Tools** -- `coding_cli_run_task`, `coding_cli_get_run`, `coding_cli_cancel_run`; offered only when the Claude
   Code executable and a usable workdir are there. `run_task` takes an optional `json_schema`: the answer then
-  carries `output`, an object matching it (untrusted). Every answer of an ended run carries `cost_usd`, on the
+  carries `output`, an object matching it (untrusted). An optional `max_run_minutes` gives the run a shorter time
+  limit than the instance's (a resume without one keeps it). Every answer of an ended run carries `cost_usd`, on the
   subscription a notional amount -- the measure the stream reports.
 - **MCP servers** -- a workdir's `mcp_servers` names servers of `external_servers.remote_servers` (enabled, with a
   url free of credentials, an HTTP or SSE transport); its edit runs load exactly these, their blocked tools

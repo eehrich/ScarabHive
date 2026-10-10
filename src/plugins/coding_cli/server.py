@@ -504,6 +504,10 @@ class CodingCliServer(SchemaBasedToolServer):
         wake = params.get("wake", True)
         if not isinstance(wake, bool):
             return await self._fail(status, "wake: true (woken at the end) or false (you wait with get_run)")
+        limit = params.get("max_run_minutes")
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, (int, float)) or not limit > 0):
+            return await self._fail(status, f"max_run_minutes: a number of minutes above 0 -- a shorter limit for "
+                                            f"this run; the instance's {self.max_run_s / 60:g} at most")
         schema = params.get("json_schema")
         prior = None
         if params.get("resume"):
@@ -520,10 +524,16 @@ class CodingCliServer(SchemaBasedToolServer):
             workdir = prior["workdir"]
             if schema is None:
                 schema = prior.get("json_schema")
+            if limit is None and prior.get("asked_run_s"):
+                # As the schema: the conversation goes on under the shorter limit its call asked for. One that
+                # asked none takes the instance's as it is now.
+                limit = float(prior["asked_run_s"]) / 60
         else:
             workdir = params.get("workdir") or (next(iter(self.workdirs)) if len(self.workdirs) == 1 else None)
         if workdir not in self.workdirs:
             return await self._fail(status, f"workdir: one of {', '.join(sorted(self.workdirs))}")
+        # As asked; _start holds it to the instance's, what its operator allows a run. None: the instance's.
+        asked_run_s = 60 * limit if limit is not None else None
         # The given one or the one a resume inherits, before anything is made.
         if schema is not None and not _schema_ok(schema):
             return await self._fail(status, f"json_schema: a JSON schema as an object, at most {MAX_SCHEMA_CHARS} "
@@ -551,7 +561,7 @@ class CodingCliServer(SchemaBasedToolServer):
             # A plain executor future, not a task: a sweep that cancels every
             # task at the loop's end does not reach it.
             prepare = asyncio.get_running_loop().run_in_executor(None, functools.partial(
-                self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema))
+                self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema, asked_run_s))
             try:
                 try:
                     record = await asyncio.shield(prepare)
@@ -733,7 +743,8 @@ class CodingCliServer(SchemaBasedToolServer):
         await asyncio.to_thread(cli.kill_tree, record.get("pid"), record.get("pid_started"))
 
     def _prepare(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict],
-                 user_id: str, session_id: str, schema: Optional[dict] = None) -> dict:
+                 user_id: str, session_id: str, schema: Optional[dict] = None,
+                 asked_run_s: Optional[float] = None) -> dict:
         """Worktree, command line and record, then the process (sync, off the loop)."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
         spec = self.workdirs[workdir]
@@ -744,7 +755,8 @@ class CodingCliServer(SchemaBasedToolServer):
         try:
             made = (cli.Worktree(prior["base"], prior.get("git_dir") or "", prior.get("hidden") or []) if prior
                     else cli.make_worktree(spec["path"], worktree, branch, spec["exclude"]))
-            return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema)
+            return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema,
+                               asked_run_s)
         except BaseException:
             # Answered "not started": no MCP file is left (a url may hold a key in its path), and for a fresh
             # run no worktree or branch that no answer names.
@@ -755,8 +767,12 @@ class CodingCliServer(SchemaBasedToolServer):
             raise
 
     def _start(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict], user_id: str,
-               session_id: str, worktree: Path, branch: str, made: cli.Worktree, schema: Optional[dict] = None) -> dict:
+               session_id: str, worktree: Path, branch: str, made: cli.Worktree, schema: Optional[dict] = None,
+               asked_run_s: Optional[float] = None) -> dict:
         resume = prior["claude_session"] if prior else ""
+        # The call's own limit, shorter only; else the instance's. The asked one is kept as asked: a resume
+        # inherits it, held to the instance's limit as it is then.
+        max_run_s = min(asked_run_s, self.max_run_s) if asked_run_s else self.max_run_s
         if resume and not _SESSION.fullmatch(resume):
             raise OSError(f"run {prior['run_id']} holds no usable session id")
         # Plan mode only reads: no server whose tools could write.
@@ -764,7 +780,7 @@ class CodingCliServer(SchemaBasedToolServer):
         env, values = cli.child_env(self.pass_env), {}
         # Claude Code gives up on an MCP tool that says nothing for 5 min (its default): a tool that works
         # longer without a word was given up on and called again. The run's own limit bounds a call.
-        env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] = str(round(self.max_run_s * 1000))
+        env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] = str(round(max_run_s * 1000))
         if servers:
             mcp, config = self._file(run_id, "mcp.json"), {}
             for name, cfg in servers.items():
@@ -788,7 +804,8 @@ class CodingCliServer(SchemaBasedToolServer):
                                              for n, c in servers.items()}, model=self.model, effort=self.effort, resume=resume,
                                 rules=rules if rules.is_file() else None, json_schema=schema,
                                 web=self.workdirs[workdir]["web"])
-        record = {"run_id": run_id, "instance_name": self.name, "max_run_s": self.max_run_s, "user_id": user_id,
+        record = {"run_id": run_id, "instance_name": self.name, "max_run_s": max_run_s, "asked_run_s": asked_run_s,
+                  "user_id": user_id,
                   "session_id": session_id, "workdir": workdir,
                   "mode": mode, "task": task[:300], "worktree": str(worktree), "branch": branch, "base": made.base,
                   "git_dir": made.git_dir, "hidden": made.hidden, "json_schema": schema,

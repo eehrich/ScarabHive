@@ -104,7 +104,9 @@ it waits stops it.
 
 @{h2}The end
 
-A run is stopped after @{tt}max_run_minutes@{utt} (60). A stop -- time
+A run is stopped after @{tt}max_run_minutes@{utt} (60), or after the
+shorter limit its call gave (@{tt}run_task@{utt}'s own
+@{tt}max_run_minutes@{utt}). A stop -- time
 limit, cancel, stopped turn -- kills Claude Code and everything it started.
 Then, once per run, the plugin commits everything left in the worktree as
 one commit @{tt}coding_cli <run_id>: <first line of the task>@{utt} (edit
@@ -327,6 +329,7 @@ mode | @{tt}edit@{utt} (default): change the code; @{tt}plan@{utt}: only read (R
 resume | run id of an ended run of the user's: continue its Claude Code conversation in its worktree and branch
 json_schema | a JSON schema, an object of at most 20,000 characters as JSON on the command line -- quotes escaped as Windows needs them, so a quote counts two to four times; the rest of the line stays far below Windows' 32,767 -- nested at most 100 deep. Claude Code also answers with an object matching it (@{tt}output@{utt}). A resume without one keeps its run's
 wake | @{tt}true@{utt} (default): a run still going when the call answers wakes the session at its end, where a wake can be armed (the answer's @{tt}wake@{utt} and @{tt}wake_note@{utt} say whether); @{tt}false@{utt}: it wakes nobody -- the caller waits with @{" get_run " link get_run} itself (see @{" What the model sees " link model})
+max_run_minutes | a shorter time limit for this run, in minutes (a number above 0); one above the instance's @{tt}max_run_minutes@{utt} counts as the instance's. A resume without one keeps the one its run asked for; a run that asked none resumes under the instance's
 @{body}
 
 @{h2}The answer of an ended run
@@ -378,6 +381,7 @@ task: at most <max_task_chars> characters | too long
 task: not valid text (a broken character escape) -- send it again | a lone surrogate in the text
 mode: edit (change the code) or plan (read and answer with a plan) | another mode
 wake: true (woken at the end) or false (you wait with get_run) | not true or false
+max_run_minutes: a number of minutes above 0 -- a shorter limit for this run; the instance's <n> at most | not a number, or 0 or less
 json_schema: a JSON schema as an object, at most 20000 characters as JSON on the command line, its quotes escaped | not an object, too long, nested deeper than 100, or holding NaN or Infinity -- also the one a resume would inherit
 resume: no run <id> of yours | unknown run, or another user's
 resume: run <id> has not ended yet | still running
