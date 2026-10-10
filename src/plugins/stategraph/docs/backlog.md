@@ -1,202 +1,196 @@
-# stategraph: Backlog aus der Review vom 27.09.2026
+# stategraph: backlog from the review of 2026-09-27
 
-Sechs Prüfer, je eine Richtung: Laufzeit-Bugs, Modell/Panel-Bugs, fehlende Features,
-Bedienung, Debug-Fähigkeit, Nutzung durch Nutzer und Agent. Die Bug-Befunde sind per Skript
-belegt (Skripte im Scratchpad der Session, `review_a/`, `review_b/`, `review_e/`) oder am Code
-nachgesehen. Der Nutzer hat alles freigegeben ("alle Sachen angehen").
+Six reviewers, one direction each: runtime bugs, model/panel bugs, missing features,
+usability, debuggability, use by user and agent. The bug findings are backed by scripts
+(scripts in the session scratchpad, `review_a/`, `review_b/`, `review_e/`) or checked
+against the code. The user approved everything ("tackle all of it").
 
-Stand Phase 1: gebaut, Review der Fix-Runde eingearbeitet (Abbruch über den Aufrufer schützt jetzt auch
-`finally`/`close` -- `CancellationManager.protect`; Steps pro Frame; eine Watchpoint-Pause beantwortet ein offenes
-„pause“; Breakpoints/`run_to` auf States ohne diesen Hook: 422; das Panel nimmt Breakpoints beim Umbenennen mit und
-verwirft veraltete beim Start; die Fassaden-Prüfung läuft in einem Worker-Thread; `expected_versions` als
-JSON-String). Offene Lücke, benannt: dass das Panel `keepingChoices` aufruft, sieht das Fake-DOM nicht -- der
-Helfer selbst ist im Browser getestet.
+Phase 1 status: built, review of the fix round incorporated (cancellation via the caller now also protects
+`finally`/`close` -- `CancellationManager.protect`; steps per frame; a watchpoint pause answers an open
+"pause"; breakpoints/`run_to` on states without this hook: 422; the panel carries breakpoints along on rename and
+discards stale ones on start; the facade check runs in a worker thread; `expected_versions` as a
+JSON string). Open gap, named: the fake DOM does not see that the panel calls `keepingChoices` -- the
+helper itself is tested in the browser.
 
-Arbeitsweise: Phase für Phase. Je Phase: bauen, jeder neue Test mit Mutation geprüft,
-adversarielles Review des Diffs, Befunde fixen, pfadbegrenzt committen. Ein erledigter Punkt
-bekommt `[x]` und den Commit.
+Way of working: phase by phase. Per phase: build, every new test checked with a mutation,
+adversarial review of the diff, fix findings, commit limited to the paths. A finished item
+gets `[x]` and the commit.
 
-## Phase 1: Bugs und Lücken
+## Phase 1: bugs and gaps
 
-### Laufzeit und Fassade
+### Runtime and facade
 
-- [x] **R1 Terminate schneidet ein laufendes `finally`/`close` ab.** `server.py` `_cancel_requests` bricht
-  jeden `<run>_NNN`-Token ab, auch den des Aufräum-Agenten, der gerade läuft (§3.10 verspricht das
-  Gegenteil). Fix: laufende finally/close-Request-IDs im RunContext merken und auslassen.
-- [x] **R2 `step` in parallelen Frames geht verloren.** `engine/debugger.py` `pause()` setzt `mode = "run"`,
-  sobald irgendein Frame hält; der Step des einen Frames wird vom anderen verbraucht. Fix: Step an den
-  Frame binden, der ihn bekam.
-- [x] **R3 `run_key` ist nicht an Maschine, `mock_only` und Params gebunden.** `service.start_run` /
-  `journal.latest_by_key`: ein Mock-Lauf mit Key k beantwortet später einen Live-Lauf mit k. Fix: bei
-  abweichender Maschine, mock_only oder Params-Hash 409 "neuen Key nehmen".
-- [x] **R4 Tool-Argumente ungeprüft.** `params` als JSON-String gibt eine Unsinnsmeldung, `mocks` als
-  String hinterlässt eine `running`-Zeile (create_run vor der Prüfung), `max_wait: "abc"` und `files`
-  als String laufen an `_run_tool` vorbei. Fix: Typen/Bereiche in den Tool-Bodies prüfen, JSON-Strings
-  parsen, Mocks vor create_run prüfen.
-- [x] **R5 Debug-Namen ungeprüft.** Breakpoints, `run_to` und Mock-Pfade werden nicht gegen die Maschine
-  geprüft; ein Mock-Tippfehler lässt still den echten Agenten laufen. Fix: State-Namen prüfen (422),
-  am Laufende `unused_mocks` melden.
-- [x] **R6 Fassade: fremde Session-ID liefert fremden Lauf.** `facade.py` Continue-Pfad prüft `sees_run`
-  nicht. Fix: vor der Antwort `sees_run` prüfen.
-- [x] **R7 Fassade: dieselbe Anfrage in derselben Session nach transientem Fehler abgelehnt.** Fix: ist
-  `row.run_key == <agent>:<request id>`, über `_start` gehen.
-- [x] **R8 Fassaden-Konfig erst beim ersten Aufruf geprüft.** Fix: beim Start prüfen (Maschine existiert
-  und validiert, `task_param` deklariert, Pflicht-Params gedeckt), Log-Error.
+- [x] **R1 Terminate cuts off a running `finally`/`close`.** `server.py` `_cancel_requests` aborts
+  every `<run>_NNN` token, including that of the cleanup agent that is currently running (§3.10 promises the
+  opposite). Fix: remember the running finally/close request IDs in the RunContext and skip them.
+- [x] **R2 `step` in parallel frames gets lost.** `engine/debugger.py` `pause()` sets `mode = "run"`
+  as soon as any frame halts; one frame's step is consumed by the other. Fix: bind the step to the
+  frame that received it.
+- [x] **R3 `run_key` is not bound to machine, `mock_only` and params.** `service.start_run` /
+  `journal.latest_by_key`: a mock run with key k later answers a live run with k. Fix: on a
+  differing machine, mock_only or params hash, 409 "use a new key".
+- [x] **R4 Tool arguments unchecked.** `params` as a JSON string gives a nonsense message, `mocks` as a
+  string leaves a `running` row behind (create_run before the check), `max_wait: "abc"` and `files`
+  as a string slip past `_run_tool`. Fix: check types/ranges in the tool bodies, parse JSON strings,
+  check mocks before create_run.
+- [x] **R5 Debug names unchecked.** Breakpoints, `run_to` and mock paths are not checked against the machine;
+  a typo in a mock silently lets the real agent run. Fix: check state names (422),
+  report `unused_mocks` at the end of the run.
+- [x] **R6 Facade: a foreign session ID returns a foreign run.** `facade.py` continue path does not check
+  `sees_run`. Fix: check `sees_run` before answering.
+- [x] **R7 Facade: the same request in the same session rejected after a transient error.** Fix: if
+  `row.run_key == <agent>:<request id>`, go through `_start`.
+- [x] **R8 Facade config checked only at the first call.** Fix: check at startup (machine exists
+  and validates, `task_param` declared, required params covered), log error.
 
-### Modell und Panel
+### Model and panel
 
-- [x] **M1 Event-Auswahl springt beim Polling zurück** (`panel.js` drawDebugPane): gewählter Wert wird
-  beim Neuzeichnen verloren, "Send" schickt das falsche Event. Gleiches für eventFrame, runToState,
-  forkStep. Fix: Auswahl erhalten.
-- [x] **M2 Transition-Formular schickt alle Felder**; ein mehrzeiliger Guard wird im `<input>` zu einer
-  Zeile. Fix: über `field()`/`changedFields`, mehrzeilig als Textarea.
-- [x] **M3 Zahlenfeld mit Tippfehler löscht still** (im Browser liefert `type=number` dann `""`).
+- [x] **M1 Event selection jumps back during polling** (`panel.js` drawDebugPane): the chosen value is lost
+  on redraw, "Send" sends the wrong event. Same for eventFrame, runToState,
+  forkStep. Fix: preserve the selection.
+- [x] **M2 Transition form sends all fields**; a multi-line guard becomes one
+  line in the `<input>`. Fix: via `field()`/`changedFields`, multi-line as a textarea.
+- [x] **M3 Number field with a typo silently deletes** (in the browser `type=number` then returns `""`).
   Fix: `validity.badInput` → FormError.
-- [x] **M4 Flow-Stil `states: {x: …}`**: YAML-Abschnitt zeigt die Geschwister-Map, Apply schachtelt sie
-  in den State. Fix: Fragment sperren, wenn der State nicht am Zeilenanfang steht; Server verweigert.
-- [—] **M5 Skalar-Anker nicht gesperrt** — WIDERLEGT im Review der Fix-Runde: ohne Sperre ändert ein Edit nur
-  den eigenen State; ruamel verlegt den Anker auf den Alias, dessen Wert bleibt gleich (Probe `probe_m5.py`). Die
-  Sperre hätte nur einen harmlosen Weg genommen; zurückgebaut.
-- [x] **M6 `graph_view` umgeht `yaml_bounds`** (Alias-Bombe blockiert die API). Fix: bei `doc is None`
-  leerer Graph, Grenzen auch auf den Re-Parse.
-- [x] **M7 Validator übersieht State mit `do` ohne Completion-Transition** (sicher `no_transition`).
-  Gebaut als Warnung SG109, nicht als Fehler: eine Aktivität, die nur über ihre Fehler-Transitionen weiterführt,
-  ist eine Maschine, die läuft (die Semantik-Tests fahren genau solche).
-- [x] **M8 Reservierte Namen `finally`/`resources`** als State-Namen erlaubt. Fix: `check_state_name` in
-  `_new_name`, dieselbe Liste im Panel.
-- [x] **M9 YAML-Datum als Param-Default** validiert, scheitert zur Laufzeit. Fix: nicht-JSON-Skalare im
-  Loader als SG001.
-- [x] **M10 Windows-Pfade mit Backslash** in `files` (store.relative): Problem-Sprung in Unterordner
-  scheitert. Fix: `relative()` liefert `/`.
+- [x] **M4 Flow style `states: {x: …}`**: the YAML section shows the sibling map, Apply nests it
+  into the state. Fix: block the fragment when the state is not at the start of a line; the server refuses.
+- [—] **M5 Scalar anchor not blocked** — REFUTED in the review of the fix round: without the block an edit changes only
+  its own state; ruamel moves the anchor to the alias, whose value stays the same (probe `probe_m5.py`). The
+  block would only have taken away a harmless path; reverted.
+- [x] **M6 `graph_view` bypasses `yaml_bounds`** (alias bomb blocks the API). Fix: on `doc is None`
+  an empty graph, bounds also on the re-parse.
+- [x] **M7 Validator overlooks a state with `do` without a completion transition** (certain `no_transition`).
+  Built as warning SG109, not as an error: an activity that continues only via its error transitions
+  is a machine that runs (the semantics tests run exactly such machines).
+- [x] **M8 Reserved names `finally`/`resources`** allowed as state names. Fix: `check_state_name` in
+  `_new_name`, the same list in the panel.
+- [x] **M9 YAML date as a param default** validates, fails at runtime. Fix: non-JSON scalars in the
+  loader as SG001.
+- [x] **M10 Windows paths with backslash** in `files` (store.relative): problem jump into subfolders
+  fails. Fix: `relative()` returns `/`.
 
-### Doku
+### Docs
 
-- [x] **D1 `get_run`-Felder** in `debugging.md`/Design §8.1 falsch (`status` statt `run_status`,
-  `view.frames` statt `frames`); SKILL-Zeile zu SG005 (enum-Param ist erlaubt).
-- [x] **D2 Fassaden-README ohne `metadata.visibility`** → privat, für SAM und Chat unsichtbar.
-- [x] **D3 403 beim Speichern einer mitgelieferten Maschine** ohne Hinweis "unter neuer id speichern".
+- [x] **D1 `get_run` fields** in `debugging.md`/design §8.1 wrong (`status` instead of `run_status`,
+  `view.frames` instead of `frames`); SKILL line on SG005 (an enum param is allowed).
+- [x] **D2 Facade README without `metadata.visibility`** → private, invisible to SAM and chat.
+- [x] **D3 403 when saving a bundled machine** without the hint "save under a new id".
 
-## Phase 2: Debug-Fähigkeit
+## Phase 2: debuggability
 
-Stand: gebaut, Review der Fix-Runde eingearbeitet (Traceback behält sein Ende; ein angehaltener Fork hält am
-Fork-Punkt, nicht an einem State ohne `do` davor; `waiting_since` einmal pro Eintritt, über Resume und in der
-gespeicherten Ansicht; `failures` überleben einen Absturz im Backoff; Guards auch bei Initial-Choice und
-verworfenem Event; `full_output` und ein Gesamtdeckel von 200.000 Zeichen für `get_run`; ein Toast beim Kopieren).
-N3 (gedeckelte Antworten) ist hier mit erledigt.
+Status: built, review of the fix round incorporated (traceback keeps its end; a paused fork halts at the
+fork point, not at a state without a preceding `do`; `waiting_since` once per entry, across resume and in the
+saved view; `failures` survive a crash in backoff; guards also on initial choice and
+discarded event; `full_output` and an overall cap of 200,000 characters for `get_run`; a toast on copy).
+N3 (capped responses) is done along with this.
 
-- [x] **G1 Gerenderte Eingabe bleibt im Journal** (Task, Tool-Args, Call-Args, Decide-Input) — heute
-  überschreibt die End-Zeile `inputs`. Anzeige im Panel.
-- [x] **G2 Guard-Auswertung** `[{owner, index, guard, result|error}]` in die Transition-Trace und in
-  `error.data` von `no_transition`.
-- [x] **G3 Traceback** (gekürzt, Frames im Companion-Modul) in `error.data.traceback`; `logger.warning`
-  für activity_failed/agent_failed/internal.
-- [x] **G4 Fehlgeschlagene Retry-Versuche** in `meta.failures`.
-- [x] **G5 Fork mit `pause` und `mocks`** (RunManager.fork kann es schon; Service/Tool/Panel reichen es
-  durch); `pause_at_start` auch am Tool `run_machine`.
-- [x] **G6 `get_run` mit `after`/`kinds`/`key`** und Kappung langer Felder; Panel-History mit Zeitstempel
-  und Filter.
-- [x] **G7 Warten sichtbar**: `waiting_since`, `deadline` in der Frame-View, `inbox` in der Tool-Antwort.
-- [x] **G8 Panel zeigt `error.data`/`cause`** bei Aktivitätsfehlern; Request-ID kopierbar.
+- [x] **G1 Rendered input stays in the journal** (task, tool args, call args, decide input) — today
+  the end row overwrites `inputs`. Display in the panel.
+- [x] **G2 Guard evaluation** `[{owner, index, guard, result|error}]` in the transition trace and in
+  `error.data` of `no_transition`.
+- [x] **G3 Traceback** (shortened, frames in the companion module) in `error.data.traceback`; `logger.warning`
+  for activity_failed/agent_failed/internal.
+- [x] **G4 Failed retry attempts** in `meta.failures`.
+- [x] **G5 Fork with `pause` and `mocks`** (RunManager.fork can already do it; service/tool/panel pass it
+  through); `pause_at_start` also on the tool `run_machine`.
+- [x] **G6 `get_run` with `after`/`kinds`/`key`** and truncation of long fields; panel history with timestamp
+  and filter.
+- [x] **G7 Waiting made visible**: `waiting_since`, `deadline` in the frame view, `inbox` in the tool response.
+- [x] **G8 Panel shows `error.data`/`cause`** on activity errors; request ID copyable.
 
-## Phase 3: Nutzung durch Nutzer und Agent
+## Phase 3: use by user and agent
 
-Stand: gebaut; Zwischencommit 8b016ff6b, danach die Befunde des Reviews: ein abgebrochenes `get_run` beendet
-den Lauf nicht mehr und wartet auch auf Läufe anderer Prozesse; eine Antwort nach Neustart (oder aus agent-cli,
-ein Prozess je Nachricht) setzt den Lauf fort und beantwortet seinen Warte-State; als Tool eines anderen Agents
-blockiert `ask`; Frames, die dasselbe Event nehmen, werden genannt und per `frame` gewählt; ein vom Guard
-verworfenes Event wird mit den Guards gemeldet; Daten nach dem Event-Namen bleiben ganz; `key=value` liest nach
-dem deklarierten Typ und behält Backslashes; ungültiges `on_wait` zeigt auch das Panel.
+Status: built; interim commit 8b016ff6b, after that the review findings: an aborted `get_run` no longer ends
+the run and also waits for runs of other processes; an answer after a restart (or from agent-cli,
+one process per message) resumes the run and answers its wait state; as a tool of another agent
+`ask` blocks; frames that take the same event are named and chosen via `frame`; an event
+discarded by the guard is reported with the guards; data after the event name stays whole; `key=value` reads
+by the declared type and keeps backslashes; an invalid `on_wait` is also shown by the panel.
 
-- [x] **N1 Tool `stategraph_list_runs`** (read-only, per `sees_run` gefiltert); Slash-Befehle
+- [x] **N1 Tool `stategraph_list_runs`** (read-only, filtered by `sees_run`); slash commands
   `/stategraph-runs`, `/stategraph-stop`.
-- [x] **N2 Weiterwarten**: `wait`/`max_wait` an `get_run`; Antwort bei `running` sagt, wie es weitergeht;
-  `max_wait` gedeckelt.
-- [x] **N3 Ergebnisse gedeckelt**: `out`/ctx-Werte in Tool-Antworten gekappt, mit Längenangabe.
-- [x] **N4 `/stategraph-run` mit Params** (`<id> {json}`).
-- [x] **N5 `catalog` liefert echte Tools** mit Beschreibung und Parametern statt Allowlist-Mustern.
-- [x] **N6 Fassade: Warte-State im Gespräch** — wartet der Lauf auf ein Event, beendet die Fassade die
-  Runde mit der Frage (Beschreibung, erlaubte Events, Schema); die nächste Nachricht in der Session wird
-  das Event. `on_wait: ask | block` (v6_story_machine bleibt `block`, writer_jobs zählt jede Antwort als
-  Erfolg).
-- [x] **N7 Freigabe als Agent in der Maschinendatei** (`agent:`-Block) statt eigener Config — erst prüfen,
-  ob die Registry Plugin-Agenten zur Laufzeit annimmt; sonst Knopf, der den YAML-Eintrag zeigt.
-  Geprüft: sie nimmt keine an (neue Agents beim Reload sind ausdrücklich nicht unterstützt; dafür bräuchte der
-  Kern ein `Runtime.declare(name, ToolServerConfig)` samt Materialisierung -- Entscheidung des Nutzers, anderes
-  Ressort). Gebaut ist der Ausweg: das Panel zeigt die Agents einer Maschine, ihre Probleme und einen Eintrag
-  zum Kopieren. Nachtrag 28.09. (Nutzer: bauen): `agent:`-Block in der Maschinendatei; der Kern bekam
-  `Runtime.declare` und fragt `offered_servers` jeder Plugin-Factory in jedem Prozess vor dem Bau ab
-  (angekündigt im comm.txt); ein neuer Block zählt ab dem nächsten Start, das Panel sagt es. Standard
-  `visibility: private` (sonst böte jede SAM mit `allowed_agents: ['*']` eine frisch gespeicherte Maschine
-  ihrem LLM an); ein Config-Reload behält die angebotenen Agents. Probleme des Blocks sind Warnungen (SG111):
-  die Maschine selbst läuft weiter.
-- [x] **N8 Params in der Fassaden-Beschreibung**, `input: json` nimmt ein Objekt.
+- [x] **N2 Keep waiting**: `wait`/`max_wait` on `get_run`; the response on `running` says how to continue;
+  `max_wait` capped.
+- [x] **N3 Results capped**: `out`/ctx values in tool responses truncated, with length information.
+- [x] **N4 `/stategraph-run` with params** (`<id> {json}`).
+- [x] **N5 `catalog` returns real tools** with description and parameters instead of allowlist patterns.
+- [x] **N6 Facade: wait state in the conversation** — if the run waits for an event, the facade ends the
+  round with the question (description, allowed events, schema); the next message in the session becomes
+  the event. `on_wait: ask | block` (a machine driven by a job chain stays `block`, because that chain counts every answer as a
+  success).
+- [x] **N7 Release as an agent in the machine file** (`agent:` block) instead of a config of its own — first check
+  whether the registry accepts plugin agents at runtime; otherwise a button that shows the YAML entry.
+  Checked: it accepts none (new agents on reload are explicitly not supported; for that the
+  core would need a `Runtime.declare(name, ToolServerConfig)` including materialization -- the user's decision, another
+  area). The workaround is built: the panel shows a machine's agents, their problems and an entry
+  to copy. Addendum 2026-09-28 (user: build it): `agent:` block in the machine file; the core got
+  `Runtime.declare` and asks every plugin factory in every process for `offered_servers` before the build
+  (announced to the other workstream); a new block counts from the next start, the panel says so. Default
+  `visibility: private` (otherwise every SAM with `allowed_agents: ['*']` would offer a freshly saved machine
+  to its LLM); a config reload keeps the offered agents. Problems of the block are warnings (SG111):
+  the machine itself keeps running.
+- [x] **N8 Params in the facade description**, `input: json` takes an object.
 
-## Phase 4: Bedienung
+## Phase 4: usability
 
-Stand: gebaut, Review eingearbeitet (Duplizieren schreibt keine importierten Dateien in die beschreibbare Wurzel,
-sondern verweist per Maschinen-id, und ersetzt die ganze `python:`-Zeile; Undo/Redo einer nach dem anderen, auch
-per Taste; ein Formular bekommt sein Getipptes nur zurück, wenn es noch dasselbe zeigt; ein umbenannter State bleibt
-gezeigt; „Neues Event…“ deklariert und wählt aus, statt das Formular zu übergehen; `events:` ohne Wert; Löschen
-vergisst Params und Undo-Schritte; ein Maschinenwechsel beginnt die Runs-Liste neu). Redo auf Wunsch des Nutzers.
+Status: built, review incorporated (duplicating does not write imported files into the writable root,
+but refers by machine id, and replaces the whole `python:` line; undo/redo one at a time, also
+via key; a form gets its typed text back only if it still shows the same thing; a renamed state stays
+shown; "New event…" declares and selects instead of bypassing the form; `events:` without a value; delete
+forgets params and undo steps; switching machines restarts the runs list). Redo at the user's request.
 
-- [x] **U1 Mehrere Apply-Formulare** eines States: Änderungen in einem anderen Formular überleben das
-  Apply (oder "Apply all").
-- [x] **U2 Agent/Tool/`by`/Profil/Maschine als Auswahl** (`<datalist>` aus dem Katalog, neue Route);
-  Feldbeschreibungen sichtbar statt nur im Tooltip.
-- [x] **U3 Undo** für Graph-Edits (letzten Dateitext zurückschreiben); Auto-Layout mit Rückfrage.
-- [x] **U4 Warte-State beantworten**: Knöpfe der angenommenen Events in der Debug-Leiste, Event
-  vorausgewählt, Beschreibung sichtbar.
-- [x] **U5 Runs-Tab**: Result-Karte sichtbar (über der Liste oder Liste im Scroller); ältere Läufe
-  (Cursor), Status-Filter.
-- [x] **U6 Params/Events**: Settings-Formular der Maschine oben, doppelte Tabellen weg, Form als Hilfe;
-  "Neues Event…" im Trigger-Select.
-- [x] **U7 State-Suche** in der Graph-Leiste; Mausrad schwenkt, Strg+Rad zoomt.
-- [x] **U8 Duplizieren** einer (auch mitgelieferten) Maschine unter neuer id.
-- [x] **U9 Schmale Breite**: Maschinen-Liste klappt ein, sobald eine Maschine offen ist; Palette als Menü.
-- [x] **U10 "Nochmal mit diesen Eingaben"** auf der Result-Karte; Params pro Maschine gemerkt.
-- [x] **U11 Namensdialoge** behalten die Eingabe beim Fehler; unveränderter Name ist kein Fehler.
-- [x] **U12 Fehler-Badge klickbar**; Übersicht zeigt alle Probleme.
+- [x] **U1 Several apply forms** of one state: changes in another form survive the
+  apply (or "Apply all").
+- [x] **U2 Agent/tool/`by`/profile/machine as a selection** (`<datalist>` from the catalog, new route);
+  field descriptions visible instead of only in the tooltip.
+- [x] **U3 Undo** for graph edits (write the last file text back); auto-layout with confirmation.
+- [x] **U4 Answer a wait state**: buttons for the accepted events in the debug bar, event
+  preselected, description visible.
+- [x] **U5 Runs tab**: result card visible (above the list or the list in a scroller); older runs
+  (cursor), status filter.
+- [x] **U6 Params/events**: the machine's settings form on top, duplicate tables gone, form as help;
+  "New event…" in the trigger select.
+- [x] **U7 State search** in the graph bar; mouse wheel pans, Ctrl+wheel zooms.
+- [x] **U8 Duplicate** a (also bundled) machine under a new id.
+- [x] **U9 Narrow width**: machine list collapses as soon as a machine is open; palette as a menu.
+- [x] **U10 "Again with these inputs"** on the result card; params remembered per machine.
+- [x] **U11 Name dialogs** keep the input on error; an unchanged name is not an error.
+- [x] **U12 Error badge clickable**; overview shows all problems.
 
-## Phase 5: Features
+## Phase 5: features
 
-Stand: gebaut (Tests in test_plugin_stategraph_backlog_features.py). F1: die End-Reihenfolge einer Join-Politik
-schreibt der Join selbst ins Journal (`<kind>:joined`), weil eine Aktivitätszeile die seq ihres Starts behält.
-F8: die Route `/plugins/<instanz>/callback*` liegt unter der Admin-Regel des Plugins -- öffentlich wird sie erst,
-wenn der Nutzer sie in BEIDEN Schichten öffnet, `auth.endpoint_security` und `auth.plugin_security` (seine
-Sicherheitsentscheidung; Beispiel in der README unter Security). Der Token steht in der Query
-(`/callback?token=...`), weil `network.remote_paths` nur exakte Pfade durchlässt -- ein Token im Pfad wäre von
-einem anderen Rechner aus nie erreichbar; URLs mit dem Token im Pfad (vor dem Umzug ausgegeben) gelten weiter.
-Die Logs maskieren den Token in beiden Formen (Kern, `loggable_path`: 7378256f5 fuer den Pfad, die Query-Form mit
-diesem Umzug, angekuendigt im comm.txt).
-F9: ein Slot läuft nach transientem Fehlschlag höchstens dreimal, fünf Minuten nach dem letzten Ende; die Lease gilt pro
-Instanz und wird beim Stop freigegeben.
+Status: built (tests in test_plugin_stategraph_backlog_features.py). F1: the end order of a join policy
+is written to the journal by the join itself (`<kind>:joined`), because an activity row keeps the seq of its start.
+F8: the route `/plugins/<instance>/callback*` lies under the plugin's admin rule -- it becomes public only
+when the user opens it in BOTH layers, `auth.endpoint_security` and `auth.plugin_security` (their
+security decision; example in the README under Security). The token is in the query
+(`/callback?token=...`), because `network.remote_paths` lets only exact paths through -- a token in the path would
+never be reachable from another machine; URLs with the token in the path (issued before the move) remain valid.
+The logs mask the token in both forms (core, `loggable_path`: the path form earlier, the query form with
+this move, announced to the other workstream).
+F9: a slot runs at most three times after a transient failure, five minutes after the last end; the lease applies per
+instance and is released on stop.
 
-- [x] **F1 Join-Politik** `join: first | {count: n}` für `parallel`, `until:` für `map`.
-- [x] **F2 Prüf-Funktion in der Agent-Aktivität** (`check:` mit `sg`, darf async sein, Feedback an dieselbe
-  Instanz).
-- [x] **F3 Lokale Submaschinen** in derselben Datei (`machines:`), teilen das Companion-Modul.
-- [x] **F4 Timer-State** `after: 10m` (Ablauf = Completion).
-- [x] **F5 `limits.concurrency`** für Blatt-Aktivitäten eines Laufs.
-- [x] **F6 `emit`**: Zwischenstand an Aufrufer und Lauf-Session.
-- [x] **F7 Operator-Reparatur**: `set` auf `out` am exit-/error-Breakpoint.
-- [x] **F8 Callback-URL pro Event** (einmalig, auf Lauf und Event begrenzt) — braucht eigenes
-  Sicherheitsreview.
-- [x] **F9 Zeitpläne** (`schedules:` in der Plugin-Config, `run_key` pro Slot).
+- [x] **F1 Join policy** `join: first | {count: n}` for `parallel`, `until:` for `map`.
+- [x] **F2 Check function in the agent activity** (`check:` with `sg`, may be async, feedback to the same
+  instance).
+- [x] **F3 Local submachines** in the same file (`machines:`), share the companion module.
+- [x] **F4 Timer state** `after: 10m` (expiry = completion).
+- [x] **F5 `limits.concurrency`** for leaf activities of a run.
+- [x] **F6 `emit`**: intermediate state to the caller and the run session.
+- [x] **F7 Operator repair**: `set` on `out` at the exit/error breakpoint.
+- [x] **F8 Callback URL per event** (one-time, limited to run and event) — needs its own
+  security review.
+- [x] **F9 Schedules** (`schedules:` in the plugin config, `run_key` per slot).
 
-## Nachträge
+## Addenda
 
-- [x] **W1 Fork-Hook sieht den ctx am Fork-Punkt** (aus dem v6-Review der Writer-Session, Nutzer 28.09.: bauen):
-  die Ressourcen der Wurzel eines Forks öffnen am Fork-Punkt, nicht am Start; davor lesen sie den Wert der Quelle
-  (Hashes: ein Token), danach tauscht ctx jeden Wert der Quelle -- und der Läufe davor -- gegen den des Forks, vars
-  neu. Journalzeile `fork_resources` {sources, chain [{values, until}], at}: ein Fork eines Forks spielt jeden
-  Schritt mit den Werten, die sein Lauf dort hatte. Der Punkt liegt vor der Arbeit des Schritts (auch vor dem
-  finally des verlassenen States) und nie hinter dem Journal der Quelle; eine Fork-Wurzel ohne Live-Teil
-  (vor dem Punkt geendet, oder ihre Fork-Hooks scheiterten) führt kein finally aus -- die Quelle hat es schon --
-  und schließt nur, was sie selbst geöffnet hat; ein Fork bei Schritt 0 öffnet am Start. Nebenbei: ein Fork eines Forks divergierte am HEAD, wenn ctx einen Wert der
-  Ur-Quelle aus einem Output trug (gemessen).
-
-## Für andere Ressorts
-
-- Writer (`writer_pipeline_v6/machines/v6_story.yaml` `chapter_plan`): jede Runde startet einen neuen
-  Planer ohne `continue`, der Task sagt aber "Dein letzter Plan wurde nicht übernommen" — der neue
-  kennt den Plan nicht. Gemeldet über `tmp/comm.txt`.
+- [x] **W1 Fork hook sees the ctx at the fork point** (from a downstream project's review, user 2026-09-28: build it):
+  the resources of a fork's root open at the fork point, not at the start; before that they read the source's value
+  (hashes: a token), afterwards ctx swaps every value of the source -- and of the runs before it -- for that of the fork, vars
+  anew. Journal row `fork_resources` {sources, chain [{values, until}], at}: a fork of a fork replays every
+  step with the values its run had there. The point lies before the step's work (also before the
+  finally of the abandoned state) and never behind the source's journal; a fork root without a live part
+  (ended before the point, or its fork hooks failed) runs no finally -- the source already did --
+  and closes only what it opened itself; a fork at step 0 opens at the start. Incidentally: a fork of a fork diverged at the HEAD if ctx carried a value of the
+  original source from an output (measured).

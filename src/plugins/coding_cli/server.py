@@ -166,12 +166,21 @@ def _instance_alive(owner: Any) -> bool:
     return isinstance(owner, dict) and alive(owner.get("pid"), owner.get("started"))
 
 
+def _no_claude(command: str) -> str:
+    """Why run_task finds no Claude Code: a name looked up on PATH, or a path that holds none."""
+    if os.path.dirname(command):
+        return f"Claude Code is not installed here: no executable at {command!r} (coding_cli command)"
+    return (f"Claude Code is not installed here: {command!r} is not on this process's PATH (coding_cli command: "
+            "its full path)")
+
+
 class CodingCliServer(SchemaBasedToolServer):
     """Claude Code runs. Offered only when the executable and a workdir are there."""
 
     def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         super().__init__(name, system_config, server_config)
-        self.command = cli.find_claude(str(getattr(server_config, "command", "") or "claude"))
+        self._command_name = str(getattr(server_config, "command", "") or "claude")
+        self.command = cli.find_claude(self._command_name)
         remote = getattr(getattr(system_config, "external_servers", None), "remote_servers", None) or {}
         self.workdirs: dict[str, dict] = {}
         for wname, entry in (getattr(server_config, "workdirs", None) or {}).items():
@@ -466,6 +475,15 @@ class CodingCliServer(SchemaBasedToolServer):
         if user_id not in self.allowed_users:
             return await self._fail(status, "Claude Code runs on the operator's subscription: this user may not "
                                             "start runs (coding_cli allowed_users)")
+        if self.command is None:
+            # A machine calls the tool by name, offered or not; Claude Code installed after the start is found now.
+            self.command = cli.find_claude(self._command_name)
+            if self.command is None:
+                return await self._fail(status, _no_claude(self._command_name))
+        if not self.workdirs:
+            # The same by-name call: every configured workdir was skipped at the start (the log says why).
+            return await self._fail(status, "no usable workdir (coding_cli workdirs: a git repository each -- the "
+                                            "log at the start says why)")
         task = params.get("task")
         if not isinstance(task, str) or not task.strip():
             return await self._fail(status, "task: the complete task as text")

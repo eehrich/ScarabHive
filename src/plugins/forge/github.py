@@ -1,5 +1,5 @@
 """GitHub REST (and GraphQL for review threads), read into the plugin's common
-shapes (docs/konzept.md §2).
+shapes (docs/concept.md §2).
 
 Differences to GitLab that shape this module:
 

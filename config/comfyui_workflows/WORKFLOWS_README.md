@@ -18,8 +18,10 @@
 **Purpose:** Generate ambient/background audio clips.
 
 **Model files required:**
-- `ComfyUI/models/checkpoints/stable_audio/stable_audio_open_1_0.safetensors`
-  - Download: https://huggingface.co/stabilityai/stable-audio-open-1.0
+- `ComfyUI/models/checkpoints/stable-audio-open-1.0.safetensors`
+  - Source: `stabilityai/stable-audio-open-1.0` → `model.safetensors` (rename on copy!)
+- `ComfyUI/models/text_encoders/t5-base.safetensors`
+  - Source: `stabilityai/stable-audio-open-1.0` → `text_encoder/model.safetensors` (rename on copy!)
 
 **Custom nodes:** None
 

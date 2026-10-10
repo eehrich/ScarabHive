@@ -20,4 +20,4 @@ The coder allows `+forge/*`; only the users in `allowed_users` may call the tool
 
 The full manual -- the ticket loop, the policy, the webhook, every tool, what the model sees and the settings --
 is the plugin's guide, `forge.guide`, in the Help panel. Design and measured facts:
-[docs/konzept.md](docs/konzept.md), [docs/facts.md](docs/facts.md).
+[docs/concept.md](docs/concept.md), [docs/facts.md](docs/facts.md).

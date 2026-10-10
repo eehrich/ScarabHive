@@ -139,7 +139,9 @@ class StepMixin:
                     request_id=run.request_id,
                     session_id=run.session_id,
                     llm=st.current_llm,
-                    cancellation_token=run.main_token
+                    cancellation_token=run.main_token,
+                    max_steps=run.max_steps,
+                    final_call=st.final_call,
                 )
             )
 
@@ -265,7 +267,11 @@ class StepMixin:
                     session_id=run.session_id,
                     # The client that produced this response — after a
                     # fallback switch in the retry loop, not the run's base.
-                    llm=st.current_llm
+                    llm=st.current_llm,
+                    # A continuation on the final call is dropped (answer.py);
+                    # the hook reads this before it counts a nudge.
+                    max_steps=run.max_steps,
+                    final_call=st.final_call,
                 )
             )
 

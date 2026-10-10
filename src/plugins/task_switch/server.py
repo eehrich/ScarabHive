@@ -311,12 +311,12 @@ class TaskSwitchServer(SchemaBasedToolServer):
                 if status:
                     await status.error("vars must be a JSON object or dict")
                 return {"status": "error", "error": "vars must be a JSON object (e.g. '{\"book_id\": 42}')"}
-            # Review-Befund: gleiche Hygiene wie im Legacy-Zweig (keine _-/
-            # Framework-Keys als template_vars — sie erben sonst in alle
-            # Sub-Agents), und flache non-internal Keys neben `vars` nicht
-            # still verwerfen, sondern mitnehmen (`vars` gewinnt bei
-            # Konflikt) — ein Mixed-Form-Call meldete sonst success,
-            # obwohl Werte fehlten.
+            # Same hygiene as in the legacy branch (no _-prefixed/framework
+            # keys as template_vars -- they would otherwise be inherited by
+            # all sub-agents), and do not silently drop flat non-internal keys
+            # next to `vars` but take them along (`vars` wins on conflict) --
+            # a mixed-form call otherwise reported success although values
+            # were missing.
             context_vars = {**_clean(params), **_clean(vars_arg)}
         else:
             # Legacy flat form: every non-internal top-level key is a

@@ -1,16 +1,16 @@
-"""Kommt an, was in der Konfiguration steht?
+"""Does what the configuration says actually arrive?
 
-Die Kette plugins.yaml -> Server -> Hook -> CompactionConfig bestand aus drei
-handgefuehrten Listen, die alle denselben Schluessel nennen mussten. Fehlte er
-in einer, verschwand der Wert wortlos: ``config_dict`` ist ein blankes Dict,
-nichts validiert es. Gemessen an der ausgelieferten Konfiguration erreichten
-5 von 25 Einstellungen den Plugin nie -- darunter eine Byte-Grenze, die jemand
-bewusst auf 29 MB gesetzt hatte, um unter einem Provider-Limit zu bleiben, und
-die mit 90 MB lief.
+The chain plugins.yaml -> server -> hook -> CompactionConfig consisted of
+three hand-maintained lists that all had to name the same key. If it was
+missing from one, the value vanished silently: ``config_dict`` is a bare
+dict, nothing validates it. Measured against the shipped configuration, 5 of
+25 settings never reached the plugin -- among them a byte limit that someone
+had deliberately set to 29 MB to stay under a provider limit, and which ran
+at 90 MB.
 
-Diese Tests fahren die ECHTE config/plugins.yaml durch den ECHTEN Server. Ein
-Test gegen selbstgebaute Werte wuerde die Luecke nicht sehen -- er wuerde
-genau die Schluessel setzen, an die der Autor gerade denkt.
+These tests run the REAL config/plugins.yaml through the REAL server. A test
+against hand-built values would not see the gap -- it would set exactly the
+keys the author happens to be thinking of.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def _server(config: dict) -> ContextEngineerServer:
 
 
 def _effective(srv: ContextEngineerServer, session: str = "probe") -> dict:
-    """Was der Plugin am Ende WIRKLICH benutzt, nicht was er gelesen hat."""
+    """What the plugin ends up REALLY using, not what it read."""
     parts = srv._hooks_impl._get_session_components(session)
     cfg = parts["strategy"].config
     values = {f.name: getattr(cfg, f.name) for f in fields(CompactionConfig)}
@@ -62,53 +62,53 @@ def _effective(srv: ContextEngineerServer, session: str = "probe") -> dict:
 
 
 class TestShippedConfigArrives:
-    @pytest.mark.skipif(not PLUGINS_YAML.exists(), reason="kein config/plugins.yaml")
+    @pytest.mark.skipif(not PLUGINS_YAML.exists(), reason="no config/plugins.yaml")
     def test_every_shipped_setting_reaches_the_plugin(self):
-        """Der Test, der die Luecke gefunden haette."""
+        """The test that would have found the gap."""
         shipped = _shipped_config()
-        assert shipped, "der context_engineer-Block ist leer — Test waere gegenstandslos"
+        assert shipped, "the context_engineer block is empty -- the test would be pointless"
 
         srv = _server(shipped)
         effective = _effective(srv)
 
         ignored = []
         for key, want in shipped.items():
-            # storage_path ist der einzige Wert, den die Fixture ueberschreibt.
+            # storage_path is the only value the fixture overrides.
             if key == "storage_path":
                 continue
             got = effective.get(key)
-            # Kein float(): 20000.0 == 20000 gilt ohnehin, und float() brach an
-            # der ersten Zeichenkette ab -- ein Profilname in plugins.yaml haette
-            # diesen Test umgeworfen, statt zu sagen, ob der Wert ankommt.
+            # No float(): 20000.0 == 20000 holds anyway, and float() choked on
+            # the first string -- a profile name in plugins.yaml would have
+            # broken this test instead of saying whether the value arrives.
             if got is None or got != want:
-                ignored.append(f"{key}: gesetzt {want!r}, wirksam {got!r}")
+                ignored.append(f"{key}: set {want!r}, effective {got!r}")
 
         assert not ignored, (
-            "Werte aus config/plugins.yaml erreichen den Plugin nicht:\n  "
+            "Values from config/plugins.yaml do not reach the plugin:\n  "
             + "\n  ".join(ignored))
 
-    @pytest.mark.skipif(not PLUGINS_YAML.exists(), reason="kein config/plugins.yaml")
+    @pytest.mark.skipif(not PLUGINS_YAML.exists(), reason="no config/plugins.yaml")
     def test_the_shipped_config_has_no_dead_keys(self):
-        """Ein Schluessel mit falschem NAMEN landet nirgends.
+        """A key with the wrong NAME lands nowhere.
 
-        `semantic_search` stand monatelang auf true, waehrend der Code
-        `enable_semantic_search` liest. Die Zuordnung ueber Feldnamen faengt
-        das nicht -- ein falscher Name passt eben auf kein Feld.
+        `semantic_search` was set to true for months while the code reads
+        `enable_semantic_search`. Mapping by field name does not catch that --
+        a wrong name simply matches no field.
         """
         dead = unknown_config_keys(_shipped_config())
         assert not dead, (
-            f"diese Schluessel in config/plugins.yaml erreichen nichts: {dead}. "
-            f"Erlaubt sind die Felder von CompactionConfig und {sorted(PLUGIN_LEVEL_KEYS)}")
+            f"these keys in config/plugins.yaml reach nothing: {dead}. "
+            f"Allowed are the fields of CompactionConfig and {sorted(PLUGIN_LEVEL_KEYS)}")
 
     def test_the_schema_defaults_have_no_dead_keys(self):
-        """Dasselbe fuer schema.yaml — dort lagen 11 Leichen aus einem
-        frueheren Entwurf, die bei jedem Start eine Warnung ausgeloest haetten."""
+        """The same for schema.yaml -- it held 11 corpses from an earlier
+        draft that would have triggered a warning on every start."""
         schema = yaml.safe_load((PLUGIN_DIR / "schema.yaml").read_text(encoding="utf-8"))
         dead = unknown_config_keys(schema.get("config", {}))
-        assert not dead, f"tote Schluessel in schema.yaml: {dead}"
+        assert not dead, f"dead keys in schema.yaml: {dead}"
 
     def test_a_misspelled_key_is_reported(self):
-        """Der Riegel selbst: unbekannte Schluessel muessen auffallen."""
+        """The guard itself: unknown keys must stand out."""
         assert unknown_config_keys({"semantic_search": True}) == ["semantic_search"]
         assert unknown_config_keys({"enable_semantic_search": True}) == []
         assert unknown_config_keys({"max_request_bytes": 1}) == []
@@ -166,9 +166,9 @@ class TestShippedConfigArrives:
         assert key in caplog.text and "only plugins.yaml" in caplog.text
 
     def test_plugin_level_keys_are_actually_consumed(self):
-        """PLUGIN_LEVEL_KEYS ist eine Ausnahmeliste — sie darf nicht zur
-        Muellhalde werden. Jeder Eintrag muss einen abweichenden Wert auch
-        wirklich durchreichen, sonst waere er nur von der Warnung befreit."""
+        """PLUGIN_LEVEL_KEYS is an exception list -- it must not become a
+        dumping ground. Every entry must actually pass a differing value
+        through, otherwise it would merely be exempt from the warning."""
         probe = {
             "session_ttl_seconds": 1234,
             "max_tracked_sessions": 7,
@@ -180,17 +180,17 @@ class TestShippedConfigArrives:
         effective = _effective(srv)
         for key, want in probe.items():
             assert effective[key] == want, (
-                f"{key} steht in PLUGIN_LEVEL_KEYS, wird aber nicht benutzt "
-                f"(gesetzt {want}, wirksam {effective[key]})")
-        # storage_path wird von der Fixture ueberschrieben; separat geprueft.
+                f"{key} is in PLUGIN_LEVEL_KEYS but is not used "
+                f"(set {want}, effective {effective[key]})")
+        # storage_path is overridden by the fixture; checked separately.
         assert "storage_path" in PLUGIN_LEVEL_KEYS
 
 
 class TestPerAgentOverrides:
     def test_an_override_works_for_every_field(self):
-        """Die ersetzte Handliste kannte drei Felder nicht (store_media_*,
-        media_store_ttl_seconds, media_store_max_files) — ein Agent, der die
-        setzte, wurde stillschweigend ignoriert."""
+        """The replaced hand-kept list did not know three fields (store_media_*,
+        media_store_ttl_seconds, media_store_max_files) -- an agent that
+        set them was silently ignored."""
         srv = _server({})
         for f in fields(CompactionConfig):
             if f.type not in ("int", "float"):
@@ -200,24 +200,22 @@ class TestPerAgentOverrides:
                 f"ov-{f.name}", overrides={f.name: probe})
             got = getattr(parts["strategy"].config, f.name)
             assert got == probe, (
-                f"per-Agent-Override fuer {f.name} wurde verschluckt "
-                f"(gesetzt {probe}, wirksam {got})")
+                f"per-agent override for {f.name} was swallowed "
+                f"(set {probe}, effective {got})")
 
 
 class TestSemanticSearchActuallyRuns:
-    """Semantische Suche muss suchen, nicht nur teuer sein.
+    """Semantic search must actually search, not merely be expensive.
 
-    ChromaDB antwortet PRO ANFRAGE: {"ids": [[id, ...]]}. Diese verschachtelte
-    Form an SQLite zu binden gibt "Error binding parameter 1: type 'list' is
-    not supported" — und der umschliessende except machte daraus einen stillen
-    Rueckfall auf die Textsuche. Die semantische Suche lief also nie, waehrend
-    jeder Archiv-Schreibvorgang ~78 ms Einbettung fuer einen Index bezahlte,
-    den niemand las.
+    ChromaDB answers PER QUERY: {"ids": [[id, ...]]}. Binding this nested
+    shape to SQLite gives "Error binding parameter 1: type 'list' is not
+    supported" -- and the surrounding except turned that into a silent
+    fallback to text search. So semantic search never ran, while every
+    archive write paid ~78 ms of embedding for an index nobody read.
 
-    Monatelang unsichtbar, weil der Config-Schluessel falsch geschrieben war
-    (`semantic_search` statt `enable_semantic_search`) und die Funktion damit
-    nie lief. Ein Schalter, der nichts einschaltet, verdeckt einen kaputten
-    Motor.
+    Invisible for months because the config key was misspelled
+    (`semantic_search` instead of `enable_semantic_search`), so the feature
+    never ran. A switch that turns nothing on hides a broken engine.
     """
 
     @pytest.fixture
@@ -228,7 +226,7 @@ class TestSemanticSearchActuallyRuns:
                            enable_semantic_search=True,
                            vector_store_path=tmp_path / "v")
         if not a.enable_semantic_search:
-            pytest.skip("kein Vektor-Backend verfuegbar")
+            pytest.skip("no vector backend available")
         for text in (
             "Der Blitter kopiert Speicherbloecke ohne die CPU zu belasten.",
             "Kapitel 3 handelt von der Reise durch die Wueste.",
@@ -240,10 +238,10 @@ class TestSemanticSearchActuallyRuns:
         return a
 
     def test_it_finds_by_meaning_not_by_word(self, archive, caplog):
-        """Der Grafikchip-Satz teilt KEIN Wort mit der Anfrage.
+        """The graphics-chip sentence shares NO word with the query.
 
-        Genau daran haengt der Beweis: waere der Rueckfall auf die Textsuche
-        noch aktiv, koennte dieser Treffer nicht auftauchen.
+        The proof hangs on exactly that: were the fallback to text search
+        still active, this hit could not show up.
         """
         import logging
 
@@ -252,10 +250,10 @@ class TestSemanticSearchActuallyRuns:
                                   session_id="s", limit=2, use_semantic=True)
 
         assert not [r for r in caplog.records if "falling back to text" in r.message], (
-            "die semantische Suche ist auf die Textsuche zurueckgefallen — "
-            "sie laeuft also gar nicht")
+            "semantic search fell back to text search -- "
+            "so it is not running at all")
 
         found = " ".join(m.content for m in hits)
         assert "Grafikchip" in found, (
-            f"nur woertliche Treffer gefunden: {[m.content[:40] for m in hits]}")
+            f"only literal hits found: {[m.content[:40] for m in hits]}")
         assert "Pferd" not in found and "Rechnung" not in found

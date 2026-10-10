@@ -832,8 +832,8 @@ class TestLayeredCompactionStrategy:
         assert "reasoning_details" not in out[3], "a turn after the change kept stale artifacts"
 
     async def test_no_mutation_keeps_reasoning_artifacts(self, strategy_components):
-        """Ohne Mutation bleiben reasoning_details unangetastet — kein
-        unnötiges Re-Reasoning."""
+        """Without a mutation reasoning_details stay untouched — no
+        needless re-reasoning."""
         strategy = strategy_components["strategy"]
         messages = [
             {"role": "user", "content": "hi"},
@@ -3206,13 +3206,13 @@ class TestSessionEvictionSkipsActiveCompactions:
 
 
 class TestRestorationBlockNotDuplicated:
-    """Der "Stored Information"-Block muss ERSETZT, nicht angehaeuft werden.
+    """The "Stored Information" block must be REPLACED, not accumulated.
 
-    Regression: die kompaktierten Messages werden persistiert, also ist die
-    Injektion des letzten Turns beim naechsten schon Teil der Historie. Ohne
-    Entfernen wuchs sie mit -- gemessen 103 Kopien in 201 Messages nach 109
-    Aufrufen, und die dadurch wandernde Einfuegestelle brach den
-    Prompt-Cache in 103 von 108 Turns.
+    Regression: the compacted messages are persisted, so the injection of the
+    last turn is already part of the history on the next one. Without removal
+    it grew -- measured 103 copies in 201 messages after 109 calls, and the
+    insertion point wandering because of it broke the prompt cache in 103 of
+    108 turns.
     """
 
     def _msgs(self, n_blocks: int):
@@ -3230,7 +3230,7 @@ class TestRestorationBlockNotDuplicated:
         return out
 
     def _reinject(self, messages, text: str):
-        """Spiegelt die Injektionslogik aus ``engineer_context``."""
+        """Mirrors the injection logic of ``engineer_context``."""
         from agent_system.llm.models import ChatMessage
         from plugins.context_engineer.hooks import _RESTORATION_MARKER
 
@@ -3259,26 +3259,26 @@ class TestRestorationBlockNotDuplicated:
         msgs = self._msgs(1)
         for turn in range(10):
             msgs = self._reinject(msgs, f"\n# Context Engineer - Stored Information\n\nturn {turn}")
-            assert self._count(msgs) == 1, f"Turn {turn}: Block dupliziert"
+            assert self._count(msgs) == 1, f"Turn {turn}: block duplicated"
 
     def test_insert_position_stays_stable(self):
-        """Die Einfuegestelle darf nicht mit jedem Turn wandern — sonst ist
-        alles dahinter kein Byte-Praefix mehr."""
+        """The insertion point must not wander with every turn -- otherwise
+        everything behind it is no longer a byte prefix."""
         msgs = self._msgs(0)
-        positionen = set()
+        positions = set()
         for turn in range(5):
             msgs = self._reinject(msgs, "\n# Context Engineer - Stored Information\n\nx")
-            positionen.add(next(
+            positions.add(next(
                 i for i, m in enumerate(msgs)
                 if getattr(m, "injected_by", None) is not None
             ))
             msgs.append(msgs[-1].__class__(role="user", content="weiter"))
-        assert positionen == {1}, f"Einfuegestelle wanderte: {sorted(positionen)}"
+        assert positions == {1}, f"insertion point wandered: {sorted(positions)}"
 
     def test_legacy_unmarked_blocks_are_cleaned(self):
-        """Sessions von vor dem Marker tragen unmarkierte Kopien in ihrer
-        persistierten Historie — die muessen ueber die Ueberschrift ebenfalls
-        verschwinden, sonst bleiben sie dort fuer immer stehen."""
+        """Sessions from before the marker carry unmarked copies in their
+        persisted history -- those must disappear via the heading as well,
+        otherwise they stay there forever."""
         from agent_system.llm.models import ChatMessage
         from plugins.context_engineer.hooks import (
             _RESTORATION_HEADER,
@@ -3288,11 +3288,11 @@ class TestRestorationBlockNotDuplicated:
         msgs = [ChatMessage(role="system", content="Du bist ein Agent.")]
         msgs += [
             ChatMessage(role="system", content=f"\n{_RESTORATION_HEADER}\n\nalt {i}")
-            for i in range(5)          # unmarkiert, wie vor dem Fix
+            for i in range(5)          # unmarked, as before the fix
         ]
         msgs.append(ChatMessage(role="user", content="Auftrag"))
 
-        # Entfern-Logik aus engineer_context
+        # Removal logic from engineer_context
         for i in range(len(msgs) - 1, -1, -1):
             m = msgs[i]
             if getattr(m, "injected_by", None) == _RESTORATION_MARKER:
@@ -3305,7 +3305,7 @@ class TestRestorationBlockNotDuplicated:
         assert not any(
             isinstance(m.content, str) and _RESTORATION_HEADER in m.content
             for m in msgs
-        ), "Alt-Kopien ohne Marker blieben stehen"
+        ), "old copies without a marker were left in place"
         assert [m.role for m in msgs] == ["system", "user"]
 
 

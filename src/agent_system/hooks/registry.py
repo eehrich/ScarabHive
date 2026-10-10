@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import inspect
 import logging
 from collections import defaultdict
@@ -317,8 +318,10 @@ class HookRegistry:
                         # Whose call it is is no hook's to change, and a hook
                         # that rebuilds the context field by field drops the
                         # fields it does not name (context_engineer and
-                        # context_summarizer do).
+                        # context_summarizer do). The step budget likewise.
                         current_context.user_id = context.user_id
+                        current_context.max_steps = context.max_steps
+                        current_context.final_call = context.final_call
 
                         # Merge hook result metadata into context metadata
                         if result.metadata:
@@ -542,41 +545,21 @@ class HookRegistry:
         Note: Some fields (agent, llm, cancellation_token) are copied by reference since they're
         stateful objects that hooks should not modify directly.
         """
-        return HookContext(
-            hook_type=context.hook_type,
-            request_id=context.request_id,
-            session_id=context.session_id,
-            agent=context.agent,  # Reference copy
-            agent_name=context.agent_name,
+        # replace(): every field not named here is carried over by reference
+        # (agent, llm, cancellation_token, tools_schema -- read-only for hooks;
+        # the rest immutable). A field list spelled out in full dropped each
+        # new HookContext field until someone added it here too.
+        return dataclasses.replace(
+            context,
             messages=copy.deepcopy(context.messages) if context.messages else None,
-            # Reference copy on purpose (read-only for hooks). Omitting it
-            # dropped the per-request schema for EVERY hook, which silently
-            # pushed consumers onto the shared, racy agent._current_tools_schema.
-            tools_schema=context.tools_schema,
             llm_response=copy.deepcopy(context.llm_response) if context.llm_response else None,
             tool_call=copy.deepcopy(context.tool_call) if context.tool_call else None,
             tool_result=copy.deepcopy(context.tool_result) if context.tool_result else None,
             metadata=copy.deepcopy(context.metadata),
             hook_config=copy.deepcopy(context.hook_config) if context.hook_config else {},
-            target_hook_name=context.target_hook_name,
-            step=context.step,
-            llm=context.llm,  # Reference copy
-            cancellation_token=context.cancellation_token,  # Reference copy
-            # LLM-client-level fields (for pre_llm_request / post_llm_response hooks)
             llm_request_payload=copy.deepcopy(context.llm_request_payload) if context.llm_request_payload else None,
             llm_response_data=copy.deepcopy(context.llm_response_data) if context.llm_response_data else None,
-            llm_provider=context.llm_provider,
-            llm_model=context.llm_model,
-            llm_request_url=context.llm_request_url,
-            llm_duration_ms=context.llm_duration_ms,
-            llm_error=context.llm_error,
             llm_usage=copy.deepcopy(context.llm_usage) if context.llm_usage else None,
-            llm_finish_reason=context.llm_finish_reason,
-            llm_is_streaming=context.llm_is_streaming,
-            reasoning_text=context.reasoning_text,  # String is immutable
-            reasoning_chars=context.reasoning_chars,
-            previous_reasoning_chars=context.previous_reasoning_chars,
-            user_id=context.user_id,
         )
 
     # Keys managed by the hook system itself — stripped from hook_config

@@ -16,18 +16,18 @@ from plugins.context_engineer.archival_memory import ArchivalMemory
 
 
 class TestMediaEvictionBooksWhatItRemoved:
-    """Der gemeinsame Rauswurf zaehlt, was er entfernt — und nur das.
+    """The shared eviction counts what it removes -- and only that.
 
-    Beide Zusicherungen hier waren ungeprueft, solange jede Auswahlregel ihren
-    eigenen Rauswurf hatte: die vorhandenen Byte-Tests werden schon von Layer 1
-    gruen gemacht, das den Zaehler auf einem anderen Weg fuellt. Eine Mutation
-    im Medien-Rauswurf selbst (Bytes nicht hochzaehlen, Auswahl umdrehen) blieb
-    dadurch unsichtbar — und ``media_bytes_saved`` entscheidet in ``_finalize``,
-    ob Reasoning-Artefakte verworfen werden. Ein zu kleiner Zaehler heisst
-    spaeter HTTP 400.
+    Both assertions here were unchecked as long as each selection rule had
+    its own eviction: the existing byte tests are already made green by
+    Layer 1, which fills the counter by another route. A mutation in the
+    media eviction itself (not counting up the bytes, reversing the
+    selection) therefore stayed invisible -- and ``media_bytes_saved``
+    decides in ``_finalize`` whether reasoning artefacts are dropped. A
+    counter that is too small later means HTTP 400.
 
-    Die zwei Nutzlasten sind ABSICHTLICH verschieden gross: damit sagt die
-    Byte-Zahl allein schon, WELCHE der beiden rausgeflogen ist.
+    The two payloads are DELIBERATELY of different size: so the byte count
+    alone says WHICH of the two was evicted.
     """
 
     OLD_PAYLOAD = 3000
@@ -35,12 +35,12 @@ class TestMediaEvictionBooksWhatItRemoved:
 
     @pytest.fixture
     def strategy(self, tmp_path):
-        """Nur der Medien-Rauswurf laeuft: die Token-Layer sind unerreichbar
-        hochgesetzt, sonst faerbt Layer 1 die Zaehler mit ein.
+        """Only the media eviction runs: the token layers are raised out of
+        reach, otherwise Layer 1 colours the counters too.
 
-        MIT ``media_store``: ohne ihn faellt ``_store_inline_media`` sofort
-        heraus, und der ``store=True``-Zweig — der einzige, in dem Daten
-        verloren gehen koennen — lief in dieser Klasse nie mit."""
+        WITH ``media_store``: without it ``_store_inline_media`` bails out
+        immediately, and the ``store=True`` branch -- the only one in which
+        data can be lost -- never ran in this class."""
         return LayeredCompactionStrategy(
             tool_store=ToolResultStore(tmp_path / "tools.db"),
             core_memory=CoreMemory(tmp_path / "memory.json"),
@@ -60,10 +60,10 @@ class TestMediaEvictionBooksWhatItRemoved:
                     "source": {"type": "base64", "media_type": "audio/wav",
                                "data": "A" * size}}
         return [
-            {"role": "user", "content": [{"type": "text", "text": "alt"},
+            {"role": "user", "content": [{"type": "text", "text": "old"},
                                          audio(self.OLD_PAYLOAD)]},
-            {"role": "assistant", "content": "verstanden"},
-            {"role": "user", "content": [{"type": "text", "text": "neu"},
+            {"role": "assistant", "content": "understood"},
+            {"role": "user", "content": [{"type": "text", "text": "new"},
                                          audio(self.NEW_PAYLOAD)]},
         ]
 
@@ -72,58 +72,58 @@ class TestMediaEvictionBooksWhatItRemoved:
         result = await strategy.compact(self._conversation(), current_tokens=100)
 
         assert result.media_always_compacted == 1, (
-            "nichts wurde kompaktiert — der Test wuerde nichts pruefen")
+            "nothing was compacted -- the test would check nothing")
         assert result.media_bytes_saved == self.OLD_PAYLOAD, (
-            "der Byte-Zaehler passt zu keiner der beiden Nutzlasten "
-            f"(alt={self.OLD_PAYLOAD}, neu={self.NEW_PAYLOAD})")
+            "the byte counter matches neither payload "
+            f"(old={self.OLD_PAYLOAD}, new={self.NEW_PAYLOAD})")
 
     @pytest.mark.asyncio
     async def test_the_newest_message_keeps_its_media(self, strategy):
-        """Die Richtung der Auswahl. Andersherum bleibt die Zahl der Hinweise
-        gleich — nur das Falsche ist weg, und der Agent sieht die Datei nicht
-        mehr, ueber die gerade gesprochen wird."""
+        """The direction of the selection. Reversed, the number of hints
+        stays the same -- only the wrong one is gone, and the agent no longer
+        sees the file that is being talked about right now."""
         result = await strategy.compact(self._conversation(), current_tokens=100)
 
         kinds = [[part.get("type") for part in msg["content"]]
                  for msg in result.modified_messages
                  if isinstance(msg.get("content"), list)]
         assert kinds[0] == ["text", "text"], (
-            f"die aeltere Nachricht haelt ihr Audio fest: {kinds[0]}")
+            f"the older message holds on to its audio: {kinds[0]}")
         assert kinds[1] == ["text", "audio"], (
-            f"die neueste Nachricht hat ihr Audio verloren: {kinds[1]}")
+            f"the newest message lost its audio: {kinds[1]}")
 
     @pytest.mark.asyncio
     async def test_the_payload_reaches_the_disk_before_it_leaves_the_context(
             self, strategy, tmp_path):
-        """Der ``store=True``-Zweig, der ohne ``media_store`` nie lief.
+        """The ``store=True`` branch, which never ran without ``media_store``.
 
-        Inline-Daten sind das einzige, was die Kompaktion entfernt und niemand
-        neu herleiten kann. Bleibt die Kopie aus, ist der Hinweis eine Adresse
-        ins Leere — genau der Fall, den ``_media_hint`` verhindern soll."""
+        Inline data is the one thing compaction removes that nobody can
+        derive again. If the copy is missing, the hint is an address into the
+        void -- exactly the case ``_media_hint`` is meant to prevent."""
         result = await strategy.compact(self._conversation(), current_tokens=100,
                                         session_id="s")
 
-        assert result.media_always_compacted == 1, "nichts kompaktiert"
+        assert result.media_always_compacted == 1, "nothing compacted"
         stored = [p for p in (tmp_path / "media").rglob("*")
                   if p.is_file() and p.suffix != ".json"]
         assert len(stored) == 1, (
-            f"die Nutzlast liegt nirgends auf Platte: {stored}")
-        # Der Store dekodiert das base64 vor dem Schreiben — verglichen wird
-        # deshalb der Rundweg, nicht der Rohtext.
+            f"the payload is nowhere on disk: {stored}")
+        # The store decodes the base64 before writing -- so the round trip
+        # is compared, not the raw text.
         import base64
         assert base64.b64encode(stored[0].read_bytes()).decode() == \
             "A" * self.OLD_PAYLOAD, (
-                "die abgelegte Datei ist nicht die entfernte Nutzlast")
+                "the stored file is not the removed payload")
 
 
 class TestNoHintPointsIntoTheVoid:
-    """Jeder ``read(ref=...)``-Auftrag in einem Hinweis muss auflösbar sein.
+    """Every ``read(ref=...)`` order in a hint must be resolvable.
 
-    Der Rauswurf beim Deduplizieren setzte fuer Items ohne Pfad die Adresse
-    ``"N/A"`` ein und haengte den Auftrag trotzdem an — ``read(ref="N/A")``,
-    ein Aufruf, der nicht gelingen kann. Mit ``"path": ""`` wurde daraus
-    ``read(ref="")``, ein ausdruecklicher Fehlerpfad. Geprueft wird deshalb
-    nicht der Wortlaut, sondern ob die genannte Adresse existiert.
+    The eviction during deduplication put the address ``"N/A"`` in for items
+    without a path and appended the order anyway -- ``read(ref="N/A")``, a
+    call that cannot succeed. With ``"path": ""`` that became
+    ``read(ref="")``, an explicit error path. So what is checked is not the
+    wording but whether the named address exists.
     """
 
     @staticmethod
@@ -158,9 +158,9 @@ class TestNoHintPointsIntoTheVoid:
 
     @pytest.mark.asyncio
     async def test_a_duplicate_without_a_path_gets_no_restore_order(self, tmp_path):
-        """Beim Deduplizieren liegt nichts auf Platte — absichtlich, die
-        Nutzlast steht weiter unten noch im Gespraech. Also darf der Hinweis
-        auch keine Adresse nennen."""
+        """Deduplication puts nothing on disk -- deliberately, the payload
+        still stands further down in the conversation. So the hint must not
+        name an address either."""
         strategy = self._strategy(tmp_path, deduplicate_media=True,
                                   always_compact_media_keep_last=0)
         same = {"type": "image", "data": "Z" * 5000}
@@ -176,18 +176,18 @@ class TestNoHintPointsIntoTheVoid:
                                         session_id="s")
 
         assert result.media_deduplicated == 2, (
-            f"nichts dedupliziert — der Test wuerde nichts pruefen "
+            f"nothing deduplicated -- the test would check nothing "
             f"({result.media_deduplicated})")
         hints = self._hints(result.modified_messages)
-        assert len(hints) == 2, f"kein Hinweis hinterlassen: {hints}"
+        assert len(hints) == 2, f"no hint left behind: {hints}"
         assert self._refs(result.modified_messages) == [], (
-            f"der Hinweis nennt eine Adresse, die es nicht gibt: {hints}")
+            f"the hint names an address that does not exist: {hints}")
 
     @pytest.mark.asyncio
     async def test_the_byte_limit_layer_leaves_a_reachable_address(self, tmp_path):
-        """Die aggressivste Schicht — sie feuert bei 90 MB, also wenn die
-        Nutzlast am groessten ist — gab als einzige kein ``store=True`` weiter:
-        Inline-Daten weg, keine Kopie, keine Adresse."""
+        """The most aggressive layer -- it fires at 90 MB, i.e. when the
+        payload is largest -- was the only one that did not pass on
+        ``store=True``: inline data gone, no copy, no address."""
         strategy = self._strategy(tmp_path, max_request_bytes=50000,
                                   deduplicate_media=False,
                                   always_compact_media_keep_last=0)
@@ -197,30 +197,29 @@ class TestNoHintPointsIntoTheVoid:
                  "source": {"type": "base64", "media_type": "audio/wav",
                             "data": "QQ==" * 30000}}]},
             {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "und?"},
+            {"role": "user", "content": "and?"},
         ]
 
         result = await strategy.compact(messages, current_tokens=100,
                                         session_id="s")
 
         assert "B" in result.layers_applied, (
-            f"die Byte-Schicht lief gar nicht: {result.layers_applied}")
+            f"the byte layer did not run at all: {result.layers_applied}")
         refs = self._refs(result.modified_messages)
         assert len(refs) == 1, (
-            f"kein wiederherstellbarer Hinweis: "
+            f"no restorable hint: "
             f"{self._hints(result.modified_messages)}")
         assert Path(refs[0]).is_file(), (
-            f"der Hinweis zeigt auf eine Datei, die nicht existiert: {refs[0]}")
+            f"the hint points at a file that does not exist: {refs[0]}")
 
 
 class TestEveryEvictedAttachmentLeavesATrace:
-    """Ein Tool-Ergebnis traegt im Normalfall MEHRERE Anhaenge.
+    """A tool result normally carries SEVERAL attachments.
 
-    Bei JSON-Inhalt schrieb jeder Hinweis in denselben Schluessel
-    ``_media_compacted`` und ueberschrieb den vorherigen: von zwei Anhaengen
-    ueberlebte einer, der andere verschwand spurlos aus dem Request. Bei
-    Klartext wurden immer beide angehaengt — dieselbe Nachricht, zwei
-    Ergebnisse.
+    With JSON content every hint wrote into the same key
+    ``_media_compacted`` and overwrote the previous one: of two attachments
+    one survived, the other vanished without a trace from the request. With
+    plain text both were always appended -- the same message, two results.
     """
 
     def _strategy(self, tmp_path):
@@ -245,10 +244,10 @@ class TestEveryEvictedAttachmentLeavesATrace:
                  {"type": "audio", "path": "/x/one.wav"},
                  {"type": "image", "path": "/x/two.png"},
              ]},
-            {"role": "user", "content": "und?"},
+            {"role": "user", "content": "and?"},
         ]
 
-    @pytest.mark.parametrize("content", ['{"ok": true}', "zwei dateien geholt"],
+    @pytest.mark.parametrize("content", ['{"ok": true}', "fetched two files"],
                              ids=["json", "plain"])
     @pytest.mark.asyncio
     async def test_both_attachments_are_still_named_after_eviction(
@@ -259,20 +258,20 @@ class TestEveryEvictedAttachmentLeavesATrace:
 
         tool_msg = result.modified_messages[0]
         assert result.media_compacted_after_event == 2, (
-            "nicht beide Anhaenge sind rausgeflogen — der Test prueft nichts")
+            "not both attachments were evicted -- the test checks nothing")
         assert tool_msg["multimodal_content"] == []
         assert "one.wav" in tool_msg["content"], (
-            f"der erste Anhang ist spurlos verschwunden: {tool_msg['content']}")
+            f"the first attachment vanished without a trace: {tool_msg['content']}")
         assert "two.png" in tool_msg["content"], (
-            f"der zweite Anhang ist spurlos verschwunden: {tool_msg['content']}")
+            f"the second attachment vanished without a trace: {tool_msg['content']}")
 
 
 class TestVideoIsAMediumLikeTheOthers:
-    """``_MEDIA_TYPES`` fuehrt ``video``, zwei Stellen zaehlten es nicht mit.
+    """``_MEDIA_TYPES`` lists ``video``, yet two places did not count it.
 
-    Beide Male eine hartkodierte Kopie der Typenliste: die Byte-Schaetzung sah
-    Inline-Video als 0 Bytes (die 90-MB-Notschicht feuert nie, der Provider
-    lehnt ab), und Layer 1 liess die volle Nutzlast stehen.
+    Both times a hard-coded copy of the type list: the byte estimate saw
+    inline video as 0 bytes (the 90 MB emergency layer never fires, the
+    provider rejects), and Layer 1 left the full payload in place.
     """
 
     def _strategy(self, tmp_path, **cfg):
@@ -291,8 +290,8 @@ class TestVideoIsAMediumLikeTheOthers:
                            "data": "V" * size}}
 
     def test_inline_video_weighs_the_same_as_inline_image(self, tmp_path):
-        """Differenziell statt gegen eine Zahl: dieselbe Nutzlast, einmal als
-        Bild, einmal als Video — die Schaetzung darf nicht davon abhaengen."""
+        """Differential instead of against a number: the same payload, once
+        as an image, once as a video -- the estimate must not depend on it."""
         strategy = self._strategy(tmp_path)
         as_video = strategy._estimate_request_bytes(
             [{"role": "user", "content": [self._inline("video", "video/mp4", 100000)]}])
@@ -300,7 +299,7 @@ class TestVideoIsAMediumLikeTheOthers:
             [{"role": "user", "content": [self._inline("image", "image/png", 100000)]}])
 
         assert as_video == as_image, (
-            f"Inline-Video zaehlt nicht in die Byte-Schranke "
+            f"inline video does not count towards the byte limit "
             f"(video={as_video}, image={as_image})")
 
     @pytest.mark.asyncio
@@ -310,7 +309,7 @@ class TestVideoIsAMediumLikeTheOthers:
                                   always_compact_media_keep_last=0)
         messages = [
             {"role": "user", "content": [self._inline("video", "video/mp4", 80000)]},
-            {"role": "user", "content": "was war das?"},
+            {"role": "user", "content": "what was that?"},
         ]
 
         result = await strategy.compact(messages, current_tokens=10**6,
@@ -318,15 +317,15 @@ class TestVideoIsAMediumLikeTheOthers:
 
         kinds = [p.get("type") for p in result.modified_messages[0]["content"]]
         assert kinds == ["text"], (
-            f"Layer 1 behaelt die volle Video-Nutzlast: {kinds}")
+            f"Layer 1 keeps the full video payload: {kinds}")
 
 
 class TestTheSubjectSurvivesAnUnexpectedType:
-    """``multimodal_content`` verspricht keinen ``type``-String.
+    """``multimodal_content`` does not promise a ``type`` string.
 
-    Der Betreff kam aus ``item["type"].title()``: bei einem Nicht-String flog
-    die ganze Kompaktion mit ``AttributeError`` auseinander, und ``image_url``
-    wurde zu „Image_Url" — ein Wort, mit dem das Modell nichts anfangen kann.
+    The subject came from ``item["type"].title()``: with a non-string the
+    whole compaction blew up with ``AttributeError``, and ``image_url``
+    became "Image_Url" -- a word the model can do nothing with.
     """
 
     @pytest.mark.asyncio
@@ -345,7 +344,7 @@ class TestTheSubjectSurvivesAnUnexpectedType:
         messages = [
             {"role": "tool", "tool_call_id": "c", "name": "g", "content": "{}",
              "multimodal_content": [{"type": {"weird": 1}, "path": "/x/a.bin"}]},
-            {"role": "user", "content": "und?"},
+            {"role": "user", "content": "and?"},
         ]
 
         result = await strategy.compact(messages, current_tokens=100, force=True,
@@ -353,7 +352,7 @@ class TestTheSubjectSurvivesAnUnexpectedType:
                                         session_id="s")
 
         assert result.media_compacted_after_event == 1, (
-            "der Anhang blieb liegen — der Test prueft nichts")
+            "the attachment was left in place -- the test checks nothing")
         assert "a.bin" in result.modified_messages[0]["content"]
 
 

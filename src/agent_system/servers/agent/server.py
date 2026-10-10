@@ -345,10 +345,8 @@ class Agent(
                 "auto_unblock_after_steps": loop_config.auto_unblock_after_steps,
             }
         else:
-            # Disabled config — detector will never trigger
-            self._loop_detection_config = {
-                "exact_match_threshold": 9999,
-            }
+            # Disabled: the detector does nothing (no note, no block, no stuck signal)
+            self._loop_detection_config = {"enabled": False}
             if loop_config and not loop_config.enabled:
                 logger.debug(f"[{self.name}] Loop detection disabled via config")
 

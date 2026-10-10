@@ -897,7 +897,7 @@ class TestInjectParams:
     def _agent_with_keyed_tool(self):
         a = FakeAgent()
         a.add_tool(
-            "writer_issues_op",
+            "issues_op",
             lambda p: {"status": "ok", "seen_key": p.get("write_key")},
             self.KEY_SCHEMA,
         )
@@ -909,12 +909,12 @@ class TestInjectParams:
 
     @pytest.mark.asyncio
     async def test_injects_omitted_required_param(self):
-        # Script laesst write_key weg — Injection VOR Schema-Validierung
+        # The script leaves write_key out -- injection runs BEFORE schema validation
         agent = self._agent_with_keyed_tool()
         server = make_server(
-            inject_params={"writer_issues_op": {"write_key": "SECRET_OK"}})
+            inject_params={"issues_op": {"write_key": "SECRET_OK"}})
         res = await run(server, agent,
-                        'result = call_tool("writer_issues_op", operation="x")')
+                        'result = call_tool("issues_op", operation="x")')
         assert res["status"] == "ok"
         assert agent.dispatched[0][1]["write_key"] == "SECRET_OK"
         # A secret is merged after the tool hooks: none of them logs it or
@@ -923,14 +923,14 @@ class TestInjectParams:
 
     @pytest.mark.asyncio
     async def test_config_overrides_garbled_script_value(self):
-        # Der v6-Befund: LLM tippt den Key transponiert — Config gewinnt
+        # A model types the key with transposed characters -- the config wins
         agent = self._agent_with_keyed_tool()
         server = make_server(
-            inject_params={"writer_issues_op": {"write_key": "SECRET_OK"}})
+            inject_params={"issues_op": {"write_key": "SECRET_OK"}})
         res = await run(
             server, agent,
-            'result = call_tool("writer_issues_op", operation="x", '
-            'write_key="WC_x9K_mP_falsch")')
+            'result = call_tool("issues_op", operation="x", '
+            'write_key="MISTYPED_KEY")')
         assert res["status"] == "ok"
         assert agent.dispatched[0][1]["write_key"] == "SECRET_OK"
 
@@ -938,7 +938,7 @@ class TestInjectParams:
     async def test_non_matching_tool_not_injected(self):
         agent = self._agent_with_keyed_tool()
         server = make_server(
-            inject_params={"writer_issues_op": {"write_key": "SECRET_OK"}})
+            inject_params={"issues_op": {"write_key": "SECRET_OK"}})
         res = await run(server, agent, 'result = call_tool("other_tool")')
         assert res["status"] == "ok"
         assert "write_key" not in agent.dispatched[0][1]
@@ -947,8 +947,8 @@ class TestInjectParams:
     async def test_fnmatch_pattern(self):
         agent = self._agent_with_keyed_tool()
         server = make_server(
-            inject_params={"writer_*": {"write_key": "SECRET_OK"}})
+            inject_params={"issues_*": {"write_key": "SECRET_OK"}})
         res = await run(server, agent,
-                        'result = call_tool("writer_issues_op", operation="x")')
+                        'result = call_tool("issues_op", operation="x")')
         assert res["status"] == "ok"
         assert agent.dispatched[0][1]["write_key"] == "SECRET_OK"

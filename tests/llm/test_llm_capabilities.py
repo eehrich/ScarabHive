@@ -28,10 +28,10 @@ class TestModelCapabilities:
     """Test ModelCapabilities class."""
 
     def test_default_capabilities(self):
-        """Die Defaults kommen seit dem Zusammenlegen (2026-08-22) aus
-        ModelCapabilitiesConfig — es gab zwei Klassen mit denselben Feldern und
-        unterschiedlichen Defaults (tools: hier False, dort True). Massgeblich
-        ist die Config-Seite: mit ihr werden die Modell-Eintraege validiert."""
+        """Since the merge (2026-08-22) the defaults come from
+        ModelCapabilitiesConfig -- there were two classes with the same fields and
+        different defaults (tools: False here, True there). The config side is
+        authoritative: it is what the model entries are validated with."""
         caps = ModelCapabilities()
         assert caps.tools is True
         assert caps.image_input is False
@@ -56,9 +56,9 @@ class TestModelCapabilities:
 
 class TestTheRegistryComesFromTheMergedConfig:
     def test_it_is_filled_and_reachable_by_both_names(self, monkeypatch):
-        """Kein Configtest: nicht welches Modell was kann, sondern dass die
-        Tabelle ueberhaupt entsteht — und unter beiden Namen greifbar ist, dem
-        Config-Key und dem Provider-String. Der Gate schlaegt genau hier auf."""
+        """Not a config test: not which model can do what, but that the
+        table comes into existence at all -- and is reachable under both names,
+        the config key and the provider string. The gate hits exactly here."""
         monkeypatch.setattr(caps_mod, "_capabilities_registry", {})
         monkeypatch.setattr(caps_mod, "_registry_loaded", False)
         init_capabilities_registry()

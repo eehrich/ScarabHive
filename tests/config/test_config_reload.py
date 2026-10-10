@@ -64,7 +64,7 @@ class TestReloadTargetResolution:
     def test_hybrid_inner_server_is_found(self):
         plugin = _HybridWithServer()
         fn = _reload_target(plugin)
-        assert fn is not None, "der Hybrid-Wrapper wurde wieder uebersehen"
+        assert fn is not None, "the hybrid wrapper was overlooked again"
         assert fn == plugin.server.reload_config
 
     def test_hybrid_mcp_server_attribute_is_found(self):
@@ -125,7 +125,7 @@ class TestReloadReport:
 
         assert [r["server"] for r in report["refreshed"]] == ["hybrid"]
         assert report["unsupported"] == []
-        assert plugin.server.seen is not None, "reload_config wurde nie aufgerufen"
+        assert plugin.server.seen is not None, "reload_config was never called"
 
     def test_inherited_value_is_not_downgraded(self, monkeypatch):
         """The reload has to hand over the MERGED config, the same one
@@ -151,7 +151,7 @@ class TestReloadReport:
             default_agent_cfg=AgentConfig(max_steps=100),
         ))
 
-        assert agent.agent_config.max_steps == 100, "der Reload hat heruntergestuft"
+        assert agent.agent_config.max_steps == 100, "the reload downgraded it"
         assert report["errors"] == []
         assert [c for r in report["refreshed"] for c in r["changes"]] \
             == ["escalate_rounds"]

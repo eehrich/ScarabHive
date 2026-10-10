@@ -110,7 +110,7 @@ async def build_tool_schemas(available_tools: List[str]) -> tuple[List[Dict], Di
 
 ### 3. Tool Filtering
 
-Tools are filtered via `agent_config.tools.allowed` and `agent_config.tools.blocked`, in two stages (`servers/agent/tool_schema_builder.py`): during discovery `server_matches_patterns` selects the servers or external dotted tools; after expansion into individual tools the tool filter decides; `blocked` is then applied to the individual tools. Patterns: `*`, `server/*`, `server/tool`, exact name, `ext.*` for external servers, otherwise fnmatch globs. An empty `allowed` list means: nothing allowed.
+Tools are filtered via `agent_config.tools.allowed` and `agent_config.tools.blocked`, in two stages (`servers/agent/tool_schema_builder.py`): during discovery `server_matches_patterns` selects the servers or external dotted tools; after expansion into individual tools the tool filter decides; `blocked` is then applied to the individual tools. Patterns: `*`, `server/*`, `server/tool`, exact name, `ext.*` for external servers, otherwise fnmatch globs. An empty `allowed` list means: nothing allowed. An `allowed` pattern that matches no tool (a typo, a tool named without its instance prefix -- `tally/count` for `tally/tally_count` -- or a server that is not enabled) is logged once per agent and pattern when the agent's tools are first built: a warning with the likely meant name, or an INFO line if its servers are configured but disabled; a pattern for an enabled external MCP server is not judged (it may connect only on demand).
 
 #### Example Configuration
 ```yaml

@@ -1,10 +1,10 @@
-"""HTTP-STATUS-400-Pfad fuer Gemini "Corrupted thought signature".
+"""HTTP status 400 path for Gemini "Corrupted thought signature".
 
-Beobachtet 2026-07-24 (gemini-3.5-flash-lite via OpenRouter): der Fehler kam
-als echter HTTP-Status 400 — der Signature-Bypass deckte aber nur die
-Body-Level-Form (Fehler in HTTP 200) ab, der Lauf crashte hart mit
-HTTPStatusError statt zu heilen. Der Status-Pfad injiziert jetzt einmalig
-das Bypass-Token und retried (mirrors dem encrypted-reasoning-Backstop).
+Observed 2026-07-24 (gemini-3.5-flash-lite via OpenRouter): the error came
+as a real HTTP status 400 -- but the signature bypass only covered the
+body-level form (error inside HTTP 200), so the run crashed hard with
+HTTPStatusError instead of healing. The status path now injects the bypass
+token once and retries (mirrors the encrypted-reasoning backstop).
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class _FakeResponse:
 
 
 class _FakeAsyncClient:
-    """Erster POST -> Status-400 mit Signatur-Fehler, danach 200."""
+    """First POST -> status 400 with a signature error, then 200."""
     calls: list
 
     def __init__(self, *a, **kw):
@@ -94,12 +94,12 @@ async def test_status400_thought_signature_heals_with_bypass_token():
         result = await client.chat_tools(msgs, [])
 
     assert result["assistant"]["content"] == "ok"
-    assert len(_FakeAsyncClient.calls) == 2, "genau ein Bypass-Retry erwartet"
+    assert len(_FakeAsyncClient.calls) == 2, "exactly one bypass retry expected"
     retry_payload = _FakeAsyncClient.calls[1]
     blocks = [b for m in retry_payload["messages"]
               for b in (m.get("reasoning_details") or [])]
     assert any(b.get("data") == "skip_thought_signature_validator" for b in blocks), \
-        "Bypass-Token muss im Retry-Payload stehen"
+        "bypass token must be in the retry payload"
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,7 @@ async def test_status400_non_signature_still_raises():
     with patch("plugins.llm_openai_compat.httpx_client.httpx.AsyncClient", _Fake400Always):
         with pytest.raises(httpx.HTTPStatusError):
             await client.chat_tools([ChatMessage(role="user", content="hi")], [])
-    assert len(_FakeAsyncClient.calls) == 1, "kein Retry fuer fremde 400er"
+    assert len(_FakeAsyncClient.calls) == 1, "no retry for unrelated 400s"
 
 
 if __name__ == "__main__":

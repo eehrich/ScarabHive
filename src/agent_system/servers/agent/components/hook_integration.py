@@ -269,7 +269,9 @@ class HookIntegrationManager:
         request_id: str,
         session_id: str,
         llm: Optional[Any] = None,
-        cancellation_token: Optional[Any] = None
+        cancellation_token: Optional[Any] = None,
+        max_steps: Optional[int] = None,
+        final_call: bool = False,
     ) -> List[ChatMessage]:
         """
         Execute pre-LLM hooks.
@@ -304,6 +306,8 @@ class HookIntegrationManager:
             messages=messages,
             tools_schema=tools_schema,
             step=step,
+            max_steps=max_steps,
+            final_call=final_call,
             llm=llm,
             cancellation_token=cancellation_token,
         )
@@ -377,7 +381,9 @@ class HookIntegrationManager:
         step: int,
         request_id: str,
         session_id: str,
-        llm: Optional[Any] = None
+        llm: Optional[Any] = None,
+        max_steps: Optional[int] = None,
+        final_call: bool = False,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Execute post-LLM hooks.
@@ -414,6 +420,8 @@ class HookIntegrationManager:
             llm_response=llm_response,
             tools_schema=tools_schema,
             step=step,
+            max_steps=max_steps,
+            final_call=final_call,
             llm=llm,
         )
         

@@ -97,7 +97,7 @@ def _record_hooks(agent, during_pre=None):
     """
     seen = {"pre": [], "post": [], "session_llm": [], "session_llm_pre": []}
 
-    async def pre(messages, step, request_id, session_id, llm=None, cancellation_token=None):
+    async def pre(messages, step, request_id, session_id, llm=None, cancellation_token=None, **_):
         seen["pre"].append((step, llm, [m.model_copy() for m in messages]))
         # What a tool run inside the hooks (tool_preload) gets from the agent.
         seen["session_llm_pre"].append(agent.llm_for_session(session_id))
@@ -105,7 +105,7 @@ def _record_hooks(agent, during_pre=None):
             during_pre(step)
         return messages
 
-    async def post(messages, llm_response, step, request_id, session_id, llm=None):
+    async def post(messages, llm_response, step, request_id, session_id, llm=None, **_):
         seen["post"].append((step, llm))
         seen["session_llm"].append(agent.llm_for_session(session_id))
         return llm_response, {}

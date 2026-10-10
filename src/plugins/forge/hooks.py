@@ -1,4 +1,4 @@
-"""The webhook's inbox handed to its session (docs/konzept.md §7, W4).
+"""The webhook's inbox handed to its session (docs/concept.md §7, W4).
 
 Before an LLM call, what waits for the session goes in as one message; once
 the run's conversation is saved, it counts as delivered. A run that dies

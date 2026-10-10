@@ -987,6 +987,30 @@ class TestSvgLayer:
         r, g, b, a = img.getpixel((60, 60))
         assert a > 240 and abs(r - 212) < 12 and abs(g - 175) < 12 and abs(b - 55) < 12
 
+    @pytest.mark.parametrize("tail", [
+        "C55 0 58 0 60 10 70 20",  # live run 2026-10-07: curveTo(70, 20)
+        "c5 -10 8 -10 10 0 5 5",
+        "S58 0 60 10 70",
+        "Q55 0 60 10 7",
+        "T50",
+        "A5 5 0 0 1 30",
+        "Z,M5 5 L6 6",  # a comma before a command letter
+        "A5 5 +30 0 1 30 10",  # svglib's arc parser knows no "+"
+    ])
+    def test_path_draws_up_to_its_first_error(self, tmp_path, fonts_dir, tail):
+        """An incomplete last segment failed the whole render inside svglib
+        ("Path.curveTo() missing 4 required positional arguments"); SVG draws
+        the path up to the error, here the line along y=10 from x=10 to 50."""
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="60" height="20">'
+               f'<path d="M10 10 L50 10 {tail}" stroke="#f00" stroke-width="4" '
+               'fill="none"/></svg>')
+        out, meta = _render({
+            "size": [60, 20], "background": "transparent",
+            "layers": [{"type": "svg", "svg": svg, "position": [0, 0]}],
+        }, tmp_path, fonts_dir)
+        assert meta["layers_rendered"] == 1
+        assert Image.open(out).convert("RGBA").getpixel((30, 10))[3] > 200
+
 
 # ── Image analysis (analyze_image) ────────────────────────────────────────
 

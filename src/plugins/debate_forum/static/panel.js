@@ -25,6 +25,10 @@ let drawnChannel = null;
 /** JSON blocks shown readable, as message id and block index. */
 const readable = new Set();
 let openings = 0;
+/** A link names the channel to show (?channel=<id>): shown at once, its group opened once the list is in. */
+const named = new URLSearchParams(location.search).get('channel');
+let linked = /^[1-9]\d*$/.test(named ?? '') ? Number(named) : null;
+if (linked) selected = linked;
 
 let expanded;
 try { expanded = new Set(JSON.parse(localStorage.getItem(EXPANDED_KEY)) || []); } catch { expanded = new Set(); }
@@ -89,9 +93,16 @@ async function refresh(event) {
     groups = groupList.groups;
     listed = { ...channelList, filtered: query.size > 0, flat: query.has('group_id') };  // what it was asked with
     listError = null;
+    const link = linked && channelList.channels.find((channel) => channel.id === linked);
+    linked = null;
+    if (link) {
+      expanded.add(String(link.group_id || 0));
+      keepExpanded();
+    }
     drawStats(stats);
     drawGroups();
     drawChannels();
+    if (link) $('channels').querySelector(`[data-channel="${link.id}"]`)?.scrollIntoView({ block: 'nearest' });
     if (selected !== null) await loadThread(!auto);
   } finally {
     if (mine === load) busy = false;

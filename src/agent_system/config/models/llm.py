@@ -152,10 +152,10 @@ class LLMModelConfig(BaseModel):
     # pseudo-provider: the resolver maps it to the real provider via
     # batch_provider before the registry ever sees it.
     provider: str = "ollama"
-    # Optional, damit ein Eintrag reine Basisklasse sein kann: er sammelt
-    # provider, base_url, Limits und capabilities, und die Kinder setzen nur
-    # noch den Modellnamen. Wer keinen hat, darf nicht benutzt werden — das
-    # prueft LLMSystemConfig._profiles_must_point_at_usable_models.
+    # Optional so that an entry can be a pure base class: it collects
+    # provider, base_url, limits and capabilities, and the children only set
+    # the model name. An entry without one must not be used — that is
+    # checked by LLMSystemConfig._profiles_must_point_at_usable_models.
     model: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None  # Custom base URL for API endpoint (e.g. Gemini, Ollama, OpenAI-compatible)
@@ -172,16 +172,16 @@ class LLMModelConfig(BaseModel):
     thinking_level: Optional[Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]] = None  # Thinking level = OpenRouter reasoning.effort enum (none|minimal|low|medium|high|xhigh|max — "ultra" existed here but no provider knows it). Gemini 3 only knows minimal-high (higher values are clamped to high in the Gemini clients); "none" disables thinking on hybrid models (OpenRouter: DeepSeek V4 & co.)
     modalities: Optional[List[str]] = None  # Output modalities for audio models (e.g., ["text"] or ["text", "audio"])
     max_tokens: Optional[int] = None  # Maximum output tokens (limits response length, reduces costs)
-    temperature: Optional[float] = None  # Sampling-Temperatur. None = Provider-Default (bei DeepSeek/OpenAI ~1,0!). Für mechanische Aufgaben (Struktur, Zuordnung, Extraktion) niedrig setzen: gemessen 2026-07-25 liefen alle Prosa-Konverter-Calls mit Provider-Default, also voller Sampling-Varianz für eine Kopier-Aufgabe. ⚠️ NICHT für Reasoning-Modelle setzen (gpt-5.x/o-Serie akzeptieren nur temperature=1 bzw. lehnen den Param ab) — dort steuert thinking_level. Wird als Top-Level-Feld an OpenAI-kompatible/Anthropic/Gemini-APIs gesendet.
+    temperature: Optional[float] = None  # Sampling temperature. None = provider default (~1.0 for DeepSeek/OpenAI!). Set it low for mechanical tasks (structure, mapping, extraction): measured 2026-07-25, all prose-converter calls ran on the provider default, i.e. full sampling variance for a copy task. ⚠️ Do NOT set it for reasoning models (gpt-5.x/o-series accept only temperature=1 or reject the param) — thinking_level controls those. Sent as a top-level field to OpenAI-compatible/Anthropic/Gemini APIs.
     safety_settings: Optional[Dict[str, str]] = None  # Gemini safety settings: {HarmCategory: HarmBlockThreshold}. Sent whenever it is set — a model whose backend does not know the field must not carry it.
     tool_schema_dialect: Optional[Literal["json_schema", "gemini_function_declarations"]] = None  # Which tool schema the endpoint accepts. "json_schema" (default) passes the schema as it is. "gemini_function_declarations" strips what Gemini's function declarations reject (additionalProperties, default, format, title, anyOf/oneOf, ...) — without it Gemini answers MALFORMED_FUNCTION_CALL. Declared per model because the same family is reachable through gateways that translate and gateways that do not. It also arms the detector for that decoder's other failure, a function call leaking into the text channel: a gateway that already translates (so "json_schema") cannot produce it, and a model merely writing the marker keeps its answer.
     assistant_reasoning_field: Optional[Literal["omit", "reasoning_content"]] = None  # What an assistant message carries back as its thinking, next to the standard reasoning_details. "omit" (default) sends the field to no one — it is not part of the OpenAI schema. "reasoning_content" fills it on EVERY assistant message, empty string included: DeepSeek's thinking mode answers 400 without it on a tool round trip.
     thinking_request_shape: Optional[Literal["budget", "adaptive"]] = None  # How this model wants its thinking asked for on the native Anthropic API: "budget" (default) sends {"type": "enabled", "budget_tokens": N}, "adaptive" sends {"type": "adaptive"} — the newer models reject budget_tokens with a 400, and the older ones do not know adaptive.
     service_tier: Optional[str] = None  # Service tier for OpenAI-compatible APIs (e.g. "flex" = Google Flex Processing via OpenRouter — cheaper, slower)
-    prompt_cache_key: Optional[str] = None  # OpenAI Cache-Routing-Key (Chat + Responses API). AB GPT-5.6 PFLICHT fuer zuverlaessiges Prompt-Cache-Matching (Doku: "you must set prompt_cache_key ... for both implicit and explicit caching"); ohne Key cached 5.6 praktisch nie (belegt 2026-07-21: byte-identischer 10k-Prefix, cached_tokens=0). Empfohlener Wert "auto": Key wird pro Request gehasht aus fuehrendem System-Prompt (voll — ein langer System-Prompt darf das Fenster nicht auffressen) + erster Task-Message bis ~4096 Zeichen (llm/cache_key.py) — gleicher stabiler Prefix <-> gleicher Key, stabil ueber Folge-Turns, kollisionsfrei bei parallelen Buechern/Stories (statischer Agent-Name-Key wuerde dann Shard + ~15 req/min-Limit teilen). Statischer String weiterhin als explizites Override moeglich. Nur fuer OpenAI/OpenRouter-GPT-Modelle setzen — Fremd-Provider koennten den Param ablehnen.
-    prompt_cache_mode: Optional[Literal["auto", "multi_turn", "task_sequence", "one_shot", "off"]] = None  # Cache-Verhalten des Agents. In Agent-yamls via llm_params "*" gesetzt (flache per-Agent-Form — es gibt keinen AgentConfig->Client-Pfad). "task_sequence" aktiviert die Segment-Leiter ueber deklarierten Sentinel-Grenzen; "multi_turn" dokumentiert Fortsetzungs-Caching (keine Marker); "off" strippt auch Sentinels. Default None ~ "auto" (nur deklarierte Grenzen markieren).
-    prompt_cache_marker_style: Optional[Literal["openai", "anthropic", "none"]] = None  # Marker-Feld des Modells: "openai" = prompt_cache_breakpoint (GPT-5.6+), "anthropic" = cache_control ephemeral, "none" = Sentinels strippen. Default None = kein Marker ausser prompt_cache_key ist gesetzt (dann "openai", weil der Key Config-diszipliniert nur auf GPT-Eintraegen steht). Ein Modell, das cache_control spricht, sagt es HIER — der Client kennt keine Modellnamen.
-    provider_routing: Optional[Dict[str, Any]] = None  # OpenRouter "provider" object: {order: [slugs], allow_fallbacks: bool, sort: "price", ...}. Order-only is enough to bias toward a sticky backend (improves implicit cache hit rate); allow_fallbacks: false would hard-pin. Systemweiter Default: llm_system.openrouter_routing (wird pro Schluessel von hier ueberstimmt). ⚠️ Nur die Pfade provider=openai_httpx und openai_responses reichen das Feld an den Request weiter — der SDK-Pfad provider=openai kennt es nicht und wuerde es STILL verwerfen (kein Modell im Katalog nutzt ihn; wer eines dorthin umstellt, verliert das Routing wortlos).
+    prompt_cache_key: Optional[str] = None  # OpenAI cache routing key (Chat + Responses API). From GPT-5.6 on REQUIRED for reliable prompt-cache matching (docs: "you must set prompt_cache_key ... for both implicit and explicit caching"); without a key 5.6 practically never caches (shown 2026-07-21: byte-identical 10k prefix, cached_tokens=0). Recommended value "auto": the key is hashed per request from the leading system prompt (in full — a long system prompt must not eat up the window) + the first task message up to ~4096 characters (llm/cache_key.py) — same stable prefix <-> same key, stable across follow-up turns, collision-free for parallel jobs (a static agent-name key would make them share a shard + the ~15 req/min limit). A static string remains possible as an explicit override. Set only for OpenAI/OpenRouter GPT models — other providers might reject the param.
+    prompt_cache_mode: Optional[Literal["auto", "multi_turn", "task_sequence", "one_shot", "off"]] = None  # Cache behaviour of the agent. Set in agent yamls via llm_params "*" (flat per-agent form — there is no AgentConfig->client path). "task_sequence" enables the segment ladder over declared sentinel boundaries; "multi_turn" documents continuation caching (no markers); "off" also strips sentinels. Default None ~ "auto" (mark declared boundaries only).
+    prompt_cache_marker_style: Optional[Literal["openai", "anthropic", "none"]] = None  # Marker field of the model: "openai" = prompt_cache_breakpoint (GPT-5.6+), "anthropic" = cache_control ephemeral, "none" = strip sentinels. Default None = no marker unless prompt_cache_key is set (then "openai", because by config discipline the key only sits on GPT entries). A model that speaks cache_control says so HERE — the client knows no model names.
+    provider_routing: Optional[Dict[str, Any]] = None  # OpenRouter "provider" object: {order: [slugs], allow_fallbacks: bool, sort: "price", ...}. Order-only is enough to bias toward a sticky backend (improves implicit cache hit rate); allow_fallbacks: false would hard-pin. System-wide default: llm_system.openrouter_routing (overridden per key from here). ⚠️ Only the paths provider=openai_httpx and openai_responses pass the field on to the request — the SDK path provider=openai does not know it and would SILENTLY drop it (no model in the catalogue uses it; whoever switches one over loses the routing without a word).
     provider_affinity_minutes: Optional[float] = Field(default=None, ge=0)  # How long after an agent type's last call a new run of it starts on the backend that answered that call (sent as provider.order [that one] with allow_fallbacks false; a refusal releases the pin for that call and the retry goes out as configured). None = prompt_cache_ttl_minutes, without that 30 min; 0 = off. The prompt a type's runs share is cached on that backend: measured 22.09.2026, a run's first call on it read 57.8 % from cache within 5 min of the previous call and 22.5 % within 30 min, on another backend 27.8 % and 9.0 %; past 30 min under 10 % either way. A run's own history (served_by) always wins. Only the OpenRouter routes (openai_httpx, openai_responses, openrouter_sdk) and only with provider_routing.order.
     prompt_cache_ttl_minutes: Optional[float] = Field(default=None, gt=0)  # How long the provider's prompt cache probably stays valid after its last write or hit, in minutes. Sent nowhere -- the system reads it: the backend pin (provider_affinity_minutes falls back to it) and whoever must judge whether a paused session's prefix is still cached. Anthropic 5 (its default ttl; 1 h would need a ttl in cache_control), GPT-5.6+/6 30 (fixed), Gemini implicit about 3-5. None = unknown.
     reasoning_details_mode: Optional[Literal["keep_last", "keep_all", "strip"]] = None  # How to round-trip provider reasoning blocks across turns: "keep_last" (default, Gemini — current turn's thought signature only), "keep_all" (encrypted chains that must stay intact, and every model whose cache matches the prefix byte for byte: stripping older blocks rewrites the prefix each turn and the cache is written anew instead of read — measured on book_launcher, ~26k tokens per step), "strip" (drop entirely). On the chat route keep_all also keeps the blocks of a turn whose chain was broken by a compaction WHILE its tools are still open, because that turn's thinking has to be echoed back complete (see utils/reasoning_artifacts); a model whose chain is encrypted and verified across turns wants the Responses route, where the chain reset stays unconditional. Literal: a typo must fail config load, not silently fall back to keep_last.
@@ -291,7 +291,7 @@ class DecisionProfile(BaseModel):
 class LLMSystemConfig(BaseModel):
     """Complete LLM system configuration"""
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # Default HTTPX timeouts for all models
-    openrouter_routing: Optional[Dict[str, Any]] = None  # System-Default fuer das OpenRouter-"provider"-Objekt (siehe LLMModelConfig.provider_routing). Gilt fuer JEDES Modell mit openrouter.ai-base_url; pro Schluessel gewinnt der Modell-Eintrag, ein bewusst gesetztes order/sort am Modell bleibt also stehen. {sort: price} waehlt den guenstigsten Anbieter (identisch zum Modell-Suffix ":floor"; erlaubt sind "price", "throughput", "latency"). ⚠️ sort schaltet OpenRouters Load-Balancing ab und verwaessert die Klebrigkeit der order-Eintraege, die hier den impliziten Prompt-Cache warm halten — ein Cache-Miss kostet bei Langkontext leicht mehr, als der guenstigere Anbieter spart. Alternative ohne diese Nebenwirkung: max_price als Deckel. Default None = aus.
+    openrouter_routing: Optional[Dict[str, Any]] = None  # System default for the OpenRouter "provider" object (see LLMModelConfig.provider_routing). Applies to EVERY model with an openrouter.ai base_url; per key the model entry wins, so a deliberately set order/sort on the model stays. {sort: price} picks the cheapest provider (identical to the model suffix ":floor"; allowed: "price", "throughput", "latency"). ⚠️ sort switches off the OpenRouter load balancing and dilutes the stickiness of the order entries that keep the implicit prompt cache warm here — on long contexts a cache miss easily costs more than the cheaper provider saves. Alternative without this side effect: max_price as a ceiling. Default None = off.
     batch: Optional[BatchSystemConfig] = None  # Global batch processing configuration
     models: Dict[str, LLMModelConfig] = {}
     profiles: Dict[str, LLMProfile] = {}
@@ -302,27 +302,27 @@ class LLMSystemConfig(BaseModel):
     def _profile_names_must_not_shadow_model_fields(
         cls, v: Dict[str, "LLMProfile"]
     ) -> Dict[str, "LLMProfile"]:
-        # Profilnamen sind Keys der profil-gekeyten agent_config.llm_params —
-        # die Formerkennung (flat vs. gekeyt) unterscheidet Param-Namen von
-        # Profilnamen. Ein Profil, das wie ein LLMModelConfig-Feld heisst
-        # (z.B. "max_tokens"), waere dort unadressierbar → an der Wurzel
-        # verbieten statt spaeter still fehlzuinterpretieren.
+        # Profile names are the keys of the profile-keyed agent_config.llm_params —
+        # the form detection (flat vs. keyed) tells param names apart from
+        # profile names. A profile named like an LLMModelConfig field
+        # (e.g. "max_tokens") could not be addressed there → forbid it at the
+        # root instead of silently misreading it later.
         shadowed = set(v) & set(LLMModelConfig.model_fields)
         if shadowed:
             raise ValueError(
-                f"llm_system.profiles: Profilnamen {sorted(shadowed)} kollidieren "
-                f"mit LLMModelConfig-Feldnamen (reserviert fuer llm_params) — "
-                f"bitte umbenennen"
+                f"llm_system.profiles: profile names {sorted(shadowed)} collide "
+                f"with LLMModelConfig field names (reserved for llm_params) — "
+                f"please rename"
             )
         return v
 
     @model_validator(mode="after")
     def _profiles_must_point_at_usable_models(self) -> "LLMSystemConfig":
-        """Eine Basisklasse ohne `model:` ist zum Erben da, nicht zum Fahren.
+        """A base class without `model:` is there to inherit from, not to run.
 
-        Ohne diesen Riegel landet ihr None im Client und der Aufruf scheitert
-        erst beim Provider — mit einer Meldung, die nichts mit der Config zu
-        tun hat.
+        Without this guard its None ends up in the client and the call fails
+        only at the provider — with a message that has nothing to do with the
+        config.
         """
         broken = sorted(
             f"{name} -> {profile.model_ref}"
@@ -332,8 +332,8 @@ class LLMSystemConfig(BaseModel):
         )
         if broken:
             raise ValueError(
-                "llm_system.profiles: diese Profile zeigen auf Eintraege ohne "
-                f"`model:` — das sind Basisklassen zum Erben: {broken}")
+                "llm_system.profiles: these profiles point at entries without "
+                f"`model:` — those are base classes meant for inheriting: {broken}")
         return self
 
     @model_validator(mode="after")

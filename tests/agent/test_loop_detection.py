@@ -261,11 +261,11 @@ class TestToolCallLoopDetector:
 
 
 class TestLoopDetectorConstruction:
-    """Konstruktion wie im Produktionspfad: Agent._create_loop_detector baut
-    den Detector via ToolCallLoopDetector(**config-dict)."""
+    """Construction as on the production path: Agent._create_loop_detector builds
+    the detector via ToolCallLoopDetector(**config-dict)."""
 
     def test_default_config(self):
-        """Detector mit Default-Parametern."""
+        """Detector with default parameters."""
         detector = ToolCallLoopDetector()
 
         assert detector.exact_match_threshold == 3
@@ -273,7 +273,7 @@ class TestLoopDetectorConstruction:
         assert detector.history_size == 20
 
     def test_custom_config(self):
-        """Detector aus Config-Dict (Produktions-Pattern: **config)."""
+        """Detector from a config dict (production pattern: **config)."""
         config = {
             "history_size": 10,
             "exact_match_threshold": 5,
@@ -289,6 +289,24 @@ class TestLoopDetectorConstruction:
         assert detector.history_size == 10
         assert detector.block_after_threshold == 8
         assert detector.auto_unblock_after_steps == 5
+
+    def test_disabled_detects_nothing(self):
+        """enabled=False (loop_detection.enabled: false) switches every
+        strategy off: no sequence, no exact match, no note, no blocking."""
+        detector = ToolCallLoopDetector(enabled=False)
+        a = {"function": {"name": "a", "arguments": "{}"}}
+        b = {"function": {"name": "b", "arguments": "{}"}}
+
+        results = [detector.record_and_check(c, step=i)
+                   for i, c in enumerate([a, b, a, b, a, b])]
+        results += [detector.record_and_check(a, step=6 + i) for i in range(8)]
+        results.append(detector.record_batch_and_check([a, b, a, b], step=14))
+
+        for result in results:
+            assert not result.is_loop
+            assert not result.intervention
+            assert not result.should_block_tool
+            assert not result.blocked_tools
 
 
 class TestInterventionMessages:
@@ -412,8 +430,8 @@ class TestPerRequestIsolation:
         )
 
     def test_construction_produces_independent_instances(self):
-        """Zwei Detector-Konstruktionen aus demselben Config-Dict teilen keinen
-        Zustand (Produktions-Pattern: per-Request-Detector via **config)."""
+        """Two detectors constructed from the same config dict share no
+        state (production pattern: per-request detector via **config)."""
         config = {
             "exact_match_threshold": 2,
             "block_after_threshold": 4,

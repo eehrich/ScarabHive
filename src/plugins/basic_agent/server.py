@@ -53,10 +53,10 @@ class BasicAgent(SchemaBasedAgent):
         llm_profile_info: Optional[str] = None
 
         # Priority: llm_profile > use_advanced_model > default.
-        # use_advanced_model wird NICHT hier gemappt, sondern als Flag an
-        # run_events durchgereicht — dort passiert das Advanced-Mapping
-        # zentral (inkl. llm_params) und _run_events berechnet die zur
-        # Advanced-Kette passende Fallback-Reihenfolge.
+        # use_advanced_model is NOT mapped here but passed on to run_events
+        # as a flag -- the advanced mapping happens there centrally (incl.
+        # llm_params) and _run_events computes the fallback order that fits
+        # the advanced chain.
         if llm_profile_name:
             # Validate profile exists in agent's available profiles
             available_profiles = self.agent_config.available_llm_profiles if self.agent_config else []
@@ -132,7 +132,7 @@ class BasicAgent(SchemaBasedAgent):
                 session_id=session_id,
                 llm_override=llm_override,
                 llm_profile_info_override=llm_profile_info,
-                # Explizites llm_profile gewinnt: dann kein Advanced-Mapping.
+                # An explicit llm_profile wins: then no advanced mapping.
                 use_advanced_model=bool(use_advanced_model) and not llm_profile_name
             ):
                 event_type = event.get("type")

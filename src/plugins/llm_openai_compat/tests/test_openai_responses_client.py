@@ -1,9 +1,9 @@
-"""Tests für den OpenAI-Responses-Client (natives Item-Round-Tripping).
+"""Tests for the OpenAI Responses client (native item round-tripping).
 
-Kern-Invariante: Output-Items des Modells werden VERBATIM in einem
-reasoning_details-Block gespeichert und beim nächsten Request exakt
-reproduziert — keine Rekonstruktion, kein Bridging-Verlust (die Ursache der
-encrypted-reasoning-400s der Chat-Completions-Route).
+Core invariant: the model's output items are stored VERBATIM in a
+reasoning_details block and reproduced exactly on the next request -- no
+reconstruction, no bridging loss (the cause of the encrypted-reasoning 400s
+on the Chat Completions route).
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def _drive_non_streaming(body: dict, **client_kw) -> list[dict]:
     return asyncio.run(_collect())
 
 
-#: Ein Tool-Schema mit allem, was Geminis Function Declarations ablehnen.
+#: A tool schema with everything Gemini's function declarations reject.
 NASTY_TOOL = [{"type": "function", "function": {
     "name": "f", "description": "d",
     "parameters": {"type": "object", "title": "T", "additionalProperties": False,
@@ -157,9 +157,9 @@ def _history(model: str) -> list:
 
 
 class TestReasoningDetailsMode:
-    """Der deklarierte Round-Trip-Modus entscheidet, WIE VIELE eigene Turns
-    ihre Items verbatim wiederholen. Ein Turn, der nicht darf, wird aus
-    content/tool_calls rekonstruiert — wie fremde Historie."""
+    """The declared round-trip mode decides HOW MANY own turns repeat their
+    items verbatim. A turn that may not is rebuilt from content/tool_calls,
+    like foreign history."""
 
     @staticmethod
     def _sent(mode=None):
@@ -169,16 +169,16 @@ class TestReasoningDetailsMode:
                 [i["call_id"] for i in items if i.get("type") == "function_call"])
 
     def test_default_replays_every_own_turn(self):
-        """Default dieser Route = keep_all: die verschluesselte Kette darf
-        keine Luecke haben, und der gecachte Prefix bleibt byte-gleich."""
+        """This route's default is keep_all: the encrypted chain must have no
+        gap, and the cached prefix stays byte-identical."""
         assert self._sent() == (["rs_1", "rs_2"], ["call_1", "call_2"])
 
     def test_keep_all_is_the_same_declared(self):
         assert self._sent("keep_all") == (["rs_1", "rs_2"], ["call_1", "call_2"])
 
     def test_keep_last_drops_the_earlier_reasoning_but_not_the_call(self):
-        """Der aeltere Turn verliert seine Reasoning-Items, behaelt aber seinen
-        function_call — sonst haenge das zugehoerige tool-Ergebnis in der Luft
+        """The older turn loses its reasoning items but keeps its
+        function_call -- otherwise the matching tool result would dangle
         (HTTP 400)."""
         assert self._sent("keep_last") == (["rs_2"], ["call_1", "call_2"])
 
@@ -199,7 +199,7 @@ class TestFormatResponse:
         a = result["assistant"]
         assert [t["id"] for t in a["tool_calls"]] == ["call_1", "call_2"]
         assert a["tool_calls"][0]["function"]["name"] == "get_value"
-        # Verbatim-Block trägt ALLE Output-Items unverändert
+        # The verbatim block carries ALL output items unchanged
         blocks = a["reasoning_details"]
         assert len(blocks) == 1 and blocks[0]["format"] == RESPONSES_ITEMS_FORMAT
         assert blocks[0]["items"] == SAMPLE_OUTPUT
@@ -233,9 +233,9 @@ class TestFormatResponse:
         assert mapped["completion_tokens_details"]["reasoning_tokens"] == 3
 
     def test_usage_openrouter_cost_passthrough(self):
-        """session_costs.py bevorzugt das billed-cost-Feld von OpenRouter —
-        _map_usage muss unbekannte Zusatzfelder durchreichen, ohne die
-        gemappten Chat-Keys zu verlieren."""
+        """session_costs.py prefers OpenRouter's billed-cost field --
+        _map_usage must pass unknown extra fields through without losing
+        the mapped chat keys."""
         mapped = OpenAIResponsesClient._map_usage({
             "input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
             "cost": 0.0123, "cost_details": {"upstream_inference_cost": 0.01},
@@ -248,8 +248,8 @@ class TestFormatResponse:
 
 class TestMessagesToInput:
     def test_verbatim_round_trip(self):
-        """format_response → ChatMessage → _messages_to_input reproduziert die
-        Output-Items exakt (die Kern-Invariante)."""
+        """format_response -> ChatMessage -> _messages_to_input reproduces the
+        output items exactly (the core invariant)."""
         c = _client()
         assistant = c._format_response({"output": SAMPLE_OUTPUT})["assistant"]
         msg = ChatMessage(**assistant)
@@ -264,8 +264,8 @@ class TestMessagesToInput:
         assert items[5] == {"type": "function_call_output", "call_id": "call_2", "output": "43"}
 
     def test_verbatim_block_suppresses_reconstruction(self):
-        """Message mit Verbatim-Block darf content/tool_calls NICHT zusätzlich
-        serialisieren (wären Duplikate der enthaltenen Items)."""
+        """A message with a verbatim block must NOT additionally serialize
+        content/tool_calls (they would duplicate the contained items)."""
         c = _client()
         assistant = c._format_response({"output": SAMPLE_OUTPUT})["assistant"]
         assistant["content"] = "sichtbarer text"
@@ -293,8 +293,8 @@ class TestMessagesToInput:
         assert output[1]["arguments"] == broken  # stored block untouched
 
     def test_foreign_history_reconstructed_without_artifacts(self):
-        """Chat-Route-Sessions (openai-responses-v1-Blöcke) und Gemini-Blöcke
-        werden ignoriert — Kette startet frisch, calls/content bleiben."""
+        """Chat-route sessions (openai-responses-v1 blocks) and Gemini blocks
+        are ignored -- the chain starts fresh, calls/content stay."""
         c = _client()
         msg = ChatMessage(
             role="assistant", content="txt",
@@ -473,46 +473,47 @@ class TestToolsAndPayload:
                          "description": "d", "parameters": {"type": "object"}}]
 
     def test_a_flat_tool_without_a_type_is_tagged(self):
-        """Der „already flat"-Zweig nahm den Aufrufer beim Wort und schickte
-        ein Tool ohne Diskriminator weiter. Die Responses-API verlangt
-        ``type`` — gefunden, als das SDK dieselbe Nutzlast typisiert
-        validierte und sie mit ``union_tag_invalid`` ablehnte."""
+        """The "already flat" branch took the caller at its word and passed a
+        tool on without a discriminator. The Responses API requires
+        ``type`` -- found when the SDK validated the same payload in typed
+        form and rejected it with ``union_tag_invalid``."""
         conv = _client()._convert_tools(
             [{"name": "f", "description": "d", "parameters": {"type": "object"}}])
         assert conv == [{"type": "function", "name": "f", "description": "d",
                          "parameters": {"type": "object"}}]
 
     def test_an_explicit_type_survives(self):
-        """Gegenprobe: der Riegel setzt nur, wo nichts steht — ein
-        Server-Tool (``web_search`` & Co.) darf nicht zur Funktion werden."""
+        """Control: the guard only sets a type where none is present -- a
+        server tool (``web_search`` & co.) must not turn into a function."""
         conv = _client()._convert_tools([{"type": "web_search", "name": "s"}])
         assert conv[0]["type"] == "web_search"
 
     def test_the_declared_dialect_sanitizes_the_schemas(self):
-        """``tool_schema_dialect: gemini_function_declarations`` entfernt die
-        Function-Declaration-feindlichen JSON-Schema-Keywords (additional-
-        Properties, default, format, oneOf, title) — wie auf der Chat-Route."""
+        """``tool_schema_dialect: gemini_function_declarations`` strips the
+        JSON Schema keywords that function declarations reject
+        (additionalProperties, default, format, oneOf, title) -- as on the
+        chat route."""
         import json as _json
         gem = _client(model="google/gemini-3.5-flash-lite",
                       tool_schema_dialect="gemini_function_declarations"
                       )._convert_tools(NASTY_TOOL)
         blob = _json.dumps(gem)
         for kw in ('"title"', '"default"', '"oneOf"', '"additionalProperties"', '"format"'):
-            assert kw not in blob, f"{kw} nicht sanitized"
+            assert kw not in blob, f"{kw} not sanitized"
 
     def test_without_the_dialect_the_schema_travels_as_it_is(self):
-        """Default = json_schema: der Endpunkt bekommt das Schema unberuehrt."""
+        """Default = json_schema: the endpoint gets the schema untouched."""
         import json as _json
         gpt = _client(model="openai/gpt-5.6-terra")._convert_tools(NASTY_TOOL)
         assert '"oneOf"' in _json.dumps(gpt)
 
     def test_the_model_name_no_longer_decides(self):
-        """Der Riegel gegen Namens-Schnueffelei, in beide Richtungen.
+        """The guard against sniffing model names, in both directions.
 
-        Der Katalog nennt dieselbe Familie als ``google/gemini-3.1-pro-preview``
-        UND als Gateway-Alias ``~google/gemini-flash-latest``. Eine
-        Praefix-Erkennung sanitisierte nur die erste Schreibweise — der Alias
-        fuhr ungefiltert. Deklariert entscheidet nur noch der Schluessel."""
+        The catalogue lists the same family as ``google/gemini-3.1-pro-preview``
+        AND as the gateway alias ``~google/gemini-flash-latest``. Prefix
+        detection sanitized only the first spelling -- the alias went out
+        unfiltered. Now only the declared key decides."""
         import json as _json
         alias = _client(model="~google/gemini-flash-latest",
                         tool_schema_dialect="gemini_function_declarations"
@@ -538,14 +539,14 @@ class TestToolsAndPayload:
         assert p["tool_choice"] == "auto"
 
     def test_parallel_tool_calls_none_leaves_the_field_out(self):
-        """None heisst „Feld weglassen" — nicht False. bool(None) haette den
-        Modellen, die das Feld gar nicht kennen sollen, parallel_tool_calls=false
-        geschickt und damit paralleles Tool-Calling abgeschaltet."""
+        """None means "leave the field out" -- not False. bool(None) would
+        have sent parallel_tool_calls=false to models that should not see the
+        field at all, switching off parallel tool calling."""
         p = _client(parallel_tool_calls=None)._build_payload(
             [ChatMessage(role="user", content="hi")],
             [{"type": "function", "function": {"name": "f", "parameters": {}}}])
         assert "parallel_tool_calls" not in p
-        assert p["tool_choice"] == "auto"  # der Rest des Tool-Blocks bleibt
+        assert p["tool_choice"] == "auto"  # the rest of the tool block stays
 
     def test_parallel_tool_calls_false_is_still_sent(self):
         p = _client(parallel_tool_calls=False)._build_payload(
@@ -583,16 +584,16 @@ class TestToolsAndPayload:
             assert absent not in p
 
     def test_payload_carries_prompt_cache_key(self):
-        # GPT-5.6+: ohne prompt_cache_key kein zuverlaessiges Cache-Matching
-        # (belegt Testlauf B936: byte-identischer Prefix, cached_tokens=0).
-        c = _client(prompt_cache_key="v4_scene_planner")
+        # GPT-5.6+: without a prompt_cache_key, no reliable cache matching
+        # (measured: byte-identical prefix, cached_tokens=0).
+        c = _client(prompt_cache_key="scene_planner")
         p = c._build_payload([ChatMessage(role="user", content="hi")], None)
-        assert p["prompt_cache_key"] == "v4_scene_planner"
+        assert p["prompt_cache_key"] == "scene_planner"
 
     def test_payload_splits_cache_breakpoint_sentinel(self):
-        # GPT-5.6 cached Mid-Prompt-Divergenz nur mit expliziten Breakpoints
-        # (Experimente 2026-07-21): Sentinel im Task -> input_text-Parts,
-        # alle bis auf den letzten mit prompt_cache_breakpoint markiert.
+        # GPT-5.6 caches mid-prompt divergence only with explicit breakpoints
+        # (experiments 2026-07-21): sentinel in the task -> input_text parts,
+        # all but the last marked with prompt_cache_breakpoint.
         from agent_system.llm.cache_key import CACHE_BP_SENTINEL
         c = _client(prompt_cache_key="auto")
         task = "stabiler teil" + CACHE_BP_SENTINEL + "variabler teil"
@@ -601,13 +602,13 @@ class TestToolsAndPayload:
         assert [x["text"] for x in parts] == ["stabiler teil", "variabler teil"]
         assert parts[0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
         assert "prompt_cache_breakpoint" not in parts[1]
-        # Sentinel darf den Payload nirgends mehr verlassen
+        # The sentinel must no longer appear anywhere in the payload
         import json as _json
         assert "CACHE_BREAKPOINT" not in _json.dumps(p)
 
     def test_payload_prompt_cache_key_auto_hashes_prefix(self):
-        # "auto" = Praefix-Hash (cache_key.py): gleicher Prompt -> gleicher
-        # Key, frueh divergenter Prompt (anderes Buch) -> anderer Key.
+        # "auto" = prefix hash (cache_key.py): same prompt -> same key,
+        # early-diverging prompt (different book) -> different key.
         c = _client(prompt_cache_key="auto")
         p1 = c._build_payload([ChatMessage(role="user", content="Buch A")], None)
         p2 = c._build_payload([ChatMessage(role="user", content="Buch A")], None)
@@ -636,24 +637,25 @@ class TestRegistryDispatch:
 
 class TestRdOrphanedHandling:
     def test_orphaned_message_not_replayed_verbatim(self):
-        """Review-Fund (major): Nach History-Mutation flaggt
-        invalidate_reasoning_artifacts die letzte assistant-Message mit
-        rd_orphaned und BEHÄLT ihren Block — verbatim-Replay wäre dann eine
-        partielle Kette (Vorgänger gestrippt) → Verify-400. Orphaned Messages
-        müssen aus content/tool_calls rekonstruiert werden."""
+        """Review finding (major): after a history mutation,
+        invalidate_reasoning_artifacts flags the last assistant message with
+        rd_orphaned and KEEPS its block -- a verbatim replay would then be a
+        partial chain (predecessor stripped) -> verify 400. Orphaned messages
+        must be rebuilt from content/tool_calls."""
         c = _client()
         assistant = c._format_response({"output": SAMPLE_OUTPUT})["assistant"]
         msg = ChatMessage(**assistant)
         msg.rd_orphaned = True
         items = c._messages_to_input([msg])
         types = [i["type"] for i in items]
-        assert "reasoning" not in types            # kein verbatim-Replay
+        assert "reasoning" not in types            # no verbatim replay
         assert types == ["function_call", "function_call"]
         assert [i["call_id"] for i in items] == ["call_1", "call_2"]
 
     def test_invalidation_integration(self):
-        """End-to-End mit der echten Invalidierungs-Infra: ältere Message wird
-        gestrippt, letzte geflaggt → Input enthält KEINE reasoning-Items."""
+        """End to end with the real invalidation infrastructure: the older
+        message is stripped, the last one flagged -> the input contains NO
+        reasoning items."""
         from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
         c = _client()
         a1 = ChatMessage(**c._format_response({"output": SAMPLE_OUTPUT})["assistant"])
@@ -667,9 +669,9 @@ class TestRdOrphanedHandling:
 
 class TestHookPayloadKeys:
     def test_success_notification_uses_response_data_key(self):
-        """Review-Fund (major): hook_integration liest info['response_data'];
-        der Key 'response' würde den message_debugger mit NULL-Bodies füllen.
-        Source-Invariante: Erfolgspfad sendet response_data."""
+        """Review finding (major): hook_integration reads info['response_data'];
+        the key 'response' would fill the message_debugger with NULL bodies.
+        Source invariant: the success path sends response_data."""
         src = (Path(__file__).parents[1] /
                "openai_responses_client.py").read_text(encoding="utf-8")
         assert '"response_data": response_data' in src

@@ -18,7 +18,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_system.auth.security import WeakSecretKeyError, check_secret_key
+from agent_system.auth.security import (MIN_SECRET_KEY_LENGTH, PUBLISHED_SIGNING_KEYS, WeakSecretKeyError,
+                                        check_secret_key)
 from agent_system.config.models import AuthConfig
 
 SHIPPED_CONFIG = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
@@ -36,6 +37,17 @@ def test_an_empty_or_short_key_is_refused(key):
 
 @pytest.mark.parametrize("key", [AuthConfig().secret_key, _shipped_key()], ids=["model default", "shipped config"])
 def test_a_published_key_warns_and_is_refused_when_asked(key, caplog):
+    with caplog.at_level(logging.ERROR, logger="agent_system.auth.security"):
+        check_secret_key(key)
+    assert "published default" in caplog.text
+    with pytest.raises(WeakSecretKeyError):
+        check_secret_key(key, reject_public=True)
+
+
+@pytest.mark.parametrize("key", [key for key in PUBLISHED_SIGNING_KEYS if len(key) >= MIN_SECRET_KEY_LENGTH])
+def test_every_key_the_repository_printed_is_known_to_the_guard(key, caplog):
+    # The guard knew five of them; nine more of 32 characters or more started without a word,
+    # even with reject_default_secret_key.
     with caplog.at_level(logging.ERROR, logger="agent_system.auth.security"):
         check_secret_key(key)
     assert "published default" in caplog.text

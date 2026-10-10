@@ -372,7 +372,7 @@ class TestMessageShape:
 class TestChains:
     @pytest.mark.asyncio
     async def test_calls_run_sequentially_in_configured_order(self, plugin):
-        """'erst context_var setzen, dann Content laden' is a real dependency."""
+        """'first set the context var, then load the content' is a real dependency."""
         agent = FakeAgent()
         rules = [{"match": "Szene\\s+(?P<sid>\\d+)", "calls": [
             {"tool": "set_var", "params": {"name": "scene", "value": "{sid}"}},

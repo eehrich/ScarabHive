@@ -113,11 +113,11 @@ def openrouter_routing_info(response_data: dict) -> Optional[dict]:
         "strategy": meta.get("strategy"),
         "region": meta.get("region"),
     }
-    # `or None`: ein Metadaten-Block, aus dem nichts Brauchbares
-    # herausfaellt, darf kein leeres Dict melden — ein Feld, das immer
-    # etwas enthaelt, ist von einem funktionierenden nicht zu unterscheiden.
-    # `!= []` neben `is not None`: eine leere Anbieterliste ist keine
-    # Information. `attempt: 0` waere eine — deshalb kein Falsy-Test.
+    # `or None`: a metadata block that yields nothing usable must not report
+    # an empty dict -- a field that always holds something cannot be told
+    # apart from one that works.
+    # `!= []` next to `is not None`: an empty provider list is no
+    # information. `attempt: 0` would be one -- hence no falsy test.
     return {k: v for k, v in info.items()
             if v is not None and v != []} or None
 
@@ -300,11 +300,11 @@ class HTTPXOpenAIClient(LLMClient):
         self.thinking_level: str | None = self.extra_params.pop("thinking_level", None)
         self.thinking_budget: int | None = self.extra_params.pop("thinking_budget", None)
 
-        # Sampling-Temperatur. None = Provider-Default (bei DeepSeek/OpenAI
-        # ~1,0) — bis 2026-07 war der Param framework-seitig überhaupt nicht
-        # setzbar, mechanische Aufgaben liefen also mit voller Varianz. Wie
-        # service_tier bewusst aus extra_params gepopt: explizites Feld im
-        # Payload statt opaker Passthrough.
+        # Sampling temperature. None = provider default (about 1.0 on
+        # DeepSeek/OpenAI) -- until 2026-07 the framework could not set the
+        # param at all, so mechanical tasks ran with full variance. Popped
+        # from extra_params on purpose, like service_tier: an explicit field
+        # in the payload instead of an opaque passthrough.
         self.temperature: float | None = self.extra_params.pop("temperature", None)
 
         # Service tier (Google Flex etc.) — set via config, injected as a
@@ -316,10 +316,10 @@ class HTTPXOpenAIClient(LLMClient):
         # handling (and a clear log surface) instead of opaque passthrough.
         self.service_tier: str | None = self.extra_params.pop("service_tier", None)
 
-        # OpenAI GPT-5.6+ Cache-Routing-Key: ohne ihn matcht der Prompt-Cache
-        # ab der 5.6-Familie praktisch nie (Doku: "you must set
-        # prompt_cache_key"). Config-diszipliniert nur auf OpenAI-Profilen
-        # setzen — Fremd-Provider koennten den Param ablehnen.
+        # OpenAI GPT-5.6+ cache routing key: without it the prompt cache
+        # practically never matches from the 5.6 family on (docs: "you must
+        # set prompt_cache_key"). Set it only on OpenAI profiles, by config
+        # discipline -- other providers might reject the param.
         self.prompt_cache_key: str | None = self.extra_params.pop("prompt_cache_key", None)
 
         # Cache-Verhalten (Agent, via llm_params "*") + Marker-Stil (Modell).
@@ -401,8 +401,8 @@ class HTTPXOpenAIClient(LLMClient):
         # base_url — the gateway extras really do hang off the endpoint.
         self._is_openrouter = "openrouter.ai" in base_url.lower()
         if self.plugins and not self._is_openrouter:
-            # Konfiguriert und trotzdem nicht gesendet ist genau die stille
-            # Drift, die dieses Feld sichtbar machen soll.
+            # Configured but not sent is exactly the silent drift this field
+            # is meant to make visible.
             logger.warning(
                 "plugins are configured for model=%s but its endpoint is not "
                 "OpenRouter (%s) — they are NOT sent.", model, base_url)
@@ -474,8 +474,8 @@ class HTTPXOpenAIClient(LLMClient):
         endpoint rejects unknown parameters.
         """
         if resolved_cache_key:
-            # GPT-5.6+ Cache-Routing-Key (s. __init__); "auto" = Praefix-Hash,
-            # kollisionsfrei bei parallelen Buechern (s. cache_key.py).
+            # GPT-5.6+ cache routing key (see __init__); "auto" = prefix hash,
+            # collision-free for parallel runs (see cache_key.py).
             payload["prompt_cache_key"] = resolved_cache_key
             if self._is_openrouter:
                 payload["session_id"] = resolved_cache_key
@@ -543,34 +543,34 @@ class HTTPXOpenAIClient(LLMClient):
     ) -> None:
         """Cache-Breakpoint-Sentinels in Message-Contents verarbeiten (in place).
 
-        Marker-Stil kommt aus der Modell-Config (prompt_cache_marker_style):
-        "openai" -> prompt_cache_breakpoint-Parts (GPT-5.6+), "anthropic" ->
-        cache_control-Parts, "none"/ohne Key -> Sentinel rueckstandsfrei
-        strippen (deepseek & Co. kennen weder Marker noch Feld).
-        Bei prompt_cache_mode=task_sequence ergaenzt die Segment-Leiter den
-        BP1-Read-Anker aus der Prozess-Registry (s. cache_key.py).
+        The marker style comes from the model config (prompt_cache_marker_style):
+        "openai" -> prompt_cache_breakpoint parts (GPT-5.6+), "anthropic" ->
+        cache_control parts, "none"/no key -> strip the sentinel without
+        residue (deepseek & co. know neither marker nor field).
+        With prompt_cache_mode=task_sequence the segment ladder adds the
+        BP1 read anchor from the process registry (see cache_key.py).
         """
         style = self._marker_style()
         mode = self.prompt_cache_mode
-        # Anthropic: hartes 4-Marker-Limit (System-/Tool-Marker belegen schon
-        # 2 Slots) und nativer Prefix-Match -> KEINE kumulative Leiter,
-        # nur deklarierte Grenzen mit knappem Budget.
+        # Anthropic: hard 4-marker limit (system/tool markers already take
+        # 2 slots) and native prefix match -> NO cumulative ladder,
+        # only declared boundaries with a tight budget.
         if style == MARKER_STYLE_ANTHROPIC:
-            # Request-weites Budget: hartes Anthropic-Limit von 4 Markern,
-            # System- + Tool-Marker belegen bereits 2 Slots.
+            # Request-wide budget: hard Anthropic limit of 4 markers,
+            # system + tool markers already take 2 slots.
             marker_budget = 2
             if mode == "task_sequence":
                 mode = None
         else:
-            marker_budget = None  # OpenAI: kein hartes Marker-Limit
+            marker_budget = None  # OpenAI: no hard marker limit
         ladder_used = False
         for msg in message_dicts:
             if not isinstance(msg, dict):
                 continue
             content = msg.get("content")
-            # Listen-Content (z.B. System-Message nach _apply_anthropic_
-            # cache_control, Multimodal-Parts): Sentinels in text-Parts
-            # strippen — Marker-Platzierung passiert nur auf String-Content.
+            # List content (e.g. system message after _apply_anthropic_
+            # cache_control, multimodal parts): strip sentinels in text parts
+            # -- marker placement happens on string content only.
             if isinstance(content, list):
                 for part in content:
                     if (isinstance(part, dict)
@@ -580,8 +580,8 @@ class HTTPXOpenAIClient(LLMClient):
                 continue
             if not isinstance(content, str) or CACHE_BP_SENTINEL not in content:
                 continue
-            # Leiter nur fuer die ERSTE Sentinel-Message pro Request — zwei
-            # Messages wuerden sonst denselben Registry-Key thrashen.
+            # Ladder only for the FIRST sentinel message per request -- two
+            # messages would otherwise thrash the same registry key.
             msg_mode = mode
             if mode == CACHE_MODE_TASK_SEQUENCE:
                 if ladder_used:
@@ -590,13 +590,13 @@ class HTTPXOpenAIClient(LLMClient):
             if style == MARKER_STYLE_NONE or (
                 style == MARKER_STYLE_OPENAI and not self.prompt_cache_key
             ):
-                # Kein Marker-Feld bzw. OpenAI-Stil ohne Key (5.6 braucht den
-                # Key zum Matching) -> Sentinel rueckstandsfrei strippen.
+                # No marker field, or OpenAI style without a key (5.6 needs the
+                # key for matching) -> strip the sentinel without residue.
                 msg["content"] = strip_cache_breakpoints(content)
                 continue
             if marker_budget is not None and marker_budget <= 0:
-                # Anthropic-Budget aufgebraucht: weitere Sentinel-Messages
-                # nur noch strippen (hartes 4-Marker-Limit, sonst HTTP 400).
+                # Anthropic budget used up: strip further sentinel messages
+                # only (hard 4-marker limit, otherwise HTTP 400).
                 msg["content"] = strip_cache_breakpoints(content)
                 continue
             plan = plan_cache_blocks(
@@ -761,14 +761,14 @@ class HTTPXOpenAIClient(LLMClient):
             clean['reasoning_content'] = d['reasoning_content']
         return clean
 
-    # Anthropic-Cache-Policy lebt zentral in cache_key.py (Single-Source-of-Truth
-    # fuer alle Claude-Pfade). Diese Methoden sind duenne, format-adaptierende
-    # Delegatoren: sie reichen die OpenAI-Chat-Completions-Dicts dieses Clients an
-    # die geteilten Helfer weiter. Anthropic via OpenRouter tunnelt Claude durch
-    # die OpenAI-kompatible API — deshalb MUSS die cache_control-Injektion hier im
-    # OpenAI-Payload passieren; die ENTSCHEIDUNG (was/wie oft) liegt aber geteilt.
+    # The Anthropic cache policy lives centrally in cache_key.py (single source
+    # of truth for all Claude paths). These methods are thin, format-adapting
+    # delegators: they pass this client's OpenAI chat-completions dicts on to
+    # the shared helpers. Anthropic via OpenRouter tunnels Claude through the
+    # OpenAI-compatible API -- so the cache_control injection MUST happen here
+    # in the OpenAI payload; the DECISION (what/how often) is shared, though.
 
-    #: Rueckwaerts-kompatibles Alias auf das geteilte harte API-Limit.
+    #: Backward-compatible alias for the shared hard API limit.
     ANTHROPIC_MAX_CACHE_BLOCKS = ANTHROPIC_MAX_CACHE_BLOCKS
 
     def _apply_anthropic_cache_control(self, message_dicts: list) -> None:
@@ -1277,19 +1277,19 @@ class HTTPXOpenAIClient(LLMClient):
         if self.max_tokens:
             payload["max_tokens"] = self.max_tokens
 
-        # Sampling-Temperatur, nur wenn explizit konfiguriert (0.0 ist ein
-        # gültiger Wert → auf None prüfen, nicht auf Falsy). Reasoning-
-        # Modelle akzeptieren den Param nicht: genau dann, wenn ein
-        # reasoning-Feld gesendet wird, NICHT senden — sonst 400er.
-        # (Dasselbe Prädikat wie der Payload-Bau — vorher divergierten die
-        # Guards und thinking_budget=0 unterdrückte temperature, obwohl gar
-        # kein reasoning-Feld gesendet wurde. Gilt BEWUSST auch für
-        # effort="none": OpenAI-Hybride lehnen temperature≠1 auch bei
-        # abgeschaltetem Thinking ab — konservativ unterdrücken.)
+        # Sampling temperature, only if explicitly configured (0.0 is a
+        # valid value -> check for None, not falsy). Reasoning models do not
+        # accept the param: exactly when a reasoning field is sent, do NOT
+        # send it -- otherwise a 400.
+        # (Same predicate as the payload build -- the guards used to diverge
+        # and thinking_budget=0 suppressed temperature although no reasoning
+        # field was sent. Applies ON PURPOSE to effort="none" as well: OpenAI
+        # hybrids reject temperature != 1 even with thinking switched off --
+        # suppress conservatively.)
         if self.temperature is not None:
             if reasoning is not None:
                 logger.debug(
-                    "temperature=%s ignoriert (Reasoning-Modell, model=%s)",
+                    "temperature=%s ignored (reasoning model, model=%s)",
                     self.temperature, self.model,
                 )
             else:
@@ -1722,9 +1722,10 @@ class HTTPXOpenAIClient(LLMClient):
                         await self._report_status(status_scope, f"Request failed after retries: {self.model} ({err_label})")
                         await _report_end(error=f"Request failed after {self.max_retries + 1} attempts ({err_label})")
                         if isinstance(last_exception, httpx.TransportError):
-                            # Endpoint nicht erreichbar (ConnectTimeout, ReadTimeout,
-                            # Netzfehler) — getypt werfen, damit der Agent-Server auf
-                            # das naechste Profil der llm_profile-Kette wechseln kann.
+                            # Endpoint unreachable (ConnectTimeout, ReadTimeout,
+                            # network error) -- raise a typed error so the agent
+                            # server can switch to the next profile of the
+                            # llm_profile chain.
                             raise LLMConnectionError(
                                 f"HTTP request failed after {self.max_retries + 1} attempts ({err_label}) url={url}",
                                 provider="openai_httpx", model=self.model,
@@ -1846,19 +1847,19 @@ class HTTPXOpenAIClient(LLMClient):
         if self.max_tokens:
             payload["max_tokens"] = self.max_tokens
 
-        # Sampling-Temperatur, nur wenn explizit konfiguriert (0.0 ist ein
-        # gültiger Wert → auf None prüfen, nicht auf Falsy). Reasoning-
-        # Modelle akzeptieren den Param nicht: genau dann, wenn ein
-        # reasoning-Feld gesendet wird, NICHT senden — sonst 400er.
-        # (Dasselbe Prädikat wie der Payload-Bau — vorher divergierten die
-        # Guards und thinking_budget=0 unterdrückte temperature, obwohl gar
-        # kein reasoning-Feld gesendet wurde. Gilt BEWUSST auch für
-        # effort="none": OpenAI-Hybride lehnen temperature≠1 auch bei
-        # abgeschaltetem Thinking ab — konservativ unterdrücken.)
+        # Sampling temperature, only if explicitly configured (0.0 is a
+        # valid value -> check for None, not falsy). Reasoning models do not
+        # accept the param: exactly when a reasoning field is sent, do NOT
+        # send it -- otherwise a 400.
+        # (Same predicate as the payload build -- the guards used to diverge
+        # and thinking_budget=0 suppressed temperature although no reasoning
+        # field was sent. Applies ON PURPOSE to effort="none" as well: OpenAI
+        # hybrids reject temperature != 1 even with thinking switched off --
+        # suppress conservatively.)
         if self.temperature is not None:
             if reasoning is not None:
                 logger.debug(
-                    "temperature=%s ignoriert (Reasoning-Modell, model=%s)",
+                    "temperature=%s ignored (reasoning model, model=%s)",
                     self.temperature, self.model,
                 )
             else:

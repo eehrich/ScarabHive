@@ -11,8 +11,11 @@ Self-contained base-system tool. It reads only:
 No dependency on the writer plugin.
 
 Why a session id needs the log: the message_debugger stores usage keyed by
-``request_id``, and its ``session_id`` column is empty — a session id never
-appears in the debugger. But every agent-cli / server run logs which
+``request_id``. Its ``session_id`` column (``turns`` and ``llm_requests``) holds
+the request's session (for ``llm_requests`` only when the agent's session
+tracker knows the request), is empty in older rows, and a sub-agent's rows
+carry the sub-agent's own session id (``sub_<name>_<n>``), not the
+coordinator's — so filtering on it would miss the sub-agent tree. But every agent-cli / server run logs which
 request_id(s) served which session, so the session id you get from
 ``Session saved: <sid>`` resolves to its request-id root(s), whose request
 trees are then walked. A session that ran several times (resumes / pipeline

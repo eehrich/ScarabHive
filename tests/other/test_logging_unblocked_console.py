@@ -44,7 +44,7 @@ def test_a_console_that_stops_reading_holds_no_one():
     finally:
         stalled.release.set()
     console._pending.settle(5)
-    assert "".join(stalled.got).startswith("0\n1\n2\n3\n[console] 6 Ausgaben ausgelassen (die Konsole las"), \
+    assert "".join(stalled.got).startswith("0\n1\n2\n3\n[console] 6 outputs dropped (the console did not read"), \
         ("the first ones in order, the rest dropped and counted", stalled.got)
     who = []
     stalled.write = lambda text: who.append(threading.current_thread().name)
@@ -61,7 +61,7 @@ def test_stdout_and_stderr_keep_their_order_and_a_failed_write_is_named():
     for console, text in ((o, "a\n"), (e, "b\n"), (o, "c\n"), (e, "═\n"), (o, "d\n")):
         console.write(text)
     pending.settle(5)
-    told = [t for t in lines if t.startswith("[console] 1 Ausgaben ausgelassen (UnicodeEncodeError")]
+    told = [t for t in lines if t.startswith("[console] 1 outputs dropped (UnicodeEncodeError")]
     assert [t for t in lines if t not in told] == ["a\n", "b\n", "c\n", "d\n"] and len(told) == 1, \
         ("one queue: written in order, shown in order; the failed one named", lines)
 
@@ -75,7 +75,7 @@ def test_a_text_the_console_cannot_take_costs_only_itself():
         console.write(text)
     stalled.release.set()
     console._pending.settle(5)
-    assert "".join(stalled.got).startswith("0\nx\ny\n[console] 1 Ausgaben ausgelassen (UnicodeEncodeError"), \
+    assert "".join(stalled.got).startswith("0\nx\ny\n[console] 1 outputs dropped (UnicodeEncodeError"), \
         stalled.got
 
 
@@ -101,8 +101,8 @@ def test_a_broken_console_is_told_what_it_lost_once_it_works_again():
     broken.healed = True
     console.write("d\n")
     console._pending.settle(5)
-    assert broken.got[:2] == ["d\n", "[console] 3 Ausgaben ausgelassen (OSError: Pipe kaputt); die Log-Zeilen"
-                              " stehen in der Logdatei unter logs/\n"], ("the lines, not the failed markers", broken.got)
+    assert broken.got[:2] == ["d\n", "[console] 3 outputs dropped (OSError: Pipe kaputt); the log lines"
+                              " are in the log file under logs/\n"], ("the lines, not the failed markers", broken.got)
 
 
 def test_a_busy_server_is_kept_up_with():

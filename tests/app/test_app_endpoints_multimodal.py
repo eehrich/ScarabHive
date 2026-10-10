@@ -43,8 +43,8 @@ class TestMultimodalValidation:
 
 
 class TestTheModelTheAttachmentsReach:
-    """Frueher stand die Auswahl-Logik als Kopie im Test — eine Mutation in
-    app.py liess ihn gruen. Jetzt wird die Funktion selbst gefragt."""
+    """The selection logic used to be a copy inside the test -- a mutation in
+    app.py left it green. Now the function itself is asked."""
 
     def test_the_override_wins_over_the_agent_default(self):
         from agent_system.app import capability_model_name

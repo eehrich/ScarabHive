@@ -132,9 +132,9 @@ def create_llm_from_profile(
     """
     # Create temporary agent config with override profile (+ optional per-agent
     # llm_params so callers with agent context propagate their overrides).
-    # Profil-gekeyte Params werden HIER auf das Zielprofil aufgeloest — die
-    # temp-Config kennt die Ketten des Original-Agents nicht und wuerde
-    # fremde Profil-Keys sonst (zu Recht) ablehnen.
+    # Profile-keyed params are resolved to the target profile HERE — the
+    # temp config does not know the original agent's chains and would
+    # otherwise (rightly) reject foreign profile keys.
     temp_agent_config = AgentConfig(
         llm_profile=llm_profile,
         llm_params=resolve_llm_params(llm_params, llm_profile),
@@ -312,29 +312,29 @@ def _targets_openrouter(model_config: LLMModelConfig) -> bool:
 def _resolve_provider_routing(
     llm_system: LLMSystemConfig, model_config: LLMModelConfig
 ) -> Optional[Dict[str, Any]]:
-    """System-Default und Modell-Eintrag zum OpenRouter-"provider"-Objekt mischen.
+    """Merge the system default and the model entry into the OpenRouter "provider" object.
 
-    Der System-Default (``llm_system.openrouter_routing``, z.B. ``{sort: price}``
-    fuer den jeweils guenstigsten Anbieter) greift nur an OpenRouter-Endpunkten:
-    ``provider`` ist ein OpenRouter-Body-Feld, ein fremder Endpunkt bekaeme einen
-    unbekannten Key.
+    The system default (``llm_system.openrouter_routing``, e.g. ``{sort: price}``
+    for the cheapest provider in each case) only applies at OpenRouter endpoints:
+    ``provider`` is an OpenRouter body field, a foreign endpoint would get an
+    unknown key.
 
-    Gemischt wird FLACH und nur auf oberster Ebene: ein Schluessel, den der
-    Modell-Eintrag setzt, ersetzt den Default-Wert **ganz**. Bei verschachtelten
-    Werten heisst das, dass Unter-Schluessel des Defaults verschwinden —
-    ``max_price: {prompt: 1, completion: 2}`` + Modell ``max_price: {prompt: 5}``
-    ergibt ``{prompt: 5}``, der completion-Deckel ist weg. Absicht: ein
-    Deep-Merge auf einem freien ``Dict[str, Any]`` waere die groessere
-    Ueberraschung.
+    The merge is FLAT and only at the top level: a key that the model entry
+    sets replaces the default value **entirely**. For nested values this
+    means that sub-keys of the default vanish —
+    ``max_price: {prompt: 1, completion: 2}`` + model ``max_price: {prompt: 5}``
+    yields ``{prompt: 5}``, the completion cap is gone. Deliberate: a
+    deep merge on a free ``Dict[str, Any]`` would be the bigger
+    surprise.
 
-    Der Modell-Eintrag kann den Default pro Schluessel ueberstimmen, ihn aber
-    nicht abschalten — ``provider_routing: {}`` heisst "nichts eigenes", nicht
-    "kein Routing". Wer ein einzelnes Modell herausnehmen will, setzt dort einen
-    Gegenwert (z.B. ``sort: throughput``).
+    The model entry can override the default per key, but cannot switch it
+    off — ``provider_routing: {}`` means "nothing of its own", not
+    "no routing". Whoever wants to take a single model out sets a
+    counter-value there (e.g. ``sort: throughput``).
 
-    Achtung auf die Semantik, nicht nur auf die Schluessel: ein Modell mit
-    ``order`` behaelt sein ``order``, sendet ab jetzt aber ``{order: [...],
-    sort: ...}`` — das ist ein anderes Routing als vorher.
+    Mind the semantics, not just the keys: a model with
+    ``order`` keeps its ``order``, but from now on sends ``{order: [...],
+    sort: ...}`` — that is a different routing than before.
     """
     per_model = model_config.provider_routing
     # getattr, not attribute access: callers hand in partial config objects
@@ -379,16 +379,16 @@ def resolve_llm_config_for_agent(
 
     model_config = config.llm_system.models[model_ref]
 
-    # Per-Agent LLM-Parameter-Overrides (agent_config.llm_params): über den
-    # referenzierten Model-Config-Eintrag legen, statt für jede Kombination
-    # (Modell × thinking_level × max_tokens …) einen eigenen models-Eintrag in
-    # llm.yaml anzulegen. Re-Validierung über LLMModelConfig hält die
-    # Typ-Garantien; Identitäts-Felder sind durch den AgentConfig-Validator
-    # gesperrt. Greift für ALLE Profile, die über diese agent_config aufgelöst
-    # werden (default/advanced/escalation) — Fallback-Profile laufen bewusst
-    # ohne (deren Call-Sites reichen keine llm_params durch).
-    # Profil-gekeyte Form wird auf das hier aufgelöste Profil reduziert
-    # (merge("*", params[profil])); Flat-Form gilt unverändert.
+    # Per-agent LLM parameter overrides (agent_config.llm_params): laid over the
+    # referenced model config entry, instead of creating a separate models entry
+    # in llm.yaml for every combination (model × thinking_level × max_tokens …).
+    # Re-validation via LLMModelConfig keeps the type guarantees; identity
+    # fields are blocked by the AgentConfig validator. Applies to ALL profiles
+    # resolved through this agent_config (default/advanced/escalation) —
+    # fallback profiles deliberately run without (their call sites do not pass
+    # llm_params through).
+    # The profile-keyed form is reduced to the profile resolved here
+    # (merge("*", params[profile])); the flat form applies unchanged.
     llm_params = resolve_llm_params(
         getattr(agent_config, "llm_params", None), profile_name
     )

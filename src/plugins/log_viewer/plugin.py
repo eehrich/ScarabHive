@@ -59,5 +59,11 @@ class LogViewerHybridPlugin:
         """Delegate to web endpoints"""
         return self.web_endpoints.get_static_assets()
 
+    def get_security_config(self) -> dict:
+        """Admins only, under any instance name: the panel serves the logs, which carry every
+        user's prompts, names, IPs and session ids. config/security.yaml's rule matches the
+        name ``log_viewer`` alone (PluginWebRegistry.effective_policy)."""
+        return {"min_role": "admin"}
+
 
 PLUGIN_FACTORY = LogViewerHybridPlugin

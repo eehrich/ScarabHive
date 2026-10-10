@@ -420,18 +420,18 @@ class TestCancellationHandling(TestHTTPXOpenAIClient):
 
 
 class TestTransportErrorTyping(TestHTTPXOpenAIClient):
-    """Transportfehler (Endpoint tot) muessen als LLMConnectionError ankommen —
-    Job-532-Regression: das nackte Exception-Wrapping machte die
-    llm_profile-Fallback-Kette des Agent-Servers blind fuer ConnectTimeouts,
-    der Sub-Agent starb trotz konfiguriertem cross-provider-Fallback."""
+    """Transport errors (dead endpoint) must arrive as LLMConnectionError --
+    regression: bare Exception wrapping made the agent server's llm_profile
+    fallback chain blind to ConnectTimeouts, and the sub-agent died despite
+    a configured cross-provider fallback."""
 
     @pytest.mark.asyncio
     async def test_non_streaming_connect_timeout_raises_typed_error(self, sample_messages):
         client = create_test_client()
-        client.capabilities = {"streaming": False}  # wie deepseek-chat-nostream
-        # Trennschaerfe: die Schleife laeuft ueber max(max_retries,
-        # rate_limit_max_retries) — mit beiden gleich koennte die Assertion
-        # unten die beiden Groessen nicht unterscheiden.
+        client.capabilities = {"streaming": False}  # like deepseek-chat-nostream
+        # Discriminating power: the loop runs over max(max_retries,
+        # rate_limit_max_retries) -- with both equal, the assertion below
+        # could not tell the two quantities apart.
         client.rate_limit_max_retries = 1
         with patch("httpx.AsyncClient") as mock_async_client:
             mock_client = AsyncMock()
@@ -443,13 +443,13 @@ class TestTransportErrorTyping(TestHTTPXOpenAIClient):
             with pytest.raises(LLMConnectionError) as exc_info:
                 await client.chat_tools(sample_messages, tools=[])
             assert exc_info.value.model == "gpt-3.5-turbo"
-            # Retries wurden ausgeschoepft, BEVOR getypt geworfen wird
+            # Retries were exhausted BEFORE the typed error is raised
             assert mock_client.post.await_count == client.max_retries + 1
 
     @pytest.mark.asyncio
     async def test_streaming_network_error_raises_typed_error(self, sample_messages):
-        # Timeout-Variante deckt test_max_retries_exceeded (oben) ab — hier
-        # der Netzfehler-Handler, die dritte Raise-Stelle des Mappings.
+        # The timeout variant is covered by test_max_retries_exceeded (above) --
+        # here the network-error handler, the third raise site of the mapping.
         client = create_test_client()
         with patch("httpx.AsyncClient") as mock_async_client:
             mock_client = AsyncMock()
@@ -771,8 +771,8 @@ class TestErrorHandling(TestHTTPXOpenAIClient):
             mock_client.stream = Mock(side_effect=timeout_error)  # Always timeout
             mock_async_client.return_value = mock_client
             
-            # Nach den Retries muss der Fehler GETYPT ankommen (Job-532):
-            # ein nacktes Exception waere fuer die Fallback-Kette unsichtbar.
+            # After the retries the error must arrive TYPED: a bare
+            # Exception would be invisible to the fallback chain.
             with pytest.raises(LLMConnectionError) as exc_info:
                 await client.chat(sample_messages)
 
@@ -1335,9 +1335,9 @@ class TestAnthropicViaOpenRouterCaching:
         assert msgs[0]["content"][1]["cache_control"] == {"type": "ephemeral"}
 
     def test_cache_control_only_on_last_system_message(self, anthropic_or_client):
-        """Mehrere System-Messages (context_engineer-Reminder etc.): NUR die
-        letzte bekommt cache_control — sonst sprengt System+System+...+Tool
-        das harte Anthropic-4-Marker-Limit (400, real getroffen 2026-07-21)."""
+        """Several system messages (context_engineer reminders etc.): ONLY the
+        last one gets cache_control -- otherwise system+system+...+tool
+        exceeds Anthropic's hard 4-marker limit (400, hit for real 2026-07-21)."""
         msgs = [
             {"role": "system", "content": "Base system prompt."},
             {"role": "system", "content": "Injected reminder A."},
@@ -1345,7 +1345,7 @@ class TestAnthropicViaOpenRouterCaching:
             {"role": "user", "content": "Hi"},
         ]
         anthropic_or_client._apply_anthropic_cache_control(msgs)
-        # nur die letzte System-Message ist markiert
+        # only the last system message is marked
         assert isinstance(msgs[0]["content"], str)
         assert isinstance(msgs[1]["content"], str)
         assert isinstance(msgs[2]["content"], list)
@@ -1753,13 +1753,14 @@ class TestContentFilterFallback:
 
 
 class TestEncryptedReasoningRecovery:
-    """Zweistufige Recovery für den encrypted-reasoning-400.
+    """Two-stage recovery for the encrypted-reasoning 400.
 
-    Root-Cause (empirisch via Replay gegen gepinnten Provider): OpenRouters
-    Bridge liefert für Turns mit mehreren parallelen tool_calls gelegentlich
-    ein defektes encrypted-Blob — deterministisch abgelehnt, alle anderen
-    Items der Kette verifizieren weiter. Stufe 0 entfernt daher NUR das im
-    Fehler genannte Item (Payload + Original-Session), Stufe 1 strippt voll.
+    Root cause (empirical, via replay against a pinned provider): OpenRouter's
+    bridge occasionally delivers a defective encrypted blob for turns with
+    several parallel tool_calls -- rejected deterministically, all other
+    items of the chain keep verifying. Stage 0 therefore removes ONLY the
+    item named in the error (payload + original session), stage 1 strips
+    everything.
     """
 
     @staticmethod
@@ -1797,11 +1798,11 @@ class TestEncryptedReasoningRecovery:
         payload, session = self._payload_and_session()
         reason = c._recover_encrypted_reasoning(self.DETAIL, payload, session, 0)
         assert reason and "targeted" in reason and "rs_bbb" in reason
-        # nur die rs_bbb-Message verliert ihre reasoning_details — beidseitig
+        # only the rs_bbb message loses its reasoning_details -- on both sides
         for msgs in (payload["messages"], session):
-            assert "reasoning_details" in msgs[1]      # rs_aaa bleibt
-            assert "reasoning_details" not in msgs[3]  # rs_bbb weg
-            assert "reasoning_details" in msgs[5]      # rs_ccc bleibt
+            assert "reasoning_details" in msgs[1]      # rs_aaa stays
+            assert "reasoning_details" not in msgs[3]  # rs_bbb gone
+            assert "reasoning_details" in msgs[5]      # rs_ccc stays
 
     def test_stage1_full_strip(self):
         c = self._client()
@@ -1856,8 +1857,8 @@ class TestCacheBreakpoints:
         assert "prompt_cache_breakpoint" not in parts[1]
 
     def test_without_key_strips_sentinel(self):
-        # deepseek-Fallback u.ae.: fremde APIs kennen weder Marker noch Feld —
-        # der Content bleibt ein Plain-String ohne Sentinel-Reste.
+        # deepseek fallback and the like: foreign APIs know neither marker nor
+        # field -- the content stays a plain string without sentinel leftovers.
         from agent_system.llm.cache_key import CACHE_BP_SENTINEL
         msgs = [{"role": "user",
                  "content": "zeile1\n" + CACHE_BP_SENTINEL + "zeile2"}]

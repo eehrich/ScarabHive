@@ -79,27 +79,27 @@ class TestToolFilteringPatterns:
         assert not service._matches_any_pattern("weather/get_forecast", ["web_scraper/*", "duckduckgo_search/*"])
 
     def test_dotted_external_requires_dot_form(self, mock_tool_integration_manager):
-        """Discovery-Gate STRIKT: dotted External-Tool-Namen ('server.tool')
-        passieren NUR über die Dot-Form ('server.*' / exakt) — nicht über
-        'server/*' oder den bare Server-Namen. Regressionstest gegen ein
-        Aufweichen des Security-Gates bei Matcher-Änderungen."""
+        """Discovery gate STRICT: dotted external tool names ('server.tool')
+        pass ONLY via the dot form ('server.*' / exact) -- not via
+        'server/*' or the bare server name. Regression test against a
+        loosening of the security gate when the matcher changes."""
         service = self.create_discovery_service(
             ["weather.*"], mock_tool_integration_manager
         )
-        # Slash-Form und bare Name decken dotted Externals NICHT
+        # The slash form and the bare name do NOT cover dotted externals
         assert not service._matches_any_pattern("weather.get_forecast", ["weather/*"])
         assert not service._matches_any_pattern("weather.get_forecast", ["weather"])
-        # Dot-Form und Exakt-Match decken sie
+        # The dot form and an exact match cover them
         assert service._matches_any_pattern("weather.get_forecast", ["weather.*"])
         assert service._matches_any_pattern("weather.get_forecast", ["weather.get_forecast"])
-        # Der Server selbst passiert weiterhin (Pass-Through zur Tool-Filterung)
+        # The server itself still passes (pass-through to tool filtering)
         assert service._matches_any_pattern("weather", ["weather/*"])
         assert service._matches_any_pattern("weather", ["weather"])
         assert service._matches_any_pattern("weather", ["weather/get_forecast"])
 
     def test_question_mark_and_seq_globs(self, mock_tool_integration_manager):
-        """'?'- und '[seq]'-Globs matchen (fnmatch läuft für alle Glob-Metazeichen,
-        nicht nur '*')."""
+        """'?' and '[seq]' globs match (fnmatch runs for all glob metacharacters,
+        not just '*')."""
         service = self.create_discovery_service(
             ["ssh_control_v?"], mock_tool_integration_manager
         )

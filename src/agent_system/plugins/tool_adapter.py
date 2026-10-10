@@ -506,10 +506,10 @@ class PluginToolRegistry:
             logger.error(f"Failed to create plugin instance {name}: {e}")
             raise
 
-        # Sichtbarer Degraded-Mode statt stillem Drift: Agenten, die ueber
-        # diesen FALLBACK-Pfad entstehen (statt ueber bootstrap_servers),
-        # bekommen keine shared ToolServerRegistry injiziert — Tool-Zugriff laeuft
-        # dann nur ueber die Plugin-Registry. Der Primaerpfad bleibt bootstrap.
+        # Visible degraded mode instead of silent drift: agents created via
+        # this FALLBACK path (instead of via bootstrap_servers)
+        # get no shared ToolServerRegistry injected — tool access then runs
+        # only through the plugin registry. The primary path stays bootstrap.
         if plugin_type != name:
             try:
                 from agent_system.servers.agent.server import Agent as _Agent

@@ -202,17 +202,17 @@ class VectorStore:
 
     @_synchronized
     def list_ids(self, collection: str) -> List[str]:
-        """Alle IDs einer Collection.
+        """All IDs of a collection.
 
-        Gebraucht fuer inkrementelles Indizieren: wer wissen will, WAS
-        fehlt, braucht die Menge des Vorhandenen — ``count()`` allein
-        sagt nur, wie viel. Ohne diese Methode musste jeder Aufrufer
-        entweder alles neu indizieren oder am Backend vorbei selbst in
-        die Ablage greifen.
+        Needed for incremental indexing: whoever wants to know WHAT is
+        missing needs the set of what exists — ``count()`` alone
+        only says how many. Without this method every caller had to
+        either re-index everything or reach into the storage
+        behind the backend's back.
 
-        Existiert die Collection nicht, ist die Antwort eine leere Liste
-        (kein Fehler): "noch nichts indiziert" ist ein gueltiger Zustand,
-        kein Ausnahmefall.
+        If the collection does not exist, the answer is an empty list
+        (no error): "nothing indexed yet" is a valid state,
+        not an exceptional case.
         """
         return self._backend.list_ids(collection)
 

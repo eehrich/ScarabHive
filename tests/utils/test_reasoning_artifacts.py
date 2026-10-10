@@ -1,11 +1,11 @@
-"""Tests für die Reasoning-Artefakt-Invalidierung bei History-Mutation.
+"""Tests for reasoning-artifact invalidation on history mutation.
 
-Invariante (utils/reasoning_artifacts.py): reasoning_details sind
-integritäts-geschützte Artefakte über die exakte History. Jede Mutation
-(Compaction, Summarization, Eviction) macht sie ungültig — der Helper
-strippt alle außer der letzten Assistant-Message und flaggt diese als
-`_rd_orphaned`, damit der LLM-Client (mode-bewusst) den Kettenreset
-vollenden kann.
+Invariant (utils/reasoning_artifacts.py): reasoning_details are
+integrity-protected artifacts over the exact history. Any mutation
+(compaction, summarization, eviction) invalidates them -- the helper
+strips all but the last assistant message and flags that one as
+`_rd_orphaned`, so the LLM client (mode-aware) can complete the
+chain reset.
 """
 from __future__ import annotations
 
@@ -133,10 +133,10 @@ class TestInvalidateReasoningArtifacts:
     def test_strips_older_flags_latest(self):
         msgs = _msgs()
         n = invalidate_reasoning_artifacts(msgs)
-        assert n == 2  # eine gestrippt + eine geflaggt
-        assert "reasoning_details" not in msgs[1]          # ältere: gestrippt
-        assert "reasoning_details" in msgs[3]              # letzte: behalten
-        assert msgs[3][RD_ORPHANED_FLAG] is True           # aber geflaggt
+        assert n == 2  # one stripped + one flagged
+        assert "reasoning_details" not in msgs[1]          # older: stripped
+        assert "reasoning_details" in msgs[3]              # last: kept
+        assert msgs[3][RD_ORPHANED_FLAG] is True           # but flagged
 
     def test_noop_without_artifacts(self):
         msgs = [
@@ -164,9 +164,9 @@ class TestInvalidateReasoningArtifacts:
     def test_idempotent(self):
         msgs = _msgs()
         invalidate_reasoning_artifacts(msgs)
-        # Zweiter Aufruf: ältere sind schon weg, letzte schon geflaggt
+        # Second call: older ones are already gone, last one already flagged
         n2 = invalidate_reasoning_artifacts(msgs)
-        assert n2 == 1  # letzte wird erneut geflaggt (harmlos), nichts sonst
+        assert n2 == 1  # last one is flagged again (harmless), nothing else
         assert "reasoning_details" in msgs[3]
 
     def test_object_messages(self):
@@ -186,9 +186,9 @@ class TestInvalidateReasoningArtifacts:
         assert getattr(latest, RD_ORPHANED_FLAG) is True
 
     def test_strip_containing_targets_only_named_item(self):
-        """Chirurgische Heilung: nur die Message mit dem defekten Item verliert
-        ihre Artefakte (OpenRouter-Bridge-Bug bei parallelen tool_calls —
-        alle anderen Items der Kette verifizieren weiter)."""
+        """Surgical healing: only the message with the defective item loses
+        its artifacts (OpenRouter bridge bug with parallel tool_calls --
+        all other items of the chain keep verifying)."""
         msgs = _msgs()
         n = strip_reasoning_artifacts_containing(msgs, "rs_1")
         assert n == 1
@@ -218,9 +218,9 @@ class TestInvalidateReasoningArtifacts:
         assert RD_ORPHANED_FLAG not in msgs[3]
 
     def test_pydantic_chatmessage_objects(self):
-        """Der Summarizer arbeitet auf echten ChatMessage-Objekten (pydantic):
-        Felder sind nicht löschbar (delattr verboten) — der Helper muss auf
-        None setzen; rd_orphaned ist deklariertes Feld und wird gesetzt."""
+        """The summarizer works on real ChatMessage objects (pydantic):
+        fields cannot be deleted (delattr forbidden) -- the helper must set
+        them to None; rd_orphaned is a declared field and gets set."""
         from agent_system.llm.models import ChatMessage
 
         older = ChatMessage(role="assistant", content="",
@@ -234,8 +234,8 @@ class TestInvalidateReasoningArtifacts:
         assert older.reasoning_details is None
         assert latest.reasoning_details == [{"type": "reasoning.encrypted", "data": "Y"}]
         assert latest.rd_orphaned is True
-        # Serialisierung: Flag kommt bei model_dump(exclude_none=True) mit,
-        # damit der LLM-Client es nach der Session-Roundtrip noch sieht
+        # Serialization: the flag is included by model_dump(exclude_none=True),
+        # so the LLM client still sees it after the session round trip
         dumped = latest.model_dump(exclude_none=True)
         assert dumped.get("rd_orphaned") is True
         assert older.model_dump(exclude_none=True).get("rd_orphaned") is None

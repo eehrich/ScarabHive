@@ -6,8 +6,8 @@
 #
 # To rerun, set BOTH enabled flags below to true (store AND agent), restart the API and
 # create a document:
-#   data/json_store/preload_store/preload-demo/mein-plan.json
-#   {"namespace":"preload-demo","doc":"mein-plan","owner":"x","data":{...}}
+#   data/json_store/preload_store/preload-demo/my-plan.json
+#   {"namespace":"preload-demo","doc":"my-plan","owner":"x","data":{...}}
 plugins:
   servers:
     preload_store:
@@ -37,9 +37,9 @@ plugins:
             tool_preload.preload:
               enabled: true
               rules:
-                # "... Dokument mein-plan ..." -> read on the store. namespace is fixed so that
+                # "... document my-plan ..." -> read on the store. namespace is fixed so that
                 # preparation and agent session see the same document (otherwise session-scoped).
-                - match: "Dokument\\s+(?P<doc>[\\w-]+)"
+                - match: "[Dd]ocument\\s+(?P<doc>[\\w-]+)"
                   tool: "preload_store_manage_json"
                   params:
                     operation: "read"
@@ -47,8 +47,8 @@ plugins:
                     doc: "{doc}"
 
         system_prompt: |
-          Du bist ein Testagent. Beantworte Fragen zu Dokumenten aus dem
-          json_store knapp und praezise.
+          You are a test agent. Answer questions about documents in the
+          json_store briefly and precisely.
 
       metadata:
         visibility: "both"

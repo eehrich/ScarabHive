@@ -16,20 +16,20 @@ plugins:
           - consensus
           - concluded
 
-    # Spezieller Sub-Agent-Manager für das Debate-System
+    # Dedicated sub-agent manager for the debate system
     debate_sam:
       type: sub_agent_manager
       enabled: true
-      description: "Sub-Agent-Manager für Debate-Agents"
+      description: "Sub-agent manager for debate agents"
 
       max_nesting_depth: 3
       max_sub_agents_per_type: 10
       max_sub_agents_per_session: 10
       
-      # Timeout-Konfiguration
+      # Timeout configuration
       default_wait_timeout: 1000
 
-      # NUR Debate-Agents erlaubt
+      # ONLY debate agents allowed
       allowed_agents:
         - debate_panel_participant_chat
         - debate_panel_participant_flash

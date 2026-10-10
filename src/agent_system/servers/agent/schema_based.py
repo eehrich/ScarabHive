@@ -79,11 +79,11 @@ class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
         vars = super().get_template_vars()
 
         # Add available LLM profiles if agent_config exists.
-        # llm_profiles = Union beider Ketten (Auswahl-Enum im Schema);
-        # has_advanced gated die use_advanced_model-Beschreibung — ohne
-        # llm_profile_advanced (oder wenn advanced == default, also kein
-        # echtes Upgrade möglich) ist der Parameter ein No-Op und soll
-        # nicht als Upgrade beworben werden.
+        # llm_profiles = union of both chains (selection enum in the schema);
+        # has_advanced gates the use_advanced_model description — without
+        # llm_profile_advanced (or when advanced == default, i.e. no
+        # real upgrade possible) the parameter is a no-op and should
+        # not be advertised as an upgrade.
         if hasattr(self, 'agent_config') and self.agent_config:
             ac = self.agent_config
             vars['llm_profiles'] = ac.available_llm_profiles

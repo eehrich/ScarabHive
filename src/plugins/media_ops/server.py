@@ -34,6 +34,7 @@ from agent_system.utils.multimodal_tool_content import (
     DEFAULT_MAX_IMAGE_SIZE_MB,
     extract_inline_media,
 )
+from agent_system.utils.params import bool_param
 from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied, remote_outside
 
 if TYPE_CHECKING:
@@ -299,7 +300,11 @@ class MediaOpsServer(SchemaBasedToolServer):
                 f"Supported extensions: {', '.join(sorted(MEDIA_TYPES))}",
                 "UnsupportedMediaType",
             )
-        if full.exists() and not params.get("overwrite"):
+        try:
+            overwrite = bool_param(params, "overwrite")  # "false" as text is a true value in Python
+        except ValueError as e:
+            return await _fail(status, str(e), "ValidationError")
+        if full.exists() and not overwrite:
             return await _fail(
                 status,
                 f"File already exists: {full}. Pass overwrite=true to replace it.",

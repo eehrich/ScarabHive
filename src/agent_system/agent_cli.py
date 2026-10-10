@@ -56,16 +56,16 @@ def _run_users_cli(users_args: List[str], config_path: Optional[str]) -> None:
 
 def _tolerate_unencodable_text() -> None:
     """Console streams that replace what they cannot encode instead of crashing."""
-    # Windows-Konsolen/Pipes laufen oft mit cp1252 — Unicode in Ausgaben
-    # (Box-Zeichen der Plugin-Tabelle, Emojis in Beschreibungen) crashte dann
-    # mit UnicodeEncodeError.
-    # - Terminal (tty): Encoding beibehalten, nicht darstellbare Zeichen
-    #   ersetzen (Anzeige degradiert sichtbar statt zu crashen).
-    # - Pipe/Datei (non-tty): UTF-8 erzwingen — Maschinen-Konsum (z.B.
-    #   `agent-cli mcp status | jq`) bekommt byte-treue Daten statt stiller
-    #   '?'-Korruption. Gleiche Konvention wie utils/logging.py.
-    # - stdin: nur errors="replace" (kein Encoding-Wechsel) — verhindert
-    #   UnicodeDecodeError bei Paste/Pipe-Input in Chat-Modi.
+    # Windows consoles/pipes often run with cp1252 — Unicode in output
+    # (box characters of the plugin table, emojis in descriptions) then crashed
+    # with UnicodeEncodeError.
+    # - Terminal (tty): keep the encoding, replace characters that cannot be
+    #   displayed (the display degrades visibly instead of crashing).
+    # - Pipe/file (non-tty): force UTF-8 — machine consumers (e.g.
+    #   `agent-cli mcp status | jq`) get byte-exact data instead of silent
+    #   '?' corruption. Same convention as utils/logging.py.
+    # - stdin: only errors="replace" (no encoding change) — prevents
+    #   UnicodeDecodeError on paste/pipe input in chat modes.
     for _stream in (sys.stdout, sys.stderr):
         if _stream is not None and hasattr(_stream, "reconfigure"):
             try:
@@ -74,7 +74,7 @@ def _tolerate_unencodable_text() -> None:
                 else:
                     _stream.reconfigure(encoding="utf-8", errors="replace")
             except Exception:
-                pass  # exotische Streams (Tests, Pipes) — Verhalten wie bisher
+                pass  # exotic streams (tests, pipes) -- behaviour as before
     if sys.stdin is not None and hasattr(sys.stdin, "reconfigure"):
         try:
             sys.stdin.reconfigure(errors="replace")

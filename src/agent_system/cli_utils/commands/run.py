@@ -506,8 +506,8 @@ async def save_session_after_run(session_service: Any, agent: Agent, *, entry_na
             else:
                 vprint(f"[cli] created new session: {actual_session_id}")
                 logger.info(f"Created new session {actual_session_id}")
-                # stderr: stdout traegt das Ergebnis (`>out.json` darf
-                # keine Meta-Zeilen einsammeln); im Terminal weiter sichtbar.
+                # stderr: stdout carries the result (`>out.json` must not
+                # collect meta lines); still visible in the terminal.
                 print(f"\nSession saved: {actual_session_id}", file=sys.stderr)
         else:
             logger.warning("Session save returned False")

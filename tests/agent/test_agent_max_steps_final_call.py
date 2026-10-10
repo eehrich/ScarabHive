@@ -119,6 +119,22 @@ class _Continues(PluginHook):
         return HookResult(success=True, metadata={"continue": True, "continue_injected_by": "test.continue"})
 
 
+class _SeesTheBudget(PluginHook):
+    """Records (step, max_steps, final_call) at both LLM hook points."""
+
+    def __init__(self):
+        super().__init__({})
+        self.pre, self.post = [], []
+
+    async def on_pre_llm_call(self, context):
+        self.pre.append((context.step, context.max_steps, context.final_call))
+        return HookResult(success=True)
+
+    async def on_post_llm_call(self, context):
+        self.post.append((context.step, context.max_steps, context.final_call))
+        return HookResult(success=True)
+
+
 #: What the last _run() finished with, notes and all. The session keeps no
 #: volatile developer note, so "what the loop added after the final call" is
 #: only measurable here -- ``stored`` answers the other question, what a resume
@@ -274,6 +290,40 @@ async def test_a_continuation_signal_on_the_final_call_is_ignored():
 
     assert len(llm.seen) == 4, f"{len(llm.seen)} requests for 3 steps and the final call"
     assert _outcome(events) == (["summary of what I have"], [])
+
+
+@pytest.mark.asyncio
+async def test_the_llm_hooks_know_which_call_is_the_final_one():
+    """A hook that records a nudge must know whether the loop will honour it:
+    a continuation on the final call is dropped."""
+    hook = _SeesTheBudget()
+    llm = _LLM(text_steps=True)
+    await _run(llm, max_steps=2, hooks=[(HookType.PRE_LLM_CALL, "test.final_call.budget_pre", hook),
+                                        (HookType.POST_LLM_CALL, "test.final_call.budget_post", hook)])
+
+    # text_steps: each text answer ends the run unless something continues it.
+    assert hook.pre == hook.post == [(0, 2, False)], (hook.pre, hook.post)
+
+    hook = _SeesTheBudget()
+    await _run(_LLM(text_steps=True), max_steps=2, hooks=[
+        (HookType.PRE_LLM_CALL, "test.final_call.budget_pre", hook),
+        (HookType.POST_LLM_CALL, "test.final_call.continues", _Continues({})),
+        (HookType.POST_LLM_CALL, "test.final_call.budget_post", hook)])
+
+    expected = [(0, 2, False), (1, 2, False), (2, 2, True)]
+    assert hook.pre == expected, hook.pre
+    assert hook.post == expected, hook.post
+
+
+@pytest.mark.asyncio
+async def test_a_continuation_dropped_on_the_final_call_is_logged_with_its_hook(caplog):
+    llm = _LLM(text_steps=True)
+    with caplog.at_level("INFO", logger="agent_system.servers.agent.server"):
+        await _run(llm, max_steps=1, hooks=[(HookType.POST_LLM_CALL, "test.final_call.continues",
+                                             _Continues({}))])
+
+    dropped = [r.getMessage() for r in caplog.records if "dropped: final call" in r.getMessage()]
+    assert len(dropped) == 1 and "test.continue" in dropped[0], dropped
 
 
 @pytest.mark.asyncio
