@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, status, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from agent_system.auth.models import User, UserRole
+from agent_system.auth.models import User, UserRole, public_user
 from agent_system.auth.database import get_db, UserDatabase
 from agent_system.auth.security import bearer_api_key, decode_access_token, verify_api_key, hash_api_key
 
@@ -114,17 +114,7 @@ async def _authenticate(
                 # What the request writes for this login holds only while it does (POST /auth/api-key)
                 request.state.login_generation = token_data.generation
                 # Convert to User (remove sensitive data)
-                return User(
-                    id=user_in_db.id,
-                    username=user_in_db.username,
-                    email=user_in_db.email,
-                    full_name=user_in_db.full_name,
-                    is_active=user_in_db.is_active,
-                    role=user_in_db.role,
-                    created_at=user_in_db.created_at,
-                    updated_at=user_in_db.updated_at,
-                    last_login=user_in_db.last_login,
-                )
+                return public_user(user_in_db)
     
     # 3. Try API key
     if x_api_key:
@@ -149,17 +139,7 @@ async def _authenticate(
                 user_in_db = db.get_user_by_api_key(api_key_hash)
                 if request.state.login_generation is None or user_in_db is None:
                     raise credentials_exception
-                return User(
-                    id=user_in_db.id,
-                    username=user_in_db.username,
-                    email=user_in_db.email,
-                    full_name=user_in_db.full_name,
-                    is_active=user_in_db.is_active,
-                    role=user_in_db.role,
-                    created_at=user_in_db.created_at,
-                    updated_at=user_in_db.updated_at,
-                    last_login=user_in_db.last_login,
-                )
+                return public_user(user_in_db)
     
     raise credentials_exception
 

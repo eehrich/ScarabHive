@@ -58,7 +58,9 @@ def test_agent_cli_log_lines_follow_color(monkeypatch, mode, expected):
     monkeypatch.setattr(logging.getLogger(), "handlers", [handler])
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr(common, "color_mode", mode)
-    cli.colour_console_logs()
+    from agent_system.cli_utils.commands.run import colour_console_logs
+
+    colour_console_logs()
     assert handler.formatter.use_colors is expected
 
 

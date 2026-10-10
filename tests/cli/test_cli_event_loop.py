@@ -22,15 +22,15 @@ import time
 
 import pytest
 
-from agent_system import agent_cli
+from agent_system.cli_utils import event_loop
 
 
 @pytest.fixture(autouse=True)
 def _fresh_loop():
     """Each test starts and ends without a CLI loop of its own."""
-    agent_cli.close_cli_loop()
+    event_loop.close_cli_loop()
     yield
-    agent_cli.close_cli_loop()
+    event_loop.close_cli_loop()
 
 
 class TestRunAsync:
@@ -40,8 +40,8 @@ class TestRunAsync:
         async def note():
             seen.append(asyncio.get_running_loop())
 
-        agent_cli.run_async(note())
-        agent_cli.run_async(note())
+        event_loop.run_async(note())
+        event_loop.run_async(note())
 
         assert seen[0] is seen[1]
 
@@ -56,8 +56,8 @@ class TestRunAsync:
         async def inspect():
             return state["task"].done()
 
-        agent_cli.run_async(start())
-        assert agent_cli.run_async(inspect()) is False, (
+        event_loop.run_async(start())
+        assert event_loop.run_async(inspect()) is False, (
             "the task from the previous call is already done -- the loop was "
             "closed in between, which is the bug")
 
@@ -77,9 +77,9 @@ class TestRunAsync:
             state["loop"] = asyncio.get_running_loop()
             await asyncio.sleep(0)
 
-        agent_cli.run_async(start())
+        event_loop.run_async(start())
         started = time.monotonic()
-        agent_cli.close_cli_loop()
+        event_loop.close_cli_loop()
         elapsed = time.monotonic() - started
 
         assert elapsed < 5, (
@@ -100,27 +100,27 @@ class TestRunAsync:
         async def note():
             loops.append(asyncio.get_running_loop())
 
-        agent_cli.run_async(note())
-        agent_cli.close_cli_loop()
-        agent_cli.run_async(note())
+        event_loop.run_async(note())
+        event_loop.close_cli_loop()
+        event_loop.run_async(note())
 
         assert loops[0] is not loops[1]
         assert loops[0].is_closed() and not loops[1].is_closed()
 
     def test_close_is_idempotent(self):
-        agent_cli.run_async(asyncio.sleep(0))
-        agent_cli.close_cli_loop()
-        agent_cli.close_cli_loop()  # must not raise
+        event_loop.run_async(asyncio.sleep(0))
+        event_loop.close_cli_loop()
+        event_loop.close_cli_loop()  # must not raise
 
     def test_exceptions_propagate_like_asyncio_run(self):
         async def boom():
             raise ValueError("durchgereicht")
 
         with pytest.raises(ValueError, match="durchgereicht"):
-            agent_cli.run_async(boom())
+            event_loop.run_async(boom())
 
         # ... and the loop is still usable afterwards.
-        assert agent_cli.run_async(_answer()) == 42
+        assert event_loop.run_async(_answer()) == 42
 
 
     def test_another_thread_gets_its_own_loop(self):
@@ -133,12 +133,12 @@ class TestRunAsync:
         async def loop_id():
             return id(asyncio.get_running_loop())
 
-        main_loop = agent_cli.run_async(loop_id())
+        main_loop = event_loop.run_async(loop_id())
         result = {}
 
         def worker():
             try:
-                result["id"] = agent_cli.run_async(loop_id())
+                result["id"] = event_loop.run_async(loop_id())
             except Exception as exc:  # pragma: no cover - the failure we guard
                 result["error"] = exc
 

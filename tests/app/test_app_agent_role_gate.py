@@ -19,6 +19,7 @@ import uuid
 import httpx
 import pytest
 
+from agent_system import app_state
 from agent_system.auth.security import create_access_token
 from agent_system.config.models import AgentConfig, AgentMetadata, ToolServerConfig
 from agent_system.core.request_context import request_user_map
@@ -310,11 +311,10 @@ async def test_the_agent_list_reads_the_registry_and_the_configs_off_the_event_l
     caller for the gate) its walk and the per-agent config reads would stall every stream on the loop."""
     import asyncio
 
-    from agent_system import app as app_mod
     from agent_system.config import settings
 
     on_loop = []
-    registry = app_mod._app_registry
+    registry = app_state.app_registry
     real_list, real_config = registry.list, settings.get_tool_server_config
 
     def listing():
@@ -339,9 +339,8 @@ async def test_an_admin_still_cannot_run_another_users_session(api):
     """POST /run answers another user's session with a 403 before any agent sees it -- an admin's included.
     The run path does the same (Agent._foreign_session refuses any registered owner who is not the session's
     stored user); this pins the HTTP side it was made to match."""
-    from agent_system import app as app_mod
 
-    manager = app_mod._session_service.session_manager
+    manager = app_state.session_service.session_manager
     await manager.create_session(user_id="bob", session_id="s-bobs", agent_name=api.entry.name,
                                  llm_profile="default")
     async with _client(api.app) as client:

@@ -5,7 +5,8 @@ Both directions, because neither existed:
 * ``load``  — audio_ops/comfyui/image_compose can only hand back media they
   produced themselves. This loads what is already on disk, via the same
   mechanism: a ``_multimodal_content`` entry in the tool result, which
-  ``tool_execution.py`` pops and attaches to the tool answer.
+  the agent's tool execution pops and attaches to the tool answer
+  (``pop_multimodal_content`` in ``servers/agent/components/tool_call_contract.py``).
 * ``list_context`` / ``save`` — media that arrived inline (base64) lives only
   in the conversation and is lost when the context is compacted. These two put
   it on disk under a name the agent chooses.

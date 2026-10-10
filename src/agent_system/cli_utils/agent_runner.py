@@ -2,20 +2,51 @@
 Shared agent runner functionality for both agent-run and agent-cli.
 
 This module provides centralized logic for:
+- The entry points' frame: the local operator they run as
 - Agent selection and creation
-- Agent execution with status monitoring
-- Error handling and reporting
+- The task of a woken run
+- What both say to a busy session and to a cancelled run
 """
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
+from typing import Callable
 
 from ..config.settings import AgentSystemConfig
-from ..core.session_presence import WAKE_TASK
+from ..core.session_presence import WAKE_TASK, SessionBusy
 from ..llm.message_roles import DEVELOPER
 from ..llm.models import ChatMessage
 from ..tools.base import ToolServerRegistry
 from ..servers.agent.server import Agent
+from .common import colorize, supports_color
+
+
+def run_as_local_operator(entry: Callable[[], None]) -> None:
+    """Run a local entry point (agent-cli, agent-run): a local process, run by
+    whoever operates the installation -- so the agent role gate takes its
+    default user, cli_user, for the local operator
+    (auth/agent_access.local_operator_trusted). The API process never does."""
+    from ..auth.agent_access import local_operator_trusted
+
+    with local_operator_trusted():
+        entry()
+
+
+def exit_unless_forced(busy: SessionBusy, force: bool) -> None:
+    """Another process holds the session: exit 1, or with --force say so and go on."""
+    if not force:
+        print(f"Error: {busy}.", file=sys.stderr)
+        print("Wait for it to finish, or pass --force if its lock is a leftover.",
+              file=sys.stderr)
+        sys.exit(1)
+    print(f"Warning: {busy}; running it anyway (--force).", file=sys.stderr)
+
+
+def say_cancelled() -> None:
+    """The line a run its user stopped ends with, yellow where colours show."""
+    msg = "\n✋ Cancelled by user"
+    print(colorize(msg, "33") if supports_color() else msg)
 
 
 def wake_message() -> ChatMessage:

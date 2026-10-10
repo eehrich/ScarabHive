@@ -469,7 +469,7 @@ class SubAgentPresence:
     (1, False, "s1", "itself woken"), (0, True, "s1", "sub-agent's session is never woken"),
     (0, False, "../s1", "cannot be watched")])
 async def test_a_woken_run_or_a_sub_agent_is_not_promised_a_wake(repo, monkeypatch, woken, sub_agent, session, reason):
-    """wake_blocked checks neither (core/session_presence.py)."""
+    """wake_blocked checks neither (core/session_presence/wake.py)."""
     monkeypatch.setattr(server_module, "wake_blocked", lambda *a: "")
     monkeypatch.setattr(server_module, "wake_depth", lambda: woken)
     monkeypatch.setattr(server_module, "presence_for", lambda cfg: SubAgentPresence() if sub_agent else None)

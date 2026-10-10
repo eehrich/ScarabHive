@@ -29,7 +29,10 @@ have been removed; `allow/block` had rewritten `mcp_servers.yaml` via
 
 ## 2. Argument Parsing (`agent_cli.main`)
 
-Three stages, each for a measured reason:
+`agent_cli.py` holds the entry point only: it reads the line, loads the
+config and hands over to the command. The two parsers and `--llm-params` are
+built in `cli_utils/cli_parser.py`, next to each other because their pitfall
+(below) is a pair. Three stages, each for a measured reason:
 
 1. **Pre-parser** (`parse_known_args`): picks up the global options (`--config`,
    `-v`, `--color`, `--no-color`, `--show-tools`, `--no-status`, `--raw`) from
@@ -60,6 +63,10 @@ subcommands.
 
 ## 3. Subcommands and What They Start Up
 
+Each command lives in `cli_utils/commands/`: `run.py` (`run` and `chat`),
+`plugins.py`, `mcp.py`, `hooks.py`, `reload.py`; `users` is the Typer app in
+`cli_utils/users.py`.
+
 | Subcommand | Bootstrap | Note |
 |------------|-----------|---------|
 | `plugins` | only `discover_all_plugins` over `plugins.plugin_dirs` | `enabled` raw from `plugins.servers` — as `ToolServerIntegration` does when registering; the type follows the `type:` chain down to the plugin. A plugin counts as enabled if one of its instances is |
@@ -76,7 +83,8 @@ and `ToolService.list_tools`; the API serves both services as well.
 
 ## 4. Flow of `run` and `chat`
 
-In this order, all in `main`:
+In this order, in `cli_utils/commands/run.py`: `run_agent_command` calls one
+function per step, each with what it reads and what it hands on.
 
 1. **Logging** into a role-specific file (`logging.file_cli`, otherwise
    `<logfile>-cli.log`), so that CLI and API do not write to the same file.
@@ -100,7 +108,8 @@ In this order, all in `main`:
    from the flag. The message and the capability check are built by
    `message_with_attachments` (`utils/multimodal_processor.py`), the same
    place as for the API and the chat; error → exit 1.
-8. **Session presence** (`core/session_presence.py`): the session is
+8. **Session presence** (`core/session_presence/`: the rules in
+   `presence.py`, the wake command in `process.py`): the session is
    *held before* it is loaded. Occupied → error (exit 1), `--force`
    overrides an orphaned hold, `--woken` (set by the wake command) steps back
    silently. Ctrl+C is a stop: the session is marked released, and
@@ -115,7 +124,7 @@ In this order, all in `main`:
    was what turned the loop again. So `wake_when_done` could not work in the
    chat at all: the job that sets the marker was frozen, so the marker
    never appeared. `_PromptEditor._ask` therefore runs
-   `prompt_async` under `run_until_complete` (`cli_utils/chat.py`). The same
+   `prompt_async` under `run_until_complete` (`cli_utils/chat/prompt_input.py`). The same
    applies to `/edit`: the editor runs via `run_in_executor`, because writing
    a message in vim takes minutes, and that is exactly when a
    background job would have the most time. Not affected and still blocking
@@ -129,11 +138,12 @@ In this order, all in `main`:
    and no call runs at the prompt — a sub-agent finished with `wake_when_done`
    would sit there until the user happens to type something. While the prompt
    waits, a watcher thread (`_watch_for_wake` in
-   `cli_utils/chat.py`) therefore polls `presence.pending(...)` every half second and
+   `cli_utils/chat/context.py`) therefore polls `presence.pending(...)` every half second and
    cuts off the input; the REPL takes the marker (so that a turn that never
    reaches an LLM call does not trigger an endless loop) and starts a
    turn with `WAKE_TASK`, just as an input would. It takes it with
    `take_for_wake`, which also changes `<session>.woken`: `wake_session`
+   (`core/session_presence/wake.py`)
    repeats its ring while the session is held, and the chat holds it for the
    whole REPL — without the stamp every repeat was a woken turn of its own
    (up to 30, ten seconds apart). A woken `agent-cli run --woken` takes the
@@ -146,7 +156,8 @@ In this order, all in `main`:
 9. **Open the session** via `SessionService.open_for_run`, like `/run` and
    agent-run: a saved one is restored, a new one starts with
    the `template_vars` of the agent config; `--vars` on top.
-10. **Run**: `chat` hands over to `cli_utils/chat.py:run_chat_loop`. `--raw` and
+10. **Run**: `chat` hands over to `cli_utils/chat/repl.py:run_chat_loop`. The
+    one-shot run is `cli_utils/commands/one_shot.py`: `--raw` and
     stream mode both collect via `collect_final_result`. In
     stream mode, `on_event` shows tool calls (`--show-tools`),
     the thinking (gray), errors (`ERROR:`) and the answer as soon as they arrive —
@@ -174,17 +185,44 @@ stderr.
 | Module | Contents |
 |-------|--------|
 | `common.py` | color mode (`set_color_mode`, `supports_color`), Windows VT mode, status lines, `show_answer` (answer as Markdown with colors, raw into a pipe), `render_with_rich` |
-| `chat.py` | the REPL: renderer, input/keyboard, slash commands, usage totals |
+| `chat/` | the REPL, a package (below) |
+| `cli_parser.py` | agent-cli's preliminary and main parser, `parse_llm_params_args` |
+| `commands/run.py` | `run` and `chat`: the steps of section 4 up to the run, the session hold, open and save |
+| `commands/one_shot.py` | the one-shot run: its stop (`RunControl`), the streamed display, the result printed after |
+| `commands/plugins.py` | `plugins list` / `info` / `search` |
+| `commands/mcp.py` | `mcp list` / `status` / `test` / `tools` |
+| `commands/reload.py` | `reload` |
+| `commands/table.py` | the table `plugins list` and `mcp list` print (tabulate, or a plain fallback) |
 | `session_defaults.py` | agent/LLM of a resumed session |
 | `session_listing.py` | `--list-sessions` |
 | `attachments.py` | sort attachments by file kind |
-| `agent_runner.py` | agent creation for `agent-run` |
+| `agent_runner.py` | what both entry points share: running as the local operator, agent creation for `agent-run`, the woken run's task, the busy-session and cancelled lines |
 | `users.py` | Typer app for `agent-cli users` |
-| `commands/hooks.py` | `hooks list` / `hooks inspect` |
+| `commands/hooks.py` | `hooks list` / `hooks inspect`, with the plugins loaded |
 
-The chat's slash commands live elsewhere: `agent_system/chat_commands.py`
-(built in) and `agent_system/plugin_commands.py` (declared by plugins,
-always run via `dispatch_tool_call`).
+`chat/` is cut by responsibility; `chat/__init__.py` re-exports
+`run_chat_loop`, `run_chat_turn`, `ChatRenderer` and `display_width`:
+
+| Module | Contents |
+|-------|--------|
+| `repl.py` | `run_chat_loop`: reads a line, resolves it, hands a built-in command to its handler through one table (`_COMMANDS`) or runs a turn; what Tab completion offers |
+| `turn.py` | `run_chat_turn`, `_execute_turn` on the REPL's loop, the two-stage Ctrl-C (`_cancel_turn`) |
+| `display.py` | `ChatRenderer` (the live region), `display_width`, muting console logging while the region is drawn |
+| `prompt_input.py` | the prompt: `"""` and a trailing `\` for several lines, `_PromptEditor` (prompt_toolkit, history, completion), piped stdin, `/edit` in `$EDITOR` |
+| `typeahead.py` | what is typed while a turn runs (`_KeyReader`, `_poll_typed_input`) |
+| `context.py` | `_ChatContext` and the open session: its messages and the history seed, hold/release/claim (session presence), the wake watch, a fresh session, `_save_now` |
+| `interruptible.py` | work on the REPL's loop that Ctrl-C cancels instead of the chat (`_run_interruptible`, `_drain`) |
+| `token_usage.py` | tokens and cost per call and per chat, the footer line, `/costs` |
+| `sessions.py` | `/new`, `/session`, `/sessions`, `/resume`, `/title`, `/vars`, `/attach` |
+| `agent_setup.py` | `/agent`, `/model`, `/think`, `/tools`, `/skills`, `/context`, running a skill |
+| `transcript.py` | `/history`, `/last`, `/undo`, `/retry`, `/rewind`, `/export`, `/copy` |
+
+Inside the package a module calls a sibling's function through the module
+(`context._save_now(...)`), so a test patches it once, where it is defined.
+The commands themselves are declared elsewhere: `agent_system/chat_commands.py`
+(built in: the catalogue and the parser, shared with the web UI) and
+`agent_system/plugin_commands.py` (declared by plugins, always run via
+`dispatch_tool_call`).
 
 ---
 

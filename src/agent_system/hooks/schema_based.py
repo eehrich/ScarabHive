@@ -241,101 +241,46 @@ class SchemaBasedPluginHook(PluginHook):
         # Fallback: respect schema-level enabled flag
         return hook.get("enabled", True)
 
-    async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+    async def _run_hooks_of_type(self, hook_type: str, context: HookContext) -> HookResult:
+        """Run this plugin's schema hooks of one type in schema order; one merged result.
+
+        Each hook that modified the context hands the next one its version.
+        The ``on_*`` methods below are the PluginHook interface and each
+        call this with its own type.
+        """
         results = []
         for hook in self._hooks:
-            if self._should_dispatch(hook, "PRE_LLM_CALL", context):
+            if self._should_dispatch(hook, hook_type, context):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
                 if result.modified and result.context:
                     context = result.context
 
         return self._merge_results(results, context)
+
+    async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+        return await self._run_hooks_of_type("PRE_LLM_CALL", context)
 
     async def on_post_llm_call(self, context: HookContext) -> HookResult:
-        results = []
-        for hook in self._hooks:
-            if self._should_dispatch(hook, "POST_LLM_CALL", context):
-                result = await self._dispatch_hook(hook["name"], context)
-                results.append(result)
-                if result.modified and result.context:
-                    context = result.context
-
-        return self._merge_results(results, context)
+        return await self._run_hooks_of_type("POST_LLM_CALL", context)
 
     async def on_pre_tool_call(self, context: HookContext) -> HookResult:
-        results = []
-        for hook in self._hooks:
-            if self._should_dispatch(hook, "PRE_TOOL_CALL", context):
-                result = await self._dispatch_hook(hook["name"], context)
-                results.append(result)
-                if result.modified and result.context:
-                    context = result.context
-
-        return self._merge_results(results, context)
+        return await self._run_hooks_of_type("PRE_TOOL_CALL", context)
 
     async def on_post_tool_call(self, context: HookContext) -> HookResult:
-        results = []
-        for hook in self._hooks:
-            if self._should_dispatch(hook, "POST_TOOL_CALL", context):
-                result = await self._dispatch_hook(hook["name"], context)
-                results.append(result)
-                if result.modified and result.context:
-                    context = result.context
-
-        return self._merge_results(results, context)
+        return await self._run_hooks_of_type("POST_TOOL_CALL", context)
 
     async def on_session_start(self, context: HookContext) -> HookResult:
-        results = []
-        for hook in self._hooks:
-            if self._should_dispatch(hook, "SESSION_START", context):
-                result = await self._dispatch_hook(hook["name"], context)
-                results.append(result)
-                if result.modified and result.context:
-                    context = result.context
-
-        return self._merge_results(results, context)
+        return await self._run_hooks_of_type("SESSION_START", context)
 
     async def on_session_end(self, context: HookContext) -> HookResult:
-        results = []
-        for hook in self._hooks:
-            if self._should_dispatch(hook, "SESSION_END", context):
-                result = await self._dispatch_hook(hook["name"], context)
-                results.append(result)
-                if result.modified and result.context:
-                    context = result.context
-
-        return self._merge_results(results, context)
+        return await self._run_hooks_of_type("SESSION_END", context)
 
     async def on_llm_progress(self, context: HookContext) -> HookResult:
-        results = []
-        for hook in self._hooks:
-            if self._should_dispatch(hook, "LLM_PROGRESS", context):
-                result = await self._dispatch_hook(hook["name"], context)
-                results.append(result)
-                if result.modified and result.context:
-                    context = result.context
-
-        return self._merge_results(results, context)
+        return await self._run_hooks_of_type("LLM_PROGRESS", context)
 
     async def on_pre_llm_request(self, context: HookContext) -> HookResult:
-        results = []
-        for hook in self._hooks:
-            if self._should_dispatch(hook, "PRE_LLM_REQUEST", context):
-                result = await self._dispatch_hook(hook["name"], context)
-                results.append(result)
-                if result.modified and result.context:
-                    context = result.context
-
-        return self._merge_results(results, context)
+        return await self._run_hooks_of_type("PRE_LLM_REQUEST", context)
 
     async def on_post_llm_response(self, context: HookContext) -> HookResult:
-        results = []
-        for hook in self._hooks:
-            if self._should_dispatch(hook, "POST_LLM_RESPONSE", context):
-                result = await self._dispatch_hook(hook["name"], context)
-                results.append(result)
-                if result.modified and result.context:
-                    context = result.context
-
-        return self._merge_results(results, context)
+        return await self._run_hooks_of_type("POST_LLM_RESPONSE", context)

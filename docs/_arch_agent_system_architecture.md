@@ -184,8 +184,9 @@ API only for `reload`), and the "Agent Service" box is the agents' own run loop
 - CORS, authentication, rate limiting
 
 **Key Files:**
-- `src/agent_system/app.py` - Application factory (`build_app`), most routes and the SSE endpoints
-- `src/agent_system/api/` - Routers for auth, admin, sessions, debug, health/version
+- `src/agent_system/app.py` - Application factory (`build_app`): setup, middleware, lifespan, router inclusion
+- `src/agent_system/api/*_routes.py` - The app's own routes: runs and SSE (`run_routes`, `event_routes`), run status/cancel/appends (`run_control_routes`), agents and LLM profiles, chat commands, pages, tools, hooks -- sharing an `AppContext` (`api/app_context.py`)
+- `src/agent_system/api/` - Further routers for auth, admin, sessions, debug, health/version
 
 **Dependencies:**
 - FastAPI framework
@@ -194,7 +195,7 @@ API only for `reload`), and the "Agent Service" box is the agents' own run loop
 
 #### 4.2.2 Agent Service (`services/agent_service.py`) -- unused stub
 
-Not wired in: `app.py` keeps `_agent_service = None`, and
+Not wired in: `app_state.agent_service` stays `None`, and
 `services/__init__.py` lists it as "STUB - TODO". `/run` and `/events` call
 `Agent.run_events()` on the selected agent directly; agent-cli runs agents
 in-process. The interface below is what the stub declares.
@@ -217,6 +218,11 @@ class AgentService:
 ```
 
 #### 4.2.3 Agent (`servers/agent/server.py`)
+
+The class is assembled from one mixin per responsibility (`servers/agent/mixins/`: the run and
+its phases, the step loop, LLM selection, prompts, usable tools, live state, persistence, the
+tool session, access); `server.py` keeps the constructor, the config reload and the ToolServer
+interface. See `_arch_agent_architecture.md`, "Component Structure".
 
 **Responsibilities:**
 - Multi-step reasoning loop
@@ -313,6 +319,16 @@ timed-out hook is logged and skipped. Global `hooks.overrides` accept an exact
 - Environment variable substitution
 - Schema validation
 - Pydantic model binding
+
+**Modules (`src/agent_system/config/`):**
+- `models/` - the Pydantic models, a module per part of the configuration: `llm` (`llm_system:`), `agent` (`agent_config` and the `plugins:` server entries that carry it), `external_servers`, `auth`, `system` (every other section, and the root `AgentSystemConfig`); every name is importable from `agent_system.config.models`
+- `settings.py` - the entry points: `load_settings`, `get_tool_server_config`, `master_data_dir`
+- `environment.py` - the secrets files (`local.env`, `secrets.env`) read into the environment, `${VAR}` expansion
+- `layers.py` - the master config, its includes and `local.yaml`: what each file may set and how they stack
+- `merging.py` - `deep_merge` for stacking files; `_deep_merge_dict` and the `+item`/`!pattern` list syntax for inheritance
+- `inheritance.py` - `extends` between model entries, `type` between server entries
+- `llm_checks.py` - the loud but not fatal reports on agents' `llm_params` and LLM chains
+- `local_layer.py` - writes this machine's layer: a credential into `local.env`, the signing key named in `local.yaml`
 
 **Configuration System:**
 - `config/config.yaml` - Main config with includes mechanism

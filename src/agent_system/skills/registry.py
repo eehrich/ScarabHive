@@ -473,6 +473,21 @@ def get_skill_registry(skill_dirs: Optional[Sequence[str]] = None) -> SkillRegis
     return registry
 
 
+def configured_skill_registry(system_config: Any) -> SkillRegistry:
+    """The process-wide registry, scanned with the roots the CONFIG resolves to.
+
+    Never a hardcoded path: ``skills.skill_dirs`` may use wildcards
+    (``skills/*/``) and the operator decides how deep that goes; the defaults
+    apply only when nothing is configured. ``ensure_discovered`` touches the
+    filesystem only when the roots changed, so the prompt render that runs on
+    every LLM call, the chat surfaces and the skills plugin stay cheap.
+    """
+    configured = list(getattr(getattr(system_config, "skills", None), "skill_dirs", []) or [])
+    registry = get_skill_registry()
+    registry.ensure_discovered(configured or list(default_skill_dirs()))
+    return registry
+
+
 def reset_skill_registry() -> None:
     """Drop the process-wide registry (used by tests for isolation)."""
     global _registry

@@ -2,7 +2,7 @@
 
 Enum `HookType` in `src/agent_system/hooks/plugin_hook.py`; called through the
 `HookIntegrationManager` (`servers/agent/components/hook_integration.py`) and the
-step loop in `servers/agent/server.py`.
+step loop in `servers/agent/mixins/llm_loop/` (its phases: `step.py`, `fallback.py`, `tool_step.py`).
 
 ## Types — when they fire, what takes effect
 

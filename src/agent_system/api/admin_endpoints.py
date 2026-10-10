@@ -12,8 +12,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
 from pydantic import BaseModel
 
+from agent_system import app_state
 from agent_system.api.auth_endpoints import renew_own_login
-from agent_system.auth.models import User, UserCreate, UserUpdate, UserRole
+from agent_system.auth.models import User, UserCreate, UserUpdate, UserRole, public_user
 from agent_system.auth.database import get_db, PasswordChangedMeanwhile, UserDatabase
 from agent_system.auth.dependencies import require_admin
 from agent_system.auth.middleware import (
@@ -135,20 +136,7 @@ async def list_users(
     users_in_db = db.list_users(skip=skip, limit=limit)
     
     # Convert to User models (remove sensitive data)
-    users = [
-        User(
-            id=u.id,
-            username=u.username,
-            email=u.email,
-            full_name=u.full_name,
-            is_active=u.is_active,
-            role=u.role,
-            created_at=u.created_at,
-            updated_at=u.updated_at,
-            last_login=u.last_login,
-        )
-        for u in users_in_db
-    ]
+    users = [public_user(u) for u in users_in_db]
     
     logger.debug(f"Admin {admin_user.username} listed users (skip={skip}, limit={limit})")
     
@@ -191,17 +179,7 @@ async def get_user(
     
     logger.debug(f"Admin {admin_user.username} retrieved user {user_in_db.username}")
     
-    return User(
-        id=user_in_db.id,
-        username=user_in_db.username,
-        email=user_in_db.email,
-        full_name=user_in_db.full_name,
-        is_active=user_in_db.is_active,
-        role=user_in_db.role,
-        created_at=user_in_db.created_at,
-        updated_at=user_in_db.updated_at,
-        last_login=user_in_db.last_login,
-    )
+    return public_user(user_in_db)
 
 
 @router.post("/users", response_model=User, status_code=status.HTTP_201_CREATED)
@@ -228,17 +206,7 @@ async def create_user_admin(
         user_in_db = db.create_user(user_data)
         logger.info(f"Admin {admin_user.username} created user: {user_in_db.username}")
         
-        return User(
-            id=user_in_db.id,
-            username=user_in_db.username,
-            email=user_in_db.email,
-            full_name=user_in_db.full_name,
-            is_active=user_in_db.is_active,
-            role=user_in_db.role,
-            created_at=user_in_db.created_at,
-            updated_at=user_in_db.updated_at,
-            last_login=user_in_db.last_login,
-        )
+        return public_user(user_in_db)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -303,17 +271,7 @@ async def update_user(
     if own_password:
         renew_own_login(response, updated_user, generation)
 
-    return User(
-        id=updated_user.id,
-        username=updated_user.username,
-        email=updated_user.email,
-        full_name=updated_user.full_name,
-        is_active=updated_user.is_active,
-        role=updated_user.role,
-        created_at=updated_user.created_at,
-        updated_at=updated_user.updated_at,
-        last_login=updated_user.last_login,
-    )
+    return public_user(updated_user)
 
 
 @router.delete("/users/{user_id}", response_model=MessageResponse)
@@ -355,6 +313,31 @@ async def delete_user(
         )
 
 
+def _apply_user_update(
+    db: UserDatabase,
+    user_id: int,
+    update_data: UserUpdate,
+    admin_user: User,
+    did: str,
+) -> User:
+    """Apply one admin action to an account and return the account as clients see it.
+
+    The common step of /activate, /deactivate, /promote and /demote: a 404
+    for an unknown ID, else one log line "Admin <name> <did>".
+    """
+    updated_user = db.update_user(user_id, update_data)
+
+    if not updated_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with ID {user_id} not found"
+        )
+
+    logger.info(f"Admin {admin_user.username} {did}")
+
+    return public_user(updated_user)
+
+
 @router.post("/users/{user_id}/activate", response_model=User)
 async def activate_user(
     user_id: int,
@@ -372,28 +355,9 @@ async def activate_user(
     Returns:
         Updated user
     """
-    update_data = UserUpdate(is_active=True)
-    updated_user = db.update_user(user_id, update_data)
-    
-    if not updated_user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID {user_id} not found"
-        )
-    
-    logger.info(f"Admin {admin_user.username} activated user ID {user_id}")
-    
-    return User(
-        id=updated_user.id,
-        username=updated_user.username,
-        email=updated_user.email,
-        full_name=updated_user.full_name,
-        is_active=updated_user.is_active,
-        role=updated_user.role,
-        created_at=updated_user.created_at,
-        updated_at=updated_user.updated_at,
-        last_login=updated_user.last_login,
-    )
+    return _apply_user_update(
+        db, user_id, UserUpdate(is_active=True), admin_user,
+        f"activated user ID {user_id}")
 
 
 @router.post("/users/{user_id}/deactivate", response_model=User)
@@ -423,28 +387,9 @@ async def deactivate_user(
             detail="Cannot deactivate your own account"
         )
     
-    update_data = UserUpdate(is_active=False)
-    updated_user = db.update_user(user_id, update_data)
-    
-    if not updated_user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID {user_id} not found"
-        )
-    
-    logger.info(f"Admin {admin_user.username} deactivated user ID {user_id}")
-    
-    return User(
-        id=updated_user.id,
-        username=updated_user.username,
-        email=updated_user.email,
-        full_name=updated_user.full_name,
-        is_active=updated_user.is_active,
-        role=updated_user.role,
-        created_at=updated_user.created_at,
-        updated_at=updated_user.updated_at,
-        last_login=updated_user.last_login,
-    )
+    return _apply_user_update(
+        db, user_id, UserUpdate(is_active=False), admin_user,
+        f"deactivated user ID {user_id}")
 
 
 @router.post("/users/{user_id}/promote", response_model=User)
@@ -464,28 +409,9 @@ async def promote_to_admin(
     Returns:
         Updated user
     """
-    update_data = UserUpdate(role=UserRole.ADMIN)
-    updated_user = db.update_user(user_id, update_data)
-    
-    if not updated_user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID {user_id} not found"
-        )
-    
-    logger.info(f"Admin {admin_user.username} promoted user ID {user_id} to admin")
-    
-    return User(
-        id=updated_user.id,
-        username=updated_user.username,
-        email=updated_user.email,
-        full_name=updated_user.full_name,
-        is_active=updated_user.is_active,
-        role=updated_user.role,
-        created_at=updated_user.created_at,
-        updated_at=updated_user.updated_at,
-        last_login=updated_user.last_login,
-    )
+    return _apply_user_update(
+        db, user_id, UserUpdate(role=UserRole.ADMIN), admin_user,
+        f"promoted user ID {user_id} to admin")
 
 
 @router.post("/users/{user_id}/demote", response_model=User)
@@ -515,28 +441,9 @@ async def demote_from_admin(
             detail="Cannot demote your own account"
         )
     
-    update_data = UserUpdate(role=UserRole.USER)
-    updated_user = db.update_user(user_id, update_data)
-    
-    if not updated_user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID {user_id} not found"
-        )
-    
-    logger.info(f"Admin {admin_user.username} demoted user ID {user_id} from admin")
-    
-    return User(
-        id=updated_user.id,
-        username=updated_user.username,
-        email=updated_user.email,
-        full_name=updated_user.full_name,
-        is_active=updated_user.is_active,
-        role=updated_user.role,
-        created_at=updated_user.created_at,
-        updated_at=updated_user.updated_at,
-        last_login=updated_user.last_login,
-    )
+    return _apply_user_update(
+        db, user_id, UserUpdate(role=UserRole.USER), admin_user,
+        f"demoted user ID {user_id} from admin")
 
 
 class ActiveSessionInfo(BaseModel):
@@ -579,7 +486,6 @@ async def list_active_sessions(
         List of active sessions with details
     """
     # Import here to avoid circular imports
-    from agent_system.app import _app_registry
     from agent_system.core.request_context import request_user_map as _request_user_map
     from agent_system.servers.agent.server import Agent
     
@@ -587,9 +493,9 @@ async def list_active_sessions(
     
     try:
         # Iterate through all agents in registry
-        for agent_name in _app_registry.list():
+        for agent_name in app_state.app_registry.list():
             try:
-                srv = _app_registry.get(agent_name)
+                srv = app_state.app_registry.get(agent_name)
                 if not isinstance(srv, Agent):
                     continue
                 

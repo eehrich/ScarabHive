@@ -239,9 +239,9 @@ async def test_a_run_whose_status_scopes_do_not_open_lets_go_of_the_session(monk
     request on it was refused until the process restarted."""
     from test_reasoning_loop_wiring import _real_agent
 
-    from agent_system.servers.agent import server as server_mod
+    from agent_system.servers.agent.mixins import run as run_mod
 
-    real_scope = server_mod.status_scope
+    real_scope = run_mod.status_scope
     endings = []
 
     class _Told:
@@ -264,10 +264,10 @@ async def test_a_run_whose_status_scopes_do_not_open_lets_go_of_the_session(monk
 
     agent = _real_agent()
     agent.llm = _Answers()
-    monkeypatch.setattr(server_mod, "status_scope", failing_worker_scope)
+    monkeypatch.setattr(run_mod, "status_scope", failing_worker_scope)
     with pytest.raises(RuntimeError):
         [event async for event in agent.run_events("hello", session_id="stuck")]
-    monkeypatch.setattr(server_mod, "status_scope", real_scope)
+    monkeypatch.setattr(run_mod, "status_scope", real_scope)
 
     assert agent._session_tracker.check_session_locked("stuck") == (False, None)
     assert agent._session_tracker._active_requests == {}

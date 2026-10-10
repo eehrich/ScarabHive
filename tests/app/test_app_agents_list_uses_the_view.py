@@ -77,7 +77,7 @@ def registry_of_agents():
 
 
 def test_only_the_publicly_visible_agents_are_listed(client, registry_of_agents):
-    with patch("agent_system.app._app_registry", registry_of_agents):
+    with patch("agent_system.app_state.app_registry", registry_of_agents):
         response = client.get("/agents")
 
     assert response.status_code == 200
@@ -109,7 +109,7 @@ def test_the_listings_carry_what_the_pickers_search_and_group_by(registry_of_age
     })
     monkeypatch.setattr(client.app.state, "config", live)
 
-    with patch("agent_system.app._app_registry", registry_of_agents):
+    with patch("agent_system.app_state.app_registry", registry_of_agents):
         agents = client.get("/agents").json()
     profiles = {p["name"]: p for p in client.get("/llm/profiles").json()["profiles"]}
 
@@ -131,7 +131,7 @@ def test_a_registry_without_a_runtime_still_answers(client, registry_of_agents):
     endpoint's result depends on how the registry was made."""
     registry_of_agents._runtime = None
 
-    with patch("agent_system.app._app_registry", registry_of_agents):
+    with patch("agent_system.app_state.app_registry", registry_of_agents):
         response = client.get("/agents")
 
     assert set(response.json()["agents"]) == EXPECTED_IN_UI, response.json()
@@ -145,7 +145,7 @@ def test_an_agent_without_the_flag_at_all_stays_listed(client, registry_of_agent
     registry_of_agents._runtime = None
     del registry_of_agents._servers["probe_private"]._tool_public
 
-    with patch("agent_system.app._app_registry", registry_of_agents):
+    with patch("agent_system.app_state.app_registry", registry_of_agents):
         response = client.get("/agents")
 
     assert set(response.json()["agents"]) == EXPECTED_IN_UI | {"probe_private"}, response.json()
@@ -165,7 +165,7 @@ def test_a_mock_registry_does_not_turn_every_server_into_a_public_agent(client):
     mock_registry.list.return_value = ["anything", "at", "all"]
     mock_registry.get.return_value = object()  # not an Agent
 
-    with patch("agent_system.app._app_registry", mock_registry):
+    with patch("agent_system.app_state.app_registry", mock_registry):
         response = client.get("/agents")
 
     assert response.json()["agents"] == [], response.json()

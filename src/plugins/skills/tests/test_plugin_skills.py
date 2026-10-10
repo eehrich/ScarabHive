@@ -56,7 +56,7 @@ def server(tmp_path, monkeypatch):
         extra={"reference/deep.md": "DEEP-CONTENT"},
     )
     monkeypatch.setattr(
-        "plugins.skills.server.get_skill_registry",
+        "agent_system.skills.registry.get_skill_registry",
         lambda *a, **k: SkillRegistry(),
     )
     cfg = AgentSystemConfig(skills={"skill_dirs": [str(root)]})

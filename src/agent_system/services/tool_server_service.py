@@ -17,6 +17,29 @@ from agent_system.config.models import AgentSystemConfig
 logger = logging.getLogger(__name__)
 
 
+async def external_client_or_none(tool_integration: Any, server_name: str):
+    """The live connection to *server_name* in the external client pool, or None.
+
+    Never raises: a missing provider or pool, a pool that hands back a
+    coroutine, and any error on the way all end in None. ToolServerService
+    and ToolService both read connections this way (each through its own
+    ``_get_client_safe``, which tests replace), and both must degrade to
+    "not connected".
+    """
+    try:
+        provider = getattr(tool_integration, "external_provider", None)
+        pool = getattr(provider, "pool", None) if provider else None
+        if pool is None:
+            return None
+        client = pool.get(server_name)
+        if hasattr(client, '__await__'):
+            client = await client
+        return client
+    except Exception as e:
+        logger.debug(f"Exception getting client for {server_name}: {e}")
+        return None
+
+
 class ToolServerService:
     """Centralized tool server management service.
 
@@ -318,18 +341,7 @@ class ToolServerService:
         Tolerates a coroutine and a missing provider: this is called on status
         paths that must degrade to "not connected" rather than raise.
         """
-        try:
-            provider = getattr(self._mcp, "external_provider", None)
-            pool = getattr(provider, "pool", None) if provider else None
-            if pool is None:
-                return None
-            client = pool.get(server_name)
-            if hasattr(client, '__await__'):
-                client = await client
-            return client
-        except Exception as e:
-            logger.debug(f"Exception getting client for {server_name}: {e}")
-            return None
+        return await external_client_or_none(self._mcp, server_name)
 
     def _check_plugin_connectivity(self, server_id: str, registry) -> bool:
         """Check if a plugin server is connected (present in registry).

@@ -1,4 +1,4 @@
-"""Session presence and waking (core/session_presence.py).
+"""Session presence and waking (core/session_presence/).
 
 The rules against a temp sessions directory. A holder in another process is a
 real process, and its crash a real kill; the agent loop's holds go through a
@@ -62,7 +62,7 @@ def spawned(monkeypatch):
         calls.append((session_id, user_id, depth))
         return os.getpid(), psutil.Process().create_time()
 
-    monkeypatch.setattr(sp, "spawn_wake", fake_spawn)
+    monkeypatch.setattr(sp.presence, "spawn_wake", fake_spawn)
     return calls
 
 
@@ -118,7 +118,7 @@ class TestHolding:
         _stored(tmp_path, "sb")
         _stored(tmp_path, "nobody_holds_it")
         other_process("sb")
-        monkeypatch.setattr(sp, "_stored_session",
+        monkeypatch.setattr(sp.presence, "_stored_session",
                             lambda path: pytest.fail("status() read the session file"))
 
         assert store.status("sb", USER) == "running"
@@ -131,7 +131,7 @@ class TestHolding:
     def test_a_lock_file_that_keeps_being_replaced_is_given_up_on(self, store, monkeypatch):
         # Every attempt means the file was deleted between the open and the
         # lock. A filesystem that keeps answering that way must not spin here.
-        monkeypatch.setattr(sp, "_is_file_at", lambda fd, path: False)
+        monkeypatch.setattr(sp.lockfile, "_is_file_at", lambda fd, path: False)
 
         assert store.hold("sb", USER, "agent_b") is False
 
@@ -222,7 +222,7 @@ class TestNotify:
         def no_process(session_id, user_id, depth):
             raise RuntimeError("no process could be started")
 
-        monkeypatch.setattr(sp, "spawn_wake", no_process)
+        monkeypatch.setattr(sp.presence, "spawn_wake", no_process)
         _stored(tmp_path, "sb")
 
         state, note = store.notify("sb", USER)
@@ -348,7 +348,7 @@ def test_a_message_does_not_make_an_idle_session_look_busy(store, tmp_path, monk
         assert go_on.wait(5), "the test never let the wake finish"
         return 0, 0.0  # a run that is gone again: the marker must not outlive it
 
-    monkeypatch.setattr(sp, "spawn_wake", slow_spawn)
+    monkeypatch.setattr(sp.presence, "spawn_wake", slow_spawn)
     waking = threading.Thread(target=store.notify, args=("sb", USER))
     waking.start()
     try:
@@ -377,7 +377,7 @@ def test_letting_go_survives_a_wake_the_disk_refuses(store, tmp_path, monkeypatc
     def refuse(path, attempts=20):
         raise OSError("the disk keeps replacing it")
 
-    monkeypatch.setattr(sp, "_open_locked", refuse)
+    monkeypatch.setattr(sp.presence, "_open_locked", refuse)
 
     store.release("sb", USER)  # must not raise
 
@@ -452,7 +452,7 @@ class TestTheAgentLoop:
     async def test_input_during_the_last_llm_call_wakes_the_session_after_its_save(
             self, tmp_path, monkeypatch):
         events = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth:
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth:
                             events.append(("woken", session_id, depth)) or (0, 0.0))
         _stored(tmp_path, "s1")
         agent = _agent(tmp_path, monkeypatch,
@@ -591,7 +591,7 @@ class TestTakingTheLock:
                 raise PermissionError(13, "being deleted")
             return real_open(path, flags, *args, **kwargs)
 
-        monkeypatch.setattr(sp.os, "open", refuse_once)
+        monkeypatch.setattr(sp.lockfile.os, "open", refuse_once)
         presence = sp.SessionPresence(tmp_path)
 
         assert presence.hold("s1", "u", "agent") is True, "the hold was refused, and the run would go on unheld"
@@ -613,7 +613,7 @@ class TestTakingTheLock:
                 raise PermissionError(13, "Permission denied")
             return real_open(path, flags, *args, **kwargs)
 
-        monkeypatch.setattr(sp.os, "open", refuse)
+        monkeypatch.setattr(sp.lockfile.os, "open", refuse)
         presence = sp.SessionPresence(tmp_path)
 
         assert presence.hold("s1", "u", "agent") is False
@@ -627,15 +627,15 @@ class TestTakingTheLock:
         elsewhere while it is free -- measured, 415 of some 3000 answers of
         "running" under six holders had gone stale by then.
         """
-        real_open_locked = sp._open_locked
+        real_open_locked = sp.lockfile._open_locked
         attempts = []
 
         def busy_first(path, *args, **kwargs):
             attempts.append(path)
             return None if len(attempts) == 1 else real_open_locked(path, *args, **kwargs)
 
-        monkeypatch.setattr(sp, "_open_locked", busy_first)
-        monkeypatch.setattr(sp, "_probe", lambda path: {"status": "running", "agent": "someone"})
+        monkeypatch.setattr(sp.presence, "_open_locked", busy_first)
+        monkeypatch.setattr(sp.presence, "_probe", lambda path: {"status": "running", "agent": "someone"})
         presence = sp.SessionPresence(tmp_path)
 
         assert presence.hold("s1", "u", "agent") is True, "a session nobody holds was reported as busy"
@@ -664,7 +664,7 @@ class TestTheWakeLog:
                  "sys.stderr.flush()\n")
         running = []
         for tag in ("first", "second"):
-            errors = sp._append_handle(log)
+            errors = sp.process._append_handle(log)
             running.append(subprocess.Popen(
                 [sys.executable, "-c", child, str(go), tag],
                 stdout=subprocess.DEVNULL, stderr=errors))
@@ -686,7 +686,7 @@ class TestAStoppedRun:
 
     @pytest.fixture(autouse=True)
     def no_stops_from_other_tests(self, monkeypatch):
-        monkeypatch.setattr(sp, "_stops", set())
+        monkeypatch.setattr(sp.presence, "_stops", set())
 
     def test_input_left_waiting_does_not_wake_a_session_let_go_stopped(self, store, tmp_path, spawned):
         _stored(tmp_path, "s1")
@@ -824,14 +824,14 @@ class TestAStoppedRun:
         # The ring passed the check before the lock; the stopped run let go in between.
         _stored(tmp_path, "s1")
         assert store.hold("s1", USER, "agent_a", run="r1")
-        open_locked = sp._open_locked
+        open_locked = sp.lockfile._open_locked
 
         def run_lets_go_first(path):
             sp.note_stop("r1")
             store.release("s1", USER)
             return open_locked(path)
 
-        monkeypatch.setattr(sp, "_open_locked", run_lets_go_first)
+        monkeypatch.setattr(sp.presence, "_open_locked", run_lets_go_first)
         assert store.notify("s1", USER) == ("queued", sp.STOPPED)
         assert spawned == []
 
@@ -914,7 +914,7 @@ class TestAStoppedRun:
         # user stops r1 and asks again (r2). A check before the first ring alone lets the
         # stopped run's work through the STOPPED answers until r2 lifts the mark.
         monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
-        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)
+        monkeypatch.setattr(sp.wake, "WAKE_RETRY_SECONDS", 0)
         config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
         store = sp.presence_for(config)
         _stored(tmp_path, "s1")
@@ -948,7 +948,7 @@ class TestAStoppedRun:
         # An admin cancels the sub-agent itself: its own id is noted, and the job's task
         # still carries it from the stream it did not drain. Its caller, r1, was not stopped.
         monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
-        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)
+        monkeypatch.setattr(sp.wake, "WAKE_RETRY_SECONDS", 0)
         config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
         sp.presence_for(config)
         _stored(tmp_path, "s1")
@@ -972,7 +972,7 @@ class TestAStoppedRun:
     async def test_a_stop_noted_before_the_run_registers_stays(self, tmp_path, monkeypatch):
         # A minted id (chat, agent-cli) is new: a stop noted before its run registers is its own.
         woken = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
         _stored(tmp_path, "s1")
         sp.note_stop("r-early-stop")
         agent = _agent(tmp_path, monkeypatch, lambda: sp.presence_for(agent.system_config).notify("s1", USER))
@@ -1007,7 +1007,7 @@ class TestAStoppedRun:
         # Stop, then ask again at once: the new run lifts the mark, and a sub-agent the
         # stopped run started ends meanwhile. Its task carries the stopped run's id.
         monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
-        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)   # a wrong answer rings on
+        monkeypatch.setattr(sp.wake, "WAKE_RETRY_SECONDS", 0)   # a wrong answer rings on
         config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
         store = sp.presence_for(config)
         _stored(tmp_path, "s1")
@@ -1030,7 +1030,7 @@ class TestAStoppedRun:
 
     async def test_work_of_the_run_that_holds_it_still_rings(self, tmp_path, monkeypatch, spawned):
         monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
-        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)
+        monkeypatch.setattr(sp.wake, "WAKE_RETRY_SECONDS", 0)
         config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
         store = sp.presence_for(config)
         _stored(tmp_path, "s1")
@@ -1055,7 +1055,7 @@ class TestAStoppedRun:
         # that. r0's work ends while the session is marked: it is still news once the
         # user's next run (r2) lifts the mark.
         monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
-        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0.05)
+        monkeypatch.setattr(sp.wake, "WAKE_RETRY_SECONDS", 0.05)
         config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
         store = sp.presence_for(config)
         _stored(tmp_path, "s1")
@@ -1079,7 +1079,7 @@ class TestAStoppedRun:
 
     async def test_a_stopped_session_is_no_warning(self, tmp_path, monkeypatch, spawned, caplog):
         monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
-        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)
+        monkeypatch.setattr(sp.wake, "WAKE_RETRY_SECONDS", 0)
         config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
         store = sp.presence_for(config)
         _stored(tmp_path, "s1")
@@ -1104,7 +1104,7 @@ class TestAStoppedRun:
 
     async def test_a_run_after_a_stopped_one_is_woken_as_usual(self, tmp_path, monkeypatch):
         woken = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
         _stored(tmp_path, "s1")
         agent = _agent(tmp_path, monkeypatch, lambda: sp.presence_for(agent.system_config).notify("s1", USER))
         presence = sp.presence_for(agent.system_config)
@@ -1118,9 +1118,9 @@ class TestAStoppedRun:
         assert woken == ["s1"]
 
     async def test_work_a_stopped_run_started_does_not_ring_after_the_next_run(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)   # a wrong answer rings on
+        monkeypatch.setattr(sp.wake, "WAKE_RETRY_SECONDS", 0)   # a wrong answer rings on
         woken = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
         _stored(tmp_path, "s1")
 
         def stop():
@@ -1145,7 +1145,7 @@ class TestAStoppedRun:
 
     async def test_a_run_its_user_stops_is_not_woken_by_input_that_came_meanwhile(self, tmp_path, monkeypatch):
         woken = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
         _stored(tmp_path, "s1")
 
         def during_call():
@@ -1166,7 +1166,7 @@ class TestAStoppedRun:
         # The run has answered and saves (session-end hooks can take seconds): its token
         # is gone, and the Stop that comes now still stops it.
         woken = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
         _stored(tmp_path, "s1")
         agent = _agent(tmp_path, monkeypatch, lambda: None)
         finalize = Agent._finalize_request
@@ -1188,7 +1188,7 @@ class TestAStoppedRun:
         # Its own failure cancels its token (and its sub-requests'): input that came
         # meanwhile still wakes the session.
         woken = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
         _stored(tmp_path, "s1")
         agent = _agent(tmp_path, monkeypatch, lambda: None)
 

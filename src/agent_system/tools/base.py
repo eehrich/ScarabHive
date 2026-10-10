@@ -389,7 +389,7 @@ class ToolServerRegistry:
         them. They are, in ``src/agent_system/``:
 
             app.py, agent_cli.py, servers/agent/entry.py,
-            servers/agent/components/tool_execution.py (three times)
+            servers/agent/components/tool_invocation.py (three times)
 
         No line numbers on purpose, they rot. The whole set is
         ``grep -rn "in .*registry\\.list()" src/agent_system/``, minus the

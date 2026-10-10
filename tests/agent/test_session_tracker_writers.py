@@ -1,7 +1,7 @@
 """A session lock held by a writer is waited for; one held by a run is not.
 
 An append or /undo's cut holds the agent's session lock from before it reads the session until its save is done
-(app._beside_the_runs, acquire_session_lock(writer=True)). Refused at once like a run, it turned away what asked
+(api/session_writes.beside_the_runs, acquire_session_lock(writer=True)). Refused at once like a run, it turned away what asked
 for the lock meanwhile: a run starting, an API turn opening -- and the put back of a failed turn, which then left
 the turn in the conversation. A writer that meets a run is still refused: a run is not over in a moment.
 """

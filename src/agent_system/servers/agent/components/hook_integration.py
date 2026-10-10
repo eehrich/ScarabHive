@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ....hooks import get_hook_registry, HookContext, HookType
 from ....llm.models import ChatMessage
-from .tool_execution import drop_runtime_params, tool_result_is_error
+from .tool_call_contract import drop_runtime_params, tool_result_is_error
 
 if TYPE_CHECKING:
     from ..server import Agent

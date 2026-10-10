@@ -465,65 +465,41 @@ class HookRegistry:
         for hook_name, order_spec in order_specs.items():
             # "after" relationships: hook comes after these predecessors
             # If hook says "after: [A]", then A -> hook (A must execute before hook)
-            for predecessor in order_spec.get("after", []):
-                pred_key = str(predecessor)
-                resolved_preds = resolve_reference(pred_key)
-
-                if not resolved_preds:
-                    # Debug level - it's normal for referenced hooks/categories to be disabled
-                    logger.debug(
-                        f"Hook '{hook_name}' references inactive hook/category '{pred_key}' in 'after' clause. "
-                        f"Dependency ignored (hook may be disabled)."
-                    )
-                    continue
-
-                # Add edges for all resolved predecessors
-                for resolved_pred in resolved_preds:
-                    edge = (resolved_pred, hook_name)
-                    # Check for conflicting reverse edge
-                    reverse_edge = (hook_name, resolved_pred)
-                    if reverse_edge in edges_added:
-                        logger.warning(
-                            f"Hook ordering conflict: '{hook_name}' wants to run after '{resolved_pred}', "
-                            f"but '{hook_name}' is already scheduled before '{resolved_pred}'. "
-                            f"This may cause circular dependencies."
-                        )
-                    if edge not in edges_added:
-                        # Add edge: predecessor -> hook_name
-                        graph[resolved_pred].add(hook_name)
-                        in_degree[hook_name] += 1
-                        edges_added.add(edge)
-
             # "before" relationships: hook comes before these successors
             # If hook says "before: [B]", then hook -> B (hook must execute before B)
-            for successor in order_spec.get("before", []):
-                succ_key = str(successor)
-                resolved_succs = resolve_reference(succ_key)
+            # One loop for both clauses: they differ only in the direction of the edge.
+            for clause, opposite in (("after", "before"), ("before", "after")):
+                for reference in order_spec.get(clause, []):
+                    ref_key = str(reference)
+                    resolved_refs = resolve_reference(ref_key)
 
-                if not resolved_succs:
-                    # Debug level - it's normal for referenced hooks/categories to be disabled
-                    logger.debug(
-                        f"Hook '{hook_name}' references inactive hook/category '{succ_key}' in 'before' clause. "
-                        f"Dependency ignored (hook may be disabled)."
-                    )
-                    continue
-
-                # Add edges for all resolved successors
-                for resolved_succ in resolved_succs:
-                    edge = (hook_name, resolved_succ)
-                    # Check for conflicting reverse edge
-                    reverse_edge = (resolved_succ, hook_name)
-                    if reverse_edge in edges_added:
-                        logger.warning(
-                            f"Hook ordering conflict: '{hook_name}' wants to run before '{resolved_succ}', "
-                            f"but '{hook_name}' is already scheduled after '{resolved_succ}'. "
-                            f"This may cause circular dependencies."
+                    if not resolved_refs:
+                        # Debug level - it's normal for referenced hooks/categories to be disabled
+                        logger.debug(
+                            f"Hook '{hook_name}' references inactive hook/category '{ref_key}' in '{clause}' clause. "
+                            f"Dependency ignored (hook may be disabled)."
                         )
-                    if edge not in edges_added:
-                        # Add edge: hook_name -> successor
-                        graph[hook_name].add(resolved_succ)
-                        in_degree[resolved_succ] += 1
-                        edges_added.add(edge)
+                        continue
+
+                    # Add edges for all resolved predecessors / successors
+                    for resolved in resolved_refs:
+                        if clause == "after":
+                            edge = (resolved, hook_name)  # predecessor -> hook_name
+                        else:
+                            edge = (hook_name, resolved)  # hook_name -> successor
+                        # Check for conflicting reverse edge
+                        reverse_edge = (edge[1], edge[0])
+                        if reverse_edge in edges_added:
+                            logger.warning(
+                                f"Hook ordering conflict: '{hook_name}' wants to run {clause} '{resolved}', "
+                                f"but '{hook_name}' is already scheduled {opposite} '{resolved}'. "
+                                f"This may cause circular dependencies."
+                            )
+                        if edge not in edges_added:
+                            first, then = edge
+                            graph[first].add(then)
+                            in_degree[then] += 1
+                            edges_added.add(edge)
 
         # Kahn's algorithm for topological sort
         queue = [node for node in in_degree if in_degree[node] == 0]

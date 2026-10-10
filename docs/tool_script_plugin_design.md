@@ -87,7 +87,7 @@ that on three counts:
 2. **Allowlist semantics:** the *effective* filter is
    `ToolSchemaBuilder._is_tool_allowed(tool, server, patterns)` matching the
    full path `server/tool` — plus **blocked patterns** applied after allowed.
-   The agent-level 2-arg `_is_tool_allowed` (server.py) matches server names
+   The agent-level 2-arg `_is_tool_allowed` (servers/agent/mixins/usable_tools.py) matches server names
    and returns `False` for every flat tool name against the standard
    `server/*` config form. Re-implementing this in a plugin would both
    over-block (unusable) and under-block (`tools.blocked` bypass).
@@ -109,7 +109,8 @@ async def dispatch_tool_call(self, tool_name: str, params: dict,
     agent-actionable message on unknown tool / not allowed."""
 ```
 
-`tool_execution._execute_plugin_tool` is refactored to use the same helper
+`tool_execution._execute_plugin_tool` (now `ToolInvoker.execute_plugin_tool` in
+`components/tool_invocation.py`) is refactored to use the same helper
 (single source of truth — no drift), which is the main cost and the main
 benefit of the core change. The plugin itself stays thin: sandbox embedding +
 `call_tool` bridging + result shaping.

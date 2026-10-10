@@ -2,7 +2,7 @@
 
 ``POST /admin/reload-config`` replaces ``app.state.config`` (admin_endpoints)
 while every handler closed over the config ``build_app`` started with. The
-override path in ``_get_agent_with_overrides`` kept reading that closure, so a
+override path in ``get_agent_with_overrides`` kept reading that closure, so a
 profile added by a reload was "not found" and silently fell back to the
 default profile -- measured live on 2026-09-04, and the same staleness sat in
 the listings the UI picks from.

@@ -31,7 +31,7 @@ USER = "someone"
 HOLDER = """
 import sys, time
 from agent_system.core import session_presence as sp
-sp.sessions_dir = lambda: __import__("pathlib").Path(sys.argv[1])
+sp.presence.sessions_dir = lambda: __import__("pathlib").Path(sys.argv[1])
 store = sp.SessionPresence(__import__("pathlib").Path(sys.argv[1]))
 print(store.hold(sys.argv[2], sys.argv[3], "agent_b"), flush=True)
 time.sleep(60)
@@ -46,10 +46,10 @@ class _Agent:
 
 @pytest.fixture
 def root(tmp_path, monkeypatch):
-    monkeypatch.setattr(sp, "sessions_dir", lambda: tmp_path)
-    sp._stores.clear()
+    monkeypatch.setattr(sp.presence, "sessions_dir", lambda: tmp_path)
+    sp.presence._stores.clear()
     yield tmp_path
-    sp._stores.clear()
+    sp.presence._stores.clear()
 
 
 @pytest.fixture

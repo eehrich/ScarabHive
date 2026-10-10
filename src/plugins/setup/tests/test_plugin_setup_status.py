@@ -203,8 +203,8 @@ class TestTheSigningKey:
     def secrets_env(self, tmp_path, monkeypatch):
         """A config naming ${SETUP_TEST_FILE_KEY}, and a secrets.env beside it: as the loader reads them, in a
         process of this test's own -- what it took from the file, and the variable, go with the test."""
-        from agent_system.config import settings
-        monkeypatch.setattr(settings, "_secrets_from_file", {})
+        from agent_system.config import environment, settings
+        monkeypatch.setattr(environment, "_secrets_from_file", {})
         # set by the loader below; as they were again after the test
         monkeypatch.setenv(settings.SECRETS_FROM_FILE_ENV, os.environ.get(settings.SECRETS_FROM_FILE_ENV, ""))
         monkeypatch.setenv("SETUP_TEST_FILE_KEY", "")
@@ -280,12 +280,12 @@ class TestTheSigningKey:
 
     def test_a_secrets_file_that_cannot_be_read_is_gone_without(self, tmp_path, monkeypatch):
         """A start warns and goes on without it (_load_secrets_file): the key the master names is still told."""
-        from agent_system.config import settings
+        from agent_system.config import environment
         (tmp_path / "secrets.env").write_text("ANY=value\n", encoding="utf-8")
 
         def unreadable(path):
             raise PermissionError(13, "Permission denied", str(path))
-        monkeypatch.setattr(settings, "_read_secrets_file", unreadable)
+        monkeypatch.setattr(environment, "_read_secrets_file", unreadable)
 
         assert status.configured_signing_key(written(tmp_path, OWN_KEY)) == OWN_KEY
 

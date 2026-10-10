@@ -22,6 +22,19 @@ data/sessions/
 Old conversation trees move out of here into `data/session_archive/` and can be
 restored from there — see `docs/session_archive.md` (German).
 
+### Code
+
+`SessionManager` (`services/session_manager.py`) is the one entry point: it
+decides when a file is written and under which lock (a session's own lock,
+then the manager's `_lock`, then the file lock of one index partition). It
+owns two components:
+
+| Module | Holds |
+|--------|-------|
+| `services/session_index.py` | `SessionIndex`: `index.json` and the `.subs.<parent>.index.json` partitions — every edit under an OS file lock, the rebuild of a lost index, and the reads behind `list_sessions`, `list_root_sessions` and `list_child_sessions` |
+| `services/session_cache.py` | `SessionCache`: recent copies (LRU with TTL) and, per session, when this process last had its file as it is (`changed_on_disk`) |
+| `services/session_paths.py` | How a user id and a session id become a path; shared by the manager, its index and the session archive |
+
 ### Session Schema
 
 Each session is a JSON file containing:
@@ -300,13 +313,14 @@ The API and any number of `agent-cli` runs write the same user's sessions,
 each with its own `SessionManager`. The asyncio lock says nothing about the
 other processes, so two more rules hold:
 
-- **Every index edit goes through `_edit_index`**, which holds an OS file lock
+- **Every index edit goes through `SessionIndex._edit`**
+  (`services/session_index.py`), which holds an OS file lock
   on that partition (`.index.json.mutex`, `..subs.<parent>.index.json.mutex`)
   for one read and one write. Not `*.lock`: in a user directory every
   `*.lock` is a session presence lock. Measured before (21.09.2026, 8
   processes x 25 sessions): 35 and 116 sessions on disk were in no index.
   After, with 8 and 16 processes: none.
-- **Every read retries `PermissionError`** (`_read_json_retrying`). Windows
+- **Every read retries `PermissionError`** (`utils.io.read_json_retrying`). Windows
   refuses to open a file another process is replacing; the writers retried
   that already, the readers did not, and `create_session` died on it.
 - A rebuild of a lost index scans for minutes and only **fills in** rows it

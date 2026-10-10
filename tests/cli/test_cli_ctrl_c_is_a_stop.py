@@ -1,4 +1,4 @@
-"""agent-cli: a Ctrl-C is its user stopping the run (core/session_presence.py).
+"""agent-cli: a Ctrl-C is its user stopping the run (core/session_presence/).
 
 The session is let go marked, so input that came in meanwhile does not start it
 again by itself. Drives the real main() on a real Agent -- only the LLM, the
@@ -25,6 +25,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 import agent_system.agent_cli as agent_cli
+from agent_system.cli_utils.commands import run as run_cmd
+from agent_system.cli_utils.event_loop import close_cli_loop
 from agent_system.config.models import (
     AgentConfig,
     AgentSystemConfig,
@@ -72,14 +74,14 @@ def cli(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(agent_cli, "load_settings", lambda path=None: config)
-    monkeypatch.setattr(agent_cli, "setup_role_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "setup_role_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(InitializationService, "initialize_for_cli", initialize_for_cli)
     monkeypatch.setattr(InitializationService, "session_manager", property(lambda self: manager))
     for name in ("initialize_tools", "init_batch_system", "shutdown_tools", "shutdown_batch_system"):
-        monkeypatch.setattr(agent_cli, name, nothing)
-    monkeypatch.setattr(agent_cli, "entry_agent", lambda *args, **kwargs: agent)
+        monkeypatch.setattr(run_cmd, name, nothing)
+    monkeypatch.setattr(run_cmd, "entry_agent", lambda *args, **kwargs: agent)
     woken = []
-    monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
+    monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "run", "--session", "s1", "do it"])
 
     loop = asyncio.new_event_loop()
@@ -87,9 +89,9 @@ def cli(tmp_path, monkeypatch):
         loop.run_until_complete(manager.create_session(user_id=USER, session_id="s1", agent_name="test_agent"))
     finally:
         loop.close()
-    monkeypatch.setattr(sp, "_stops", set())
+    monkeypatch.setattr(sp.presence, "_stops", set())
     yield SimpleNamespace(llm=llm, woken=woken, presence=sp.presence_for(config))
-    agent_cli.close_cli_loop()
+    close_cli_loop()
 
 
 def _input_comes_in(cli):
@@ -126,7 +128,7 @@ def test_a_ctrl_c_out_of_the_loop_leaves_the_session_marked_when_the_run_unwinds
         agent_cli.main()
     assert cli.presence.status("s1", USER) == "running", "fixture: the run let go before exit"
 
-    agent_cli.close_cli_loop()   # what atexit does
+    close_cli_loop()   # what atexit does
 
     assert cli.woken == []
     assert cli.presence.notify("s1", USER)[0] == "queued"
@@ -154,7 +156,7 @@ def test_a_ctrl_c_between_the_runs_events_with_raw_output_leaves_the_session_mar
     monkeypatch.setattr(sys, "argv", sys.argv[:1] + ["--raw"] + sys.argv[1:])
     agent_cli.main()
     assert asked, "fixture: the run never asked its model"
-    agent_cli.close_cli_loop()   # what atexit does
+    close_cli_loop()   # what atexit does
 
     assert cli.woken == []
     assert cli.presence.notify("s1", USER)[0] == "queued"
@@ -174,7 +176,7 @@ def test_a_ctrl_c_in_a_chat_turn_leaves_the_session_marked(cli, monkeypatch):
         raise EOFError
 
     monkeypatch.setattr(Agent, "_presence_step", step)
-    monkeypatch.setattr(chat, "_read_input", prompt)
+    monkeypatch.setattr(chat.prompt_input, "_read_input", prompt)
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
     agent_cli.main()
 
@@ -215,7 +217,7 @@ def test_a_ctrl_c_before_the_turns_run_takes_the_session_is_a_stop(cli, monkeypa
         raise EOFError
 
     monkeypatch.setattr(Agent, "run_events", not_yet)
-    monkeypatch.setattr(chat, "_read_input", prompt)
+    monkeypatch.setattr(chat.prompt_input, "_read_input", prompt)
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
     agent_cli.main()
 
@@ -240,7 +242,7 @@ def test_a_chat_turn_is_named_before_it_starts(cli, monkeypatch):
 
     cli.llm.chat_tools = chat_tools
     monkeypatch.setattr(Agent, "run_events", recorded)
-    monkeypatch.setattr(chat, "_read_input", lambda *args, **kwargs: (_ for _ in ()).throw(EOFError()))
+    monkeypatch.setattr(chat.prompt_input, "_read_input", lambda *args, **kwargs: (_ for _ in ()).throw(EOFError()))
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
     agent_cli.main()
 
@@ -255,7 +257,7 @@ def test_a_chat_that_ends_after_a_normal_turn_is_woken_by_input_that_came_meanwh
         return {"assistant": {"role": "assistant", "content": "done"}}
 
     cli.llm.chat_tools = chat_tools
-    monkeypatch.setattr(chat, "_read_input", lambda *args, **kwargs: (_ for _ in ()).throw(EOFError()))
+    monkeypatch.setattr(chat.prompt_input, "_read_input", lambda *args, **kwargs: (_ for _ in ()).throw(EOFError()))
     monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "chat", "--session", "s1", "do it"])
     agent_cli.main()
 

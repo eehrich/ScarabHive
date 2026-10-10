@@ -127,6 +127,64 @@ class PluginToolAdapter:
             raise
 
 
+def _load_plugin_schema(name: str, plugin_server: Any) -> Optional[Dict[str, Any]]:
+    """The schema of a plugin the registry has just built; None if none is found.
+
+    Asked of the server first, then read from ``schema.yaml`` / ``schema.json``
+    in the plugin's directory. register_plugin and register_plugin_simple both
+    load it this way; register_existing_plugin_instance asks the instance only.
+    """
+    schema = None
+    schema_file = None
+
+    # Try to get schema from plugin server first (handles templates properly)
+    if hasattr(plugin_server, 'get_schema_data'):
+        try:
+            schema = plugin_server.get_schema_data()
+            logger.debug(f"Loaded schema for plugin {name} from server (with template support)")
+        except Exception as e:
+            logger.warning(f"Failed to load schema from plugin server {name}: {e}")
+            schema = None
+
+    # Fallback to file-based loading if server doesn't support schema or failed
+    if schema is None:
+        # Try to find schema file in standard locations
+        for plugin_dir in ["src/plugins", "plugins"]:
+            # Standard schema.yaml
+            schema_path = Path(plugin_dir) / name / "schema.yaml"
+            if schema_path.exists():
+                schema_file = schema_path
+                break
+
+            # Standard JSON schema
+            schema_path = Path(plugin_dir) / name / "schema.json"
+            if schema_path.exists():
+                schema_file = schema_path
+                break
+
+        if schema_file:
+            try:
+                # Use template-aware loader for consistency
+                schema_dir = schema_file.parent
+                template_vars = {'name': name}
+                schema = load_schema_from_dir(schema_dir, template_vars)
+                logger.debug(f"Loaded schema for plugin {name} from file with template support")
+            except Exception as e:
+                logger.warning(f"Failed to load schema for plugin {name}: {e}")
+    return schema
+
+
+def _register_web_capabilities(name: str, plugin_server: Any) -> None:
+    """Hand a plugin the registry has just built to the web registry, if it serves web routes."""
+    if isinstance(plugin_server, PluginWebInterface):
+        plugin_web_registry.register_web_plugin(name, plugin_server)
+        logger.debug(f"Registered web capabilities for plugin {name}")
+    elif hasattr(plugin_server, 'get_web_router'):
+        # Handle hybrid plugins that implement web methods but don't inherit PluginWebInterface
+        plugin_web_registry.register_web_plugin(name, plugin_server)
+        logger.debug(f"Registered hybrid web capabilities for plugin {name}")
+
+
 class PluginToolRegistry:
     """Registry for the plugins built as tool servers"""
 
@@ -275,56 +333,14 @@ class PluginToolRegistry:
             raise
 
         # Load schema if available
-        schema = None
-        schema_file = None
-
-        # Try to get schema from plugin server first (handles templates properly)
-        if hasattr(plugin_server, 'get_schema_data'):
-            try:
-                schema = plugin_server.get_schema_data()
-                logger.debug(f"Loaded schema for plugin {name} from server (with template support)")
-            except Exception as e:
-                logger.warning(f"Failed to load schema from plugin server {name}: {e}")
-                schema = None
-
-        # Fallback to file-based loading if server doesn't support schema or failed
-        if schema is None:
-            # Try to find schema file
-            for plugin_dir in ["src/plugins", "plugins"]:
-                # Standard schema.yaml
-                schema_path = Path(plugin_dir) / name / "schema.yaml"
-                if schema_path.exists():
-                    schema_file = schema_path
-                    break
-
-                # Standard JSON schema
-                schema_path = Path(plugin_dir) / name / "schema.json"
-                if schema_path.exists():
-                    schema_file = schema_path
-                    break
-
-            if schema_file:
-                try:
-                    # Use template-aware loader for consistency
-                    plugin_dir = schema_file.parent
-                    template_vars = {'name': name}
-                    schema = load_schema_from_dir(plugin_dir, template_vars)
-                    logger.debug(f"Loaded schema for plugin {name} from file with template support")
-                except Exception as e:
-                    logger.warning(f"Failed to load schema for plugin {name}: {e}")
+        schema = _load_plugin_schema(name, plugin_server)
 
         # Create tool adapter
         tool_adapter = PluginToolAdapter(name, plugin_server, schema)
         self.plugin_servers[name] = tool_adapter
 
         # Register web capabilities if plugin supports them
-        if isinstance(plugin_server, PluginWebInterface):
-            plugin_web_registry.register_web_plugin(name, plugin_server)
-            logger.debug(f"Registered web capabilities for plugin {name}")
-        elif hasattr(plugin_server, 'get_web_router'):
-            # Handle hybrid plugins that implement web methods but don't inherit PluginWebInterface
-            plugin_web_registry.register_web_plugin(name, plugin_server)
-            logger.debug(f"Registered hybrid web capabilities for plugin {name}")
+        _register_web_capabilities(name, plugin_server)
 
         await self.start_plugin(name)
 
@@ -507,43 +523,7 @@ class PluginToolRegistry:
                 pass
 
         # Load schema if available
-        schema = None
-        schema_file = None
-
-        # Try to get schema from plugin server first (handles templates properly)
-        if hasattr(plugin_server, 'get_schema_data'):
-            try:
-                schema = plugin_server.get_schema_data()
-                logger.debug(f"Loaded schema for plugin {name} from server (with template support)")
-            except Exception as e:
-                logger.warning(f"Failed to load schema from plugin server {name}: {e}")
-                schema = None
-
-        # Fallback to file-based loading if server doesn't support schema or failed
-        if schema is None:
-            # Try to find schema file in standard locations
-            for plugin_dir in ["src/plugins", "plugins"]:
-                # Standard schema.yaml
-                schema_path = Path(plugin_dir) / name / "schema.yaml"
-                if schema_path.exists():
-                    schema_file = schema_path
-                    break
-
-                # Standard JSON schema
-                schema_path = Path(plugin_dir) / name / "schema.json"
-                if schema_path.exists():
-                    schema_file = schema_path
-                    break
-
-            if schema_file:
-                try:
-                    # Use template-aware loader for consistency
-                    plugin_dir = schema_file.parent
-                    template_vars = {'name': name}
-                    schema = load_schema_from_dir(plugin_dir, template_vars)
-                    logger.debug(f"Loaded schema for plugin {name} from file with template support")
-                except Exception as e:
-                    logger.warning(f"Failed to load schema for plugin {name}: {e}")
+        schema = _load_plugin_schema(name, plugin_server)
 
         # Create tool adapter
         tool_adapter = PluginToolAdapter(name, plugin_server, schema)
@@ -552,12 +532,7 @@ class PluginToolRegistry:
         self.plugin_servers[name] = tool_adapter
 
         # Register web capabilities if plugin supports them
-        if isinstance(plugin_server, PluginWebInterface):
-            plugin_web_registry.register_web_plugin(name, plugin_server)
-            logger.debug(f"Registered web capabilities for plugin {name}")
-        elif hasattr(plugin_server, 'get_web_router'):
-            plugin_web_registry.register_web_plugin(name, plugin_server)
-            logger.debug(f"Registered hybrid web capabilities for plugin {name}")
+        _register_web_capabilities(name, plugin_server)
 
         await self.start_plugin(name)
 

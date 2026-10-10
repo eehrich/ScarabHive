@@ -5,7 +5,7 @@ calling user: a stored one (the Responses API continues it by
 ``previous_response_id``) or a throwaway one (Chat Completions, ``store:
 false``).
 
-A stored conversation is held (session presence, core/session_presence.py) from
+A stored conversation is held (session presence, core/session_presence/) from
 before it is opened until its turn is settled, as /run and /events hold theirs:
 a run of it in another process -- an agent-cli run woken by a sub-agent -- would
 write it too, and the last save would win. One that another run has in hand, in
@@ -498,7 +498,7 @@ class AgentTurn:
 
     @staticmethod
     def _runs(row: dict[str, Any]) -> list[str]:
-        """The runs that wrote a sub-session, by their request ids (its index row, SessionManager._index_metadata)."""
+        """The runs that wrote a sub-session, by their request ids (its index row, SessionIndex.row)."""
         return [run for run in row.get("runs") or [] if isinstance(run, str)]
 
     def _ours(self, run: str) -> bool:

@@ -166,7 +166,7 @@ class SetupServer(SchemaBasedToolServer):
     async def post_probe(self, request: Request, _admin: None = Depends(require_admin_viewer)) -> dict[str, Any]:
         require_json(request)
         # As the chat's next message: the agent it started with (a reload does not move it), its client built from
-        # the config as it runs now (app.py _live_config) -- a key saved here since is the one tried.
+        # the config as it runs now (AppContext.live_config) -- a key saved here since is the one tried.
         return await probe_chat(self.system_config, llm_config=getattr(request.app.state, "config", None))
 
     def _config_path(self) -> Path:

@@ -18,10 +18,10 @@ from agent_system.config.settings import (
 @pytest.fixture(autouse=True)
 def clear_caches():
     """Clear caches before each test to avoid pollution between tests."""
-    import agent_system.config.settings as settings
-    settings._plugins_cache = None
+    import agent_system.config.inheritance as inheritance
+    inheritance._plugins_cache = None
     yield
-    settings._plugins_cache = None
+    inheritance._plugins_cache = None
 
 
 @pytest.fixture

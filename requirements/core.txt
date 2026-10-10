@@ -61,5 +61,5 @@ regex>=2022.1.18
 colorama>=0.4.6; sys_platform == "win32"
 # agent-cli prompt: line editing and arrow-up history. stdlib readline
 # cannot do this job on Windows — importing it there activates pyreadline3,
-# whose raw-mode loop breaks input() (see cli_utils/chat.py:_build_line_readers).
+# whose raw-mode loop breaks input() (see cli_utils/chat/prompt_input.py:_build_prompt_editor).
 prompt_toolkit>=3.0

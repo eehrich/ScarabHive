@@ -1,5 +1,5 @@
 """Direct messages: kept in the pair's channel, handed over by the hook, sent
-and listed through the core's session presence (core/session_presence.py has
+and listed through the core's session presence (core/session_presence/ has
 the waking rules and their tests). The hook runs through the plugin's real
 schema.yaml dispatch.
 """
@@ -155,7 +155,7 @@ class TestDirectMessages:
     async def test_a_sub_agents_session_is_not_started_for_a_message(
             self, server, sessions, monkeypatch):
         spawned = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth:
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth:
                             spawned.append(session_id) or (os.getpid(), 0.0))
         (sessions / USER).mkdir(parents=True)
         (sessions / USER / "sb.json").write_text(
@@ -184,7 +184,7 @@ class TestDirectMessages:
 
     async def test_an_idle_session_is_woken_for_the_message(self, server, sessions, monkeypatch):
         spawned = []
-        monkeypatch.setattr(sp, "spawn_wake", lambda session_id, user_id, depth:
+        monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth:
                             spawned.append(session_id) or (os.getpid(), 0.0))
         (sessions / USER).mkdir(parents=True)
         (sessions / USER / "sb.json").write_text("{}", encoding="utf-8")

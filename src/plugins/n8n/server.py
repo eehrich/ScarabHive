@@ -975,7 +975,7 @@ class N8nServer(SchemaBasedToolServer):
         return None, None, []
 
     async def _is_sub_agent(self, session_id: str, user_id: str) -> bool:
-        """wake_blocked leaves this out (core/session_presence.py): a sub-agent's
+        """wake_blocked leaves this out (core/session_presence/wake.py): a sub-agent's
         session is never woken, the run that spawned it hands its result over.
         Asked off the loop, as it parses the session file."""
         presence = presence_for(self.system_config)
@@ -1040,7 +1040,7 @@ class N8nServer(SchemaBasedToolServer):
 
     def _store(self) -> Optional[PluginCache]:
         """Watch records and marks, visible to every process: a woken run is a new
-        one (core/session_presence.py). Best effort: without a writable cache a
+        one (core/session_presence/). Best effort: without a writable cache a
         watch still rings, it only cannot see a read in another process."""
         if self._outcomes is None:
             try:

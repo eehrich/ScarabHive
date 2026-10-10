@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from agent_system import app_state
 from agent_system.config.models import SessionPresenceConfig
 from agent_system.core.session_presence import presence_for
 from agent_system.services.session_manager import SessionManager
@@ -54,7 +55,7 @@ def api(tmp_path, monkeypatch):
     app.state.config.session_presence = SessionPresenceConfig(enabled=True)
     manager = SessionManager(storage_path=str(tmp_path))
     service = SessionService(manager)
-    monkeypatch.setattr(app_mod, "_session_service", service)
+    monkeypatch.setattr(app_state, "session_service", service)
     return SimpleNamespace(app=app, manager=manager,
                            presence=presence_for(app.state.config))
 
@@ -190,14 +191,13 @@ class TestUndo:
     async def test_a_cut_that_is_not_saved_is_taken_back(self, api, monkeypatch):
         """Answered with the exchange gone while the record still had it -- and
         the cut left in memory for whatever saved the session next."""
-        from agent_system import app as app_mod
 
         await _stored(api, messages=_turn("frage", "antwort"))
 
         async def fails(*args, **kwargs):
             return False
 
-        monkeypatch.setattr(app_mod._session_service, "save_session", fails)
+        monkeypatch.setattr(app_state.session_service, "save_session", fails)
         async with _client(api.app) as client:
             response = await client.post("/chat/undo", json={"session_id": "s1"},
                                          timeout=30.0)
@@ -238,7 +238,6 @@ class TestUndo:
         the record's agent's tracker, the exchange came back with it."""
         from test_app_session_presence import _another_agent
 
-        from agent_system import app as app_mod
 
         coder = _another_agent("coder")
         registry = api.app.state.tool_registry
@@ -246,7 +245,7 @@ class TestUndo:
         monkeypatch.setattr(registry, "get", lambda name: coder if name == "coder" else get(name))
         monkeypatch.setattr(registry, "list", lambda: [*names(), "coder"])
         await _stored(api, messages=_turn("frage", "antwort") + _turn("noch eine", "die zweite"))
-        await app_mod._session_service.load_and_restore_session(coder, USER, "s1")
+        await app_state.session_service.load_and_restore_session(coder, USER, "s1")
         seen = coder._session_tracker.watch_appends("s1")  # a turn of coder settles it
         try:
             async with _client(api.app) as client:

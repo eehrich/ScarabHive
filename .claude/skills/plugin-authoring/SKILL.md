@@ -116,7 +116,7 @@ cfg = getattr(server_config, "config", None) or {}              # nested config:
 - Hot reload: no watcher. `agent-cli reload` calls `reload_config(new_server_config)`
   only on servers that implement it. New servers need a restart — **the user does
   restarts.**
-- If a config **model** changes (`src/agent_system/config/models.py`), update the
+- If a config **model** changes (`src/agent_system/config/models/`), update the
   JSON schema under `schemas/` too.
 - **Never spell out a data path yourself.** The data directory can move
   (`AGENT_DATA_DIR`, else `paths.data_dir`). Default: `data_path("plugin", "x.db")`
@@ -159,7 +159,7 @@ Scripts in `src/scripts/` (run with `.venv/Scripts/python.exe`; all read-only un
 | `validate_all_tool_schemas.py` | every tool in every schema.yaml is valid OpenAI/MCP format **and routes to a method the plugin defines**; templated schemas rendered in both states | `validate_all_tool_schemas.py` · `--plugin my_plugin` |
 | `validate_agent_configs.py` | agent YAML: syntax, `plugins.servers` shape, `tools`/`hooks` at the right level, Pydantic models (`agent_config` typos, `self_tool_descriptions` in the wrong place) | `validate_agent_configs.py src/plugins/my_plugin/agents/*.yaml` (also `validate-agents`) |
 | `analyze_plugin_config.py` | lists the config keys the code reads (`getattr(server_config, …)`) | `analyze_plugin_config.py src/plugins/my_plugin` |
-| `generate_config_schemas.py` | **writes** `schemas/*.schema.json` from the config models — run after changing `config/models.py`; drift test `tests/config/test_config_schemas.py` | `generate_config_schemas.py` |
+| `generate_config_schemas.py` | **writes** `schemas/*.schema.json` from the config models — run after changing `config/models/`; drift test `tests/config/test_config_schemas.py` | `generate_config_schemas.py` |
 
 `validate_plugin.py --merge-config` **writes** missing config keys into schema.yaml.
 

@@ -29,6 +29,7 @@ from agent_system.auth.models import (
     PasswordResetRequest,
     PasswordReset,
     APIKeyResponse,
+    public_user,
 )
 from agent_system.auth.database import get_db, PasswordChangedMeanwhile, UserDatabase
 from agent_system.config.models import RegistrationConfig
@@ -132,17 +133,7 @@ async def register(
         logger.info(f"User registered: {user_in_db.username}")
 
         # Convert to User (remove sensitive data)
-        return User(
-            id=user_in_db.id,
-            username=user_in_db.username,
-            email=user_in_db.email,
-            full_name=user_in_db.full_name,
-            is_active=user_in_db.is_active,
-            role=user_in_db.role,
-            created_at=user_in_db.created_at,
-            updated_at=user_in_db.updated_at,
-            last_login=user_in_db.last_login,
-        )
+        return public_user(user_in_db)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -434,17 +425,7 @@ async def update_current_user(
             renew_own_login(response, updated_user, generation)
 
         # Return User model (without sensitive data)
-        return User(
-            id=updated_user.id,
-            username=updated_user.username,
-            email=updated_user.email,
-            full_name=updated_user.full_name,
-            is_active=updated_user.is_active,
-            role=updated_user.role,
-            created_at=updated_user.created_at,
-            updated_at=updated_user.updated_at,
-            last_login=updated_user.last_login,
-        )
+        return public_user(updated_user)
 
     except HTTPException:
         raise

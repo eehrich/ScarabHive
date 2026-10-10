@@ -461,25 +461,31 @@ def messages_have_history(message_dicts: list) -> bool:
     )
 
 
-def mark_last_text_block(blocks: list) -> bool:
-    """cache_control: ephemeral on the LAST text block of a block list.
+def _mark_last_block_of(blocks: list, block_types: tuple) -> bool:
+    """cache_control: ephemeral on the LAST block whose type is in ``block_types``.
 
-    Returns whether something was marked. Idempotent on the same block. Understands
-    chat-completions and Responses text block types (_ANTHROPIC_TEXT_TYPES).
+    The scan behind mark_last_text_block (text types) and
+    mark_last_cacheable_block (text plus tool_result). Returns whether it
+    marked; a non-list marks nothing.
     """
     if not isinstance(blocks, list):
         return False
     for i in range(len(blocks) - 1, -1, -1):
         b = blocks[i]
-        if isinstance(b, dict) and b.get("type") in _ANTHROPIC_TEXT_TYPES:
+        if isinstance(b, dict) and b.get("type") in block_types:
             b["cache_control"] = dict(ANTHROPIC_EPHEMERAL)
             return True
     return False
 
 
-def mark_message_tail(msg: dict) -> bool:
-    """cache_control on the last text block of ONE message; bare-string content
-    is lifted into a text block first. Returns whether something was marked."""
+def _mark_content_tail(msg: Any, block_types: tuple) -> bool:
+    """cache_control on the tail of ONE message's content; returns whether it marked.
+
+    Bare-string content is first lifted into a text block that carries the
+    marker; a block list gets it on its last block of ``block_types``. Shared
+    by mark_message_tail (text types) and mark_conversation_tail (text plus
+    tool_result).
+    """
     if not isinstance(msg, dict):
         return False
     content = msg.get("content")
@@ -491,8 +497,23 @@ def mark_message_tail(msg: dict) -> bool:
         ]
         return True
     if isinstance(content, list):
-        return mark_last_text_block(content)
+        return _mark_last_block_of(content, block_types)
     return False
+
+
+def mark_last_text_block(blocks: list) -> bool:
+    """cache_control: ephemeral on the LAST text block of a block list.
+
+    Returns whether something was marked. Idempotent on the same block. Understands
+    chat-completions and Responses text block types (_ANTHROPIC_TEXT_TYPES).
+    """
+    return _mark_last_block_of(blocks, _ANTHROPIC_TEXT_TYPES)
+
+
+def mark_message_tail(msg: dict) -> bool:
+    """cache_control on the last text block of ONE message; bare-string content
+    is lifted into a text block first. Returns whether something was marked."""
+    return _mark_content_tail(msg, _ANTHROPIC_TEXT_TYPES)
 
 
 def mark_last_system(message_dicts: list) -> bool:
@@ -513,14 +534,7 @@ def mark_last_cacheable_block(blocks: list) -> bool:
     (text OR tool_result, see _ANTHROPIC_TAIL_TYPES). For the conversation
     tail, so that a turn ending in a tool_result still pulls the breakpoint to
     the end. Returns whether something was marked."""
-    if not isinstance(blocks, list):
-        return False
-    for i in range(len(blocks) - 1, -1, -1):
-        b = blocks[i]
-        if isinstance(b, dict) and b.get("type") in _ANTHROPIC_TAIL_TYPES:
-            b["cache_control"] = dict(ANTHROPIC_EPHEMERAL)
-            return True
-    return False
+    return _mark_last_block_of(blocks, _ANTHROPIC_TAIL_TYPES)
 
 
 def mark_conversation_tail(message_dicts: list) -> bool:
@@ -548,20 +562,7 @@ def mark_conversation_tail(message_dicts: list) -> bool:
     tail = [m for m in message_dicts if not (isinstance(m, dict) and m.get("role") == "developer")]
     if not tail:
         return False
-    msg = tail[-1]
-    if not isinstance(msg, dict):
-        return False
-    content = msg.get("content")
-    if isinstance(content, str):
-        if not content:
-            return False
-        msg["content"] = [
-            {"type": "text", "text": content, "cache_control": dict(ANTHROPIC_EPHEMERAL)}
-        ]
-        return True
-    if isinstance(content, list):
-        return mark_last_cacheable_block(content)
-    return False
+    return _mark_content_tail(tail[-1], _ANTHROPIC_TAIL_TYPES)
 
 
 def mark_last_tool(tools: list) -> bool:

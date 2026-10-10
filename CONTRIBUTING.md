@@ -113,7 +113,7 @@ in the same pull request:
 
 | After changing | Run | Guarded by |
 | --- | --- | --- |
-| the config models in `src/agent_system/config/models.py` | `python src/scripts/generate_config_schemas.py` (updates `schemas/*.json`) | `tests/config/test_config_schemas.py` |
+| the config models in `src/agent_system/config/models/` | `python src/scripts/generate_config_schemas.py` (updates `schemas/*.json`) | `tests/config/test_config_schemas.py` |
 | `requirements/core.txt` or a plugin's `dependencies` in `plugin.toml` | `python scripts/aggregate_plugin_deps.py` (updates `requirements/all.txt`) | `tests/pluginsystem/test_plugin_deps_aggregation.py` |
 
 ## Writing plugins

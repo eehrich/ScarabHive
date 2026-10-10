@@ -5,13 +5,14 @@ server name and tool name, so resolving them requires a longest-prefix search
 over ``'_'``-joined segments. That loop — and the "local registry, then plugin
 registry" cascade — used to be copied across
 ``Agent._get_server_from_any_registry``, ``Agent._resolve_flat_tool_name`` and
-``ToolExecutionManager._invoke_tool`` (with per-copy drift risk).
+``ToolInvoker.invoke_tool`` (tool_invocation.py; with per-copy drift risk).
 
 This module owns each building block ONCE; those three call sites compose
 them in their historical precedence order (behavior-preserving consolidation).
 
-NOT consolidated: ``ToolExecutionManager._execute_plugin_tool`` (the LLM tool
-path) keeps its own older exact-match cascade WITHOUT a prefix walk — it
+NOT consolidated: ``ToolInvoker.execute_plugin_tool`` (the LLM tool
+path) keeps its own older exact-match cascade (``ToolInvoker._plugin_server``)
+WITHOUT a prefix walk — it
 receives names that already went through schema-build name mapping, so a
 prefix walk there would change which server handles a call. If you change
 resolution order here, check that function separately.

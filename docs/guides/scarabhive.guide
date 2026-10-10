@@ -1003,19 +1003,19 @@ login page, the core panels, the kit's templates), @{tt}config/@{utt} and
 
 @{table}
 Where | What
-@{tt}app.py@{utt} | builds the FastAPI application (@{tt}build_app@{utt}) with most routes; @{tt}run()@{utt} serves it, behind @{tt}agent-api@{utt} (@{tt}own_console.py@{utt}: on Windows a console of its own first)
+@{tt}app.py@{utt} | builds the FastAPI application (@{tt}build_app@{utt}) and includes its routers; @{tt}run()@{utt} serves it, behind @{tt}agent-api@{utt} (@{tt}own_console.py@{utt}: on Windows a console of its own first)
 @{tt}runtime.py@{utt} | the composition root: turns the configuration into running servers -- discover, merge the configuration, build, register
-@{tt}config/@{utt} | @{tt}models.py@{utt} (the Pydantic models, root @{tt}AgentSystemConfig@{utt}), @{tt}settings.py@{utt} (@{tt}load_settings@{utt}, includes, @{tt}${NAME}@{utt}, @{tt}get_tool_server_config@{utt})
+@{tt}config/@{utt} | @{tt}models/@{utt} (the Pydantic models, root @{tt}AgentSystemConfig@{utt}), @{tt}settings.py@{utt} (@{tt}load_settings@{utt}, @{tt}get_tool_server_config@{utt}) with its steps beside it: @{tt}layers.py@{utt} (includes, the local layer), @{tt}environment.py@{utt} (secrets files, @{tt}${NAME}@{utt}), @{tt}merging.py@{utt}, @{tt}inheritance.py@{utt}
 @{tt}plugins/@{utt} | discovery, manifests (@{tt}plugin.toml@{utt}), @{tt}schema.yaml@{utt} loading, the tool and web adapters, the schema router
 @{tt}tools/@{utt} | tool server base classes (@{tt}SchemaBasedToolServer@{utt}), @{tt}ToolServerRegistry@{utt}, status lines, the tool cache
-@{tt}servers/agent/@{utt} | the @{tt}Agent@{utt} and its step loop (@{tt}server.py@{utt}, @{tt}run_events@{utt}), prompt strategies, tool discovery and the allowlist, the components for hooks, tool execution, session tracking and status
+@{tt}servers/agent/@{utt} | the @{tt}Agent@{utt} (@{tt}server.py@{utt}; its responsibilities one mixin each in @{tt}mixins/@{utt}: @{tt}run_events@{utt} in @{tt}run.py@{utt}, the step loop in @{tt}llm_loop.py@{utt}), prompt strategies, tool discovery and the allowlist, the components for hooks, tool execution, session tracking and status
 @{tt}hooks/@{utt} | @{tt}HookType@{utt}, @{tt}SchemaBasedPluginHook@{utt}, @{tt}HookRegistry@{utt}
 @{tt}llm/@{utt} | @{tt}ChatMessage@{utt} and the other models, the provider registry, @{tt}create_llm_from_profile@{utt} (@{tt}factory.py@{utt}), pricing, token counting
 @{tt}services/@{utt} | session manager and service, agent service, configuration service and reload, the session archive, background jobs, system status
 @{tt}core/@{utt} | cancellation tokens, the request context, session presence (the locks)
 @{tt}skills/@{utt} | @{tt}SkillRegistry@{utt}, running a skill as a command
 @{tt}auth/@{utt} | the user database, tokens and API keys, the route rules
-@{tt}api/@{utt} | routers for sessions, auth, admin and debug
+@{tt}api/@{utt} | the routers: runs (@{tt}/run@{utt}, @{tt}/events@{utt}), agents, chat commands, pages and status (@{tt}*_routes.py@{utt}, sharing an @{tt}AppContext@{utt}), sessions, auth, admin and debug
 @{tt}ui/@{utt} | the panel catalog, the core panel routes, this help
 @{tt}chat_commands.py@{utt}, @{tt}plugin_commands.py@{utt} | the command catalogue both the terminal and the browser use
 @{tt}agent_cli.py@{utt}, @{tt}agent_run.py@{utt}, @{tt}cli_utils/@{utt} | the command-line clients
@@ -1782,7 +1782,7 @@ built. Writing the agent itself: @{" Writing an agent " link agentdev}.
 @{h2}The models
 
 The whole configuration is validated by Pydantic models in
-@{tt}src/agent_system/config/models.py@{utt}. The root is
+@{tt}src/agent_system/config/models/@{utt}, a module per part of the configuration. The root is
 @{tt}AgentSystemConfig@{utt} with the sections @{tt}name@{utt},
 @{tt}version@{utt}, @{tt}description@{utt}, @{tt}includes@{utt},
 @{tt}paths@{utt}, @{tt}context@{utt}, @{tt}status@{utt}, @{tt}vision@{utt},

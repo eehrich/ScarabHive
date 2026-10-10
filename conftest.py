@@ -430,31 +430,32 @@ def relative_data_dir(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def never_wake_a_session_for_real():
-    """Session presence (agent_system/core/session_presence.py) wakes an idle
+    """Session presence (agent_system/core/session_presence/) wakes an idle
     session by STARTING agent-cli -- a real run, with real LLM calls and real
     money. A test that reaches that path by accident has to fail, not spend.
 
-    Tests that mean to wake replace spawn_wake themselves; their patch wins for
-    as long as they run, and this puts the refusal back afterwards.
+    Tests that mean to wake replace spawn_wake themselves, in
+    session_presence/presence.py -- where notify() looks it up; their patch
+    wins for as long as they run, and this puts the refusal back afterwards.
     """
     try:
-        from agent_system.core import session_presence
+        from agent_system.core.session_presence import presence
     except Exception:  # the module is not part of every checkout state
         yield
         return
 
-    original = session_presence.spawn_wake
+    original = presence.spawn_wake
 
     def refuse(session_id, user_id, depth):
         raise WokeForReal(
             f"a test tried to wake session {session_id} for real -- spawn_wake "
             "starts agent-cli. Replace spawn_wake in the test.")
 
-    session_presence.spawn_wake = refuse
+    presence.spawn_wake = refuse
     try:
         yield
     finally:
-        session_presence.spawn_wake = original
+        presence.spawn_wake = original
 
 
 @pytest.fixture(autouse=True)
@@ -847,20 +848,10 @@ def _reset_all_global_state():
     except ImportError:
         pass
     
-    # Reset app registry and all app-level globals
+    # Reset the API's shared services (app registry, session service, ...)
     try:
-        from agent_system import app as app_module
-        app_module._app_registry = None
-        app_module._tool_integration = None
-        app_module._config_service = None
-        app_module._tool_server_service = None
-        app_module._tool_service = None
-        app_module._agent_service = None
-        app_module._initialization_service = None
-        app_module._session_manager = None
-        app_module._session_service = None
-        app_module._shutdown_event = None
-        app_module._app_start_time = None
+        from agent_system import app_state
+        app_state.reset()
     except ImportError:
         pass
     
@@ -941,8 +932,8 @@ def _reset_all_global_state():
     
     # Reset config settings cache
     try:
-        from agent_system.config import settings as settings_module
-        settings_module._plugins_cache = None
+        from agent_system.config import inheritance as inheritance_module
+        inheritance_module._plugins_cache = None
     except ImportError:
         pass
     
@@ -979,9 +970,10 @@ def _reset_all_global_state():
     
     # Reset vector store backend cache
     try:
-        from agent_system.utils import vector_store as vector_store_module
-        vector_store_module._VECTOR_BACKEND = None
-        vector_store_module._ONNX_PROVIDERS = None
+        from agent_system.utils.vector_store import base as vector_store_base
+        from agent_system.utils.vector_store import embeddings as vector_store_embeddings
+        vector_store_base._VECTOR_BACKEND = None
+        vector_store_embeddings._ONNX_PROVIDERS = None
     except ImportError:
         pass
 

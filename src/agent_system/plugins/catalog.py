@@ -1,6 +1,6 @@
 """The plugin TYPES, read from manifests -- without importing a single plugin.
 
-Answering "is this type a known plugin?" (config inheritance in settings.py)
+Answering "is this type a known plugin?" (config inheritance in config/inheritance.py)
 ran a full discovery. Measured 2026-09-04 in a fresh process: the first
 inheritance resolution took 0.85 s and left 187 plugin modules in sys.modules,
 for a membership test.

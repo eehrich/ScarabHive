@@ -1,6 +1,6 @@
 """The chat renders tool traffic twice -- in Python and in JavaScript.
 
-The terminal builds those lines in ``cli_utils/chat.py``; the browser cannot
+The terminal builds those lines in ``cli_utils/chat/transcript.py``; the browser cannot
 run Python, so ``static/js/chat_module.js`` builds the same lines again. The
 architecture asks for that (``chat_commands`` holds the knowledge, each
 surface keeps its own execution) -- but nothing holds the two halves together,

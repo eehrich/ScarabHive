@@ -443,8 +443,8 @@ def _drive_repl(monkeypatch, lines, agent, loop=None, seen_loops=None):
         turns.append(task)
         return {}
 
-    monkeypatch.setattr("agent_system.cli_utils.chat._execute_turn", _fake_turn)
-    monkeypatch.setattr("agent_system.cli_utils.chat._available_skills",
+    monkeypatch.setattr("agent_system.cli_utils.chat.turn._execute_turn", _fake_turn)
+    monkeypatch.setattr("agent_system.cli_utils.chat.agent_setup._available_skills",
                         lambda ctx: [])
     fed = iter(lines)
 
@@ -460,7 +460,7 @@ def _drive_repl(monkeypatch, lines, agent, loop=None, seen_loops=None):
     # block on the console -- green under pytest (stdin is not a tty), hanging
     # under `pytest -s`. Force the input() path so the driver means the same
     # thing wherever it runs.
-    monkeypatch.setattr("agent_system.cli_utils.chat._build_prompt_editor",
+    monkeypatch.setattr("agent_system.cli_utils.chat.prompt_input._build_prompt_editor",
                         lambda seed, **kw: None)
     agent.llm = SimpleNamespace(model="m")
     run_chat_loop(

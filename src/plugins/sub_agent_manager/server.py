@@ -3039,7 +3039,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         writer's worker. Asking only ourselves, `list` calls a live sub-agent interrupted and
         writes that over its metadata -- the very thing the panel's read-only listing avoids
         (web_endpoints.py). A run holds the lock file next to its session for as long as it lasts
-        (core/session_presence.py), and that is the same answer in every process.
+        (core/session_presence/), and that is the same answer in every process.
 
         False while session presence is off: then there is no such answer, and `list` falls back
         to what it always did.

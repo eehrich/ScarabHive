@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from agent_system import app_state
 from agent_system.llm.models import ChatMessage
 from agent_system.servers.agent.server import Agent
 from agent_system.services.session_manager import SessionManager
@@ -34,7 +35,7 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(AuthConfig, "enabled", _Off(), raising=False)
     monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
     app = app_mod.build_app()
-    monkeypatch.setattr(app_mod, "_session_service", SessionService(SessionManager(storage_path=str(tmp_path))))
+    monkeypatch.setattr(app_state, "session_service", SessionService(SessionManager(storage_path=str(tmp_path))))
     tasks = []
 
     async def run_events(self, task, request_id=None, session_id=None, **kwargs):

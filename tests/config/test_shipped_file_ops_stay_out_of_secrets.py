@@ -13,6 +13,7 @@ paths -- and a narrowed coder_fs that no longer does -- turns this red.
 """
 from __future__ import annotations
 
+from pathlib import Path
 
 from agent_system.config import settings
 from agent_system.config.settings import get_tool_server_config, load_settings
@@ -26,7 +27,7 @@ REPOSITORY_WIDE = {"coder_fs", "coder_fs_ro"}
 
 def _enabled_file_ops_instances(monkeypatch):
     monkeypatch.setattr(settings, "_load_secrets_file", lambda path: None)  # keys stay out of this process
-    config = load_settings(str(settings.Path(__file__).resolve().parents[2] / "config" / "config.yaml"))
+    config = load_settings(str(Path(__file__).resolve().parents[2] / "config" / "config.yaml"))
     names = [name for name, raw in (config.plugins.servers or {}).items() if raw.enabled]
     resolved = {name: get_tool_server_config(name, config) for name in names}
     return {name: cfg for name, cfg in resolved.items() if cfg is not None and cfg.type == "file_ops"}

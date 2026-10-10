@@ -299,7 +299,7 @@ Node knowledge now comes from `search_nodes` and `get_node_types` of the instanc
 
   Source: probe_mcp_trigger.py.
 - **F-MCP2 [measured]** `transport: sse` returns 404. Source: probe_mcp_trigger.py.
-- **F-MCP3 [documented]** Remote servers are declared in `config/mcp_servers.yaml` under `external_servers.remote_servers`. Source: `mcp_servers.yaml:26-31`; `config/models.py:959-1000`.
+- **F-MCP3 [documented]** Remote servers are declared in `config/mcp_servers.yaml` under `external_servers.remote_servers`. Source: `mcp_servers.yaml:26-31`; `config/models/external_servers.py`.
 - **F-MCP4 SUPERSEDED → M-MCP-H1…, M-MCP-1…** It used to say: "instance MCP off, tools unmeasured." Now it is switched on and measured. What remains valid: if the MCP is off, the endpoint answers 404 "MCP access is disabled".
 - **F-MCP5 SUPERSEDED → M-MCP-H2** The probe key from back then is rotated. We now know the endpoint for it.
 
@@ -613,7 +613,7 @@ Node knowledge now comes from `search_nodes` and `get_node_types` of the instanc
 - **F-OUR1 [measured]** In `config/` and `src/agent_system/` there is no n8n reference. A plugin folder containing only docs is silently skipped by the discovery (DEBUG). Source: probe_discovery.py.
 - **F-OUR2 [documented]** The handler contract requires `{"status":"success"|"error"}`; the error net does not recognize `failed`. Status lines: exactly one `end` or `error`, at most 140 characters. Source: `tools/base.py:86-90`; `tests/plugins/test_status_end_lines.py`.
 - **F-OUR3 [documented]** The framework validates no arguments and truncates no results (except context_engineer, pre-layer T). Source: `references/tools.md:71-93`.
-- **F-OUR4 [documented]** `${VAR}` applies only to names from `[A-Z0-9_]`. An unset variable gives `""` plus a WARNING. Source: `config/settings.py:29-60,122-143,203-205,300-311`.
+- **F-OUR4 [documented]** `${VAR}` applies only to names from `[A-Z0-9_]`. An unset variable gives `""` plus a WARNING. Source: `config/environment.py` (`expand_env`).
 - **F-OUR5 [documented]** Agent and tool YAMLs under `src/plugins*/*/agents/*.yaml` are included by the glob in `config/config.yaml:18`. There they stand under `plugins:` → `servers:`. Source: `src/plugins/research/agents/*.yaml`.
 - **F-OUR6 [documented]** httpx and aiohttp are core dependencies. Source: `requirements/core.txt:9,11`.
 - **F-OUR7 [documented]** `enabled` defaults to false. Plugin config is not validated. Source: `config/plugins.yaml:16-17`.
@@ -621,7 +621,7 @@ Node knowledge now comes from `search_nodes` and `get_node_types` of the instanc
 - **F-OUR9 SUPERSEDED → F-DEP5** Formerly: an `.env` in `docs/deploy/` would not be git-ignored.
 - **F-OUR10 [documented]** Allowlists: `tools.allowed: ["+…"]` extends the list, without `+` it replaces. An agent with visibility `tool`/`both` appears for callers with `<agent>/*` as `<agent>_execute_task`. Source: `config/agents/agents.yaml:6-32`; `runtime.py:154-159`; `tool_discovery.py:156-222`.
 - **F-OUR11 [measured]** No active agent reaches the root SAM `sub_agent_manager`. Source: probe_sam.py.
-- **F-OUR12 [documented]** `wake_blocked()` returns "" or a reason. `wake_session()` starts a **new** process and takes effect only while the process that holds the work is alive. Source: `core/session_presence.py`; pattern `terminal/server.py:306-340,441-462`.
+- **F-OUR12 [documented]** `wake_blocked()` returns "" or a reason. `wake_session()` starts a **new** process and takes effect only while the process that holds the work is alive. Source: `core/session_presence/wake.py`; pattern `terminal/server.py:306-340,441-462`.
 - **F-OUR13 [documented]** The only teardown is `stop_plugin` on the object from `PLUGIN_FACTORY`. Source: `plugins/capabilities.py:182-190`; `test_pluginsystem_teardown_hook.py:59`.
 - **F-OUR14 [documented]** The API binds `127.0.0.1:8000`. Source: `config/config.yaml:56-57`.
 - **F-OUR15 [documented]** `/run` always answers with `text/event-stream`. Source: `app.py`, search term `media_type="text/event-stream"`.

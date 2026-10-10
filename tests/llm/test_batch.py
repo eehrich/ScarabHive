@@ -1097,8 +1097,8 @@ class TestBatchQueueManager:
         mock_client = AsyncMock()
         manager.register_batch_client("openai", mock_client)
         
-        assert "openai" in manager._batch_clients
-        assert manager._batch_clients["openai"] == mock_client
+        assert "openai" in manager._client_registry._clients
+        assert manager._client_registry._clients["openai"] == mock_client
 
     @pytest.mark.asyncio
     async def test_cancel_request_from_queue(self, mock_config):

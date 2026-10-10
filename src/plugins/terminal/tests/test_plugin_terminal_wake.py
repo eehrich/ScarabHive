@@ -1,6 +1,6 @@
 """A background process that ends tells the session that started it.
 
-The wake itself is core (``core/session_presence.py``) and is replaced here:
+The wake itself is core (``core/session_presence/wake.py``) and is replaced here:
 ``notify`` on a session nobody holds STARTS AN agent-cli PROCESS, which a test
 must never do. What is tested is the plugin's side -- whether the end is
 reported at all, with which session, and what the caller is told when there is

@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from agent_system.auth.security import check_secret_key
-from agent_system.config import local_layer, settings
+from agent_system.config import environment, local_layer, settings
 from agent_system.config.local_layer import ensure_signing_key, main, signing_key_at_restart, write_secret
 
 SHIPPED = "published-signing-key-replace-with-your-own-0000000000"  # config/config.yaml's, public
@@ -14,7 +14,7 @@ SHIPPED = "published-signing-key-replace-with-your-own-0000000000"  # config/con
 
 @pytest.fixture
 def own_process(monkeypatch):
-    monkeypatch.setattr(settings, "_secrets_from_file", {})
+    monkeypatch.setattr(environment, "_secrets_from_file", {})
     monkeypatch.setenv(settings.SECRETS_FROM_FILE_ENV, os.environ.get(settings.SECRETS_FROM_FILE_ENV, ""))
     for name in (local_layer.SIGNING_KEY_VARIABLE, "LAYER_TEST_KEY"):
         monkeypatch.setenv(name, "")

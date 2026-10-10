@@ -138,6 +138,7 @@ async def test_a_second_run_under_a_running_id_is_refused(tmp_path, monkeypatch)
     time; the job is where the two meet, and the second one is refused there
     without starting its agent or letting go of the first one's ownership."""
     from agent_system import app as app_mod
+    from agent_system.api import run_routes
     from agent_system.core.request_context import (
         get_request_user, register_request_user, release_request_user_tree)
 
@@ -146,7 +147,7 @@ async def test_a_second_run_under_a_running_id_is_refused(tmp_path, monkeypatch)
     app = app_mod.build_app()
     request_id = f"mirror{uuid.uuid4().hex[:10]}"
     # as if the second request had passed the check in the same moment as the first
-    monkeypatch.setattr(app_mod, "_validate_client_request_id", lambda rid: asyncio.sleep(0, rid))
+    monkeypatch.setattr(run_routes, "validate_client_request_id", lambda rid: asyncio.sleep(0, rid))
     started = []
 
     async def run_events(self, task, **kwargs):

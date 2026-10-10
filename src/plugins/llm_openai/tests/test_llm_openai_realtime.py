@@ -254,7 +254,7 @@ async def test_a_failed_response_is_an_error_the_server_can_read(realtime):
 
     result = await client.chat_tools([ChatMessage(role="user", content="hi")], [])
 
-    # agent_system/servers/agent/server.py reads error.message and error.type
+    # agent_system/servers/agent/mixins/llm_loop/fallback.py reads error.message and error.type
     error = result["assistant"]["error"]
     assert error["type"] == "upstream_error_server_error"
     assert "failed" in error["message"] and "overloaded" in error["message"]

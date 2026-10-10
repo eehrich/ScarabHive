@@ -92,7 +92,7 @@ def _plugin_stopped() -> ApiError:
 
 def _streamed(stream: AsyncGenerator[str, None], turn: AgentTurn) -> StreamingResponse:
     """A stream whose generator -- and turn -- are closed once its response is over, as the app's
-    ``_sse_response`` closes its generator.
+    ``sse_response`` (api/run_start.py) closes its generator.
 
     Starlette cancels a response whose client left but never closes its body generator. Caught at a yield --
     in the middle of a send (a client that stopped reading, uvicorn waiting to write) -- the generator waited for

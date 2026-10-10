@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from agent_system import app_state
 from agent_system.app import build_app
 from agent_system.auth.security import create_access_token
 from live_accounts import signing_key, token_generation
@@ -107,7 +108,7 @@ class TestCatalogue:
         command word. "3d-print" was offered here and went to the model as a
         message; "tools" was offered and ran the built-in. The terminal has
         filtered both for a while -- through the same function this uses."""
-        import agent_system.skills as skills_module
+        import agent_system.skills.registry as skills_module
 
         registry = SimpleNamespace(
             ensure_discovered=lambda dirs: None,
@@ -685,13 +686,12 @@ class TestVarsEndpoint:
         """
         import types
 
-        from agent_system import app as app_module
         from agent_system.services.session_manager import SessionManager
 
         manager = SessionManager(storage_path=str(tmp_path))
         asyncio_run = __import__("asyncio").run
         asyncio_run(manager.create_session(user_id="admin", session_id=vars_session))
-        monkeypatch.setattr(app_module, "_session_service",
+        monkeypatch.setattr(app_state, "session_service",
                             types.SimpleNamespace(session_manager=manager))
 
         self._set(client, auth_headers, vars_session, "lang=de keep=yes")
@@ -712,7 +712,6 @@ class TestVarsEndpoint:
         """
         import types
 
-        from agent_system import app as app_module
         from agent_system.services.session_manager import SessionManager
 
         asyncio_run = __import__("asyncio").run
@@ -721,7 +720,7 @@ class TestVarsEndpoint:
                                                      session_id=vars_session))
         session["context_vars"] = {"lang": "de", "book_id": "7", "gone": "x"}
         asyncio_run(manager.save_session(session))
-        monkeypatch.setattr(app_module, "_session_service",
+        monkeypatch.setattr(app_state, "session_service",
                             types.SimpleNamespace(session_manager=manager))
 
         # Nothing in the tracker for this session -- exactly the opened-old-

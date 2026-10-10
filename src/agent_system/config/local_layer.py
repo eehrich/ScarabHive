@@ -2,7 +2,7 @@
 
 Neither file is in the repository (.gitignore), so a `git pull` never meets what is written here. The Setup panel
 and the install scripts write through this module; the loader reads both
-(settings.LOCAL_SECRETS, settings.LOCAL_CONFIG).
+(environment.LOCAL_SECRETS, layers.LOCAL_CONFIG).
 
 The install scripts run it as a module:  python -m agent_system.config.local_layer signing-key [config/config.yaml]
 """
@@ -20,8 +20,8 @@ import yaml
 from agent_system.utils import yaml_io
 from agent_system.utils.io import atomic_write_text
 
-from .settings import (LOCAL_CONFIG, LOCAL_SECRETS, _read_secrets_file, environment_at_restart, expand_env,
-                       local_text, master_section, set_by_the_environment)
+from .environment import LOCAL_SECRETS, _read_secrets_file, environment_at_restart, expand_env, set_by_the_environment
+from .layers import LOCAL_CONFIG, local_text, master_section
 
 SIGNING_KEY_VARIABLE = "AUTH_SECRET_KEY"
 SIGNING_KEY_REFERENCE = "${%s}" % SIGNING_KEY_VARIABLE

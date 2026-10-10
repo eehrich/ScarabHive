@@ -99,8 +99,8 @@ class TestMCPStatusEndpoint:
         mock_registry = Mock()
         mock_registry._servers = {}
 
-        with patch('agent_system.app._tool_server_service', mock_service), \
-             patch('agent_system.app._app_registry', mock_registry):
+        with patch('agent_system.app_state.tool_server_service', mock_service), \
+             patch('agent_system.app_state.app_registry', mock_registry):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.get('/tools/status', headers=auth_headers)
                 
@@ -134,7 +134,7 @@ class TestMCPStatusEndpoint:
     async def test_mcp_status_service_not_initialized(self, auth_headers):
         """Test MCP status endpoint when tool server service is not initialized."""
         app = build_app()
-        with patch('agent_system.app._tool_server_service', None):
+        with patch('agent_system.app_state.tool_server_service', None):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.get('/tools/status', headers=auth_headers)
                 
@@ -150,8 +150,8 @@ class TestMCPStatusEndpoint:
         app = build_app()
         mock_service = AsyncMock()
 
-        with patch('agent_system.app._tool_server_service', mock_service), \
-             patch('agent_system.app._app_registry', None):
+        with patch('agent_system.app_state.tool_server_service', mock_service), \
+             patch('agent_system.app_state.app_registry', None):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.get('/tools/status', headers=auth_headers)
                 
@@ -173,8 +173,8 @@ class TestMCPStatusEndpoint:
         mock_registry = Mock()
         mock_registry._servers = {}
 
-        with patch('agent_system.app._tool_server_service', mock_service), \
-             patch('agent_system.app._app_registry', mock_registry):
+        with patch('agent_system.app_state.tool_server_service', mock_service), \
+             patch('agent_system.app_state.app_registry', mock_registry):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.get('/tools/status', headers=auth_headers)
                 
@@ -202,8 +202,8 @@ class TestMCPStatusEndpoint:
         mock_registry = Mock()
         mock_registry._servers = {}
 
-        with patch('agent_system.app._tool_server_service', mock_service), \
-             patch('agent_system.app._app_registry', mock_registry):
+        with patch('agent_system.app_state.tool_server_service', mock_service), \
+             patch('agent_system.app_state.app_registry', mock_registry):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.get('/tools/status', headers=auth_headers)
                 

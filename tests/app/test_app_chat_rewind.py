@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from agent_system import app_state
 from agent_system.config.models import SessionPresenceConfig
 from agent_system.core.session_presence import presence_for
 from agent_system.file_rewind import file_rewinder
@@ -69,7 +70,7 @@ async def api(tmp_path, monkeypatch):
     app.state.config.session_presence = SessionPresenceConfig(enabled=True)
     manager = SessionManager(storage_path=str(tmp_path / "sessions"))
     service = SessionService(manager)
-    monkeypatch.setattr(app_mod, "_session_service", service)
+    monkeypatch.setattr(app_state, "session_service", service)
     # The app's own plugin, built from the shipped configuration -- not the rig's.
     plugin = file_rewinder()
     assert plugin is not None, "the app loaded no file_checkpoints"

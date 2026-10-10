@@ -25,7 +25,10 @@ import pytest
 from filelock import FileLock
 
 from agent_system.core.session_presence import SessionPresence
+from agent_system.services import session_cache, session_paths
+from agent_system.services import session_index as index_module
 from agent_system.services import session_manager as sm_module
+from agent_system.utils import io as io_module
 from agent_system.services.session_manager import SessionManager
 
 USER = "u"
@@ -85,9 +88,9 @@ def test_an_index_being_replaced_is_read_again_not_given_up(tmp_path, monkeypatc
             raise PermissionError(13, "being replaced by another process")
         return real_open(file, *args, **kwargs)
 
-    monkeypatch.setattr(sm_module, "open", refuse_twice, raising=False)
+    monkeypatch.setattr(io_module, "open", refuse_twice, raising=False)
 
-    assert sm_module._read_json_retrying(path) == {"s1": {}}
+    assert io_module.read_json_retrying(path) == {"s1": {}}
     assert len(refusals) == 2, "the test never refused anything"
 
 
@@ -109,12 +112,12 @@ async def test_a_row_written_during_a_rebuild_survives_it(tmp_path, monkeypatch)
         if not arrived:
             def put(index):
                 index["s_meanwhile"] = {"session_id": "s_meanwhile", "title": "new"}
-                return sm_module._WRITE
-            await manager._edit_index(USER, None, put, missing={})
+                return index_module._WRITE
+            await manager._index._edit(USER, None, put, missing={})
             arrived.append(True)
         return await real_read(path)
 
-    monkeypatch.setattr(manager, "_read_session_file_async", scan_while_another_process_writes)
+    monkeypatch.setattr(manager._index, "_read_session", scan_while_another_process_writes)
 
     await manager._rebuild_index(USER)
 
@@ -127,9 +130,9 @@ async def test_a_row_written_during_a_rebuild_survives_it(tmp_path, monkeypatch)
 def test_an_index_lock_is_not_taken_for_a_running_session(tmp_path):
     """Every *.lock in a user directory is a session presence lock to its readers."""
     manager = SessionManager(storage_path=str(tmp_path / "sessions"))
-    index_path = manager._get_index_path(USER)
+    index_path = manager._index.path(USER)
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = manager._index_lock_path(index_path)
+    lock_path = manager._index.lock_path(index_path)
 
     assert not lock_path.name.endswith(".lock")
     with FileLock(str(lock_path)):
@@ -139,5 +142,7 @@ def test_an_index_lock_is_not_taken_for_a_running_session(tmp_path):
 
 def test_the_retrying_reader_is_what_every_index_read_uses():
     """One raw open() left beside it would bring the crash back for that path."""
-    source = Path(sm_module.__file__).read_text(encoding="utf-8")
-    assert source.count("json.load(") == 1, "an index or session file is read without the retry"
+    source = "".join(Path(module.__file__).read_text(encoding="utf-8")
+                     for module in (sm_module, index_module, session_cache, session_paths))
+    assert "json.load(" not in source, "an index or session file is read without the retry"
+    assert "read_json_retrying(" in source

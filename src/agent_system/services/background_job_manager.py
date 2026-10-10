@@ -378,7 +378,7 @@ class BackgroundJobManager:
                         own_job.changed.notify_all()
 
         # Check-and-register in ONE lock block. The callers' own duplicate
-        # guard (app.py's _validate_client_request_id) is a check-then-act
+        # guard (api/run_start.py's validate_client_request_id) is a check-then-act
         # with a wide window — it runs in the request handler while
         # create_job only runs once the SSE body is being streamed — so two
         # concurrent requests carrying the same caller-supplied request_id
@@ -460,7 +460,7 @@ class BackgroundJobManager:
         # Somebody stopped it -- the web chat's Stop, an admin, a deleted session,
         # writer_jobs. Noted first: the run may be past the point where the
         # layers below reach it (its finalize), and its session is let go marked
-        # all the same, so nothing starts it again by itself (core/session_presence.py).
+        # all the same, so nothing starts it again by itself (core/session_presence/).
         from ..core.session_presence import note_stop
         note_stop(request_id)
 

@@ -2597,7 +2597,7 @@
       "additionalProperties": false
     },
     "SessionPresenceConfig": {
-      "description": "Which sessions run right now, and waking idle ones (core/session_presence.py).",
+      "description": "Which sessions run right now, and waking idle ones (core/session_presence/).",
       "properties": {
         "enabled": {
           "default": false,
