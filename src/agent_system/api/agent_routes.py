@@ -53,9 +53,12 @@ def get_config(ctx: AppContext = Depends(app_context)):
 
     Live, not the start state: the endpoint whose whole job is to show the
     configuration must not report the state before the reload that just
-    succeeded.
+    succeeded. Without its credentials: the signing key, the providers' keys,
+    passwords and the credentials in URLs show as ``***`` -- an admin login
+    must not turn into the key that signs every login, for good.
     """
-    return ctx.live_config().model_dump()
+    from agent_system.utils.redact import redact_secrets
+    return redact_secrets(ctx.live_config().model_dump())
 
 
 def _public_agents() -> tuple[list[str], dict[str, str]]:

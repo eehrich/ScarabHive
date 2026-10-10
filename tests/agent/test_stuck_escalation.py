@@ -133,7 +133,7 @@ class TestCreateStuckEscalatorGating:
 
     def _agent(self, **cfg):
         a = Agent.__new__(Agent)  # skip heavy __init__
-        # Ketten-Semantik: Advanced-Modell kommt aus llm_profile_advanced[0]
+        # Chain semantics: the advanced model comes from llm_profile_advanced[0]
         a.agent_config = SimpleNamespace(
             llm_profile=cfg.get("llm_profile", ["std"]),
             default_llm_profile=cfg.get("default_llm_profile", "std"),
@@ -153,8 +153,8 @@ class TestCreateStuckEscalatorGating:
         assert not esc.enabled
 
     def test_disabled_when_advanced_equals_default(self):
-        # advanced == default kann keinen anderen Client bauen (Guard
-        # spiegelt _get_escalation_llm) — Escalator wäre ein toter Trigger.
+        # advanced == default cannot build a different client (the guard
+        # mirrors _get_escalation_llm) — the escalator would be a dead trigger.
         esc = self._agent(advanced_llm_profile="std")._create_stuck_escalator(already_advanced=False)
         assert not esc.enabled
 

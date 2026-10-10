@@ -247,11 +247,11 @@ class TestPluginToolRegistry:
 
     @pytest.mark.asyncio
     async def test_plugins_tool_registry_register_from_config_key_ne_type(self, registry):
-        """Config-Agent-Fall: Server-Key != Plugin-Typ (z.B. 'slovak_tutor' mit
-        type='basic_agent'). Die Factory MUSS über den Typ aufgelöst werden —
-        der alte Key-Lookup errorte für jeden Config-Agenten, sobald der
-        Integration-Fallback lief (Startreihenfolge), und konnte ihn nie
-        registrieren."""
+        """Config-agent case: server key != plugin type (e.g. 'slovak_tutor' with
+        type='basic_agent'). The factory MUST be resolved via the type --
+        the old key lookup errored for every config agent as soon as the
+        integration fallback ran (startup order), and could never
+        register it."""
         def mock_factory(name, system_config, server_config):
             return MockPluginServer(name)
 
@@ -272,8 +272,8 @@ class TestPluginToolRegistry:
 
     @pytest.mark.asyncio
     async def test_plugins_tool_registry_register_from_config_unknown_type_skips(self, registry):
-        """Unbekannter TYP wird geloggt und übersprungen — kein Abbruch,
-        keine Registrierung (Fehlermeldung nennt Typ UND Server-Key)."""
+        """An unknown TYPE is logged and skipped -- no abort,
+        no registration (the error message names the type AND the server key)."""
         from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
         system_config = AgentSystemConfig()
         servers_config = {

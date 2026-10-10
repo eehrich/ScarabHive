@@ -65,9 +65,10 @@ agent can reach everything below that folder, the configuration and its
 secrets included when it is the project.
 @{bullet}A @{tt}data/...@{utt} entry follows the data directory when that
 is moved (@{tt}AGENT_DATA_DIR@{utt}, @{tt}paths.data_dir@{utt}).
-@{bullet}Without the key the instance gets @{tt}src@{utt}, @{tt}docs@{utt},
-@{tt}tests@{utt} and @{tt}tmp@{utt} of the project. An empty list allows
-nothing.
+@{bullet}Without the key, as with an empty list, the instance allows
+nothing: every path is refused. (It used to get @{tt}src@{utt},
+@{tt}docs@{utt}, @{tt}tests@{utt} and @{tt}tmp@{utt} of the project,
+writable -- enough for an agent to plant a plugin the next start loads.)
 
 The folders are fixed when the instance starts; a later change of the
 working directory does not move them.
@@ -484,7 +485,7 @@ every session. Switch it on only for an agent you trust with all of that.
 
 @{table}
 Key | Default | Meaning
-allowed_directories | src, docs, tests, tmp | the folders; see "Where an agent can read and write"
+allowed_directories | none: nothing allowed | the folders; see "Where an agent can read and write"
 read_only | false | true: no write tools
 max_unpaginated_file_size_kb | 100 | read_file returns a file up to this size whole
 default_line_limit | 500 | lines read_file returns of a larger file without limit

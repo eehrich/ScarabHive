@@ -28,8 +28,8 @@ plugins:
         tools:
           allowed: []
         system_prompt: |
-          Du bist ein Reviewer. Beurteile den Text, den du bekommst, in genau
-          einem Satz.
+          You are a reviewer. Judge the text you are given in exactly
+          one sentence.
 
     required_spawns_test_agent:
       type: basic_agent
@@ -54,16 +54,16 @@ plugins:
                 agents: 'review_map.get(aufgabe, [])'
                 tool: required_spawns_test_sam_manage_sub_agent
                 message: >-
-                  Die Review fehlt: {missing} wurde nie gespawnt. Spawne ihn
-                  jetzt mit deiner Antwort als Task und gib dann die Antwort
-                  zusammen mit seinem Urteil zurück.
+                  The review is missing: {missing} was never spawned. Spawn it
+                  now with your answer as its task, then return the answer
+                  together with its verdict.
         template_vars:
           aufgabe: demo
           review_map:
             demo: [required_spawns_test_reviewer]
         system_prompt: |
-          Du bist ein Testagent. Beantworte die Frage sofort selbst in einem
-          Satz. Rufe von dir aus kein Tool auf.
+          You are a test agent. Answer the question yourself right away in one
+          sentence. Do not call any tool on your own.
       metadata:
         visibility: "both"
         tags:

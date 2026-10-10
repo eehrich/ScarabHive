@@ -8,6 +8,7 @@ Extracted from servers/agent/server.py to reduce _run_events() complexity (Issue
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+import difflib
 import logging
 import fnmatch
 
@@ -15,6 +16,10 @@ if TYPE_CHECKING:
     from agent_system.servers.agent.components.tool_integration import ToolIntegrationManager
 
 logger = logging.getLogger(__name__)
+
+# (agent, pattern) pairs already reported: schemas are built on every run, the
+# warning about an allowed pattern that matches nothing is wanted once.
+_REPORTED_UNMATCHED: set[tuple[str, str]] = set()
 
 
 def tool_matches_patterns(tool_name: str, server_name: str, patterns: List[str]) -> bool:
@@ -117,6 +122,45 @@ def server_matches_patterns(name: str, patterns: List[str]) -> bool:
     return False
 
 
+def external_reach(pattern: str, servers: dict[str, bool]) -> Optional[bool]:
+    """Whether a pattern can grant a tool of a server in `servers` ({name: enabled}): None when it cannot, else
+    whether one of the servers it can reach is enabled.
+
+    An external tool is `server.tool` to discovery and `server.tool` + `server_tool` to the tool filter
+    (tool_matches_patterns). Measured against both: only the exact dotted name and a pattern ending in `*` pass both --
+    `*.echo` and `everything.ech?` pass discovery and die in the filter, a `/` never matches at all. Which tools a
+    server has is unknown here, so a pattern that ends in `*` counts as reaching every server its head can match
+    (fnmatch, as the runtime matches, case included).
+    """
+    if "/" in pattern:
+        return None
+    if not any(character in pattern for character in "*?["):
+        head, dot, tool = pattern.partition(".")
+        return servers.get(head) if dot and tool else None
+    if not pattern.endswith("*"):
+        return None
+    head, dot, _ = pattern.partition(".")
+    # with a dot the head faces the server name, without one the whole pattern faces `server.` and the `*` takes the rest
+    reached = [on for name, on in servers.items()
+               if (fnmatch.fnmatch(name, head) if dot else fnmatch.fnmatch(f"{name}.", pattern))]
+    return any(reached) if reached else None
+
+
+def _unmatched_hint(pattern: str, tools: List[Tuple[str, str]], servers: List[str]) -> str:
+    """What an allowed pattern that matches nothing probably meant: the
+    prefixed tool name, else the closest tool or server names."""
+    server, _, tool = pattern.partition("/")
+    if tool and (server, f"{server}_{tool}") in tools:
+        return f"the tool name carries the instance prefix: '{server}/{server}_{tool}'"
+    if server in servers and all(s != server for s, _ in tools):
+        return f"server '{server}' is enabled but offered this agent no tools -- failed to start, or not a tool?"
+    names = [f"{s}/{t}" for s, t in tools] + sorted(set(servers) | {s for s, _ in tools})
+    close = difflib.get_close_matches(pattern, names, n=3)
+    if close:
+        return "closest: " + ", ".join(close)
+    return "no tool or server of that name -- misspelt, or its server is not enabled?"
+
+
 class ToolSchemaBuilder:
     """Builds OpenAI-compatible tool schemas from tool servers."""
 
@@ -193,6 +237,10 @@ class ToolSchemaBuilder:
 
         # Apply allowed patterns FIRST (if specified) to whitelist tools
         if allowed_patterns:
+            try:
+                self._warn_unmatched_allowed(tool_name_mapping, allowed_patterns)
+            except Exception:  # a diagnostic must not fail the build
+                logger.debug("Checking the allowed patterns of %s failed", self.agent_name, exc_info=True)
             tools_schema, tool_name_mapping, usable_tools, display_tools = self._apply_allowed_patterns(
                 tools_schema, tool_name_mapping, usable_tools, display_tools, allowed_patterns
             )
@@ -274,6 +322,63 @@ class ToolSchemaBuilder:
 
         # If no tools match allowed patterns, return empty lists (deny all)
         return [], {}, [], []
+
+    def _warn_unmatched_allowed(self, tool_name_mapping: Dict[str, str],
+                                allowed_patterns: List[str]) -> List[str]:
+        """Log every ``tools.allowed`` pattern that matches none of the discovered tools.
+
+        Such a pattern gives the agent nothing, silently: a typo, a tool named
+        without its instance prefix (``tally/count`` for ``tally/tally_count``),
+        a server that is not enabled. The judgement is the Agent Editor's
+        "Matches no tool" (agent_editor ``effective_tools``): the tools here are
+        those of the servers discovery let through for the whole list.
+
+        Not judged:
+        - ``tools.blocked``: a block that matches nothing takes nothing away.
+          (Allowed entries carry no ``-``/``!``/``+``: the merge prefixes are
+          resolved when the config loads.)
+        - patterns that reach an enabled external MCP server (``external_reach``):
+          an on_demand server's tools are missing until it connects.
+        A pattern whose servers are all configured but disabled is logged at
+        INFO, not as a warning: shipped agents name optional servers
+        (default_config has ``enabled: false``), and leaving them off is the
+        operator's choice.
+
+        Each (agent, pattern) is logged once per process. Returns the messages
+        of this call (for tests).
+        """
+        messages: List[str] = []
+        tools = [(server, tool) for tool, server in tool_name_mapping.items()]
+        unmatched = [pattern for pattern in dict.fromkeys(allowed_patterns)
+                     if (self.agent_name, pattern) not in _REPORTED_UNMATCHED
+                     and not any(tool_matches_patterns(tool, server, [pattern]) for server, tool in tools)]
+        if not unmatched:
+            return messages
+        config = getattr(self.tool_integration_manager, "system_config", None)
+        servers = getattr(getattr(config, "plugins", None), "servers", None)
+        remote = getattr(getattr(config, "external_servers", None), "remote_servers", None)
+        servers = servers if isinstance(servers, dict) else {}
+        remote = {name: bool(getattr(cfg, "enabled", True))
+                  for name, cfg in (remote.items() if isinstance(remote, dict) else [])}
+        enabled = {name: bool(getattr(cfg, "enabled", True)) for name, cfg in servers.items()}
+        for pattern in unmatched:
+            reach = external_reach(pattern, remote)
+            if reach:  # an enabled external server: its tools may come with the connect
+                continue
+            _REPORTED_UNMATCHED.add((self.agent_name, pattern))
+            head = pattern.split("/", 1)[0]
+            reached = [on for name, on in enabled.items() if fnmatch.fnmatch(name, head)]
+            if reach is False or (reached and not any(reached)):
+                message = (f"Agent '{self.agent_name}': tools.allowed pattern '{pattern}' "
+                           "gives no tool -- its server is disabled")
+                logger.info(message)
+            else:
+                hint = _unmatched_hint(pattern, tools, [name for name, on in enabled.items() if on])
+                message = (f"Agent '{self.agent_name}': tools.allowed pattern '{pattern}' "
+                           f"matches no tool -- it gives the agent nothing ({hint})")
+                logger.warning(message)
+            messages.append(message)
+        return messages
 
     def _is_tool_allowed(self, tool_name: str, server_name: str, allowed_patterns: List[str]) -> bool:
         """

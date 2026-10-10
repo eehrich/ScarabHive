@@ -1,6 +1,6 @@
 """tool_preload — execute the predictable opening tool calls without an LLM turn.
 
-The pattern this removes: an agent gets "ändere X im Dokument Y", and its first
+The pattern this removes: an agent gets "change X in document Y", and its first
 LLM turn is — always — the tool call that loads Y. That turn costs a full LLM
 round trip (and they have grown slow) plus the prompt tokens of the whole
 context, and its outcome is known in advance.
@@ -325,8 +325,8 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
             if not text:
                 return unchanged
 
-            # Im Hook aufgeloest, wo `context` im Scope ist — _plan_calls
-            # bekommt Daten, kein Kontext-Objekt.
+            # Resolved in the hook, where `context` is in scope -- _plan_calls
+            # receives data, not a context object.
             plan = self._plan_calls(
                 rules, text, config, messages,
                 ctx_vars=_session_context_vars(context))
@@ -469,7 +469,7 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                             deadline: float = float("inf")) -> List[ChatMessage]:
         """Run the plan sequentially; return the message pairs to append.
 
-        Sequential ON PURPOSE: "erst context_var setzen, dann Content laden" is
+        Sequential ON PURPOSE: "set context_var first, then load content" is
         a real dependency, so call k+1 must not start before call k finished.
 
         A call that the dispatcher rejects (unknown tool, not in the agent's

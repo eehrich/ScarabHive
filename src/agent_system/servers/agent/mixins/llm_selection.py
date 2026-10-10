@@ -59,8 +59,8 @@ class LLMSelectionMixin:
         config flag is off, no advanced profile exists, or the run is already on
         the advanced model (nothing to escalate to)."""
         cfg = self.agent_config
-        # Gleichheits-Guard spiegelt _get_escalation_llm: advanced == default
-        # kann keinen anderen Client bauen — Escalator wäre ein toter Trigger.
+        # Equality guard mirrors _get_escalation_llm: advanced == default
+        # cannot build a different client — the escalator would be a dead trigger.
         has_advanced = bool(
             cfg and cfg.advanced_llm_profile
             and cfg.advanced_llm_profile != cfg.default_llm_profile)
@@ -209,10 +209,10 @@ class LLMSelectionMixin:
         try:
             from ....llm.factory import create_llm_from_profile
 
-            # Fallbacks laufen mit DERSELBEN llm_params-Semantik wie das
-            # Primaermodell — create_llm_from_profile loest die profil-
-            # gekeyten Params selbst auf ("*"/flat fuer die ganze Kette,
-            # exakter Eintrag gewinnt). Keine Sonderbehandlung hier.
+            # Fallbacks run with the SAME llm_params semantics as the
+            # primary model — create_llm_from_profile resolves the profile-
+            # keyed params itself ("*"/flat for the whole chain,
+            # exact entry wins). No special handling here.
             fallback_llm = create_llm_from_profile(
                 config=self.system_config,
                 llm_profile=fallback_profile,

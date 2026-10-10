@@ -1,11 +1,11 @@
-"""Flex→Standard-Tier-Fallback im Responses-Client (Review-Fund, major).
+"""Flex->standard tier fallback in the Responses client (review finding, major).
 
-Die httpx-Route droppt beim ersten 429 den service_tier (gesättigte
-flex-Queue — standard ist meist frei) und retried. Der Responses-Client
-raist e stattdessen sofort (HTTP-429) bzw. retried stur auf flex (Body-429)
-→ unnötige Modell-Fallbacks für alle flex-Modelle. Jetzt: einmaliger
-Tier-Drop ohne Retry-Slot-Verbrauch in beiden Pfaden; enc-Heal-Payload-
-Rebuilds stellen den gedroppten Tier nicht wieder her.
+The httpx route drops the service_tier on the first 429 (saturated flex
+queue -- standard is usually free) and retries. The Responses client
+instead raised immediately (HTTP 429) or retried stubbornly on flex
+(body 429) -> needless model fallbacks for all flex models. Now: a single
+tier drop without consuming a retry slot, in both paths; enc-heal payload
+rebuilds do not restore the dropped tier.
 """
 from __future__ import annotations
 
@@ -54,8 +54,8 @@ def _make_fake(sequence):
 
         async def post(self, url, json=None, headers=None, **kw):
             import copy as _copy
-            # Snapshot statt Referenz — der Client mutiert das payload-Dict
-            # beim Tier-Drop in place.
+            # Snapshot instead of reference -- the client mutates the payload dict
+            # in place on the tier drop.
             _Fake.calls.append(_copy.deepcopy(json))
             status, body = sequence[min(len(_Fake.calls) - 1, len(sequence) - 1)]
             return _FakeResponse(status, body)
@@ -77,7 +77,7 @@ async def test_http_429_drops_flex_tier_and_retries():
     assert result["assistant"]["content"] == "ok"
     assert len(fake.calls) == 2
     assert fake.calls[0].get("service_tier") == "flex"
-    assert "service_tier" not in fake.calls[1], "Retry muss auf standard laufen"
+    assert "service_tier" not in fake.calls[1], "retry must run on standard"
 
 
 @pytest.mark.asyncio
@@ -97,12 +97,12 @@ async def test_second_429_after_drop_raises_typed():
     with patch("plugins.llm_openai_compat.openai_responses_client.httpx.AsyncClient", fake):
         with pytest.raises(LLMRateLimitError):
             await _client().chat_tools([ChatMessage(role="user", content="hi")], [])
-    assert len(fake.calls) == 2, "nach dem Tier-Drop kein weiterer Drop-Loop"
+    assert len(fake.calls) == 2, "no further drop loop after the tier drop"
 
 
 @pytest.mark.asyncio
 async def test_enc_heal_rebuild_keeps_tier_dropped():
-    """Payload-Rebuild im enc-Heal darf den gedroppten Tier nicht zurückbringen."""
+    """A payload rebuild in the enc-heal must not bring back the dropped tier."""
     enc_400 = json.dumps({"error": {"message":
         "The encrypted content for item rs_x could not be verified.", "code": 400}})
     fake = _make_fake([(429, RATE_LIMIT_429), (400, enc_400), (200, OK_BODY)])
@@ -115,7 +115,7 @@ async def test_enc_heal_rebuild_keeps_tier_dropped():
         result = await _client().chat_tools(msgs, [])
     assert result["assistant"]["content"] == "ok"
     assert len(fake.calls) == 3
-    assert "service_tier" not in fake.calls[2], "Rebuild stellt flex nicht wieder her"
+    assert "service_tier" not in fake.calls[2], "rebuild does not restore flex"
 
 
 if __name__ == "__main__":

@@ -1026,6 +1026,57 @@ async def test_the_panel_shows_its_viewer_her_own_sessions_only(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_an_admin_sees_every_users_sub_agents(tmp_path):
+    """The rule of the other plugin panels (auth/session_access.py): an admin -- and anyone while authentication is
+    off -- sees every user's sessions. The panel went by the viewer alone, and an admin opening it on a session of
+    agent-cli's cli_user saw no sub-agents; a user who is not an admin still sees none."""
+    import json
+    from unittest.mock import patch
+
+    from agent_system.auth.models import UserRole
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    await service.session_manager.create_session(user_id="cli_user", session_id="c-1", title="CLI",
+                                                 agent_name="coordinator", llm_profile="normal")
+    sub = await manager.create_sub_session(parent_session_id="c-1", agent_type="writer_agent",
+                                           initial_message="x", params={"_creator_plugin": "sam", "_user_id": "cli_user"})
+    factory = SubAgentManagerWebFactory(server)
+    request = lambda enabled: SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(  # noqa: E731
+        config=SimpleNamespace(auth=SimpleNamespace(enabled=enabled)))))
+    admin = SimpleNamespace(username="root", role=UserRole.ADMIN)
+    user = SimpleNamespace(username="ada", role=UserRole.USER)
+
+    async def shown(asker, enabled=True):
+        listed = await factory.get_sub_agents(request(enabled), session_id="c-1", current_user=asker)
+        mapped = await factory.get_agent_map(request(enabled), session_id="c-1", current_user=asker)
+        return ([entry["instance_id"] for entry in listed["instances"]],
+                [node["instance_id"] for node in mapped["root"]["children"]])
+
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        by_admin = await shown(admin)
+        read = await factory.get_sub_agent(request(True), agent_id=sub, session_id="c-1", offset=None, limit=None,
+                                           current_user=admin)
+        by_user = await shown(user)
+        auth_off = await shown(user, enabled=False)
+        await factory.archive_sub_agent(request(True), agent_id=sub, session_id="c-1", current_user=admin)
+        # an id in two directories: the admin's own copy, not whichever the scan of the directories meets first
+        roots = json.loads((tmp_path / "cli_user" / "c-1.json").read_text(encoding="utf-8"))
+        roots["user_id"], roots["metadata"]["sub_agents"] = "root", {}
+        (tmp_path / "root").mkdir()
+        (tmp_path / "root" / "c-1.json").write_text(json.dumps(roots), encoding="utf-8")
+        service.session_manager._cache.clear()
+        own_copy = await shown(admin)
+
+    assert by_admin == auth_off == ([sub], [sub]), (by_admin, auth_off)
+    assert read["instance_id"] == sub, read
+    assert by_user == ([], []), by_user
+    parent = await service.session_manager.load_session("cli_user", "c-1", bypass_cache=True)
+    assert parent["metadata"]["sub_agents"][sub]["status"] == "archived"
+    assert own_copy == ([], []), own_copy
+
+
+@pytest.mark.asyncio
 async def test_an_entry_naming_another_users_sub_agent_is_shown_as_it_says(tmp_path, monkeypatch):
     """A session's metadata is its user's to write (PATCH /sessions). An entry naming another user's sub-agent had
     the panel look up that one's tokens and whether it runs, by the bare id. It is shown as its entry says, as one

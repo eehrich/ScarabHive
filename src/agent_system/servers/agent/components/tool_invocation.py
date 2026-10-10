@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ....tools.integration import get_tool_integration
+from ....utils.redact import redact_secrets
 from .server_resolution import resolve_longest_prefix
 from .tool_call_contract import (
     call_id_or,
@@ -213,7 +214,8 @@ class ToolInvoker:
         report = _CallReport(tc, tool_name, actual_tool_name, params, step, request_id)
 
         try:
-            logger.info("Invoking external tool %s on server %s with params %s", actual_tool_name, server_name, params)
+            logger.info("Invoking external tool %s on server %s with params %s", actual_tool_name, server_name,
+                        redact_secrets(params))  # an add_machine password must not reach the log
             # Use the integration the agent already set up.
             #
             # This used to call get_tool_integration(config=agent_config) --
@@ -299,7 +301,8 @@ class ToolInvoker:
         report = _CallReport(tc, tool_name, openai_tool_name, params, step, request_id)
 
         try:
-            logger.info("Invoking tool %s with params %s", openai_tool_name, params)
+            logger.info("Invoking tool %s with params %s", openai_tool_name,
+                        redact_secrets(params))  # an add_machine password must not reach the log
 
             # Inject session context (shared with Agent.dispatch_tool_call — see
             # inject_runtime_params; passed through the call chain to avoid races)

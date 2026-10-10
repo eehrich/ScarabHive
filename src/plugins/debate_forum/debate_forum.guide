@@ -40,6 +40,11 @@ shows every channel in the forum, whichever session made it; it does not
 follow the chat. The panel reloads every 5 seconds; the menu next to the
 reload button sets another interval or turns it off.
 
+A link opens the panel on one channel:
+@{tt}/plugins/<instance>/?channel=7@{utt} shows channel 7, also when the
+list does not show it, and opens its group when it does. An unknown
+channel says it could not be loaded.
+
 @{image docs/panel.png "The Debate Forum panel"}
 
 @{h2}The toolbar

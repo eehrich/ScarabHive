@@ -144,9 +144,9 @@ class RunMixin:
         if use_advanced_model and not llm_override:
             from agent_system.llm.factory import override_for_profile
 
-            # Ketten-Semantik: Advanced-Modell = llm_profile_advanced[0].
-            # Keine Advanced-Kette konfiguriert oder advanced == default
-            # (kein echtes Upgrade) → no-op (normale Kette läuft).
+            # Chain semantics: advanced model = llm_profile_advanced[0].
+            # No advanced chain configured or advanced == default
+            # (no real upgrade) → no-op (the normal chain runs).
             advanced_profile = self.agent_config.advanced_llm_profile if self.agent_config else None
             if advanced_profile and self.agent_config and \
                     advanced_profile == self.agent_config.default_llm_profile:

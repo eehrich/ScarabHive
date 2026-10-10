@@ -1,4 +1,4 @@
-"""The webhook route and where its events go (docs/konzept.md §7).
+"""The webhook route and where its events go (docs/concept.md §7).
 
 ``POST /plugins/<instance>/webhook`` takes GitLab's project webhooks. The
 route has no login -- the operator opens it in both auth layers -- and checks

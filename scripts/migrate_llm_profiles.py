@@ -1,30 +1,30 @@
-"""Migration: llm_profile [normal, advanced] + llm_profile_fallbacks → Ketten-Semantik.
+"""Migration: llm_profile [normal, advanced] + llm_profile_fallbacks → chain semantics.
 
-ALT (Positions-Semantik):
+OLD (positional semantics):
     llm_profile: [deepseek-chat, or-gpt-full-unlimited]      # [0]=standard, [-1]=advanced
     llm_profile_fallbacks: [deepseek-chat, or-gemini-pro]    # [0]=std-fb, [1]=adv-fb
 
-NEU (Ketten-Semantik):
-    llm_profile: [deepseek-chat]                             # [primär, fallback1, ...]
+NEW (chain semantics):
+    llm_profile: [deepseek-chat]                             # [primary, fallback1, ...]
     llm_profile_advanced: [or-gpt-full-unlimited, or-gemini-pro]
 
-Regeln:
-- llm_profile mit 1 Eintrag (oder String): bleibt; llm_profile_advanced wird
-  IMMER explizit ergänzt ([] wenn kein Advanced existierte) — verhindert
-  ungewolltes Erben einer Advanced-Kette aus default_config.
-- llm_profile mit 2 Einträgen [n, a]: llm_profile=[n], advanced=[a].
-- >2 Einträge (Choice-Listen wie basic_agent): llm_profile=alle außer letztem,
-  advanced=[letzter] — Datei wird als REVIEW geflaggt (Choice-Semantik prüfen).
-- fallbacks [f0, f1, extra...]: f0 + extra → normale Kette, f1 → Advanced-Kette.
-  (Zur Laufzeit dient die normale Kette ohnehin als Sicherheitsnetz der
-  Advanced-Kette — Doppel-Einträge werden dedupliziert.)
-- Transformiert werden NUR Zeilen innerhalb von `agent_config:`-Blöcken
-  (schema.yaml-Config-Keys namens llm_profile bleiben unberührt).
-- Nur einzeilige Flow-Listen/Skalare; Block-Listen werden geflaggt.
+Rules:
+- llm_profile with 1 entry (or a string): stays; llm_profile_advanced is
+  ALWAYS added explicitly ([] if no advanced existed) — prevents
+  unintentionally inheriting an advanced chain from default_config.
+- llm_profile with 2 entries [n, a]: llm_profile=[n], advanced=[a].
+- >2 entries (choice lists like basic_agent): llm_profile=all but the last,
+  advanced=[last] — the file is flagged for REVIEW (check the choice semantics).
+- fallbacks [f0, f1, extra...]: f0 + extra → normal chain, f1 → advanced chain.
+  (At runtime the normal chain serves as the safety net of the
+  advanced chain anyway — duplicate entries are deduplicated.)
+- ONLY lines inside `agent_config:` blocks are transformed
+  (schema.yaml config keys named llm_profile stay untouched).
+- Only single-line flow lists/scalars; block lists are flagged.
 
-Aufruf:
-    python scripts/migrate_llm_profiles.py            # Dry-Run (zeigt Diffs)
-    python scripts/migrate_llm_profiles.py --apply    # schreibt
+Usage:
+    python scripts/migrate_llm_profiles.py            # dry run (shows diffs)
+    python scripts/migrate_llm_profiles.py --apply    # writes
 """
 from __future__ import annotations
 
@@ -42,13 +42,13 @@ AC_RE = re.compile(r"^(\s*)agent_config:\s*(#.*)?$")
 
 
 def parse_value(raw: str) -> list[str] | str | None:
-    """Flow-Liste '[a, b]' → Liste; Skalar → String; leer/Block-Stil → None."""
+    """Flow list '[a, b]' → list; scalar → string; empty/block style → None."""
     raw = raw.strip()
     if not raw:
         return None
     if raw.startswith("["):
         if not raw.endswith("]"):
-            return None  # mehrzeilige Flow-Liste — flaggen
+            return None  # multi-line flow list — flag it
         inner = raw[1:-1].strip()
         if not inner:
             return []
@@ -69,15 +69,15 @@ def dedupe(items: list[str]) -> list[str]:
 
 
 def migrate_file(path: Path) -> tuple[list[str] | None, list[str]]:
-    """Returns (neue Zeilen oder None wenn unverändert, Warnungen)."""
+    """Returns (new lines or None if unchanged, warnings)."""
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=False)
     warnings: list[str] = []
     changed = False
 
-    # agent_config-Blöcke lokalisieren: (start_line, block_indent)
+    # Locate agent_config blocks: (start_line, block_indent)
 
-    # Erst alle relevanten Zeilen-Indizes einsammeln, gruppiert pro Block
+    # First collect all relevant line indices, grouped per block
     blocks: list[dict] = []
     current: dict | None = None
     for i, line in enumerate(lines):
@@ -90,14 +90,14 @@ def migrate_file(path: Path) -> tuple[list[str] | None, list[str]]:
             continue
         if current is not None and stripped and not line.lstrip().startswith("#"):
             if indent <= current["ac_indent"]:
-                current = None  # Block zu Ende (Dedent)
+                current = None  # block ends (dedent)
                 continue
             if current["child_indent"] is None:
-                current["child_indent"] = indent  # Ebene der direkten Kinder
+                current["child_indent"] = indent  # level of the direct children
         if current is None:
             continue
-        # Nur DIREKTE Kinder von agent_config matchen — ein tiefer verschachtelter
-        # gleichnamiger Key (z.B. unter template_vars) darf nicht migriert werden.
+        # Match only DIRECT children of agent_config — a deeply nested key
+        # of the same name (e.g. under template_vars) must not be migrated.
         if current["child_indent"] is not None and indent != current["child_indent"]:
             continue
         m = LP_RE.match(line)
@@ -107,34 +107,34 @@ def migrate_file(path: Path) -> tuple[list[str] | None, list[str]]:
         if m:
             current["fb"] = i
         if ADV_RE.match(line):
-            current["adv"] = True  # Block bereits migriert — Idempotenz-Guard
+            current["adv"] = True  # block already migrated — idempotence guard
 
     out = list(lines)
-    # Rückwärts bearbeiten, damit Insert-Indizes stabil bleiben
+    # Process backwards so that insert indices stay stable
     for blk in reversed(blocks):
         lp_i = blk["lp"]
         fb_i = blk["fb"]
         if blk["adv"]:
-            # Idempotenz: llm_profile_advanced existiert bereits → Block ist
-            # schon Ketten-Semantik. Nur noch eine verwaiste fallbacks-Zeile
-            # wäre ein Fehler (halb-migriert) — flaggen statt raten.
+            # Idempotence: llm_profile_advanced already exists → the block is
+            # already chain semantics. Only an orphaned fallbacks line
+            # would be an error (half-migrated) — flag it instead of guessing.
             if fb_i is not None:
                 warnings.append(
-                    f"{path}: llm_profile_advanced UND llm_profile_fallbacks "
-                    f"im selben Block (Zeile {fb_i+1}) — MANUELL bereinigen"
+                    f"{path}: llm_profile_advanced AND llm_profile_fallbacks "
+                    f"in the same block (line {fb_i+1}) — clean up MANUALLY"
                 )
             continue
         if lp_i is None and fb_i is None:
             continue
         if lp_i is None and fb_i is not None:
-            warnings.append(f"{path}: llm_profile_fallbacks ohne llm_profile (Zeile {fb_i+1}) — MANUELL")
+            warnings.append(f"{path}: llm_profile_fallbacks without llm_profile (line {fb_i+1}) — MANUAL")
             continue
 
         lp_m = LP_RE.match(lines[lp_i])
         lp_indent, lp_raw, lp_comment = lp_m.group(1), lp_m.group(2), lp_m.group(3) or ""
         lp_val = parse_value(lp_raw)
         if lp_val is None:
-            warnings.append(f"{path}: llm_profile Block-Stil/leer (Zeile {lp_i+1}) — MANUELL")
+            warnings.append(f"{path}: llm_profile block style/empty (line {lp_i+1}) — MANUAL")
             continue
 
         fb_val: list[str] | str | None = None
@@ -142,7 +142,7 @@ def migrate_file(path: Path) -> tuple[list[str] | None, list[str]]:
             fb_m = FB_RE.match(lines[fb_i])
             fb_val = parse_value(fb_m.group(2))
             if fb_val is None:
-                warnings.append(f"{path}: llm_profile_fallbacks Block-Stil (Zeile {fb_i+1}) — MANUELL")
+                warnings.append(f"{path}: llm_profile_fallbacks block style (line {fb_i+1}) — MANUAL")
                 continue
             if isinstance(fb_val, str):
                 fb_val = [fb_val]
@@ -152,20 +152,20 @@ def migrate_file(path: Path) -> tuple[list[str] | None, list[str]]:
 
         if len(lp_list) > 2:
             warnings.append(
-                f"{path}: llm_profile hat {len(lp_list)} Einträge (Choice-Liste?) "
-                f"(Zeile {lp_i+1}) — migriert als Kette, bitte REVIEWEN"
+                f"{path}: llm_profile has {len(lp_list)} entries (choice list?) "
+                f"(line {lp_i+1}) — migrated as a chain, please REVIEW"
             )
 
-        # Mapping alte → neue Semantik.
-        # WICHTIG: Der alte Runtime-Loop nutzte im NORMAL-Modus die KOMPLETTE
-        # fallbacks-Liste (der [f1,f0]-Swap galt nur für advanced). Deshalb:
-        # - hatte der Agent KEIN Advanced (len<=1): ALLE fallbacks → normale
-        #   Kette, advanced bleibt [] (kein "erfundenes" Advanced-Modell —
-        #   f1 war ein Verfügbarkeits-Fallback, kein Qualitäts-Upgrade).
-        # - hatte er ein Advanced: f1 (der alte Advanced-Fallback) → Advanced-
-        #   Kette, f0 + Rest → normale Kette. Beide Modi erreichen zur Laufzeit
-        #   weiterhin ALLE Einträge über das symmetrische Sicherheitsnetz
-        #   (AgentConfig.fallback_chain: eigene Kette zuerst, dann die andere).
+        # Mapping old → new semantics.
+        # IMPORTANT: The old runtime loop used the COMPLETE fallbacks list in
+        # NORMAL mode (the [f1,f0] swap applied only to advanced). Therefore:
+        # - if the agent had NO advanced (len<=1): ALL fallbacks → normal
+        #   chain, advanced stays [] (no "invented" advanced model —
+        #   f1 was an availability fallback, not a quality upgrade).
+        # - if it had an advanced: f1 (the old advanced fallback) → advanced
+        #   chain, f0 + rest → normal chain. Both modes still reach ALL entries
+        #   at runtime via the symmetric safety net
+        #   (AgentConfig.fallback_chain: own chain first, then the other).
         if len(lp_list) <= 1:
             normal = (lp_list or ["normal"]) + fb_list
             advanced: list[str] = []
@@ -187,7 +187,7 @@ def migrate_file(path: Path) -> tuple[list[str] | None, list[str]]:
             fb_comment = (FB_RE.match(lines[fb_i]).group(3) or "")
             if fb_comment:
                 new_adv_line += f"  {fb_comment}"
-            # fallbacks-Zeile wird zur advanced-Zeile
+            # the fallbacks line becomes the advanced line
             if fb_i > lp_i:
                 out[lp_i] = new_lp_line
                 out[fb_i] = new_adv_line
@@ -201,7 +201,7 @@ def migrate_file(path: Path) -> tuple[list[str] | None, list[str]]:
 
     if not changed:
         return None, warnings
-    # Zeilenende-Stil erhalten
+    # Preserve the line-ending style
     trailing_nl = "\n" if text.endswith("\n") else ""
     return [ln + "\n" for ln in out[:-1]] + [out[-1] + trailing_nl], warnings
 
@@ -223,7 +223,7 @@ def main() -> None:
             try:
                 new_lines, warnings = migrate_file(path)
             except Exception as e:
-                all_warnings.append(f"{path}: FEHLER {e}")
+                all_warnings.append(f"{path}: ERROR {e}")
                 continue
             all_warnings.extend(warnings)
             if new_lines is None:
@@ -232,15 +232,15 @@ def main() -> None:
             if apply:
                 path.write_text("".join(new_lines), encoding="utf-8", newline="\n")
 
-    print(f"{'GEÄNDERT' if apply else 'WÜRDE ÄNDERN'}: {len(changed_files)} Dateien")
+    print(f"{'CHANGED' if apply else 'WOULD CHANGE'}: {len(changed_files)} files")
     for p in changed_files:
         print(f"  {p.relative_to(repo)}")
     if all_warnings:
-        print(f"\nWARNUNGEN ({len(all_warnings)}):")
+        print(f"\nWARNINGS ({len(all_warnings)}):")
         for w in all_warnings:
             print(f"  ⚠ {w}")
     if not apply:
-        print("\nDry-Run — mit --apply schreiben.")
+        print("\nDry run — write with --apply.")
 
 
 if __name__ == "__main__":

@@ -61,7 +61,11 @@ class HookContext:
         metadata: Additional hook-specific metadata
         hook_config: Per-agent custom config from hooks.overrides (auto-populated by registry)
         target_hook_name: Short hook name the registry intends to dispatch (set by registry)
-        step: Current execution step number
+        step: Current execution step number (0-based)
+        max_steps: The run's step budget (pre/post_llm_call); None elsewhere
+        final_call: True on the one LLM call after the step budget
+            (step == max_steps; pre/post_llm_call). No step follows it, so the
+            loop drops a post_llm_call ``continue`` on it
         llm: Reference to the LLM client being used
         cancellation_token: Optional cancellation token for graceful cancellation
         llm_request_payload: Raw API request payload (for pre_llm_request hooks)
@@ -91,6 +95,8 @@ class HookContext:
     hook_config: Dict[str, Any] = field(default_factory=dict)
     target_hook_name: Optional[str] = None
     step: int = 0
+    max_steps: Optional[int] = None
+    final_call: bool = False
     llm: Optional[Any] = None
     cancellation_token: Optional[Any] = None
     # LLM-client-level fields (for pre_llm_request / post_llm_response hooks)

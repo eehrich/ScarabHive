@@ -1,12 +1,13 @@
-"""Was passiert, wenn Nachrichten die Konversation verlassen.
+"""What happens when messages leave the conversation.
 
-Zwei Fragen, die vorher an verschiedenen Stellen verschieden beantwortet
-wurden und jetzt durch einen Pfad laufen (``_archive_then_remove``):
+Two questions that used to be answered differently in different places and
+now run through one path (``_archive_then_remove``):
 
-1. Ist der Inhalt danach noch erreichbar? Pre-Layer P archivierte vorher,
-   Layer 3 loeschte roh — dieselbe Operation, zwei Antworten.
-2. Wie oft passiert es? Jede Entfernung schreibt den Anfang der Konversation
-   um und entwertet damit den Provider-Prompt-Cache fuer alles dahinter.
+1. Is the content still reachable afterwards? Pre-Layer P used to archive,
+   Layer 3 deleted raw -- the same operation, two answers.
+2. How often does it happen? Every removal rewrites the start of the
+   conversation and thereby invalidates the provider prompt cache for
+   everything behind it.
 """
 
 from __future__ import annotations
@@ -33,12 +34,12 @@ def _turns(n: int) -> list[dict]:
 
 
 class TestPruneHysteresis:
-    """Ein Prune muss ruhige Schritte kaufen, nicht beim naechsten neu ausloesen.
+    """A prune must buy quiet steps, not trigger again on the next one.
 
-    Genau auf ``max_messages`` zu kuerzen legte den naechsten Schritt wieder
-    darueber. Eine Session am Limit zahlte den Cache-Bruch also bei JEDEM
-    Schritt fuer eine einzige gesparte Nachricht — der Grund, aus dem
-    ``max_messages`` produktiv abgeschaltet war ("breaks cache").
+    Trimming to exactly ``max_messages`` put the next step over the limit
+    again. A session at the limit therefore paid the cache break on EVERY
+    step for a single saved message -- the reason ``max_messages`` was
+    switched off in production ("breaks cache").
     """
 
     @staticmethod
@@ -70,12 +71,12 @@ class TestPruneHysteresis:
 
         kept = len(result.modified_messages)
         assert kept <= 40 - 20 + 1, (
-            f"nur auf {kept} gekuerzt; ein Prune, der AUF dem Limit landet, "
-            f"loest bei der naechsten Nachricht sofort wieder aus")
+            f"trimmed only to {kept}; a prune that lands ON the limit "
+            f"triggers again at the very next message")
 
     @pytest.mark.asyncio
     async def test_the_next_steps_are_quiet(self, tmp_path):
-        """Der Gewinn: ein Cache-Bruch statt einer pro Schritt."""
+        """The gain: one cache break instead of one per step."""
         strat = self._strategy(tmp_path, prune_to=20)
         messages = self._over_the_limit()
 
@@ -84,13 +85,13 @@ class TestPruneHysteresis:
             result = await strat.compact(messages, current_tokens=100)
             if result.messages_pruned:
                 pruning_rounds += 1
-            # compact() arbeitet auf einer Kopie; die Konversation geht mit dem
-            # Ergebnis weiter, so wie der Hook sie auch zurueckschreibt.
+            # compact() works on a copy; the conversation continues with the
+            # result, just as the hook writes it back.
             messages = result.modified_messages
             messages.append({"role": "assistant", "content": f"neu {step}"})
             assert len(messages) <= 41, (
-                f"Schritt {step}: {len(messages)} Nachrichten liegen ueber dem "
-                f"Limit — die Hysterese darf die Liste nicht wachsen lassen")
+                f"step {step}: {len(messages)} messages are over the "
+                f"limit -- the hysteresis must not let the list grow")
 
         assert pruning_rounds == 1, (
             f"{pruning_rounds} of 15 steps pruned. Each rewrites the front of "
@@ -132,13 +133,13 @@ class TestPruneHysteresis:
 
 
 class TestLayer3DoesNotDestroy:
-    """Layer 3 archiviert vor dem Loeschen, wie Pre-Layer P direkt daneben.
+    """Layer 3 archives before deleting, like Pre-Layer P right next to it.
 
-    Es war die letzte Stelle, die Nachrichten ohne Kopie entfernte. Der
-    Docstring nannte das "irreversible", und in den letzten 1000 produktiven
-    Kompaktionen feuerte die Schicht null Mal — die Luecke war also latent,
-    nicht beobachtet. Eine Luecke bleibt sie: die Schicht laeuft, sobald die
-    Token-Schwellen es sagen.
+    It was the last place that removed messages without a copy. The
+    docstring called that "irreversible", and in the last 1000 production
+    compactions the layer fired zero times -- so the gap was latent, not
+    observed. It remains a gap: the layer runs as soon as the token
+    thresholds say so.
     """
 
     @staticmethod
@@ -165,22 +166,22 @@ class TestLayer3DoesNotDestroy:
         result = await strat.compact(messages, current_tokens=10_000, force=True)
 
         assert result.messages_dropped > 0, (
-            "Layer 3 hat nichts verworfen — diese Fixture prueft die Schicht nicht")
+            "Layer 3 dropped nothing -- this fixture does not test the layer")
         stored = [r[0] for r in archival._db.execute(
             "SELECT content FROM archived_messages").fetchall()]
         live = {str(m.get("content")) for m in result.modified_messages}
         for i in range(3):
             text = f"unersetzliche Antwort {i}"
             assert any(text in s for s in stored) or text in live, (
-                f"'{text}' hat die Konversation verlassen, ohne im Archiv anzukommen")
+                f"'{text}' left the conversation without reaching the archive")
 
     @pytest.mark.asyncio
     async def test_a_failed_archive_write_keeps_the_messages(self, tmp_path, monkeypatch):
-        """Nicht loeschen schlaegt ohne Kopie loeschen.
+        """Not deleting beats deleting without a copy.
 
-        Dieselbe Abwaegung wie bei Pre-Layer P: ein zu langer Kontext kostet,
-        zerstoerter Inhalt ist nicht wiederherstellbar. Der Schreibvorgang ist
-        alles-oder-nichts, ein Fehlschlag betrifft also den ganzen Stapel.
+        The same trade-off as in Pre-Layer P: a too-long context costs money,
+        destroyed content cannot be restored. The write is all-or-nothing, so
+        a failure affects the whole batch.
         """
         strat, archival = self._strategy(tmp_path)
 
@@ -196,16 +197,16 @@ class TestLayer3DoesNotDestroy:
 
         assert result.messages_dropped == 0
         after = [str(m.get("content")) for m in result.modified_messages]
-        assert before == after, "Nachrichten wurden zerstoert, obwohl nichts gespeichert wurde"
+        assert before == after, "messages were destroyed although nothing was stored"
 
     @pytest.mark.asyncio
     async def test_the_breadcrumb_survives_a_drop(self, tmp_path):
-        """Der Hinweis ist ueber seinen TYP geschuetzt, nicht ueber die Rolle.
+        """The notice is protected by its TYPE, not by its role.
 
-        Layer 3 pruefte nur die Rolle. Mit ``keep_system_messages=False`` warf
-        sie damit die einzige Nachricht raus, die dem Agent sagt, dass ueberhaupt
-        etwas ausgelagert wurde — und der Laufzaehler darin startet beim
-        naechsten Prune wieder bei null.
+        Layer 3 only checked the role. With ``keep_system_messages=False`` it
+        threw out the one message that tells the agent that anything was
+        archived at all -- and the running counter in it restarts at zero on
+        the next prune.
         """
         strat, _ = self._strategy(tmp_path, keep_system=False)
         notice = json.dumps({"type": "pruned_notice", "total_removed": 137,
@@ -216,9 +217,9 @@ class TestLayer3DoesNotDestroy:
 
         kept = [m for m in result.modified_messages
                 if "pruned_notice" in str(m.get("content"))]
-        assert kept, "der Hinweis wurde verworfen — der Agent kann nicht wissen, dass es etwas zu holen gibt"
+        assert kept, "the notice was dropped -- the agent cannot know there is something to fetch"
         assert json.loads(kept[0]["content"])["total_removed"] >= 137, (
-            "der Laufzaehler wurde zurueckgesetzt")
+            "the running counter was reset")
 
 
 class TestLayer1ResultsAreFindable:

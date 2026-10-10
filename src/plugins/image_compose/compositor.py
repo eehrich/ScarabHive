@@ -1284,16 +1284,11 @@ def _render_svg_layer(layer: dict, canvas_size: tuple[int, int]) -> tuple[Image.
 _SVG_RASTER_RE = re.compile(r"^data:image/(jpe?g|png);base64")  # svglib's own pattern
 
 
-def _check_svg_rasters(svg_str: str) -> None:
+def _check_svg_rasters(root: Any) -> None:
     """svglib decodes an embedded data: PNG/JPEG at full size (Pillow's own
     guard only). Read each one's header first, parsed and decoded the way
     svglib does, and refuse one over MAX_PIXELS. A payload that does not
     open here does not open in svglib either."""
-    from svglib.svglib import load_svg_file  # type: ignore
-
-    root = load_svg_file(io.StringIO(svg_str))  # type: ignore[arg-type]
-    if root is None:
-        return
     for node in root.iter():
         for value in node.attrib.values():
             match = _SVG_RASTER_RE.match(value)
@@ -1306,6 +1301,47 @@ def _check_svg_rasters(svg_str: str) -> None:
                 raise
             except Exception:
                 continue
+
+
+#: Path data tokens as the SVG grammar defines them (SVG 2, 9.3.9).
+_PATH_CMD_RE = re.compile(r"\s*([MmZzLlHhVvCcSsQqTtAa])")
+_PATH_NUM = r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?"
+_PATH_ARITY = {"m": 2, "z": 0, "l": 2, "h": 1, "v": 1, "c": 6, "s": 4, "q": 4, "t": 2, "a": 7}
+
+
+def _path_data_until_error(d: str) -> str:
+    """`d` up to its last complete segment -- SVG's own rule for an error in
+    path data (render up to it, SVG 2, 9.5.4). svglib has none: it hands an
+    incomplete segment ("C 20 0 40 0 50 10 60 20" -- a 6-number C plus 2) to
+    reportlab as is, and the whole render fails ("Path.curveTo() missing 4
+    required positional arguments"). Data that does not start with a moveto
+    draws nothing, as in a browser."""
+    pos = good = 0
+    cmd = ""
+    while True:
+        m = _PATH_CMD_RE.match(d, pos)
+        if m:
+            if not cmd and m.group(1) not in "Mm":
+                return ""
+            cmd, pos = m.group(1), m.end()
+        elif not cmd or cmd in "Zz":  # nothing to repeat after Z
+            return d[:good]
+        for i in range(_PATH_ARITY[cmd.lower()]):
+            sep = r"\s*" if m and i == 0 else r"[\s,]*"  # no comma after a command letter
+            arg = re.compile(sep + ("[01]" if cmd in "Aa" and i in (3, 4) else _PATH_NUM)).match(d, pos)
+            if not arg:
+                return d[:good]
+            pos = arg.end()
+        good = pos
+
+
+def _cut_svg_path_errors(root: Any) -> None:
+    """Every path's data up to its first error; a sign "+" becomes a space,
+    which svglib's arc parser does not know ("A5 5 +30 ..." -> float(''))."""
+    for node in root.iter("{*}path"):
+        d = node.get("d")
+        if d:
+            node.set("d", re.sub(r"(?<![eE])\+", " ", _path_data_until_error(d)))
 
 
 def _svg_font_map() -> Any:
@@ -1327,7 +1363,7 @@ def _svg_font_map() -> Any:
 def _render_svg_to_image(svg_str: str, target_size: tuple[int, int] | None) -> Image.Image:
     """Render SVG via svglib + reportlab (pure-Python, no native deps)."""
     try:
-        from svglib.svglib import svg2rlg  # type: ignore
+        from svglib.svglib import SvgRenderer, load_svg_file  # type: ignore
         from reportlab.graphics import renderPM  # type: ignore
     except ImportError as e:
         # Both installed and still no import: reportlab 4.0.0 fails here
@@ -1338,12 +1374,17 @@ def _render_svg_to_image(svg_str: str, target_size: tuple[int, int] | None) -> I
             "SVG rendering requires 'svglib' and 'reportlab' (pip install svglib reportlab). "
             f"Import failed: {e}"
         ))
-    _check_svg_rasters(svg_str)
-    # svglib accepts a file-like object at runtime even though its type
-    # stubs only mention str/PathLike.
-    drawing = svg2rlg(io.StringIO(svg_str), font_map=_svg_font_map())  # type: ignore[arg-type]
-    if drawing is None:
+    # svg2rlg's two steps, parsed once: the tree is checked and its path
+    # data cut at the first error before svglib converts it. svglib accepts
+    # a file-like object at runtime even though its type stubs only mention
+    # str/PathLike.
+    source = io.StringIO(svg_str)
+    root = load_svg_file(source)  # type: ignore[arg-type]
+    if root is None:
         raise CompositionError("SVG could not be parsed (invalid SVG)")
+    _check_svg_rasters(root)
+    _cut_svg_path_errors(root)
+    drawing = SvgRenderer(source, font_map=_svg_font_map()).render(root)  # type: ignore[arg-type]
     if target_size:
         tw, th = target_size
         sx = tw / drawing.width if drawing.width else 1.0

@@ -1,13 +1,13 @@
-"""Tests für per-Agent LLM-Parameter-Overrides (agent_config.llm_params).
+"""Tests for per-agent LLM parameter overrides (agent_config.llm_params).
 
-Feature: Agent-yamls können LLM-Parameter (thinking_level, max_tokens, …)
-über den referenzierten llm_system.models-Eintrag legen, statt für jede
-Kombination einen eigenen Model-Eintrag anzulegen. Anwendung zentral in
-resolve_llm_config_for_agent(); Identitäts-Felder (provider/model/…) sind
-gesperrt. Fallbacks laufen mit DERSELBEN Semantik wie das Primärmodell:
-"*"/Flat gilt für die ganze Kette, exakter Eintrag gewinnt
-(_create_fallback_llm reicht llm_params unverändert an
-create_llm_from_profile durch — eine Auflösungsstelle, kein Doppel-Code).
+Feature: agent YAMLs can layer LLM parameters (thinking_level, max_tokens, ...)
+over the referenced llm_system.models entry, instead of creating a separate
+model entry for every combination. Applied centrally in
+resolve_llm_config_for_agent(); identity fields (provider/model/...) are
+locked. Fallbacks run with the SAME semantics as the primary model:
+"*"/flat applies to the whole chain, an exact entry wins
+(_create_fallback_llm passes llm_params through unchanged to
+create_llm_from_profile -- one resolution point, no duplicated code).
 """
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ class TestResolveAppliesLlmParams:
         resolved = resolve_llm_config_for_agent(cfg, agent)
         assert resolved.spec.thinking_level == "low"
         assert resolved.spec.max_tokens == 8000
-        # Nicht überschriebene Felder bleiben vom Basis-Modell
+        # Fields that were not overridden stay as in the base model
         assert resolved.spec.service_tier == "flex"
         assert resolved.spec.model == "gpt-test"
 
@@ -85,8 +85,8 @@ class TestResolveAppliesLlmParams:
         assert resolved.spec.max_tokens == 32000
 
     def test_shared_model_registry_not_mutated(self):
-        """Der Override darf NIE in den geteilten models-Eintrag zurückschreiben —
-        sonst erbt der nächste Agent mit demselben model_ref die Fremd-Params."""
+        """The override must NEVER write back into the shared models entry --
+        otherwise the next agent with the same model_ref inherits foreign params."""
         cfg = _system_config()
         agent = AgentConfig(
             llm_profile="test-profile",
@@ -97,7 +97,7 @@ class TestResolveAppliesLlmParams:
         assert base.thinking_level == "high"
         assert base.max_tokens == 32000
 
-        # Zweiter Agent ohne Params sieht das Original
+        # A second agent without params sees the original
         other = AgentConfig(llm_profile="test-profile")
         resolved = resolve_llm_config_for_agent(cfg, other)
         assert resolved.spec.thinking_level == "high"
@@ -114,8 +114,8 @@ class TestAgentConfigValidation:
                 AgentConfig(llm_profile="x", llm_params={key: "hijack"})
 
     def test_value_validated_against_model_schema(self):
-        # thinking_level ist ein Literal — ungültiger Wert muss beim
-        # Config-Load knallen, nicht erst beim ersten LLM-Call.
+        # thinking_level is a Literal -- an invalid value must blow up at
+        # config load, not only at the first LLM call.
         with pytest.raises(ValidationError):
             AgentConfig(llm_profile="x", llm_params={"thinking_level": "mega"})
         with pytest.raises(ValidationError):
@@ -212,19 +212,19 @@ class TestEveryRunOverrideCarriesThem:
 
 
 class TestParamsOfAnOverriddenProfile:
-    """Ein Override waehlt ein anderes MODELL, nicht einen anderen Agenten.
+    """An override selects a different MODEL, not a different agent.
 
-    Was der Agent ueber jedes Modell sagt ("*"/flach), muss ihn deshalb auch
-    auf ein Profil begleiten, das der Nutzer im Panel oder per /model waehlt
-    — so wie _create_fallback_llm es in den Fallback traegt. Ohne das fiel
-    der context_window-Deckel des coder lautlos weg, und seine Aufrufe
-    wurden gegen die 272000 des Modells gezaehlt statt gegen seine 200000.
+    What the agent says about every model ("*"/flat) must therefore also
+    accompany it onto a profile the user picks in the panel or via /model --
+    just as _create_fallback_llm carries it into the fallback. Without that,
+    the coder's context_window cap silently fell away, and its calls were
+    counted against the model's 272000 instead of its own 200000.
     """
 
     def test_the_agents_star_params_reach_the_chosen_profile(self):
         agent = AgentConfig(llm_profile=["test-profile"],
                             llm_params={"*": {"context_window": 200000}})
-        assert agent_params_for_profile(agent, "fremdes-profil") == {"context_window": 200000}
+        assert agent_params_for_profile(agent, "foreign-profile") == {"context_window": 200000}
 
     def test_the_entry_of_that_profile_wins_over_the_star(self):
         agent = AgentConfig(
@@ -245,9 +245,9 @@ class TestParamsOfAnOverriddenProfile:
 
 
 class TestKeyedLlmParams:
-    """Profil-gekeyte Form: {profil: {param: wert}} — Params kleben am
-    Modell, nicht am Slot. "*" gilt für beide Ketten-Primärmodelle,
-    der spezifische Eintrag gewinnt."""
+    """Profile-keyed form: {profile: {param: value}} -- params stick to the
+    model, not to the slot. "*" applies to both chain primary models,
+    the specific entry wins."""
 
     KEYED = {
         "*": {"max_tokens": 8000, "thinking_level": "low"},
@@ -268,7 +268,7 @@ class TestKeyedLlmParams:
 
     def test_resolve_flat_form_passthrough(self):
         flat = {"thinking_level": "low", "max_tokens": 8000}
-        assert resolve_llm_params(flat, "irgendein-profil") == flat
+        assert resolve_llm_params(flat, "any-profile") == flat
         assert resolve_llm_params(None, "x") is None
 
     def test_keyed_applies_only_to_matching_primary(self):
@@ -278,9 +278,9 @@ class TestKeyedLlmParams:
             llm_profile_advanced=["advanced-profile"],
             llm_params={"advanced-profile": {"thinking_level": "xhigh"}},
         )
-        # resolve löst das Default-Profil auf → Advanced-Params greifen NICHT
+        # resolve picks the default profile -> advanced params do NOT apply
         resolved = resolve_llm_config_for_agent(cfg, agent)
-        assert resolved.spec.thinking_level == "high"  # Basis-Modell unverändert
+        assert resolved.spec.thinking_level == "high"  # base model unchanged
 
     def test_keyed_star_applies_to_default(self):
         cfg = _system_config()
@@ -294,8 +294,8 @@ class TestKeyedLlmParams:
         assert resolved.spec.max_tokens == 8000
 
     def test_resolved_keyed_valid_as_temp_config(self):
-        # create_llm_from_profile reduziert gekeyte Params VOR der temp-
-        # AgentConfig — das Ergebnis muss als Flat-Form validieren.
+        # create_llm_from_profile reduces keyed params BEFORE the temp
+        # AgentConfig -- the result must validate as the flat form.
         flat = resolve_llm_params(self.KEYED, "advanced-profile")
         a = AgentConfig(llm_profile="advanced-profile", llm_params=flat)
         assert a.llm_params["thinking_level"] == "xhigh"
@@ -321,8 +321,8 @@ class TestKeyedLlmParamsValidation:
             )
 
     def test_fallback_profile_key_accepted(self):
-        # Gekeyte Einträge für Fallback-Profile sind gültig — Fallbacks
-        # laufen mit derselben llm_params-Semantik wie das Primärmodell.
+        # Keyed entries for fallback profiles are valid -- fallbacks run
+        # with the same llm_params semantics as the primary model.
         a = AgentConfig(
             llm_profile=["test-profile", "fallback-profile"],
             llm_profile_advanced=["advanced-profile", "adv-fallback"],
@@ -334,8 +334,8 @@ class TestKeyedLlmParamsValidation:
         assert set(a.llm_params) == {"fallback-profile", "adv-fallback"}
 
     def test_fallback_resolution_same_semantics_as_primary(self):
-        # Fallback-Auflösung = identische resolve_llm_params-Semantik:
-        # "*" gilt auch für Fallback-Profile, exakter Eintrag gewinnt.
+        # Fallback resolution = identical resolve_llm_params semantics:
+        # "*" also applies to fallback profiles, an exact entry wins.
         params = {
             "*": {"max_tokens": 8000, "thinking_level": "max"},
             "fallback-profile": {"thinking_level": "high"},
@@ -343,7 +343,7 @@ class TestKeyedLlmParamsValidation:
         assert resolve_llm_params(params, "fallback-profile") == {
             "max_tokens": 8000, "thinking_level": "high",
         }
-        assert resolve_llm_params(params, "anderes-fallback") == {
+        assert resolve_llm_params(params, "other-fallback") == {
             "max_tokens": 8000, "thinking_level": "max",
         }
 
@@ -378,8 +378,8 @@ class TestKeyedLlmParamsValidation:
             AgentConfig(llm_profile="x", llm_params={"totally_unknown": 1})
 
     def test_flat_typo_next_to_valid_param_gets_precise_message(self):
-        # Tippfehler neben gültigem Param darf NICHT als "Mischform"
-        # fehldiagnostiziert werden — präzise Unknown-Key-Meldung
+        # A typo next to a valid param must NOT be misdiagnosed as a
+        # "mixed form" -- precise unknown-key message
         with pytest.raises(ValidationError, match="keys not allowed.*max_toknes"):
             AgentConfig(
                 llm_profile="x",
@@ -387,9 +387,10 @@ class TestKeyedLlmParamsValidation:
             )
 
     def test_profile_names_must_not_shadow_model_fields(self):
-        # Profilnamen sind llm_params-Keys — Kollision mit Feldnamen wäre
-        # dort unadressierbar → an der Wurzel (llm_system.profiles) verboten
-        with pytest.raises(ValidationError, match="kollidieren"):
+        # Profile names are llm_params keys -- a collision with field names
+        # would be unaddressable there -> forbidden at the root
+        # (llm_system.profiles)
+        with pytest.raises(ValidationError, match="collide"):
             LLMSystemConfig(
                 profiles={"max_tokens": LLMProfile(model_ref="test-model")},
                 models={"test-model": LLMModelConfig(provider="ollama", model="m")},

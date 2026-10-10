@@ -170,6 +170,13 @@ class AnswerMixin:
             }
             run.consecutive_no_tool_calls = 0  # Reset — hook evaluated this
             st.end = StepEnd.NEXT_STEP
+        elif hook_metadata.get("continue") and content and content.strip():
+            # final_call: the hook asked for a step that does not exist.
+            logger.info(
+                f"[{self.name}] Continuation from "
+                f"{hook_metadata.get('continue_injected_by') or 'post_llm_call_hook'} "
+                f"dropped: final call after the step budget"
+            )
 
     async def _deliver_text_answer(self: Agent, run: LoopState, st: StepState, *,
                                    log_unavailable: bool = True):

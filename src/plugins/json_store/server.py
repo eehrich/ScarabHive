@@ -1046,15 +1046,15 @@ class JsonStoreServer(SchemaBasedToolServer):
                     "error": f"Unknown or missing operation '{operation}'. "
                              f"Valid: {sorted(handlers)}"}
 
-        # Vor dem Dispatch, damit KEINE Operation den privaten Fallback nimmt —
-        # ein Lesen im falschen Namespace ist genauso still wie ein Schreiben.
+        # Before the dispatch, so that NO operation takes the private fallback --
+        # a read in the wrong namespace is just as silent as a write.
         #
-        # ponytail: Erkennung, nicht Verhinderung. Das Tool-Schema (schema.yaml)
-        # nennt ``namespace`` weiterhin „optional" und teilt ``required`` mit
-        # allen Instanzen — es per Instanz zu verschaerfen braeuchte einen
-        # Mechanismus in der MCP-Basis. Der Riegel kostet damit EINE verworfene
-        # LLM-Runde statt fuenf; auf Prevention umbauen, wenn eine zweite
-        # Instanz denselben Bedarf hat.
+        # ponytail: detection, not prevention. The tool schema (schema.yaml)
+        # still calls ``namespace`` "optional" and shares ``required`` with
+        # all instances -- tightening it per instance would need a mechanism
+        # in the MCP base. The guard thus costs ONE wasted LLM round instead
+        # of five; rebuild it as prevention when a second instance has the
+        # same need.
         if self._require_namespace and (params.get("namespace") in (None, "")):
             return {
                 "status": "error",
@@ -1435,39 +1435,39 @@ class JsonStoreServer(SchemaBasedToolServer):
                              f"Use a smaller 'depth'."}
         return {"status": "ok", "doc": name, "outline": outline}
 
-    #: Haeufige deutsche/englische Funktionswoerter (>=4 Zeichen), die als
-    #: Sättigungs-Signal wertlos sind. Bewusst klein — perfekte Filterung ist
-    #: nicht noetig, der Konsument (LLM) ignoriert Restrauschen selbst.
+    #: Common German/English function words (>=4 characters) that are
+    #: worthless as a saturation signal. Deliberately small -- perfect
+    #: filtering is not needed, the consumer (LLM) ignores residual noise itself.
     _STATS_STOPWORDS = frozenset((
         "aber auch beim dann dass dein deine dem den einer einem einen eines "
         "eine doch dort durch fast hier ihre ihrem ihren ihrer mehr nach nicht "
         "noch nur ohne schon sein seine seinem seinen seiner sich sind ueber "
         "unter viel wieder wird wurde zwei zum zur als wenn weil wie was wer "
         "the and with from that this have will into over "
-        # erzaehlagnostische Allerwelts-Verben/-Woerter — als Saettigungs-
-        # Signal wertlos, verstopfen sonst die Top-Slots
+        # narrative-agnostic everyday verbs/words -- worthless as a saturation
+        # signal, they would clog the top slots otherwise
         "kommt sitzt liegt steht geht sagt sieht legt nimmt macht bleibt "
         "beginnt haelt laesst zeigt spuert wirkt traegt bringt erste ersten "
         "zurueck davor danach dabei etwas nichts alles beide diesem dieser "
         "dieses jetzt heute leser kapitel szene beat "
-        # native Umlaut-Formen (der Tokenizer ist Unicode-aware, .lower()
-        # transliteriert NICHT — beide Schreibweisen abdecken)
+        # native umlaut forms (the tokenizer is Unicode-aware, .lower()
+        # does NOT transliterate -- cover both spellings)
         "über während möchte hält lässt spürt trägt zurück wäre könnte "
         "müsste hätte würde später früher nächste nächsten für"
     ).split())
 
     async def stats(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Per-Kind-Wiederkehr von Begriffen ueber einen Doc-Teilbaum.
+        """Per-child recurrence of terms across a doc subtree.
 
-        Deterministische Saettigungs-Analyse: fuer jedes Kind unter ``path``
-        (dict-Werte oder Listen-Elemente) werden alle String-Werte rekursiv
-        eingesammelt, in Woerter (>=4 Zeichen, lowercase) und Wort-Bigramme
-        zerlegt, und pro Kind als MENGE gezaehlt. Ergebnis: Begriffe, die in
-        >= ``min_children`` Kindern vorkommen — d.h. wiederkehrende
-        Requisiten/Phrasen/Motive, nicht blosse Haeufigkeit in einem Kind.
+        Deterministic saturation analysis: for each child under ``path``
+        (dict values or list elements) all string values are collected
+        recursively, split into words (>=4 characters, lowercase) and word
+        bigrams, and counted per child as a SET. Result: terms that occur in
+        >= ``min_children`` children -- i.e. recurring props/phrases/motifs,
+        not mere frequency within one child.
 
-        Params: doc (Pflicht), path (z.B. "beats"; leer = ganzes data),
-        min_children (Default 2), top (Default 12).
+        Params: doc (required), path (e.g. "beats"; empty = whole data),
+        min_children (default 2), top (default 12).
         """
         bucket, name, err = self._require_doc(params)
         if err:
@@ -1475,7 +1475,7 @@ class JsonStoreServer(SchemaBasedToolServer):
         node: Any = bucket[name]
         path = (params.get("path") or "").strip()
         if path:
-            # Gleiche Pfad-Syntax wie read/set_value (inkl. [i]-Array-Index)
+            # Same path syntax as read/set_value (incl. [i] array index)
             try:
                 node = self._resolve(node, self._split_path(path))
             except ValueError as e:
@@ -1499,11 +1499,11 @@ class JsonStoreServer(SchemaBasedToolServer):
         except (TypeError, ValueError):
             return {"status": "error",
                     "error": "min_children/top must be integers"}
-        # exclude: erwartbar-haeufige Begriffe (Figuren-/Ortsnamen) rausfiltern,
-        # damit die Top-Slots den echten Saettigungs-Signalen gehoeren.
-        # Leere/Kurzst-Eintraege fallen raus (Substring-Match: "" traefe ALLES,
-        # 1-2 Zeichen wuerden massiv ueberfiltern); Nicht-Listen-Skalare sind
-        # ein Param-Fehler, kein Crash.
+        # exclude: filter out expectedly frequent terms (character/place names)
+        # so the top slots belong to the real saturation signals.
+        # Empty/very short entries are dropped (substring match: "" would hit
+        # EVERYTHING, 1-2 characters would over-filter massively); non-list
+        # scalars are a param error, not a crash.
         exclude_raw = params.get("exclude") or []
         if isinstance(exclude_raw, str):
             exclude_raw = exclude_raw.split(",")
@@ -1539,9 +1539,9 @@ class JsonStoreServer(SchemaBasedToolServer):
             for t, c in term_children.items()
             if c >= min_children and not any(x in t for x in exclude)
         ]
-        # Bigramme vor ihren Teil-Wörtern bevorzugen: gleiche Zählung ->
-        # das spezifischere Bigramm behalten, Teilwort unterdruecken.
-        # (Index-Lookup statt Rescan — linear statt O(n^2).)
+        # Prefer bigrams over their component words: same count ->
+        # keep the more specific bigram, suppress the component word.
+        # (Index lookup instead of rescan -- linear instead of O(n^2).)
         by_count = sorted(recurring, key=lambda x: (-x["children"], -len(x["term"])))
         count_by_term = {e["term"]: e["children"] for e in by_count}
         suppressed: set = set()

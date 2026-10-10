@@ -1,99 +1,99 @@
-# n8n für ScarabHive bereitstellen
+# Deploying n8n for ScarabHive
 
-Diese Anleitung richtet eine eigene n8n-Instanz in Docker ein und verbindet sie mit dem ScarabHive-Plugin `n8n`. Sie gilt für jede ScarabHive-Installation. Die Beispiele verwenden `http://localhost:5678`; setze überall deine eigene Adresse ein.
+This guide sets up an n8n instance of your own in Docker and connects it to the ScarabHive plugin `n8n`. It applies to every ScarabHive installation. The examples use `http://localhost:5678`; substitute your own address everywhere.
 
-Getestet ist der Aufbau mit n8n 2.39.9 (Community, Docker, SQLite). Die Fakten dazu stehen in `../n8n_facts.md`, das Design in `../design.md`.
+The setup is tested with n8n 2.39.9 (Community, Docker, SQLite). The facts are in `../n8n_facts.md`, the design in `../design.md`.
 
-## Was hier liegt
+## What is here
 
-| Datei | Zweck |
+| File | Purpose |
 |---|---|
-| `docker-compose.yml` | n8n-Container mit festgelegter Image-Version, Volume `n8n_data`, Instanz-MCP per Env eingeschaltet |
-| `.env.example` | Vorlage für deine `.env` |
-| `setup_owner.sh` | Einmaliges Setup: Owner, Public-API-Key, MCP-Key, alles nach `CREDENTIALS` |
-| `.gitignore` | hält `.env` und `CREDENTIALS` aus Git heraus |
+| `docker-compose.yml` | n8n container with a pinned image version, volume `n8n_data`, instance MCP switched on via env |
+| `.env.example` | Template for your `.env` |
+| `setup_owner.sh` | One-time setup: owner, public API key, MCP key, everything into `CREDENTIALS` |
+| `.gitignore` | keeps `.env` and `CREDENTIALS` out of Git |
 
-## Voraussetzungen
+## Prerequisites
 
-- Docker mit dem Compose-Plugin (`docker compose version` muss antworten).
-- Auf dem Rechner, der das Setup ausführt: `sh`, `curl`, `python3` und `openssl`. Unter Windows geht das in WSL oder Git Bash.
-- `setup_owner.sh` spricht n8n unter `http://127.0.0.1:<N8N_PORT>` an. Es muss also **auf dem Docker-Host** laufen.
-- Eine frische n8n-Instanz. Hat die Instanz schon einen Owner, braucht das Skript dessen Passwort in `CREDENTIALS` (siehe „Bestehende Instanz“).
+- Docker with the Compose plugin (`docker compose version` must respond).
+- On the machine that runs the setup: `sh`, `curl`, `python3` and `openssl`. On Windows this works in WSL or Git Bash.
+- `setup_owner.sh` talks to n8n at `http://127.0.0.1:<N8N_PORT>`. So it must run **on the Docker host**.
+- A fresh n8n instance. If the instance already has an owner, the script needs its password in `CREDENTIALS` (see "Existing instance").
 
-## 1. Verzeichnis wählen
+## 1. Choose a directory
 
-Du hast zwei Möglichkeiten:
-- **Am Ort ausführen:** direkt in `src/plugins/n8n/docs/deploy/`. `.env` und `CREDENTIALS` sind dort git-ignored und landen nicht in einem Commit.
-- **Kopieren:** den Ordner `docs/deploy/` in ein Verzeichnis deiner Wahl kopieren, z. B. auf einen Server. Dann liegen die Geheimnisse nicht im Repository-Baum. Die `.gitignore` kopierst du mit, falls das Zielverzeichnis selbst unter Git steht.
+You have two options:
+- **Run in place:** directly in `src/plugins/n8n/docs/deploy/`. `.env` and `CREDENTIALS` are git-ignored there and do not end up in a commit.
+- **Copy:** copy the folder `docs/deploy/` to a directory of your choice, e.g. on a server. Then the secrets do not lie in the repository tree. Copy the `.gitignore` along if the target directory itself is under Git.
 
-Alle folgenden Befehle laufen in diesem Verzeichnis.
+All following commands run in this directory.
 
-## 2. `.env` anlegen
+## 2. Create `.env`
 
 ```sh
 cp .env.example .env
 chmod 600 .env
 ```
 
-Dann `N8N_ENCRYPTION_KEY` erzeugen und eintragen:
+Then generate `N8N_ENCRYPTION_KEY` and enter it:
 
 ```sh
 openssl rand -hex 32
 ```
 
-Den ausgegebenen Wert hinter `N8N_ENCRYPTION_KEY=` in `.env` setzen. Ohne diesen Wert startet der Container nicht.
+Set the printed value after `N8N_ENCRYPTION_KEY=` in `.env`. Without this value the container does not start.
 
-**Wichtig:** Mit diesem Schlüssel verschlüsselt n8n alle gespeicherten Credentials. Bewahre ihn sicher auf und ändere ihn nach dem ersten Start nicht mehr; sonst kann n8n die vorhandenen Credentials nicht mehr entschlüsseln.
+**Important:** n8n uses this key to encrypt all stored credentials. Keep it safe and do not change it after the first start; otherwise n8n can no longer decrypt the existing credentials.
 
-Die übrigen Werte:
+The remaining values:
 
-| Variable | Bedeutung | Default |
+| Variable | Meaning | Default |
 |---|---|---|
-| `N8N_PUBLIC_URL` | Die Adresse, unter der Browser und Webhook-Aufrufer n8n erreichen, mit abschließendem `/`. n8n baut daraus Editor-Links und Webhook-URLs. | `http://localhost:5678/` |
-| `N8N_PORT` | Port auf dem Docker-Host | `5678` |
-| `GENERIC_TIMEZONE` | Zeitzone für Schedule-Trigger und Zeitstempel, z. B. `Europe/Berlin` | `UTC` |
-| `N8N_SECURE_COOKIE` | Ob das Login-Cookie das Flag `Secure` bekommt | `true` |
+| `N8N_PUBLIC_URL` | The address at which browsers and webhook callers reach n8n, with a trailing `/`. n8n builds editor links and webhook URLs from it. | `http://localhost:5678/` |
+| `N8N_PORT` | Port on the Docker host | `5678` |
+| `GENERIC_TIMEZONE` | Time zone for schedule triggers and timestamps, e.g. `Europe/Berlin` | `UTC` |
+| `N8N_SECURE_COOKIE` | Whether the login cookie gets the `Secure` flag | `true` |
 
-**Zu `N8N_SECURE_COOKIE`:** Browser schicken ein `Secure`-Cookie nur über HTTPS (Ausnahme: `localhost`).
-- Rufst du n8n per **reinem HTTP über eine andere Adresse als localhost** auf, z. B. `http://<server>:5678`, setze `N8N_SECURE_COOKIE=false`. Sonst klappt das Login im Editor nicht.
-- Steht n8n **hinter HTTPS** (Reverse-Proxy mit TLS), lass den Wert auf `true`.
+**On `N8N_SECURE_COOKIE`:** browsers send a `Secure` cookie only over HTTPS (exception: `localhost`).
+- If you open n8n over **plain HTTP via an address other than localhost**, e.g. `http://<server>:5678`, set `N8N_SECURE_COOKIE=false`. Otherwise login in the editor does not work.
+- If n8n sits **behind HTTPS** (reverse proxy with TLS), leave the value at `true`.
 
-Beachte dabei: Ohne TLS gehen Passwort und API-Keys im Klartext übers Netz. Für alles außer einem vertrauenswürdigen lokalen Netz gehört ein TLS-Reverse-Proxy vor n8n.
+Note: without TLS, password and API keys travel over the network in plain text. For anything except a trusted local network, a TLS reverse proxy belongs in front of n8n.
 
-Optional kannst du in `.env` auch `N8N_OWNER_EMAIL=<deine Adresse>` setzen. Das Setup-Skript legt den Owner dann mit dieser Adresse an; sonst nimmt es einen Platzhalter.
+Optionally you can also set `N8N_OWNER_EMAIL=<your address>` in `.env`. The setup script then creates the owner with this address; otherwise it uses a placeholder.
 
-## 3. n8n starten
+## 3. Start n8n
 
 ```sh
 docker compose up -d
 ```
 
-Warten, bis n8n bereit ist:
+Wait until n8n is ready:
 
 ```sh
 curl -fsS http://localhost:5678/healthz
 ```
 
-Die Antwort muss `{"status":"ok"}` sein.
+The response must be `{"status":"ok"}`.
 
-Die Compose-Datei schaltet den **Instanz-MCP** per Env ein (`N8N_MCP_MANAGED_BY_ENV=true`, `N8N_MCP_ACCESS_ENABLED=true`). Er ist damit nach jedem Start an, und der Schalter im Editor ist gesperrt. Neue Workflows, die ein Mensch im Editor anlegt, sind trotzdem **nicht** automatisch für den MCP freigegeben; das bleibt eine Entscheidung im Editor.
+The compose file switches the **instance MCP** on via env (`N8N_MCP_MANAGED_BY_ENV=true`, `N8N_MCP_ACCESS_ENABLED=true`). It is therefore on after every start, and the switch in the editor is locked. New workflows that a human creates in the editor are still **not** automatically released for the MCP; that remains a decision in the editor.
 
-Der Container startet mit `restart: unless-stopped` bei einem Neustart des Docker-Hosts wieder mit.
+The container starts with `restart: unless-stopped` and comes back up when the Docker host restarts.
 
-## 4. `setup_owner.sh` ausführen
+## 4. Run `setup_owner.sh`
 
 ```sh
 sh setup_owner.sh
 ```
 
-Das Skript arbeitet Schritt für Schritt und ist wiederholbar. Jeder Schritt prüft, ob sein Ergebnis schon da ist.
+The script works step by step and can be repeated. Each step checks whether its result is already there.
 
-1. **Owner anlegen:** erzeugt ein zufälliges Passwort, legt den Owner-Account an und meldet sich an.
-2. **Public-API-Key erzeugen** mit **minimalen, nur lesenden Scopes**: `workflow:read`, `workflow:list`, `execution:read`, `execution:list`. Mehr braucht ScarabHive nicht; geschrieben wird ausschließlich über den MCP.
-3. **Instanz-MCP prüfen:** Er muss an sein (siehe Schritt 3). Ist er aus, bricht das Skript mit einem Hinweis auf die Compose-Variablen ab.
-4. **MCP-Key erzeugen:** rotiert den MCP-Key des Owners und speichert den neuen Schlüssel. n8n zeigt ihn nur in genau dieser Antwort im Klartext, danach nur noch maskiert.
+1. **Create owner:** generates a random password, creates the owner account and logs in.
+2. **Create public API key** with **minimal, read-only scopes**: `workflow:read`, `workflow:list`, `execution:read`, `execution:list`. ScarabHive needs nothing more; writing happens exclusively via the MCP.
+3. **Check instance MCP:** it must be on (see step 3). If it is off, the script aborts with a pointer to the compose variables.
+4. **Create MCP key:** rotates the owner's MCP key and stores the new key. n8n shows it in plain text only in exactly this response, afterwards only masked.
 
-Alles landet in der Datei `CREDENTIALS` mit den Rechten 0600 (nur dein Benutzer darf lesen):
+Everything ends up in the file `CREDENTIALS` with permissions 0600 (only your user may read):
 
 ```
 N8N_URL=…
@@ -103,114 +103,114 @@ N8N_API_KEY=…
 N8N_MCP_KEY=…
 ```
 
-Das Skript gibt keinen Schlüssel und kein Passwort auf der Konsole aus, nur HTTP-Statuscodes.
+The script prints no key and no password on the console, only HTTP status codes.
 
-## 5. Werte in ScarabHive eintragen
+## 5. Enter the values in ScarabHive
 
-In die Datei `config/secrets.env` deiner ScarabHive-Installation gehören genau drei Werte:
+Exactly three values belong in the file `config/secrets.env` of your ScarabHive installation:
 
 ```
 N8N_BASE_URL=http://localhost:5678
-N8N_API_KEY=<N8N_API_KEY aus CREDENTIALS>
-N8N_MCP_KEY=<N8N_MCP_KEY aus CREDENTIALS>
+N8N_API_KEY=<N8N_API_KEY from CREDENTIALS>
+N8N_MCP_KEY=<N8N_MCP_KEY from CREDENTIALS>
 ```
 
-- `N8N_BASE_URL` ist die Adresse, unter der **ScarabHive** n8n erreicht, ohne abschließenden `/`. Das kann eine andere sein als `N8N_PUBLIC_URL`, z. B. wenn beide auf demselben Host laufen.
-- Ist sie eine andere, gehört auch `N8N_PUBLIC_URL=<öffentliche Adresse>` in `config/secrets.env`. Editor-Links und die Webhook-URLs, die der Agent nach dem Veröffentlichen nennt, baut das Plugin daraus; ohne sie aus `N8N_BASE_URL`, und die taugt dann nicht für Aufrufer von außen.
-- Das **Owner-Passwort gehört nicht** in `config/secrets.env`. ScarabHive braucht es zur Laufzeit nicht; es bleibt in `CREDENTIALS` für dich.
+- `N8N_BASE_URL` is the address at which **ScarabHive** reaches n8n, without a trailing `/`. It can differ from `N8N_PUBLIC_URL`, e.g. when both run on the same host.
+- If it differs, `N8N_PUBLIC_URL=<public address>` also belongs in `config/secrets.env`. The plugin builds editor links and the webhook URLs the agent names after publishing from it; without it, from `N8N_BASE_URL`, which is then no good for outside callers.
+- The **owner password does not belong** in `config/secrets.env`. ScarabHive does not need it at runtime; it stays in `CREDENTIALS` for you.
 
-Danach ScarabHive neu starten. Die Plugin-Instanz ist bereits eingeschaltet (`enabled: true` in `agents/n8n.yaml`) und bietet ohne die Werte keine Tools an. Ohne `N8N_MCP_KEY` stellt das Plugin keine Tools bereit; ohne `N8N_API_KEY` nur die lesenden Knotenwissen-Tools.
+Then restart ScarabHive. The plugin instance is already switched on (`enabled: true` in `agents/n8n.yaml`) and offers no tools without the values. Without `N8N_MCP_KEY` the plugin provides no tools; without `N8N_API_KEY` only the read-only node-knowledge tools.
 
-`CREDENTIALS` selbst kannst du nach dem Übertragen an einem sicheren Ort ablegen. Liegt sie im Deploy-Verzeichnis, ist sie git-ignored.
+You can store `CREDENTIALS` itself in a safe place after transferring the values. If it lies in the deploy directory, it is git-ignored.
 
-## Keys rotieren
+## Rotating keys
 
-Rotiere einen Key, wenn er irgendwo gelandet sein könnte, wo er nicht hingehört, oder regelmäßig nach deiner eigenen Richtlinie.
+Rotate a key if it may have ended up somewhere it does not belong, or regularly according to your own policy.
 
-**MCP-Key:**
-1. Die Zeile `N8N_MCP_KEY=…` aus `CREDENTIALS` löschen.
-2. `sh setup_owner.sh` erneut ausführen. Das Skript rotiert den Key; der alte ist danach nicht mehr gültig.
-3. Den neuen Wert in `config/secrets.env` eintragen und ScarabHive neu starten.
+**MCP key:**
+1. Delete the line `N8N_MCP_KEY=…` from `CREDENTIALS`.
+2. Run `sh setup_owner.sh` again. The script rotates the key; the old one is no longer valid afterwards.
+3. Enter the new value in `config/secrets.env` and restart ScarabHive.
 
-Solange ScarabHive noch den alten Key hat, schlagen die n8n-Tools mit einem Hinweis auf `N8N_MCP_KEY` fehl.
+As long as ScarabHive still has the old key, the n8n tools fail with a pointer to `N8N_MCP_KEY`.
 
-**Public-API-Key:**
-1. Die Zeile `N8N_API_KEY=…` aus `CREDENTIALS` löschen.
-2. `sh setup_owner.sh` erneut ausführen. Es erzeugt einen neuen Key mit denselben minimalen Scopes.
-3. Den neuen Wert in `config/secrets.env` eintragen und ScarabHive neu starten.
-4. Den **alten** Key im n8n-Editor in den Einstellungen unter „n8n API“ löschen. Das Skript löscht ihn nicht; ein neuer Key ersetzt den alten nicht automatisch.
+**Public API key:**
+1. Delete the line `N8N_API_KEY=…` from `CREDENTIALS`.
+2. Run `sh setup_owner.sh` again. It creates a new key with the same minimal scopes.
+3. Enter the new value in `config/secrets.env` and restart ScarabHive.
+4. Delete the **old** key in the n8n editor under Settings → "n8n API". The script does not delete it; a new key does not automatically replace the old one.
 
-**Owner-Passwort:** im n8n-Editor in den persönlichen Einstellungen ändern und den neuen Wert in `CREDENTIALS` nachtragen. Das Setup-Skript braucht es für spätere Rotationen.
+**Owner password:** change it in the n8n editor under personal settings and add the new value to `CREDENTIALS`. The setup script needs it for later rotations.
 
-**`N8N_ENCRYPTION_KEY`** wird nicht rotiert (siehe Schritt 2).
+**`N8N_ENCRYPTION_KEY`** is not rotated (see step 2).
 
-## Bestehende Instanz
+## Existing instance
 
-Hast du n8n schon mit einer früheren Fassung dieses Skripts eingerichtet, hat dein Public-API-Key vermutlich **alle** Scopes. Dann, in dieser Reihenfolge:
-1. Die Compose-Datei auf den aktuellen Stand bringen (MCP-Variablen) und `docker compose up -d` ausführen. Das Skript bricht sonst beim MCP-Schritt ab.
-2. Die Zeile `N8N_API_KEY=…` aus `CREDENTIALS` löschen und das Skript erneut ausführen; es erzeugt einen Minimal-Key und den MCP-Key.
-3. Den alten Voll-Key im Editor löschen.
+If you already set up n8n with an earlier version of this script, your public API key probably has **all** scopes. Then, in this order:
+1. Bring the compose file up to date (MCP variables) and run `docker compose up -d`. Otherwise the script aborts at the MCP step.
+2. Delete the line `N8N_API_KEY=…` from `CREDENTIALS` and run the script again; it creates a minimal key and the MCP key.
+3. Delete the old full key in the editor.
 
-## n8n aktualisieren
+## Updating n8n
 
-Die Image-Version ist in `docker-compose.yml` fest eingetragen (`docker.n8n.io/n8nio/n8n:<version>`). So aktualisierst du:
+The image version is pinned in `docker-compose.yml` (`docker.n8n.io/n8nio/n8n:<version>`). To update:
 
-1. **Sichern.** Die Daten liegen im Docker-Volume `n8n_n8n_data` (Projektname `n8n` plus Volume `n8n_data`):
+1. **Back up.** The data lies in the Docker volume `n8n_n8n_data` (project name `n8n` plus volume `n8n_data`):
    ```sh
    docker compose stop
    docker run --rm -v n8n_n8n_data:/data -v "$PWD":/backup alpine \
      tar czf /backup/n8n_data_backup.tgz -C /data .
    ```
-   Die Sicherung enthält die Datenbank mit verschlüsselten Credentials. Behandle sie wie `CREDENTIALS`.
-2. **Version ändern:** in `docker-compose.yml` die Versionsnummer im `image`-Eintrag ersetzen. Vorher die Release Notes von n8n auf Breaking Changes lesen.
-3. **Starten:**
+   The backup contains the database with encrypted credentials. Treat it like `CREDENTIALS`.
+2. **Change the version:** replace the version number in the `image` entry in `docker-compose.yml`. Read n8n's release notes for breaking changes first.
+3. **Start:**
    ```sh
    docker compose pull
    docker compose up -d
    curl -fsS http://localhost:5678/healthz
    ```
-4. **Plugin-Konfiguration:** ScarabHive prüft die n8n-Version zur Laufzeit nicht; ohne Owner-Login gibt n8n sie nicht heraus (M-MCP-51). `tested_n8n_version` in `agents/n8n.yaml` ist ein Vermerk: erst anheben, wenn die Prüfungen unten durch sind.
+4. **Plugin configuration:** ScarabHive does not check the n8n version at runtime; without an owner login n8n does not give it out (M-MCP-51). `tested_n8n_version` in `agents/n8n.yaml` is a note: raise it only once the checks below pass.
 
-### Was danach in `n8n_facts.md` neu zu prüfen ist
+### What to re-check in `n8n_facts.md` afterwards
 
-Das Plugin stützt sich auf gemessenes Verhalten einer bestimmten n8n-Version. Nach einem Upgrade kann jedes davon kippen.
+The plugin relies on measured behavior of a specific n8n version. After an upgrade any of it can flip.
 
-**Die Live-Tests des Plugins prüfen diese Punkte:**
+**The plugin's live tests check these points:**
 
-| Was | Fakten | Warum es zählt |
+| What | Facts | Why it matters |
 |---|---|---|
-| Ein ganzer Durchlauf: anlegen, markieren, testen, Ergebnis lesen | M-MCP-4, M-MCP-5, M-MCP-6 | Ergebnisauswertung und Fehlernormalisierung |
-| Pins werden befolgt; ungepinnte Knoten laufen live | M-MCP-3, M-MCP-30, M-MCP-39 | Darauf ruht die Sicherheit jedes Testlaufs. |
-| Ein gepinnter Sub-Workflow-Aufruf startet den Sub-Workflow nicht | M-MCP-53 | Darum dürfen Sub-Workflows im Test nie live laufen. |
-| Code hat Netz über `helpers.httpRequest` | M-MCP-38 | Begründet, warum Code im Test nie live läuft. |
-| `validate_workflow` lässt Version 99 und einen leeren Webhook-Pfad durch | M-MCP-H9 | Fängt n8n das inzwischen selbst, fällt die eigene Prüfung weg. |
-| Veröffentlichen per `versionId`, Auslösen per Webhook, die laufende Execution finden, Zurücknehmen, Archivieren | M-MCP-65 bis M-MCP-68, M-MCP-70 | Darauf ruhen die Versionsprüfung und das Wiederfinden einer ausgelösten Execution. |
+| A whole run-through: create, mark, test, read the result | M-MCP-4, M-MCP-5, M-MCP-6 | Result evaluation and error normalization |
+| Pins are honored; unpinned nodes run live | M-MCP-3, M-MCP-30, M-MCP-39 | The safety of every test run rests on this. |
+| A pinned sub-workflow call does not start the sub-workflow | M-MCP-53 | That is why sub-workflows must never run live in a test. |
+| Code has network access via `helpers.httpRequest` | M-MCP-38 | Explains why code never runs live in a test. |
+| `validate_workflow` lets version 99 and an empty webhook path through | M-MCP-H9 | If n8n catches this itself by now, our own check is no longer needed. |
+| Publishing by `versionId`, triggering by webhook, finding the running execution, taking back, archiving | M-MCP-65 to M-MCP-68, M-MCP-70 | The version check and finding a triggered execution again rest on this. |
 
-**Von Hand zu prüfen** (mit den Skripten aus den Quellen in `n8n_facts.md`):
+**To check by hand** (with the scripts from the sources in `n8n_facts.md`):
 
-| Was | Fakten | Warum es zählt |
+| What | Facts | Why it matters |
 |---|---|---|
-| Liste und Schemas der MCP-Tools | M-MCP-H4, M-MCP-13, M-MCP-25, M-MCP-27 | Das Plugin leitet Tools weiter; geänderte Namen oder Parameter brechen es. |
-| Die übrigen Lücken der Validatoren | M-MCP-H8, M-MCP-8 bis M-MCP-11, M-MCP-32, M-MCP-44 | wie oben |
-| Freigabe-Tor pro Workflow | M-MCP-20, M-MCP-21 | zweiter Riegel des Plugins |
-| MCP-Env-Variablen | M-MCP-22, M-MCP-23 | Ohne sie ist der MCP nach dem Start aus. |
-| Rate-Limit; der MCP vergibt keine Session-ID | M-MCP-24, M-MCP-54 | Budget des Plugins |
-| Scopes der Public API | F-AUTH6, F-AUTH7, F-AUTH8 | Der Minimal-Key muss weiter reichen. |
-| Speichereinstellungen | M-MCP-41, M-MCP-55 | Testnachweis |
-| Agent-Tool-Varianten und versteckte Knoten, MCP-Client-Knoten | M-MCP-42, M-MCP-59, F-NOD11 | Sperr- und Prüfliste des Plugins |
+| List and schemas of the MCP tools | M-MCP-H4, M-MCP-13, M-MCP-25, M-MCP-27 | The plugin forwards tools; changed names or parameters break it. |
+| The remaining gaps of the validators | M-MCP-H8, M-MCP-8 to M-MCP-11, M-MCP-32, M-MCP-44 | as above |
+| Release gate per workflow | M-MCP-20, M-MCP-21 | second bolt of the plugin |
+| MCP env variables | M-MCP-22, M-MCP-23 | Without them the MCP is off after the start. |
+| Rate limit; the MCP issues no session ID | M-MCP-24, M-MCP-54 | The plugin's budget |
+| Scopes of the public API | F-AUTH6, F-AUTH7, F-AUTH8 | The minimal key must still be sufficient. |
+| Storage settings | M-MCP-41, M-MCP-55 | Test evidence |
+| Agent tool variants and hidden nodes, MCP client nodes | M-MCP-42, M-MCP-59, F-NOD11 | Block and check list of the plugin |
 
-### Live-Tests ausführen
+### Running the live tests
 
-Die Tests legen Workflows mit dem Präfix `zz-probe-live-` an und löschen sie am Ende wieder. Der Laufzeit-Key darf nicht löschen, deshalb brauchen sie einen **zweiten Key**:
+The tests create workflows with the prefix `zz-probe-live-` and delete them again at the end. The runtime key may not delete, so they need a **second key**:
 
-1. Im n8n-Editor unter Einstellungen → „n8n API“ einen Key anlegen, mindestens mit `workflow:read`, `workflow:list` und `workflow:delete`. Bietet der Editor keine Auswahl der Scopes, hat der Key alle Rechte: dann nur für den Testlauf anlegen und danach löschen.
-2. Diesen Key **nie** in `config/secrets.env` eintragen; er gehört nur in die Umgebung des Testlaufs.
-3. Im ScarabHive-Verzeichnis, mit dem Python der ScarabHive-Umgebung:
+1. In the n8n editor under Settings → "n8n API" create a key, at least with `workflow:read`, `workflow:list` and `workflow:delete`. If the editor offers no choice of scopes, the key has all rights: then create it only for the test run and delete it afterwards.
+2. **Never** enter this key in `config/secrets.env`; it belongs only in the environment of the test run.
+3. In the ScarabHive directory, with the Python of the ScarabHive environment:
    ```sh
-   N8N_LIVE=1 N8N_BASE_URL=http://<host>:5678 N8N_API_KEY=<Laufzeit-Key> \
-   N8N_MCP_KEY=<MCP-Key> N8N_TEST_API_KEY=<zweiter Key> \
+   N8N_LIVE=1 N8N_BASE_URL=http://<host>:5678 N8N_API_KEY=<runtime key> \
+   N8N_MCP_KEY=<MCP key> N8N_TEST_API_KEY=<second key> \
      python -m pytest src/plugins/n8n/tests/test_plugin_n8n_live.py -q
    ```
-   Ohne `N8N_LIVE=1` oder eine der Variablen werden die Tests übersprungen, nicht bestanden.
+   Without `N8N_LIVE=1` or one of the variables, the tests are skipped, not passed.
 
-Weicht ein Ergebnis ab: den Fakt in `n8n_facts.md` mit neuer Messung korrigieren, dann Design und Plugin anpassen. Erst danach `tested_n8n_version` anheben.
+If a result deviates: correct the fact in `n8n_facts.md` with a new measurement, then adapt design and plugin. Only then raise `tested_n8n_version`.

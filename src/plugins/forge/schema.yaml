@@ -2,7 +2,7 @@
 # Without a usable repository (host, provider, token) nothing here can work,
 # so nothing is offered. pr_merge exists only where a repository allows it.
 
-# The webhook's inbox (docs/konzept.md §7): cheap for every other session --
+# The webhook's inbox (docs/concept.md §7): cheap for every other session --
 # without a store file nothing is read, with one a single indexed lookup.
 hooks:
   - name: deliver_webhook_events

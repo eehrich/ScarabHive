@@ -1,4 +1,4 @@
-# forge: GitLab and GitHub for the coder (docs/konzept.md).
+# forge: GitLab and GitHub for the coder (docs/concept.md).
 #
 # Hosts, repositories and their tokens are the operator's values and belong in
 # config/plugins.yaml under plugins.servers.forge (forge.guide, "Setting it up").

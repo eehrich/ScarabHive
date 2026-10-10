@@ -212,11 +212,11 @@ class TestTheRealConfigStillResolves:
         cfg = load_settings()
         models = cfg.llm_system.models
         assert len(models) >= 50, f"only {len(models)} models — config did not arrive"
-        # Eintraege ohne `model:` sind Basisklassen. Erlaubt, solange kein
-        # Profil auf sie zeigt — sonst faehrt ein None in den Client.
+        # Entries without `model:` are base classes. Allowed as long as no
+        # profile points at them -- otherwise a None ends up in the client.
         abstract = {n for n, m in models.items() if not m.model}
         referenced = {p.model_ref for p in cfg.llm_system.profiles.values()}
-        assert not (abstract & referenced),             f"Profile zeigen auf Basisklassen: {sorted(abstract & referenced)}"
+        assert not (abstract & referenced),             f"Profiles point at base classes: {sorted(abstract & referenced)}"
         assert len(models) - len(abstract) >= 50
 
     def test_no_model_entry_carries_extends(self):
@@ -231,8 +231,8 @@ class TestTheRealConfigStillResolves:
 
 
 class TestABaseClassMayNotBeDriven:
-    """Ein Eintrag ohne `model:` ist zum Erben da. Ohne Riegel landet sein
-    None im Client und der Aufruf scheitert erst beim Provider."""
+    """An entry without `model:` exists to be inherited from. Without a
+    guard its None ends up in the client and the call only fails at the provider."""
 
     def _cfg(self, models, profiles):
         from agent_system.config.models import LLMSystemConfig
@@ -242,7 +242,7 @@ class TestABaseClassMayNotBeDriven:
     def test_a_profile_pointing_at_one_is_refused(self):
         import pytest
         from pydantic import ValidationError
-        with pytest.raises(ValidationError, match="Basisklassen"):
+        with pytest.raises(ValidationError, match="base classes"):
             self._cfg({"base": {"provider": "openai"}},
                       {"p": {"model_ref": "base"}})
 

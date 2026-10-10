@@ -44,11 +44,11 @@ class StepLLMMixin:
         block is lifted is a switch like any other, stripped below.
         """
         llm = run.active_llm
-        # Profil des TATSÄCHLICH aktiven Modells, wenn es vom Config-
-        # Primär abweicht: Eskalations-Swap oder explizites Override
-        # (llm_profile_info_override = "profil:provider/model"). Wird
-        # aus der Fallback-Kette exkludiert, sonst würde das gerade
-        # fehlschlagende Modell als sein eigener Fallback erneut laufen.
+        # Profile of the model that is ACTUALLY active, when it differs
+        # from the config primary: escalation swap or explicit override
+        # (llm_profile_info_override = "profile:provider/model"). It is
+        # excluded from the fallback chain, otherwise the model that
+        # just failed would run again as its own fallback.
         active_profile_override = None
         if run.base_profile is not None:
             active_profile_override = run.base_profile
@@ -74,10 +74,10 @@ class StepLLMMixin:
                 # Blocked for now: this step runs on standard, the
                 # window stays open for a step after the block.
                 escalate = False
-        # Ketten-Semantik: llm_profile = [primär, fallback1, ...],
-        # llm_profile_advanced analog. fallback_chain() liefert die
-        # passende Reihenfolge (advanced-Kette zuerst, dann die
-        # normale Kette als letztes Sicherheitsnetz).
+        # Chain semantics: llm_profile = [primary, fallback1, ...],
+        # llm_profile_advanced likewise. fallback_chain() returns the
+        # matching order (advanced chain first, then the
+        # normal chain as the last safety net).
         profiles = (
             self.agent_config.fallback_chain(
                 run.use_advanced_model, exclude=active_profile_override)

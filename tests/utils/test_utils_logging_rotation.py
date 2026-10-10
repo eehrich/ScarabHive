@@ -1,15 +1,15 @@
-"""Tests für Multi-Process-sichere Log-Rotation.
+"""Tests for multi-process-safe log rotation.
 
-Hintergrund: bei parallelen agent-cli-Instanzen unter Windows scheitert
-``os.rename(source, dest)`` während der Log-Rotation mit
-``PermissionError [WinError 32]``, weil andere Prozesse die Datei offen
-halten. Die frühere `FailTolerantRotatingFileHandler`-Lösung swallowed
-nur das letzte rename, hatte aber zuvor bereits Backup-Files via
-`os.remove` gelöscht — sodass cli.log.1 unwiderruflich verschwand.
+Background: with parallel agent-cli instances on Windows,
+``os.rename(source, dest)`` fails during log rotation with
+``PermissionError [WinError 32]`` because other processes hold the file
+open. The earlier `FailTolerantRotatingFileHandler` solution swallowed
+only the last rename, but had already deleted backup files via
+`os.remove` beforehand -- so cli.log.1 vanished irrecoverably.
 
-Aktuelle Lösung: `concurrent_log_handler.ConcurrentRotatingFileHandler`
-nutzt File-Locks (portalocker, cross-platform) und serialisiert
-Rotationen sauber zwischen Prozessen.
+Current solution: `concurrent_log_handler.ConcurrentRotatingFileHandler`
+uses file locks (portalocker, cross-platform) and serializes
+rotations cleanly between processes.
 """
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ from concurrent_log_handler import ConcurrentRotatingFileHandler
 
 
 def test_rotation_enabled_uses_concurrent_handler(tmp_path: Path) -> None:
-    """`setup_logging(rotation_enabled=True)` muss einen
-    `ConcurrentRotatingFileHandler` an den Root-Logger hängen.
+    """`setup_logging(rotation_enabled=True)` must attach a
+    `ConcurrentRotatingFileHandler` to the root logger.
     """
     log_file = tmp_path / "rot.log"
     try:
@@ -43,7 +43,7 @@ def test_rotation_enabled_uses_concurrent_handler(tmp_path: Path) -> None:
         assert h.maxBytes == 100
         assert h.backupCount == 2
     finally:
-        # Sauberes Schließen — sonst hält der Lock-File-Handle die Datei offen.
+        # Close cleanly -- otherwise the lock-file handle keeps the file open.
         for h in list(logging.getLogger().handlers):
             try:
                 h.close()
@@ -52,7 +52,7 @@ def test_rotation_enabled_uses_concurrent_handler(tmp_path: Path) -> None:
 
 
 def test_rotation_actually_rotates_on_size_limit(tmp_path: Path) -> None:
-    """Über den maxBytes-Wert hinaus wird tatsächlich rotiert."""
+    """Rotation really happens once maxBytes is exceeded."""
     log_file = tmp_path / "spam.log"
     try:
         setup_logging(

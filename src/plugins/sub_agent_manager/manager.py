@@ -7,7 +7,7 @@ import logging
 import random
 import weakref
 from agent_system.services.session_manager import SessionNotFoundError
-from agent_system.services.session_service import is_ephemeral_session
+from agent_system.services.session_service import PLACEHOLDER_TITLE, is_ephemeral_session
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -204,7 +204,7 @@ class SubAgentManager:
                 await session_manager.create_session(
                     user_id=user_id,
                     session_id=parent_session_id,
-                    title="Coordinator Session",
+                    title=PLACEHOLDER_TITLE,  # the run's first save names it
                     agent_name=parent_agent_name,
                     llm_profile=parent_llm_profile
                 )

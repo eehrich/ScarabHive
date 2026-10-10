@@ -290,6 +290,25 @@ class PluginWebRegistry:
         """
         return self.security_configs.get(plugin_name, {})
     
+    def effective_policy(self, enforcer: PluginEndpointSecurityEnforcer, plugin_name: str, path: str,
+                         method: str = "GET") -> Dict[str, Any]:
+        """The enforcer's policy, raised to the role the plugin's type declares (``min_role`` in its
+        get_security_config). The rules in config match request paths, that is instance names: a
+        renamed or a second ssh_control instance fell to the default role, every user's. A type
+        that declares a role keeps it under any name; a rule may ask for more, never for less."""
+        from agent_system.auth.enforcement import ROLE_HIERARCHY
+
+        policy = enforcer.get_plugin_policy(plugin_name, path, method)
+        declared = (self.security_configs.get(plugin_name) or {}).get("min_role")
+        if not declared or not (enforcer.auth_config and enforcer.auth_config.enabled):
+            return policy
+        current = policy.get("min_role")
+        if (policy.get("requires_auth") and current
+                and ROLE_HIERARCHY.get(str(current).lower(), 0) >= ROLE_HIERARCHY.get(str(declared).lower(), 0)):
+            return policy
+        return {"requires_auth": True, "min_role": declared,
+                "description": f"{policy.get('description')}; the plugin type requires {declared}"}
+
     def apply_to_app(self, app: FastAPI, auth_config: Optional["AuthConfig"] = None) -> None:
         """Apply all registered web capabilities to FastAPI app with security enforcement.
         
@@ -323,7 +342,7 @@ class PluginWebRegistry:
                 plugin_name = path_parts[2] if len(path_parts) > 2 else "unknown"
             
             # Get security policy
-            policy = security_enforcer.get_plugin_policy(plugin_name, path, method)
+            policy = self.effective_policy(security_enforcer, plugin_name, path, method)
             
             if not policy["requires_auth"]:
                 return None
@@ -431,7 +450,7 @@ class PluginWebRegistry:
             # Build status for each plugin
             plugin_status = {}
             for name in self.active_routers.keys():
-                policy = enforcer.get_plugin_policy(name, f"/plugins/{name}/", "GET")
+                policy = self.effective_policy(enforcer, name, f"/plugins/{name}/", "GET")
                 plugin_status[name] = {
                     "has_router": True,
                     "has_static": name in self.static_mounts,

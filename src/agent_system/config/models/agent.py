@@ -97,8 +97,8 @@ class ReasoningLoopConfig(BaseModel):
     repetition_threshold: float = 0.5
 
 
-# Nicht per agent_config.llm_params ueberschreibbar: diese Felder definieren
-# die IDENTITAET des Modells (dafuer gibt es llm_profile / llm.yaml).
+# Not overridable via agent_config.llm_params: these fields define the
+# IDENTITY of the model (that is what llm_profile / llm.yaml are for).
 LLM_PARAMS_PROTECTED_FIELDS = frozenset({
     "provider", "model", "api_key", "base_url", "batch_provider", "ollama_mode",
 })
@@ -107,14 +107,14 @@ LLM_PARAMS_PROTECTED_FIELDS = frozenset({
 def resolve_llm_params(
     params: Optional[Dict[str, Any]], profile: str
 ) -> Optional[Dict[str, Any]]:
-    """Effektive flache LLM-Params fuer EIN Profil.
+    """Effective flat LLM params for ONE profile.
 
-    Flat-Form ({param: wert}) gilt unveraendert fuer jedes Profil, auf das
-    der Aufrufer sie anwendet. Profil-gekeyte Form ({profil: {param: wert}})
-    loest zu merge("*", params[profil]) auf — der spezifische Eintrag
-    gewinnt. Erkennung ist eindeutig: Flat-Keys sind LLMModelConfig-
-    Feldnamen, Profil-Keys nicht (Mischformen lehnt der AgentConfig-
-    Validator beim Config-Load ab).
+    Flat form ({param: value}) applies unchanged to every profile the
+    caller applies it to. Profile-keyed form ({profile: {param: value}})
+    resolves to merge("*", params[profile]) — the specific entry
+    wins. Detection is unambiguous: flat keys are LLMModelConfig
+    field names, profile keys are not (mixed forms are rejected by the
+    AgentConfig validator at config load).
     """
     if not params:
         return None
@@ -124,12 +124,12 @@ def resolve_llm_params(
     return merged or None
 
 
-# Fallback-Profile nutzen dieselbe resolve_llm_params-Semantik wie die
-# Primaermodelle: Flat-Form und "*" gelten fuer ALLE Ketten-Mitglieder,
-# der exakt gekeyte Eintrag gewinnt. Wer "*" setzt, entscheidet das
-# bewusst fuer die ganze Kette — Cross-Provider-Vertraeglichkeit der
-# Werte liegt beim Operator (profil-gekeyte Eintraege erlauben die
-# Feinsteuerung pro Modell).
+# Fallback profiles use the same resolve_llm_params semantics as the
+# primary models: flat form and "*" apply to ALL chain members,
+# the exactly keyed entry wins. Whoever sets "*" decides this
+# deliberately for the whole chain — cross-provider compatibility of the
+# values is up to the operator (profile-keyed entries allow
+# fine control per model).
 
 
 class SkillsConfig(BaseModel):
@@ -182,15 +182,15 @@ class AgentConfig(BaseModel):
     # Measured before switching: zero agent_config blocks in config/ or src/
     # carry an unknown key, so no deployment is refused by this.
     model_config = ConfigDict(extra="forbid")
-    # LLM-KETTE (seit 2026-07: neue Semantik!): Liste = [primär, fallback1, fallback2, ...]
-    # — Position 0 ist das Standard-Modell, ALLE weiteren Einträge sind Fallbacks
-    # in Reihenfolge (Rate-Limit/Upstream-Fehler). String = nur Primär, keine Fallbacks.
+    # LLM CHAIN (since 2026-07: new semantics!): list = [primary, fallback1, fallback2, ...]
+    # — position 0 is the default model, ALL further entries are fallbacks
+    # in order (rate limit/upstream errors). String = primary only, no fallbacks.
     llm_profile: str | List[str] = "normal"
-    # Advanced-KETTE (use_advanced_model=True): gleiche Struktur — [primär_adv,
-    # fallback1_adv, ...]. Leer/fehlend = KEIN Advanced-Modell (use_advanced_model
-    # läuft dann auf der normalen Kette weiter). Die Ketten sind FÜREINANDER das
-    # letzte Sicherheitsnetz: ist die eigene Kette bei Fallbacks erschöpft, wird
-    # die jeweils andere Kette komplett durchprobiert (fallback_chain()).
+    # Advanced CHAIN (use_advanced_model=True): same structure — [primary_adv,
+    # fallback1_adv, ...]. Empty/missing = NO advanced model (use_advanced_model
+    # then continues on the normal chain). The chains are each other's
+    # last safety net: when a chain has run out of its own fallbacks, the
+    # other chain is tried through completely (fallback_chain()).
     llm_profile_advanced: Optional[List[str]] = None
     # Run on the caller's LLM (opt-in): when the run that starts this agent was
     # switched to another profile than its agent's own (API llm_profile, the
@@ -203,34 +203,34 @@ class AgentConfig(BaseModel):
     # inside a tool call gets this without doing anything (llm/caller_llm.py);
     # a run started later in another process does not.
     inherit_parent_llm: bool = False
-    # ENTFERNT (alte Semantik [std_fallback, adv_fallback]) — Migration:
-    # scripts/migrate_llm_profiles.py. Absichtlich als Feld behalten, damit
-    # unmigrierte yamls LAUT beim Laden scheitern statt still falsch zu laufen.
+    # REMOVED (old semantics [std_fallback, adv_fallback]) — migration:
+    # scripts/migrate_llm_profiles.py. Deliberately kept as a field so that
+    # unmigrated yamls fail LOUDLY at load instead of silently running wrong.
     llm_profile_fallbacks: Optional[List[str]] = None
-    # Per-Agent LLM-Parameter-Overrides: werden beim Aufloesen der llm_profile-
-    # Modelle (default/advanced/escalation) ueber den referenzierten
-    # llm_system.models-Eintrag gelegt — statt fuer jede Kombination
-    # (Modell x thinking_level x max_tokens ...) einen eigenen Model-Eintrag
-    # anzulegen. Erlaubt sind alle LLMModelConfig-Felder AUSSER den
-    # Identitaets-Feldern (provider/model/api_key/base_url/batch_provider/
-    # ollama_mode — die definieren WELCHES Modell und gehoeren in llm.yaml).
-    # Gilt einheitlich fuer ALLE Ketten-Mitglieder (Primaer + Fallbacks
-    # beider Ketten, Eskalation): Flat-Form und "*" wirken ueberall, der
-    # exakt gekeyte Eintrag gewinnt. Cross-Provider-Vertraeglichkeit
-    # pauschaler Werte ("*" mit thinking_level=max auf einem Gemini-
-    # Fallback) verantwortet der Operator — profil-gekeyte Eintraege
-    # erlauben die Feinsteuerung pro Modell. Explizite --llm-profile-
-    # Overrides laufen weiterhin ohne llm_params.
+    # Per-agent LLM parameter overrides: laid over the referenced
+    # llm_system.models entry when the llm_profile models
+    # (default/advanced/escalation) are resolved — instead of creating a
+    # separate model entry for every combination
+    # (model x thinking_level x max_tokens ...). All LLMModelConfig fields are
+    # allowed EXCEPT the identity fields (provider/model/api_key/base_url/
+    # batch_provider/ollama_mode — they define WHICH model and belong in llm.yaml).
+    # Applies uniformly to ALL chain members (primary + fallbacks of
+    # both chains, escalation): flat form and "*" work everywhere, the
+    # exactly keyed entry wins. Cross-provider compatibility of
+    # blanket values ("*" with thinking_level=max on a Gemini
+    # fallback) is the operator's responsibility — profile-keyed entries
+    # allow fine control per model. Explicit --llm-profile
+    # overrides still run without llm_params.
     #
-    # ZWEI Formen (unterschiedliche Modelle kennen unterschiedliche Keys):
-    #   flat  — gilt fuer die ganze Kette (wie "*"):
+    # TWO forms (different models know different keys):
+    #   flat  — applies to the whole chain (like "*"):
     #     llm_params: { max_tokens: 8000 }
-    #   profil-gekeyt — Params kleben am Modell, nicht am Slot;
-    #     "*" gilt fuer alle Ketten-Mitglieder, spezifischer Eintrag gewinnt:
+    #   profile-keyed — params stick to the model, not to the slot;
+    #     "*" applies to all chain members, a specific entry wins:
     #     llm_params:
     #       "*": { max_tokens: 8000 }
     #       or-gpt-full-unlimited: { thinking_level: high }
-    #   Unbekannte Keys (in keiner Kette) sind ungueltig. Mischformen ebenso.
+    #   Unknown keys (in no chain) are invalid. Mixed forms likewise.
     llm_params: Optional[Dict[str, Any]] = None
     # Longest block this agent puts on an LLM (llm/model_health.py, for every agent):
     # a rate limit starts at 60 s and doubles up to this; an exhausted quota or a
@@ -406,16 +406,16 @@ class AgentConfig(BaseModel):
 
     @property
     def default_llm_profile(self) -> str:
-        """Primäres LLM-Profil (Position 0 der Kette bzw. der String)."""
+        """Primary LLM profile (position 0 of the chain, or the string)."""
         if isinstance(self.llm_profile, list):
             return self.llm_profile[0] if self.llm_profile else "normal"
         return self.llm_profile
 
     @property
     def available_llm_profiles(self) -> List[str]:
-        """ALLE dem Agent zugeordneten Profile (normale + Advanced-Kette,
-        dedupliziert, Reihenfolge stabil) — für Auswahl-Enums (schema_based)
-        und Validierung expliziter llm_profile-Parameter."""
+        """ALL profiles assigned to the agent (normal + advanced chain,
+        deduplicated, order stable) — for selection enums (schema_based)
+        and validation of explicit llm_profile parameters."""
         base = list(self.llm_profile) if isinstance(self.llm_profile, list) else [self.llm_profile]
         seen: list[str] = []
         for p in base + (self.llm_profile_advanced or []):
@@ -425,33 +425,33 @@ class AgentConfig(BaseModel):
 
     @property
     def advanced_llm_profile(self) -> Optional[str]:
-        """Primäres Advanced-Profil (use_advanced_model=True) — None wenn
-        keine Advanced-Kette konfiguriert ist (dann läuft advanced = normal)."""
+        """Primary advanced profile (use_advanced_model=True) — None if
+        no advanced chain is configured (then advanced = normal)."""
         adv = self.llm_profile_advanced or []
         return adv[0] if adv else None
 
     @property
     def fallback_profiles(self) -> List[str]:
-        """Fallback-Kette des NORMALEN Modus: llm_profile[1:]."""
+        """Fallback chain of the NORMAL mode: llm_profile[1:]."""
         if isinstance(self.llm_profile, list):
             return self.llm_profile[1:]
         return []
 
     def fallback_chain(self, use_advanced_model: bool = False,
                        exclude: Optional[str] = None) -> List[str]:
-        """Fallback-Reihenfolge für den Retry-Loop (ohne das aktive Primär-Modell).
+        """Fallback order for the retry loop (without the active primary model).
 
-        Die Ketten sind FÜREINANDER das letzte Sicherheitsnetz (symmetrisch):
-        - normal:   llm_profile[1:]           + komplette Advanced-Kette
-        - advanced: llm_profile_advanced[1:]  + komplette normale Kette
-        Erhält die alte Resilienz („Ultimate-Fallback wenn beide Provider down"):
-        ein Lauf fällt nie ins Leere, solange IRGENDEINE Kette noch ein Modell
-        hat. Dedupliziert, Reihenfolge stabil, aktives Primär-Modell exkludiert.
+        The chains are each other's last safety net (symmetric):
+        - normal:   llm_profile[1:]           + complete advanced chain
+        - advanced: llm_profile_advanced[1:]  + complete normal chain
+        Keeps the old resilience ("ultimate fallback when both providers are down"):
+        a run never ends up empty-handed as long as ANY chain still has a model.
+        Deduplicated, order stable, active primary model excluded.
 
-        exclude: Profil-Name des TATSÄCHLICH aktiven Modells, wenn es vom
-        Config-Primär abweicht (Eskalations-Swap, explizites llm_profile-
-        Override) — sonst würde das gerade fehlschlagende Modell als sein
-        eigener Fallback erneut versucht (Doppel-Retry).
+        exclude: profile name of the model that is ACTUALLY active, when it
+        differs from the config primary (escalation swap, explicit llm_profile
+        override) — otherwise the model that just failed would be retried as its
+        own fallback (double retry).
         """
         base = list(self.llm_profile) if isinstance(self.llm_profile, list) else [self.llm_profile]
         adv = list(self.llm_profile_advanced or [])

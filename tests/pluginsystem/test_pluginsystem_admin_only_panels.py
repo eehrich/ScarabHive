@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from agent_system.config.models import AgentConfig, AgentSystemConfig, AuthConfig, ToolServerConfig
 from agent_system.config.settings import load_settings
+from agent_system.plugins import web_adapter
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from http_routes import http_routes
 
@@ -34,6 +35,16 @@ def _shipped_auth() -> AuthConfig:
 
 @pytest.fixture
 def panels(tmp_path, monkeypatch):
+    return _mounted(tmp_path, monkeypatch, {"log_viewer": "log_viewer", "ssh_control": "ssh_control"})
+
+
+@pytest.fixture
+def renamed_panels(tmp_path, monkeypatch):
+    # A second or renamed instance of either type: names no rule in the shipped config knows.
+    return _mounted(tmp_path, monkeypatch, {"log_viewer": "ops_logs", "ssh_control": "ssh_lab"})
+
+
+def _mounted(tmp_path, monkeypatch, names):
     from agent_system.auth import database, security
     from agent_system.auth.models import UserCreate, UserRole
     from plugins.log_viewer.plugin import LogViewerHybridPlugin
@@ -44,6 +55,8 @@ def panels(tmp_path, monkeypatch):
         raise AssertionError("the test must not open an SSH connection")
 
     monkeypatch.setattr(SSHAuthenticator, "create_connection", staticmethod(no_connection))
+    # apply_to_app sets the global plugin enforcer: the next test gets its own back
+    monkeypatch.setattr(web_adapter, "_plugin_security_enforcer", None)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "logs").mkdir()
     (tmp_path / "logs" / "api.log").write_text("2026-01-01 10:00:00,000 INFO x someone's prompt\n", encoding="utf-8")
@@ -59,10 +72,12 @@ def panels(tmp_path, monkeypatch):
     ssh_config.machines = [{"name": "alpha", "host": "alpha.test", "username": "deploy"}]
     ssh_config.security = {"audit_log": False}
     registry = PluginWebRegistry()
-    registry.register_web_plugin("log_viewer", LogViewerHybridPlugin("log_viewer", AgentSystemConfig(), log_config))
-    registry.register_web_plugin("ssh_control", SSH_FACTORY("ssh_control", AgentSystemConfig(), ssh_config))
+    log_name, ssh_name = names["log_viewer"], names["ssh_control"]
+    registry.register_web_plugin(log_name, LogViewerHybridPlugin(log_name, AgentSystemConfig(), log_config))
+    registry.register_web_plugin(ssh_name, SSH_FACTORY(ssh_name, AgentSystemConfig(), ssh_config))
     app = FastAPI()
     registry.apply_to_app(app, _shipped_auth())
+    app.state.panel_registry = registry
 
     def headers(name):
         claims = {"sub": name, "user_id": users.get_user_by_username(name).id, "role": "user"}
@@ -71,10 +86,10 @@ def panels(tmp_path, monkeypatch):
     return app, TestClient(app), headers
 
 
-def _routes(app):
+def _routes(app, names=PANELS):
     """(method, path) of every API route the two panels mount, path parameters filled in."""
     return sorted((method, re.sub(r"\{[^}]+\}", "x", path)) for method, path in http_routes(app)
-                  if any(path.startswith(f"/plugins/{name}/") for name in PANELS))
+                  if any(path.startswith(f"/plugins/{name}/") for name in names))
 
 
 def test_a_user_reaches_no_route_of_either_panel(panels):
@@ -84,6 +99,36 @@ def test_a_user_reaches_no_route_of_either_panel(panels):
     answers = {(method, path): client.request(method, path, headers=headers("bob"), json={}).status_code
                for method, path in routes}
     assert answers and set(answers.values()) == {403}, answers
+
+
+def test_a_renamed_instance_answers_admins_only_too(renamed_panels):
+    # The rules match instance names; the plugin types declare admin themselves.
+    app, client, headers = renamed_panels
+    routes = _routes(app, ("ops_logs", "ssh_lab"))
+    assert {path.split("/")[2] for _, path in routes} == {"ops_logs", "ssh_lab"}, routes
+    answers = {(method, path): client.request(method, path, headers=headers("bob"), json={}).status_code
+               for method, path in routes}
+    assert answers and set(answers.values()) == {403}, answers
+    for path in ("/plugins/ops_logs/", "/plugins/ops_logs/logs/list", "/plugins/ssh_lab/api/machines"):
+        assert client.get(path, headers=headers("root")).status_code == 200, path
+
+
+def test_the_catalogue_offers_a_renamed_instance_to_admins_only(renamed_panels, monkeypatch):
+    # The launcher lists what the route guard lets through: a user was offered a panel that answered 403.
+    from types import SimpleNamespace
+
+    from agent_system.plugins import tool_adapter
+    from agent_system.ui.routes import plugin_panels
+
+    app, _, _ = renamed_panels
+    registry = app.state.panel_registry
+    monkeypatch.setattr(web_adapter, "plugin_web_registry", registry)
+    monkeypatch.setattr(tool_adapter.plugin_tool_registry, "get_server",
+                        lambda name: SimpleNamespace(plugin_schema=registry.web_plugins[name].get_schema_data()))
+
+    roles = {panel.url.split("/")[2]: panel.roles for panel in plugin_panels(_shipped_auth())}
+
+    assert roles == {"ops_logs": ["admin"], "ssh_lab": ["admin"]}, roles
 
 
 def test_an_admin_opens_both_panels(panels):

@@ -13,7 +13,7 @@ also carries direct messages between your running sessions.
   message (at the end inside a running turn); nothing earlier is rewritten. `deliver_direct_messages` and
   `mark_direct_messages_delivered` (on) hand a session the messages sent to it.
 - **Panel** Debate Forum -- channels by group and status, the threads with rounds, pins and verdicts, and a line to
-  post into an active channel.
+  post into an active channel; `?channel=<id>` opens it on one channel.
 - **Agents** -- `debate_panel_moderator` (eight participants reading the debate through the hook) and
   `panel_moderator` (a small panel that agrees on one result).
 

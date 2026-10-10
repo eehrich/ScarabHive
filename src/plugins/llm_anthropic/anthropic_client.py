@@ -260,9 +260,9 @@ class AnthropicAsyncClient(LLMClient):
         self.include_thinking = include_thinking
         self.thinking_budget = thinking_budget
         self.enable_prompt_caching = enable_prompt_caching
-        # Anthropic-Cache-Policy (geteilt mit dem OpenRouter-httpx-Pfad):
-        # steuert ob der wachsende Konversations-Tail zusaetzlich zu System/Tools
-        # als cache_control-Breakpoint markiert wird (Multi-Turn).
+        # Anthropic cache policy (shared with the OpenRouter httpx path):
+        # controls whether the growing conversation tail is marked as a
+        # cache_control breakpoint in addition to system/tools (multi-turn).
         self.prompt_cache_mode = prompt_cache_mode
         # Governs the thinking-block replay below. keep_all is what this
         # client has always done and what a tool round trip needs: the blocks
@@ -545,11 +545,10 @@ class AnthropicAsyncClient(LLMClient):
                         "content": msg.content or ""
                     })
         
-        # Cache-Breakpoint-Sentinels strippen (Sicherheitsnetz, auf dem
-        # KONVERTIERTEN Output — Session-Messages bleiben unangetastet):
-        # der native Anthropic-Pfad nutzt cache_control (nicht die OpenAI-
-        # Sentinel-Breakpoints); ein Sentinel-Marker darf das Modell nie
-        # erreichen (s. cache_key.py).
+        # Strip cache breakpoint sentinels (safety net, on the CONVERTED
+        # output -- session messages stay untouched): the native Anthropic
+        # path uses cache_control (not the OpenAI sentinel breakpoints); a
+        # sentinel marker must never reach the model (see cache_key.py).
         if isinstance(system_prompt, str) and CACHE_BP_SENTINEL in system_prompt:
             system_prompt = strip_cache_breakpoints(system_prompt)
         for cm in converted_messages:
@@ -560,24 +559,24 @@ class AnthropicAsyncClient(LLMClient):
                 for block in content:
                     if not isinstance(block, dict):
                         continue
-                    # text-Bloecke tragen "text", tool_result-Bloecke "content"
+                    # text blocks carry "text", tool_result blocks carry "content"
                     for key in ("text", "content"):
                         val = block.get(key)
                         if isinstance(val, str) and CACHE_BP_SENTINEL in val:
                             block[key] = strip_cache_breakpoints(val)
 
         # Prompt caching (geteilte Anthropic-Policy, s. cache_key.py):
-        # System-Prefix als cache_control-Breakpoint markieren; bei Multi-Turn
-        # zusaetzlich den wachsenden Konversations-Tail (frueher fehlte das im
-        # nativen Pfad — dadurch cachte provider=anthropic den Verlauf NICHT,
-        # or-claude-sonnet via OpenRouter aber schon → jetzt konsistent).
+        # Mark the system prefix as a cache_control breakpoint; on multi-turn
+        # also the growing conversation tail (this used to be missing in the
+        # native path -- so provider=anthropic did NOT cache the history,
+        # while or-claude-sonnet via OpenRouter did -> now consistent).
         if self.enable_prompt_caching and system_prompt:
             if isinstance(system_prompt, str):
                 system_prompt = [{"type": "text", "text": system_prompt}]
             mark_last_text_block(system_prompt)
-            # multi_turn ab Runde 1; auto/None nur bei echter Historie. System +
-            # Tool + Tail bleiben <= 4 Bloecke; der Cap am Assemblierungspunkt
-            # (chat / chat_tools_streaming) erzwingt das harte Limit ohnehin.
+            # multi_turn from round 1; auto/None only with real history. System +
+            # tool + tail stay <= 4 blocks; the cap at the assembly point
+            # (chat / chat_tools_streaming) enforces the hard limit anyway.
             if anthropic_cache_conversation(
                 self.prompt_cache_mode, messages_have_history(converted_messages)
             ):
@@ -635,7 +634,7 @@ class AnthropicAsyncClient(LLMClient):
                 "input_schema": input_schema
             })
         
-        # Prompt caching: letzte Tool-Definition markieren (geteilte Policy)
+        # Prompt caching: mark the last tool definition (shared policy)
         if self.enable_prompt_caching:
             mark_last_tool(anthropic_tools)
 
@@ -688,9 +687,9 @@ class AnthropicAsyncClient(LLMClient):
         converted_messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Defense-in-depth: max. 4 cache_control-Bloecke ueber System + Tools +
-        Messages (Anthropic-Prefix-Reihenfolge). No-op ohne Caching. Geteilte
-        Policy (cache_key.cap_cache_control)."""
+        """Defense in depth: at most 4 cache_control blocks across system + tools +
+        messages (Anthropic prefix order). No-op without caching. Shared
+        policy (cache_key.cap_cache_control)."""
         if not self.enable_prompt_caching:
             return
         cap_cache_control([

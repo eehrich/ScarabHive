@@ -1,17 +1,17 @@
-"""Die Gateway-Felder, die OpenRouter kann und wir bis 09/2026 nicht nutzten.
+"""The gateway fields OpenRouter offers and we did not use until 09/2026.
 
-Drei Dinge werden hier festgehalten:
+Three things are recorded here:
 
-* Der Opt-in-Header ``X-OpenRouter-Metadata``. Ohne ihn nennt keine Antwort
-  den Anbieter, der wirklich geliefert hat — auf der Responses-Route gibt es
-  gar kein anderes Feld dafuer.
-* ``session_id`` als Sticky-Routing-Schluessel. OpenRouters Prompt-Cache ist
-  backend-lokal; Aufrufe mit gleichem Praefix treffen ihn nur, solange sie
-  beim selben Backend landen (gemessen 01.09.2026: 6/6 Aufrufe auf einem
-  Anbieter mit session_id, 4 verschiedene ohne).
-* Die Durchreichen-Felder ``plugins``, ``prompt_cache_options`` und
-  ``safety_identifier`` — alle unbelegt per Default, weil jedes davon
-  aendert, was das Modell sieht oder kostet.
+* The opt-in header ``X-OpenRouter-Metadata``. Without it no response names
+  the provider that actually delivered — on the Responses route there is no
+  other field for it at all.
+* ``session_id`` as a sticky-routing key. OpenRouter's prompt cache is
+  backend-local; calls with the same prefix only hit it as long as they land
+  on the same backend (measured 01.09.2026: 6/6 calls on one provider with
+  session_id, 4 different ones without).
+* The pass-through fields ``plugins``, ``prompt_cache_options`` and
+  ``safety_identifier`` — all unset by default, because each of them changes
+  what the model sees or what it costs.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesCli
 OR_URL = "https://openrouter.ai/api/v1"
 OPENAI_URL = "https://api.openai.com/v1"
 
-#: Wie OpenRouter es wirklich schickt (Live-Antwort 01.09.2026, gekuerzt).
+#: As OpenRouter really sends it (live response 01.09.2026, shortened).
 META = {
     "requested": "deepseek/deepseek-v4-flash-latest", "strategy": "latest",
     "region": "FRA", "attempt": 1, "is_byok": False,
@@ -65,18 +65,17 @@ class TestTheRoutingReader:
         assert info["region"] == "FRA"
 
     def test_the_chat_routes_plain_provider_field_is_enough(self):
-        """Die Chat-Antwort traegt `provider` auch ohne Metadaten-Block."""
+        """The chat response carries `provider` even without a metadata block."""
         assert openrouter_routing_info({"provider": "Google"}) == {"selected": "Google"}
 
     def test_an_empty_metadata_block_reports_nothing(self):
-        """Ein Block, aus dem nichts Brauchbares faellt, darf kein leeres
-        Dict melden — sonst sieht der Hook immer nach Antwort aus."""
+        """A block that yields nothing usable must not report an empty
+        dict — otherwise the hook always looks like it got an answer."""
         assert openrouter_routing_info({"openrouter_metadata": {}}) is None
 
     def test_nothing_reported_when_nothing_is_there(self):
-        """Wichtig: kein leeres Dict, sondern None — ein Feld, das immer
-        etwas enthaelt, ist von einem funktionierenden nicht zu
-        unterscheiden."""
+        """Important: no empty dict but None — a field that always contains
+        something cannot be told apart from a working one."""
         assert openrouter_routing_info({"id": "x", "output": []}) is None
 
     def test_metadata_without_a_selection_falls_back(self):
@@ -88,8 +87,8 @@ class TestTheRoutingReader:
 
 class TestConfiguredButNotSent:
     def test_plugins_at_a_foreign_endpoint_are_reported(self, caplog):
-        """Konfiguriert und trotzdem verworfen ist die stille Drift, die
-        dieses Feld sichtbar machen soll."""
+        """Configured and yet dropped is the silent drift this field is
+        meant to make visible."""
         import logging as _logging
         with caplog.at_level(_logging.WARNING):
             _httpx(base_url=OPENAI_URL, plugins=[{"id": "moderation"}])
@@ -112,7 +111,7 @@ class TestTheOptInHeader:
         assert _httpx()._headers["X-OpenRouter-Metadata"] == "enabled"
 
     def test_httpx_does_not_ask_openai(self):
-        """Ein fremder Endpunkt bekommt keinen Gateway-Header."""
+        """A foreign endpoint gets no gateway header."""
         assert "X-OpenRouter-Metadata" not in _httpx(base_url=OPENAI_URL)._headers
 
     def test_responses_asks_openrouter_for_metadata(self):
@@ -135,8 +134,8 @@ class TestStickyRoutingOnTheChatRoute:
         assert "session_id" not in payload and "prompt_cache_key" not in payload
 
     def test_a_foreign_endpoint_gets_no_session_id(self):
-        """`session_id` ist Gateway-Vokabular; OpenAI lehnt unbekannte
-        Parameter mit 400 ab."""
+        """`session_id` is gateway vocabulary; OpenAI rejects unknown
+        parameters with a 400."""
         payload: dict = {}
         _httpx(base_url=OPENAI_URL)._apply_gateway_extras(payload, "abc123")
         assert payload["prompt_cache_key"] == "abc123"
@@ -152,8 +151,8 @@ class TestStickyRoutingOnTheChatRoute:
         assert "plugins" not in elsewhere
 
     def test_cache_options_travel_to_both(self):
-        """`prompt_cache_options` ist ein OpenAI-Feld (GPT-5.6+), kein
-        Gateway-Feld — es darf auch direkt zu OpenAI."""
+        """`prompt_cache_options` is an OpenAI field (GPT-5.6+), not a
+        gateway field — it may also go directly to OpenAI."""
         for url in (OR_URL, OPENAI_URL):
             payload: dict = {}
             _httpx(base_url=url,
@@ -193,7 +192,7 @@ class TestTheResponsesPayload:
     def test_unset_means_absent(self):
         payload = self._payload()
         for key in ("plugins", "prompt_cache_options", "safety_identifier"):
-            assert key not in payload, f"{key} darf ohne Konfiguration nicht mitreisen"
+            assert key not in payload, f"{key} must not travel along without configuration"
 
 
 class _Transport:
@@ -252,8 +251,8 @@ class TestTheHookSeesTheRouting:
 
     @pytest.mark.asyncio
     async def test_the_stream_reports_it_from_the_last_chunk(self):
-        """Der Gateway haengt die Metadaten an den LETZTEN Chunk — wer nur den
-        ersten liest, sieht nie etwas."""
+        """The gateway attaches the metadata to the LAST chunk — whoever reads
+        only the first never sees anything."""
         import json as _json
 
         lines = [

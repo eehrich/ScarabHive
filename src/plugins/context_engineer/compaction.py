@@ -406,8 +406,8 @@ TOOL_RESULT_REF_TYPE = "tool_result_ref"
 TOOL_RESULTS_SECTION = "## Tool Results"
 
 #: Marker of the single breadcrumb Pre-Layer P leaves after removing messages.
-#: Without it a bulk removal is invisible to the agent, which is the "kein
-#: stiller Drift" invariant applied to the context: a self-healing step nobody
+#: Without it a bulk removal is invisible to the agent, which is the "no
+#: silent drift" invariant applied to the context: a self-healing step nobody
 #: can see is indistinguishable from one that never happened.
 PRUNE_NOTICE_TYPE = "pruned_notice"
 
@@ -3056,21 +3056,20 @@ class LayeredCompactionStrategy:
         This is added to the system prompt so the LLM knows how to access
         stored/archived information.
 
-        BYTE-STABIL HALTEN. Der Block wird direkt hinter dem System-Prompt
-        eingefuegt (hooks.py), steht also VOR der gesamten Konversation:
-        jede Aenderung an ihm entwertet den Provider-Prompt-Cache fuer ALLES
-        dahinter. Zaehler wie "There are 47 stored tool results" aendern sich
-        bei jedem ausgelagerten Tool-Ergebnis -- gemessen an einem
-        Multi-Turn-Lauf: Praefix-Bruch bei Message 50 von 197, Cache-Quote
-        8-13 % statt 50-65 %. Die Zahlen sind fuer das Modell auch nicht
-        handlungsleitend: es reagiert auf die Referenz IM Text, nicht auf
-        eine Gesamtzahl. Also nur konstante Beschreibungen hier, nichts,
-        was sich pro Turn bewegt.
+        KEEP THIS BYTE-STABLE. The block is inserted directly after the
+        system prompt (hooks.py), so it stands BEFORE the whole conversation:
+        any change to it invalidates the provider prompt cache for EVERYTHING
+        behind it. Counters like "There are 47 stored tool results" change
+        with every offloaded tool result -- measured on a multi-turn run:
+        prefix break at message 50 of 197, cache rate 8-13 % instead of
+        50-65 %. The numbers do not guide the model's actions either: it
+        reacts to the reference IN the text, not to a total. So only constant
+        descriptions here, nothing that moves per turn.
 
-        Die Variablen-Sektion war genau so ein Verstoss: sie listete JEDE
-        angelegte Variable mit Namen und Zusammenfassung, aenderte sich also
-        bei jeder neuen -- und entwertete den Cache fuer die ganze
-        Konversation dahinter. Sie ist mit der $VAR-Ersetzung weg.
+        The variables section was exactly such a violation: it listed EVERY
+        variable created, with name and summary, so it changed with each new
+        one -- and invalidated the cache for the whole conversation behind
+        it. It is gone with the $VAR substitution.
 
         Returns:
             System prompt section

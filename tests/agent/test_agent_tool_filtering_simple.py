@@ -21,7 +21,7 @@ async def test_filter_no_patterns_all_available(monkeypatch):
     registry = ToolServerRegistry()
     agent = Agent("test_agent", system_config, server_config, registry)
 
-    # Neue Policy: Keine tools.allowed -> keine Tools erlaubt
+    # New policy: no tools.allowed -> no tools allowed
     # list_usable_tools now returns (tools, blocked_patterns)
     filtered, _, blocked_patterns = await agent.list_usable_tools()  # type: ignore[attr-defined]
     assert filtered == []
@@ -29,24 +29,24 @@ async def test_filter_no_patterns_all_available(monkeypatch):
     assert blocked_patterns is None or blocked_patterns == []
 
 def test_filter_patterns():
-    """Discovery-Stufen-Semantik des geteilten Matchers (server_matches_patterns)
-    — ehemals über das entfernte Agent._filter_usable_tools getestet (G5)."""
+    """Discovery-level semantics of the shared matcher (server_matches_patterns)
+    -- formerly tested via the removed Agent._filter_usable_tools (G5)."""
     from agent_system.servers.agent.tool_schema_builder import server_matches_patterns
 
     patterns = [
-        "web_scraper/*",          # ganze Plugin Tools
+        "web_scraper/*",          # whole plugin tools
         "duckduckgo_search",      # plugin Short-Hand
         "weather.get_forecast",   # einzelnes externes Tool
-        "datetime.*"              # alle datetime.*
+        "datetime.*"              # all of datetime.*
     ]
 
     tools = ["web_scraper", "web_scraper.scrape", "duckduckgo_search", "weather.get_forecast", "weather.get_temperature", "datetime.get_time", "datetime.other", "other"]
     effective = [t for t in tools if server_matches_patterns(t, patterns)]
     assert "duckduckgo_search" in effective
     assert "web_scraper" in effective
-    # STRIKT: dotted External-Namen brauchen die Dot-Form ("web_scraper.*");
-    # "server/*" deckt nur den Server selbst (Pass-Through), nicht dessen
-    # dotted Externals — Discovery-Gate-Semantik (siehe server_matches_patterns).
+    # STRICT: dotted external names need the dot form ("web_scraper.*");
+    # "server/*" covers only the server itself (pass-through), not its
+    # dotted externals -- discovery-gate semantics (see server_matches_patterns).
     assert "web_scraper.scrape" not in effective
     assert "weather.get_forecast" in effective
     assert "weather.get_temperature" not in effective

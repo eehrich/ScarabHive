@@ -162,8 +162,8 @@ def _built(**kw):
 
 
 class TestThinkingRequestShape:
-    """Welche Thinking-Form das Modell akzeptiert, sagt der Eintrag — nicht
-    sein Name. Die falsche Form ist ein HTTP 400, kein stiller Verlust."""
+    """Which thinking shape the model accepts is told by its entry -- not
+    by its name. The wrong shape is an HTTP 400, not a silent loss."""
 
     def test_default_is_the_budget_form(self):
         assert _built(thinking_budget=4096)._build_thinking_param() == {
@@ -174,14 +174,14 @@ class TestThinkingRequestShape:
             "type": "enabled", "budget_tokens": 8192}
 
     def test_declared_adaptive_sends_no_budget(self):
-        """budget_tokens waere hier die 400 — das Feld darf nicht mitreisen,
-        auch wenn der Eintrag ein thinking_budget traegt."""
+        """budget_tokens would be the 400 here -- the field must not travel along,
+        even if the entry carries a thinking_budget."""
         assert _built(thinking_request_shape="adaptive",
                       thinking_budget=16384)._build_thinking_param() == {"type": "adaptive"}
 
     def test_the_name_no_longer_decides(self):
-        """Gegenprobe zur geloeschten Namens-Tabelle: derselbe Name, beide
-        Formen — allein der deklarierte Schluessel entscheidet."""
+        """Counter-check to the deleted name table: the same name, both
+        shapes -- the declared key alone decides."""
         assert _built(model="claude-opus-5")._build_thinking_param()["type"] == "enabled"
         assert _built(model="claude-haiku-4-5-20251001",
                       thinking_request_shape="adaptive")._build_thinking_param() == {
@@ -193,8 +193,8 @@ class TestThinkingRequestShape:
 
 
 class TestReasoningDetailsModeGovernsTheThinkingBlocks:
-    """Dieser Client traegt sein Reasoning in ``thinking_blocks`` statt in
-    ``reasoning_details`` — der deklarierte Modus regiert trotzdem ihn."""
+    """This client carries its reasoning in ``thinking_blocks`` instead of
+    ``reasoning_details`` -- the declared mode still governs it."""
 
     @staticmethod
     def _history():
@@ -222,7 +222,7 @@ class TestReasoningDetailsModeGovernsTheThinkingBlocks:
         assert self._replayed("strip") == []
 
     def test_the_text_of_a_stripped_turn_survives(self):
-        """Nur die Bloecke fallen weg, nicht die Antwort des Modells."""
+        """Only the blocks drop out, not the model's answer."""
         client = _built(reasoning_details_mode="strip")
         _system, converted = client._convert_messages(self._history())
         assert [m["content"] for m in converted if m["role"] == "assistant"] == ["erst", "dann"]

@@ -1,5 +1,5 @@
 """What the platform reports through its webhook, and where it goes: the
-inbox of the session that works on it (docs/konzept.md §7).
+inbox of the session that works on it (docs/concept.md §7).
 
 The store is a small SQLite file shared by every process -- the API that
 takes the webhook, and the agent-cli processes that sessions are woken in.

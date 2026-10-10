@@ -36,7 +36,7 @@ plugins:
           The wait_for_completion operation will:
           - Poll the job status automatically every 2 seconds
           - Provide progress updates
-          - Timeout after 5 minutes (300s) by default
+          - Wait up to the server's configured timeout (timeout_seconds)
           - Return when job is completed or failed
           
           NEVER give up on a running job - wait_for_completion handles everything.

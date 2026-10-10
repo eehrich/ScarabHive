@@ -186,6 +186,7 @@ def results(tmp_path_factory):
 EXPECTED = [
     'opened, the panel counts the channels, lists the groups newest first and closed, and shows no channel',
     'a group opens and closes, stays so across a tick and a reload, and lists its channels oldest first',
+    'a link to a channel (?channel=) shows it and opens its group; an unknown one says so, a malformed one is ignored',
     'the channel list keeps the width it was resized to across a reload, and a narrow panel still stacks it full width',
     'a channel shows its thread: a round opens only where a later one begins, participants, pins, Markdown, code and the line to post',
     'a JSON block switches to a readable tree, other code does not, and an unchanged thread is not drawn again',

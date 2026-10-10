@@ -43,7 +43,7 @@ def _literal_strings(annotation: Any) -> frozenset:
 
 
 def _coerce_cli_value(value: str, keep: frozenset = frozenset()) -> Any:
-    """Auto-type a CLI KEY=VALUE value: int/float/bool/none, sonst String.
+    """Auto-type a CLI KEY=VALUE value: int/float/bool/none, otherwise string.
 
     ``keep`` holds spellings the target field accepts as a literal STRING;
     those win over the generic coercion. Without it ``thinking_level=none``
@@ -73,20 +73,20 @@ def _coerce_cli_value(value: str, keep: frozenset = frozenset()) -> Any:
 def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, Any]]:
     """Parse ``--llm-params KEY=VALUE ...`` into a flat llm_params dict.
 
-    Werte werden auto-getypt (``max_tokens=1000`` → int, ``stream=false`` →
-    bool, ``thinking_level=max`` → str) — die LLM-Params-Validierung
-    (LLMModelConfig-Re-Validierung in ``resolve_llm_config_for_agent``)
-    braucht echte Typen, keine Strings. Leeres Ergebnis → ``None``.
+    Values are auto-typed (``max_tokens=1000`` → int, ``stream=false`` →
+    bool, ``thinking_level=max`` → str) — the LLM-params validation
+    (LLMModelConfig re-validation in ``resolve_llm_config_for_agent``)
+    needs real types, not strings. Empty result → ``None``.
 
-    Zwei harte Fehler (``ValueError``) statt stiller Drift (Review-Befunde):
-    - Eintrag ohne ``=``: das ist fast immer der vom greedy ``nargs='+'``
-      verschluckte TASK-String — still überspringen hieße, der Agent läuft
-      lautlos mit dem Default-Task.
-    - Unbekannter Key (kein ``LLMModelConfig``-Feld): ``resolve_llm_params``
-      würde ein Dict aus lauter Fremd-Keys als profil-gekeyte Form deuten
-      und den Override LAUTLOS zu ``None`` mergen — ein Tippfehler
-      (``temperatur=``) verschwände wirkungslos, während die CLI ihn als
-      angewandt anzeigt.
+    Two hard errors (``ValueError``) instead of silent drift (review findings):
+    - Entry without ``=``: this is almost always the TASK string swallowed
+      by the greedy ``nargs='+'`` — skipping it silently would make the agent
+      run quietly with the default task.
+    - Unknown key (not an ``LLMModelConfig`` field): ``resolve_llm_params``
+      would read a dict made up entirely of foreign keys as the profile-keyed
+      form and merge the override SILENTLY to ``None`` — a typo
+      (``temperatur=``) would vanish without effect while the CLI displays it
+      as applied.
     """
     if not raw_items:
         return None
@@ -97,8 +97,8 @@ def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, 
         if "=" not in item:
             raise ValueError(
                 f"invalid --llm-params entry (expected KEY=VALUE): {item!r}. "
-                f"Steht --llm-params VOR dem Task? Task zuerst angeben oder "
-                f"--llm-params ans Ende stellen."
+                f"Is --llm-params placed BEFORE the task? Give the task first or "
+                f"put --llm-params at the end."
             )
         key, _, value = item.partition("=")
         key = key.strip()

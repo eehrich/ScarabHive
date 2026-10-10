@@ -1349,12 +1349,12 @@ class TestCreateParamValidation:
 
 
 class TestAllowAdvancedModelGate:
-    """Kosten-Riegel allow_advanced_model: LLM-Caller setzen
-    use_advanced_model gern aus Eigeninitiative (Prod-Befund 2026-07-20:
-    der v6-Coordinator spawnte JEDES Panel mit use_advanced_model=true,
-    ohne dass sein Prompt es verlangt - kompletter Moderator-Run auf der
-    teuren advanced-Kette). Die Instanz-Config muss das hart unterdruecken
-    koennen; Default True = Bestandsverhalten."""
+    """Cost gate allow_advanced_model: LLM callers like to set
+    use_advanced_model on their own initiative (production finding 2026-07-20:
+    a coordinator spawned EVERY panel with use_advanced_model=true without its
+    prompt asking for it -- a complete run on the expensive advanced chain).
+    The instance config must be able to suppress that hard; default True =
+    existing behavior."""
 
     def _gate(self, allow, params):
         from types import SimpleNamespace
@@ -1372,7 +1372,7 @@ class TestAllowAdvancedModelGate:
         assert self._gate(False, {}) is False
 
     def test_server_default_is_true(self, server):
-        # Bestehende Instanzen ohne Config-Eintrag verhalten sich unveraendert.
+        # Existing instances without a config entry behave unchanged.
         assert server.allow_advanced_model is True
 
 

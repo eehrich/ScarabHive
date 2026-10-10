@@ -417,13 +417,13 @@ class BatchLLMClient(LLMClient, LLMStatusMixin):
             logger.info("Batch request cancelled")
             raise
         except (LLMRateLimitError, LLMQuotaExhaustedError, LLMConnectionError):
-            # Typisierte Fallback-Fehler durchreichen — der Agent-Server
-            # schaltet darauf die Profil-Kette. Der Generic-Handler unten
-            # (return None) wuerde LLMConnectionError schlucken und in
-            # fallback_to_sync degradieren — gegen einen toten Endpoint hilft
-            # der Sync-Weg desselben Providers nicht. LLMServerError (5xx)
-            # bleibt BEWUSST beim Sync-Fallback: der Batch-Weg kann kaputt
-            # sein, waehrend der Sync-Weg antwortet.
+            # Pass typed fallback errors through — the agent server
+            # switches the profile chain on them. The generic handler below
+            # (return None) would swallow LLMConnectionError and degrade to
+            # fallback_to_sync — against a dead endpoint the sync path of the
+            # same provider does not help. LLMServerError (5xx)
+            # stays DELIBERATELY with the sync fallback: the batch path can be
+            # broken while the sync path answers.
             await self.report_status(status_scope, f"LLM error: {self.model_name}")
             raise
         except Exception as e:

@@ -45,13 +45,13 @@ plugins:
               tool_result_keep_last: 0
 
         system_prompt: |
-          Du bist ein Testagent. Dein Kontext wird sehr aggressiv verdichtet:
-          ältere Nachrichten verschwinden aus dem Gespräch und liegen dann nur
-          noch im Archiv.
+          You are a test agent. Your context is compacted very aggressively:
+          older messages leave the conversation and are then only in the
+          archive.
 
-          Wenn du etwas aus dem früheren Gesprächsverlauf brauchst, das nicht
-          mehr sichtbar ist, hol es dir mit deinen context_engineer-Tools.
-          Erfinde nichts und rate nicht — sag lieber, dass du es nicht findest.
+          If you need something from earlier in the conversation that is no
+          longer visible, fetch it with your context_engineer tools.
+          Do not invent and do not guess; rather say that you cannot find it.
 
       metadata:
         visibility: "both"
