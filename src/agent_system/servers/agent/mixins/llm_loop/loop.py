@@ -9,6 +9,7 @@ answer -- and the end of the step. A phase that ends the step early says so on t
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -192,8 +193,9 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
         # that no step follows it (see final_call below).
         for step in range(run.max_steps + 1):
             st = StepState(step=step, final_call=step == run.max_steps)
-            async for event in self._run_step(run, st):
-                yield event
+            async with contextlib.aclosing(self._run_step(run, st)) as events:
+                async for event in events:
+                    yield event
             if st.end is StepEnd.RUN:
                 return
 
@@ -202,8 +204,9 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
         # A step's cancel is reported at the top of the next iteration; there
         # is none after the final call.
         if self._is_cancelled(request_id):
-            async for event in self._cancelled_events(run, run.max_steps):
-                yield event
+            async with contextlib.aclosing(self._cancelled_events(run, run.max_steps)) as events:
+                async for event in events:
+                    yield event
             return
         results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
         yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
@@ -212,37 +215,45 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
         """One step, phase by phase. A phase that ends the step sets ``st.end`` (st.ended()); the
         phases after it do not run (StepEnd.NEXT_STEP: on to the next step; StepEnd.RUN: the run
         is over)."""
-        async for event in self._begin_step(run, st):  # step.py
-            yield event
+        async with contextlib.aclosing(self._begin_step(run, st)) as events:  # step.py
+            async for event in events:
+                yield event
         if st.ended():
             return
         await self._choose_step_llm(run, st)  # step_llm.py
-        async for event in self._run_pre_llm_hooks(run, st):  # step.py
-            yield event
+        async with contextlib.aclosing(self._run_pre_llm_hooks(run, st)) as events:  # step.py
+            async for event in events:
+                yield event
         await self._settle_step_llm(run, st)  # step_llm.py
-        async for event in self._call_step_llm(run, st):  # fallback.py
-            yield event
+        async with contextlib.aclosing(self._call_step_llm(run, st)) as events:  # fallback.py
+            async for event in events:
+                yield event
         if st.ended():
             return
 
         await self._record_answer(run, st)  # step.py
-        async for event in self._run_post_llm_hooks(run, st):
-            yield event
-        async for event in self._show_answer(run, st):
-            yield event
+        async with contextlib.aclosing(self._run_post_llm_hooks(run, st)) as events:
+            async for event in events:
+                yield event
+        async with contextlib.aclosing(self._show_answer(run, st)) as events:
+            async for event in events:
+                yield event
         self._check_truncation(run, st)
-        async for event in self._handle_empty_answer(run, st):
-            yield event
+        async with contextlib.aclosing(self._handle_empty_answer(run, st)) as events:
+            async for event in events:
+                yield event
         if st.ended():
             return
 
         # Check if we have tool calls to execute
         if st.tool_calls:
-            async for event in self._tool_step(run, st):  # tool_step.py
-                yield event
+            async with contextlib.aclosing(self._tool_step(run, st)) as events:  # tool_step.py
+                async for event in events:
+                    yield event
             return
-        async for event in self._text_step(run, st):  # answer.py
-            yield event
+        async with contextlib.aclosing(self._text_step(run, st)) as events:  # answer.py
+            async for event in events:
+                yield event
         if st.ended():
             return
         await self._end_step(run, st)  # step.py

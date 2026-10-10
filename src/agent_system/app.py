@@ -12,7 +12,9 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
+import sys
 import time
+import types
 from datetime import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -52,12 +54,41 @@ def __getattr__(name: str) -> Any:
     """The API's shared services under the names they had here (app_state.LEGACY_APP_NAMES).
 
     For code outside this repository that still reads them from this module;
-    everything here reads ``app_state``.
+    everything here reads ``app_state``. Read-only: see _AppModule.
     """
     legacy = app_state.LEGACY_APP_NAMES.get(name)
     if legacy is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     return getattr(app_state, legacy)
+
+
+class _AppModule(types.ModuleType):
+    """This module, refusing to have the old names of the shared services set or deleted.
+
+    A write could not reach anyone: every reader reads ``app_state``, so
+    ``monkeypatch.setattr(app, "_session_service", x)`` would patch nothing, and
+    the attribute it leaves behind would shadow ``__getattr__`` for the rest of
+    the process. It fails loudly instead, naming where the service lives now.
+    """
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self._refuse(name)
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        self._refuse(name)
+        super().__delattr__(name)
+
+    @staticmethod
+    def _refuse(name: str) -> None:
+        legacy = app_state.LEGACY_APP_NAMES.get(name)
+        if legacy is not None:
+            raise AttributeError(
+                f"agent_system.app.{name} is read-only: the service lives in "
+                f"agent_system.app_state.{legacy} -- set it there")
+
+
+sys.modules[__name__].__class__ = _AppModule
 
 
 # Security: Track request_id -> user_id mapping for status stream authorization.
@@ -649,7 +680,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # WARNING dropped it before anyone saw it.
                 logger.warning("Default admin %r created; its password is shown on the console, once",
                                config.auth.default_admin_username)
-                import sys
                 print(f"\nDefault admin created -- save these credentials, the log file does not hold them:\n"
                       f"  Username: {config.auth.default_admin_username}\n"
                       f"  Password: {admin_password}\n", file=sys.stderr, flush=True)

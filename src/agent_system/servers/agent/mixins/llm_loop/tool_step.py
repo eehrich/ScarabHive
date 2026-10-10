@@ -9,6 +9,7 @@ with an error, since no step follows to read their results.
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 from datetime import datetime, timezone
@@ -70,8 +71,9 @@ class ToolStepMixin:
         run.consecutive_no_tool_calls = 0
 
         # ===== TOOL CALL LOOP DETECTION =====
-        async for event in self._police_tool_loop(run, st):
-            yield event
+        async with contextlib.aclosing(self._police_tool_loop(run, st)) as events:
+            async for event in events:
+                yield event
         if st.ended():
             return
 
@@ -83,8 +85,9 @@ class ToolStepMixin:
         # Update tracked messages
         self._set_live_messages(run.session_id, run.messages.copy())
 
-        async for event in self._run_tool_calls(run, st):
-            yield event
+        async with contextlib.aclosing(self._run_tool_calls(run, st)) as events:
+            async for event in events:
+                yield event
 
         # Add tool results to the results dictionary
         run.results["calls"].extend(st.tool_results)
@@ -109,8 +112,9 @@ class ToolStepMixin:
             yield status_event
 
         if st.final_call:
-            async for event in self._end_after_final_tools(run, st):
-                yield event
+            async with contextlib.aclosing(self._end_after_final_tools(run, st)) as events:
+                async for event in events:
+                    yield event
             return
 
         # Continue to next iteration to let LLM respond to tool results
@@ -204,8 +208,9 @@ class ToolStepMixin:
                             # What is left is a text answer on the final
                             # call: delivered like the no-tool answer below.
                             # No step is left to ask for a correction in.
-                            async for event in self._deliver_text_answer(run, st, log_unavailable=False):
-                                yield event
+                            async with contextlib.aclosing(self._deliver_text_answer(run, st, log_unavailable=False)) as events:
+                                async for event in events:
+                                    yield event
                             return
                         st.end = StepEnd.NEXT_STEP
 
@@ -223,34 +228,35 @@ class ToolStepMixin:
         # DO NOT set self._tool_execution_manager._status_forwarder - that causes race conditions!
 
         context = run.context
-        async for item in self._tool_execution_manager.execute_tools_streaming(
-            tool_calls=st.tool_calls,
-            tool_name_mapping=run.tool_name_mapping,
-            available_tools=context.available_tools,
-            step=st.step,
-            request_id=run.request_id,
-            session_id=run.session_id,
-            user_id=user_id,
-            status_forwarder=context.status_forwarder,
-            assistant_message=st.assistant_msg,
-            # What this run was switched to, for the sub-agents its
-            # tools start (agent_config.inherit_parent_llm).
-            llm_profile=self._profile_to_hand_down(run.llm_override),
-            intercept=(functools.partial(context.deferred_tools.intercept,
-                                         tools_schema=run.tools_schema)
-                       if context.deferred_tools is not None else None),
-        ):
-            if item.get("type") == "status":
-                # Yield status events in real-time during tool execution
-                yield item["event"]
-            elif item.get("type") == "tool_events":
-                # Yield tool execution events
-                for event in item["events"]:
-                    yield event
-            elif item.get("type") == "complete":
-                # Store final results
-                st.tool_messages = item["messages"]
-                st.tool_results = item["results"]
+        async with contextlib.aclosing(self._tool_execution_manager.execute_tools_streaming(
+                tool_calls=st.tool_calls,
+                tool_name_mapping=run.tool_name_mapping,
+                available_tools=context.available_tools,
+                step=st.step,
+                request_id=run.request_id,
+                session_id=run.session_id,
+                user_id=user_id,
+                status_forwarder=context.status_forwarder,
+                assistant_message=st.assistant_msg,
+                # What this run was switched to, for the sub-agents its
+                # tools start (agent_config.inherit_parent_llm).
+                llm_profile=self._profile_to_hand_down(run.llm_override),
+                intercept=(functools.partial(context.deferred_tools.intercept,
+                                             tools_schema=run.tools_schema)
+                           if context.deferred_tools is not None else None),
+            )) as items:
+            async for item in items:
+                if item.get("type") == "status":
+                    # Yield status events in real-time during tool execution
+                    yield item["event"]
+                elif item.get("type") == "tool_events":
+                    # Yield tool execution events
+                    for event in item["events"]:
+                        yield event
+                elif item.get("type") == "complete":
+                    # Store final results
+                    st.tool_messages = item["messages"]
+                    st.tool_results = item["results"]
 
     async def _count_all_error_step(self: Agent, run: LoopState, st: StepState) -> None:
         """The stuck signal of failing tools: N steps in a row whose calls all failed open an
@@ -339,8 +345,9 @@ class ToolStepMixin:
         # A step's cancel is reported by the check at the top of the
         # next iteration; after the final call there is none.
         if self._is_cancelled(run.request_id):
-            async for event in self._cancelled_events(run, st.step):
-                yield event
+            async with contextlib.aclosing(self._cancelled_events(run, st.step)) as events:
+                async for event in events:
+                    yield event
             st.end = StepEnd.RUN
             return
         # Tools on the final call run once: an agent that delivers

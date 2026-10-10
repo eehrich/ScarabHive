@@ -12,6 +12,7 @@ place the rules of docs/_arch_agent_architecture.md ("What Triggers a Block") li
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import errno
 import functools
@@ -86,15 +87,17 @@ class FallbackMixin:
         """
         # LLM call with streaming support and fallback handling (st.llm_out starts as None)
         while True:  # Retry loop for fallbacks (rate limits + upstream errors)
-            async for event in self._prepare_llm_call(run, st):
-                yield event
+            async with contextlib.aclosing(self._prepare_llm_call(run, st)) as events:
+                async for event in events:
+                    yield event
             if st.ended():
                 return
             st.call_started = asyncio.get_event_loop().time()
             st.health_asked_at = model_health.now()
             try:
-                async for event in self._attempt_llm_call(run, st):
-                    yield event
+                async with contextlib.aclosing(self._attempt_llm_call(run, st)) as events:
+                    async for event in events:
+                        yield event
 
                 # Check for upstream error in response body BEFORE yielding to client.
                 # Upstream errors (e.g. Qwen/Alibaba content filter) arrive as HTTP 200
@@ -103,8 +106,9 @@ class FallbackMixin:
                 # retry with a fallback LLM without leaking the error event to the client.
                 _assistant_check: Dict[str, Any] = st.llm_out.get("assistant", {}) if st.llm_out else {}
                 if "error" in _assistant_check:
-                    async for event in self._on_upstream_error(run, st, _assistant_check["error"]):
-                        yield event
+                    async with contextlib.aclosing(self._on_upstream_error(run, st, _assistant_check["error"])) as events:
+                        async for event in events:
+                            yield event
                     if st.ended():
                         return
                     continue
@@ -139,8 +143,9 @@ class FallbackMixin:
 
             except asyncio.CancelledError:
                 # Streaming was cancelled - send proper status events and cancelled event
-                async for event in self._cancelled_events(run, st.step, during_llm_call=True):
-                    yield event
+                async with contextlib.aclosing(self._cancelled_events(run, st.step, during_llm_call=True)) as events:
+                    async for event in events:
+                        yield event
                 st.end = StepEnd.RUN
                 return
 
@@ -149,13 +154,14 @@ class FallbackMixin:
                 # This is different from user cancellation - report as timeout error
                 timeout_msg = str(e) if str(e) else "LLM request timed out"
                 logger.error(f"Request {run.request_id} timed out during LLM call at step {st.step + 1}: {timeout_msg}")
-                async for event in self._stop_events(
-                        run, st.step, "timeout",
-                        worker_line=f"timeout at step {st.step + 1}: {timeout_msg}",
-                        coordinator_line=f"timeout at step {st.step + 1}",
-                        last_event={"type": "error", "request_id": run.request_id, "step": st.step + 1,
-                                    "message": timeout_msg, "error_type": "timeout"}):
-                    yield event
+                async with contextlib.aclosing(self._stop_events(
+                            run, st.step, "timeout",
+                            worker_line=f"timeout at step {st.step + 1}: {timeout_msg}",
+                            coordinator_line=f"timeout at step {st.step + 1}",
+                            last_event={"type": "error", "request_id": run.request_id, "step": st.step + 1,
+                                        "message": timeout_msg, "error_type": "timeout"})) as events:
+                    async for event in events:
+                        yield event
                 st.end = StepEnd.RUN
                 return
 
@@ -221,47 +227,48 @@ class FallbackMixin:
         thinking_complete, which is kept back (``st.pending_thinking_complete``) until it is
         settled that the answer is no error."""
         st.pending_thinking_complete = None
-        async for event in self._call_llm_with_streaming(
-            llm=st.current_llm,
-            messages=run.messages,
-            tools_schema=run.tools_schema,
-            cancellation_token=run.main_token,
-            step=st.step,
-            yield_pending_status_fn=run.pending_status_events,
-            status_scope=run.status_worker,
-            watch_reasoning=st.current_llm is not st.reasoning_loop_llm,
-            on_reasoning_progress=(functools.partial(self._reasoning_progress, run, st)
-                                   if self._hook_manager.wants_llm_progress()
-                                   else None),
-            response_format=st.wire_format,
-        ):
-            event_type = event.get("type")
+        async with contextlib.aclosing(self._call_llm_with_streaming(
+                llm=st.current_llm,
+                messages=run.messages,
+                tools_schema=run.tools_schema,
+                cancellation_token=run.main_token,
+                step=st.step,
+                yield_pending_status_fn=run.pending_status_events,
+                status_scope=run.status_worker,
+                watch_reasoning=st.current_llm is not st.reasoning_loop_llm,
+                on_reasoning_progress=(functools.partial(self._reasoning_progress, run, st)
+                                       if self._hook_manager.wants_llm_progress()
+                                       else None),
+                response_format=st.wire_format,
+            )) as events:
+            async for event in events:
+                event_type = event.get("type")
 
-            if event_type in ("reasoning_delta", "reasoning_reset"):
-                # Yield Gemini reasoning/thinking tokens to WebUI; a
-                # reset empties the step's thinking after a stream restart.
-                yield event
-            elif event_type == "thinking_delta":
-                # Yield real-time token deltas to WebUI
-                yield event
-            elif event_type in ("status", "sub_run"):
-                # What the forwarder collected meanwhile: status lines, and
-                # the events of sub-agents working while this call waits.
-                yield event
-            elif event_type == "thinking_complete":
-                # A copy: the event goes on to every reader of the run, and the
-                # message kept in the session must not change with what one of them does
-                llm_out: Dict[str, Any] = {"assistant": copy.deepcopy(event["assistant"])}
-                # Preserve usage data if present in event
-                if "usage" in event:
-                    llm_out["usage"] = event["usage"]
-                # ...and finish_reason, which the truncation guard
-                # below reads off llm_out.
-                if event.get("finish_reason"):
-                    llm_out["finish_reason"] = event["finish_reason"]
-                st.llm_out = llm_out
-                # Store event — DON'T yield yet, check for upstream errors first
-                st.pending_thinking_complete = event
+                if event_type in ("reasoning_delta", "reasoning_reset"):
+                    # Yield Gemini reasoning/thinking tokens to WebUI; a
+                    # reset empties the step's thinking after a stream restart.
+                    yield event
+                elif event_type == "thinking_delta":
+                    # Yield real-time token deltas to WebUI
+                    yield event
+                elif event_type in ("status", "sub_run"):
+                    # What the forwarder collected meanwhile: status lines, and
+                    # the events of sub-agents working while this call waits.
+                    yield event
+                elif event_type == "thinking_complete":
+                    # A copy: the event goes on to every reader of the run, and the
+                    # message kept in the session must not change with what one of them does
+                    llm_out: Dict[str, Any] = {"assistant": copy.deepcopy(event["assistant"])}
+                    # Preserve usage data if present in event
+                    if "usage" in event:
+                        llm_out["usage"] = event["usage"]
+                    # ...and finish_reason, which the truncation guard
+                    # below reads off llm_out.
+                    if event.get("finish_reason"):
+                        llm_out["finish_reason"] = event["finish_reason"]
+                    st.llm_out = llm_out
+                    # Store event — DON'T yield yet, check for upstream errors first
+                    st.pending_thinking_complete = event
 
     async def _on_upstream_error(self: Agent, run: LoopState, st: StepState, error_info: Dict[str, Any]):
         """An error in the body of an answer: the same model once more, then the next fallback;

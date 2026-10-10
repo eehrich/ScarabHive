@@ -10,6 +10,7 @@ Here too the events a cancel or a timeout ends the run with (_stop_events).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict
@@ -55,12 +56,13 @@ class StepMixin:
             logger.info(f"Request {run.request_id} cancelled during LLM call at step {step + 1}")
         else:
             logger.info("Request %s cancelled at step %d", run.request_id, step + 1)
-        async for event in self._stop_events(
-                run, step, "cancelled",
-                worker_line=f"cancelled at step {step + 1}",
-                coordinator_line=f"cancelled at step {step + 1}",
-                last_event={"type": "cancelled", "request_id": run.request_id, "step": step + 1}):
-            yield event
+        async with contextlib.aclosing(self._stop_events(
+                    run, step, "cancelled",
+                    worker_line=f"cancelled at step {step + 1}",
+                    coordinator_line=f"cancelled at step {step + 1}",
+                    last_event={"type": "cancelled", "request_id": run.request_id, "step": step + 1})) as events:
+            async for event in events:
+                yield event
 
     async def _begin_step(self: Agent, run: LoopState, st: StepState):
         """Phase: open the step -- error-streak bookkeeping, appended messages, the cancel check,
@@ -88,8 +90,9 @@ class StepMixin:
 
         # Check for cancellation at the start of each step
         if self._is_cancelled(run.request_id):
-            async for event in self._cancelled_events(run, step):
-                yield event
+            async with contextlib.aclosing(self._cancelled_events(run, step)) as events:
+                async for event in events:
+                    yield event
             st.end = StepEnd.RUN
             return
 
