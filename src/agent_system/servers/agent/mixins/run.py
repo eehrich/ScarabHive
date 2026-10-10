@@ -199,27 +199,25 @@ class RunMixin:
             # Pass status_scope parameters to _run_events which will open them AFTER
             # sending the 'start' event - this ensures frontend has currentRequestId
             # before any status events arrive
-            async for event in self._run_events(
-                task_text,
-                request_id=request_id,
-                session_id=session_id,
-                coordinator_request_id=coordinator_request_id,
-                worker_request_id=worker_request_id,
-                initial_message=initial_message,
-                llm_override=llm_override,
-                llm_profile_info_override=llm_profile_info_override,
-                status_forwarder=status_forwarder,
-                use_advanced_model=use_advanced_model,
-                response_format=response_format,
-            ):
-                # Before the yield: the consumer of a sub-run can stop reading at its
-                # end, error or cancel (sub_agent_manager does), and the event it
-                # stops at would never be relayed.
-                relay_run_event(status_forwarder, event, self.name)
-                if event.get("type") == "end":
-                    current_request_id.set(request_before)
-                    current_run_user.set(user_before)
-                yield event
+            async with contextlib.aclosing(self._run_events(
+                    task_text,
+                    request_id=request_id,
+                    session_id=session_id,
+                    coordinator_request_id=coordinator_request_id,
+                    worker_request_id=worker_request_id,
+                    initial_message=initial_message,
+                    llm_override=llm_override,
+                    llm_profile_info_override=llm_profile_info_override,
+                    status_forwarder=status_forwarder,
+                    use_advanced_model=use_advanced_model,
+                    response_format=response_format,
+                )) as events:
+                async for event in events:
+                    relay_run_event(status_forwarder, event, self.name)
+                    if event.get("type") == "end":
+                        current_request_id.set(request_before)
+                        current_run_user.set(user_before)
+                    yield event
         except GeneratorExit:
             # Generator is being closed early - clean exit without error
             raise
@@ -410,31 +408,30 @@ class RunMixin:
                     response_format=response_format,
                 )
 
-                async for event in loop_generator:
-                    # Track step from events that contain step info
-                    # This ensures we report accurate step count in completion message
-                    if "step" in event:
-                        step = event.get("step", step)
+                async with contextlib.aclosing(loop_generator) as loop_generator_closed:
+                    async for event in loop_generator_closed:
+                        if "step" in event:
+                            step = event.get("step", step)
 
-                    # Capture summary and errors from events -- before the yield:
-                    # a consumer may stop reading at an error (sub_agent_manager
-                    # and stategraph do), and the finalize, its status line and
-                    # the session end hooks must still know of it.
-                    if event.get("type") == "final" and "summary" in event:
-                        results["summary"] = event["summary"]
-                    elif event.get("type") == "error":
-                        results.setdefault("errors", []).append(event.get("message", "Unknown error"))
+                        # Capture summary and errors from events -- before the yield:
+                        # a consumer may stop reading at an error (sub_agent_manager
+                        # and stategraph do), and the finalize, its status line and
+                        # the session end hooks must still know of it.
+                        if event.get("type") == "final" and "summary" in event:
+                            results["summary"] = event["summary"]
+                        elif event.get("type") == "error":
+                            results.setdefault("errors", []).append(event.get("message", "Unknown error"))
 
-                    yield event
+                        yield event
 
-                    # Yield any pending status events after each main event
-                    # This ensures status messages are delivered in real-time, not batched at the end
-                    for status_event in yield_pending_status_events():
-                        yield status_event
+                        # Yield any pending status events after each main event
+                        # This ensures status messages are delivered in real-time, not batched at the end
+                        for status_event in yield_pending_status_events():
+                            yield status_event
 
-                    # Track messages updates from context during loop execution
-                    if context:
-                        messages = context.messages
+                        # Track messages updates from context during loop execution
+                        if context:
+                            messages = context.messages
 
             except Exception as e:
                 logger.exception("Agent execution failed with exception:")

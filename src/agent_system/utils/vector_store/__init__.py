@@ -35,8 +35,9 @@ for a new store in ``store``.
 """
 
 from .base import VectorStoreError, get_vector_backend
-from .embeddings import (
+from .embeddings import (  # noqa: F401 - _load_embedding_model: imported from here outside this repository
     EMBEDDING_DIM,
+    _load_embedding_model,
     compute_embedding,
     compute_embeddings,
     cosine_similarity,

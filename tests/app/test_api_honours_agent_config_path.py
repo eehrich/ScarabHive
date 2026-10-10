@@ -135,3 +135,20 @@ def test_a_working_directory_it_cannot_write_to_does_not_stop_the_start(monkeypa
     finally:
         locked.chmod(0o755)
     assert not (locked / "logs").exists()
+
+
+def test_the_old_names_of_the_shared_services_are_read_only():
+    """agent_system.app still answers a read of its former globals (code outside this repository
+    reads them there); a write would reach no reader -- they all read app_state -- and leave an
+    attribute that shadows the read for the rest of the process, so it fails loudly."""
+    import pytest
+
+    from agent_system import app_state
+
+    assert app_mod._session_service is app_state.session_service
+    with pytest.raises(AttributeError, match="app_state.session_service"):
+        app_mod._session_service = object()
+    with pytest.raises(AttributeError, match="app_state.app_registry"):
+        del app_mod._app_registry
+    app_mod.some_other_attribute = 1   # everything else is an ordinary module attribute
+    del app_mod.some_other_attribute

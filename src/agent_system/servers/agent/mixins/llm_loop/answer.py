@@ -9,6 +9,7 @@ without a tool call and without text end the run as they are. The final event it
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict
@@ -39,8 +40,9 @@ class AnswerMixin:
         # (prev_step_all_errored stays False → the error streak resets at the
         #  top of the next iteration; handled centrally, see loop top.)
 
-        async for event in self._continue_on_hook_signal(run, st):
-            yield event
+        async with contextlib.aclosing(self._continue_on_hook_signal(run, st)) as events:
+            async for event in events:
+                yield event
         if st.ended():
             return
 
@@ -83,8 +85,9 @@ class AnswerMixin:
 
         # If we have content AND it's not just whitespace, treat as final answer
         if content and content.strip():
-            async for event in self._deliver_text_answer(run, st):
-                yield event
+            async with contextlib.aclosing(self._deliver_text_answer(run, st)) as events:
+                async for event in events:
+                    yield event
             return
 
         # No tool calls AND (no content OR empty content)
