@@ -281,3 +281,34 @@ def test_an_anonymous_endpoint_is_open_for_the_method_it_names_only(tmp_path, mo
 
     assert web.get("/plugins/probe/data").status_code == 200
     assert web.post("/plugins/probe/data").status_code == 401
+
+
+class AdminOnlyPlugin(MockWebPlugin):
+    """A plugin type that declares its role, as log_viewer and ssh_control do."""
+
+    def get_security_config(self) -> Dict[str, Any]:
+        return {"min_role": "admin"}
+
+
+def test_an_anonymous_visitor_does_not_open_an_admin_only_plugin_type(tmp_path, monkeypatch):
+    """With anonymous access on and an entry "GET /plugins/*", the plugin layer handed a guest the
+    route before it looked at the role: admin-only plugin types (log_viewer, ssh_control) opened to
+    anyone. The allowlist waives the sign-in and the default role; a role the plugin type, a rule or
+    an override asks for above that still holds (403, audited)."""
+    from agent_system.auth import database
+    from agent_system.config.models import AnonymousAccessConfig, AuthConfig
+
+    monkeypatch.setattr(database, "_db", database.UserDatabase(tmp_path / "users.db"))
+    auth = AuthConfig(enabled=True, anonymous_access=AnonymousAccessConfig(
+        enabled=True, allowed_endpoints=["GET /plugins/*"]))
+    auth.endpoint_security.audit_enabled = False
+    auth.plugin_security.endpoint_rules = []
+    registry = PluginWebRegistry()
+    registry.register_web_plugin("logs", AdminOnlyPlugin("logs", has_static=False))
+    registry.register_web_plugin("public", MockWebPlugin("public", has_static=False))
+    app = FastAPI()
+    registry.apply_to_app(app, auth)
+    web = TestClient(app)
+
+    assert web.get("/plugins/public/status").status_code == 200
+    assert web.get("/plugins/logs/status").status_code == 403

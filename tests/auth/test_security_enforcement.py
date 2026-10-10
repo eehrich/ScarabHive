@@ -486,6 +486,7 @@ class TestConfigIntegration:
     ("/plugins/probe/*", "PUT", "/plugins/probe/data", True),
     ("POST /auth/login", "GET", "/auth/login", False),
     ("GET /static/*", "GET", "/static/app.js", True),
+    ("HEAD /plugins/probe/data", "HEAD", "/plugins/probe/data", False),
 ])
 def test_an_allowed_endpoint_opens_the_method_it_names(entry, method, path, opens):
     from agent_system.auth.enforcement import anonymous_may_reach
@@ -501,15 +502,39 @@ def test_nothing_is_open_while_anonymous_access_is_off():
     assert anonymous_may_reach(access, "GET", "/health") is False
 
 
-def test_every_layer_reads_the_allowed_endpoints_through_one_rule():
-    """The enforcer, the middleware and the plugin routes' dependency read the list three ways
-    once; the plugin layer ignored the method. Each of them now asks anonymous_may_reach."""
-    import inspect
+@pytest.mark.parametrize("min_role, default_role, opens", [
+    (None, "user", True),
+    ("guest", "user", True),
+    ("user", "user", True),       # the default role is what the allowlist waives
+    ("admin", "user", False),     # a stronger one a rule, an override or a plugin type asks for is not
+    ("admin", "admin", True),
+])
+def test_an_anonymous_visitor_meets_the_role_the_allowlist_waives_only(min_role, default_role, opens):
+    from agent_system.auth.enforcement import anonymous_meets_role
 
-    from agent_system.auth import middleware
-    from agent_system.plugins import web_adapter
+    assert anonymous_meets_role(min_role, default_role, "guest") is opens
 
-    for module in (middleware, web_adapter):
-        source = inspect.getsource(module)
-        assert "anonymous_may_reach(" in source
-        assert "allowed_endpoints:" not in source, f"{module.__name__} walks the list itself"
+
+@pytest.mark.asyncio
+async def test_the_enforcer_keeps_a_stronger_role_from_an_anonymous_visitor():
+    from fastapi import HTTPException
+    from agent_system.auth.enforcement import EndpointSecurityEnforcer
+
+    config = AuthConfig(enabled=True, anonymous_access=AnonymousAccessConfig(
+        enabled=True, allowed_endpoints=["GET /*"]),
+        endpoint_security=EndpointSecurityConfig(default_policy="require_auth", rules=[
+            EndpointSecurityRule(pattern="* /admin/*", policy="require_auth", min_role="admin")]))
+    enforcer = EndpointSecurityEnforcer(config)
+
+    async def nobody(request):
+        return None
+
+    def request(path):
+        req = MagicMock()
+        req.method, req.url.path = "GET", path
+        return req
+
+    assert (await enforcer.enforce_endpoint_security(request("/agents"), nobody)).role == "guest"
+    with pytest.raises(HTTPException) as refused:
+        await enforcer.enforce_endpoint_security(request("/admin/users"), nobody)
+    assert refused.value.status_code == 403

@@ -24,6 +24,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send, Message
 from agent_system.auth.enforcement import (
     ROLE_HIERARCHY,
     anonymous_may_reach,
+    anonymous_meets_role,
     compile_endpoint_rules,
     first_matching_rule,
 )
@@ -382,8 +383,14 @@ class EndpointSecurityMiddleware:
         # No user and auth required
         if username is None:
             # Check if anonymous access is allowed for this endpoint
-            if anonymous_may_reach(self.auth_config.anonymous_access, method, path):
-                await self.app(scope, receive, send)
+            anonymous_access = self.auth_config.anonymous_access
+            if anonymous_may_reach(anonymous_access, method, path):
+                if anonymous_meets_role(min_role, "user", anonymous_access.role):
+                    await self.app(scope, receive, send)
+                    return
+                safe_path = path.replace('\n', '').replace('\r', '')[:200]
+                logger.info(f"[SECURITY] Forbidden: {method} {safe_path} - anonymous access, requires {min_role}")
+                await self._send_error_response(send, 403, f"Insufficient permissions. Required role: {min_role}")
                 return
             
             # Return 401

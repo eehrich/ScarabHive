@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PATCH or `*` there, as the enforcer does: an entry such as `"HEAD /x"`
   opens nothing.
 
+- A visitor without an account that `anonymous_access.allowed_endpoints` lets
+  in no longer passes a route's role requirement: all three layers handed out
+  the anonymous user before they looked at the role, so an entry such as
+  `"GET /plugins/*"` opened admin-only plugin types (`log_viewer`,
+  `ssh_control`) and `"GET /*"` admin routes to a guest. An entry waives the
+  sign-in and the default role (`user`, or `plugin_security.default_min_role`);
+  a stronger one that a rule, a plugin override or the plugin's type asks for
+  answers 403 (`auth.enforcement.anonymous_meets_role`).
+
 - On Windows the API no longer freezes whole when the terminal it was started
   in stops answering: starting a process with pipes, CPython asked the
   terminal's console, holding the GIL, whether a pipe is a console, and no

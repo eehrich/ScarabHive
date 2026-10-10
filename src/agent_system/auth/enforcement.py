@@ -86,6 +86,25 @@ def anonymous_may_reach(anonymous_access: "AnonymousAccessConfig", method: str, 
     return False
 
 
+def anonymous_meets_role(min_role: Optional[str], default_role: Optional[str], anonymous_role: str) -> bool:
+    """Whether a visitor ``anonymous_may_reach`` lets in meets the role the route asks for.
+
+    The allowlist waives the sign-in and the role every route asks for by default
+    (``default_role``: "user" for the app's routes, plugin_security.default_min_role
+    for a plugin's) -- an entry would open nothing otherwise. It does not waive a
+    stronger one that a rule, a plugin override or the plugin's type asks for: an
+    entry such as "GET /plugins/*" let a guest into admin-only plugin types
+    (log_viewer, ssh_control) and "GET /*" into admin routes. Such a role holds
+    against the visitor's own (``anonymous_access.role``).
+    """
+    if not min_role:
+        return True
+    needed = ROLE_HIERARCHY.get(str(min_role).lower(), 0)
+    if needed <= ROLE_HIERARCHY.get(str(default_role or "user").lower(), 0):
+        return True
+    return ROLE_HIERARCHY.get(str(anonymous_role).lower(), 0) >= needed
+
+
 def compile_endpoint_rules(
     rules: "list[EndpointSecurityRule]",
 ) -> list[tuple[re.Pattern, str, "EndpointSecurityRule"]]:
@@ -397,7 +416,14 @@ class EndpointSecurityEnforcer:
         
         # No authenticated user - check if anonymous allowed
         if self.is_endpoint_allowed_anonymous(method, path):
-            return self.create_anonymous_user()
+            anonymous = self.create_anonymous_user()
+            if not anonymous_meets_role(policy.min_role, "user", anonymous.role):
+                logger.info(f"[SECURITY] Forbidden for anonymous access: {method} {path} requires {policy.min_role}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Insufficient permissions. Required role: {policy.min_role}",
+                )
+            return anonymous
         
         # Not allowed - raise 401
         logger.info(f"[SECURITY] Unauthorized access attempt: {method} {path}")

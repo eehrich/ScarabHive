@@ -185,6 +185,12 @@ without an account read `/health`, not post to it. Without a method, or with `*`
 path is a glob. The app's routes, the security middleware and the plugin routes read the list the same way
 (`auth.enforcement.anonymous_may_reach`).
 
+An entry waives the sign-in and the role every route asks for by default (`user`; for plugin routes
+`plugin_security.default_min_role`), not a stronger one: a route that a rule, a plugin override or the plugin's
+type (`min_role` in its security config, as `log_viewer` and `ssh_control` declare) keeps for admins answers a
+visitor without an account with 403 even when an entry such as `"GET /plugins/*"` matches it
+(`auth.enforcement.anonymous_meets_role`).
+
 The route rules are in `config/security.yaml`, which `config/config.yaml` includes. Edit them there: rules
 written into `config.yaml` are replaced by that file's.
 
