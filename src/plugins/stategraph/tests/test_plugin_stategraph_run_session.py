@@ -54,6 +54,20 @@ async def test_a_run_is_a_session_of_its_user_with_its_agents_below_it(harness, 
     assert ended["role"] == "assistant" and "succeeded" in ended["content"] and "writer answers a storm" in ended["content"]
 
 
+async def test_the_run_session_shows_the_params_the_run_took_by_default(harness, tmp_path):
+    """The panel sends only what differs from a default: the session shows the params bound, the defaults with them."""
+    host = AgentHost(tmp_path / "sessions", FakeAgent("writer"))
+    files = {name: text.replace("params: {topic: {type: string}}",
+                                "params: {topic: {type: string}, engine: {type: string, default: claude_code}}")
+             for name, text in WRITE.items()}
+    assert files != WRITE, "fixture: no default param"
+
+    run_id, row = await start(harness, host, files, params={"topic": "a storm"})
+
+    asked = (await host.sessions.load_session("ann", f"sg_{run_id}"))["messages"][0]
+    assert '"topic": "a storm"' in asked["content"] and '"engine": "claude_code"' in asked["content"], asked["content"]
+
+
 async def test_a_run_an_agent_started_hangs_below_that_agents_session(harness, tmp_path):
     host = AgentHost(tmp_path / "sessions", FakeAgent("writer"))
     caller = await host.sessions.create_session(user_id="ann", title="the coordinator", agent_name="writer")
