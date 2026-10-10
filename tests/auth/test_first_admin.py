@@ -11,6 +11,7 @@ import logging
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -284,12 +285,29 @@ def first_api_start(tmp_path: Path, auth_lines: str = "") -> str:
     return (tmp_path / "logs" / "api-probe.log").read_text(encoding="utf-8")
 
 
+def _console_err(capsys, wait: float = 5.0) -> str:
+    """What reached stderr, once the console has written it.
+
+    The first build_app of a process puts stdout and stderr behind one writer
+    thread (utils.logging.unblock_console), so a line printed during the start
+    reaches the captured stream when that thread gets to it, not when print()
+    returns -- read at once, it was there or not depending on the thread's
+    timing (CI, Python 3.11, 2026-10-10)."""
+    err = ""
+    deadline = time.monotonic() + wait
+    while True:
+        err += capsys.readouterr().err
+        if "Password:" in err or time.monotonic() > deadline:
+            return err
+        time.sleep(0.02)
+
+
 def test_a_generated_first_password_reaches_the_console_and_not_the_log_file(tmp_path, capsys):
     """Without the install scripts the API's first start generates the password. Logged, it stayed readable in
     logs/api.log for as long as the file lived, and a log level above WARNING dropped it unseen."""
     log = first_api_start(tmp_path)
 
-    shown = re.findall(r"Password: (\S+)", capsys.readouterr().err)
+    shown = re.findall(r"Password: (\S+)", _console_err(capsys))
     assert len(shown) == 1, "the generated password was not shown"
     admin = UserDatabase(tmp_path / "users.db").get_user_by_username("admin")
     assert verify_password(shown[0], admin.hashed_password)
