@@ -177,6 +177,11 @@ auth:
     rate_limit_multiplier: 0.5  # 50% of normal rate limit
 ```
 
+An entry of `allowed_endpoints` opens the method it names and no other: `"GET /health"` lets a visitor
+without an account read `/health`, not post to it. Without a method, or with `*`, it opens every method; the
+path is a glob. The app's routes, the security middleware and the plugin routes read the list the same way
+(`auth.enforcement.anonymous_may_reach`).
+
 The route rules are in `config/security.yaml`, which `config/config.yaml` includes. Edit them there: rules
 written into `config.yaml` are replaced by that file's.
 

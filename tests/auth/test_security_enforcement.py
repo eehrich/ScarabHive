@@ -472,3 +472,44 @@ class TestConfigIntegration:
         assert config.validate_session_ownership
         assert not config.audit_llm_requests
         assert config.max_requests_per_hour_anonymous == 10
+
+
+# ===========================
+# anonymous_access.allowed_endpoints: one reading for every layer
+# ===========================
+
+@pytest.mark.parametrize("entry, method, path, opens", [
+    ("GET /plugins/probe/data", "GET", "/plugins/probe/data", True),
+    ("GET /plugins/probe/data", "POST", "/plugins/probe/data", False),
+    ("get /plugins/probe/data", "GET", "/plugins/probe/data", True),
+    ("* /plugins/probe/*", "DELETE", "/plugins/probe/data", True),
+    ("/plugins/probe/*", "PUT", "/plugins/probe/data", True),
+    ("POST /auth/login", "GET", "/auth/login", False),
+    ("GET /static/*", "GET", "/static/app.js", True),
+])
+def test_an_allowed_endpoint_opens_the_method_it_names(entry, method, path, opens):
+    from agent_system.auth.enforcement import anonymous_may_reach
+
+    access = AnonymousAccessConfig(enabled=True, allowed_endpoints=[entry])
+    assert anonymous_may_reach(access, method, path) is opens
+
+
+def test_nothing_is_open_while_anonymous_access_is_off():
+    from agent_system.auth.enforcement import anonymous_may_reach
+
+    access = AnonymousAccessConfig(enabled=False, allowed_endpoints=["* /*"])
+    assert anonymous_may_reach(access, "GET", "/health") is False
+
+
+def test_every_layer_reads_the_allowed_endpoints_through_one_rule():
+    """The enforcer, the middleware and the plugin routes' dependency read the list three ways
+    once; the plugin layer ignored the method. Each of them now asks anonymous_may_reach."""
+    import inspect
+
+    from agent_system.auth import middleware
+    from agent_system.plugins import web_adapter
+
+    for module in (middleware, web_adapter):
+        source = inspect.getsource(module)
+        assert "anonymous_may_reach(" in source
+        assert "allowed_endpoints:" not in source, f"{module.__name__} walks the list itself"

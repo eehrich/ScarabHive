@@ -28,7 +28,7 @@ from typing import Optional, TYPE_CHECKING, Any
 from fastapi import HTTPException, Request, status
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AuthConfig, EndpointSecurityRule
+    from agent_system.config.models import AnonymousAccessConfig, AuthConfig, EndpointSecurityRule
 
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,30 @@ def split_method_prefix(pattern: str) -> tuple[str, str]:
         method = parts[0].upper()
         path_pattern = parts[1]
     return method, path_pattern
+
+
+def anonymous_may_reach(anonymous_access: "AnonymousAccessConfig", method: str, path: str) -> bool:
+    """Whether ``anonymous_access`` lets a visitor without an account call ``method path``.
+
+    THE reading of ``anonymous_access.allowed_endpoints``, for every layer that
+    asks: EndpointSecurityEnforcer (the app's routes), EndpointSecurityMiddleware
+    and the plugin routes' security dependency (plugins/web_adapter.py). An
+    entry names the method it opens ("GET /health"), or none or ``*`` for every
+    method; the path is a glob. The three layers read the list three ways
+    before: the plugin layer took only the last word of an entry and ignored its
+    method, so "GET /plugins/x/data" let an anonymous POST through wherever the
+    plugin layer was the one that decided.
+    """
+    if not anonymous_access.enabled:
+        return False
+    method = method.upper()
+    for allowed in anonymous_access.allowed_endpoints:
+        allowed_method, allowed_path = split_method_prefix(allowed.strip())
+        if allowed_method != "*" and allowed_method != method:
+            continue
+        if fnmatch.fnmatch(path, allowed_path):
+            return True
+    return False
 
 
 def compile_endpoint_rules(
@@ -268,26 +292,7 @@ class EndpointSecurityEnforcer:
         Returns:
             True if anonymous access is allowed for this endpoint
         """
-        if not self.config.anonymous_access.enabled:
-            return False
-        
-        method = method.upper()
-        
-        for allowed in self.config.anonymous_access.allowed_endpoints:
-            allowed = allowed.strip()
-            
-            # Parse method prefix
-            allowed_method, allowed_path = split_method_prefix(allowed)
-            
-            # Check method
-            if allowed_method != "*" and allowed_method != method:
-                continue
-            
-            # Check path with glob matching
-            if fnmatch.fnmatch(path, allowed_path):
-                return True
-        
-        return False
+        return anonymous_may_reach(self.config.anonymous_access, method, path)
     
     def validate_role(self, user: Any, min_role: Optional[str]) -> None:
         """Validate that a user has the required role.

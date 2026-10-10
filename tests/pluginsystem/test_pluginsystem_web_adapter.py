@@ -243,3 +243,41 @@ class TestPluginWebIntegration:
         from agent_system.plugins.web_adapter import plugin_web_registry
         assert plugin_web_registry is not None
         assert isinstance(plugin_web_registry, PluginWebRegistry)
+
+class WritablePlugin(MockWebPlugin):
+    """A plugin route that answers GET and POST on one path."""
+
+    def get_web_router(self) -> Optional[APIRouter]:
+        router = APIRouter(prefix=f"/plugins/{self.name}")
+
+        @router.get("/data")
+        def read_data():
+            return {"read": True}
+
+        @router.post("/data")
+        def write_data():
+            return {"written": True}
+
+        return router
+
+
+def test_an_anonymous_endpoint_is_open_for_the_method_it_names_only(tmp_path, monkeypatch):
+    """anonymous_access.allowed_endpoints names a method: "GET /plugins/probe/data" lets an anonymous
+    visitor read, not write. The plugin layer read only the path of an entry, so behind an
+    endpoint_security rule that leaves plugin routes to it, the same entry let an anonymous POST through."""
+    from agent_system.auth import database
+    from agent_system.config.models import AnonymousAccessConfig, AuthConfig
+
+    monkeypatch.setattr(database, "_db", database.UserDatabase(tmp_path / "users.db"))
+    auth = AuthConfig(enabled=True, anonymous_access=AnonymousAccessConfig(
+        enabled=True, allowed_endpoints=["GET /plugins/probe/data"]))
+    auth.endpoint_security.audit_enabled = False
+    auth.plugin_security.endpoint_rules = []
+    registry = PluginWebRegistry()
+    registry.register_web_plugin("probe", WritablePlugin("probe", has_static=False))
+    app = FastAPI()
+    registry.apply_to_app(app, auth)
+    web = TestClient(app)
+
+    assert web.get("/plugins/probe/data").status_code == 200
+    assert web.post("/plugins/probe/data").status_code == 401

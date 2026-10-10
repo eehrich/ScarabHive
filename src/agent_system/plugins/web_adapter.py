@@ -357,11 +357,9 @@ class PluginWebRegistry:
             # Check if user is authenticated
             if user is None:
                 # Check if anonymous access is allowed for this endpoint
-                if auth_config.anonymous_access.enabled:
-                    from agent_system.auth.enforcement import AnonymousUser
-                    for allowed in auth_config.anonymous_access.allowed_endpoints:
-                        if fnmatch.fnmatch(path, allowed.split(" ")[-1]):
-                            return AnonymousUser(role=auth_config.anonymous_access.role)
+                from agent_system.auth.enforcement import AnonymousUser, anonymous_may_reach
+                if anonymous_may_reach(auth_config.anonymous_access, method, path):
+                    return AnonymousUser(role=auth_config.anonymous_access.role)
                 
                 security_enforcer.audit_denied(
                     plugin_name, path, method, None,

@@ -32,6 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An entry of `auth.anonymous_access.allowed_endpoints` opens only the method
+  it names on plugin routes too: the plugin routes' security read the path of
+  an entry and ignored its method, so `"GET /plugins/x/data"` also let an
+  anonymous POST, PUT or DELETE through where the plugin layer decided (an
+  `endpoint_security` rule leaving plugin routes to it). The enforcer, the
+  security middleware and the plugin layer now read the list through one rule
+  (`auth.enforcement.anonymous_may_reach`). The middleware, which took any
+  first word of an entry as its method, now takes only GET, POST, PUT, DELETE,
+  PATCH or `*` there, as the enforcer does: an entry such as `"HEAD /x"`
+  opens nothing.
+
 - On Windows the API no longer freezes whole when the terminal it was started
   in stops answering: starting a process with pipes, CPython asked the
   terminal's console, holding the GIL, whether a pipe is a console, and no
