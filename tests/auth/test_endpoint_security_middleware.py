@@ -1404,3 +1404,46 @@ class TestBearerApiKey:
         assert await token_user([(b"x-api-key", key)]) is None
         assert await token_user([(b"authorization", f"Bearer {jwt}".encode())]) == "otheruser"
         assert await self.dependency_says([(b"authorization", b"Bearer " + key)]) == "keyuser", "the other side"
+
+
+def _anonymous_app(entries, rules=()):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    config = AuthConfig(enabled=True, secret_key="test-secret-key-12345", algorithm="HS256",
+                        anonymous_access=AnonymousAccessConfig(enabled=True, allowed_endpoints=list(entries)),
+                        endpoint_security=EndpointSecurityConfig(default_policy="require_auth", rules=list(rules)))
+    app = FastAPI()
+    for path in ("/x", "/debug/profile"):
+        app.get(path)(lambda: {"ok": True})
+        app.post(path)(lambda: {"ok": True})
+        app.head(path)(lambda: None)
+    app.add_middleware(EndpointSecurityMiddleware, auth_config=config)
+    return TestClient(app)
+
+
+def test_an_allowed_anonymous_endpoint_opens_only_the_method_it_names():
+    """"GET /x" lets an anonymous visitor read /x, not post to it."""
+    web = _anonymous_app(["GET /x"])
+
+    assert web.get("/x").status_code == 200
+    assert web.post("/x").status_code == 401
+
+
+def test_an_entry_whose_first_word_is_no_method_opens_nothing():
+    """The middleware took any first word as the method: "HEAD /x" opened HEAD /x here and
+    nothing in the enforcer. The two read it alike now: HEAD is no method prefix, so the entry
+    is a path no request has."""
+    web = _anonymous_app(["HEAD /x"])
+
+    assert web.head("/x").status_code == 401
+
+
+def test_an_allowed_anonymous_endpoint_keeps_a_stronger_role_its_rule_asks_for():
+    """The allowlist waives the sign-in and the default role, not admin: an entry that also
+    matches an admin-only route does not open it to a guest."""
+    web = _anonymous_app(["GET /*"], rules=[
+        EndpointSecurityRule(pattern="* /debug/*", policy="require_auth", min_role="admin")])
+
+    assert web.get("/x").status_code == 200
+    assert web.get("/debug/profile").status_code == 403

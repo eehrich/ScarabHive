@@ -28,7 +28,7 @@ from typing import Optional, TYPE_CHECKING, Any
 from fastapi import HTTPException, Request, status
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AuthConfig, EndpointSecurityRule
+    from agent_system.config.models import AnonymousAccessConfig, AuthConfig, EndpointSecurityRule
 
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,49 @@ def split_method_prefix(pattern: str) -> tuple[str, str]:
         method = parts[0].upper()
         path_pattern = parts[1]
     return method, path_pattern
+
+
+def anonymous_may_reach(anonymous_access: "AnonymousAccessConfig", method: str, path: str) -> bool:
+    """Whether ``anonymous_access`` lets a visitor without an account call ``method path``.
+
+    THE reading of ``anonymous_access.allowed_endpoints``, for every layer that
+    asks: EndpointSecurityEnforcer (the app's routes), EndpointSecurityMiddleware
+    and the plugin routes' security dependency (plugins/web_adapter.py). An
+    entry names the method it opens ("GET /health"), or none or ``*`` for every
+    method; the path is a glob. The three layers read the list three ways
+    before: the plugin layer took only the last word of an entry and ignored its
+    method, so "GET /plugins/x/data" let an anonymous POST through wherever the
+    plugin layer was the one that decided.
+    """
+    if not anonymous_access.enabled:
+        return False
+    method = method.upper()
+    for allowed in anonymous_access.allowed_endpoints:
+        allowed_method, allowed_path = split_method_prefix(allowed.strip())
+        if allowed_method != "*" and allowed_method != method:
+            continue
+        if fnmatch.fnmatch(path, allowed_path):
+            return True
+    return False
+
+
+def anonymous_meets_role(min_role: Optional[str], default_role: Optional[str], anonymous_role: str) -> bool:
+    """Whether a visitor ``anonymous_may_reach`` lets in meets the role the route asks for.
+
+    The allowlist waives the sign-in and the role every route asks for by default
+    (``default_role``: "user" for the app's routes, plugin_security.default_min_role
+    for a plugin's) -- an entry would open nothing otherwise. It does not waive a
+    stronger one that a rule, a plugin override or the plugin's type asks for: an
+    entry such as "GET /plugins/*" let a guest into admin-only plugin types
+    (log_viewer, ssh_control) and "GET /*" into admin routes. Such a role holds
+    against the visitor's own (``anonymous_access.role``).
+    """
+    if not min_role:
+        return True
+    needed = ROLE_HIERARCHY.get(str(min_role).lower(), 0)
+    if needed <= ROLE_HIERARCHY.get(str(default_role or "user").lower(), 0):
+        return True
+    return ROLE_HIERARCHY.get(str(anonymous_role).lower(), 0) >= needed
 
 
 def compile_endpoint_rules(
@@ -268,26 +311,7 @@ class EndpointSecurityEnforcer:
         Returns:
             True if anonymous access is allowed for this endpoint
         """
-        if not self.config.anonymous_access.enabled:
-            return False
-        
-        method = method.upper()
-        
-        for allowed in self.config.anonymous_access.allowed_endpoints:
-            allowed = allowed.strip()
-            
-            # Parse method prefix
-            allowed_method, allowed_path = split_method_prefix(allowed)
-            
-            # Check method
-            if allowed_method != "*" and allowed_method != method:
-                continue
-            
-            # Check path with glob matching
-            if fnmatch.fnmatch(path, allowed_path):
-                return True
-        
-        return False
+        return anonymous_may_reach(self.config.anonymous_access, method, path)
     
     def validate_role(self, user: Any, min_role: Optional[str]) -> None:
         """Validate that a user has the required role.
@@ -392,7 +416,14 @@ class EndpointSecurityEnforcer:
         
         # No authenticated user - check if anonymous allowed
         if self.is_endpoint_allowed_anonymous(method, path):
-            return self.create_anonymous_user()
+            anonymous = self.create_anonymous_user()
+            if not anonymous_meets_role(policy.min_role, "user", anonymous.role):
+                logger.info(f"[SECURITY] Forbidden for anonymous access: {method} {path} requires {policy.min_role}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Insufficient permissions. Required role: {policy.min_role}",
+                )
+            return anonymous
         
         # Not allowed - raise 401
         logger.info(f"[SECURITY] Unauthorized access attempt: {method} {path}")

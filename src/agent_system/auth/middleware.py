@@ -23,6 +23,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send, Message
 
 from agent_system.auth.enforcement import (
     ROLE_HIERARCHY,
+    anonymous_may_reach,
+    anonymous_meets_role,
     compile_endpoint_rules,
     first_matching_rule,
 )
@@ -381,22 +383,15 @@ class EndpointSecurityMiddleware:
         # No user and auth required
         if username is None:
             # Check if anonymous access is allowed for this endpoint
-            if self.auth_config.anonymous_access.enabled:
-                import fnmatch
-                for allowed in self.auth_config.anonymous_access.allowed_endpoints:
-                    allowed = allowed.strip()
-                    allowed_method = "*"
-                    allowed_path = allowed
-                    
-                    parts = allowed.split(" ", 1)
-                    if len(parts) == 2:
-                        allowed_method = parts[0].upper()
-                        allowed_path = parts[1]
-                    
-                    if (allowed_method == "*" or allowed_method == method.upper()) and \
-                       fnmatch.fnmatch(path, allowed_path):
-                        await self.app(scope, receive, send)
-                        return
+            anonymous_access = self.auth_config.anonymous_access
+            if anonymous_may_reach(anonymous_access, method, path):
+                if anonymous_meets_role(min_role, "user", anonymous_access.role):
+                    await self.app(scope, receive, send)
+                    return
+                safe_path = path.replace('\n', '').replace('\r', '')[:200]
+                logger.info(f"[SECURITY] Forbidden: {method} {safe_path} - anonymous access, requires {min_role}")
+                await self._send_error_response(send, 403, f"Insufficient permissions. Required role: {min_role}")
+                return
             
             # Return 401
             safe_path = path.replace('\n', '').replace('\r', '')[:200]

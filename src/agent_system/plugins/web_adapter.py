@@ -374,13 +374,25 @@ class PluginWebRegistry:
                 logger.warning(f"Plugin security auth check failed: {e}")
             
             # Check if user is authenticated
+            min_role = policy.get("min_role")
             if user is None:
                 # Check if anonymous access is allowed for this endpoint
-                if auth_config.anonymous_access.enabled:
-                    from agent_system.auth.enforcement import AnonymousUser
-                    for allowed in auth_config.anonymous_access.allowed_endpoints:
-                        if fnmatch.fnmatch(path, allowed.split(" ")[-1]):
-                            return AnonymousUser(role=auth_config.anonymous_access.role)
+                from agent_system.auth.enforcement import AnonymousUser, anonymous_may_reach, anonymous_meets_role
+                anonymous_access = auth_config.anonymous_access
+                if anonymous_may_reach(anonymous_access, method, path):
+                    # Not before the role: the allowlist waives the sign-in and the default role,
+                    # not one the plugin type, a rule or an override asks for above it.
+                    if anonymous_meets_role(min_role, auth_config.plugin_security.default_min_role,
+                                            anonymous_access.role):
+                        return AnonymousUser(role=anonymous_access.role)
+                    security_enforcer.audit_denied(
+                        plugin_name, path, method, None,
+                        f"Insufficient role for anonymous access: required {min_role}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"Insufficient permissions. Required role: {min_role}",
+                    )
                 
                 security_enforcer.audit_denied(
                     plugin_name, path, method, None,
@@ -393,7 +405,6 @@ class PluginWebRegistry:
                 )
             
             # Check role if required
-            min_role = policy.get("min_role")
             if min_role:
                 from agent_system.auth.enforcement import has_role
                 if not has_role(user, min_role):
