@@ -163,8 +163,10 @@ async def test_a_run_sums_what_its_agents_cost_and_a_fork_only_what_it_ran_itsel
         """)
     source, row = await run(harness, host, files)
     assert row["status"] == "succeeded", row["error"]
+    each = {"cost": 0.5, "activities": 1, "tokens": {"prompt": 100, "completion": 10}}
     assert harness.store.spend(source) == {"cost": 1.0, "activities": 2, "tokens": {"prompt": 200, "completion": 20,
-                                           "cached": 0}, "cost_is_estimate": False, "cost_unpriced_calls": 0}
+                                           "cached": 0}, "cost_is_estimate": False, "cost_unpriced_calls": 0,
+                                           "by_state": [{"path": "a", **each}, {"path": "b", **each}]}
 
     manager = harness.manager()
     fork = await manager.fork(source, at_step=1, backend_factory=backend_for(host))
@@ -172,6 +174,7 @@ async def test_a_run_sums_what_its_agents_cost_and_a_fork_only_what_it_ran_itsel
 
     assert len(host.calls()) == 3, "the fork replayed a and ran b"
     assert harness.store.spend(fork)["cost"] == 0.5, harness.store.spend(fork)
+    assert "by_state" not in harness.store.spend(fork), "the replayed state is the source's, not split here"
     copied = next(r for r in harness.store.rows(fork, kinds=("activity",)) if r["state"] == "a")["data"]["meta"]
     assert copied["copied_from"] == source and copied["cost"] == 0.5
     assert harness.store.spend("no-such-run") is None
@@ -283,6 +286,126 @@ async def test_a_failed_agent_run_fails_the_activity(harness, tmp_path, case):
     assert row["status"] == "failed"
     assert row["error"]["type"] == "agent_failed", row["error"]
     assert ("model down" if case == "error" else "without an answer") in row["error"]["message"]
+
+
+async def test_the_run_session_holds_each_agent_call_keyed_by_its_runs_id(harness, tmp_path):
+    """The chat hangs a run read from its session under the call keyed by its id (attachStoredSubRuns): the run's
+    session holds each agent activity as such a call, its answer -- or why it failed -- as the call's result, and
+    lists each instance among its sub-agents, which is what makes the chat look for them."""
+    import json
+
+    host = AgentHost(tmp_path / "sessions", FakeAgent("writer", lambda call: (
+        RuntimeError("model down") if call["task"] == "judge it" else f"writer answers {call['task']}")))
+    run_id, row = await run(harness, host, machine("""\
+        a:
+          do: {agent: writer, task: draft it}
+          transitions: [{target: b, effect: "ctx.inst = activity.instance_id"}]
+        b:
+          do: {agent: writer, continue: "{{ ctx.inst }}", task: shorten it}
+          transitions: [{target: c}]
+        c:
+          do: {agent: writer, task: judge it}
+          transitions: [{target: done}]
+        done: {type: final}
+        """, head="context: {inst: null}\n"))
+    assert row["status"] == "failed", "fixture: the third call fails"
+
+    first, second, third = host.calls()
+    stored = await host.sessions.load_session("ann", f"sg_{run_id}")
+    calls = [m["tool_calls"][0] | {"ran_as": m["tool_request_ids"][m["tool_calls"][0]["id"]]}
+             for m in stored["messages"] if m.get("tool_calls")]
+    answers = {m["tool_call_id"]: m["content"] for m in stored["messages"] if m["role"] == "tool"}
+    assert [c["ran_as"] for c in calls] == [first["request_id"], second["request_id"], third["request_id"]]
+    assert [c["function"]["name"] for c in calls] == ["writer"] * 3
+    assert json.loads(calls[1]["function"]["arguments"]) == {"state": "b", "task": "shorten it"}
+    assert [answers.get(c["id"]) for c in calls[:2]] == ["writer answers draft it", "writer answers shorten it"]
+    assert "model down" in answers[calls[2]["id"]] and answers[calls[2]["id"]].startswith("Failed")
+    assert sorted(stored["metadata"]["sub_agents"]) == sorted({first["session"], third["session"]}), \
+        "a continue lists no instance anew"
+    assert {entry["status"] for entry in stored["metadata"]["sub_agents"].values()} == {"stategraph"}, \
+        "an open SAM status would count against the SAM's limits"
+
+
+async def test_parallel_agent_calls_each_keep_their_answer_right_behind_them(harness, tmp_path):
+    """Two branches write both their calls before either answers; each answer goes behind its own call (the chat
+    reads a call's answer up to the next call), and a long one is cut there -- the instance's session has it."""
+    import json
+
+    both_in = asyncio.Event()
+    entered: list[str] = []
+
+    async def answer(call: dict) -> str:
+        entered.append(call["task"])
+        if len(entered) == 2:
+            both_in.set()
+        await both_in.wait()
+        if call["task"] == "one":
+            await asyncio.sleep(0.05)  # two answers first: behind its call, not at the end
+        return "x" * 5000 if call["task"] == "two" else "done one"
+
+    host = AgentHost(tmp_path / "sessions", FakeAgent("writer", answer))
+    run_id, row = await run(harness, host, machine("""\
+        a:
+          do:
+            parallel:
+              one: {agent: writer, task: one}
+              two: {agent: writer, task: two}
+          transitions: [{target: done}]
+        done: {type: final}
+        """))
+    assert row["status"] == "succeeded", row["error"]
+
+    messages = (await host.sessions.load_session("ann", f"sg_{run_id}"))["messages"]
+    pairs = [(m["tool_calls"][0]["id"], messages[i + 1]) for i, m in enumerate(messages) if m.get("tool_calls")]
+    assert len(pairs) == 2 and all(after.get("tool_call_id") == call_id for call_id, after in pairs), \
+        [(m["role"], m.get("tool_call_id") or (m.get("tool_calls") or [{}])[0].get("id")) for m in messages]
+    by_task = {json.loads(next(m for m in messages if (m.get("tool_calls") or [{}])[0].get("id") == call_id)
+                          ["tool_calls"][0]["function"]["arguments"])["task"]: after["content"] for call_id, after in pairs}
+    assert by_task["one"] == "done one"
+    assert len(by_task["two"]) < 2100 and by_task["two"].endswith("[... the agent's session holds it whole]")
+
+
+async def test_a_call_that_timed_out_still_gets_its_answer(harness, tmp_path, monkeypatch):
+    """A timeout reaches the agent call as a cancel, not as an error: the call is still answered (why it ended),
+    not left open in the run's session."""
+    from plugins.stategraph.engine import backend as backend_module
+
+    monkeypatch.setattr(backend_module, "AGENT_STOP_GRACE", 0.1)
+
+    async def slow(call: dict) -> str:
+        await asyncio.sleep(5)
+        return "late"
+
+    host = AgentHost(tmp_path / "sessions", FakeAgent("writer", slow))
+    run_id, row = await run(harness, host, machine("""\
+        a:
+          do: {agent: writer, task: draft it, timeout: 0.2s}
+          transitions: [{target: done}]
+        done: {type: final}
+        """))
+    assert row["status"] == "failed", "fixture: the call times out"
+    messages = (await host.sessions.load_session("ann", f"sg_{run_id}"))["messages"]
+    at = next(i for i, m in enumerate(messages) if m.get("tool_calls"))
+    answer = messages[at + 1]
+    assert answer.get("tool_call_id") == messages[at]["tool_calls"][0]["id"], [m["role"] for m in messages]
+    assert answer["content"].startswith("Stopped")
+
+
+async def test_a_stop_while_the_answer_is_shown_keeps_the_instances_conversation(tmp_path, monkeypatch):
+    """The instance is saved before its answer goes into the run's session: a stop in that write must not cost a
+    later continue the conversation."""
+    host = AgentHost(tmp_path / "s", FakeAgent("writer"))
+    backend = ScarabHiveBackend(runner=host, system_config=None, session_id="sg_r1", user_id="ann")
+
+    async def stopped(*_: Any) -> None:
+        raise asyncio.CancelledError("stopped")
+
+    monkeypatch.setattr(backend, "_show_answer", stopped)
+    with pytest.raises(asyncio.CancelledError):
+        await backend.agent_create(activity(), agent="writer", task="t", advanced=False, vars={})
+    [call] = host.calls()
+    saved = await host.sessions.load_session("ann", call["session"])
+    assert any(m.get("content") == "writer answers t" for m in saved["messages"]), saved["messages"]
 
 
 async def test_a_finally_activity_runs_its_agent_after_the_run_was_cancelled(tmp_path):

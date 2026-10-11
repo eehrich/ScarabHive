@@ -430,7 +430,8 @@ class StateGraphService:
                         mocks: Optional[dict[str, Any]] = None, mock_only: bool = False, breakpoints: Any = (),
                         watchpoints: Any = (), pause_at_start: bool = False, user_id: Optional[str] = None,
                         run_key: Optional[str] = None, run_id: Optional[str] = None,
-                        caller_session: Optional[str] = None) -> dict[str, Any]:
+                        caller_session: Optional[str] = None,
+                        live: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Start a run of ``machine_id``. With ``run_key`` the same request gets the run of that key, if there is
         one: attached to while it runs, resumed when interrupted, and once it ended its outcome again (``ended``:
         its status) -- only after a transient failure (runner.TRANSIENT_ERRORS) does a new run try it anew.
@@ -439,6 +440,8 @@ class StateGraphService:
         the caller's request id; it must be a session-id-safe word of at most 128 characters.
         ``caller_session``: the session of the agent that asks; the run's agent instances sit one level below it
         in its sub-agent tree.
+        ``live``: objects of the caller in this process for its call functions (``sg.live``) -- never journaled,
+        handed again when the key resumes an interrupted run here.
         """
         self._require(machine_id)
         for name, value in (("params", params), ("mocks", mocks)):
@@ -467,7 +470,7 @@ class StateGraphService:
                     return {"run_id": existing["id"], "attached": False, "owner": existing.get("owner"),
                             "note": "another process runs it; this call started nothing"}
                 if existing["status"] == "interrupted":
-                    await self._resume(existing["id"])
+                    await self._resume(existing["id"], live=live)
                     return {"run_id": existing["id"], "resumed": True}
                 if not (existing["status"] == "failed" and failed_transiently(existing.get("error"))):
                     return {"run_id": existing["id"], "ended": existing["status"]}
@@ -482,7 +485,7 @@ class StateGraphService:
                 tree, params=params, mocks=mocks, mock_only=mock_only, breakpoints=breakpoints,
                 watchpoints=watchpoints, pause_at_start=pause_at_start,
                 backend_factory=None if mock_only else self.backend_factory(), user_id=user_id,
-                run_key=run_key, run_id=run_id, nesting=nesting, runner=self._runner_of(checked))
+                run_key=run_key, run_id=run_id, nesting=nesting, runner=self._runner_of(checked), live=live)
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": run_id}
@@ -505,11 +508,72 @@ class StateGraphService:
         return {"depth": depth if _is_int(depth) else 1, "depth_budget": budget if _is_int(budget) else None,
                 "session": caller_session}
 
-    async def _resume(self, run_id: str) -> None:
+    async def run_to_end(self, machine_id: str, params: Optional[dict[str, Any]] = None, *,
+                         user_id: Optional[str] = None, keep_on_cancel: Optional[Callable[[], bool]] = None,
+                         **start: Any) -> dict[str, Any]:
+        """Start a run (``start_run``: run_key, run_id, live, ...) and wait in this process until its task here
+        is over; its row (``status``, ``output``, ``error``, ``final_state``). For Python code that runs a machine
+        as a step of its own work. The status is a terminal one -- or ``interrupted`` when this process stopped
+        meanwhile, or the row of another owner that took the run over: the caller reads anything but
+        ``succeeded`` as not done.
+
+        Its caller cancelled: the run this call started or resumed is terminated, then the cancel goes on --
+        unless ``keep_on_cancel()`` says the cancel came from outside the caller's work (its process stopping, a
+        graceful shutdown cutting the request): then the run is interrupted (``RunManager.interrupt``) and a later
+        ``run_to_end`` under its key resumes it. Called from a ``call`` activity of another run here, that run's
+        ending decides first: terminated, its child is too; stopping (shutdown, interrupt, taken over), its child
+        is interrupted. A key
+        whose run another process holds is a 409 -- waiting here would wait on nobody's task -- and so is
+        ``live`` for a key whose run already runs in this process: that run has its own caller's objects, and
+        this caller's cancel must not end it."""
+        started = await self.start_run(machine_id, params=params, user_id=user_id, **start)
+        run_id = started["run_id"]
+        if started.get("attached") is False:
+            raise ServiceError(409, f"run {run_id} runs in another process ({started.get('owner')})")
+        if started.get("attached") and start.get("live"):
+            raise ServiceError(409, f"run {run_id} already runs in this process with its own caller's live "
+                                    "objects; use a new run_key for a new run")
+        owned = not started.get("attached")
+        live = self.runs.live.get(run_id)
+        if live is not None:
+            try:
+                await asyncio.shield(live.task)
+            except asyncio.CancelledError:
+                if owned and self._cut_from_outside(run_id, keep_on_cancel):
+                    self.runs.interrupt(run_id)
+                    if live.task is not None:  # its row says interrupted when the cancel goes on
+                        await asyncio.wait({live.task}, timeout=TERMINATE_WAIT)
+                elif owned:
+                    try:
+                        await self.control_run(run_id, "terminate", user_id=user_id)
+                    except Exception:
+                        logger.warning("stategraph: terminate of %s after its caller's cancel failed", run_id,
+                                       exc_info=True)
+                raise
+        return self.run_store.get_run(run_id) or {"id": run_id, "status": "unknown"}
+
+    def _cut_from_outside(self, run_id: str, keep_on_cancel: Optional[Callable[[], bool]]) -> bool:
+        """After the caller's cancel: interrupt the run (True) or terminate it. A caller that is itself a run's
+        ``call`` activity here (its task carries that run's id) goes with that run's ending -- a terminate from
+        the panel reaches no token of the caller's -- and only otherwise ``keep_on_cancel`` decides."""
+        try:
+            from agent_system.tools.status import current_request_id
+
+            enclosing = self.runs.live.get(current_request_id.get() or "")
+        except Exception:
+            enclosing = None
+        if enclosing is not None and enclosing.ctx.id != run_id:
+            if enclosing.ctx.stopping or enclosing.ctx.lost:
+                return True
+            if enclosing.ctx.cancelled:
+                return False
+        return keep_on_cancel is not None and _keeps(keep_on_cancel, run_id)
+
+    async def _resume(self, run_id: str, live: Optional[dict[str, Any]] = None) -> None:
         row = self.run_store.get_run(run_id)
         options = (row or {}).get("mocks") or {}
         try:
-            await self.runs.resume(run_id, backend_factory=None if options.get("mock_only")
+            await self.runs.resume(run_id, live=live, backend_factory=None if options.get("mock_only")
                                    else self.backend_factory())
         except (ValueError, CompileError) as exc:
             raise ServiceError(409, str(exc)) from None
@@ -816,6 +880,15 @@ class StateGraphService:
         except ValueError as exc:
             raise ServiceError(409, str(exc)) from None
 
+
+
+def _keeps(keep_on_cancel: Callable[[], bool], run_id: str) -> bool:
+    """``run_to_end``'s question after its caller's cancel; a question that breaks terminates, as before."""
+    try:
+        return bool(keep_on_cancel())
+    except Exception:
+        logger.warning("stategraph: keep_on_cancel of %s raised; the run is terminated", run_id, exc_info=True)
+        return False
 
 
 def _digest(token: str) -> str:

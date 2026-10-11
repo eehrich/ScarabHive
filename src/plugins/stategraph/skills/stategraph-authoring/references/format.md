@@ -575,6 +575,12 @@ thread's late result is dropped, but the thread runs on to its end -- unless the
 the run's event loop: make a function that calls tools `async` (a sync one may only
 `return sg.tool(...)`, which is then awaited).
 
+`sg.live` is a read-only mapping of the objects a Python caller handed the run
+(`service.run_to_end(..., live={...})` or `start_run(live=...)`: a pipeline instance, a
+client) -- never journaled, only their names (trace `live_objects`). It is empty in a run
+started without them, and after a resume from the panel or by another process: a function
+that needs one fails there (`call_failed`) unless it checks (`sg.live.get("pipeline")`).
+
 A `call` activity is the place for deterministic computation that is too big for an
 effect, and for reading the outside world (a file, a database row): its result is
 journaled, so a resumed run gets the same value without calling again. Unlike code
@@ -1070,6 +1076,15 @@ function runs in a worker thread: it can only return `sg.tool(...)`, not run it 
   (docs/stategraph_design.md §5.3).
 - Use it for steps whose data must not pass through `ctx`: read documents, map them,
   write a row, check it.
+
+**`sg.live` in a call.** Objects the Python caller handed the run (§5 `call`), for work
+that cannot go through tools or the journal -- the caller's pipeline instance.
+
+- What the function returns is journaled like any `out`: a resume replays a finished call
+  and never reaches the object again. One in flight at a crash runs again from the top --
+  with the objects the resume handed, or none.
+- Their state is the caller's, not the run's: a fork or a replay does not restore it. Keep
+  what decides a transition in `out` and `ctx`, not in the object.
 
 **`finally`.** An activity on a state or on the machine.
 

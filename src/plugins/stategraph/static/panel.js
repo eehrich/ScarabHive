@@ -408,7 +408,7 @@ async function loadMachines() {
 const closedFolders = new Set(recall('closed-folders', []));
 
 /** The machines as a folder tree: a machine's group ("Reviews/nightly", set in its file, else where it comes from) is its
- * folder path. Folders keep the order the server lists their first machine in. */
+ * folder path. Machines keep the order the server lists them in; folders show sorted by name (`subfolders`). */
 function folderTree(machines) {
   const root = { path: '', children: new Map(), machines: [] };
   for (const m of machines) {
@@ -422,6 +422,9 @@ function folderTree(machines) {
   }
   return root;
 }
+
+/** A folder's folders by name -- a group can lead with its order ("1 Front", "2 Chapters"). */
+const subfolders = (folder) => [...folder.children.values()].sort((a, b) => a.name.localeCompare(b.name));
 
 const folderSize = (folder) => folder.machines.length + [...folder.children.values()].reduce((sum, f) => sum + folderSize(f), 0);
 
@@ -444,7 +447,7 @@ function folderView(folder, searching) {
   const open = searching || !closedFolders.has(folder.path);
   return html`<details class="sg-folder" data-folder="${folder.path}" ${open ? 'open' : ''}>
     <summary class="sg-folder-name">${icon('folder', { size: 'sm' })}<span class="pk-grow">${folder.name}</span><span class="pk-muted">${folderSize(folder)}</span></summary>
-    <div class="sg-folder-body">${[...folder.children.values()].map((child) => folderView(child, searching))}${folder.machines.map(machineItem)}</div>
+    <div class="sg-folder-body">${subfolders(folder).map((child) => folderView(child, searching))}${folder.machines.map(machineItem)}</div>
   </details>`;
 }
 
@@ -454,7 +457,7 @@ function drawMachineList() {
   const shown = S.machines.filter((m) => !needle || `${m.id} ${m.title} ${m.description} ${m.group || ''}`.toLowerCase().includes(needle));
   const tree = folderTree(shown);
   update($('machineList'), shown.length
-    ? [...[...tree.children.values()].map((folder) => folderView(folder, Boolean(needle))), ...tree.machines.map(machineItem)]
+    ? [...subfolders(tree).map((folder) => folderView(folder, Boolean(needle))), ...tree.machines.map(machineItem)]
     : emptyState('workflow', S.machines.length ? 'No machine matches' : 'No machines yet', S.machines.length ? '' : 'Create one with New.'));
 }
 
@@ -2907,6 +2910,16 @@ function spendText(spend, { tokens = true } = {}) {
   return `${spend.cost_is_estimate ? '~$' : '$'}${spend.cost.toFixed(4)}${unpriced}${flow}`;
 }
 
+/** The spend per state path; a state that runs a submachine holds what its machine's states cost (a phase). */
+function costByState(states) {
+  return html`<div class="pk-table-wrap"><table class="pk-table">
+    <thead><tr><th>State</th><th class="pk-num">Cost</th><th class="pk-num">Tokens ↑ ↓</th><th class="pk-num">Activities</th></tr></thead>
+    <tbody>${states.map((s) => html`<tr><td class="pk-mono">${s.path}</td>
+      <td class="pk-num">${spendText(s, { tokens: false })}</td>
+      <td class="pk-num">${tokenCount(s.tokens?.prompt || 0)} ${tokenCount(s.tokens?.completion || 0)}</td>
+      <td class="pk-num">${s.activities}</td></tr>`)}</tbody></table></div>`;
+}
+
 function historyRow(row) {
   const data = row.data || {};
   let what = row.status || '';
@@ -2926,6 +2939,13 @@ function historyRow(row) {
     else if (row.status === 'failed') detail = `${data.type || ''} ${data.message || ''}`;
     else if (row.status === 'final') detail = data.status || '';
     kind = row.status === 'failed' ? 'danger' : row.status === 'paused' ? 'warn' : '';
+    if (row.status === 'live_objects') {  // a Python caller's objects (sg.live): their names, never the objects
+      const names = data.names || [];
+      const resumed = row.key.includes(':resumed');
+      detail = names.length ? `${resumed ? 'handed again: ' : ''}${names.join(', ')}`
+        : 'resumed without them -- call functions that need them fail';
+      if (resumed && !names.length) kind = 'warn';
+    }
   } else if (row.kind === 'event') {
     what = `event ${row.status || ''}`;
     detail = `${data.name || ''} ${preview(data.data, 60)}`;
@@ -3078,16 +3098,17 @@ function drawResult() {
   update($('runResult'), html`<div class="pk-card sg-result" data-run="${run.id}">
     <div class="pk-card-head"><h3 class="pk-card-title">Result</h3>${statusBadge(run.status)}
       ${run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span>${reason && reason !== run.status ? html` (${reason})` : ''}</span>` : ''}
-      ${run.spend ? html`<span class="pk-muted" title="What the run's agents cost so far, their sub-agents included: tokens in ↑ and out ↓">${spendText(run.spend)}</span>` : ''}
+      ${run.spend ? html`<span class="pk-muted" title="What the run cost so far -- its agents with their sub-agents, and the LLM calls its call functions made: tokens in ↑ and out ↓">${spendText(run.spend)}</span>` : ''}
       <span class="pk-grow"></span>
       ${run.machine_id === S.machine?.id ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="rerun"
         title="A new run with this run's params and mocks (they go into the start form too); a param that had its default then takes the machine's default now">${icon('rotate-cw', { size: 'sm' })} Run again</button>` : ''}
       ${run.mocks?.mock_only || !ownSessions(run) ? '' : html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${run.session_id || `sg_${run.id}`}"
-        title="The run's session in the chat: what it was asked, how it ended, its agents' conversations below it">${icon('message-square', { size: 'sm' })} Session</button>`}</div>
+        title="The run's session in the chat: what it was asked, each agent call with that agent's run under it, how it ended">${icon('message-square', { size: 'sm' })} Session</button>`}</div>
     ${run.error ? errorView(run.error) : ''}
     ${run.output !== undefined && run.output !== null
     ? html`<details class="pk-details" open><summary>Output</summary>${resultValue(run.output)}</details>`
     : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No output.' : 'The output comes when the run ends.'}</p>`}
+    ${run.spend?.by_state ? html`<details class="pk-details"><summary>Cost by state</summary>${costByState(run.spend.by_state)}</details>` : ''}
     ${finals.length ? html`<h4 class="sg-section-title">End states</h4><ul class="sg-plain-list">${finals.map((row) => html`<li class="sg-watch">
       ${badge(row.data?.frame ? 'submachine' : 'top', row.data?.frame ? 'info' : '')}
       <span class="pk-mono">${row.data?.frame ? `${row.data.machine || row.data.frame} · ` : ''}${row.state}</span>

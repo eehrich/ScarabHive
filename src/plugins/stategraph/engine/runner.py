@@ -12,11 +12,13 @@ journal cut at a top-level step (§5.6).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import logging
 import os
 import re
 import socket
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -28,7 +30,7 @@ from plugins.stategraph.model.code import fingerprint, jsonable
 from plugins.stategraph.model.loader import MachineTree, load_snapshot
 from plugins.stategraph.model.spec import parse_duration
 from .activity import _IN_ENDING, ReplayDivergence
-from .backend import NoBackend
+from .backend import CALL_SPEND, NoBackend
 from .debugger import Debugger, UnknownState, apply_edit, check_points, known_states, unknown_state
 from .interpreter import Frame, RunAbort, bind_params
 from .journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore, utc_now
@@ -38,6 +40,8 @@ logger = logging.getLogger(__name__)
 
 JOURNAL_FORMAT = 1
 LEASE_SECONDS = 60
+#: The lease says the PROCESS lives, so it is renewed from a thread of its own: a call that holds the event loop
+#: (synchronous work of minutes -- the writer's whole-book passes) must not lose its run to another process.
 HEARTBEAT_SECONDS = 20
 #: How often the owner of live runs takes the control requests of other processes (RunStore.request_control).
 CONTROL_POLL_SECONDS = 1.0
@@ -258,8 +262,13 @@ class RunContext:
     def __init__(self, *, run_id: str, store: RunStore, machine: Machine, backend: Any = None,
                  mocks: Optional[dict[str, Any]] = None, mock_only: bool = False,
                  debugger: Optional[Debugger] = None, token: Any = None,
-                 owner: Optional[str] = None, origin: Optional[str] = None):
+                 owner: Optional[str] = None, origin: Optional[str] = None,
+                 live: Optional[dict[str, Any]] = None):
         self.id = run_id
+        #: the caller's objects for call functions (``sg.live``; not ``self.live``, the replay flag): never
+        #: journaled, so a run resumed by another process -- or without them -- sees an empty mapping, and a
+        #: function that needs them says so
+        self.live_objects = dict(live or {})
         self.origin = origin or run_id   # the first run of a fork chain: stable across forks (run.origin)
         self.store = store
         self.machine = machine
@@ -833,6 +842,10 @@ class RunContext:
                 logger.debug("cancel token of %s raised", self.id, exc_info=True)
 
 
+#: the trace rows naming a run's live objects (``sg.live``) -- names only, the objects never reach the journal
+LIVE_OBJECTS = "live_objects"
+
+
 @dataclass
 class LiveRun:
     ctx: RunContext
@@ -862,7 +875,8 @@ class RunManager:
         self.live: dict[str, LiveRun] = {}
         self._defaults: dict[str, dict[str, Any]] = {}  # run id -> its params' defaults when it started (describe)
         self._stopping = False
-        self._heartbeat: Optional[asyncio.Task] = None
+        self._heartbeat: Optional[threading.Thread] = None
+        self._heartbeat_stop = threading.Event()  # the running thread's own: a new thread gets a new one
         self._controls: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------ lifecycle
@@ -875,8 +889,9 @@ class RunManager:
                     copy_rows: Optional[list[dict[str, Any]]] = None,
                     fork_resources: Optional[dict[str, Any]] = None,
                     nesting: Optional[dict[str, Any]] = None, strict_points: bool = True,
-                    runner: Optional[str] = None) -> str:
-        """``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
+                    runner: Optional[str] = None, live: Optional[dict[str, Any]] = None) -> str:
+        """``live``: the caller's objects for call functions (``sg.live``), not journaled.
+        ``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
         with the run so its agent instances count as one level below the caller (backend.agent_create).
         ``runner``: the runner agent the run is hosted by (runners.py), kept with it for every resume.
         ``strict_points``: a breakpoint naming no state is refused; else (a fork's inherited points) it is dropped."""
@@ -908,10 +923,13 @@ class RunManager:
         if fork_resources is not None:  # journaled, so a resume of the fork runs its fork hooks where it did
             self.store.record(run_id, "trace", "fork_resources", fence=self.owner, status="fork_resources",
                               data=fork_resources)
+        if live:  # their names only: the history says the run had them, and a resume without them shows it
+            self.store.record(run_id, "trace", LIVE_OBJECTS, fence=self.owner, status=LIVE_OBJECTS,
+                              data={"names": sorted(live)})
         self._launch(run_id, machine, params, mocks, mock_only, debugger,
                      backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
                      token_factory(run_id) if token_factory else None, origin=self._origin(parent_run) or run_id,
-                     fork_step=fork_step if parent_run else None)
+                     fork_step=fork_step if parent_run else None, live=live)
         return run_id
 
     def _refuse_while_stopping(self) -> None:
@@ -931,9 +949,11 @@ class RunManager:
         return run_id
 
     async def resume(self, run_id: str, *, backend: Any = None, backend_factory: Optional[Callable[[str], Any]] = None,
-                     token_factory: Optional[Callable[[str], Any]] = None, cancel: bool = False) -> str:
+                     token_factory: Optional[Callable[[str], Any]] = None, cancel: bool = False,
+                     live: Optional[dict[str, Any]] = None) -> str:
         """Continue a run from its journal. ``cancel``: resume it into its termination -- the journaled prefix
-        replays, then it ends as cancelled and its finally and close activities run (§3.10)."""
+        replays, then it ends as cancelled and its finally and close activities run (§3.10). ``live``: the
+        caller's objects for call functions again (``sg.live``) -- they are not in the journal."""
         self._refuse_while_stopping()
         row = self.store.get_run(run_id)
         if row is None:
@@ -954,6 +974,11 @@ class RunManager:
             if cancel and not self.store.has_row(run_id, "trace", "cancel"):  # an earlier one (a timeout) counts
                 self.store.record(run_id, "trace", "cancel", fence=self.owner, status="cancel",
                                   data={"timed_out": False})
+            if live or self.store.has_row(run_id, "trace", LIVE_OBJECTS):  # handed again, or missing now
+                resumes = sum(1 for r in self.store.rows(run_id, kinds=("trace",))
+                              if r["key"].startswith(f"{LIVE_OBJECTS}:resumed:"))
+                self.store.record(run_id, "trace", f"{LIVE_OBJECTS}:resumed:{resumes + 1}", fence=self.owner,
+                                  status=LIVE_OBJECTS, data={"names": sorted(live or {})})
             tree = load_snapshot(row["definition"])
             machine = compile_tree(tree)
             if row["status"] == "failed" and (row.get("error") or {}).get("resumable"):
@@ -967,7 +992,7 @@ class RunManager:
                          backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
                          token_factory(run_id) if token_factory else None, origin=self._origin(run_id),
                          running_seconds=float((row.get("view") or {}).get("running_seconds") or 0.0),
-                         fork_step=row.get("fork_step") if row.get("parent_run") else None)
+                         fork_step=row.get("fork_step") if row.get("parent_run") else None, live=live)
         except BaseException:  # nothing runs it here: the lease goes back, so another process may take it at once
             try:
                 self.store.update_run(run_id, fence=self.owner, lease_until=_utc(-1), status=row["status"],
@@ -1061,17 +1086,21 @@ class RunManager:
     def _launch(self, run_id: str, machine: Machine, params: Optional[dict[str, Any]],
                 mocks: Optional[dict[str, Any]], mock_only: bool, debugger: Debugger, backend: Any,
                 token: Any, *, origin: Optional[str] = None, running_seconds: float = 0.0,
-                fork_step: Optional[int] = None) -> None:
+                fork_step: Optional[int] = None, live: Optional[dict[str, Any]] = None) -> None:
         ctx = RunContext(run_id=run_id, store=self.store, machine=machine, backend=backend, mocks=mocks,
                          mock_only=mock_only, debugger=debugger, token=token,
-                         owner=self.owner, origin=origin)
+                         owner=self.owner, origin=origin, live=live)
         ctx.running_seconds = running_seconds  # limits.timeout counts running time across resumes
         ctx.callback_base = self.callback_base
         ctx.fork_step = fork_step
         root = Frame(ctx, machine, params)
         ctx.root = root
         ctx.on_lost = self._drop
-        task = asyncio.ensure_future(self._execute(ctx, root))
+        # A run started inside a call function (run_to_end, a tool that runs a machine) is no part of that call's
+        # LLM spend: its own activities count what they cost (backend.CALL_SPEND).
+        context = contextvars.copy_context()
+        context.run(CALL_SPEND.set, None)
+        task = asyncio.get_running_loop().create_task(self._execute(ctx, root), context=context)
         self.live[run_id] = LiveRun(ctx, task, root)
         watched = getattr(ctx.backend, "token", None)
         if watched is not None and hasattr(watched, "wait_for_cancellation"):
@@ -1193,15 +1222,27 @@ class RunManager:
             return
 
     def _ensure_heartbeat(self) -> None:
-        if self._heartbeat is None or self._heartbeat.done():
-            self._heartbeat = asyncio.ensure_future(self._renew_leases())
+        if self._heartbeat is None or not self._heartbeat.is_alive() or self._heartbeat_stop.is_set():
+            # a thread told to stop (shutdown) may still be alive for a moment: it ends, a new one renews
+            self._heartbeat_stop = threading.Event()
+            self._heartbeat = threading.Thread(target=self._renew_leases,
+                                               args=(asyncio.get_running_loop(), self._heartbeat_stop),
+                                               name=f"stategraph-lease-{self.owner}", daemon=True)
+            self._heartbeat.start()
         if self._controls is None or self._controls.done():
             self._controls = asyncio.ensure_future(self._take_controls())
 
-    async def _renew_leases(self) -> None:
-        while self.live:
-            await asyncio.sleep(HEARTBEAT_SECONDS)
-            self.renew_leases()
+    def _renew_leases(self, loop: asyncio.AbstractEventLoop, stop: threading.Event) -> None:
+        """The heartbeat thread, until shutdown or the loop's end. A run it lost stops on the loop."""
+        while not stop.wait(HEARTBEAT_SECONDS):
+            if loop.is_closed():
+                return
+            lost = self._renewed()
+            if lost:
+                try:
+                    loop.call_soon_threadsafe(lambda: [ctx.lose() for ctx in lost])
+                except RuntimeError:  # the loop closed meanwhile: nothing left to stop
+                    return
 
     async def _take_controls(self) -> None:
         while self.live:
@@ -1239,20 +1280,44 @@ class RunManager:
 
     def renew_leases(self) -> None:
         """Extend our runs' leases; a run whose owner changed is lost and stops locally (§5.7)."""
-        for run_id, live in list(self.live.items()):
-            if live.ctx.finished:  # its end is written, lease released: renewing would hold it 60 s more
-                continue
+        for ctx in self._renewed():
+            ctx.lose()
+
+    def _renewed(self) -> list["RunContext"]:
+        """Extend our runs' leases -- from the heartbeat thread too: the store locks, and the runs are read
+        once as a copy. Returns the runs whose owner changed."""
+        lost = []
+        for run_id, live in tuple(self.live.items()):
             try:
-                kept = self.store.renew(run_id, self.owner, _utc(LEASE_SECONDS), live.ctx.status)
+                # Check and renew under the store's (reentrant) lock: a run ends by setting ``finished`` and then
+                # writing its end, which takes this lock -- a renew can no longer fall between the two and hold
+                # an ended run's lease, or put an interrupted end back to running (review of the thread).
+                with self.store._lock:
+                    if live.ctx.finished:  # its end is written or being written: renewing would hold it 60 s more
+                        continue
+                    kept = self.store.renew(run_id, self.owner, _utc(LEASE_SECONDS), live.ctx.status)
             except Exception:
                 logger.debug("lease renewal of %s failed", run_id, exc_info=True)
                 continue
             if not kept:
-                live.ctx.lose()
+                lost.append(live.ctx)
+        return lost
 
     def sweep_expired(self) -> list[str]:
         """Mark runs whose owner's lease ran out as interrupted (never a run of a live process)."""
         return self.store.mark_expired(now=_utc())
+
+    def interrupt(self, run_id: str) -> None:
+        """Stop one run here as ``shutdown`` stops them all: ``interrupted``, its journal kept, a resume goes on
+        from the step in flight. For a caller whose own work is cut from outside (its process stops) -- not a
+        terminate: the run is not over. A run that ended or is ending keeps its end."""
+        live = self.live.get(run_id)
+        # not begun: a task cancelled before its first line would never end the run (control's terminate
+        # has the same guard) -- and there is nothing to interrupt yet
+        if live is None or live.ctx.finished or live.ctx.cancelled or not live.ctx.begun:
+            return
+        live.ctx.stopping = True
+        live.task.cancel()
 
     async def shutdown(self) -> None:
         self._stopping = True
@@ -1263,9 +1328,9 @@ class RunManager:
             if not live.ctx.finished:  # a finished run only tells its session how it ended: cut, it never would
                 live.task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        for task in (self._heartbeat, self._controls):
-            if task is not None:
-                task.cancel()
+        self._heartbeat_stop.set()
+        if self._controls is not None:
+            self._controls.cancel()
 
     # ------------------------------------------------------------ control
     def _live(self, run_id: str) -> LiveRun:

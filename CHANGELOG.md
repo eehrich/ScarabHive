@@ -45,7 +45,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   left waiting or failed. An agent's tool allowlist now allows a whole
   subject (`forge/forge_pr`), no longer single operations such as merge.
 
+- A state machine run's cost counts the LLM calls made under its `call`
+  activities too -- by the function, the code it calls, a tool it runs
+  (hook `count_call_spend`) -- and with more than one state it is split
+  by state (`spend.by_state`, the panel's Cost by state): a state that runs
+  a submachine holds what its machine's states cost, the cost of a phase.
+
 ### Fixed
+
+- A state machine run's lease is renewed from a thread of its own: a `call`
+  function holding the event loop for more than ~40 seconds let it run
+  out, so a sweep marked the working run interrupted and another process
+  could take it over.
+
+- A state machine run's session in the web chat shows its agents' runs --
+  task, steps and answer, read from their sessions -- each under the call
+  that ran it, as a sub-agent's under the call that spawned it. The run's
+  session now holds each agent activity as such a call (task and answer cut
+  to 2,000 characters; the agent's session has them whole); before, the
+  agents were only sub-sessions in the session list.
 
 - A session's figures "including sub-agents" (`/costs` in the chat and the
   terminal, the Context & Cost Usage panel for one session) count the sessions

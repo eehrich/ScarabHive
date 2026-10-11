@@ -748,6 +748,24 @@ async def test_map_with_concurrency_one_runs_strictly_in_order(harness):
     assert row["output"] == ["item 0: 3", "item 1: 1", "item 2: 2"], row
 
 
+async def test_a_fail_fast_map_begins_no_item_after_one_failed(harness):
+    # with concurrency 1 the failed item's slot frees before the join sees the failure: the next one must not begin
+    # (a drafting machine: it would set its chapter in progress before the cancel came)
+    log: list[str] = []
+
+    async def answer(call):
+        index = call["path"].rsplit("/", 1)[1]
+        log.append(f"start {index}")
+        if index == "0":
+            raise ActivityError("agent_failed", "item 0 broke")
+        return call["task"]
+
+    machine = MAP_MACHINE.format(concurrency=1).replace("concurrency: 1", "concurrency: 1\n      fail: fast")
+    row = await harness.run(files(machine), backend=FakeBackend({f"each/{i}": answer for i in range(3)}))
+    assert row["status"] == "failed"
+    assert log == ["start 0"], log
+
+
 async def test_map_results_keep_item_order_whatever_finishes_first(harness):
     log: list[str] = []
     row = await harness.run(files(MAP_MACHINE.format(concurrency=3)), backend=_map_backend(log))

@@ -443,7 +443,8 @@ async def test_an_emit_is_a_message_in_the_run_s_session(harness, tmp_path, stat
 
     assert row["status"] == "succeeded", row["error"]
     messages = (await host.sessions.load_session("ann", f"sg_{run_id}"))["messages"]
-    assert [(m["role"], m["content"]) for m in messages[1:-1]] == [("assistant", "drafting x")], messages
+    told = [m for m in messages[1:-1] if not m.get("tool_calls") and m["role"] != "tool"]  # not the agent calls
+    assert [(m["role"], m["content"]) for m in told] == [("assistant", "drafting x")], messages
 
 
 async def test_an_emit_runs_in_a_mock_only_run(harness, status_lines):

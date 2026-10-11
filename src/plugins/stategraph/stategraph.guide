@@ -32,6 +32,7 @@ For agents and developers
   @{"  The authoring agent  " link author}
   @{"  Schedules  " link schedules}
   @{"  Callback URLs  " link callbacks}
+  @{"  Running a machine from Python  " link python}
   @{"  What the model sees  " link model}
   @{"  Setting it up  " link setup}
   @{"  Security  " link security}
@@ -53,7 +54,8 @@ The panel has three parts; the toolbar buttons fold the outer two away.
 
 Every machine in the machine folders, in folders by the machine's
 @{tt}group@{utt} (@{tt}Reviews/nightly@{utt} is a folder inside another).
-A machine without a group sits in "My machines" when it lies in the
+Folders sort by name, so a group can lead with its order
+(@{tt}Writer/1 Front@{utt}, @{tt}Writer/2 Chapters@{utt}). A machine without a group sits in "My machines" when it lies in the
 folder new machines are saved to, else in a folder named after the plugin
 it comes with -- also when that folder is made writable.
 Each entry shows the title, the id when it says more than the title, the
@@ -246,9 +248,12 @@ Run to set there are the submachine's. Its runs list also holds the runs
 it ran in ("in scene_review"): one picked shows the frame picked, else a
 live one, else the last. A fork shows the frames it ran itself; those
 before its fork point are in the run it was forked from.
-@{bullet}The @{b}Result@{ub} card: output or error, what the run's
-agents cost so far (their sub-agents included; tokens in ↑ and out ↓; ~
-marks an amount estimated from the price table), the final state of each
+@{bullet}The @{b}Result@{ub} card: output or error, what the run cost so
+far -- its agents with their sub-agents, and the LLM calls its
+@{tt}call@{utt} functions made (tokens in ↑ and out ↓; ~ marks an amount
+estimated from the price table) -- with more than one state @{b}Cost by
+state@{ub} (a state that runs a submachine holds what its machine's
+states cost: the cost of a phase), the final state of each
 frame, and every finished activity folded with its cost -- open one for
 its full answer, its input, failed attempts, its cost with its tokens,
 the agent's session (@{b}Open@{ub} shows the conversation in the chat) and
@@ -256,7 +261,7 @@ the request id (the message debugger finds the LLM calls by it). A fork
 counts only what it ran itself: an activity it replays says which run
 spent it. @{b}Run again@{ub} starts a new run with the same
 params and mocks, less those that had their default when the run
-started: the machine's default now applies; @{b}Session@{ub} opens the run's own session (not for
+started: the machine's default now applies; @{b}Session@{ub} opens the run's own session in the chat -- what it was asked, each agent call with that agent's run under it, how it ended (not for
 a mock-only run, which has none, nor for another user's run).
 @{bullet}The @{b}History@{ub} card: the last 200 journal rows, filtered by
 kind.
@@ -475,7 +480,9 @@ in the debugger. That is what the panel's history and result show -- and
 what makes a run survive its process. A process that stops marks its
 runs @{tt}interrupted@{utt}; one that crashes leaves them
 @{tt}running@{utt} until its lease on them has run out (a minute), then
-the next process that looks marks them. A schedule resumes its slot's
+the next process that looks marks them. The lease says the process lives:
+a thread of its own renews it every 20 seconds, so a @{tt}call@{utt}
+function that holds the event loop for minutes keeps its run. A schedule resumes its slot's
 run, and a callback URL resumes its run before it sends the event.
 Nothing else resumes by itself: resume the run (panel,
 @{tt}control_run@{utt}), or start it again with its run key. A resumed run replays its journal: an
@@ -710,10 +717,12 @@ The answer adds to run_machine's: @{tt}frames@{utt} (each frame's
 machine, state, step, visits, @{tt}ctx@{utt} and params, what it waits
 for), @{tt}inbox@{utt} (events no frame has taken yet),
 @{tt}journal@{utt} and @{tt}debug@{utt} (breakpoints, watchpoints, their
-values, where it is paused), and @{tt}spend@{utt} once an agent or decide
-activity reported a cost: @{tt}cost@{utt}, @{tt}tokens@{utt} (prompt,
+values, where it is paused), and @{tt}spend@{utt} once an agent, decide
+or call activity reported a cost: @{tt}cost@{utt}, @{tt}tokens@{utt} (prompt,
 completion, cached), @{tt}activities@{utt}, @{tt}cost_is_estimate@{utt},
-@{tt}cost_unpriced_calls@{utt} -- a fork's without what it replays. Texts in frames, journal and error are cut at
+@{tt}cost_unpriced_calls@{utt} and, with more than one state,
+@{tt}by_state@{utt} (each state path, a submachine state with what its
+states cost) -- a fork's without what it replays. Texts in frames, journal and error are cut at
 2,000 characters. An answer over 200,000 characters drops the oldest
 journal rows first (@{tt}journal_cut@{utt} says how many), then shows each
 frame's ctx as its keys and their sizes (@{tt}frames_cut@{utt}). A reader
@@ -928,6 +937,79 @@ is admin-only like the rest of the plugin until an operator opens it --
 see @{" Security " link security}.
 @endnode
 
+@node python "Running a machine from Python"
+@{h1}Running a machine from Python
+
+Python code in the same process -- a pipeline that runs a machine as a
+step of its own work -- does not go through a tool. It takes the
+instance's service and waits for the run's end. Outside the API and
+agent-cli, hand the instance your registry first
+(@{tt}server.use_registry(registry)@{utt}): without one, agent
+activities find no runner.
+
+@{code}
+server = registry.get("stategraph")          # the StateGraphServer instance
+row = await server.service.run_to_end(
+    "issue_loop", {"chapter": 3},
+    run_key=f"book-956:ch3:{attempt}",       # one key per pass
+    live={"pipeline": pipeline})             # objects that cannot be journaled
+if row["status"] != "succeeded": ...         # not done: failed, cancelled, interrupted
+@{body}
+
+@{tt}run_to_end(machine_id, params, *, user_id, ...)@{utt} takes what
+@{tt}start_run@{utt} takes (@{tt}run_key@{utt}, @{tt}run_id@{utt},
+@{tt}live@{utt}, @{tt}caller_session@{utt}, mocks), starts the run and
+returns its row (@{tt}status@{utt}, @{tt}output@{utt}, @{tt}error@{utt},
+@{tt}final_state@{utt}) once its task in this process is over. That is a
+terminal status, or @{tt}interrupted@{utt} (this process stopped), or
+another owner's row (another process took the run over): read anything
+but @{tt}succeeded@{utt} as not done. A wait state holds it until its
+event comes. A cancel of the caller terminates the run it started or
+resumed -- its @{tt}finally@{utt} activities run -- and the cancel goes on.
+
+@{b}keep_on_cancel.@{ub} A cancel that comes from outside the caller's
+work -- a graceful shutdown cancels the request that waits here -- need
+not end the run: pass @{tt}keep_on_cancel@{utt}, a function asked after
+the cancel. True interrupts the run instead (@{tt}interrupted@{utt}, its
+journal kept), and a later call under its key resumes it from the step in
+flight; False, or a function that raises, terminates as before. The
+writer asks its book's cancellation token: set means the user cancelled.
+
+@{b}run_key.@{ub} A key whose run ended answers that run's row again,
+without running anything -- after a transient failure a new run tries it
+anew: take a new key for each pass. A key whose run is interrupted
+resumes it, with the objects this call hands. A key whose run another
+process holds is a 409. A key whose run already runs in this process:
+called without @{tt}live@{utt}, the call waits for that run, and its
+cancel ends only the wait; called with @{tt}live@{utt}, it is a 409 --
+that run has its caller's objects.
+
+@{b}live.@{ub} Objects of the caller -- a pipeline instance, a client --
+reach @{tt}call@{utt} functions as @{tt}sg.live@{utt}, a read-only
+mapping, and never the journal: the history names them only
+(@{tt}live_objects@{utt}). A run resumed without them -- from the panel,
+or by another process after a restart -- sees an empty mapping, and the
+history marks the resume; a function that needs an object fails there
+(@{tt}call_failed@{utt}) unless it checks. What a call returned is
+journaled as usual, so a resume replays finished calls without the
+objects.
+
+@{b}A machine in several files.@{ub} Keep a long flow maintainable: a
+parent that only sequences, and each phase a machine of its own
+(@{tt}imports: {gate: ./book_gate.yaml}@{utt}, then
+@{tt}do: {machine: gate, params: {...}}@{utt}), its call functions in a
+module of its own. A submachine is a frame of the same run: the
+caller's @{tt}live@{utt} objects reach its calls at every depth, and a
+resume after a restart goes on inside it -- the calls before the one that
+was cut off are replayed from the journal, not run again.
+
+@{b}What a call costs.@{ub} The LLM calls made under a @{tt}call@{utt}
+function -- by it, by the code it calls, by a tool it runs -- count into
+its activity (the hook @{tt}count_call_spend@{utt}), so the run's
+@{tt}spend@{utt} and the panel's cost by state hold them: a phase of a
+pipeline shows what it cost.
+@endnode
+
 @node model "What the model sees"
 @{h1}What the model sees
 
@@ -987,12 +1069,20 @@ runs' own sessions.
 @{h2}Known gaps
 
 @{bullet}An agent activity's cost counts its LLM calls and its
-sub-agents'; LLM calls a tool makes on its own are not in it. A call with
-neither a billed cost nor a price for its model counts in
-@{tt}cost_unpriced_calls@{utt}, not in @{tt}cost@{utt}.
+sub-agents'; LLM calls a tool makes on its own are not in it. A
+@{tt}call@{utt} activity's cost counts the calls that reach
+@{tt}post_llm_response@{utt} under it: an agent whose hooks are off, or
+whose @{tt}hooks.overrides@{utt} switch
+@{tt}stategraph.count_call_spend@{utt} off,
+leaves its calls out. A call with neither a billed cost nor a price for
+its model counts in @{tt}cost_unpriced_calls@{utt}, not in
+@{tt}cost@{utt}.
 @{bullet}Of a run another process holds, pause, continue, step,
 terminate and events reach it; run_to, breakpoints, evaluate and set act
 only in its own process.
+@{bullet}A resume from the panel, or by another process, has no
+@{tt}live@{utt} objects: a function that needs one fails there (see
+@{" Running a machine from Python " link python}).
 @{bullet}A synchronous @{tt}call@{utt} function runs in a worker thread:
 terminate and timeouts end the activity at once, and Python cannot stop
 the thread -- a long function checks @{tt}sg.cancelled@{utt} (a

@@ -3744,10 +3744,12 @@
    * what the run did is read from its session once it comes into view
    * (watchStoredSubRun).
    *
-   * A run hangs under the nearest call read back whose id its own extends: the run of
-   * an agent called as a tool is not kept, so what that agent started hangs under the
-   * call to it. A run with no such call (compacted away, or older than the stamps) is
-   * not shown. The live events of these runs wait for the listing (waitingFor).
+   * A run hangs under the call that ran it (a state machine's run session keys its
+   * agent calls by their runs' ids), else under the nearest call read back whose id its
+   * own extends: the run of an agent called as a tool is not kept, so what that agent
+   * started hangs under the call to it. A run with no such call (compacted away, or
+   * older than the stamps) is not shown. The live events of these runs wait for the
+   * listing (waitingFor).
    */
   async function attachStoredSubRuns(session, views) {
     if (!session || !Object.keys((session.metadata && session.metadata.sub_agents) || {}).length) return;
@@ -3772,10 +3774,12 @@
         if (!calls.has(el.dataset.key)) calls.set(el.dataset.key, { view, el });
       });
     });
-    // The call whose id the run's extends: `X_003_sub_a` was started by X_003, and
-    // `X_003_sub_a_minlen_1`, a retry of it, goes beside it under the same call.
+    // The call that ran it -- a state machine's run session keys each agent call by the
+    // agent run's own id -- else the call whose id the run's extends: `X_003_sub_a` was
+    // started by X_003, and `X_003_sub_a_minlen_1`, a retry of it, goes beside it under
+    // the same call. As the live events find theirs (subRunView).
     const callOf = (runId) => {
-      for (let end = runId.lastIndexOf('_'); end > 0; end = runId.lastIndexOf('_', end - 1)) {
+      for (let end = runId.length; end > 0; end = runId.lastIndexOf('_', end - 1)) {
         const call = calls.get(runId.slice(0, end));
         if (call) return call;
       }

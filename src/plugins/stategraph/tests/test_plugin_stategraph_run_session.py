@@ -49,8 +49,12 @@ async def test_a_run_is_a_session_of_its_user_with_its_agents_below_it(harness, 
     assert session in roots and roots[session]["title"] == f"Write it · {run_id}"
     [child] = await host.sessions.list_child_sessions("ann", session)
     assert child["agent_name"] == "writer"
-    asked, ended = (await host.sessions.load_session("ann", session))["messages"]
+    # asked, the agent's call and its answer (the chat hangs the agent's run under the call), how it ended
+    asked, call, answer, ended = (await host.sessions.load_session("ann", session))["messages"]
     assert (asked["role"], asked["injected_by"]) == ("user", "stategraph") and '"topic": "a storm"' in asked["content"]
+    assert call["tool_calls"][0]["function"]["name"] == "writer" and call["tool_request_ids"]
+    assert (answer["role"], answer["tool_call_id"], answer["content"]) == (
+        "tool", call["tool_calls"][0]["id"], "writer answers a storm")
     assert ended["role"] == "assistant" and "succeeded" in ended["content"] and "writer answers a storm" in ended["content"]
 
 

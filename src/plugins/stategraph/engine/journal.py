@@ -142,6 +142,8 @@ _JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "de
                  "control_answer")
 #: Columns a runs.db from before them lacks: added when it is opened.
 _ADDED_COLUMNS = {"nesting": "TEXT", "control": "TEXT", "runner": "TEXT", "control_answer": "TEXT"}
+#: The key prefix of a row a resume set aside (runner.REWOUND + its rewind number).
+_REWOUND_KEY = re.compile(r"^rewound\.\d+/")
 #: Answers to event requests kept per run: one request at a time, each taken within a second, and its asker reads
 #: for a few seconds at most -- the last 16 hold every answer still read.
 ANSWERS_KEPT = 16
@@ -166,6 +168,17 @@ class RunStore:
         self.path = Path(path)
         self._conn: Optional[sqlite3.Connection] = None
         self._lock = threading.RLock()
+
+    @classmethod
+    def read_only(cls, path: str | Path) -> "RunStore":
+        """A store that only reads -- a report on a server's runs.db: no schema, no migration, and a write fails.
+        A file that is not there raises here, instead of an empty database appearing in its place."""
+        store = cls(path)
+        conn = sqlite3.connect(f"{store.path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        store._conn = conn
+        return store
 
     # ---------------------------------------------------------------- plumbing
     def _db(self) -> sqlite3.Connection:
@@ -665,6 +678,46 @@ class RunStore:
             priced, cost, prompt, completion, cached, estimated, unpriced = self._db().execute(sql, (run_id,)).fetchone()
         if not priced and not unpriced:
             return None
+        by_state = self._spend_by_state(run_id)
         return {"cost": round(cost, 6), "activities": priced,
                 "tokens": {"prompt": int(prompt), "completion": int(completion), "cached": int(cached)},
-                "cost_is_estimate": bool(estimated), "cost_unpriced_calls": int(unpriced)}
+                "cost_is_estimate": bool(estimated), "cost_unpriced_calls": int(unpriced),
+                **({"by_state": by_state} if len(by_state) > 1 else {})}  # one state: the total says it all
+
+    def _spend_by_state(self, run_id: str) -> list[dict[str, Any]]:
+        """The spend per state, by its path through the submachines (``phase/deeper/wait``): an activity counts to
+        the state it ran in -- a parallel's or a sequence's children to theirs -- and a state that runs a submachine
+        holds what that machine's states cost: the cost of a phase. Ordered as the paths sort, a state above its
+        children."""
+        sql = ("SELECT key, json_extract(data, '$.state'), json_extract(data, '$.meta.cost'),"
+               " json_extract(data, '$.meta.tokens.prompt'), json_extract(data, '$.meta.tokens.completion'),"
+               " json_extract(data, '$.meta.cost_unpriced_calls'), json_extract(data, '$.meta.cost_is_estimate')"
+               " FROM journal WHERE run_id = ? AND kind = 'activity'"
+               " AND json_extract(data, '$.meta.copied_from') IS NULL"
+               " AND (json_extract(data, '$.meta.cost') IS NOT NULL"
+               " OR json_extract(data, '$.meta.cost_unpriced_calls') IS NOT NULL)")
+        with self._lock:
+            db = self._db()
+            rows = db.execute(sql, (run_id,)).fetchall()
+            frames = dict(db.execute("SELECT prefix, path FROM frames WHERE run_id = ?", (run_id,)).fetchall())
+        totals: dict[str, dict[str, Any]] = {}
+        for key, state, cost, prompt, completion, unpriced, estimated in rows:
+            key = _REWOUND_KEY.sub("", key, count=1)  # a row a resume set aside costs where it ran (runner.REWOUND)
+            prefix = key[:key.rfind("/m/") + 3] if "/m/" in key else ""  # the frame the activity ran in
+            where = frames.get(prefix) or ""
+            parts = [part for part in f"{where}/{state or '?'}".split("/") if part]
+            for depth in range(1, len(parts) + 1):  # the state and every state above it
+                entry = totals.setdefault("/".join(parts[:depth]), {"cost": 0.0, "prompt": 0, "completion": 0,
+                                                                   "activities": 0, "unpriced": 0,
+                                                                   "estimated": False})
+                entry["cost"] += cost or 0.0
+                entry["prompt"] += int(prompt or 0)
+                entry["completion"] += int(completion or 0)
+                entry["activities"] += 1
+                entry["unpriced"] += int(unpriced or 0)
+                entry["estimated"] = entry["estimated"] or bool(estimated)
+        return [{"path": path, "cost": round(e["cost"], 6), "activities": e["activities"],
+                 "tokens": {"prompt": e["prompt"], "completion": e["completion"]},
+                 **({"cost_is_estimate": True} if e["estimated"] else {}),
+                 **({"cost_unpriced_calls": e["unpriced"]} if e["unpriced"] else {})}
+                for path, e in sorted(totals.items())]
