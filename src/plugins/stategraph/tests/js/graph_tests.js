@@ -611,6 +611,10 @@ test('runOverlay of a submachine frame: its own states, pause and edge; a child 
   equal([[...ended.active], ended.current, ended.visits.a, ended.lastEdge, ended.submachines.size],
     [['done'], 'done', 2, 'a#0', 0], 'gone from the view: drawn from its trace');
   equal(runOverlay(run, 's3/m/', seen).current, 'judge', 'a live frame says itself where it is');
+
+  const resumed = foldTrace(new Map(), { kind: 'trace', key: 's2/m/s1:enter:a', status: 'enter', state: 'a', data: { machine: 'crit', frame: 's2/m/', visit: 1 } });
+  foldTrace(resumed, { kind: 'trace', key: 'rewound.1/s2/m/end', status: 'end', state: 'a', data: { machine: 'crit', frame: 's2/m/', reason: 'failed' } });
+  equal(resumed.get('s2/m/').ended, null, 'a set-aside end (a resume runs the frame on) does not end it');
 });
 
 // ------------------------------------------------------------------ fragments

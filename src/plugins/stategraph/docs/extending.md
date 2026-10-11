@@ -97,7 +97,8 @@ returns the activity's result -- `out` for the machine -- or raises `ActivityErr
 - **Fail with `ActivityError(type, message, data=None)`.** Use a type from the design's
   list (§3.5) so machines can handle it: `call_failed` for "the work failed", `config`
   for a misconfiguration, `tool_failed` / `agent_failed` when you wrap those. `data`
-  becomes `error.data`. Any other exception is caught and turned into an error too, but
+  becomes `error.data`; with `resumable=True` it stops the run for a resume to run this activity again
+  instead of being handled (docs/stategraph_design.md §5.3). Any other exception is caught and turned into an error too, but
   with a generic type -- raise your own.
 - **Leave cancellation alone.** Do not catch `asyncio.CancelledError`; terminate and
   per-attempt timeouts cancel `run`. A timeout becomes error `timeout`. A `CancelledError`

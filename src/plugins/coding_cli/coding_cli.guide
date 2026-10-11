@@ -22,7 +22,7 @@ only listed users may start them, and none starts
 while the subscription is near its limit. A long run goes on in the
 background; the session that started it is woken when it ends.
 
-The plugin has three tools, no hooks and no panel. It also ships an agent,
+The plugin has four tools, no hooks and no panel. It also ships an agent,
 @{tt}claude_code_agent@{utt}, that only relays work to Claude Code; the
 coder agent has the tools too.
 
@@ -36,6 +36,7 @@ For agents and developers
   @{"  run_task  " link run_task}
   @{"  get_run  " link get_run}
   @{"  cancel_run  " link cancel_run}
+  @{"  quota  " link quota}
   @{"  What the model sees  " link model}
   @{"  Setting it up  " link setup}
   @{"  Known gaps  " link gaps}
@@ -286,7 +287,23 @@ in its stream; the plugin stores the last report in
 @{tt}max_window_utilization@{utt} and has not reset yet, or the
 subscription refuses requests, no run starts: "not started: the
 subscription's five_hour window is at 85%, the limit for runs is 80%; it
-resets 2026-09-30 14:00".
+resets 2026-09-30 14:00". A call may ask for a lower threshold
+(@{tt}max_window_utilization@{utt} of @{" run_task " link run_task}), never a
+higher one.
+
+Such a refusal says so as a field too, @{tt}limit@{utt}: @{tt}window@{utt},
+@{tt}utilization@{utt}, @{tt}threshold@{utt}, @{tt}resets_at@{utt} (epoch
+seconds) and @{tt}resets@{utt} (local time). So does a run the subscription
+stopped midway: its result is an error with @{tt}api_error@{utt}
+"usage_limit_reached" (HTTP 429, "You've hit your session limit · resets
+1:10am (Europe/Berlin)"), the stream's last rate_limit_event says
+"rejected" (measured on Claude Code 2.1.295, 2026-10-09, seven runs); its
+@{tt}limit@{utt} names the window, the api_error and when it resets. A
+caller that must tell the budget from any other failure reads the field, not
+the words: "not started: N run(s) still going" carries none. The tool
+@{tt}coding_cli_quota@{utt} reads the windows and the limit a new run would
+be refused for, without starting one; no report yet: @{tt}known: false@{utt},
+no limit.
 @endnode
 
 @node agent "The relay agent"
@@ -313,7 +330,7 @@ metadata.visibility | not set: private -- neither in the agent list nor a tool o
 
 As shipped it is therefore reached by name, e.g.
 @{tt}agent-cli run claude_code_agent "..."@{utt}. The coder agent has the
-three tools itself (deferred: loaded on demand with @{tt}tool_search@{utt}).
+four tools itself (deferred: loaded on demand with @{tt}tool_search@{utt}).
 @endnode
 
 @node run_task "run_task"
@@ -330,6 +347,7 @@ resume | run id of an ended run of the user's: continue its Claude Code conversa
 json_schema | a JSON schema, an object of at most 20,000 characters as JSON on the command line -- quotes escaped as Windows needs them, so a quote counts two to four times; the rest of the line stays far below Windows' 32,767 -- nested at most 100 deep. Claude Code also answers with an object matching it (@{tt}output@{utt}). A resume without one keeps its run's
 wake | @{tt}true@{utt} (default): a run still going when the call answers wakes the session at its end, where a wake can be armed (the answer's @{tt}wake@{utt} and @{tt}wake_note@{utt} say whether); @{tt}false@{utt}: it wakes nobody -- the caller waits with @{" get_run " link get_run} itself (see @{" What the model sees " link model})
 max_run_minutes | a shorter time limit for this run, in minutes (a number above 0); one above the instance's @{tt}max_run_minutes@{utt} counts as the instance's. A resume without one keeps the one its run asked for; a run that asked none resumes under the instance's
+max_window_utilization | a lower threshold for the subscription's windows than the instance's (a share above 0, at most 1); one above it counts as the instance's. Refused for it, the answer carries @{tt}limit@{utt} (see @{" How a run goes " link run}). A resume without one keeps the one its run asked for
 @{body}
 
 @{h2}The answer of an ended run
@@ -349,7 +367,8 @@ denials | untrusted: tool calls Claude Code was refused, e.g. @{tt}Write /elsewh
 result | untrusted: Claude Code's final report, at most 12,000 characters (@{tt}result_cut: true@{utt} when cut)
 output | untrusted, only with a @{tt}json_schema@{utt}: the object Claude Code returned for it (@{tt}structured_output@{utt}); dropped, with a note, when its JSON is over @{tt}max_output_chars@{utt} (12,000) characters (characters, not escapes) -- cut, it would match the schema no more -- or nests deeper than 100: Python's own encoder, which writes the record and prints an answer in the agent-cli, gives up at about 1,000. A broken character escape in it, as in every part of the stream, arrives as U+FFFD
 hidden | files kept out of the worktree for their secrets; at most 50 and a "... N more"
-note | the plugin's own words: why it was stopped, "not committed, the changes are in the worktree", "Claude Code ended without a result, its stderr is in details", ...
+note | the plugin's own words: why it was stopped, "not committed, the changes are in the worktree", "Claude Code ended without a result, its stderr is in details", "stopped by the subscription: ...", ...
+limit | only when the subscription stopped the run: @{tt}window@{utt}, @{tt}api_error@{utt}, @{tt}resets_at@{utt}, @{tt}resets@{utt}
 details | untrusted: git's error output, the last 600 characters of Claude Code's stderr
 next | how to resume, and the @{tt}git diff@{utt} that shows the branch
 @{body}
@@ -382,12 +401,13 @@ task: not valid text (a broken character escape) -- send it again | a lone surro
 mode: edit (change the code) or plan (read and answer with a plan) | another mode
 wake: true (woken at the end) or false (you wait with get_run) | not true or false
 max_run_minutes: a number of minutes above 0 -- a shorter limit for this run; the instance's <n> at most | not a number, or 0 or less
+max_window_utilization: a share above 0 and at most 1 -- a lower threshold for this run; the instance's <n> at most | not a number, 0 or less, above 1, or a boolean
 json_schema: a JSON schema as an object, at most 20000 characters as JSON on the command line, its quotes escaped | not an object, too long, nested deeper than 100, or holding NaN or Infinity -- also the one a resume would inherit
 resume: no run <id> of yours | unknown run, or another user's
 resume: run <id> has not ended yet | still running
 resume: run <id> left no conversation or worktree to continue -- start a new run | no Claude Code session, or the worktree was removed
 workdir: one of <names> | unknown workdir, or none given with several configured
-not started: <reason> | the subscription guard, a git or start failure
+not started: <reason> | the subscription guard (then with @{tt}limit@{utt}), a git or start failure
 not started: <n> run(s) still going (<ids>) -- wait for them or cancel one | @{tt}max_parallel@{utt} reached
 resume: another run works in that worktree | a resume of a run whose worktree is in use
 @{body}
@@ -446,12 +466,38 @@ run_id | required; a run of the calling user
 Error: "no run <id> of yours".
 @endnode
 
+@node quota "quota"
+@{h1}quota
+
+Reads the subscription's windows as the last run reported them
+(@{tt}data/coding_cli/quota.json@{utt}) and the budget limit a new run would
+be refused for now, without starting one -- the reading
+@{" run_task " link run_task} refuses by. A state machine asks it at a run's
+start, before it pays for anything that a refused Claude Code step would
+then waste.
+
+@{table}
+Parameter | Meaning
+max_window_utilization | a lower threshold than the instance's (a share above 0, at most 1)
+@{body}
+
+@{table}
+Field | Meaning
+known | whether any run has reported the windows yet; false: no windows and no limit -- nothing to go by refuses nothing
+windows | utilization per window, e.g. @{tt}{"five_hour": 0.34, "seven_day": 0.51}@{utt}
+threshold | the threshold it judged by: the instance's, or the lower one asked
+limit | null, or the limit run_task would refuse with (see @{" How a run goes " link run})
+@{body}
+
+Error: "max_window_utilization: a share above 0 and at most 1".
+@endnode
+
 @node model "What the model sees"
 @{h1}What the model sees
 
 @{h2}The tools
 
-The three tools come from the plugin's @{tt}schema.yaml@{utt}, rendered per
+The four tools come from the plugin's @{tt}schema.yaml@{utt}, rendered per
 instance: the names carry the instance name
 (@{tt}coding_cli_run_task@{utt}, ...), and @{tt}workdir@{utt} is an enum of
 the configured workdirs. Without a Claude Code executable or a usable

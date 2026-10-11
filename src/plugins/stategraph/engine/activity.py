@@ -240,6 +240,9 @@ class ActivityRun:
         result = await child.execute()
         if result.status != "succeeded":
             cause = result.error or {}  # named in the message too: the caller's answer and a finally read that
+            if cause.get("resumable"):  # it ends the caller too, saying what it said (a resume runs it again, §5.3)
+                raise ActivityError("submachine_failed", str(cause.get("message") or ""), data=result.output,
+                                    cause=result.error, resumable=True)
             why = f"{cause.get('type')}: {cause.get('message')}"
             raise ActivityError("submachine_failed", f"{alias} ended in {result.final_state} ({result.status}): "
                                 f"{why[:_CAUSE_CHARS]}", data=result.output, cause=result.error)
@@ -430,6 +433,8 @@ class ActivityRun:
         A cause the retry rules exclude (NOT_RETRIED) in the chain of unhandled causes excludes the composite
         too, unless ``errors`` names it.
         """
+        if failure.extra.get("resumable"):  # it would be refused again: a resume runs it, once that changed (§5.3)
+            return False
         below = f"{self.key}/"
         if any(key.startswith(below) and not _IN_ENDING.search(key[len(below):]) for key in self.run.interrupted):
             return False

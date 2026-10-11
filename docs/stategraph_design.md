@@ -779,6 +779,31 @@ A resume re-runs the interpreter from the start against the run's own definition
 - **The debugger's state survives the stop** (§6): its points, and what held the run -- a run
   that stopped while paused pauses again at its first live hook; a pending pause, step or
   `run_to` still applies.
+- **A resumable failure** is an `ActivityError` raised with `resumable=True` (a `call`'s, e.g. a
+  subscription's budget used up until its window resets): no answer of the machine, so no error
+  transition takes it, and no retry runs it again. It ends its frame as unhandled; a submachine
+  frame ended so raises it on in its caller (`submachine_failed`, the same message,
+  `resumable`), a `fail: collect` join raises it once every child ended (each kept its outcome), a
+  quorum raises it instead of `join_failed`. The run ends `failed` with it -- its frames' `finally`
+  and `close` activities run -- and `error.resumable` says it may be resumed (the panel offers
+  Resume, `get_run` says so in `next`). The resume of such a run sets aside the rows the failure
+  decided before it replays (`runner.rewound_rows`): the innermost activity whose resumable error
+  ended the run -- every composite enclosing it ended on it too; a refused branch a quorum outvoted,
+  or a `finally`'s failure (swallowed), ended nothing and stays -- and every row below it, the
+  composites it was in, and in every frame on its path the later steps and the frame's end with its
+  activities. A child the failure cancelled below those composites (`fail: fast`, a quorum) has no
+  outcome, only its `started` row: its innermost started row is set aside the same way -- of what
+  ran below it only its frame's end -- so it runs again, not taken for one a crash left in flight,
+  while the steps it had finished replay and a wait it stood in goes on. The rows move in one transaction to `rewound.<n>/<key>`, beside a trace
+  `rewound.<n>` naming them -- their cost still counts, a mock's `$visits` counts their visits, and
+  nothing else of them is read: no replay, fork or join (`joined`) matches them. So that activity
+  and the cancelled children run again, and everything before it and a join's children that ended
+  replay. A frame with resources on the failure's path, or of a cancelled child, refuses the resume
+  (`NotRewindable`, the journal untouched): its end closed them, and the steps before would replay
+  with them closed -- fork it, or start it again. A resume that fails after its rewind (its launch)
+  leaves the run as it was, `failed` with its resumable error; the next one does not rewind again
+  while nothing ran since. A schedule or a run key never resumes it: the reason has to
+  change first, and a resume too early stops again at the same activity.
 
 ### 5.4 Divergence
 
@@ -935,7 +960,8 @@ A run is `paused` while the debugger holds it, `running` while any leaf activity
 tool, decide, call) executes, `waiting` when no activity executes and at least one frame
 waits for an event, and `running` otherwise. `limits.timeout` counts only `running` time,
 across resumes. The terminal statuses are `succeeded`, `failed` and `cancelled`;
-`interrupted` means the owner stopped and the run can be resumed.
+`interrupted` means the owner stopped and the run can be resumed; a `failed` run whose
+`error.resumable` is true can be resumed too (§5.3).
 
 ---
 

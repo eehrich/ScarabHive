@@ -2,7 +2,8 @@
 
 Agent workflows as state machines in YAML: states run an agent, a tool, a decision, a Python function, another
 machine or a fan-out; transitions carry Python guards and effects. The engine journals every step, resumes an
-interrupted run without repeating finished work, and pauses on breakpoints and watches. The **State Graph** panel
+interrupted run without repeating finished work -- and a run that stopped on a resumable failure (a budget used up)
+by running just the activity it stopped on again --, and pauses on breakpoints and watches. The **State Graph** panel
 shows a machine as a graph to edit, run and debug it; the agent `stategraph_author` writes machines for you.
 
 - **Tools** `stategraph_catalog`, `stategraph_list_machines`, `stategraph_get_machine`, `stategraph_validate_machine`,
