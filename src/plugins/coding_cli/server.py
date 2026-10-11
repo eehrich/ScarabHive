@@ -233,7 +233,7 @@ class CodingCliServer(SchemaBasedToolServer):
         self.max_utilization = _bounded(getattr(server_config, "max_window_utilization", None), 0.8, 0.05, 1.0) or 0.8
         self.wait_s = _bounded(getattr(server_config, "wait_s", None), 300, 0, 3600)
         self.wait_s = 300.0 if self.wait_s is None else self.wait_s
-        self.max_run_s = 60 * (_bounded(getattr(server_config, "max_run_minutes", None), 60, 1, 24 * 60) or 60)
+        self.max_run_s = 60 * (_bounded(getattr(server_config, "max_run_minutes", None), 60, 1, 7 * 24 * 60) or 60)
         self.max_parallel = int(_bounded(getattr(server_config, "max_parallel", None), 1, 1, 8) or 1)
         self.max_task_chars = int(_bounded(getattr(server_config, "max_task_chars", None), MAX_TASK_CHARS, 1_000,
                                            MAX_TASK_CHARS_CAP) or MAX_TASK_CHARS)
