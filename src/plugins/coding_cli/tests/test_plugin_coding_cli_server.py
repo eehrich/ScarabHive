@@ -258,6 +258,16 @@ async def test_a_seeded_folder_is_in_the_runs_worktree_and_stays_out_of_its_comm
 def test_a_seed_outside_the_repository_is_refused(tmp_path):
     with pytest.raises(ValueError, match="inside the repository"):
         cli.seed_worktree(tmp_path / "repo", tmp_path / "wt", ["../elsewhere"])
+    with pytest.raises(ValueError, match="inside the repository"):
+        cli.seed_worktree(tmp_path / "repo", tmp_path / "wt", [str(tmp_path / "elsewhere")])
+
+
+def test_a_seed_folder_the_repository_does_not_have_is_skipped(tmp_path):
+    """A ticket without attachments: tracker names the folder all the same."""
+    (tmp_path / "repo").mkdir()
+    (tmp_path / "wt").mkdir()
+    cli.seed_worktree(tmp_path / "repo", tmp_path / "wt", [".seed"])
+    assert not (tmp_path / "wt" / ".seed").exists()
 
 
 async def test_no_hook_runs_when_the_plugin_commits(tmp_path):
