@@ -7,11 +7,17 @@ down (no MCP server but those the operator names per workdir, a fixed tool list,
 listed users start them, and none starts while the subscription is near its limit. A long run goes on in the
 background and wakes the session that started it.
 
-- **Tools** -- `coding_cli_run_task`, `coding_cli_get_run`, `coding_cli_cancel_run`; offered only when the Claude
-  Code executable and a usable workdir are there. `run_task` takes an optional `json_schema`: the answer then
-  carries `output`, an object matching it (untrusted). An optional `max_run_minutes` gives the run a shorter time
-  limit than the instance's (a resume without one keeps it). Every answer of an ended run carries `cost_usd`, on the
+- **Tools** -- `coding_cli_run_task`, `coding_cli_get_run`, `coding_cli_cancel_run`, `coding_cli_quota`; offered
+  only when the Claude Code executable and a usable workdir are there. `run_task` takes an optional `json_schema`:
+  the answer then carries `output`, an object matching it (untrusted). An optional `max_run_minutes` gives the run a
+  shorter time limit than the instance's, an optional `max_window_utilization` a lower threshold for the
+  subscription's windows (a resume without one keeps either). Every answer of an ended run carries `cost_usd`, on the
   subscription a notional amount -- the measure the stream reports.
+- **Budget** -- a run refused for the subscription's budget (a window at or past the threshold), and one the
+  subscription stopped midway (its result `api_error: usage_limit_reached`, the stream's last rate_limit_event
+  `rejected`; measured on Claude Code 2.1.295), answer with a field `limit`: the window, its use, the threshold, when
+  it resets. A caller tells the budget by it, not by words -- "N run(s) still going" carries none. `quota` reads the
+  windows as the last run reported them and the limit a new run would be refused for, without starting one.
 - **MCP servers** -- a workdir's `mcp_servers` names servers of `external_servers.remote_servers` (enabled, with a
   url free of credentials, an HTTP or SSE transport); its edit runs load exactly these, their blocked tools
   denied, through a per-run MCP config whose auth headers are `${CODING_CLI_MCP_<n>}` placeholders -- the

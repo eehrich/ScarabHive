@@ -47,7 +47,8 @@ def test_the_tools_exist_only_when_claude_code_and_a_workdir_are_there(tmp_path,
     cfg.workdirs = {"repo": {"path": str(tmp_path)}} if workdir else {}
     server = CodingCliServer("coding_cli", AgentSystemConfig(), cfg)
     names = {tool["function"]["name"] for tool in server.get_tools()}
-    assert names == ({"coding_cli_run_task", "coding_cli_get_run", "coding_cli_cancel_run"} if offered else set())
+    assert names == ({"coding_cli_run_task", "coding_cli_get_run", "coding_cli_cancel_run", "coding_cli_quota"}
+                     if offered else set())
 
 
 def test_the_instance_keeps_the_subscription_to_its_owner(config):

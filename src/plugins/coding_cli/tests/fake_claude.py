@@ -6,6 +6,8 @@ The task on stdin is a script, one command per line:
   SLEEP <seconds>       wait
   RATE <utilization>    the five-hour window's utilization in the rate_limit_event
   REJECT                the rate_limit_event says the subscription refuses requests
+  LIMIT                 the subscription stops the run midway, as measured on Claude Code 2.1.295 (2026-10-09): a
+                        last rate_limit_event "rejected" and an is_error result, api_error usage_limit_reached
   TORN                  a Write tool call whose line arrives in two halves
   ERROR                 end with an error result
   DIE                   exit without a result, "boom" on stderr
@@ -83,6 +85,19 @@ def main():
             sys.stdout.write("this is no json\n")
             sys.stdout.flush()
     emit({"type": "assistant", "session_id": session, "message": {"content": [{"type": "text", "text": "done\nall of it"}]}})
+    if "LIMIT" in task.splitlines():
+        resets = time.time() + 1800
+        emit({"type": "rate_limit_event", "session_id": session, "rate_limit_info": {
+            "status": "rejected", "resetsAt": resets, "rateLimitType": "five_hour", "overageStatus": "rejected",
+            "isUsingOverage": False, "unifiedWindows": {"five_hour": {"utilization": 1, "resetsAt": resets},
+                                                        "seven_day": {"utilization": 0.43, "resetsAt": resets + 86400}}}})
+        emit({"type": "assistant", "session_id": session, "message": {"model": "<synthetic>", "content": [
+            {"type": "text", "text": "You've hit your session limit · resets 1:10am (Europe/Berlin)"}]}})
+        emit({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429,
+              "api_error": "usage_limit_reached", "terminal_reason": "api_error", "num_turns": turns,
+              "duration_ms": 904000, "result": "You've hit your session limit · resets 1:10am (Europe/Berlin)",
+              "session_id": session, "total_cost_usd": 3.51, "permission_denials": [], "usage": {}})
+        return
     result = {"type": "result", "subtype": "error_during_execution" if error else "success", "is_error": error,
               "num_turns": turns, "duration_ms": 5002, "result": "failed" if error else f"did: {task.splitlines()[0]}",
               "session_id": session, "total_cost_usd": 0.07, "permission_denials": [

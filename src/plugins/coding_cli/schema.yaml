@@ -37,6 +37,11 @@ tools:
             type: number
             exclusiveMinimum: 0
             description: "A shorter time limit for this run than the instance's (which it never exceeds); a resume without one keeps the prior run's"
+          max_window_utilization:
+            type: number
+            exclusiveMinimum: 0
+            maximum: 1
+            description: "A lower threshold than the instance's max_window_utilization (0-1): the run is not started while a subscription window is at or past it. Refused so -- or stopped midway by the subscription -- the answer carries limit (the window, when it resets). A resume without one keeps the prior run's"
         required: [task]
         additionalProperties: false
 
@@ -54,6 +59,20 @@ tools:
             default: false
             description: "true: should this call be cancelled while it waits (its caller stopped), the run is stopped with it -- as a run_task call's run is"
         required: [run_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_quota"
+      description: "The subscription's windows (five_hour, seven_day: their utilization as the last run reported it) and the budget limit a new run would be refused for now (limit, null when none). Reads only."
+      parameters:
+        type: object
+        properties:
+          max_window_utilization:
+            type: number
+            exclusiveMinimum: 0
+            maximum: 1
+            description: "A lower threshold than the instance's (0-1)"
         additionalProperties: false
 
   - type: function

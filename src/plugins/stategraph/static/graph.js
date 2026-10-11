@@ -833,7 +833,8 @@ export function runOverlay(run, prefix = '', traced = null) {
 /** One journal row folded into `frames` (prefix -> what the trace says of that frame: its machine, the visits of its
  * states, the state it is in or ended in, its last transition and how it ended); rows in seq order. */
 export function foldTrace(frames, row) {
-  if (row?.kind !== 'trace' || !row.data?.machine) return frames;
+  // a row a resume set aside (`rewound.<n>/...`, §5.3) is history: its frame runs on
+  if (row?.kind !== 'trace' || !row.data?.machine || row.key?.startsWith('rewound.')) return frames;
   const prefix = row.data.frame || '';
   const seen = frames.get(prefix)
     || { machine: row.data.machine, visits: Object.create(null), state: null, lastEdge: null, ended: null };

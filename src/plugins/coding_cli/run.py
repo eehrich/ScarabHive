@@ -290,24 +290,69 @@ def windows(rate_limit: Any) -> dict[str, float]:
             if isinstance(w, dict) and isinstance(w.get("utilization"), (int, float))}
 
 
-def quota_block(rate_limit: Any, limit: float, now: float) -> str:
-    """Why no run may start on the last known subscription state, or "". It is
-    a lower bound: the user's own sessions have used it since."""
+def quota_limit(rate_limit: Any, limit: float, now: float) -> Optional[dict]:
+    """The budget limit that keeps a run from starting on the last known subscription state, or None: a window
+    (five_hour, seven_day -- every one the stream reports) at or past `limit`, or a subscription that refuses
+    requests, until it resets. It is a lower bound: the user's own sessions have used it since. No state known
+    (no run has reported one yet): None -- nothing to go by is no reason to refuse.
+
+    The answer's fields: window (its name, or the rateLimitType of a refusal), utilization (a window's, 0-1),
+    threshold (`limit`), status (a refusal's), resets_at (epoch seconds) and resets (local time, as a person
+    reads it)."""
     if not isinstance(rate_limit, dict):
-        return ""
+        return None
     found = rate_limit.get("unifiedWindows")
     for name, w in (found if isinstance(found, dict) else {}).items():
         if not isinstance(w, dict):
             continue
         used, resets = w.get("utilization"), w.get("resetsAt")
         if isinstance(used, (int, float)) and used >= limit and isinstance(resets, (int, float)) and resets > now:
-            return (f"the subscription's {name} window is at {used:.0%}, the limit for runs is {limit:.0%}; "
-                    f"it resets {_when(resets)}")
+            return {"window": str(name), "utilization": float(used), "threshold": limit, "resets_at": resets,
+                    "resets": _when(resets)}
     resets = rate_limit.get("resetsAt")
     if not str(rate_limit.get("status") or "allowed").startswith("allowed") \
             and isinstance(resets, (int, float)) and resets > now:
-        return f"the subscription refuses requests ({rate_limit.get('status')}) until {_when(resets)}"
-    return ""
+        return {"window": str(rate_limit.get("rateLimitType") or "subscription"), "status": rate_limit.get("status"),
+                "threshold": limit, "resets_at": resets, "resets": _when(resets)}
+    return None
+
+
+def limit_text(limit: dict) -> str:
+    """A budget limit (quota_limit, usage_limit) in words."""
+    if limit.get("status"):
+        return f"the subscription refuses requests ({limit['status']}) until {limit.get('resets') or 'unknown'}"
+    if "utilization" in limit:
+        return (f"the subscription's {limit['window']} window is at {limit['utilization']:.0%}, the limit for runs "
+                f"is {limit['threshold']:.0%}; it resets {limit.get('resets') or 'at an unknown time'}")
+    return (f"the subscription's {limit.get('window')} limit is reached -- it resets "
+            f"{limit.get('resets') or 'at an unknown time'}")
+
+
+def quota_block(rate_limit: Any, limit: float, now: float) -> str:
+    """Why no run may start on the last known subscription state (quota_limit), or ""."""
+    found = quota_limit(rate_limit, limit, now)
+    return limit_text(found) if found else ""
+
+
+# What a run the subscription stopped midway ends with (measured on Claude Code 2.1.295, 2026-10-09, 7 runs): its
+# result is_error with api_error "usage_limit_reached" (HTTP 429), its text "You've hit your session limit · resets
+# 1:10am (Europe/Berlin)", and the stream's last rate_limit_event "rejected" with the window and resetsAt.
+USAGE_LIMIT_ERRORS = ("usage_limit_reached",)
+
+
+def usage_limit(result: Any, rate_limit: Any) -> Optional[dict]:
+    """The budget limit a run ended on, or None: its result says so (api_error, USAGE_LIMIT_ERRORS) or the stream's
+    last rate_limit_event refuses (status "rejected"). Fields as quota_limit's, the reset from the event."""
+    said = isinstance(result, dict) and result.get("is_error") and result.get("api_error") in USAGE_LIMIT_ERRORS
+    info = rate_limit if isinstance(rate_limit, dict) else {}
+    refused = str(info.get("status") or "allowed") == "rejected"
+    if not (said or refused):
+        return None
+    resets = info.get("resetsAt")
+    resets = resets if isinstance(resets, (int, float)) else None
+    return {"window": str(info.get("rateLimitType") or "subscription"),
+            "api_error": result.get("api_error") if isinstance(result, dict) else None,
+            "resets_at": resets, "resets": _when(resets) if resets else ""}
 
 
 def _when(epoch: float) -> str:

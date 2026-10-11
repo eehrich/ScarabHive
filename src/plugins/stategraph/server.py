@@ -57,6 +57,9 @@ NEXT = {
     "paused": "the debugger holds it: stategraph_control_run(run_id, action='continue' or 'step')",
     "interrupted": "its process stopped: stategraph_control_run(run_id, action='resume') goes on from its journal",
 }
+#: A run that ended on a resumable failure (docs/stategraph_design.md §5.3): a resume runs that activity again.
+NEXT_RESUMABLE = ("it stopped on a resumable failure (its error says why, e.g. a budget used up): once that has changed, "
+                  "stategraph_control_run(run_id, action='resume') runs that activity again and replays the rest")
 #: A wait that takes no event -- a timer state (after): it goes on by itself.
 NEXT_TIMER = ("it waits out a timer (after) and goes on by itself: stategraph_get_run(run_id, wait='finish') waits "
               "for its end, a pause or a wait")
@@ -786,7 +789,9 @@ def _summary(row: dict[str, Any], *, full_output: bool = False) -> dict[str, Any
             "output": row.get("output") if full_output else _capped(row.get("output"), OUTPUT_CHARS),
             "error": _capped(row.get("error"), ROW_CHARS),
             "paused": debug.get("paused"),
-            **({"next": NEXT_TIMER if _timed(row) else NEXT[row["status"]]} if row.get("status") in NEXT else {}),
+            **({"next": NEXT_TIMER if _timed(row) else NEXT[row["status"]]} if row.get("status") in NEXT
+               else {"next": NEXT_RESUMABLE} if row.get("status") == "failed" and (row.get("error") or {}).get("resumable")
+               else {}),
             "accepts": [{"frame": f.get("prefix", ""), "events": f.get("accepts")} for f in frames if f.get("accepts")],
             **({"mocks_unused": view["mocks_unused"]} if view.get("mocks_unused") else {})}
 

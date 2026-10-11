@@ -2466,6 +2466,12 @@ async function loadRun({ tick = false } = {}) {
 function showRun(run) {
   // a control's answer does not list the frames a run started: the last poll's stand until the next
   if (!run.frames_started && S.run?.id === run.id) run.frames_started = S.run.frames_started;
+  // resumed after a resumable failure: its resume moved rows aside (rewound.<n>/, same seq) -- read the journal
+  // anew, and a read still out with the old rows must not put them back (resultEpoch)
+  if (S.run?.id === run.id && S.run.status === 'failed' && S.run.error?.resumable && run.status !== 'failed') {
+    resultEpoch += 1;
+    if (S.result?.runId === run.id) S.result = null;
+  }
   S.run = run;
   if (!TERMINAL.has(run.status) && run.status !== 'interrupted') poller.start();
   else poller.stop();
@@ -2522,7 +2528,8 @@ function drawDebugBar() {
     runTo: live && ['running', 'paused'].includes(run.status),
     // an interrupted run is live nowhere: terminating it runs its finally here and ends it (service: terminate)
     terminate: (live && !TERMINAL.has(run.status)) || elsewhere || run.status === 'interrupted',
-    restart: run.status === 'interrupted',
+    // an interrupted run, or one that ended on a resumable failure (a budget stop): its resume runs that activity again
+    restart: run.status === 'interrupted' || (run.status === 'failed' && !!run.error?.resumable),
   };
   const answers = run.status === 'waiting' ? acceptedEvents(run) : [];
   const choices = runChoices(run);
@@ -2547,7 +2554,7 @@ function drawDebugBar() {
     ${can.runTo ? html`<select class="pk-select pk-select--sm" id="runToState" aria-label="State to run to">${states.map((name) => html`<option value="${name}">${name}</option>`)}</select>
     <button type="button" class="pk-btn pk-btn--sm" data-control="run_to" title="Run until the chosen state is entered">${icon('crosshair', { size: 'sm' })} Run to</button>` : ''}
     ${can.terminate ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-control="terminate">${icon('square', { size: 'sm' })} Terminate</button>` : ''}
-    ${can.restart ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" data-control="resume" title="Resume the interrupted run: finished activities are replayed, not repeated">${icon('play', { size: 'sm' })} Resume</button>` : ''}
+    ${can.restart ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" data-control="resume" title="${run.status === 'failed' ? 'Resume the run where it stopped: the activity it stopped on runs again, everything finished is replayed, not repeated' : 'Resume the interrupted run: finished activities are replayed, not repeated'}">${icon('play', { size: 'sm' })} Resume</button>` : ''}
     <button type="button" class="pk-btn pk-btn--sm" data-control="fork" title="A new run from a top-level step of this one (Shift: with the machine's current definition)">${icon('git-branch', { size: 'sm' })} Fork…</button>
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`));
 }
@@ -2985,6 +2992,7 @@ const resultRow = (row) => (row.kind === 'activity' && (row.status === 'done' ||
   || (row.kind === 'trace' && row.status === 'final');
 
 let resultLoad = null;   // the run whose result is being read: a poll meanwhile leaves the read alone
+let resultEpoch = 0;     // bumped when the journal read so far no longer holds (showRun: a resumed run's rows moved)
 let resultAgain = null;  // ... and asks for another look once it is done
 
 /**
@@ -2997,6 +3005,7 @@ let resultAgain = null;  // ... and asks for another look once it is done
 async function loadResult({ ended = [], more = true } = {}) {
   const id = S.runId;
   if (!id) return;
+  const epoch = resultEpoch;
   const kept = S.result?.runId === id ? S.result
     : { runId: id, rows: [], after: 0, running: new Set(), complete: true, frames: new Map() };
   let { after } = kept;
@@ -3037,7 +3046,7 @@ async function loadResult({ ended = [], more = true } = {}) {
   } finally {
     if (resultLoad === id) resultLoad = null;
   }
-  if (id !== S.runId) return;
+  if (id !== S.runId || epoch !== resultEpoch) return;
   S.result = { runId: id, rows: [...rows.values()].sort((a, b) => a.seq - b.seq), after, running, complete, frames };
   drawResult();
   drawStateFrames();  // the frames a state started: also those only the journal names, and how they ended
