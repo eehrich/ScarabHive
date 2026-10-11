@@ -209,6 +209,25 @@ export function icon(name, { size = '', label = '' } = {}) {
   return new SafeHtml(`<svg class="pk-icon${cls}"${aria}><use href="/static/kit/icons.svg#${escapeHtml(name)}"/></svg>`);
 }
 
+// The status set of runs, stages and jobs (.pk-status): name -> icon. The template twin is the status() macro in
+// templates/kit/macros.html; tests/ui/test_kit.py holds the two equal.
+const STATUS_ICONS = {
+  pending: 'circle-dashed', running: 'loader-circle', success: 'circle-check', failed: 'circle-x',
+  canceled: 'circle-slash', skipped: 'circle-chevron-right', manual: 'circle-play', waiting: 'circle-pause',
+  paused: 'circle-pause',
+};
+
+/**
+ * A status as icon and tone. label: true adds its word (in the page's language), a text adds that text. Without a
+ * visible word the icon carries it for screen readers. An unknown name draws as pending and keeps its name as word.
+ */
+export function status(name, { label = false, pill = false } = {}) {
+  const known = Object.hasOwn(STATUS_ICONS, name) ? name : 'pending';
+  const text = typeof label === 'string' && label ? label : (word('statuses')[name] || String(name ?? ''));
+  return html`<span class="pk-status pk-status--${known}${pill ? ' pk-status--pill' : ''}" title="${text}">${
+    icon(STATUS_ICONS[known], { label: label ? '' : text })}${label && html`<span class="pk-status-label">${text}</span>`}</span>`;
+}
+
 // ------------------------------------------------------------------ api
 
 export class ApiError extends Error {
@@ -458,6 +477,8 @@ const WORDS = {
     pinnedTitle: (id) => `A link sent this panel to session ${id}: it does not follow the chat`,
     followChat: 'Follow the chat', followChatTitle: 'Show the session open in the chat again',
     openInShell: 'Open in ScarabHive', openInShellTitle: 'Open ScarabHive with this panel docked beside the chat',
+    statuses: { pending: 'Pending', running: 'Running', success: 'Succeeded', failed: 'Failed', canceled: 'Canceled',
+      skipped: 'Skipped', manual: 'Manual', waiting: 'Waiting', paused: 'Paused' },
   },
   de: {
     notice: 'Hinweis', confirm: 'Bestätigen', input: 'Eingabe', cancel: 'Abbrechen',
@@ -471,6 +492,8 @@ const WORDS = {
     pinnedTitle: (id) => `Ein Link hat dieses Panel auf Session ${id} gesetzt: es folgt dem Chat nicht`,
     followChat: 'Dem Chat folgen', followChatTitle: 'Wieder die Session zeigen, die im Chat offen ist',
     openInShell: 'In ScarabHive öffnen', openInShellTitle: 'ScarabHive öffnen, dieses Panel neben dem Chat',
+    statuses: { pending: 'Ausstehend', running: 'Läuft', success: 'Erfolgreich', failed: 'Fehlgeschlagen',
+      canceled: 'Abgebrochen', skipped: 'Übersprungen', manual: 'Manuell', waiting: 'Wartet', paused: 'Angehalten' },
   },
 };
 const word = (key) => (WORDS[document.documentElement.lang.slice(0, 2).toLowerCase()] || WORDS.en)[key];

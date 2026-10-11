@@ -36,6 +36,8 @@ ICONS = sorted({
     # states
     "info", "triangle-alert", "circle-alert", "circle-check", "circle-x",
     "loader-circle", "clock", "circle-help", "ban",
+    # the status set of runs, stages and jobs (kit.css .pk-status)
+    "circle-dashed", "circle-slash", "circle-chevron-right", "circle-play", "circle-pause",
     # domains
     "bug", "activity", "database", "file-text", "book-open", "library", "layers",
     "brain", "list-todo", "message-square", "messages-square", "users", "shield",

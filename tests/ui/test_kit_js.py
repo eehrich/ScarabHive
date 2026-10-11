@@ -27,6 +27,7 @@ EXPECTED = [
     "keepInSight brings an item into sight in a list that scrolls up and down, and in the page itself",
     "html escapes interpolated markup",
     "html keeps nested html and joins arrays",
+    "status draws a state as icon, tone and word, an unknown one as pending, and escapes what it shows",
     "trusted markup passes unchanged",
     "jsonView escapes keys and strings",
     "jsonView shows every level, strings as text with their line breaks, arrays as lists",

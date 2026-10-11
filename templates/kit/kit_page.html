@@ -1,5 +1,5 @@
 {% extends "kit/panel_base.html" %}
-{% from "kit/macros.html" import icon, logo, empty, skeleton %}
+{% from "kit/macros.html" import icon, logo, empty, skeleton, status %}
 {% block title %}UI Kit{% endblock %}
 {% block head %}
 <style>
@@ -147,6 +147,132 @@
     <kbd class="pk-kbd">Ctrl K</kbd>
   </div>
   <div class="pk-stack" style="max-width: 320px"><span class="pk-skeleton"></span><span class="pk-skeleton" style="width: 70%"></span></div>
+</section>
+
+<section class="kit-section">
+  <h2>Run status</h2>
+  <p class="pk-secondary" style="margin:0">One set for runs, stages and jobs: <code class="pk-mono">status(name, {label, pill})</code> in
+    panel-kit.js, the <code class="pk-mono">status()</code> macro in templates. Running turns, unless the viewer asked for less motion.</p>
+  {% set kit_statuses = ["pending", "running", "success", "failed", "canceled", "skipped", "manual", "waiting", "paused"] %}
+  <div class="pk-row">{% for name in kit_statuses %}{{ status(name) }}{% endfor %}</div>
+  <div class="pk-row">{% for name in kit_statuses %}{{ status(name, label=true) }}{% endfor %}</div>
+  <div class="pk-row">{% for name in kit_statuses %}{{ status(name, label=true, pill=true) }}{% endfor %}</div>
+  <div class="pk-stack" style="max-width: 320px">
+    <progress class="pk-progress" value="40" max="100"></progress>
+    <progress class="pk-progress pk-progress--ok" value="100" max="100"></progress>
+    <progress class="pk-progress pk-progress--warn" value="70" max="100"></progress>
+    <progress class="pk-progress pk-progress--danger" value="25" max="100"></progress>
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Pipeline</h2>
+  <p class="pk-secondary" style="margin:0">Stages as columns, jobs as pills (<code class="pk-mono">.pk-job</code>: a button when it opens
+    something), lines between them. Several jobs behind one pill show their count. Narrow, the graph scrolls sideways.</p>
+  <div class="pk-pipeline" role="group" aria-label="Pipeline">
+    <section class="pk-pipeline-stage">
+      <h3 class="pk-pipeline-stage-title">{{ status("success") }} Triage</h3>
+      <ul class="pk-pipeline-jobs">
+        <li><button type="button" class="pk-job">{{ status("success") }}<span class="pk-job-name">triage</span><span class="pk-job-time">0:42</span></button></li>
+      </ul>
+    </section>
+    <section class="pk-pipeline-stage">
+      <h3 class="pk-pipeline-stage-title">{{ status("failed") }} Build</h3>
+      <ul class="pk-pipeline-jobs">
+        <li><button type="button" class="pk-job">{{ status("success") }}<span class="pk-job-name">compile</span><span class="pk-job-time">2:10</span></button></li>
+        <li><button type="button" class="pk-job" aria-current="true">{{ status("failed") }}<span class="pk-job-name">lint and type check</span><span class="pk-job-time">0:31</span></button></li>
+        <li><button type="button" class="pk-job" popovertarget="kit-job-group">{{ status("success") }}<span class="pk-job-name">unit tests</span><span class="pk-job-count">3</span></button>
+          <div id="kit-job-group" class="pk-menu" popover>
+            <div class="pk-menu-label">unit tests · 3 jobs</div>
+            <button class="pk-menu-item">{{ status("success") }} unit tests 1/3</button>
+            <button class="pk-menu-item">{{ status("success") }} unit tests 2/3</button>
+            <button class="pk-menu-item">{{ status("success") }} unit tests 3/3</button>
+          </div>
+        </li>
+      </ul>
+    </section>
+    <section class="pk-pipeline-stage">
+      <h3 class="pk-pipeline-stage-title">{{ status("running") }} Review</h3>
+      <ul class="pk-pipeline-jobs">
+        <li><button type="button" class="pk-job">{{ status("running") }}<span class="pk-job-name">code review</span><span class="pk-job-time">1:05</span></button></li>
+        <li><button type="button" class="pk-job">{{ status("manual") }}<span class="pk-job-name">approve</span></button></li>
+        <li><button type="button" class="pk-job">{{ status("waiting") }}<span class="pk-job-name">wait for CI</span><span class="pk-job-time">12:40</span></button></li>
+      </ul>
+    </section>
+    <section class="pk-pipeline-stage">
+      <h3 class="pk-pipeline-stage-title">{{ status("pending") }} Deploy</h3>
+      <ul class="pk-pipeline-jobs">
+        <li><span class="pk-job">{{ status("pending") }}<span class="pk-job-name">deploy</span></span></li>
+        <li><span class="pk-job">{{ status("skipped") }}<span class="pk-job-name">rollback</span></span></li>
+        <li><span class="pk-job">{{ status("canceled") }}<span class="pk-job-name">notify</span></span></li>
+      </ul>
+    </section>
+  </div>
+  <h3>Mini pipeline</h3>
+  <div class="pk-table-wrap">
+    <table class="pk-table">
+      <thead><tr><th>Status</th><th>Run</th><th>Stages</th><th class="pk-num">Duration</th></tr></thead>
+      <tbody>
+        <tr><td>{{ status("running", label=true) }}</td><td>#12 Add export</td>
+          <td><span class="pk-pipeline pk-pipeline--mini" role="list" aria-label="Stages">{% for name in ["success", "success", "running", "pending", "pending"] %}<span role="listitem">{{ status(name) }}</span>{% endfor %}</span></td>
+          <td class="pk-num">4:12</td></tr>
+        <tr><td>{{ status("failed", label=true) }}</td><td>!7 Fix login</td>
+          <td><span class="pk-pipeline pk-pipeline--mini" role="list" aria-label="Stages">{% for name in ["success", "failed", "skipped"] %}<span role="listitem">{{ status(name) }}</span>{% endfor %}</span></td>
+          <td class="pk-num">1:58</td></tr>
+        <tr><td>{{ status("waiting", label=true) }}</td><td>#15 Rename module</td>
+          <td><span class="pk-pipeline pk-pipeline--mini" role="list" aria-label="Stages">{% for name in ["success", "manual", "canceled"] %}<button type="button" title="Stage {{ loop.index }}">{{ status(name) }}</button>{% endfor %}</span></td>
+          <td class="pk-num">22:03</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Timeline</h2>
+  <ol class="pk-timeline">
+    <li class="pk-timeline-item"><span class="pk-timeline-icon">{{ icon("git-branch", size="sm") }}</span>
+      <div><div class="pk-timeline-head"><span class="pk-timeline-actor">@carol</span><span>labeled the issue</span><time class="pk-timeline-time">2 hours ago</time></div></div></li>
+    <li class="pk-timeline-item"><span class="pk-timeline-icon">{{ status("success") }}</span>
+      <div><div class="pk-timeline-head"><span class="pk-timeline-actor">rules</span><span>started the run</span><time class="pk-timeline-time">2 hours ago</time></div>
+        <div class="pk-timeline-body">label=ready → build</div></div></li>
+    <li class="pk-timeline-item"><span class="pk-timeline-icon">{{ icon("message-square", size="sm") }}</span>
+      <div><div class="pk-timeline-head"><span class="pk-timeline-actor">@dave</span><span>commented</span><time class="pk-timeline-time">40 minutes ago</time></div>
+        <div class="pk-timeline-body pk-prose pk-prose--breaks">Please rename the helper.
+It reads like a getter.</div></div></li>
+    <li class="pk-timeline-item"><span class="pk-timeline-icon">{{ status("failed") }}</span>
+      <div><div class="pk-timeline-head"><span class="pk-timeline-actor">pipeline</span><span>failed in lint</span><time class="pk-timeline-time">5 minutes ago</time></div></div></li>
+    <li class="pk-timeline-item"><span class="pk-timeline-icon">{{ status("manual") }}</span>
+      <div><div class="pk-timeline-head"><span class="pk-timeline-actor">gate</span><span>waits for an answer</span><time class="pk-timeline-time">now</time></div></div></li>
+  </ol>
+</section>
+
+<section class="kit-section">
+  <h2>Detail page</h2>
+  <p class="pk-secondary" style="margin:0">One thing's page: <code class="pk-mono">.pk-detail-layout</code> with a header across, the main
+    column and a sidebar of facts on the right; narrow, the sidebar goes below.</p>
+  <div class="pk-card pk-detail-layout">
+    <header class="pk-detail-head">
+      <div>
+        <h3 class="pk-detail-title">Add CSV export to the report page</h3>
+        <div class="pk-detail-meta">{{ status("running", label=true, pill=true) }}<span class="pk-mono">#12 → !7</span>
+          <span>{{ icon("git-branch", size="sm") }} <span class="pk-mono">feature/12-export</span> → <span class="pk-mono">main</span></span>
+          <span class="pk-muted">started 2 hours ago by a rule</span></div>
+      </div>
+      <div class="pk-detail-actions">
+        <button type="button" class="pk-btn pk-btn--sm">{{ icon("external-link", size="sm") }} Open</button>
+        <button type="button" class="pk-btn pk-btn--sm pk-btn--danger">{{ icon("square", size="sm") }} Cancel</button>
+      </div>
+    </header>
+    <div class="pk-detail-main">
+      <nav class="pk-tabs" aria-label="Detail pages"><a class="pk-tab" href="#" aria-current="page">Overview</a><a class="pk-tab" href="#">Pipeline</a><a class="pk-tab" href="#">Changes</a></nav>
+      <p class="pk-secondary" style="margin:0">The main column takes the rest.</p>
+    </div>
+    <aside class="pk-detail-aside" aria-label="Facts">
+      <section><h3>Repository</h3><div>shop</div></section>
+      <section><h3>Labels</h3><div class="pk-row"><span class="pk-badge">ready</span><span class="pk-badge pk-badge--info">backend</span></div></section>
+      <section><h3>Cost</h3><dl class="pk-kv"><dt>Build</dt><dd>$0.42</dd><dt>Total</dt><dd>$1.10</dd></dl></section>
+    </aside>
+  </div>
 </section>
 
 <section class="kit-section">

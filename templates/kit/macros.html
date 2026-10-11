@@ -17,3 +17,24 @@
 {% macro skeleton(lines=3) -%}
 <div class="pk-stack">{% for _ in range(lines) %}<span class="pk-skeleton"></span>{% endfor %}</div>
 {%- endmacro %}
+
+{#- The status set (.pk-status): name -> icon. The JS twin is status() in panel-kit.js; a test holds the two equal. #}
+{% set STATUS_ICONS = {"pending": "circle-dashed", "running": "loader-circle", "success": "circle-check",
+                       "failed": "circle-x", "canceled": "circle-slash", "skipped": "circle-chevron-right",
+                       "manual": "circle-play", "waiting": "circle-pause", "paused": "circle-pause"} %}
+{#- The words, per page language as panel-kit.js has them (its WORDS[lang].statuses). #}
+{% set STATUS_WORDS = {
+  "en": {"pending": "Pending", "running": "Running", "success": "Succeeded", "failed": "Failed",
+         "canceled": "Canceled", "skipped": "Skipped", "manual": "Manual", "waiting": "Waiting", "paused": "Paused"},
+  "de": {"pending": "Ausstehend", "running": "Läuft", "success": "Erfolgreich", "failed": "Fehlgeschlagen",
+         "canceled": "Abgebrochen", "skipped": "Übersprungen", "manual": "Manuell", "waiting": "Wartet",
+         "paused": "Angehalten"}} %}
+
+{#- A status as icon and tone; label=true adds its word (in ``lang``, the page's <html lang>), a text adds that.
+    An unknown name draws as pending. #}
+{% macro status(name, label="", pill=false, lang="en") -%}
+{%- set known = name if name in STATUS_ICONS else "pending" -%}
+{%- set words = STATUS_WORDS.get(lang[:2] | lower, STATUS_WORDS["en"]) -%}
+{%- set text = label if label is string and label else words.get(name, name) -%}
+<span class="pk-status pk-status--{{ known }}{% if pill %} pk-status--pill{% endif %}" title="{{ text }}">{{ icon(STATUS_ICONS[known], label="" if label else text) }}{% if label %}<span class="pk-status-label">{{ text }}</span>{% endif %}</span>
+{%- endmacro %}

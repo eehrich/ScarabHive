@@ -132,6 +132,8 @@ window bar carries it there; the toolbar stays. Further blocks: `head`, `lang`
 (`de` for a German panel).
 
 Icons in the template: `{{ icon('refresh-cw') }}`, `{{ icon('bug', size='sm', label='Bug') }}`.
+A run's or job's status: `{{ status('running', label=true, pill=true, lang='de') }}` (`from "kit/macros.html" import
+status`; `lang` as the page's `<html lang>`, so it reads like the script's `status()`).
 
 ## 3. `panel-kit.js`
 
@@ -157,6 +159,7 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 | `selectTab(list, name)` | select a tab (`data-tab`) without a click — from the URL, for instance. |
 | `isDark()` | whether the page is dark right now (for canvas/SVG that read no tokens). |
 | ``html`…` ``, `render(el, content)` | build markup: every inserted value is escaped, nested ``html`` `` and arrays stay markup. `trusted(str)` only for HTML that is already safe (sanitised by the server, say). `false`, `null` and `undefined` yield nothing — so `${cond && html`…`}` works; in an attribute therefore `aria-pressed="${String(on)}"`, or it says `""`. `render` gives the focus back: if it was inside the element, the new element with the same `data-key` gets it afterwards. |
+| `status(name, {label, pill})` | a status of the one set (`pending`, `running` -- turns, unless the viewer wants less motion --, `success`, `failed`, `canceled`, `skipped`, `manual`, `waiting`, `paused`) as icon and tone; `label: true` adds its word in the page's language, a text adds that text; `pill` for a page header. An unknown name draws as pending. |
 | `escapeHtml(v)`, `jsonView(value)`, `icon(name, {size, label})` | helpers for the same. `jsonView` shows JSON for reading: all levels open, strings without quotes and with their line breaks, arrays as a list. The panel itself offers the raw JSON (copy, toggle). |
 | `yamlCode(text)` | YAML text coloured (`.pk-yaml-*`), the text itself unchanged: for a `<pre class="pk-code">` or as a copy under a textarea. `\|`/`>` blocks keep their colour across blank lines, an unquoted `!…` shows as a tag. No Prism needed. |
 | `alert(msg)`, `confirm(msg, {title, confirmLabel, danger})`, `prompt(msg, {title, value, placeholder, confirmLabel})`, `dialog({title, message, actions, input})` | dialogs — a promise with the result (`confirm` → `true/false`, `prompt` → text or `null`). In the shell above the whole application, otherwise in the panel. |
@@ -273,14 +276,18 @@ rendered (the enclosing one too, when only the `tbody` is new).
   area: width draggable at the corner, the kit remembers the width per panel,
   stacked when narrow — **every sidebar takes this one**, none of your own),
   a panel's pages as `<nav class="pk-tabs">` with `<a class="pk-tab"
-  aria-current="page">`.
+  aria-current="page">`; for runs and pipelines `pk-status` (through `status()`), `pk-pipeline` (stages as columns
+  with lines between, `role="group"` with its `aria-label`) with `pk-pipeline-stage`/`pk-pipeline-jobs`, `pk-job`
+  (a pill; a button when it opens something, `pk-job-count` for a group), `pk-pipeline--mini` (the stage row in a
+  list), `pk-timeline` (who did what when, an optional body), `pk-detail-layout` (one thing's page: header, main
+  column, a sidebar of facts on the right that goes below when narrow).
 - **Colours, spacing, radii, type only through tokens**: `--surface-0…3`,
   `--text-primary/secondary/muted`, `--border-subtle/default/strong`,
   `--accent*`, `--ok/--warn/--danger/--info` (+ `-subtle`), `--space-1…8`,
   `--radius-sm/md/lg`, `--text-xs…xl`, `--font-ui`, `--font-mono`. Every value
   holds in light and dark. A hex value in a panel is an error — if a token is
   missing, it belongs in the kit.
-- **Own CSS** only for what is really the panel's own (a timeline, a graph),
+- **Own CSS** only for what is really the panel's own (a canvas, a diagram the kit has no part for),
   in a file next to the script, built from tokens.
 - `hidden` hides reliably, whatever `display` a class sets.
 

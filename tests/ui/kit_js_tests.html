@@ -57,6 +57,22 @@
     return !out.includes('<img') && !out.includes('<b>') && out.includes('&quot;&gt;&lt;img');
   });
 
+  await check('status draws a state as icon, tone and word, an unknown one as pending, and escapes what it shows', () => {
+    const box = document.createElement('div');
+    pk.render(box, pk.status('running', { label: true }));
+    const running = box.firstElementChild;
+    const labelled = running.className === 'pk-status pk-status--running'
+      && running.querySelector('use').getAttribute('href').endsWith('#loader-circle')
+      && running.textContent === 'Running' && running.querySelector('svg').getAttribute('aria-hidden') === 'true';
+    pk.render(box, pk.status('odd<b>x</b>'));
+    const odd = box.firstElementChild;
+    const unknown = odd.classList.contains('pk-status--pending') && !box.querySelector('b')
+      && odd.querySelector('svg').getAttribute('aria-label') === 'odd<b>x</b>' && odd.textContent === '';
+    pk.render(box, pk.status('failed', { label: 'Broke', pill: true }));
+    const own = box.firstElementChild.className === 'pk-status pk-status--failed pk-status--pill' && box.textContent === 'Broke';
+    return labelled && unknown && own;
+  });
+
   await check('html keeps nested html and joins arrays', () => {
     const items = ['<i>', 'b'].map((v) => pk.html`<li>${v}</li>`);
     return String(pk.html`<ul>${items}</ul>`) === '<ul><li>&lt;i&gt;</li><li>b</li></ul>';

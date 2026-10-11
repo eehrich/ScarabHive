@@ -194,3 +194,36 @@ def test_a_panel_scoped_to_a_session_says_which_one():
     silent = {name: str(path) for name, path in scoped.items() if name not in saying}
 
     assert silent == {}
+
+
+def _js_object(name: str, text: str) -> dict[str, str]:
+    """A flat object literal of string values from panel-kit.js (``name = { key: 'value', ... }``), the first one."""
+    body = re.search(rf"\b{name}\s*[=:]\s*\{{([^}}]*)\}}", text).group(1)
+    return dict(re.findall(r"(\w+):\s*'([^']*)'", body))
+
+
+def _js_words(script: str, lang: str) -> dict[str, str]:
+    """The status words of one language in panel-kit.js's WORDS table (its ``<lang>: { ... },`` block)."""
+    block = re.search(rf"\n  {lang}: \{{\n(.*?)\n  \}},", script, re.DOTALL).group(1)
+    return _js_object("statuses", block)
+
+
+def test_the_status_macro_and_its_script_twin_draw_the_same_set():
+    """status() in panel-kit.js and the status() macro both draw .pk-status: the same names, the same icon for each,
+    the same word in each language the kit speaks, every icon in the sprite -- a list drawn by the script and a page
+    drawn by the template show one state alike, on an English page and on a German one."""
+    script = (KIT / "panel-kit.js").read_text(encoding="utf-8")
+    icons = _js_object("STATUS_ICONS", script)
+    words = {lang: _js_words(script, lang) for lang in ("en", "de")}
+    assert len(icons) == 9 and all(set(w) == set(icons) for w in words.values()), "fixture: the status set was not read"
+    assert words["en"] != words["de"], "fixture: the two languages read the same table"
+    macros = ui_templates().env.get_template("kit/macros.html").module
+
+    drawn = {lang: {name: str(macros.status(name, label=True, lang=lang)) for name in icons} for lang in words}
+
+    assert {name: re.search(r"icons\.svg#([\w-]+)", markup).group(1) for name, markup in drawn["en"].items()} == icons
+    for lang, markups in drawn.items():
+        assert {name: re.search(r'pk-status-label">([^<]*)<', markup).group(1)
+                for name, markup in markups.items()} == words[lang], lang
+    assert set(icons.values()) <= set(sprite_icons())
+    assert f"icons.svg#{icons['pending']}" in str(macros.status("no-such-state")), "an unknown name draws as pending"
