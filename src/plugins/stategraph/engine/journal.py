@@ -547,6 +547,32 @@ class RunStore:
         with self._lock:
             return self._db().execute(sql, args).rowcount == 1
 
+    def set_aside(self, run_id: str, rows: list[tuple[str, str]], prefix: str, *, status: str, data: Any,
+                  fence: str) -> None:
+        """Move the journal rows ``(kind, key)`` to ``<prefix>/<key>`` and record the trace row ``prefix`` that
+        names them -- all or nothing, in one IMMEDIATE transaction, while ``fence`` holds the run (a resume's
+        rewind, docs/stategraph_design.md §5.3). Raises ValueError when the owner lost the run or a row is gone."""
+        with self._lock:
+            db = self._db()
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                if not db.execute("SELECT 1 FROM runs WHERE id = ? AND owner = ?", (run_id, fence)).fetchone():
+                    raise ValueError(f"run {run_id}: not held by {fence}")
+                now = utc_now()
+                for kind, key in rows:
+                    if db.execute("UPDATE journal SET key = ?, ts = ? WHERE run_id = ? AND kind = ? AND key = ?",
+                                  (f"{prefix}/{key}", now, run_id, kind, key)).rowcount != 1:
+                        raise ValueError(f"run {run_id}: no journal row {kind} {key} to set aside")
+                seq = db.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM journal WHERE run_id = ?",
+                                 (run_id,)).fetchone()[0]
+                db.execute("INSERT INTO journal (run_id, seq, ts, kind, key, state, status, data)"
+                           " VALUES (?,?,?,?,?,?,?,?)", (run_id, seq, now, "trace", prefix, None, status, _dumps(data)))
+                db.execute("COMMIT")
+            except BaseException:
+                if db.in_transaction:
+                    db.execute("ROLLBACK")
+                raise
+
     def rows(self, run_id: str, kinds: Optional[Iterable[str]] = None) -> list[dict[str, Any]]:
         sql = "SELECT * FROM journal WHERE run_id = ?"
         args: list[Any] = [run_id]

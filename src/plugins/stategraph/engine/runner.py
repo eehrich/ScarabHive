@@ -27,7 +27,7 @@ from plugins.stategraph.kinds import ActivityError
 from plugins.stategraph.model.code import fingerprint, jsonable
 from plugins.stategraph.model.loader import MachineTree, load_snapshot
 from plugins.stategraph.model.spec import parse_duration
-from .activity import ReplayDivergence
+from .activity import _IN_ENDING, ReplayDivergence
 from .backend import NoBackend
 from .debugger import Debugger, UnknownState, apply_edit, check_points, known_states, unknown_state
 from .interpreter import Frame, RunAbort, bind_params
@@ -73,6 +73,85 @@ def failed_transiently(error: Any) -> bool:
             return True
         error = error.get("cause")
     return False
+
+
+#: The journal rows a resume set aside (rewound_rows): kept under this prefix -- what they cost still counts (spend),
+#: the panel lists them, a mock's $visits counts their visits -- and never replayed or forked: a resume's journal load
+#: skips them but for that count, and no lookup of a fork matches a key under it.
+REWOUND = "rewound."
+
+
+class NotRewindable(ValueError):
+    """A run that ended on a resumable failure its resume cannot run again alone (rewound_rows says why)."""
+
+
+def _resumable_error(row: dict[str, Any]) -> bool:
+    return row.get("status") == "error" and bool(((row.get("data") or {}).get("error") or {}).get("resumable"))
+
+
+def rewound_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The rows a resume sets aside in a run that ended on a resumable failure (docs/stategraph_design.md §5.3), so
+    that activity runs again and nothing else does: the innermost activity whose error is resumable and ended the
+    run (each one, when several did -- two items of one map) with every row below it; the composites it was in
+    (their outcome was its); and in every frame on its path, what came after it -- later steps and the frame's end
+    with its finally and close activities. A sibling the failure cancelled (fail: fast, a quorum) has no outcome,
+    only its ``started`` row: its innermost started row is set aside the same way, but of what ran below it only
+    its frame's end -- the steps it had finished replay, a wait it stood in goes on. Everything else replays: the
+    steps before, a map's other items, and edits.
+
+    The failure that ended the run is the one whose every enclosing composite ended on it too: a refused branch a
+    quorum outvoted, or a finally's failure (swallowed), ended nothing. Raises NotRewindable when a frame on its path
+    (or below a cancelled sibling) has resources: its end closed them, and the steps before would replay with them
+    closed."""
+    activities = {r["key"]: r for r in rows if r["kind"] == "activity" and not r["key"].startswith(REWOUND)}
+
+    def ended_the_run(key: str) -> bool:
+        return not _IN_ENDING.search(key) and all(
+            _resumable_error(row) for k, row in activities.items() if key.startswith(f"{k}/"))
+
+    stopped = [k for k, row in activities.items() if _resumable_error(row) and ended_the_run(k)]
+    if not stopped:
+        raise NotRewindable("its journal names no activity whose resumable failure ended it")
+    within = {k for f in stopped for k in activities if f.startswith(f"{k}/")}  # the composites it ended
+    cancelled = [k for k, row in activities.items() if row.get("status") == "started"  # not below a stopped one:
+                 and any(k.startswith(f"{c}/") for c in within)                       # that goes aside whole
+                 and not any(k.startswith(f"{f}/") for f in stopped if not any(
+                     other.startswith(f"{f}/") for other in stopped))]   # (the innermost stopped ones)
+    points = stopped + cancelled
+    inner = [k for k in points if not any(other.startswith(f"{k}/") for other in points)]
+
+    def open_frame(key: str) -> str:
+        """The frame a cancelled composite had open: its current attempt's (``s0/b.a/m/``, ``s0/b.a/a2/m/``)."""
+        attempt = int(((activities[key].get("data") or {}).get("attempt")) or 1)
+        return f"{key}/m/" if attempt == 1 else f"{key}/a{attempt}/m/"
+
+    for f in inner:  # the frames on its path -- and for a cancelled one, the frame it had open, which runs on
+        frames = ({prefix for prefix, _ in key_steps(f)} | {f[:f.rfind("/m/") + 3] if "/m/" in f else ""}
+                  | ({open_frame(f)} if f in cancelled else set()))
+        held = sorted({k[len(p) + 2:].split("/", 1)[0] for p in frames for k in activities if k.startswith(f"{p}r.")})
+        if held:
+            raise NotRewindable(
+                f"it stopped in a frame with resources ({', '.join(held)}): its end closed them, and the steps a "
+                "resume would replay used them -- fork it from the step it stopped at, or start it again")
+    out = []
+    for row in rows:
+        key, kind = row["key"], row["kind"]
+        base = key.split(":", 1)[0]
+        if key.startswith(REWOUND) or kind == "edit" or (kind == "event" and key.startswith("pending:")):
+            continue
+        for f in inner:
+            if base == f or base.startswith(f"{open_frame(f)}end" if f in cancelled else f"{f}/"):  # it, and what
+                out.append(row)  # ran below it -- of a cancelled one only its open frame's end: its steps replay
+                break
+            if f.startswith(f"{base}/") and kind in ("activity", "trace"):  # a composite it was in
+                out.append(row)
+                break
+            if any(base.startswith(prefix) and (base[len(prefix):].startswith("end")
+                                                or ((m := _STEP.match(base[len(prefix):])) and int(m.group(1)) > step))
+                   for prefix, step in key_steps(f)):                     # after it, in a frame on its path
+                out.append(row)
+                break
+    return out
 
 
 def key_steps(key: str) -> list[tuple[str, int]]:
@@ -255,12 +334,17 @@ class RunContext:
     def _load_journal(self) -> None:
         for row in self.store.rows(self.id, kinds=("activity", "event", "edit", "timer", "trace")):
             kind, key, data = row["kind"], row["key"], row.get("data") or {}
+            mocked = data.get("path") if kind == "activity" and row["status"] in ("done", "error") and (
+                data.get("meta") or {}).get("mocked") else data.get("mock") if kind == "trace" and (
+                row["status"] == "wait") else None
+            if mocked:  # a $visits count goes on from every visit, also from one a resume set aside (REWOUND)
+                self.mock_uses[mocked] = self.mock_uses.get(mocked, 0) + 1
+            if key.startswith(REWOUND):  # nothing else of a set-aside row counts: not even a join's joined row
+                continue
             if kind == "activity":
                 if row["status"] in ("done", "error"):
                     self.note_outcome(key, row["status"], data)
                     self._advance(key)
-                    if (data.get("meta") or {}).get("mocked") and data.get("path"):
-                        self.mock_uses[data["path"]] = self.mock_uses.get(data["path"], 0) + 1
                 elif row["status"] == "started":
                     self.started[key] = {"data": data}
             elif kind == "event":
@@ -282,9 +366,7 @@ class RunContext:
                     self._advance(_head(key))
                 elif row["status"] == "vars_from":
                     self.var_snapshots[data.get("agent", "")] = data.get("vars") or {}
-                elif row["status"] == "wait":
-                    if data.get("mock"):  # a wait that asked its mock (a $visits count goes on from here)
-                        self.mock_uses[data["mock"]] = self.mock_uses.get(data["mock"], 0) + 1
+                elif row["status"] == "wait":  # (a wait that asked its mock counted above)
                     if data.get("deadline") is not None:
                         self.deadlines[key] = float(data["deadline"])
                     if data.get("since") is not None:
@@ -874,6 +956,8 @@ class RunManager:
                                   data={"timed_out": False})
             tree = load_snapshot(row["definition"])
             machine = compile_tree(tree)
+            if row["status"] == "failed" and (row.get("error") or {}).get("resumable"):
+                self._rewind(run_id, row["error"])  # the activity it ended on runs again, nothing else (§5.3)
             debugger = Debugger.from_state(row.get("debug"), run_id)  # its points, and the pause or step that held it
             options = row.get("mocks") or {}
             self.store.update_run(run_id, status="running", finished_at=None, error=None, output=None,
@@ -886,11 +970,34 @@ class RunManager:
                          fork_step=row.get("fork_step") if row.get("parent_run") else None)
         except BaseException:  # nothing runs it here: the lease goes back, so another process may take it at once
             try:
-                self.store.update_run(run_id, fence=self.owner, lease_until=_utc(-1), status=row["status"])
+                self.store.update_run(run_id, fence=self.owner, lease_until=_utc(-1), status=row["status"],
+                                      error=row.get("error"), output=row.get("output"),
+                                      final_state=row.get("final_state"), finished_at=row.get("finished_at"))
             except Exception:
                 logger.warning("stategraph: could not release the lease of run %s", run_id, exc_info=True)
             raise
         return run_id
+
+    def _rewind(self, run_id: str, error: dict[str, Any]) -> None:
+        """Set aside what the run's resumable failure decided (rewound_rows), under REWOUND<n>/, with a trace row
+        that names them, in one transaction: the resume then runs that activity again and replays the rest. Under the
+        lease. Raises NotRewindable (a ValueError) when that cannot be: the journal is left as it was. Nothing to do
+        when the last rewind is the journal's newest row: a resume that failed after it (its launch) never ran."""
+        rows = self.store.rows(run_id)
+        rewinds = [r["seq"] for r in rows if r["kind"] == "trace" and r.get("status") == "rewound"]
+        if rewinds and max(rewinds) > max((r["seq"] for r in rows if not r["key"].startswith(REWOUND)), default=0):
+            return
+        n = 1 + len(rewinds)
+        try:
+            aside = rewound_rows(rows)
+        except NotRewindable as exc:
+            raise NotRewindable(f"run {run_id} cannot be resumed: {exc}") from None
+        keys = [row["key"] for row in aside]
+        self.store.set_aside(run_id, [(row["kind"], row["key"]) for row in aside], f"{REWOUND}{n}", status="rewound",
+                             fence=self.owner,
+                             data={"keys": keys, "error": {k: error.get(k) for k in ("type", "message", "state")}})
+        logger.info("stategraph: run %s resumes after a resumable failure: %d journal row(s) set aside", run_id,
+                    len(keys))
 
     async def fork(self, run_id: str, *, at_step: Optional[int] = None, tree: Optional[MachineTree] = None,
                    backend: Any = None, backend_factory: Optional[Callable[[str], Any]] = None,

@@ -854,7 +854,13 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
         raise exc
     if cut["at"] is not None:
         await _end_branches(act, [child for child in children if child[0] not in begun])  # cut before they began
-        return results[:cut["at"] + 1]
+        results = results[:cut["at"] + 1]
+    # fail: collect -- every child ran to its end, each kept its outcome (its journal row); a resumable failure among
+    # them ends the join after all (docs/stategraph_design.md §5.3): a resume runs that child again, the others replay
+    stopped = next((r["error"] for r in results if isinstance(r, dict) and r.get("status") == "failed"
+                    and (r.get("error") or {}).get("resumable")), None) if fail == "collect" else None
+    if stopped is not None:
+        raise ActivityError.from_dict(stopped)
     return results
 
 
@@ -946,6 +952,9 @@ async def quorum(act: "ActivityRun", children: list[tuple[str, dict[str, Any], O
 
 
 def _join_failed(act: "ActivityRun", needed: int, lost: dict[str, ActivityError]) -> ActivityError:
+    stopped = next((error for error in lost.values() if error.extra.get("resumable")), None)
+    if stopped is not None:  # one of them ended on a resumable failure: so does the join (§5.3)
+        return stopped
     return ActivityError("join_failed", f"{act.path}: {len(lost)} branch(es) failed -- {needed} cannot succeed any more",
                          data={label[2:]: error.as_dict() for label, error in lost.items()})
 

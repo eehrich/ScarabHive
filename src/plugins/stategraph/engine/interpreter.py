@@ -659,6 +659,10 @@ class Frame:
         else:
             candidates = [(node, t) for node in reversed(leaf.chain()) for t in node.transitions
                           if t.trigger == event.name]
+            if event.name == TRIGGER_ERROR and (event.error or {}).get("resumable"):
+                # A resumable failure (docs/stategraph_design.md §5.3) is no answer the machine handles: it ends the
+                # frame -- and the run -- as unhandled, and a resume runs that activity again
+                candidates = []
         snapshot = (copy.deepcopy(self.ctx), list(self.config), dict(self.visits))
         for owner, transition in candidates:
             try:

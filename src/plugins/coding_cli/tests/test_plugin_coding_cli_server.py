@@ -402,6 +402,109 @@ async def test_a_full_window_refuses_new_runs_until_it_resets(repo, data_root, r
     assert (result.get("state") == "done") is not refused
 
 
+def full_window(data_root, used=0.85, resets_in=3600, name="five_hour"):
+    data_root.mkdir(parents=True, exist_ok=True)
+    resets = time.time() + resets_in
+    (data_root / "quota.json").write_text(json.dumps({"status": "allowed", "unifiedWindows": {
+        name: {"utilization": used, "resetsAt": resets}}}))
+    return resets
+
+
+@pytest.mark.parametrize("name", ["five_hour", "seven_day"])
+async def test_a_refusal_for_the_budget_says_so_as_a_field(repo, data_root, name):
+    """A caller tells the budget from every other refusal by a field, not by its words: limit names the window and
+    when it resets -- the weekly window as the five-hour one."""
+    resets = full_window(data_root, name=name)
+    result, _ = await call(make_server(repo), "run_task", task="x")
+    limit = result["limit"]
+    assert result["status"] == "error" and result["error"].startswith(f"not started: the subscription's {name}")
+    assert (limit["window"], limit["utilization"], limit["threshold"]) == (name, 0.85, 0.8), limit
+    assert limit["resets_at"] == resets and limit["resets"] == cli._when(resets), limit
+
+
+async def test_waiting_for_a_free_run_is_no_budget_limit(repo, monkeypatch):
+    """All of the instance's runs going: a refusal to wait out (the machines ask again), without a limit field."""
+    server = make_server(repo, max_parallel=1)
+
+    async def busy():
+        return [{"run_id": "abc", "instance_name": server.name, "owner": server._me}]
+    monkeypatch.setattr(server, "_running", busy)
+    monkeypatch.setattr(server, "_mine", lambda record: True)
+    result, _ = await call(server, "run_task", task="x")
+    assert "1 run(s) still going" in result["error"] and "limit" not in result, result
+
+
+@pytest.mark.parametrize("asked, used, refused", [(0.5, 0.6, True), (0.5, 0.4, False), (0.95, 0.85, True),
+                                                  (None, 0.79, False)])
+async def test_a_call_may_lower_the_threshold_never_raise_it(repo, data_root, asked, used, refused):
+    full_window(data_root, used=used)
+    params = {} if asked is None else {"max_window_utilization": asked}
+    result, _ = await call(make_server(repo), "run_task", task="x", **params)
+    assert ("limit" in result) is refused and (result.get("state") == "done") is not refused, result
+    if refused:
+        assert result["limit"]["threshold"] == min(asked, 0.8), result["limit"]
+
+
+@pytest.mark.parametrize("value", [0, -0.1, 1.5, True, "0.5"])
+async def test_a_threshold_that_is_no_share_is_refused(repo, value):
+    result, _ = await call(make_server(repo), "run_task", task="x", max_window_utilization=value)
+    assert result["error"].startswith("max_window_utilization: a share above 0 and at most 1"), result
+
+
+async def test_a_resume_keeps_the_threshold_its_run_asked_for(repo, data_root):
+    server = make_server(repo)
+    first, _ = await call(server, "run_task", task="RATE 0.6", max_window_utilization=0.7)
+    assert first["state"] == "done" and server._load(first["run_id"])["asked_utilization"] == 0.7
+    full_window(data_root, used=0.75)                      # under the instance's 0.8, past the 0.7 asked
+    again, _ = await call(server, "run_task", task="x", resume=first["run_id"])
+    assert again["limit"]["threshold"] == 0.7, again
+
+
+async def test_a_run_the_subscription_stops_midway_says_so_as_a_field(repo):
+    """Measured (2026-10-09, 7 runs): the stream's last rate_limit_event "rejected", an is_error result with
+    api_error usage_limit_reached. The answer says it is the budget, and when the window resets."""
+    server = make_server(repo)
+    result, _ = await call(server, "run_task", task="LIMIT")
+    assert result["state"] == "failed" and result["limit"]["window"] == "five_hour", result
+    assert result["limit"]["api_error"] == "usage_limit_reached" and result["limit"]["resets"], result["limit"]
+    assert "stopped by the subscription" in result["note"], result["note"]
+    again, _ = await call(server, "get_run", run_id=result["run_id"])
+    assert again["limit"] == result["limit"], "get_run answers as run_task did"
+
+
+def test_a_failed_run_is_told_apart_by_its_measured_fields():
+    """The fields of the runs the subscription stopped (data/coding_cli/runs, 2026-10-09), against a run that failed
+    for another reason and one that went on while a window filled."""
+    rejected = {"status": "rejected", "resetsAt": 1791587400, "rateLimitType": "five_hour", "overageStatus": "rejected",
+                "unifiedWindows": {"five_hour": {"utilization": 1, "resetsAt": 1791587400}}}
+    stopped = {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429,
+               "api_error": "usage_limit_reached", "terminal_reason": "api_error",
+               "result": "You've hit your session limit · resets 1:10am (Europe/Berlin)"}
+    warned = {**rejected, "status": "allowed_warning", "utilization": 0.99}
+    limit = cli.usage_limit(stopped, rejected)
+    assert (limit["window"], limit["resets_at"], limit["api_error"]) == ("five_hour", 1791587400, "usage_limit_reached")
+    assert cli.usage_limit(stopped, None)["window"] == "subscription", "the result alone says it"
+    alone = cli.usage_limit({"is_error": True, "subtype": "success", "result": "?"}, rejected)
+    assert (alone["window"], alone["resets_at"], alone["api_error"]) == ("five_hour", 1791587400, None), \
+        "the stream's rejection alone says it too"
+    assert cli.usage_limit({"is_error": True, "subtype": "error_during_execution"}, warned) is None
+    assert cli.usage_limit(None, warned) is None and cli.usage_limit(None, None) is None
+
+
+async def test_the_quota_tool_reads_what_run_task_would_refuse(repo, data_root):
+    server = make_server(repo)
+    unknown, _ = await call(server, "quota")
+    assert unknown == {"status": "success", "known": False, "windows": {}, "threshold": 0.8, "limit": None}, \
+        "no run reported yet: nothing to go by refuses nothing"
+    full_window(data_root, used=0.6)
+    low, _ = await call(server, "quota", max_window_utilization=0.5)
+    assert low["known"] and low["windows"] == {"five_hour": 0.6} and low["limit"]["threshold"] == 0.5, low
+    refused, _ = await call(server, "run_task", task="x", max_window_utilization=0.5)
+    assert refused["limit"] == low["limit"], "the same reading run_task refuses by"
+    ok, _ = await call(server, "quota", max_window_utilization=0.7)
+    assert ok["limit"] is None, ok
+
+
 async def test_what_a_run_reports_of_the_subscription_guards_the_next(repo):
     server = make_server(repo)
     first, _ = await call(server, "run_task", task="RATE 0.9")

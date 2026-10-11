@@ -220,7 +220,7 @@ beside the one shown, each with its status; a click shows another. It
 shows only the controls the run takes now: @{b}Continue@{ub},
 @{b}Step@{ub} (to the next hook) and @{b}Pause@{ub} as icon buttons,
 @{b}Run to@{ub} a state, @{b}Terminate@{ub} (its finally activities still
-run), @{b}Resume@{ub} for an interrupted run, and always
+run), @{b}Resume@{ub} for an interrupted run or one that ended on a resumable failure, and always
 @{b}Fork...@{ub}: a new run that replays this one up to a top-level step
 and goes on live from there. A dialog asks for the step, then whether the
 fork holds there (to look at or set @{tt}ctx@{utt} first) or runs on; with
@@ -463,7 +463,7 @@ paused | a breakpoint, a watch, a step or Pause holds it | continue, step, run_t
 waiting | a wait state waits for an event, or a timer state for its time | send an event; a timer goes on by itself
 interrupted | the process that ran it stopped | resume
 succeeded | it reached a final state | --
-failed | a failed final state, or an error no transition took | --
+failed | a failed final state, or an error no transition took | -- (a resumable failure: resume)
 cancelled | terminated | --
 @{body}
 
@@ -483,6 +483,28 @@ activity that finished is not run again, its answer is read. One that was
 in flight is started again only if it is idempotent (the default; a
 @{tt}tool@{utt} activity is not, unless it says so) -- otherwise it fails
 with @{tt}interrupted@{utt}.
+
+@{h2}Resumable failures
+
+A @{tt}call@{utt} may raise an @{tt}ActivityError@{utt} with
+@{tt}resumable=True@{utt}: a failure that is no answer of the machine but
+of something outside it that will change -- a subscription's budget used
+up until its window resets. No error transition takes it: it ends its
+frame, every submachine and fan-out above it, and the run, as
+@{tt}failed@{utt} with that error (@{tt}error.resumable: true@{utt}); the
+frames' finally activities run, and it is never retried. A
+@{tt}fail: collect@{utt} fan-out first lets its other children run to
+their end. Such a run can be resumed (panel, @{tt}control_run@{utt}): the
+resume sets aside what the failure decided -- the activity, the
+composites it was in, what came after it in its frames, and the
+siblings it cancelled (@{tt}fail: fast@{utt}, a quorum), kept in the
+journal under @{tt}rewound.<n>/@{utt} -- and those run again; the steps
+before it, a fan-out's children that ended and the steps a cancelled
+sibling had finished replay from the journal. A refusal that ended
+nothing (a branch a quorum outvoted, a finally's) is not run again. A run
+stopped in a frame with resources (also a cancelled sibling's) is not
+resumed: its end closed them -- fork it instead. Nothing resumes it by
+itself: neither a schedule nor its run key.
 
 @{h2}Mocks
 
@@ -748,7 +770,7 @@ continue | -- | goes on from a pause
 step | -- | goes on to the next hook
 run_to | state, machine | goes on until that state is entered
 terminate | -- | ends the run; its finally activities run first (the answer waits up to 10 s)
-resume | -- | an interrupted run goes on from its journal
+resume | -- | an interrupted run goes on from its journal; one that ended on a resumable failure runs that activity again
 fork | at_step, definition, pause, mocks | a new run from a top-level step
 set_breakpoints | breakpoints | replaces the run's breakpoints
 set_watchpoints | watchpoints | replaces the run's watchpoints

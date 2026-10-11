@@ -147,6 +147,11 @@ def _bounded(value: Any, default: float, low: float, high: float) -> Optional[fl
         return None
 
 
+def _utilization_ok(value: Any) -> bool:
+    """A threshold for the subscription's windows a call may ask for: a share above 0, at most 1 (100 %)."""
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and 0 < value <= 1
+
+
 def _claim(path: Path, content: str = "") -> bool:
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -469,9 +474,10 @@ class CodingCliServer(SchemaBasedToolServer):
 
     # ── tools ──
 
-    async def _fail(self, status, message: str) -> dict:
+    async def _fail(self, status, message: str, **extra: Any) -> dict:
+        """An error answer; `extra` are fields beside it (limit: a budget limit, quota_limit's)."""
         await status.error(message[:140])
-        return {"status": "error", "error": message}
+        return {"status": "error", "error": message, **extra}
 
     async def run_task(self, params: dict[str, Any]) -> dict[str, Any]:
         status = params.get("_status") or _NoStatus()
@@ -508,6 +514,10 @@ class CodingCliServer(SchemaBasedToolServer):
         if limit is not None and (isinstance(limit, bool) or not isinstance(limit, (int, float)) or not limit > 0):
             return await self._fail(status, f"max_run_minutes: a number of minutes above 0 -- a shorter limit for "
                                             f"this run; the instance's {self.max_run_s / 60:g} at most")
+        utilization = params.get("max_window_utilization")
+        if utilization is not None and not _utilization_ok(utilization):
+            return await self._fail(status, f"max_window_utilization: a share above 0 and at most 1 -- a lower "
+                                            f"threshold for this run; the instance's {self.max_utilization:g} at most")
         schema = params.get("json_schema")
         prior = None
         if params.get("resume"):
@@ -528,6 +538,8 @@ class CodingCliServer(SchemaBasedToolServer):
                 # As the schema: the conversation goes on under the shorter limit its call asked for. One that
                 # asked none takes the instance's as it is now.
                 limit = float(prior["asked_run_s"]) / 60
+            if utilization is None and prior.get("asked_utilization"):
+                utilization = float(prior["asked_utilization"])     # and under the lower threshold, as asked
         else:
             workdir = params.get("workdir") or (next(iter(self.workdirs)) if len(self.workdirs) == 1 else None)
         if workdir not in self.workdirs:
@@ -539,9 +551,11 @@ class CodingCliServer(SchemaBasedToolServer):
             return await self._fail(status, f"json_schema: a JSON schema as an object, at most {MAX_SCHEMA_CHARS} "
                                             f"characters as JSON on the command line, its quotes escaped, "
                                             f"nested at most {cli.MAX_NESTING} deep")
-        blocked = cli.quota_block(self._quota(), self.max_utilization, time.time())
+        # The call's threshold, lower only; else the instance's. A budget limit is said as a field too (limit), so a
+        # caller tells it from every other refusal -- "N run(s) still going" is a wait, not the budget.
+        blocked = cli.quota_limit(self._quota(), min(utilization or 1.0, self.max_utilization), time.time())
         if blocked:
-            return await self._fail(status, f"not started: {blocked}")
+            return await self._fail(status, f"not started: {cli.limit_text(blocked)}", limit=blocked)
         # Held until the process runs: a run being prepared is not on disk as running yet.
         async with self._start_lock:
             running = await self._running()
@@ -561,7 +575,8 @@ class CodingCliServer(SchemaBasedToolServer):
             # A plain executor future, not a task: a sweep that cancels every
             # task at the loop's end does not reach it.
             prepare = asyncio.get_running_loop().run_in_executor(None, functools.partial(
-                self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema, asked_run_s))
+                self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema, asked_run_s,
+                utilization))
             try:
                 try:
                     record = await asyncio.shield(prepare)
@@ -702,6 +717,21 @@ class CodingCliServer(SchemaBasedToolServer):
         await status.end(f"run {run_id} running, {len(answer['last_actions']['content'])} recent action(s)")
         return answer
 
+    async def quota(self, params: dict[str, Any]) -> dict[str, Any]:
+        """The subscription's windows as the last run reported them, and the budget limit a run would be refused for
+        now (limit, as run_task's: None when none) -- at the instance's threshold, or the lower one asked. Read
+        only. No run has reported yet: known false, no limit -- nothing to go by refuses nothing."""
+        status = params.get("_status") or _NoStatus()
+        utilization = params.get("max_window_utilization")
+        if utilization is not None and not _utilization_ok(utilization):
+            return await self._fail(status, "max_window_utilization: a share above 0 and at most 1")
+        threshold = min(utilization or 1.0, self.max_utilization)
+        state = self._quota()
+        limit = cli.quota_limit(state, threshold, time.time())
+        await status.end(cli.limit_text(limit) if limit else f"below {threshold:.0%}")
+        return {"status": "success", "known": isinstance(state, dict), "windows": cli.windows(state),
+                "threshold": threshold, "limit": limit}
+
     async def cancel_run(self, params: dict[str, Any]) -> dict[str, Any]:
         status = params.get("_status") or _NoStatus()
         session_id = str(params.get("_session_id") or "")
@@ -744,7 +774,7 @@ class CodingCliServer(SchemaBasedToolServer):
 
     def _prepare(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict],
                  user_id: str, session_id: str, schema: Optional[dict] = None,
-                 asked_run_s: Optional[float] = None) -> dict:
+                 asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None) -> dict:
         """Worktree, command line and record, then the process (sync, off the loop)."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
         spec = self.workdirs[workdir]
@@ -756,7 +786,7 @@ class CodingCliServer(SchemaBasedToolServer):
             made = (cli.Worktree(prior["base"], prior.get("git_dir") or "", prior.get("hidden") or []) if prior
                     else cli.make_worktree(spec["path"], worktree, branch, spec["exclude"]))
             return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema,
-                               asked_run_s)
+                               asked_run_s, asked_utilization)
         except BaseException:
             # Answered "not started": no MCP file is left (a url may hold a key in its path), and for a fresh
             # run no worktree or branch that no answer names.
@@ -768,7 +798,7 @@ class CodingCliServer(SchemaBasedToolServer):
 
     def _start(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict], user_id: str,
                session_id: str, worktree: Path, branch: str, made: cli.Worktree, schema: Optional[dict] = None,
-               asked_run_s: Optional[float] = None) -> dict:
+               asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None) -> dict:
         resume = prior["claude_session"] if prior else ""
         # The call's own limit, shorter only; else the instance's. The asked one is kept as asked: a resume
         # inherits it, held to the instance's limit as it is then.
@@ -805,6 +835,7 @@ class CodingCliServer(SchemaBasedToolServer):
                                 rules=rules if rules.is_file() else None, json_schema=schema,
                                 web=self.workdirs[workdir]["web"])
         record = {"run_id": run_id, "instance_name": self.name, "max_run_s": max_run_s, "asked_run_s": asked_run_s,
+                  "asked_utilization": asked_utilization,
                   "user_id": user_id,
                   "session_id": session_id, "workdir": workdir,
                   "mode": mode, "task": task[:300], "worktree": str(worktree), "branch": branch, "base": made.base,
@@ -1032,6 +1063,11 @@ class CodingCliServer(SchemaBasedToolServer):
                 notes.append(cancelled)
             else:
                 record["state"] = "failed"
+                # The subscription stopped it: said as a field (limit), as a refusal before the start is
+                limit = cli.usage_limit(result, found["rate_limit"])
+                if limit:
+                    record["limit"] = limit
+                    notes.append(f"stopped by the subscription: {cli.limit_text(limit)}")
                 if not result:
                     try:
                         err = self._file(run_id, "err").read_text(encoding="utf-8", errors="replace").strip()
@@ -1092,6 +1128,8 @@ class CodingCliServer(SchemaBasedToolServer):
             answer["output"] = _untrusted(record["output"])
         if record.get("note"):
             answer["note"] = record["note"]
+        if record.get("limit"):
+            answer["limit"] = record["limit"]
         if record.get("details"):
             answer["details"] = _untrusted(record["details"])
         answer["next"] = (f"resume={run_id} continues this conversation in the same worktree; "

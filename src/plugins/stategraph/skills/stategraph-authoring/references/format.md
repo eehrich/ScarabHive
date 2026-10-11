@@ -1061,6 +1061,13 @@ function runs in a worker thread: it can only return `sg.tool(...)`, not run it 
   deterministic apart from these calls. `args` is data, not a template.
 - A call in flight at a crash raises `interrupted` unless `idempotent=True`; catch it
   with `except sg.Error as exc:` and reconcile. Tool failures are `sg.Error` too.
+- `raise sg.Error(type, message, data=..., resumable=True)`: a failure outside the machine
+  that will change (a budget used up until its window resets). No error transition takes it
+  and no retry: it stops the run as `failed`, and a resume runs this call again -- the steps
+  before it and a fan-out's items that ended replay, siblings it cancelled (`fail: fast`) run
+  again from where they stood. Not in a frame with resources (nor a cancelled sibling's): that
+  resume is refused, fork instead
+  (docs/stategraph_design.md §5.3).
 - Use it for steps whose data must not pass through `ctx`: read documents, map them,
   write a row, check it.
 
