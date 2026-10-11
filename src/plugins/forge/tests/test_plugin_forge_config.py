@@ -39,7 +39,7 @@ def test_the_plugin_yaml_sets_nothing_an_operator_tunes():
     assert set(entry) == {"type", "enabled", "description"}
 
 
-@pytest.mark.parametrize("tool", ["forge_checkout", "forge_push", "forge_pr_merge", "forge_ci_job_log"])
+@pytest.mark.parametrize("tool", ["forge_repo", "forge_issue", "forge_pr", "forge_ci"])
 def test_the_coder_may_call_the_forge_tools(coder, tool):
     assert tool_matches_patterns(tool, "forge", coder.agent_config.tools.allowed)
 
@@ -59,7 +59,9 @@ def render(coder, config, tools):
 
 def test_the_prompt_speaks_of_forge_only_when_its_tools_are_there(coder, config):
     assert "## GitLab / GitHub" not in render(coder, config, [])
-    shown = render(coder, config, ["forge_checkout", "forge_push"])
+    # unconfigured, forge offers only repo status: no repository to work in
+    assert "## GitLab / GitHub" not in render(coder, config, ["forge_repo"])
+    shown = render(coder, config, ["forge_repo", "forge_issue"])
     assert "## GitLab / GitHub" in shown and "forge-workflow" in shown
 
 
@@ -67,6 +69,6 @@ def test_the_claude_code_section_points_to_forge_only_when_forge_is_there(coder,
     """Its "never commit it" has a forge exception -- named only where the
     forge section it points to is rendered."""
     alone = render(coder, config, ["coding_cli_run_task"])
-    both = render(coder, config, ["coding_cli_run_task", "forge_checkout"])
+    both = render(coder, config, ["coding_cli_run_task", "forge_issue"])
     assert "Never merge it, never commit it." in alone and "forge section below" not in alone
     assert "commit it on the ticket branch, as the forge section below" in both

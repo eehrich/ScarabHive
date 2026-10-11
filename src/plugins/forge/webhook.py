@@ -53,6 +53,13 @@ class WebhookConfig:
                    max_new_per_hour=cap("max_new_per_hour", 6), max_wakes_per_hour=cap("max_wakes_per_hour", 20))
 
 
+def _unread(repo: str, payload: Any) -> Event:
+    """A payload that could not be read as events, for its outcome."""
+    body = payload if isinstance(payload, dict) else {}
+    actor = str((body.get("user") or {}).get("username") or "") if isinstance(body.get("user"), dict) else ""
+    return Event(repo, str(body.get("object_kind") or "event"), "", "", actor, "", "", False)
+
+
 def _answer(status: int, **body: Any) -> JSONResponse:
     return JSONResponse(body, status_code=status)
 
@@ -63,8 +70,9 @@ class Intake:
         self._tasks: set[asyncio.Task] = set()
         self._targets: dict[tuple[str, str, str], asyncio.Lock] = {}
 
-    def router(self) -> APIRouter:
-        router = APIRouter(prefix=f"/plugins/{self.server.name}", tags=[self.server.name])
+    def router(self, router: Optional[APIRouter] = None) -> APIRouter:
+        """The webhook route, on ``router`` (the panel's, already under /plugins/<instance>) or a router of its own."""
+        router = router or APIRouter(prefix=f"/plugins/{self.server.name}", tags=[self.server.name])
 
         @router.post("/webhook", include_in_schema=False)
         async def webhook(request: Request) -> JSONResponse:
@@ -110,18 +118,40 @@ class Intake:
         return _answer(202, accepted=True)
 
     async def distribute(self, repo: "Repo", payload: Any, key: str = "") -> None:
+        went: list[Optional[str]] = []
         try:
             bot = (await self.server._backend(repo).me())["login"]
-            went = [await self.deliver(event) for event in gitlab_events(payload, repo.name, bot)]
-            if key and None in went:
-                # Not started (a cap, presence off, nobody works on it): a resend
-                # from GitLab once that changed must be taken (review of the fix round).
-                self.server.events.forget(key)
-        except Exception:  # noqa: BLE001 - GitLab has its answer; the log is where this can go
-            logger.exception("forge %s: a webhook event of %s could not be distributed -- resend it from GitLab's "
+            events = gitlab_events(payload, repo.name, bot)
+        except Exception as exc:  # noqa: BLE001 - GitLab has its answer; the log and the outcome are where this goes
+            logger.exception("forge %s: a webhook event of %s could not be read -- resend it from GitLab's "
                              "webhook page", self.server.name, repo.name)
-            if key:
+            self._note(_unread(repo.name, payload), f"error: not read: {type(exc).__name__}: {exc}")
+            events, went = [], [None]
+        for event in events:
+            try:
+                went.append(await self.deliver(event))
+            except Exception as exc:  # noqa: BLE001 - the next event of the payload still goes
+                logger.exception("forge %s: %s on %s %s could not be distributed -- resend it from GitLab's "
+                                 "webhook page", self.server.name, event.kind, event.repo, event.ref)
+                self._note(event, f"error: {type(exc).__name__}: {exc}")
+                went.append(None)
+        if key and None in went:
+            # Not started (a cap, presence off, nobody works on it, an error):
+            # a resend from GitLab once that changed must be taken (review of the fix round).
+            try:
                 self.server.events.forget(key)
+            except Exception:  # noqa: BLE001
+                logger.exception("forge %s: forgetting delivery %s failed -- a resend of it is ignored",
+                                 self.server.name, key)
+
+    def _note(self, event: Event, outcome: str, user: str = "", session: str = "") -> None:
+        """What became of ``event``, for the status. A view: a failed write must
+        not undo a delivery that happened (review of the outcomes)."""
+        try:
+            self.server.events.record(event, outcome[:300], user, session)
+        except Exception:  # noqa: BLE001
+            logger.exception("forge %s: recording the outcome of %s on %s %s failed", self.server.name,
+                             event.kind, event.repo, event.ref)
 
     async def deliver(self, event: Event) -> Optional[str]:
         """Into the inbox of the session that works on the event's target, and
@@ -144,16 +174,19 @@ class Intake:
                 if not event.new_work:
                     logger.info("forge %s: %s on %s %s -- no session works on it", self.server.name, event.kind,
                                 event.repo, event.ref)
+                    self._note(event, "dropped: no session works on it")
                     return None
                 if presence is None:
                     logger.warning("forge %s: %s on %s %s not started -- session presence is off (config.yaml "
                                    "session_presence), nothing would run a new session", self.server.name,
                                    event.kind, event.repo, event.ref)
+                    self._note(event, "not started: session presence is off")
                     return None
                 if not store.may_ring("new", config.max_new_per_hour):
                     logger.warning("forge %s: %s on %s %s not started -- %d new sessions within the hour "
                                    "(webhook.max_new_per_hour)", self.server.name, event.kind, event.repo,
                                    event.ref, config.max_new_per_hour)
+                    self._note(event, f"not started: {config.max_new_per_hour} new sessions within the hour")
                     return None
                 bound = config.user, await self.new_session(event)
                 store.bind(*target, *bound)
@@ -165,15 +198,29 @@ class Intake:
         if presence is None:
             logger.warning("forge %s: session presence is off (config.yaml session_presence) -- the event waits "
                            "for the next run of session %s", self.server.name, session)
+            self._note(event, "waits for its next run: session presence is off", user, session)
             return session
-        if not fresh and not store.may_ring("wake", config.max_wakes_per_hour):
-            logger.warning("forge %s: %s on %s %s waits for the next run of session %s -- %d wakes within the "
-                           "hour (webhook.max_wakes_per_hour)", self.server.name, event.kind, event.repo, event.ref,
-                           session, config.max_wakes_per_hour)
+        # The news is in the inbox now: whatever fails from here on, it reaches
+        # the session with its next run -- the event is delivered, a resend
+        # from GitLab must not put it there twice (review of the outcomes).
+        try:
+            if not fresh and not store.may_ring("wake", config.max_wakes_per_hour):
+                logger.warning("forge %s: %s on %s %s waits for the next run of session %s -- %d wakes within the "
+                               "hour (webhook.max_wakes_per_hour)", self.server.name, event.kind, event.repo,
+                               event.ref, session, config.max_wakes_per_hour)
+                self._note(event, f"waits for its next run: {config.max_wakes_per_hour} wakes within the hour",
+                           user, session)
+                return session
+            rung, note = await asyncio.to_thread(presence.notify, session, user)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("forge %s: %s on %s %s is in the inbox of session %s but it was not rung",
+                             self.server.name, event.kind, event.repo, event.ref, session)
+            self._note(event, f"waits for its next run: not rung: {type(exc).__name__}: {exc}", user, session)
             return session
-        rung, note = await asyncio.to_thread(presence.notify, session, user)
         logger.info("forge %s: %s on %s %s -> session %s: %s %s", self.server.name, event.kind, event.repo,
                     event.ref, session, rung, note)
+        self._note(event, " ".join(part for part in ("new session," if fresh else "", str(rung), str(note or ""))
+                                     if part), user, session)
         return session
 
     async def new_session(self, event: Event) -> str:

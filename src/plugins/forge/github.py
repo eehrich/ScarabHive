@@ -150,7 +150,7 @@ class GitHub:
     async def issue(self, number: int, *, comments: int) -> dict:
         raw = await self.api.request("GET", f"{self._r}/issues/{number}")
         if "pull_request" in raw:
-            raise ForgeError(f"#{number} is a pull request -- read it with pr_get")
+            raise ForgeError(f"#{number} is a pull request -- read it with pr get")
         issue = _issue(raw)
         issue["body"] = raw.get("body") or ""
         total = int(raw.get("comments") or 0)
@@ -387,7 +387,7 @@ class GitHub:
         old = await self.job(job_id)
         await self.api.request("POST", f"{self._r}/actions/jobs/{job_id}/rerun")
         return {**old, "id": None, "state": "pending", "url": None,    # both name the old attempt
-                "note": "GitHub starts a new attempt with new job ids -- ci_status shows it"}
+                "note": "GitHub starts a new attempt with new job ids -- ci status shows it"}
 
     async def branch_exists(self, branch: str) -> bool:
         try:

@@ -264,6 +264,13 @@ auth:
         min_role: "admin"
         description: "State machine editor, runner and debugger require admin role"
 
+      # The forge panel lists every user's sessions that work on a ticket; a user
+      # sees their own with /forge. The webhook rule above matches first.
+      - pattern: "/plugins/forge/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Forge panel requires admin role"
+
       # writer_admin exposes the whole writer DB (jobs.db, books.db, sessions, story
       # payloads, raw reader feedback): operator surface only. A user-role token must not be able
       # to delete queue jobs or dump payloads.

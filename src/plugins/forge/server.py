@@ -49,16 +49,25 @@ CAP_TEXT = 24_000           # all comments / threads of one answer
 CAP_DIFF = 30_000           # one page of diffs
 CAP_LOG = 20_000            # one log excerpt
 MAX_JOBS = 60
-MAX_EXCERPTS = 40           # pr_discussions entries shown shortened once the text budget is spent
-MAX_FILES = 300             # entries in pr_diff's file list
+MAX_EXCERPTS = 40           # pr discussions entries shown shortened once the text budget is spent
+MAX_FILES = 300             # entries in pr diff's file list
 MAX_WAIT_S = 600
-NONE_GRACE_S = 45           # how long ci_status waits for a pipeline to appear at all
+NONE_GRACE_S = 45           # how long ci status waits for a pipeline to appear at all
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]")
 _GITLAB_SECTION = re.compile(r"section_(?:start|end):\d+:[A-Za-z0-9_.-]+(?:\[[^\]]*\])?\r?")
 _RUNNER_PREFIX = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z [0-9a-f]{2}[OE](?:(\+)| )?(.*)", re.S)
 _ACTIONS_PREFIX = re.compile(r"^\ufeff?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ")
 _WAITING = ("pending", "running")
 _LOOPBACK = ("localhost", "127.0.0.1", "::1")
+# The four tools and their operations -> the method doing it. "merge" is offered only where a repository
+# allows it (schema.yaml); the method checks the repository anyway.
+OPERATIONS = {
+    "repo": {"status": "repo_status", "checkout": "checkout", "push": "push"},
+    "issue": {"list": "issue_list", "get": "issue_get", "comment": "issue_comment", "update": "issue_update"},
+    "pr": {"list": "pr_list", "get": "pr_get", "diff": "pr_diff", "discussions": "pr_discussions",
+           "create": "pr_create", "update": "pr_update", "comment": "pr_comment", "merge": "pr_merge"},
+    "ci": {"status": "ci_status", "log": "ci_job_log", "retry": "ci_retry"},
+}
 
 
 class _NoStatus:
@@ -87,6 +96,43 @@ class Repo:
     path: Path
     allow_merge: bool
     require_ci: bool
+
+
+def _utc(seconds: float) -> str:
+    """A stored time as the databases write it: UTC, no zone (the panel kit reads it so)."""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(seconds))
+
+
+def _status_text(s: dict[str, Any]) -> str:
+    """``repo status`` for a person: what /forge prints (plugin_commands.format_command_result
+    prints a result's ``message`` as it is)."""
+    lines = ["You may use forge." if s["you_may_use_it"] else f"You may not use forge: {s['why_not']}"]
+    lines += [f"repo {r['name']}: {r['provider']} {r['host']} {r['project']}"
+              f"{', merge allowed' if r['allow_merge'] else ''}{', CI required' if r['require_ci'] else ''}"
+              f"{', TLS checks OFF' if not r['tls_verify'] else ''}" for r in s["repos"]]
+    lines += [f"left out {r['repo']}: {r['why']}" for r in s["left_out"]]
+    if not s["repos"] and not s["left_out"]:
+        lines.append("No repository configured (plugins.servers.forge in config/plugins.yaml).")
+    lines.append(f"Pushes only under {s['branch_prefix']}, never forced; merge method {s['merge_method']}.")
+    hook = s["webhook"]
+    if not hook:
+        lines.append("Webhook: off.")
+        return "\n".join(lines)
+    lines.append(f"Webhook: new work runs as {hook['user']} with agent {hook['agent']}, "
+                 f"{'it may merge' if hook['merge'] else 'a person merges'}; last hour "
+                 f"{hook['last_hour']['new']}/{hook['max_new_per_hour']} started, "
+                 f"{hook['last_hour']['wake']}/{hook['max_wakes_per_hour']} woken"
+                 f"{'' if hook['route'] else ' -- no route: no host has a webhook secret'}.")
+    if hook.get("error"):
+        lines.append(f"Webhook store UNREADABLE: {hook['error']}")
+        return "\n".join(lines)
+    lines += ["Your sessions at work:"] + [
+        f"  {w['ref']} -> {w['session_id']}, {w['waiting']} waiting, since {w['since']} UTC" for w in s["work"]
+    ] if s["work"] else ["None of your sessions works on a ticket."]
+    lines += ["What the webhook did for them (newest first):"] + [
+        f"  {o['at']} UTC {o['event']}{f' by @' + o['by'] if o['by'] else ''}: {o['outcome']}" for o in s["outcomes"][:20]
+    ] if s["outcomes"] else []
+    return "\n".join(lines)
 
 
 def _untrusted(content: Any) -> dict:
@@ -185,6 +231,7 @@ class ForgeServer(SchemaBasedToolServer):
         # `allowed_users: admin` is one user, not five letters.
         self.allowed_users = frozenset([users] if isinstance(users, str) else map(str, users))
         self.repos: dict[str, Repo] = {}
+        self.left_out: dict[str, str] = {}      # repository -> why it is not usable (the status shows it)
         self._apis: dict[str, Api] = {}
         self._backends: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -205,13 +252,15 @@ class ForgeServer(SchemaBasedToolServer):
         entry costs that entry, logged -- never the other repositories."""
         if not isinstance(hosts, dict) or not isinstance(repos, dict):
             logger.warning("forge %s: hosts and repos must be mappings", self.name)
+            self.left_out["(config)"] = "hosts and repos under plugins.servers.forge must be mappings"
             return
         for repo_name, spec in repos.items():
             problem = self._repo_problem(str(repo_name), spec, hosts)
             if problem:
+                self.left_out[str(repo_name)] = problem
                 logger.warning("forge %s: repo %s is left out: %s", self.name, repo_name, problem)
         if repos and not self.repos:
-            logger.warning("forge %s: no usable repository -- no tools are offered", self.name)
+            logger.warning("forge %s: no usable repository -- only repo status is offered", self.name)
         for host, api_url in sorted({(r.host, r.api_url) for r in self.repos.values()}):
             if urlsplit(api_url).scheme == "http" and urlsplit(api_url).hostname not in _LOOPBACK:
                 logger.warning("forge %s: host %s is plain HTTP (%s): its token travels unencrypted, to the "
@@ -271,10 +320,14 @@ class ForgeServer(SchemaBasedToolServer):
         return secrets
 
     def get_web_router(self) -> Any:
-        """The webhook route, only where a webhook user and a host secret are configured."""
-        if not self.webhook_secrets():
-            return None
-        return self._intake.router()
+        """The panel, and the webhook route only where a webhook user and a host secret are configured."""
+        from .web_endpoints import ForgeWebEndpoints
+
+        router = ForgeWebEndpoints(self).get_web_router()
+        return self._intake.router(router) if self.webhook_secrets() else router
+
+    def get_static_assets(self) -> Path:
+        return Path(__file__).parent / "static"
 
     def _bind(self, params: dict, repo: Repo, target: str, key: str) -> None:
         """The calling session works on this target: the webhook's news for it goes there (W5)."""
@@ -292,6 +345,82 @@ class ForgeServer(SchemaBasedToolServer):
             await api.aclose()
         self._apis.clear()
         self._backends.clear()
+
+    # ── the tools: one per subject, the operation picks the method ────────
+
+    async def repo(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._operation("repo", params)
+
+    async def issue(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._operation("issue", params)
+
+    async def pr(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._operation("pr", params)
+
+    async def ci(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._operation("ci", params)
+
+    async def _operation(self, tool: str, params: dict[str, Any]) -> dict[str, Any]:
+        operation = params.get("operation")
+        method = OPERATIONS[tool].get(operation) if isinstance(operation, str) else None  # a list is unhashable
+        if method is None:
+            message = f"operation must be one of: {', '.join(OPERATIONS[tool])}"
+            await (params.get("_status") or _NoStatus()).error(message)
+            return {"status": "error", "error": message}
+        return await getattr(self, method)(params)
+
+    def _overview(self, user_id: Optional[str] = None) -> dict[str, Any]:
+        """The repositories (and why one is left out), the policy, and what the
+        webhook did -- for ``user_id``'s sessions, or everyone's with None (the
+        panel, admins only). Shared by the ``repo status`` operation and the
+        panel. Flat lists of flat records with readable UTC times: /forge
+        prints them as rows (plugin_commands.format_command_result)."""
+        answer: dict[str, Any] = {
+            "repos": [{"name": r.name, "provider": r.provider, "host": r.host, "project": r.project,
+                       "allow_merge": r.allow_merge, "require_ci": r.require_ci, "tls_verify": r.tls_verify}
+                      for r in sorted(self.repos.values(), key=lambda r: r.name)],
+            "left_out": [{"repo": name, "why": why} for name, why in sorted(self.left_out.items())],
+            "branch_prefix": self.branch_prefix, "merge_method": self.merge_method}
+        hook = self.webhook
+        if hook is None:
+            answer["webhook"] = None
+            return answer
+        try:
+            seen = self.events.overview(user_id)
+        except Exception:  # noqa: BLE001 - the store is a view here; the status still answers
+            logger.exception("forge %s: reading the webhook store failed", self.name)
+            seen = {"work": [], "outcomes": [], "last_hour": {"new": 0, "wake": 0},
+                    "error": f"the webhook store {self.events.path} could not be read -- see the log"}
+        answer["webhook"] = {"route": bool(self.webhook_secrets()), "user": hook.user, "agent": hook.agent,
+                             "merge": hook.merge, "max_new_per_hour": hook.max_new_per_hour,
+                             "max_wakes_per_hour": hook.max_wakes_per_hour, "last_hour": seen["last_hour"],
+                             **({"error": seen["error"]} if "error" in seen else {})}
+        answer["work"] = [{"ref": self._target_ref(w["repo"], w["target"], str(w["key"])), "user_id": w["user_id"],
+                           "session_id": w["session_id"], "waiting": w["waiting"], "since": _utc(w["since"])}
+                          for w in seen["work"]]
+        answer["outcomes"] = [{"at": _utc(o["at"]), "event": f"{o['kind']} {o['repo']} {o['ref']}",
+                               "by": o["actor"], "outcome": o["outcome"], "user_id": o["user_id"],
+                               "session_id": o["session_id"]} for o in seen["outcomes"]]
+        return answer
+
+    def _target_ref(self, repo_name: str, target: str, key: str) -> str:
+        repo = self.repos.get(repo_name)
+        if target != "branch" and repo is not None and key.isdigit():
+            return self._ref(repo, "pr" if target == "mr" else "issue", int(key))
+        return f"{repo_name} {key}"
+
+    async def repo_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Open to anyone who may call the tool: it uses no token, and the
+        webhook's part is the caller's own sessions only."""
+        status = params.get("_status") or _NoStatus()
+        refused = self._refusal(params)
+        answer = await asyncio.to_thread(self._overview, str(params.get("_user_id") or ""))
+        answer = {"you_may_use_it": not refused, **({"why_not": refused} if refused else {}), **answer}
+        hook = answer["webhook"]
+        await status.end(_short(f"{len(answer['repos'])} repos, {len(answer['left_out'])} left out, webhook "
+                                + ("off" if not hook else "store unreadable" if hook.get("error")
+                                   else f"on, {len(answer['work'])} bound"), 140))
+        return {"status": "success", "message": _status_text(answer), **answer}
 
     # ── shared building blocks ────────────────────────────────────────────
 
@@ -322,12 +451,10 @@ class ForgeServer(SchemaBasedToolServer):
         """One tool call: the repository resolved, ForgeError turned into the
         error shape with its status line, anything else logged and reported."""
         status = params.get("_status") or _NoStatus()
-        user = str(params.get("_user_id") or "")
-        if not user or user not in self.allowed_users:
-            message = (f"forge acts with the operator's bot token and user {_short(user or '(none)', 40)!r} may not "
-                       f"use it -- ask the operator to add the user id to forge allowed_users")
-            await status.error(_short(message, 140))
-            return {"status": "error", "error": message}
+        refused = self._refusal(params)
+        if refused:
+            await status.error(_short(refused, 140))
+            return {"status": "error", "error": refused}
         try:
             repo = self._repo(params)
             return await work(repo, self._backend(repo), status)
@@ -338,6 +465,14 @@ class ForgeServer(SchemaBasedToolServer):
             logger.exception("forge %s failed", self.name)
             await status.error(_short(f"{type(exc).__name__}: {exc}", 140))
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    def _refusal(self, params: dict) -> str:
+        """Why the calling user may not use forge, or "" -- every tool acts with the bot's token."""
+        user = str(params.get("_user_id") or "")
+        if user and user in self.allowed_users:
+            return ""
+        return (f"forge acts with the operator's bot token and user {_short(user or '(none)', 40)!r} may not "
+                f"use it -- ask the operator to add the user id to forge allowed_users")
 
     def _need_number(self, params: dict, key: str = "number") -> int:
         number = _number(params.get(key))
@@ -501,7 +636,7 @@ class ForgeServer(SchemaBasedToolServer):
                 if open_prs:
                     answer["pr"] = {k: open_prs[0][k] for k in ("number", "url", "draft")}
                 else:
-                    answer["next"] = f"pr_create with source_branch={remote}"
+                    answer["next"] = f"pr create with source_branch={remote}"
             await status.end(f"{repo.name}: pushed {_short(branch, 40)} -> {_short(remote, 50)} at {sha[:8]}")
             return answer
 
@@ -735,7 +870,7 @@ class ForgeServer(SchemaBasedToolServer):
                 self._bind_request(params, repo, pr["number"], source, closes)
                 await status.end(f"{self._ref(repo, 'pr', pr['number'])} exists already for {_short(source, 60)}")
                 return {"status": "success", "created": False, "pr": pr,
-                        "note": "an open request for this branch exists; pr_update changes it"}
+                        "note": "an open request for this branch exists; pr update changes it"}
             if not await backend.branch_exists(source):
                 raise ForgeError(f"{source} is not on the platform -- push it first")
             target = target or (await backend.project_info())["default_branch"]
@@ -816,7 +951,7 @@ class ForgeServer(SchemaBasedToolServer):
                 await status.end(f"{ref}: comment on {_short(file, 60)}:{line_no}")
                 answer = {"status": "success", "thread_id": done.get("thread_id"), "comment_id": done.get("comment_id")}
                 if not done.get("thread_id"):
-                    answer["note"] = "its thread id shows in pr_discussions"
+                    answer["note"] = "its thread id shows in pr discussions"
                 return answer
             done = await backend.pr_comment(number, body)
             await status.end(f"{ref}: comment {done.get('id')} posted")
@@ -835,7 +970,7 @@ class ForgeServer(SchemaBasedToolServer):
             # The framework does not enforce "required": without the head the
             # caller reviewed, whatever was pushed since would be merged.
             if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-fA-F]{7,64}", expected):
-                raise ForgeError("sha is required: the head commit you reviewed (head_sha from pr_get), "
+                raise ForgeError("sha is required: the head commit you reviewed (head_sha from pr get), "
                                  "at least 7 hex digits")
             if method not in ("merge", "squash", "rebase"):
                 raise ForgeError("method: merge|squash|rebase")
@@ -844,7 +979,7 @@ class ForgeServer(SchemaBasedToolServer):
             if pr["state"] != "open":
                 refusals.append(f"it is {pr['state']}")
             if pr["draft"]:
-                refusals.append("it is a draft (pr_update draft=false when it is ready)")
+                refusals.append("it is a draft (pr update draft=false when it is ready)")
             if not str(pr["head_sha"] or "").lower().startswith(expected.lower()):
                 refusals.append(f"its head is {str(pr['head_sha'])[:12]}, not the {expected[:12]} you checked")
             if pr["open_threads"]:
@@ -855,7 +990,7 @@ class ForgeServer(SchemaBasedToolServer):
                 refusals.append(f"at least {pr['unread_threads']} discussions could not be read -- a person merges")
             ci = pr["ci"]
             if repo.require_ci and ci["state"] != "success":
-                refusals.append(f"CI on the head is {ci['state']}" + (" (ci_status wait_s waits for it)"
+                refusals.append(f"CI on the head is {ci['state']}" + (" (ci status wait_s waits for it)"
                                                                       if ci["state"] in _WAITING else ""))
             if pr["mergeable"] is None:
                 refusals.append("the platform is still checking mergeability -- ask again in a few seconds")
@@ -916,7 +1051,7 @@ class ForgeServer(SchemaBasedToolServer):
                 if (state not in _WAITING and not appearing) or time.monotonic() + delay > deadline:
                     break
                 if token and token.is_cancelled:
-                    return {"error": "Tool 'ci_status' was cancelled.", "cancelled": True,
+                    return {"error": "Tool 'ci' (status) was cancelled.", "cancelled": True,
                             "forced": bool(getattr(token, "is_forced", False))}
                 await status.progress(f"{what}: CI {state}, waiting")
                 await asyncio.sleep(delay)
@@ -953,7 +1088,7 @@ class ForgeServer(SchemaBasedToolServer):
                 lines = clean_log(await backend.job_log(job_id))
             except ForgeNotFound:
                 raise ForgeError(f"job {job_id} has no log here -- a check of another CI system, or a wrong id "
-                                 f"(ids come from ci_status)") from None
+                                 f"(ids come from ci status)") from None
             numbered = [(i + 1, line) for i, line in enumerate(lines)]
             if grep:
                 needle = grep.lower()

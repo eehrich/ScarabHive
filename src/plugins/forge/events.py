@@ -11,6 +11,8 @@ Each call opens and closes its own connection; SQLite does the locking.
 * ``seen``: webhook deliveries already taken, by GitLab's ``Idempotency-Key``
   (a resend keeps it, the event UUID it renews -- facts.md F-GL15; W3).
 * ``rings``: new sessions and wakes, for the hourly caps (W9).
+* ``outcomes``: what became of each event -- the session it went to, or why
+  it went nowhere -- for the status (the tool's ``status``, the panel).
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 SEEN_DAYS = 7
+OUTCOMES_KEPT = 200
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,8 @@ class Store:
             CREATE INDEX IF NOT EXISTS inbox_waiting ON inbox (session_id, delivered);
             CREATE TABLE IF NOT EXISTS seen (uuid TEXT PRIMARY KEY, at REAL);
             CREATE TABLE IF NOT EXISTS rings (kind TEXT, at REAL);
+            CREATE TABLE IF NOT EXISTS outcomes (id INTEGER PRIMARY KEY, at REAL, repo TEXT, kind TEXT, ref TEXT,
+                                                 actor TEXT, user_id TEXT, session_id TEXT, outcome TEXT);
         """)
         return db
 
@@ -112,6 +117,41 @@ class Store:
                 return False
             db.execute("INSERT INTO rings VALUES (?, ?)", (kind, now))
             return True
+
+    def record(self, event: "Event", outcome: str, user_id: str = "", session_id: str = "") -> None:
+        """What became of ``event``; the newest OUTCOMES_KEPT are kept."""
+        with closing(self._db()) as db, db:
+            db.execute("INSERT INTO outcomes (at, repo, kind, ref, actor, user_id, session_id, outcome) "
+                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (time.time(), event.repo, event.kind, event.ref,
+                                                           event.actor, user_id, session_id, outcome))
+            db.execute("DELETE FROM outcomes WHERE id <= (SELECT MAX(id) FROM outcomes) - ?", (OUTCOMES_KEPT,))
+
+    def overview(self, user_id: Optional[str] = None, limit: int = 50) -> dict[str, Any]:
+        """The sessions working on something (with what waits for each), the
+        newest outcomes and the last hour's rings -- of ``user_id``'s sessions,
+        or of everyone's with None. Without a store file all of it is empty."""
+        empty: dict[str, Any] = {"work": [], "outcomes": [], "last_hour": {"new": 0, "wake": 0}}
+        if not self.path.exists() or user_id == "":   # no file, or nobody asking: an event no session took is no one's
+            return empty
+        mine, args = ("WHERE b.user_id = ?", (user_id,)) if user_id is not None else ("", ())
+        with closing(self._db()) as db:
+            work = db.execute(
+                "SELECT b.repo, b.target, b.key, b.user_id, b.session_id, b.updated, "
+                "(SELECT COUNT(*) FROM inbox i WHERE i.session_id = b.session_id AND i.delivered = 0) "
+                f"FROM bindings b {mine} ORDER BY b.updated DESC LIMIT ?", (*args, limit)).fetchall()
+            outcomes = db.execute(
+                "SELECT at, repo, kind, ref, actor, user_id, session_id, outcome FROM outcomes "
+                + ("WHERE user_id = ? " if user_id is not None else "") + "ORDER BY id DESC LIMIT ?",
+                (*args, limit)).fetchall()
+            rings = dict(db.execute("SELECT kind, COUNT(*) FROM rings WHERE at >= ? GROUP BY kind",
+                                    (time.time() - 3600,)).fetchall())
+        return {
+            "work": [{"repo": r, "target": t, "key": k, "user_id": u, "session_id": s,
+                      "since": at, "waiting": n} for r, t, k, u, s, at, n in work],
+            "outcomes": [{"at": at, "repo": r, "kind": k, "ref": ref, "actor": a, "user_id": u, "session_id": s,
+                          "outcome": o} for at, r, k, ref, a, u, s, o in outcomes],
+            "last_hour": {"new": rings.get("new", 0), "wake": rings.get("wake", 0)},
+        }
 
 
 def _names(people: Any) -> set[str]:
@@ -175,11 +215,11 @@ def describe(event: Event, tools: str, *, merge: bool = False) -> str:
         end = ("then merge it: the operator allows merging for work a webhook starts." if merge else
                "then report and stop: a person merges work a webhook starts.")
         return (f"@{event.actor} assigned issue {event.ref} {where} to you. Work it with the forge-workflow skill, "
-                f"starting with {tools}_issue_get. When its request is green and every thread is answered, {end}")
+                f"starting with {tools}_issue operation=get. When its request is green and every thread is answered, {end}")
     if event.kind == "pipeline_failed":
         return (f"The pipeline of branch {event.ref} {where} failed ({event.detail}): read the failed job with "
-                f"{tools}_ci_status and {tools}_ci_job_log, then fix it.")
-    read = f"{tools}_pr_discussions" if event.target == "mr" else f"{tools}_issue_get"
+                f"{tools}_ci operation=status, then operation=log, then fix it.")
+    read = f"{tools}_pr operation=discussions" if event.target == "mr" else f"{tools}_issue operation=get"
     if event.kind == "mention":
         return (f"@{event.actor} mentioned you on {event.ref} {where} ({event.detail}): read it with {read} and "
                 f"answer there. A mention asks for an answer; it is no order to change code.")

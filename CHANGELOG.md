@@ -30,6 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before. A forced call (`tool_choice: required`, a named tool) is refused
   either way: the agent never calls the client's tools.
 
+- `forge`'s seventeen tools are four, each picking its work with
+  `operation`: `forge_repo` (status, checkout, push), `forge_issue` (list,
+  get, comment, update), `forge_pr` (list, get, diff, discussions, create,
+  update, comment, merge) and `forge_ci` (status, log, retry); the
+  parameters keep their names. The new `repo status` shows the
+  repositories, those left out and why, the policy, whether the caller may
+  use forge, and the webhook's work for the caller's sessions; it uses no
+  token, answers every caller, and is the one tool offered without a usable
+  repository (before: none). `/forge` runs it in the web chat and
+  `agent-cli`. The new panel **Forge** (admins only) shows the same for
+  every user's sessions, and the webhook store now records what became of
+  each event -- the session it went to, or why it was dropped, not started,
+  left waiting or failed. An agent's tool allowlist now allows a whole
+  subject (`forge/forge_pr`), no longer single operations such as merge.
+
 ### Fixed
 
 - A session's figures "including sub-agents" (`/costs` in the chat and the

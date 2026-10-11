@@ -10,6 +10,7 @@ import pytest
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.forge import gitops
 from plugins.forge import server as server_module
+from plugins.forge.events import Store
 from plugins.forge.server import ForgeServer, clean_log
 
 HEAD = "a" * 40
@@ -121,9 +122,16 @@ def make_server(tmp_path, monkeypatch, *, allow_merge=True, token="tok", **extra
     return server
 
 
+# method -> (tool, operation): every call goes the model's way, through the tool and its operation
+ROUTE = {method: (tool, operation) for tool, operations in server_module.OPERATIONS.items()
+         for operation, method in operations.items()}
+
+
 async def call(server, tool, **params):
     status = Status()
-    result = await getattr(server, tool)({"repo": "app", "_user_id": "tester", **params, "_status": status})
+    subject, operation = ROUTE[tool]
+    result = await getattr(server, subject)({"repo": "app", "_user_id": "tester", **params, "operation": operation,
+                                             "_status": status})
     assert len(status.lines) == 1, f"{tool}: one closing line expected, got {status.lines}"
     kind, line = status.lines[0]
     assert kind == ("end" if result.get("status") == "success" else "error"), (tool, result, status.lines)
@@ -137,10 +145,51 @@ def tool_names(server):
     return {t["function"]["name"] for t in server.get_tools()}
 
 
-def test_a_repo_without_its_token_is_left_out(tmp_path, monkeypatch):
+async def test_a_repo_without_its_token_is_left_out_and_the_status_says_why(tmp_path, monkeypatch):
     server = make_server(tmp_path, monkeypatch, token="")
     assert server.repos == {}
-    assert tool_names(server) == set()
+    [tool] = server.get_tools()
+    assert tool["function"]["name"] == "forge_repo"
+    assert tool["function"]["parameters"]["properties"]["operation"]["enum"] == ["status"]
+    result, line = await call(server, "repo_status")
+    [left] = result["left_out"]
+    assert result["repos"] == [] and left["repo"] == "app" and "FORGE_TEST_TOKEN" in left["why"], result
+    assert "1 left out" in line
+
+
+async def test_a_config_that_is_no_mapping_says_so_in_the_status(tmp_path, monkeypatch):
+    server = make_server(tmp_path, monkeypatch, repos=["app"])
+    result, _ = await call(server, "repo_status")
+    assert result["left_out"] == [{"repo": "(config)",
+                                   "why": "hosts and repos under plugins.servers.forge must be mappings"}]
+
+
+async def test_forge_prints_the_status_for_a_person(tmp_path, monkeypatch):
+    """/forge prints the tool's ``message`` (plugin_commands.format_command_result): lines, never a repr."""
+    from agent_system.plugin_commands import format_command_result
+
+    server = make_server(tmp_path, monkeypatch, webhook={"user": "tester"})
+    server.events = server.hooks_plugin.store = Store(tmp_path / "events.db")
+    server.events.bind("app", "issue", "12", "tester", "s1")
+    shown = format_command_result((await call(server, "repo_status"))[0])
+    assert shown.splitlines()[:2] == ["You may use forge.", "repo app: gitlab gl team/app, merge allowed, CI required"]
+    assert "Webhook: new work runs as tester with agent coder, a person merges; last hour 0/6 started" in shown
+    assert "  app#12 -> s1, 0 waiting, since " in shown and "{" not in shown and "[" not in shown, shown
+
+
+async def test_an_unreadable_store_is_said_not_shown_as_nothing(tmp_path, monkeypatch):
+    from agent_system.plugin_commands import format_command_result
+
+    server = make_server(tmp_path, monkeypatch, webhook={"user": "tester"})
+
+    def broken(*_args, **_kwargs):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(server.events, "overview", broken)
+    result, line = await call(server, "repo_status")
+    shown = format_command_result(result)
+    assert "Webhook store UNREADABLE" in shown and "None of your sessions" not in shown, shown
+    assert line.endswith("webhook store unreadable")
 
 
 @pytest.mark.parametrize("api_url, warned", [("http://192.168.1.5:8929/api/v4", True),
@@ -159,10 +208,35 @@ def test_a_plain_http_host_is_warned_about_once(tmp_path, monkeypatch, caplog, a
                       "to git" % api_url] if warned else [])
 
 
-def test_pr_merge_is_offered_only_where_a_repo_allows_it(tmp_path, monkeypatch):
-    assert "forge_pr_merge" in tool_names(make_server(tmp_path, monkeypatch, allow_merge=True))
-    names = tool_names(make_server(tmp_path, monkeypatch, allow_merge="yes"))     # only a real true counts
-    assert "forge_pr_merge" not in names and "forge_pr_get" in names
+def pr_operations(server):
+    [pr] = [t["function"] for t in server.get_tools() if t["function"]["name"] == "forge_pr"]
+    return pr["parameters"]["properties"]["operation"]["enum"], pr["parameters"]["properties"]
+
+
+def test_merge_is_offered_only_where_a_repo_allows_it(tmp_path, monkeypatch):
+    operations, properties = pr_operations(make_server(tmp_path, monkeypatch, allow_merge=True))
+    assert "merge" in operations and "sha" in properties
+    operations, properties = pr_operations(make_server(tmp_path, monkeypatch, allow_merge="yes"))  # only a real true
+    assert "merge" not in operations and "get" in operations and "sha" not in properties
+
+
+def test_four_tools_carry_every_operation(tmp_path, monkeypatch):
+    server = make_server(tmp_path, monkeypatch)
+    offered = {t["function"]["name"]: t["function"]["parameters"]["properties"]["operation"]["enum"]
+               for t in server.get_tools()}
+    assert offered == {f"forge_{tool}": list(operations) for tool, operations in server_module.OPERATIONS.items()}
+    for operations in server_module.OPERATIONS.values():
+        for method in operations.values():
+            assert callable(getattr(server, method)), method
+
+
+@pytest.mark.parametrize("operation", ["delete", None, ["get"]])
+async def test_an_unknown_operation_names_the_known_ones(tmp_path, monkeypatch, operation):
+    server = make_server(tmp_path, monkeypatch)
+    status = Status()
+    result = await server.issue({"repo": "app", "_user_id": "tester", "operation": operation, "_status": status})
+    assert result == {"status": "error", "error": "operation must be one of: list, get, comment, update"}
+    assert status.lines == [("error", result["error"])]
 
 
 def test_every_tool_offers_exactly_the_configured_repos(tmp_path, monkeypatch):
@@ -190,8 +264,19 @@ ALL_TOOLS = ["checkout", "push", "issue_list", "issue_get", "issue_comment", "is
              "ci_job_log", "ci_retry"]
 
 
-def test_the_gated_list_is_every_tool_the_schema_offers(tmp_path, monkeypatch):
-    assert {f"forge_{t}" for t in ALL_TOOLS} == tool_names(make_server(tmp_path, monkeypatch))
+def test_the_gated_list_is_every_operation_but_status(tmp_path, monkeypatch):
+    assert set(ALL_TOOLS) == set(ROUTE) - {"repo_status"}
+
+
+async def test_the_status_answers_a_user_forge_refuses_and_touches_no_token(tmp_path, monkeypatch):
+    """/forge is how a user learns why forge refuses them -- it acts with no token."""
+    server = make_server(tmp_path, monkeypatch)
+    server._backends["app"] = Untouchable()
+    result, _ = await call(server, "repo_status", _user_id="mallory")
+    assert result["status"] == "success" and result["you_may_use_it"] is False
+    assert "allowed_users" in result["why_not"] and [r["name"] for r in result["repos"]] == ["app"]
+    result, _ = await call(server, "repo_status")
+    assert result["you_may_use_it"] is True and "why_not" not in result
 
 
 @pytest.mark.parametrize("tool", ALL_TOOLS)
@@ -478,7 +563,7 @@ async def test_checkout_push_round_trip(platform, tmp_path):
     commit_in(clone, "b.txt")
     pushed, line = await call(server, "push", branch="scarabhive/1-x")
     assert sh(bare, "rev-parse", "refs/heads/scarabhive/1-x") == sh(clone, "rev-parse", "HEAD")
-    assert pushed["next"].startswith("pr_create") and "pushed scarabhive/1-x" in line
+    assert pushed["next"].startswith("pr create") and "pushed scarabhive/1-x" in line
 
 
 @pytest.mark.parametrize("params,reason", [

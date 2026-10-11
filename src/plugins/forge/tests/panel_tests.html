@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Forge panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const rows = (id) => [...doc().querySelectorAll(`#${id} tbody tr`)];
+  const cells = (row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.replace(/\s+/g, ' ').trim());
+
+  await go('/plugins/forge/');
+  await until('the panel', () => rows('repos').length > 0);
+
+  await check('the repositories are listed, and one left out says why', async () => {
+    await until('both rows', () => rows('repos').length === 2, 3000);
+    const [app, docs] = rows('repos').map(cells);
+    return app[0] === 'app' && app[1] === 'gitlab · gl' && app[2] === 'team/app' && app[3] === 'merge'
+      && app[4] === 'CI' && docs[0] === 'docs' && /^left out host 'nowhere' is not under hosts/.test(docs[1])
+      && $('#stats').textContent.includes('Left out1');
+  });
+
+  await check('the policy names who may use forge and what the webhook may do', async () => {
+    const text = $('#policy').textContent.replace(/\s+/g, ' ');
+    return text.includes('admin, alice') && text.includes('scarabhive/') && text.includes('runs as admin with agent coder')
+      && text.includes('a person merges') && text.includes('at most 6 new sessions and 20 wakes an hour')
+      && $('#policy .pk-badge').textContent === 'route';
+  });
+
+  await check('the sessions at work show what waits for them, and only the viewer\'s own opens in the chat', async () => {
+    const byRef = Object.fromEntries(rows('work').map((row) => [cells(row)[0], row]));
+    const own = byRef['app#12'], theirs = byRef['app!14'];
+    return rows('work').length === 2 && cells(own)[1] === 'admin' && cells(own)[3] === '1'
+      && own.querySelector('[data-open-session]')?.dataset.openSession === 's-own'
+      && cells(theirs)[1] === 'alice' && cells(theirs)[3] === '0' && !theirs.querySelector('[data-open-session]');
+  });
+
+  await check('a webhook event that went nowhere is marked, one that started a session names it', async () => {
+    const [dropped, , started] = rows('outcomes');  // newest first
+    return cells(dropped)[1] === 'comment app #30' && cells(dropped)[2] === '@dave'
+      && dropped.querySelector('td:nth-child(4) .pk-badge--warn')?.textContent === 'dropped: no session works on it'
+      && cells(started)[3] === 'new session, woke_session' && !started.querySelector('.pk-badge--warn')
+      && started.querySelector('[data-open-session]')?.dataset.openSession === 's-own';
+  });
+
+  await check('an event that failed is marked as an error', async () => {
+    const failed = rows('outcomes')[1];
+    return cells(failed)[1] === 'note app' && cells(failed)[2] === '@erin'
+      && failed.querySelector('.pk-badge--danger')?.textContent === 'error: not read: RuntimeError: 401';
+  });
+
+  await check('an unreadable store is said, never shown as nothing happened', async () => {
+    await fetch('/__stub/store-broken', { method: 'POST' });
+    $('pk-refresh [data-act="now"]').click();
+    await until('the store gone', () => $('#work .pk-badge--danger'));
+    return rows('work').length === 0 && rows('outcomes').length === 0
+      && $('#work').textContent.includes('could not be read') && !$('#work').textContent.includes('No session works')
+      && $('#outcomes .pk-badge--danger')?.textContent === 'store unreadable' && rows('repos').length === 2
+      && /Sessions at work\s*\?/.test($('#stats').textContent) && /woken \(1 h\)\s*\?/.test($('#stats').textContent);
+  });
+
+  await check('with the webhook off the panel says so and shows nothing of before', async () => {
+    await fetch('/__stub/hook-off', { method: 'POST' });
+    $('pk-refresh [data-act="now"]').click();
+    await until('the webhook gone', () => $('#work').textContent.includes('The webhook is off'));
+    return rows('work').length === 0 && rows('outcomes').length === 0
+      && $('#outcomes').textContent.trim() === 'The webhook is off.'
+      && $('#policy').textContent.includes('off (no webhook.user)') && rows('repos').length === 2;
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

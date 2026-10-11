@@ -84,8 +84,8 @@ plugins:
             # rendered only when has_tool() finds them.
             - "+coding_cli/*"
             # GitLab/GitHub for the repositories the operator configured under
-            # plugins.servers.forge; none configured -> no tools, and the
-            # prompt's section on them is not rendered.
+            # plugins.servers.forge; none configured -> only forge_repo status
+            # (it says why), and the prompt's section on them is not rendered.
             - "+forge/*"
             # Ask the person in the chat when a choice is theirs to make
             # (plugin ask_user); a run nobody watches gets "decide yourself".

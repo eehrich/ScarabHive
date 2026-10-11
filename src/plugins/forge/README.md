@@ -7,14 +7,16 @@ threads and with green CI, and only where a repository allows it; text from the 
 untrusted. On GitLab a project webhook starts the coder for an issue assigned to the bot and wakes the session
 that works on a commented request or a failed pipeline.
 
-- **Tools** -- seventeen `forge_*` tools: `checkout` and `push` on a local clone, issues (list, get, comment,
-  update), requests (list, get, diff, discussions, create, update, comment, merge) and CI (status with waiting,
-  job log, retry). The coder's loop is the skill `forge-workflow`.
+- **Tools** -- four tools, each with an `operation`: `forge_repo` (status, checkout, push on a local clone),
+  `forge_issue` (list, get, comment, update), `forge_pr` (list, get, diff, discussions, create, update, comment,
+  merge) and `forge_ci` (status with waiting, log, retry). `/forge` runs repo status: the repositories, those
+  left out and why, and what the webhook did for your sessions. The coder's loop is the skill `forge-workflow`.
 - **Hooks** -- `deliver_webhook_events` hands a session the webhook's news before an LLM call;
   `mark_webhook_events_delivered` marks it delivered once the run is saved.
-- **Web** -- the webhook route `POST /plugins/forge/webhook`; no panel.
+- **Web** -- the panel **Forge** (admins only): repositories, policy, the sessions at work and what became of each
+  webhook event; the webhook route `POST /plugins/forge/webhook`.
 
-The instance comes enabled with the plugin and offers no tools until a repository is configured: hosts and
+The instance comes enabled with the plugin and offers only repo status until a repository is configured: hosts and
 repositories go under `plugins.servers.forge` in `config/plugins.yaml`, the tokens into `config/secrets.env`.
 The coder allows `+forge/*`; only the users in `allowed_users` may call the tools (empty: nobody).
 

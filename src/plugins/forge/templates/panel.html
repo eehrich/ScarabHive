@@ -1,0 +1,26 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Forge{% endblock %}
+{% block toolbar %}<pk-refresh interval="15" auto></pk-refresh>{% endblock %}
+{% block content %}
+<div class="pk-stack" data-viewer="{{ viewer }}">
+  <div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
+  <section class="pk-card" aria-labelledby="reposTitle">
+    <div class="pk-card-head">{{ icon('git-branch') }}<h2 class="pk-card-title" id="reposTitle">Repositories</h2></div>
+    <div id="repos"></div>
+  </section>
+  <section class="pk-card" aria-labelledby="policyTitle">
+    <div class="pk-card-head">{{ icon('shield') }}<h2 class="pk-card-title" id="policyTitle">Policy</h2></div>
+    <div id="policy"></div>
+  </section>
+  <section class="pk-card" aria-labelledby="workTitle">
+    <div class="pk-card-head">{{ icon('message-square') }}<h2 class="pk-card-title" id="workTitle">Sessions at work</h2></div>
+    <div id="work"></div>
+  </section>
+  <section class="pk-card" aria-labelledby="outcomesTitle">
+    <div class="pk-card-head">{{ icon('history') }}<h2 class="pk-card-title" id="outcomesTitle">Webhook events</h2></div>
+    <div id="outcomes"></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}

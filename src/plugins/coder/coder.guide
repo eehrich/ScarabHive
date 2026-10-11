@@ -257,7 +257,7 @@ coder_tester | about 2,700 | run what was asked, report failures verbatim, the m
 
 The coder's sections on Claude Code and on GitLab/GitHub are rendered
 only when @{tt}has_tool('coding_cli_run_task')@{utt} or
-@{tt}has_tool('forge_checkout')@{utt} finds the tool. The bundle path is
+@{tt}has_tool('forge_issue')@{utt} finds the tool. The bundle path is
 filled in from @{tt}template_vars.okf_bundle@{utt}. No prompt renders a
 value that changes between calls.
 
@@ -275,7 +275,7 @@ context_engineer_list, _read, _store_fact, _compact | @{" context_engineer " lin
 coder_okf_search, _read_concept, _neighbors, _subgraph, _list, _write_concept, _append_log, _validate, _reindex | deferred; OKF, instance @{tt}coder_okf@{utt}
 sequential_thinking and its two helpers, datetime_operations | deferred
 coding_cli_run_task, _get_run, _cancel_run | deferred; only where Claude Code is installed
-forge_* | deferred; only where repositories are configured
+forge_repo, _issue, _pr, _ci | deferred; @{" Forge " link forge/main}, each with an operation; without a usable repository only forge_repo status
 playwright_browser_navigate, _snapshot, _click, _console_messages, _take_screenshot and 18 more | deferred; the external MCP server @{tt}playwright@{utt}, only where it is enabled
 @{body}
 

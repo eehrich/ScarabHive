@@ -4,8 +4,8 @@
 # config/plugins.yaml under plugins.servers.forge (forge.guide, "Setting it up").
 # This file is merged AFTER that one, so it sets nothing an operator would
 # tune -- a value here would silently override theirs. Without a configured
-# repository the instance offers no tools, so an installation without GitLab
-# or GitHub loses nothing by this being enabled.
+# repository the instance offers only forge_repo status, so an installation
+# without GitLab or GitHub loses next to nothing by this being enabled.
 plugins:
   servers:
 
