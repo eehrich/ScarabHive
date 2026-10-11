@@ -239,6 +239,27 @@ async def test_a_rewritten_git_file_does_not_move_the_commit(repo):
     assert git(repo, "show", f"{result['branch']}:b.txt") == "hello"
 
 
+async def test_a_seeded_folder_is_in_the_runs_worktree_and_stays_out_of_its_commit(tmp_path):
+    """tracker's ticket attachments: untracked in the repo, so a fresh worktree would not have them."""
+    repo = fresh_repo(tmp_path / "repo")
+    (repo / ".seed").mkdir()
+    (repo / ".seed" / "shot.png").write_bytes(b"\x89PNG")
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    with (repo / ".git" / "info" / "exclude").open("a", encoding="utf-8") as exclude:
+        exclude.write("\n/.seed/\n")
+    server = make_server(repo)
+    server.workdirs["repo"]["seed"] = [".seed"]
+    result, _ = await call(server, "run_task", task="WRITE b.txt hello")
+    assert result["state"] == "done" and result["commit"], result.get("note")
+    assert (Path(result["worktree"]) / ".seed" / "shot.png").read_bytes() == b"\x89PNG"
+    assert git(repo, "diff", "--name-only", f"{result['commit']}~1", result["commit"]).split() == ["b.txt"]
+
+
+def test_a_seed_outside_the_repository_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="inside the repository"):
+        cli.seed_worktree(tmp_path / "repo", tmp_path / "wt", ["../elsewhere"])
+
+
 async def test_no_hook_runs_when_the_plugin_commits(tmp_path):
     """A hook would run a program in ScarabHive's process, with its keys."""
     repo = fresh_repo(tmp_path / "repo")
