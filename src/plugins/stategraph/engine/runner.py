@@ -1307,6 +1307,18 @@ class RunManager:
         """Mark runs whose owner's lease ran out as interrupted (never a run of a live process)."""
         return self.store.mark_expired(now=_utc())
 
+    def interrupt(self, run_id: str) -> None:
+        """Stop one run here as ``shutdown`` stops them all: ``interrupted``, its journal kept, a resume goes on
+        from the step in flight. For a caller whose own work is cut from outside (its process stops) -- not a
+        terminate: the run is not over. A run that ended or is ending keeps its end."""
+        live = self.live.get(run_id)
+        # not begun: a task cancelled before its first line would never end the run (control's terminate
+        # has the same guard) -- and there is nothing to interrupt yet
+        if live is None or live.ctx.finished or live.ctx.cancelled or not live.ctx.begun:
+            return
+        live.ctx.stopping = True
+        live.task.cancel()
+
     async def shutdown(self) -> None:
         self._stopping = True
         for live in self.live.values():

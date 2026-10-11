@@ -115,6 +115,97 @@ async def test_a_cancelled_caller_terminates_its_run(server, tmp_path):
     assert server.service.run_store.get_run("cancelme")["status"] == "cancelled"
 
 
+@pytest.mark.parametrize("keep, status", [(True, "interrupted"), (False, "cancelled")])
+async def test_a_caller_cut_from_outside_leaves_its_run_resumable(server, tmp_path, keep, status):
+    # a graceful shutdown cancels the request that waits in run_to_end: the run is not over, a resume under its key
+    # goes on from the step in flight; a cancel of the caller's own work (keep_on_cancel says no) still ends it
+    _machine(tmp_path, "waits", WAITS, SLOW_STOP_PY)
+    gate, counter = asyncio.Event(), Counter()
+    caller = asyncio.ensure_future(server.service.run_to_end(
+        "waits", {}, run_id="cut", run_key="k-cut", live={"gate": gate, "counter": counter},
+        keep_on_cancel=lambda: keep))
+    await until(lambda: "cut" in server.service.runs.live, what="the run started")
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    # no wait of our own: when the caller's cancel goes on, the row already says how the run ended
+    assert server.service.run_store.get_run("cut")["status"] == status
+    if keep:
+        gate.set()
+        row = await server.service.run_to_end("waits", {}, run_key="k-cut", live={"gate": gate, "counter": counter})
+        assert row["id"] == "cut" and row["status"] == "succeeded" and counter.calls == 1, row
+
+
+SLOW_STOP_PY = """\
+import asyncio
+
+
+async def wait(sg):
+    try:
+        await sg.live["gate"].wait()
+    except asyncio.CancelledError:
+        await asyncio.sleep(0.3)   # cleans up before it lets the cancel through (an agent activity's grace)
+        raise
+    return sg.live["counter"].bump()
+"""
+
+
+PARENT = """\
+stategraph: 1
+id: parent
+python: parent.py
+initial: run
+states:
+  run:
+    do: {call: run, args: {}}
+    transitions: [{target: done}]
+  done: {type: final}
+"""
+
+PARENT_PY = """\
+async def run(sg):
+    row = await sg.live["service"].run_to_end("waits", {}, run_id="child", run_key="k-child",
+                                              live={"gate": sg.live["gate"], "counter": sg.live["counter"]},
+                                              keep_on_cancel=sg.live["keep"])
+    return row["status"]
+"""
+
+
+@pytest.mark.parametrize("how, keep, child", [("terminate", True, "cancelled"), ("interrupt", False, "interrupted")])
+async def test_a_nested_run_goes_with_the_ending_of_the_run_that_waits_on_it(server, tmp_path, how, keep, child):
+    # a terminate from the panel reaches no token of the waiting caller: the child must not be left resumable;
+    # a parent that stops (shutdown, interrupt) leaves its child resumable whatever keep_on_cancel would say
+    _machine(tmp_path, "waits", WAITS, WAITS_PY)
+    _machine(tmp_path, "parent", PARENT, PARENT_PY)
+    service = server.service
+    started = await service.start_run("parent", params={}, run_id="parent-run",
+                                      live={"service": service, "gate": asyncio.Event(), "counter": Counter(),
+                                            "keep": lambda: keep})
+    await until(lambda: "child" in service.runs.live, what="the child started")
+    if how == "terminate":
+        await service.control_run(started["run_id"], "terminate")
+    else:
+        service.runs.interrupt(started["run_id"])
+    await until(lambda: not service.runs.live, what="both runs ended")
+    assert service.run_store.get_run("child")["status"] == child
+    assert service.run_store.get_run("parent-run")["status"] == ("cancelled" if how == "terminate" else "interrupted")
+
+
+async def test_a_keep_on_cancel_that_breaks_terminates(server, tmp_path):
+    _machine(tmp_path, "waits", WAITS, WAITS_PY)
+
+    def broken():
+        raise RuntimeError("no answer")
+
+    caller = asyncio.ensure_future(server.service.run_to_end(
+        "waits", {}, run_id="broken", live={"gate": asyncio.Event(), "counter": Counter()}, keep_on_cancel=broken))
+    await until(lambda: "broken" in server.service.runs.live, what="the run started")
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert server.service.run_store.get_run("broken")["status"] == "cancelled"
+
+
 async def test_a_key_another_process_holds_is_refused(server, tmp_path, monkeypatch):
     _machine(tmp_path, "uses_live", USES_LIVE, USES_LIVE_PY)
 

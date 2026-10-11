@@ -509,14 +509,20 @@ class StateGraphService:
                 "session": caller_session}
 
     async def run_to_end(self, machine_id: str, params: Optional[dict[str, Any]] = None, *,
-                         user_id: Optional[str] = None, **start: Any) -> dict[str, Any]:
+                         user_id: Optional[str] = None, keep_on_cancel: Optional[Callable[[], bool]] = None,
+                         **start: Any) -> dict[str, Any]:
         """Start a run (``start_run``: run_key, run_id, live, ...) and wait in this process until its task here
         is over; its row (``status``, ``output``, ``error``, ``final_state``). For Python code that runs a machine
         as a step of its own work. The status is a terminal one -- or ``interrupted`` when this process stopped
         meanwhile, or the row of another owner that took the run over: the caller reads anything but
         ``succeeded`` as not done.
 
-        Its caller cancelled: the run this call started or resumed is terminated, then the cancel goes on. A key
+        Its caller cancelled: the run this call started or resumed is terminated, then the cancel goes on --
+        unless ``keep_on_cancel()`` says the cancel came from outside the caller's work (its process stopping, a
+        graceful shutdown cutting the request): then the run is interrupted (``RunManager.interrupt``) and a later
+        ``run_to_end`` under its key resumes it. Called from a ``call`` activity of another run here, that run's
+        ending decides first: terminated, its child is too; stopping (shutdown, interrupt, taken over), its child
+        is interrupted. A key
         whose run another process holds is a 409 -- waiting here would wait on nobody's task -- and so is
         ``live`` for a key whose run already runs in this process: that run has its own caller's objects, and
         this caller's cancel must not end it."""
@@ -533,7 +539,11 @@ class StateGraphService:
             try:
                 await asyncio.shield(live.task)
             except asyncio.CancelledError:
-                if owned:
+                if owned and self._cut_from_outside(run_id, keep_on_cancel):
+                    self.runs.interrupt(run_id)
+                    if live.task is not None:  # its row says interrupted when the cancel goes on
+                        await asyncio.wait({live.task}, timeout=TERMINATE_WAIT)
+                elif owned:
                     try:
                         await self.control_run(run_id, "terminate", user_id=user_id)
                     except Exception:
@@ -541,6 +551,23 @@ class StateGraphService:
                                        exc_info=True)
                 raise
         return self.run_store.get_run(run_id) or {"id": run_id, "status": "unknown"}
+
+    def _cut_from_outside(self, run_id: str, keep_on_cancel: Optional[Callable[[], bool]]) -> bool:
+        """After the caller's cancel: interrupt the run (True) or terminate it. A caller that is itself a run's
+        ``call`` activity here (its task carries that run's id) goes with that run's ending -- a terminate from
+        the panel reaches no token of the caller's -- and only otherwise ``keep_on_cancel`` decides."""
+        try:
+            from agent_system.tools.status import current_request_id
+
+            enclosing = self.runs.live.get(current_request_id.get() or "")
+        except Exception:
+            enclosing = None
+        if enclosing is not None and enclosing.ctx.id != run_id:
+            if enclosing.ctx.stopping or enclosing.ctx.lost:
+                return True
+            if enclosing.ctx.cancelled:
+                return False
+        return keep_on_cancel is not None and _keeps(keep_on_cancel, run_id)
 
     async def _resume(self, run_id: str, live: Optional[dict[str, Any]] = None) -> None:
         row = self.run_store.get_run(run_id)
@@ -853,6 +880,15 @@ class StateGraphService:
         except ValueError as exc:
             raise ServiceError(409, str(exc)) from None
 
+
+
+def _keeps(keep_on_cancel: Callable[[], bool], run_id: str) -> bool:
+    """``run_to_end``'s question after its caller's cancel; a question that breaks terminates, as before."""
+    try:
+        return bool(keep_on_cancel())
+    except Exception:
+        logger.warning("stategraph: keep_on_cancel of %s raised; the run is terminated", run_id, exc_info=True)
+        return False
 
 
 def _digest(token: str) -> str:

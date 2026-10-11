@@ -966,6 +966,14 @@ but @{tt}succeeded@{utt} as not done. A wait state holds it until its
 event comes. A cancel of the caller terminates the run it started or
 resumed -- its @{tt}finally@{utt} activities run -- and the cancel goes on.
 
+@{b}keep_on_cancel.@{ub} A cancel that comes from outside the caller's
+work -- a graceful shutdown cancels the request that waits here -- need
+not end the run: pass @{tt}keep_on_cancel@{utt}, a function asked after
+the cancel. True interrupts the run instead (@{tt}interrupted@{utt}, its
+journal kept), and a later call under its key resumes it from the step in
+flight; False, or a function that raises, terminates as before. The
+writer asks its book's cancellation token: set means the user cancelled.
+
 @{b}run_key.@{ub} A key whose run ended answers that run's row again,
 without running anything -- after a transient failure a new run tries it
 anew: take a new key for each pass. A key whose run is interrupted
