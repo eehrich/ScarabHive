@@ -210,6 +210,9 @@ def _serve_mutated_sources(app: FastAPI) -> None:
 
 
 HELPED = "rh00000001"
+#: A state machine's run: its session keys each agent call by the agent run's own id, <run>_NNN
+#: (stategraph backend._show_call), not by a prefix of it.
+MACHINE_RUN = "rm00000001_sgabcdef"
 
 
 def _call(call_id, name):
@@ -281,6 +284,18 @@ STORED_RUNS = {
         # its last word so far an interim: a hook's follow-up came after it
         {"role": "assistant", "content": "Two colours so far.", "content_format": "text"},
         {"role": "user", "content": "Check the rest.", "injected_by": "agent_continuation.followup"},
+    ],
+    "machine": [
+        {"role": "user", "content": "Run of the state machine `review`", "injected_by": "stategraph"},
+        {"role": "assistant", "content": "", "injected_by": "stategraph",
+         "tool_calls": [_call(f"sg_{MACHINE_RUN}_001", "writer")],
+         "tool_request_ids": {f"sg_{MACHINE_RUN}_001": f"{MACHINE_RUN}_001"}},
+        {"role": "tool", "tool_call_id": f"sg_{MACHINE_RUN}_001", "content": "A draft.", "injected_by": "stategraph"},
+        {"role": "assistant", "content": "The run ended **succeeded** in `done`.", "injected_by": "stategraph"},
+    ],
+    "sub-writer": [
+        {"role": "user", "content": "Draft it", "request_id": f"{MACHINE_RUN}_001"},
+        {"role": "assistant", "content": "A draft.", "content_format": "text"},
     ],
     "sub-deep": [
         {"role": "user", "content": "Count them", "request_id": f"{HELPED}_003_sub_aaaaaa_002_sub_cccccc"},
@@ -452,6 +467,8 @@ def stub_app() -> FastAPI:
     children["sub-flaky"] = [{**sessions[0], "session_id": "sub-flaky-deep", "title": "Help the third",
                               "agent_name": "skills_agent", "depth": 2, "run": "sub-flaky-deep",
                               "runs": [f"{FLAKY}_003_sub_cont_cccccc_001_sub_dddddd"]}]
+    children["s-machine"] = [{**sessions[0], "session_id": "sub-writer", "title": "writer (draft)", "agent_name": "writer",
+                              "depth": 1, "run": "sub-writer", "runs": [f"{MACHINE_RUN}_001"]}]
     listing_fails_once = {"sub-flaky"}  # its first listing answers 500
     children["s-pipeline-live"] = [{**sessions[0], "session_id": f"sub-q{n:02d}", "title": f"Chapter {n}",
                                     "agent_name": "chapter_writer", "depth": 1, "run": f"sub-q{n:02d}",
@@ -1762,6 +1779,7 @@ EXPECTED = [
     'a command typed while the last answer is on its way leaves that answer once, streamed or whole',
     'a session read back while its run still works keeps that run open',
     "a session read back shows what its sub-agents did under the calls that started them, read when it comes into view",
+    "a state machine's run session shows each agent's run under the call that ran it",
     "a sub-session that could not be read is read again for its next run",
     "a pipeline read back while it runs: its sub-agents hang under the call waiting for them, are read as they come into view, and one at work goes on in its box",
     'the chat keeps its end in view as it grows, until the viewer scrolls up, and again once they are back at the end',

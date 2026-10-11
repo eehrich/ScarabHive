@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A state machine run's session in the web chat shows its agents' runs --
+  task, steps and answer, read from their sessions -- each under the call
+  that ran it, as a sub-agent's under the call that spawned it. The run's
+  session now holds each agent activity as such a call (task and answer cut
+  to 2,000 characters; the agent's session has them whole); before, the
+  agents were only sub-sessions in the session list.
+
 - A session's figures "including sub-agents" (`/costs` in the chat and the
   terminal, the Context & Cost Usage panel for one session) count the sessions
   below it in the session list: a session that makes no LLM call of its own --

@@ -811,7 +811,8 @@ async def test_the_run_session_tells_the_end_only_once_it_is_stored(harness, tmp
 
     assert store.get_run(run_id)["status"] == "running", "fixture: the end did not reach the row"
     messages = (await host.sessions.load_session("ann", f"sg_{run_id}"))["messages"]
-    assert [m["role"] for m in messages] == ["user"], [m["content"][:40] for m in messages]
+    told = [m for m in messages if not m.get("tool_calls") and m["role"] != "tool"]  # not the agent calls
+    assert [m["role"] for m in told] == ["user"], [m["content"][:40] for m in messages]
 
 
 # ------------------------------------------------------------------ R4: the heartbeat leaves a finished run alone

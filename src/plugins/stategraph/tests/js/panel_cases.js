@@ -1903,6 +1903,21 @@ const CASES = {
     check(JSON.stringify(globalThis.OPENED) === '["inst-1"]', `opened ${JSON.stringify(globalThis.OPENED)}`);
   },
 
+  async the_history_names_a_callers_live_objects_and_marks_a_resume_without_them() {
+    runAnswer = { ...RUN, journal: [...RUN.journal,
+      { seq: 30, kind: 'trace', key: 'live_objects', state: null, status: 'live_objects', data: { names: ['counter', 'pipeline'] } },
+      { seq: 31, kind: 'trace', key: 'live_objects:resumed:1', state: null, status: 'live_objects', data: { names: ['pipeline'] } },
+      { seq: 32, kind: 'trace', key: 'live_objects:resumed:2', state: null, status: 'live_objects', data: { names: [] } }] };
+    await boot('?machine=review&run=r1');
+    const rows = $('runHistory').innerHTML.split('<tr>');
+    const row = (key) => rows.find((r) => r.includes(`>${key}<`)) || '';
+    check(row('live_objects').includes('counter, pipeline') && !row('live_objects').includes('pk-text--warn'),
+      `the names: ${row('live_objects')}`);
+    check(row('live_objects:resumed:1').includes('handed again: pipeline'), `a resume with them: ${row('live_objects:resumed:1')}`);
+    check(row('live_objects:resumed:2').includes('resumed without them') && row('live_objects:resumed:2').includes('pk-text--warn'),
+      `a resume without them is marked: ${row('live_objects:resumed:2')}`);
+  },
+
   async the_result_and_each_activity_say_what_they_cost() {
     RUN2.spend = { cost: 2.1535, activities: 2, tokens: { prompt: 1930049, completion: 63342, cached: 1643136 },
       cost_is_estimate: false, cost_unpriced_calls: 1 };

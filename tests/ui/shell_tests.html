@@ -2318,6 +2318,25 @@
     }
   });
 
+  await check("a state machine's run session shows each agent's run under the call that ran it", async () => {
+    // The run session holds each agent activity as a call keyed by the agent run's own
+    // id; a run hung only under a call whose id its own EXTENDS, so the agents stayed
+    // sub-sessions in the list and nothing of them showed in the run.
+    try {
+      await stub('/__stub/sessions', { session_id: 's-machine', title: 'Machine run', run: 'machine', has_children: false,
+        metadata: { sub_agents: { 'sub-writer': {} } } });
+      await loadShell();
+      sessionButton('s-machine', 'open').click();
+      await until('the run session', () => $('#headerSessionId').textContent === 'Machine run');
+      const box = await until('its run', () => $$('#chat .msg.assistant').at(-1));
+      const run = await until('the agent run under its call', () => box.querySelector(
+        '.tool-detail[data-key="rm00000001_sgabcdef_001"] > .sub-run[data-run-id="rm00000001_sgabcdef_001"]'), 3000);
+      return need(run.querySelector('.sub-run-agent').textContent === 'writer', `the agent: ${run.textContent}`);
+    } finally {
+      await loadShell();
+    }
+  });
+
   await check("a sub-session that could not be read is read again for its next run", async () => {
     // One failed read stood for every run of that sub-session: each showed the error
     // without asking again, until the whole session was opened anew.

@@ -2919,6 +2919,13 @@ function historyRow(row) {
     else if (row.status === 'failed') detail = `${data.type || ''} ${data.message || ''}`;
     else if (row.status === 'final') detail = data.status || '';
     kind = row.status === 'failed' ? 'danger' : row.status === 'paused' ? 'warn' : '';
+    if (row.status === 'live_objects') {  // a Python caller's objects (sg.live): their names, never the objects
+      const names = data.names || [];
+      const resumed = row.key.includes(':resumed');
+      detail = names.length ? `${resumed ? 'handed again: ' : ''}${names.join(', ')}`
+        : 'resumed without them -- call functions that need them fail';
+      if (resumed && !names.length) kind = 'warn';
+    }
   } else if (row.kind === 'event') {
     what = `event ${row.status || ''}`;
     detail = `${data.name || ''} ${preview(data.data, 60)}`;
@@ -3074,7 +3081,7 @@ function drawResult() {
       ${run.machine_id === S.machine?.id ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="rerun"
         title="A new run with this run's params and mocks (they go into the start form too); a param that had its default then takes the machine's default now">${icon('rotate-cw', { size: 'sm' })} Run again</button>` : ''}
       ${run.mocks?.mock_only || !ownSessions(run) ? '' : html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${run.session_id || `sg_${run.id}`}"
-        title="The run's session in the chat: what it was asked, how it ended, its agents' conversations below it">${icon('message-square', { size: 'sm' })} Session</button>`}</div>
+        title="The run's session in the chat: what it was asked, each agent call with that agent's run under it, how it ended">${icon('message-square', { size: 'sm' })} Session</button>`}</div>
     ${run.error ? errorView(run.error) : ''}
     ${run.output !== undefined && run.output !== null
     ? html`<details class="pk-details" open><summary>Output</summary>${resultValue(run.output)}</details>`

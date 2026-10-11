@@ -129,6 +129,14 @@ def validate_answer(value: Any, schema: dict[str, Any]) -> Optional[str]:
     return None
 
 
+#: What a run's session shows of an agent call's task and answer; the instance's session holds them whole.
+SHOWN_CHARS = 2000
+
+
+def _shown(text: str) -> str:
+    return text if len(text) <= SHOWN_CHARS else text[:SHOWN_CHARS] + " [... the agent's session holds it whole]"
+
+
 def _run_message(role: str, content: str) -> dict[str, Any]:
     """A message of a run's session: written by the plugin, not by a person or a model (``injected_by``)."""
     from datetime import datetime, timezone
@@ -259,11 +267,21 @@ class ScarabHiveBackend:
             tracker.clear_session_template_vars(instance_id)
             if variables:
                 tracker.set_session_template_vars(instance_id, dict(variables))
+            await self._show_call(act, agent.name, instance_id, message, request_id, new)
             work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced, spend, *llm))
-            text = await self._guarded(act, agent.name, work)
+            try:
+                text = await self._guarded(act, agent.name, work)
+            except asyncio.CancelledError:  # a timeout, a terminate, a failed parallel sibling
+                await self._show_answer(request_id, "Stopped before it answered: timed out or the run was stopped")
+                raise
+            except Exception as exc:
+                await self._show_answer(request_id, f"Failed: {exc}")
+                raise
+            # saved first: a stop while the run's session is written must not cost the instance its conversation
             if not await service.save_session(agent, user, instance_id, agent.name, profile, was_new_session=new):
                 logger.warning("stategraph: instance %s of %s was not saved; a continue after a restart "
                                "would miss its conversation", instance_id, agent.name)
+            await self._show_answer(request_id, text)
             return text
         finally:
             spend.into(act.meta)  # what it cost so far: a failed or stopped run cost too
@@ -419,8 +437,47 @@ class ScarabHiveBackend:
             lines.append(f"\nOutput:\n\n```json\n{shown}\n```" if not isinstance(output, str) else f"\n{shown}")
         await self._append("\n".join(lines), "end")
 
+    async def _show_call(self, act: "ActivityRun", agent: str, instance_id: str, task: str, request_id: str,
+                         new: bool) -> None:
+        """An agent activity as a call of the run in its session, keyed by the agent run's request id
+        (``tool_request_ids``) -- the chat hangs the run read from the instance's session under it, as it hangs
+        a sub-agent's under the call that spawned it. A new instance is listed among the session's sub-agents
+        (``metadata.sub_agents``, the SAM's shape), which is what makes the chat look for them. Task and answer
+        are cut here (SHOWN_CHARS): the instance's session holds them whole, and the run's session is written
+        anew with every message."""
+        call_id = f"sg_{request_id}"
+        message = _run_message("assistant", "")
+        message.update(tool_calls=[{"id": call_id, "type": "function", "function": {
+            "name": agent, "arguments": json.dumps({"state": act.path, "task": _shown(task)}, ensure_ascii=False)}}],
+            tool_request_ids={call_id: request_id})
+        await self._append_message(message, "call")
+        service = self._run_sessions()
+        if new and service is not None:
+            try:  # merged into what is there (save_session keeps the file's metadata, by design)
+                await service.session_manager.update_session_metadata(
+                    self.user_id or "anonymous", self.session_id, {"sub_agents": {instance_id: {
+                        # not one of the SAM's open statuses: its limits count those, and these are not its
+                        "instance_id": instance_id, "agent_type": agent, "status": "stategraph",
+                        "created_at": message["timestamp"], "task_summary": task[:100]}}})
+            except Exception:
+                logger.warning("stategraph: instance %s was not listed in the session of run %s", instance_id,
+                               self.session_id, exc_info=True)
+
+    async def _show_answer(self, request_id: str, text: str) -> None:
+        """What the call of ``_show_call`` answered, or why it failed -- right behind that call: parallel
+        branches and emits write between a call and its answer, and the chat reads a call's answer from the
+        messages up to the next call."""
+        message = _run_message("tool", _shown(text))
+        message["tool_call_id"] = f"sg_{request_id}"
+        await self._append_message(message, "answer", behind=message["tool_call_id"])
+
     async def _append(self, content: str, what: str) -> None:
-        """An assistant message in the run's session -- a view of the run: it never fails it."""
+        """An assistant message in the run's session."""
+        await self._append_message(_run_message("assistant", content), what)
+
+    async def _append_message(self, message: dict[str, Any], what: str, behind: Optional[str] = None) -> None:
+        """A message in the run's session -- at its end, or right behind the call ``behind`` names -- a view of
+        the run: it never fails it."""
         service = self._run_sessions()
         if service is None:
             return
@@ -429,7 +486,11 @@ class ScarabHiveBackend:
             lock = service.save_lock(self.session_id) if hasattr(service, "save_lock") else None
             async with lock if lock is not None else contextlib.nullcontext():
                 data = await manager.load_session(user, self.session_id)
-                data["messages"].append(_run_message("assistant", content))
+                messages = data["messages"]
+                at = next((i + 1 for i in range(len(messages) - 1, -1, -1)
+                           if any(call.get("id") == behind for call in messages[i].get("tool_calls") or ())),
+                          len(messages)) if behind else len(messages)
+                messages.insert(at, message)
                 await manager.save_session(data)
         except Exception:
             logger.warning("stategraph: the %s of run %s was not written to its session", what, self.session_id,

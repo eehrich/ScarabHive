@@ -13,6 +13,9 @@ shows a machine as a graph to edit, run and debug it; the agent `stategraph_auth
   debugger.
 - **Agents** `stategraph_author` (writes, validates, saves and test-runs machines), `stategraph_runner` (the default
   runner: hosts runs; its tool allowlist is what a machine may call).
+- **From Python** `service.run_to_end(machine_id, params, run_key=..., live={...})` runs a machine as a step of
+  the caller's own work and waits for its end; `live` objects reach `call` functions as `sg.live`, never the journal
+  (guide, "Running a machine from Python").
 - No hook.
 
 Nothing to enable: `agents/stategraph.yaml` and `agents/stategraph_author.yaml` ship the instances and are included
