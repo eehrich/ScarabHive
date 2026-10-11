@@ -2753,7 +2753,10 @@ class _StatsTracker:
         self._stats = stats
         self.asked_for = None
 
-    def get_statistics(self, session_id=None):
+    async def session_tree(self, sessions, user_id, session_id):
+        return []
+
+    def get_statistics(self, session_id=None, tree=()):
         self.asked_for = session_id
         return self._stats
 
@@ -2938,12 +2941,23 @@ class TestCostsCommand:
     bill against the same wallet through their own sub-sessions, so /costs has
     to read the tracker -- the only place that sees every call in the process."""
 
-    def _ctx(self, agent):
+    def _ctx(self, agent, session_manager=None):
         from agent_system.cli_utils.chat import _ChatContext
         return _ChatContext(
             agent=agent, entry_name="a", session_service=None, session_user="u",
             session_id="sess-1", was_new_session=False, llm_profile="p",
-            llm_override=None, llm_profile_info=None, show_status=True)
+            llm_override=None, llm_profile_info=None, show_status=True,
+            session_manager=session_manager)
+
+    @staticmethod
+    def _costs(ctx, renderer):
+        """/costs on a loop of its own, as the REPL runs it on its own."""
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            _show_costs(ctx, renderer, loop)
+        finally:
+            loop.close()
 
     def test_asks_the_tracker_for_this_session(self):
         tracker = _StatsTracker({"totals": {"cost": 1.0, "prompt_tokens": 10,
@@ -2953,7 +2967,7 @@ class TestCostsCommand:
                                             "cache_hit_rate": 0.0},
                                  "timespan": {"sample_count": 1}})
         r, out = _renderer(width=200)
-        _show_costs(self._ctx(_CostAgent(tracker)), r)
+        self._costs(self._ctx(_CostAgent(tracker)), r)
         assert tracker.asked_for == "sess-1"   # the tree filter needs the id
         assert "$1.0000" in out.getvalue()
 
@@ -2965,7 +2979,7 @@ class TestCostsCommand:
                                             "cache_hit_rate": 50.0},
                                  "timespan": {"sample_count": 2}})
         r, out = _renderer(width=200)
-        _show_costs(self._ctx(_CostAgent(tracker)), r)
+        self._costs(self._ctx(_CostAgent(tracker)), r)
         assert "~$0.5000" in out.getvalue()
         assert "not provider billing" in capsys.readouterr().out
 
@@ -2978,30 +2992,52 @@ class TestCostsCommand:
                                             "cache_hit_rate": 0.0},
                                  "timespan": {"sample_count": 3}})
         r, out = _renderer(width=200)
-        _show_costs(self._ctx(_CostAgent(tracker)), r)
+        self._costs(self._ctx(_CostAgent(tracker)), r)
         assert "(2 unpriced)" in out.getvalue()
 
     def test_missing_plugin_says_so_and_falls_back(self, capsys):
         r, _t = _renderer(width=200)
         ctx = self._ctx(_CostAgent(None))
         ctx.total_usage = {"prompt_tokens": 5, "completion_tokens": 1}
-        _show_costs(ctx, r)
+        self._costs(ctx, r)
         printed = capsys.readouterr().out
         assert "not active" in printed
         assert "This chat's own turns" in printed
 
     def test_tracker_failure_is_reported(self, capsys):
-        class _Boom:
-            def get_statistics(self, session_id=None):
+        class _Boom(_StatsTracker):
+            def get_statistics(self, session_id=None, tree=()):
                 raise RuntimeError("tracker kaputt")
         r, _t = _renderer(width=200)
-        _show_costs(self._ctx(_CostAgent(_Boom())), r)
+        self._costs(self._ctx(_CostAgent(_Boom({}))), r)
         assert "Could not read usage statistics" in capsys.readouterr().out
 
     def test_empty_session_says_so(self, capsys):
         r, _t = _renderer(width=200)
-        _show_costs(self._ctx(_CostAgent(_StatsTracker({}))), r)
+        self._costs(self._ctx(_CostAgent(_StatsTracker({}))), r)
         assert "No LLM calls recorded" in capsys.readouterr().out
+
+    def test_a_session_without_calls_of_its_own_counts_the_sessions_below_it(self, tmp_path):
+        """A state machine's run -- or an agent that only runs a machine -- makes no LLM call itself: its agents
+        do, in sessions below it. The real tracker and the real session store, as the REPL has them."""
+        import asyncio
+        from agent_system.services.session_manager import SessionManager
+        from plugins.context_usage_tracker.tracker import UsageTracker
+
+        sessions = SessionManager(storage_path=str(tmp_path / "sessions"))
+        for session_id, parent in (("sess-1", None), ("agent-1", "sess-1")):
+            asyncio.run(sessions.save_session(asyncio.run(sessions.create_session(
+                user_id="u", session_id=session_id, agent_name="a", llm_profile="p",
+                parent_session_id=parent))))
+        tracker = UsageTracker(storage_path=tmp_path / "usage.json")
+        tracker.record_usage(agent_id="x", agent_name="coder", session_id="agent-1", total_tokens=9,
+                             prompt_tokens=7, completion_tokens=2, context_window=1000, cost=1.25,
+                             request_id="r_sg1_001")
+        r, out = _renderer(width=200)
+
+        self._costs(self._ctx(_CostAgent(tracker), session_manager=sessions), r)
+
+        assert "$1.2500" in out.getvalue(), out.getvalue()
 
 
 class _AsyncOnlyServer:

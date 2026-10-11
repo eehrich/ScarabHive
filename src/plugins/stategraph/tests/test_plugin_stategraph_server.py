@@ -770,6 +770,21 @@ async def test_get_run_refuses_steps_of_zero_as_control_run_does(server):
     assert closing.phase is StatusPhase.ERROR
 
 
+async def test_get_run_says_what_the_runs_agents_cost(server):
+    """``spend`` sums the activities' meta (RunStore.spend); a run whose activities reported none carries no key."""
+    started, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "mock_only": True,
+                                                                   "wait": "finish"})
+    quiet, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"]})
+    assert "spend" not in quiet, quiet
+    server.run_store.record(started["run_id"], "activity", "late", status="done", data={"meta": {
+        "cost": 0.25, "tokens": {"prompt": 40, "completion": 4, "cached": 0}}})
+
+    got, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"]})
+
+    assert got["spend"] == {"cost": 0.25, "activities": 1, "tokens": {"prompt": 40, "completion": 4, "cached": 0},
+                            "cost_is_estimate": False, "cost_unpriced_calls": 0}, got
+
+
 async def test_saving_a_machines_own_file_without_its_version_says_to_pass_it(server):
     """A save of an existing machine without expected_versions: the answer names the fix, not "not one of its files"
     -- which stays the answer for a stray file of that name (the panel's module dialog reads it)."""

@@ -144,3 +144,28 @@ def test_only_an_admin_clears_everyones_figures(served):
     viewer["user"] = user("admin", UserRole.ADMIN)
     assert client.post(f"{PREFIX}/clear").status_code == 200
     assert tracker.get_history() == []
+
+
+def test_a_run_session_shows_the_calls_of_the_sessions_below_it(served):
+    """A state machine's run session makes no call of its own: its agents' sessions hang below it, and their
+    calls are what /usage shows for it -- read under its owner, also when an admin asks."""
+    import asyncio
+
+    client, viewer, tracker = served
+    sessions = app_state.session_service.session_manager
+    for session_id, parent in (("sg_alice_run", None), ("alice-agent", "sg_alice_run")):
+        asyncio.run(sessions.save_session(asyncio.run(sessions.create_session(
+            user_id="alice", session_id=session_id, agent_name="a", llm_profile="p", parent_session_id=parent))))
+    tracker.record_usage(agent_id="agent", agent_name="coder", session_id="alice-agent", total_tokens=7,
+                         context_window=1000, cost=0.5, request_id="run_001")
+
+    for asker in (user("alice"), user("admin", UserRole.ADMIN)):
+        viewer["user"] = asker
+        usage = client.get(f"{PREFIX}/usage?session_id=sg_alice_run").json()
+        assert usage["statistics"]["totals"]["cost"] == 0.5, (asker.username, usage)
+        assert set(usage["agents"]) == {"agent"}
+        assert usage["latest"] == {}, "the run's own last call is none: its context is not its agent's"
+        assert _sessions_in(client, "?session_id=sg_alice_run") == (200, {"alice-agent"})
+
+    viewer["user"] = user("bob")
+    assert client.get(f"{PREFIX}/usage?session_id=sg_alice_run").json()["statistics"] == {}

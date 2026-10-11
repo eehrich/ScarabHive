@@ -446,6 +446,7 @@ class StateGraphServer(SchemaBasedToolServer):
             return _bounded({**_summary(row, full_output=_flag(params, "full_output")), "run_id": row["id"],
                              "frames": _capped(view.get("frames", []), ROW_CHARS),
                              **({"inbox": view["inbox"]} if view.get("inbox") else {}),
+                             **({"spend": row["spend"]} if row.get("spend") else {}),  # what its agents cost
                              "journal": _capped(row.get("journal", []), ROW_CHARS), "debug": row.get("debug")})
         return await self._run_tool(params, "get_run", body,
                                     lambda r: f"run {r['run_id']}: {r['run_status']} in {r.get('state') or '-'}")

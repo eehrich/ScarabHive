@@ -10,10 +10,12 @@ shows them, and /costs reports the same arithmetic from a wider source.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 from ...llm.pricing import normalize_usage, resolve_call_cost
+from .interruptible import _run_interruptible
 
 if TYPE_CHECKING:
     from .context import _ChatContext
@@ -179,12 +181,14 @@ def _usage_tracker(ctx: "_ChatContext") -> Any:
     return tracker if hasattr(tracker, "get_statistics") else None
 
 
-def _show_costs(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
+def _show_costs(ctx: "_ChatContext", renderer: ChatRenderer, loop: asyncio.AbstractEventLoop) -> None:
     """Session cost INCLUDING sub-agents, from the usage tracker.
 
     The turn footer only sums what the coordinator's own event stream carries.
     Sub-agents bill against the same wallet but report through their own
     sub-sessions, so a number built from the stream alone is silently too low.
+    Which sessions count is the tracker's word (UsageTracker.session_tree), the
+    same the browser's /costs gets: everything below this one in the session store.
     """
     tracker = _usage_tracker(ctx)
     if tracker is None:
@@ -192,8 +196,13 @@ def _show_costs(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
               "records to add up.")
         print(f"This chat's own turns: {_format_usage(ctx.total_usage, 0, renderer.sym)}")
         return
+    finished, tree = _run_interruptible(
+        loop, tracker.session_tree(ctx.session_manager, ctx.session_user, ctx.session_id),
+        "reading the sub-agent sessions")
+    if not finished:
+        return
     try:
-        stats = tracker.get_statistics(session_id=ctx.session_id)
+        stats = tracker.get_statistics(session_id=ctx.session_id, tree=tree)
     except Exception as e:
         logger.error("Failed to read usage statistics: %s", e, exc_info=True)
         print(f"Could not read usage statistics: {e}")
@@ -227,4 +236,4 @@ def _show_costs(ctx: "_ChatContext", renderer: ChatRenderer) -> None:
 
 
 def _on_costs(repl: _Repl, payload: str) -> None:
-    _show_costs(repl.ctx, repl.renderer)
+    _show_costs(repl.ctx, repl.renderer, repl.loop)

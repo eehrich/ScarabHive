@@ -450,6 +450,24 @@ class SessionIndex:
         # It is stat work like the read, so it belongs in the same thread.
         return await asyncio.to_thread(read_and_shape)
 
+    def subtree_ids(self, user_id: str, session_id: str) -> List[str]:
+        """``SessionManager.subtree_ids``, all of it on the caller's thread: a stat per
+        session of the tree and a read per parent, which on the event loop would hold
+        every stream for a writer's thousand sub-sessions."""
+        found, seen, todo = [session_id], {session_id}, [session_id]
+        while todo:
+            parent = todo.pop()
+            path = self.path(user_id, parent)  # validates the id
+            if not path.exists():
+                continue
+            for meta in (_read_partition(path, "sub-index") or {}).values():
+                child_id = meta.get("session_id")
+                if extract_parent_id(meta) == parent and child_id and child_id not in seen:
+                    seen.add(child_id)
+                    found.append(child_id)
+                    todo.append(child_id)
+        return found
+
     def has_children(self, user_id: str, session_id: str) -> bool:
         """Whether a session has sub-sessions — one stat on its per-parent
         sub-index, no file read. The size guard (> 4 bytes; an empty index

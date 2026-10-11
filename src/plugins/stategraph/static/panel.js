@@ -2889,6 +2889,16 @@ onSubmit($('eventForm'), async (fields) => {
 const WHAT = { activity: 'activity', trace: 'trace', event: 'event', edit: 'edit', timer: 'timer' };
 /** A duration in seconds as the history and the result show it; '' when there is none. */
 const seconds = (value) => (value === undefined || value === null ? '' : `${Number(value).toFixed(1)} s`);
+const tokenCount = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
+
+/** What a run or an activity cost (the journal's spend, backend._Spend): the amount -- "~" estimated from the
+ * price table, "+n unpriced" for calls with neither -- and with `tokens` what went in and came out. */
+function spendText(spend, { tokens = true } = {}) {
+  if (typeof spend?.cost !== 'number') return '';
+  const unpriced = spend.cost_unpriced_calls ? ` +${spend.cost_unpriced_calls} unpriced` : '';
+  const flow = tokens && spend.tokens ? ` · ↑${tokenCount(spend.tokens.prompt || 0)} ↓${tokenCount(spend.tokens.completion || 0)}` : '';
+  return `${spend.cost_is_estimate ? '~$' : '$'}${spend.cost.toFixed(4)}${unpriced}${flow}`;
+}
 
 function historyRow(row) {
   const data = row.data || {};
@@ -3059,6 +3069,7 @@ function drawResult() {
   update($('runResult'), html`<div class="pk-card sg-result" data-run="${run.id}">
     <div class="pk-card-head"><h3 class="pk-card-title">Result</h3>${statusBadge(run.status)}
       ${run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span>${reason && reason !== run.status ? html` (${reason})` : ''}</span>` : ''}
+      ${run.spend ? html`<span class="pk-muted" title="What the run's agents cost so far, their sub-agents included: tokens in ↑ and out ↓">${spendText(run.spend)}</span>` : ''}
       <span class="pk-grow"></span>
       ${run.machine_id === S.machine?.id ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="rerun"
         title="A new run with this run's params and mocks (they go into the start form too); a param that had its default then takes the machine's default now">${icon('rotate-cw', { size: 'sm' })} Run again</button>` : ''}
@@ -3092,6 +3103,7 @@ function resultActivity(row) {
       ${failed ? badge(data.error?.type || 'error', 'danger') : ''}
       ${meta.mocked ? badge('mocked') : ''}
       <span class="pk-muted">${seconds(meta.duration_s)}</span>
+      ${spendText(meta) ? html`<span class="pk-muted" title="${meta.copied_from ? `spent by run ${meta.copied_from}, which this fork replays` : 'what it cost'}">${spendText(meta, { tokens: false })}</span>` : ''}
       ${failed ? '' : html`<span class="sg-mono sg-preview">${preview(data.out, 120)}</span>`}</summary>
     <div class="sg-result-body" data-drawn="${open ? 'yes' : ''}">${open ? resultBody(row) : ''}</div>
   </details>`;
@@ -3135,6 +3147,7 @@ function resultBody(row) {
         <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-copy="${meta.request_id}"
           title="Copy the request id: the message debugger finds its LLM calls by it" aria-label="Copy the request id">${icon('copy', { size: 'sm' })}</button></dd>` : ''}
       ${meta.model ? html`<dt>Model</dt><dd class="pk-mono">${meta.model}</dd>` : ''}
+      ${spendText(meta) ? html`<dt>Cost</dt><dd>${spendText(meta)}${meta.tokens?.cached ? html` <span class="pk-muted">(${tokenCount(meta.tokens.cached)} cached)</span>` : ''}${meta.copied_from ? html` <span class="pk-muted">-- spent by <span class="pk-mono">${meta.copied_from}</span>, which this fork replays</span>` : ''}</dd>` : ''}
       ${meta.attempts > 1 ? html`<dt>Attempts</dt><dd>${meta.attempts}</dd>` : ''}
       <dt>Step</dt><dd class="pk-mono">${row.key}</dd>
     </dl>`;

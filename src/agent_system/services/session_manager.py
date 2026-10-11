@@ -1011,6 +1011,17 @@ class SessionManager:
         """
         return await self._index.list_children(user_id, parent_session_id, annotate_children)
 
+    async def subtree_ids(self, user_id: str, session_id: str) -> List[str]:
+        """``session_id`` and every session below it, each after its parent: the tree the
+        session list shows, hung together by ``parent_session`` -- a sub-agent's session,
+        a state machine run's, the sessions of the run's agents.
+
+        Walked down one parent at a time, in a worker thread (SessionIndex.subtree_ids:
+        one sub-index per parent that has children; a stale sub-index naming a session
+        further up does not keep the walk going).
+        """
+        return await asyncio.to_thread(self._index.subtree_ids, user_id, session_id)
+
     async def resolve_session_ref(self, user_id: str, ref: str, *,
                                   others: Optional[list] = None) -> Optional[str]:
         """The session ``ref`` names: an id, or the TITLE of one.

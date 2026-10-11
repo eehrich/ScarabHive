@@ -613,6 +613,32 @@ class RunStore:
         return [dict(row) for row in rows]
 
     def copy_rows(self, source_run: str, target_run: str, rows: Iterable[dict[str, Any]]) -> None:
+        """A fork's prefix: the source run's rows, which the fork replays. An activity's says whose it is
+        (``meta.copied_from``): what it cost, the source run spent (spend) -- or, a row the source had copied
+        itself, the run that did."""
         for row in rows:
+            data = row.get("data")
+            if row["kind"] == "activity" and isinstance(data, dict):
+                meta = data.get("meta") or {}
+                data = {**data, "meta": {**meta, "copied_from": meta.get("copied_from") or source_run}}
             self.record(target_run, row["kind"], row["key"], state=row.get("state"), status=row.get("status"),
-                        data=row.get("data"))
+                        data=data)
+
+    def spend(self, run_id: str) -> Optional[dict[str, Any]]:
+        """What the run's agent and decide activities cost, its submachines' included: the sum of their
+        ``meta`` (backend._Spend), read from the journal itself -- so a resume, which replays rows instead of
+        running them, counts nothing twice, and nothing has to be kept beside it. Rows a fork copied from its
+        source are the source's spend. None while no activity reported any (mock-only, tools only)."""
+        sql = ("SELECT COUNT(json_extract(data, '$.meta.cost')), TOTAL(json_extract(data, '$.meta.cost')),"
+               " TOTAL(json_extract(data, '$.meta.tokens.prompt')), TOTAL(json_extract(data, '$.meta.tokens.completion')),"
+               " TOTAL(json_extract(data, '$.meta.tokens.cached')), MAX(json_extract(data, '$.meta.cost_is_estimate')),"
+               " TOTAL(json_extract(data, '$.meta.cost_unpriced_calls'))"
+               " FROM journal WHERE run_id = ? AND kind = 'activity'"
+               " AND json_extract(data, '$.meta.copied_from') IS NULL")
+        with self._lock:
+            priced, cost, prompt, completion, cached, estimated, unpriced = self._db().execute(sql, (run_id,)).fetchone()
+        if not priced and not unpriced:
+            return None
+        return {"cost": round(cost, 6), "activities": priced,
+                "tokens": {"prompt": int(prompt), "completion": int(completion), "cached": int(cached)},
+                "cost_is_estimate": bool(estimated), "cost_unpriced_calls": int(unpriced)}

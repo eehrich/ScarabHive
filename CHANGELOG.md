@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A session's figures "including sub-agents" (`/costs` in the chat and the
+  terminal, the Context & Cost Usage panel for one session) count the sessions
+  below it in the session list: a session that makes no LLM call of its own --
+  a state machine's run, an agent that only runs a machine -- showed nothing
+  while its agents spent. The sub-agents of a session were found only through
+  the request ids of its own calls; now through the session store
+  (`SessionManager.subtree_ids`), and the request-id rule still finds calls
+  filed under no session of the tree.
+
+- The State Graph panel shows what a run cost -- in its Result card, its
+  sub-agents included, and per activity with its tokens -- and `get_run`
+  answers it as `spend`, summed from the journal. A fork counts only what it
+  ran itself: the activities it replays name the run that spent them.
+
 - An entry of `auth.anonymous_access.allowed_endpoints` opens only the method
   it names on plugin routes too: the plugin routes' security read the path of
   an entry and ignored its method, so `"GET /plugins/x/data"` also let an

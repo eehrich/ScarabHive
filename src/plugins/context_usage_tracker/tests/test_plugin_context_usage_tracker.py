@@ -761,6 +761,35 @@ def test_session_filter_includes_sub_and_sub_sub_agents(tmp_path):
     assert tracker.get_latest(session_id="root-sess")["agent_id"] == "main"
 
 
+async def test_a_session_without_calls_of_its_own_counts_the_sessions_below_it(tmp_path):
+    """A state machine's run session makes no LLM call: its agents do, in sessions below it. Their calls are the
+    run's -- found by the session store's tree, and by the request ids of the tree's runs where a call is filed
+    under no session of it."""
+    from agent_system.services.session_manager import SessionManager
+
+    sessions = SessionManager(storage_path=str(tmp_path / "sessions"))
+    for session_id, parent in (("sg_run1", None), ("agent-a", "sg_run1"), ("agent-b", "sg_run1"),
+                               ("deep", "agent-b")):
+        await sessions.save_session(await sessions.create_session(
+            user_id="u", session_id=session_id, agent_name="a", llm_profile="p", parent_session_id=parent))
+    tracker = UsageTracker(storage_path=tmp_path / "t.json")
+    for session_id, request_id, cost in (("agent-a", "run1_001", 0.2), ("agent-b", "run1_002", 0.3),
+                                         ("deep", "own-deep", 0.4),  # its id extends none of the tree's
+                                         ("", "run1_001_tts", 0.05),  # a tool's call, filed under no session
+                                         ("other", "run1x", 9.0)):
+        tracker.record_usage(agent_id=session_id or "tool", agent_name="A", session_id=session_id,
+                             total_tokens=10, context_window=1000, cost=cost, request_id=request_id)
+
+    assert "totals" not in tracker.get_statistics(session_id="sg_run1"), "the run's own calls are none"
+    tree = await tracker.session_tree(sessions, "u", "sg_run1")
+    assert sorted(tree) == ["agent-a", "agent-b", "deep"]
+    assert tracker.get_statistics(session_id="sg_run1", tree=tree)["totals"]["cost"] == pytest.approx(0.95)
+    assert set(tracker.get_agent_stats(session_id="sg_run1", tree=tree)) == {"agent-a", "agent-b", "deep", "tool"}
+    assert len(tracker.get_history(session_id="sg_run1", tree=tree)) == 4
+    # no store: the request-id rule alone, nothing to fail over
+    assert await tracker.session_tree(None, "u", "sg_run1") == []
+
+
 def test_session_filter_pre20_snapshots_match_exact_only(tmp_path):
     """Old snapshots without request_id still match their own session."""
     tracker = UsageTracker(storage_path=tmp_path / "t.json")

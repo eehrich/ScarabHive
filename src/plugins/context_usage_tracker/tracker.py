@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from agent_system.paths import data_path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Sequence
 from dataclasses import dataclass, asdict, fields as dataclass_fields
 
 from .database import UsageDatabase
@@ -202,7 +202,21 @@ class UsageTracker:
             f"messages={message_count}"
         )
 
-    def _window(self, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def session_tree(self, sessions: Any, user_id: str, session_id: str) -> List[str]:
+        """The sessions below ``session_id`` whose calls count with it: what the web's and the terminal's
+        "incl. sub-agents" both pass as ``tree``. From the session store (``SessionManager.subtree_ids``),
+        so a session that makes no call of its own -- a state machine's run, an agent that only runs a
+        machine -- still has the calls of the agents below it. Nothing without a store: the request-id
+        rule alone then (UsageDatabase.recent_snapshots)."""
+        if sessions is None or not session_id:
+            return []
+        try:
+            return (await sessions.subtree_ids(user_id, session_id))[1:]
+        except Exception:  # a figure must not fail over the tree: the calls the ids find stay
+            logger.warning("The sessions below %s could not be read", session_id, exc_info=True)
+            return []
+
+    def _window(self, session_id: Optional[str] = None, tree: Sequence[str] = ()) -> List[Dict[str, Any]]:
         """The query window: the newest ``max_history`` snapshots, oldest first.
 
         This is what the deque used to be. It is a WINDOW now, not a cap — the
@@ -212,16 +226,16 @@ class UsageTracker:
         ITS calls. Filtering a global window afterwards would hide a quiet
         session behind a busy one, which the process-local deque never did.
         """
-        return self.db.recent_snapshots(self.max_history, session_id=session_id)
+        return self.db.recent_snapshots(self.max_history, session_id=session_id, tree=tree)
 
     def get_history(self, last_n: Optional[int] = None, session_id: Optional[str] = None,
-                    agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
+                    agent_id: Optional[str] = None, tree: Sequence[str] = ()) -> List[Dict[str, Any]]:
         """Get usage history as a list of dictionaries (optionally filtered).
 
         The session filter includes the session's sub-agent calls (see
         UsageDatabase.recent_snapshots).
         """
-        history_list = self._window(session_id)
+        history_list = self._window(session_id, tree)
         if agent_id is not None:
             history_list = [s for s in history_list if s.get("agent_id") == agent_id]
 
@@ -278,7 +292,8 @@ class UsageTracker:
             f"📊 Marked usage data as stale for session {session_id} (reason: {reason})"
         )
 
-    def get_agent_stats(self, session_id: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    def get_agent_stats(self, session_id: Optional[str] = None,
+                        tree: Sequence[str] = ()) -> Dict[str, Dict[str, Any]]:
         """Get statistics for all agents."""
         if session_id is None:
             # All-time totals, held in their own table so retention can prune
@@ -286,7 +301,7 @@ class UsageTracker:
             return self.db.agent_stats()
 
         # Per session: accumulated over the window, including sub-agent calls.
-        session_snapshots = self._window(session_id)
+        session_snapshots = self._window(session_id, tree)
 
         session_agent_stats: Dict[str, Dict[str, Any]] = {}
         for snapshot in session_snapshots:
@@ -332,9 +347,9 @@ class UsageTracker:
 
         return session_agent_stats
 
-    def get_statistics(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_statistics(self, session_id: Optional[str] = None, tree: Sequence[str] = ()) -> Dict[str, Any]:
         """Get overall usage statistics."""
-        history_list = self._window(session_id)
+        history_list = self._window(session_id, tree)
 
         if not history_list:
             return {"error": "No usage data available"}

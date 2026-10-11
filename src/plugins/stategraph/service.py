@@ -660,6 +660,7 @@ class StateGraphService:
                           else self.run_store.page(run_id, after=after, limit=steps, kinds=wanted, state=state))
         if frames:
             row["frames_started"] = self.run_store.frames(run_id)
+        row["spend"] = self.run_store.spend(run_id)
         return row
 
     def journal(self, run_id: str, after: int = 0, limit: int = 200, kinds: Optional[list[str]] = None) -> list[dict[str, Any]]:

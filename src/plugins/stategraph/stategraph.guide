@@ -246,11 +246,15 @@ Run to set there are the submachine's. Its runs list also holds the runs
 it ran in ("in scene_review"): one picked shows the frame picked, else a
 live one, else the last. A fork shows the frames it ran itself; those
 before its fork point are in the run it was forked from.
-@{bullet}The @{b}Result@{ub} card: output or error, the final state of each
-frame, and every finished activity folded -- open one for its full answer,
-its input, failed attempts, the agent's session (@{b}Open@{ub} shows the
-conversation in the chat) and the request id (the message debugger finds
-the LLM calls by it). @{b}Run again@{ub} starts a new run with the same
+@{bullet}The @{b}Result@{ub} card: output or error, what the run's
+agents cost so far (their sub-agents included; tokens in ↑ and out ↓; ~
+marks an amount estimated from the price table), the final state of each
+frame, and every finished activity folded with its cost -- open one for
+its full answer, its input, failed attempts, its cost with its tokens,
+the agent's session (@{b}Open@{ub} shows the conversation in the chat) and
+the request id (the message debugger finds the LLM calls by it). A fork
+counts only what it ran itself: an activity it replays says which run
+spent it. @{b}Run again@{ub} starts a new run with the same
 params and mocks, less those that had their default when the run
 started: the machine's default now applies; @{b}Session@{ub} opens the run's own session (not for
 a mock-only run, which has none, nor for another user's run).
@@ -684,7 +688,10 @@ The answer adds to run_machine's: @{tt}frames@{utt} (each frame's
 machine, state, step, visits, @{tt}ctx@{utt} and params, what it waits
 for), @{tt}inbox@{utt} (events no frame has taken yet),
 @{tt}journal@{utt} and @{tt}debug@{utt} (breakpoints, watchpoints, their
-values, where it is paused). Texts in frames, journal and error are cut at
+values, where it is paused), and @{tt}spend@{utt} once an agent or decide
+activity reported a cost: @{tt}cost@{utt}, @{tt}tokens@{utt} (prompt,
+completion, cached), @{tt}activities@{utt}, @{tt}cost_is_estimate@{utt},
+@{tt}cost_unpriced_calls@{utt} -- a fork's without what it replays. Texts in frames, journal and error are cut at
 2,000 characters. An answer over 200,000 characters drops the oldest
 journal rows first (@{tt}journal_cut@{utt} says how many), then shows each
 frame's ctx as its keys and their sizes (@{tt}frames_cut@{utt}). A reader

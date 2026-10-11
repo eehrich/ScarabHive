@@ -146,6 +146,43 @@ async def test_an_agent_activity_carries_what_its_calls_and_its_sub_agents_cost_
         2 * 0.765, True, 2, "m-billed"), meta  # r3's final priced as its run's calls: batch
 
 
+async def test_a_run_sums_what_its_agents_cost_and_a_fork_only_what_it_ran_itself(harness, tmp_path):
+    """The panel's and get_run's ``spend``: from the journal, so nothing kept beside it can drift; a fork's replayed
+    prefix is its source's spend, copied rows say whose."""
+    spent = [{"type": "thinking_complete", "usage": {"prompt_tokens": 100, "completion_tokens": 10, "cost": 0.5},
+              "model": "m"}]
+    host = AgentHost(tmp_path / "sessions", FakeAgent("writer", spent=spent))
+    files = machine("""\
+        a:
+          do: {agent: writer, task: draft it}
+          transitions: [{target: b}]
+        b:
+          do: {agent: writer, task: shorten it}
+          transitions: [{target: done}]
+        done: {type: final}
+        """)
+    source, row = await run(harness, host, files)
+    assert row["status"] == "succeeded", row["error"]
+    assert harness.store.spend(source) == {"cost": 1.0, "activities": 2, "tokens": {"prompt": 200, "completion": 20,
+                                           "cached": 0}, "cost_is_estimate": False, "cost_unpriced_calls": 0}
+
+    manager = harness.manager()
+    fork = await manager.fork(source, at_step=1, backend_factory=backend_for(host))
+    assert (await settle(manager, fork))["status"] == "succeeded"
+
+    assert len(host.calls()) == 3, "the fork replayed a and ran b"
+    assert harness.store.spend(fork)["cost"] == 0.5, harness.store.spend(fork)
+    copied = next(r for r in harness.store.rows(fork, kinds=("activity",)) if r["state"] == "a")["data"]["meta"]
+    assert copied["copied_from"] == source and copied["cost"] == 0.5
+    assert harness.store.spend("no-such-run") is None
+
+    # a fork of the fork: a spent, not the fork it is copied from
+    again = await manager.fork(fork, at_step=1, backend_factory=backend_for(host))
+    assert (await settle(manager, again))["status"] == "succeeded"
+    copied = next(r for r in harness.store.rows(again, kinds=("activity",)) if r["state"] == "a")["data"]["meta"]
+    assert copied["copied_from"] == source, copied
+
+
 async def test_a_continue_carries_the_instance_s_conversation(harness, tmp_path):
     host = AgentHost(tmp_path / "sessions", FakeAgent("writer"))
     _, row = await run(harness, host, machine(CREATE_THEN_CONTINUE, head="context: {inst: null}\n"))

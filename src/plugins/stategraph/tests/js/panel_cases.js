@@ -1903,6 +1903,30 @@ const CASES = {
     check(JSON.stringify(globalThis.OPENED) === '["inst-1"]', `opened ${JSON.stringify(globalThis.OPENED)}`);
   },
 
+  async the_result_and_each_activity_say_what_they_cost() {
+    RUN2.spend = { cost: 2.1535, activities: 2, tokens: { prompt: 1930049, completion: 63342, cached: 1643136 },
+      cost_is_estimate: false, cost_unpriced_calls: 1 };
+    journalOf.r2 = [
+      { seq: 3, kind: 'activity', key: 's1', state: 'write', status: 'done', data: { kind: 'agent', path: 'write', out: 'a draft',
+        meta: { agent: 'scene_writer', cost: 0.0321, cost_is_estimate: true, tokens: { prompt: 1200, completion: 80, cached: 1000 } } } },
+      { seq: 4, kind: 'activity', key: 's2', state: 'read', status: 'done', data: { kind: 'agent', path: 'read', out: 'fine',
+        meta: { agent: 'reader', cost: 0.5, tokens: { prompt: 10, completion: 2, cached: 0 }, copied_from: 'r0' } } },
+      { seq: 5, kind: 'activity', key: 's3', state: 'read', status: 'done', data: { kind: 'tool', path: 'store', out: {}, meta: {} } },
+    ];
+    await boot('?machine=review&run=r2');
+    const result = $('runResult').innerHTML;
+    check(result.includes('$2.1535 +1 unpriced · ↑1.9M ↓63.3k'), `the run's spend: ${result}`);
+    check(result.includes('>~$0.0321<'), 'an activity\'s cost, folded, is the amount alone');
+    check(result.includes('spent by run r0, which this fork replays'), 'a copied activity does not say it spent');
+    check((result.match(/\$0\.|\$2\./g) || []).length === 3, 'a tool activity reported no cost and shows none');
+    const details = element('details', { 'data-result': '3' });
+    details.open = true;
+    const body = details.appendChild(element('div', { class: 'sg-result-body' }));
+    await $('runResult').fire('toggle', { target: details });
+    check(body.innerHTML.includes('<dt>Cost</dt><dd>~$0.0321 · ↑1.2k ↓80') && body.innerHTML.includes('(1.0k cached)'),
+      `opened, the cost with its tokens: ${body.innerHTML}`);
+  },
+
   async a_live_runs_result_reads_on_from_where_it_stopped() {
     runAnswer = { ...RUN, mocks: { mock_only: true } };
     await boot('?machine=review&run=r1');

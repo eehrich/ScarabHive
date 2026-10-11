@@ -48,9 +48,12 @@ names it, and @{b}Follow the chat@{ub} lets go of it. With no session open
 it says so rather than counting every session. @{b}All sessions@{ub}
 counts every call; only an admin may look at that (see below).
 
-A session's calls include those of its sub-agents, at any depth: they run
-in sessions of their own, but their request ids start with the request id
-of the session that spawned them.
+A session's calls include those of its sub-agents, at any depth: the
+calls of every session below it in the session list -- a sub-agent's, the
+sessions of a state machine run's agents -- and every call whose request id
+starts with the request id of a run in them. So a session that makes no
+call of its own, a machine's run or an agent that only runs a machine,
+shows what its agents spent.
 
 The figures look at the newest calls only -- 1000 by default, the
 server's @{tt}max_history@{utt} -- per session, or over all sessions. The

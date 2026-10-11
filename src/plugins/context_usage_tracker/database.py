@@ -25,12 +25,13 @@ WAL mode and thread-local connections follow message_debugger/database.py.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,8 @@ class UsageDatabase:
             CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_snapshots(timestamp);
             CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_snapshots(session_id);
             CREATE INDEX IF NOT EXISTS idx_usage_agent ON usage_snapshots(agent_id);
+            -- a session's sub-runs by their ids' prefix (recent_snapshots): one range per prefix
+            CREATE INDEX IF NOT EXISTS idx_usage_request ON usage_snapshots(request_id);
             DROP INDEX IF EXISTS idx_usage_time;
 
             CREATE TABLE IF NOT EXISTS agent_stats (
@@ -447,8 +450,8 @@ class UsageDatabase:
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
-    def recent_snapshots(self, limit: int,
-                         session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def recent_snapshots(self, limit: int, session_id: Optional[str] = None,
+                         tree: Sequence[str] = ()) -> List[Dict[str, Any]]:
         """The newest ``limit`` snapshots, oldest first.
 
         Oldest-first because every caller treats the list as a timeline —
@@ -461,9 +464,17 @@ class UsageDatabase:
         coordinator fanning out to sub-agents, fills the window. The rows are
         still there; they just fall outside it.
 
-        ``substr(request_id, 1, n) = prefix`` rather than LIKE: a request id is
-        arbitrary text, and ``_`` is LIKE's single-character wildcard — the
-        prefixes here are FULL of underscores.
+        A sub-agent's calls are found two ways. ``tree``: the sessions below
+        ``session_id`` in the session store (SessionManager.subtree_ids) — a
+        sub-agent's, a state machine run's, its agents'. Without it the
+        session's requests were the tree's only root, and a session that makes
+        no call of its own (a machine's run, an agent that only runs a machine)
+        showed none of the calls below it. And by request id: a run started
+        under one carries its id as a prefix (<parent>_sub_<id>, <run>_001,
+        transitively), which also finds calls filed under no session of the
+        tree. The comparison is exact (``substr``), the range around it only
+        lets the index find the candidates: ``_`` is LIKE's wildcard, and the
+        prefixes are full of underscores.
         """
         try:
             conn = self._get_conn()
@@ -472,25 +483,22 @@ class UsageDatabase:
                     "SELECT * FROM usage_snapshots ORDER BY id DESC LIMIT ?",
                     (limit,)).fetchall()
             else:
-                # Sub-agent calls run in their own sessions; their request ids
-                # carry the parent's as a prefix (<parent>_sub_<id>,
-                # transitively). The session's OWN requests define the tree.
-                own = [r[0] for r in conn.execute(
+                sessions = json.dumps(list(dict.fromkeys([session_id, *tree])))
+                own = sorted(r[0] + "_" for r in conn.execute(
                     "SELECT DISTINCT request_id FROM usage_snapshots "
-                    "WHERE session_id = ? AND request_id != ''",
-                    (session_id,)).fetchall()]
-                params: list[Any] = [session_id]
-                clause = "session_id = ?"
-                if own:
-                    prefixes = [r + "_" for r in own]
-                    clause += " OR " + " OR ".join(
-                        "substr(request_id, 1, ?) = ?" for _ in prefixes)
-                    for p in prefixes:
-                        params.extend((len(p), p))
-                params.append(limit)
+                    "WHERE session_id IN (SELECT value FROM json_each(?)) AND request_id != ''",
+                    (sessions,)).fetchall())
+                # a prefix that extends one kept already finds nothing new (its ids sort right behind it)
+                prefixes: list[str] = []
+                for prefix in own:
+                    if not prefixes or not prefix.startswith(prefixes[-1]):
+                        prefixes.append(prefix)
                 rows = conn.execute(
-                    f"SELECT * FROM usage_snapshots WHERE {clause} "
-                    f"ORDER BY id DESC LIMIT ?", tuple(params)).fetchall()
+                    "SELECT * FROM usage_snapshots WHERE session_id IN (SELECT value FROM json_each(?1)) "
+                    "OR id IN (SELECT u.id FROM json_each(?2) AS p JOIN usage_snapshots AS u "
+                    "  ON u.request_id >= p.value AND u.request_id < p.value || char(1114111) "
+                    "  AND substr(u.request_id, 1, length(p.value)) = p.value) "
+                    "ORDER BY id DESC LIMIT ?3", (sessions, json.dumps(prefixes), limit)).fetchall()
         except sqlite3.Error as e:
             logger.error(f"Failed to read usage snapshots: {e}")
             return []
