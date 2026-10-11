@@ -167,6 +167,17 @@ class RunStore:
         self._conn: Optional[sqlite3.Connection] = None
         self._lock = threading.RLock()
 
+    @classmethod
+    def read_only(cls, path: str | Path) -> "RunStore":
+        """A store that only reads -- a report on a server's runs.db: no schema, no migration, and a write fails.
+        A file that is not there raises here, instead of an empty database appearing in its place."""
+        store = cls(path)
+        conn = sqlite3.connect(f"{store.path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        store._conn = conn
+        return store
+
     # ---------------------------------------------------------------- plumbing
     def _db(self) -> sqlite3.Connection:
         if self._conn is None:

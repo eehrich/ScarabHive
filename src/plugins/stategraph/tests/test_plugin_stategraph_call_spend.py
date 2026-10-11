@@ -141,3 +141,27 @@ async def test_a_second_stategraph_instance_does_not_count_a_call_again(hooked, 
         for name in names:
             await registry.unregister_hook(HookType.POST_LLM_RESPONSE, name)
         await other.stop_plugin()
+
+
+def test_a_read_only_store_reads_the_spend_and_writes_nothing(tmp_path):
+    # a report on a server's runs.db (a report): it must never migrate, write or create the file
+    import sqlite3
+
+    from plugins.stategraph.engine.journal import RunStore
+
+    store = RunStore(tmp_path / "runs.db")
+    store.create_run("r", "m", {}, status="succeeded")
+    for key, state in (("s1", "a"), ("s2", "b")):
+        store.record("r", "activity", key, state=state, status="done",
+                     data={"kind": "call", "path": state, "state": state, "meta": {"cost": 0.5}})
+    store.close()
+    reader = RunStore.read_only(tmp_path / "runs.db")
+    try:
+        assert reader.spend("r")["cost"] == 1.0
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            reader.update_run("r", status="failed")
+    finally:
+        reader.close()
+    with pytest.raises(sqlite3.OperationalError):
+        RunStore.read_only(tmp_path / "elsewhere" / "runs.db")
+    assert not (tmp_path / "elsewhere").exists()
