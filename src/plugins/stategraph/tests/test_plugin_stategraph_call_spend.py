@@ -165,3 +165,21 @@ def test_a_read_only_store_reads_the_spend_and_writes_nothing(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         RunStore.read_only(tmp_path / "elsewhere" / "runs.db")
     assert not (tmp_path / "elsewhere").exists()
+
+
+def test_a_row_a_resume_set_aside_costs_in_the_state_it_ran_in(tmp_path):
+    # a resumable failure's rows move to rewound.<n>/<key> (runner.REWOUND): their cost still counts, in their state
+    from plugins.stategraph.engine.journal import RunStore
+    from plugins.stategraph.engine.runner import REWOUND
+
+    store = RunStore(tmp_path / "runs.db")
+    try:
+        store.create_run("r", "m", {}, status="succeeded")
+        store.add_frame("r", "s1/m/", "sub", "phase")
+        for key, state, cost in (("s0", "first", 0.5), (f"{REWOUND}1/s1/m/s0", "inner", 0.25), ("s1/m/s0", "inner", 1.0)):
+            store.record("r", "activity", key, state=state, status="done",
+                         data={"kind": "call", "path": state, "state": state, "meta": {"cost": cost}})
+        by_state = {s["path"]: s["cost"] for s in store.spend("r")["by_state"]}
+        assert by_state == {"first": 0.5, "phase": 1.25, "phase/inner": 1.25}
+    finally:
+        store.close()

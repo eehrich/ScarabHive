@@ -142,6 +142,8 @@ _JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "de
                  "control_answer")
 #: Columns a runs.db from before them lacks: added when it is opened.
 _ADDED_COLUMNS = {"nesting": "TEXT", "control": "TEXT", "runner": "TEXT", "control_answer": "TEXT"}
+#: The key prefix of a row a resume set aside (runner.REWOUND + its rewind number).
+_REWOUND_KEY = re.compile(r"^rewound\.\d+/")
 #: Answers to event requests kept per run: one request at a time, each taken within a second, and its asker reads
 #: for a few seconds at most -- the last 16 hold every answer still read.
 ANSWERS_KEPT = 16
@@ -700,6 +702,7 @@ class RunStore:
             frames = dict(db.execute("SELECT prefix, path FROM frames WHERE run_id = ?", (run_id,)).fetchall())
         totals: dict[str, dict[str, Any]] = {}
         for key, state, cost, prompt, completion, unpriced, estimated in rows:
+            key = _REWOUND_KEY.sub("", key, count=1)  # a row a resume set aside costs where it ran (runner.REWOUND)
             prefix = key[:key.rfind("/m/") + 3] if "/m/" in key else ""  # the frame the activity ran in
             where = frames.get(prefix) or ""
             parts = [part for part in f"{where}/{state or '?'}".split("/") if part]

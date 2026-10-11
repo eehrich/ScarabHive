@@ -801,6 +801,7 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
     gate = asyncio.Semaphore(concurrency)
     results: list[Any] = [None] * len(children)
     begun: set[str] = set()
+    failed: list[str] = []  # fail: fast -- a child failed: none begins after it (its slot frees before gather sees it)
     cut: dict[str, Optional[int]] = {"at": None}  # the first index until held for
     past = lambda index: cut["at"] is not None and index > cut["at"]  # noqa: E731
 
@@ -819,14 +820,15 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
     async def one(index: int, label: str, raw: dict[str, Any], extra: Optional[dict[str, Any]]) -> None:
         try:
             async with gate:
-                if past(index):
-                    return  # never started: the cut is before it
+                if past(index) or failed:
+                    return  # never started: the cut, or a failed sibling, is before it
                 begun.add(label)
                 if fail == "fast":
                     try:
                         results[index] = await act.child(label, raw, extra)
                     except ActivityError as exc:
                         _name_child(exc, label)
+                        failed.append(label)
                         raise
                 else:
                     try:
