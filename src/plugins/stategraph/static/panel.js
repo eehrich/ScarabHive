@@ -408,7 +408,7 @@ async function loadMachines() {
 const closedFolders = new Set(recall('closed-folders', []));
 
 /** The machines as a folder tree: a machine's group ("Reviews/nightly", set in its file, else where it comes from) is its
- * folder path. Folders keep the order the server lists their first machine in. */
+ * folder path. Machines keep the order the server lists them in; folders show sorted by name (`subfolders`). */
 function folderTree(machines) {
   const root = { path: '', children: new Map(), machines: [] };
   for (const m of machines) {
@@ -422,6 +422,9 @@ function folderTree(machines) {
   }
   return root;
 }
+
+/** A folder's folders by name -- a group can lead with its order ("1 Front", "2 Chapters"). */
+const subfolders = (folder) => [...folder.children.values()].sort((a, b) => a.name.localeCompare(b.name));
 
 const folderSize = (folder) => folder.machines.length + [...folder.children.values()].reduce((sum, f) => sum + folderSize(f), 0);
 
@@ -444,7 +447,7 @@ function folderView(folder, searching) {
   const open = searching || !closedFolders.has(folder.path);
   return html`<details class="sg-folder" data-folder="${folder.path}" ${open ? 'open' : ''}>
     <summary class="sg-folder-name">${icon('folder', { size: 'sm' })}<span class="pk-grow">${folder.name}</span><span class="pk-muted">${folderSize(folder)}</span></summary>
-    <div class="sg-folder-body">${[...folder.children.values()].map((child) => folderView(child, searching))}${folder.machines.map(machineItem)}</div>
+    <div class="sg-folder-body">${subfolders(folder).map((child) => folderView(child, searching))}${folder.machines.map(machineItem)}</div>
   </details>`;
 }
 
@@ -454,7 +457,7 @@ function drawMachineList() {
   const shown = S.machines.filter((m) => !needle || `${m.id} ${m.title} ${m.description} ${m.group || ''}`.toLowerCase().includes(needle));
   const tree = folderTree(shown);
   update($('machineList'), shown.length
-    ? [...[...tree.children.values()].map((folder) => folderView(folder, Boolean(needle))), ...tree.machines.map(machineItem)]
+    ? [...subfolders(tree).map((folder) => folderView(folder, Boolean(needle))), ...tree.machines.map(machineItem)]
     : emptyState('workflow', S.machines.length ? 'No machine matches' : 'No machines yet', S.machines.length ? '' : 'Create one with New.'));
 }
 

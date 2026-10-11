@@ -1984,6 +1984,9 @@ const CASES = {
     check(/data-folder="Writer\/v6"[\s\S]*data-machine="review"[\s\S]*<\/details>[\s\S]*data-machine="other"/.test(list()),
       'review sits in Writer/v6, other in Writer after it');
     check(list().indexOf('data-folder="Writer"') < list().indexOf('data-folder="Writer/v6"'), 'v6 is a folder inside Writer');
+    const at = (path) => list().indexOf(`data-folder="${path}"`);
+    check(at('My machines') < at('stategraph') && at('stategraph') < at('Writer'),
+      'folders by name, not in the order the server listed their first machine (Writer came first)');
     check(folder('Writer/v6')[1] === 'open', 'folders start open');
     const closing = element('details', { 'data-folder': 'Writer/v6' });
     closing.open = false;

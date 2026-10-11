@@ -54,7 +54,8 @@ The panel has three parts; the toolbar buttons fold the outer two away.
 
 Every machine in the machine folders, in folders by the machine's
 @{tt}group@{utt} (@{tt}Reviews/nightly@{utt} is a folder inside another).
-A machine without a group sits in "My machines" when it lies in the
+Folders sort by name, so a group can lead with its order
+(@{tt}Writer/1 Front@{utt}, @{tt}Writer/2 Chapters@{utt}). A machine without a group sits in "My machines" when it lies in the
 folder new machines are saved to, else in a folder named after the plugin
 it comes with -- also when that folder is made writable.
 Each entry shows the title, the id when it says more than the title, the
