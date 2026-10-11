@@ -157,6 +157,10 @@ class ActivityRun:
         ``sg.cancelled`` (a threading.Event) is set once nobody waits for the answer any more -- a timeout, a
         terminate, or the call returned: a sync function's thread cannot be stopped, a long one checks it (or
         waits on it instead of sleeping) and returns early.
+
+        ``sg.live`` (read-only): the objects the caller handed to the run in this process (``start_run(live=)``)
+        -- an instance, a connection, anything that cannot go through the journal. Empty after a resume
+        without them (another process, the panel): a function that needs one fails loudly instead of guessing.
         """
         counter = itertools.count()
         closed = False
@@ -181,7 +185,7 @@ class ActivityRun:
             cancelled.set()
 
         api = types.SimpleNamespace(**self.scope(), tool=tool, Error=ActivityError,  # except sg.Error as exc
-                                    cancelled=cancelled)
+                                    cancelled=cancelled, live=types.MappingProxyType(self.run.live_objects))
         api._close = close
         return api
 

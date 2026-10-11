@@ -179,8 +179,13 @@ class RunContext:
     def __init__(self, *, run_id: str, store: RunStore, machine: Machine, backend: Any = None,
                  mocks: Optional[dict[str, Any]] = None, mock_only: bool = False,
                  debugger: Optional[Debugger] = None, token: Any = None,
-                 owner: Optional[str] = None, origin: Optional[str] = None):
+                 owner: Optional[str] = None, origin: Optional[str] = None,
+                 live: Optional[dict[str, Any]] = None):
         self.id = run_id
+        #: the caller's objects for call functions (``sg.live``; not ``self.live``, the replay flag): never
+        #: journaled, so a run resumed by another process -- or without them -- sees an empty mapping, and a
+        #: function that needs them says so
+        self.live_objects = dict(live or {})
         self.origin = origin or run_id   # the first run of a fork chain: stable across forks (run.origin)
         self.store = store
         self.machine = machine
@@ -751,6 +756,10 @@ class RunContext:
                 logger.debug("cancel token of %s raised", self.id, exc_info=True)
 
 
+#: the trace rows naming a run's live objects (``sg.live``) -- names only, the objects never reach the journal
+LIVE_OBJECTS = "live_objects"
+
+
 @dataclass
 class LiveRun:
     ctx: RunContext
@@ -793,8 +802,9 @@ class RunManager:
                     copy_rows: Optional[list[dict[str, Any]]] = None,
                     fork_resources: Optional[dict[str, Any]] = None,
                     nesting: Optional[dict[str, Any]] = None, strict_points: bool = True,
-                    runner: Optional[str] = None) -> str:
-        """``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
+                    runner: Optional[str] = None, live: Optional[dict[str, Any]] = None) -> str:
+        """``live``: the caller's objects for call functions (``sg.live``), not journaled.
+        ``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
         with the run so its agent instances count as one level below the caller (backend.agent_create).
         ``runner``: the runner agent the run is hosted by (runners.py), kept with it for every resume.
         ``strict_points``: a breakpoint naming no state is refused; else (a fork's inherited points) it is dropped."""
@@ -826,10 +836,13 @@ class RunManager:
         if fork_resources is not None:  # journaled, so a resume of the fork runs its fork hooks where it did
             self.store.record(run_id, "trace", "fork_resources", fence=self.owner, status="fork_resources",
                               data=fork_resources)
+        if live:  # their names only: the history says the run had them, and a resume without them shows it
+            self.store.record(run_id, "trace", LIVE_OBJECTS, fence=self.owner, status=LIVE_OBJECTS,
+                              data={"names": sorted(live)})
         self._launch(run_id, machine, params, mocks, mock_only, debugger,
                      backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
                      token_factory(run_id) if token_factory else None, origin=self._origin(parent_run) or run_id,
-                     fork_step=fork_step if parent_run else None)
+                     fork_step=fork_step if parent_run else None, live=live)
         return run_id
 
     def _refuse_while_stopping(self) -> None:
@@ -849,9 +862,11 @@ class RunManager:
         return run_id
 
     async def resume(self, run_id: str, *, backend: Any = None, backend_factory: Optional[Callable[[str], Any]] = None,
-                     token_factory: Optional[Callable[[str], Any]] = None, cancel: bool = False) -> str:
+                     token_factory: Optional[Callable[[str], Any]] = None, cancel: bool = False,
+                     live: Optional[dict[str, Any]] = None) -> str:
         """Continue a run from its journal. ``cancel``: resume it into its termination -- the journaled prefix
-        replays, then it ends as cancelled and its finally and close activities run (§3.10)."""
+        replays, then it ends as cancelled and its finally and close activities run (§3.10). ``live``: the
+        caller's objects for call functions again (``sg.live``) -- they are not in the journal."""
         self._refuse_while_stopping()
         row = self.store.get_run(run_id)
         if row is None:
@@ -872,6 +887,11 @@ class RunManager:
             if cancel and not self.store.has_row(run_id, "trace", "cancel"):  # an earlier one (a timeout) counts
                 self.store.record(run_id, "trace", "cancel", fence=self.owner, status="cancel",
                                   data={"timed_out": False})
+            if live or self.store.has_row(run_id, "trace", LIVE_OBJECTS):  # handed again, or missing now
+                resumes = sum(1 for r in self.store.rows(run_id, kinds=("trace",))
+                              if r["key"].startswith(f"{LIVE_OBJECTS}:resumed:"))
+                self.store.record(run_id, "trace", f"{LIVE_OBJECTS}:resumed:{resumes + 1}", fence=self.owner,
+                                  status=LIVE_OBJECTS, data={"names": sorted(live or {})})
             tree = load_snapshot(row["definition"])
             machine = compile_tree(tree)
             debugger = Debugger.from_state(row.get("debug"), run_id)  # its points, and the pause or step that held it
@@ -883,7 +903,7 @@ class RunManager:
                          backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
                          token_factory(run_id) if token_factory else None, origin=self._origin(run_id),
                          running_seconds=float((row.get("view") or {}).get("running_seconds") or 0.0),
-                         fork_step=row.get("fork_step") if row.get("parent_run") else None)
+                         fork_step=row.get("fork_step") if row.get("parent_run") else None, live=live)
         except BaseException:  # nothing runs it here: the lease goes back, so another process may take it at once
             try:
                 self.store.update_run(run_id, fence=self.owner, lease_until=_utc(-1), status=row["status"])
@@ -954,10 +974,10 @@ class RunManager:
     def _launch(self, run_id: str, machine: Machine, params: Optional[dict[str, Any]],
                 mocks: Optional[dict[str, Any]], mock_only: bool, debugger: Debugger, backend: Any,
                 token: Any, *, origin: Optional[str] = None, running_seconds: float = 0.0,
-                fork_step: Optional[int] = None) -> None:
+                fork_step: Optional[int] = None, live: Optional[dict[str, Any]] = None) -> None:
         ctx = RunContext(run_id=run_id, store=self.store, machine=machine, backend=backend, mocks=mocks,
                          mock_only=mock_only, debugger=debugger, token=token,
-                         owner=self.owner, origin=origin)
+                         owner=self.owner, origin=origin, live=live)
         ctx.running_seconds = running_seconds  # limits.timeout counts running time across resumes
         ctx.callback_base = self.callback_base
         ctx.fork_step = fork_step
