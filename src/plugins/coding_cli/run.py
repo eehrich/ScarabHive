@@ -415,6 +415,18 @@ def make_worktree(repo: Path, path: Path, branch: str, exclude: Iterable[str]) -
     return Worktree(base, git_dir, hidden)
 
 
+def seed_worktree(repo: Path, path: Path, folders: Iterable[str]) -> None:
+    """Untracked folders of the repo copied into a fresh worktree (it holds only what is committed): a
+    caller's files for the run to read, set by code only (tracker's ticket attachments), never by the
+    config. The caller keeps them out of git (info/exclude): commit_all's add would take them along."""
+    for rel in folders:
+        if Path(rel).is_absolute() or ".." in Path(rel).parts:
+            raise ValueError(f"seed {rel!r}: a folder inside the repository")
+        source = repo / rel
+        if source.is_dir() and not source.is_symlink():
+            shutil.copytree(source, path / rel, dirs_exist_ok=True)
+
+
 def remove_worktree(repo: Path, path: Path, branch: str) -> None:
     """Takes back what make_worktree made for a run that never started, as far as it got. Only this
     worktree's entry -- `remove --force` drops it even when the folder is gone (measured, git 2.36): a

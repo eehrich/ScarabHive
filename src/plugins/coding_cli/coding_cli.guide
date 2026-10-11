@@ -60,6 +60,11 @@ is at or past @{tt}max_window_utilization@{utt}; fewer than
 branch @{tt}coding_cli/<run_id>@{utt}, under
 @{tt}data/coding_cli/worktrees/<run_id>@{utt}. A resume reuses its run's
 worktree and branch instead.
+@{bullet}A workdir entry made by code (never by the config) may name
+@{tt}seed@{utt} folders: untracked folders of the repository copied into
+the fresh worktree, which holds only what is committed (tracker's ticket
+attachments). The caller keeps them out of git, so the run's commit never
+takes them along.
 @{bullet}The workdir's @{tt}exclude@{utt} files are deleted in the worktree
 and marked skip-worktree, so the run can neither read them nor commit them
 as deleted. So is every other tracked file that holds one of their secret
