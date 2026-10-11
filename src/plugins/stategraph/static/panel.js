@@ -2900,6 +2900,16 @@ function spendText(spend, { tokens = true } = {}) {
   return `${spend.cost_is_estimate ? '~$' : '$'}${spend.cost.toFixed(4)}${unpriced}${flow}`;
 }
 
+/** The spend per state path; a state that runs a submachine holds what its machine's states cost (a phase). */
+function costByState(states) {
+  return html`<div class="pk-table-wrap"><table class="pk-table">
+    <thead><tr><th>State</th><th class="pk-num">Cost</th><th class="pk-num">Tokens ↑ ↓</th><th class="pk-num">Activities</th></tr></thead>
+    <tbody>${states.map((s) => html`<tr><td class="pk-mono">${s.path}</td>
+      <td class="pk-num">${spendText(s, { tokens: false })}</td>
+      <td class="pk-num">${tokenCount(s.tokens?.prompt || 0)} ${tokenCount(s.tokens?.completion || 0)}</td>
+      <td class="pk-num">${s.activities}</td></tr>`)}</tbody></table></div>`;
+}
+
 function historyRow(row) {
   const data = row.data || {};
   let what = row.status || '';
@@ -3076,7 +3086,7 @@ function drawResult() {
   update($('runResult'), html`<div class="pk-card sg-result" data-run="${run.id}">
     <div class="pk-card-head"><h3 class="pk-card-title">Result</h3>${statusBadge(run.status)}
       ${run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span>${reason && reason !== run.status ? html` (${reason})` : ''}</span>` : ''}
-      ${run.spend ? html`<span class="pk-muted" title="What the run's agents cost so far, their sub-agents included: tokens in ↑ and out ↓">${spendText(run.spend)}</span>` : ''}
+      ${run.spend ? html`<span class="pk-muted" title="What the run cost so far -- its agents with their sub-agents, and the LLM calls its call functions made: tokens in ↑ and out ↓">${spendText(run.spend)}</span>` : ''}
       <span class="pk-grow"></span>
       ${run.machine_id === S.machine?.id ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="rerun"
         title="A new run with this run's params and mocks (they go into the start form too); a param that had its default then takes the machine's default now">${icon('rotate-cw', { size: 'sm' })} Run again</button>` : ''}
@@ -3086,6 +3096,7 @@ function drawResult() {
     ${run.output !== undefined && run.output !== null
     ? html`<details class="pk-details" open><summary>Output</summary>${resultValue(run.output)}</details>`
     : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No output.' : 'The output comes when the run ends.'}</p>`}
+    ${run.spend?.by_state ? html`<details class="pk-details"><summary>Cost by state</summary>${costByState(run.spend.by_state)}</details>` : ''}
     ${finals.length ? html`<h4 class="sg-section-title">End states</h4><ul class="sg-plain-list">${finals.map((row) => html`<li class="sg-watch">
       ${badge(row.data?.frame ? 'submachine' : 'top', row.data?.frame ? 'info' : '')}
       <span class="pk-mono">${row.data?.frame ? `${row.data.machine || row.data.frame} · ` : ''}${row.state}</span>

@@ -471,11 +471,17 @@ class CallKind(ActivityKind):
         once and the thread's late result is dropped, while the thread keeps its worker until it returns. Its
         ``sg`` works there except ``sg.tool()``, which a sync function can only return (it is awaited on the
         loop), not run."""
+        from plugins.stategraph.engine.backend import CALL_SPEND, _Spend
+
         fn = resolve_callable(spec.call, act, "call")
         args = act.render(spec.args, "args")
         params = list(inspect.signature(fn).parameters)
         sg = act.sg_api() if params[:1] == ["sg"] else None
         head = () if sg is None else (sg,)
+        # What the LLM calls under it cost (CALL_SPEND): into the activity's meta like an agent's, so the run's
+        # spend -- and a resume, which replays the row -- counts it once.
+        meter = _Spend(None)
+        metering = CALL_SPEND.set(meter)
         try:
             if inspect.iscoroutinefunction(fn):
                 result = fn(*head, **args)
@@ -484,6 +490,9 @@ class CallKind(ActivityKind):
                 result = await asyncio.get_running_loop().run_in_executor(_CALL_POOL, run)
             return await result if inspect.isawaitable(result) else result
         finally:
+            CALL_SPEND.reset(metering)
+            if meter.tokens["prompt"] or meter.tokens["completion"] or meter.cost or meter.unpriced:
+                meter.into(act.meta)  # a failed or stopped call cost too
             if sg is not None:
                 sg._close()
 

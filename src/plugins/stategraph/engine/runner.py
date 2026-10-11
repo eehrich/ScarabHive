@@ -12,11 +12,13 @@ journal cut at a top-level step (§5.6).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import logging
 import os
 import re
 import socket
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -28,7 +30,7 @@ from plugins.stategraph.model.code import fingerprint, jsonable
 from plugins.stategraph.model.loader import MachineTree, load_snapshot
 from plugins.stategraph.model.spec import parse_duration
 from .activity import ReplayDivergence
-from .backend import NoBackend
+from .backend import CALL_SPEND, NoBackend
 from .debugger import Debugger, UnknownState, apply_edit, check_points, known_states, unknown_state
 from .interpreter import Frame, RunAbort, bind_params
 from .journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore, utc_now
@@ -38,6 +40,8 @@ logger = logging.getLogger(__name__)
 
 JOURNAL_FORMAT = 1
 LEASE_SECONDS = 60
+#: The lease says the PROCESS lives, so it is renewed from a thread of its own: a call that holds the event loop
+#: (synchronous work of minutes -- the writer's whole-book passes) must not lose its run to another process.
 HEARTBEAT_SECONDS = 20
 #: How often the owner of live runs takes the control requests of other processes (RunStore.request_control).
 CONTROL_POLL_SECONDS = 1.0
@@ -789,7 +793,8 @@ class RunManager:
         self.live: dict[str, LiveRun] = {}
         self._defaults: dict[str, dict[str, Any]] = {}  # run id -> its params' defaults when it started (describe)
         self._stopping = False
-        self._heartbeat: Optional[asyncio.Task] = None
+        self._heartbeat: Optional[threading.Thread] = None
+        self._heartbeat_stop = threading.Event()  # the running thread's own: a new thread gets a new one
         self._controls: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------ lifecycle
@@ -984,7 +989,11 @@ class RunManager:
         root = Frame(ctx, machine, params)
         ctx.root = root
         ctx.on_lost = self._drop
-        task = asyncio.ensure_future(self._execute(ctx, root))
+        # A run started inside a call function (run_to_end, a tool that runs a machine) is no part of that call's
+        # LLM spend: its own activities count what they cost (backend.CALL_SPEND).
+        context = contextvars.copy_context()
+        context.run(CALL_SPEND.set, None)
+        task = asyncio.get_running_loop().create_task(self._execute(ctx, root), context=context)
         self.live[run_id] = LiveRun(ctx, task, root)
         watched = getattr(ctx.backend, "token", None)
         if watched is not None and hasattr(watched, "wait_for_cancellation"):
@@ -1106,15 +1115,27 @@ class RunManager:
             return
 
     def _ensure_heartbeat(self) -> None:
-        if self._heartbeat is None or self._heartbeat.done():
-            self._heartbeat = asyncio.ensure_future(self._renew_leases())
+        if self._heartbeat is None or not self._heartbeat.is_alive() or self._heartbeat_stop.is_set():
+            # a thread told to stop (shutdown) may still be alive for a moment: it ends, a new one renews
+            self._heartbeat_stop = threading.Event()
+            self._heartbeat = threading.Thread(target=self._renew_leases,
+                                               args=(asyncio.get_running_loop(), self._heartbeat_stop),
+                                               name=f"stategraph-lease-{self.owner}", daemon=True)
+            self._heartbeat.start()
         if self._controls is None or self._controls.done():
             self._controls = asyncio.ensure_future(self._take_controls())
 
-    async def _renew_leases(self) -> None:
-        while self.live:
-            await asyncio.sleep(HEARTBEAT_SECONDS)
-            self.renew_leases()
+    def _renew_leases(self, loop: asyncio.AbstractEventLoop, stop: threading.Event) -> None:
+        """The heartbeat thread, until shutdown or the loop's end. A run it lost stops on the loop."""
+        while not stop.wait(HEARTBEAT_SECONDS):
+            if loop.is_closed():
+                return
+            lost = self._renewed()
+            if lost:
+                try:
+                    loop.call_soon_threadsafe(lambda: [ctx.lose() for ctx in lost])
+                except RuntimeError:  # the loop closed meanwhile: nothing left to stop
+                    return
 
     async def _take_controls(self) -> None:
         while self.live:
@@ -1152,16 +1173,28 @@ class RunManager:
 
     def renew_leases(self) -> None:
         """Extend our runs' leases; a run whose owner changed is lost and stops locally (§5.7)."""
-        for run_id, live in list(self.live.items()):
-            if live.ctx.finished:  # its end is written, lease released: renewing would hold it 60 s more
-                continue
+        for ctx in self._renewed():
+            ctx.lose()
+
+    def _renewed(self) -> list["RunContext"]:
+        """Extend our runs' leases -- from the heartbeat thread too: the store locks, and the runs are read
+        once as a copy. Returns the runs whose owner changed."""
+        lost = []
+        for run_id, live in tuple(self.live.items()):
             try:
-                kept = self.store.renew(run_id, self.owner, _utc(LEASE_SECONDS), live.ctx.status)
+                # Check and renew under the store's (reentrant) lock: a run ends by setting ``finished`` and then
+                # writing its end, which takes this lock -- a renew can no longer fall between the two and hold
+                # an ended run's lease, or put an interrupted end back to running (review of the thread).
+                with self.store._lock:
+                    if live.ctx.finished:  # its end is written or being written: renewing would hold it 60 s more
+                        continue
+                    kept = self.store.renew(run_id, self.owner, _utc(LEASE_SECONDS), live.ctx.status)
             except Exception:
                 logger.debug("lease renewal of %s failed", run_id, exc_info=True)
                 continue
             if not kept:
-                live.ctx.lose()
+                lost.append(live.ctx)
+        return lost
 
     def sweep_expired(self) -> list[str]:
         """Mark runs whose owner's lease ran out as interrupted (never a run of a live process)."""
@@ -1176,9 +1209,9 @@ class RunManager:
             if not live.ctx.finished:  # a finished run only tells its session how it ended: cut, it never would
                 live.task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        for task in (self._heartbeat, self._controls):
-            if task is not None:
-                task.cancel()
+        self._heartbeat_stop.set()
+        if self._controls is not None:
+            self._controls.cancel()
 
     # ------------------------------------------------------------ control
     def _live(self, run_id: str) -> LiveRun:

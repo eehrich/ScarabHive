@@ -18,7 +18,9 @@ resolved configuration, with the matchers the runtime itself uses.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
+import contextvars
 import fnmatch
 import functools
 import json
@@ -595,6 +597,13 @@ def _control_tools() -> tuple[str, ...]:
     return tuple(tool for tool in re.findall(r'name: "\{\{ name \}\}_(\w+)"', text) if tool not in READ_ONLY_TOOLS)
 
 
+#: The meter of the call activity whose function runs now (CallKind): every LLM call made under it -- by the function,
+#: by the code it calls (the writer's pipeline), by a tool it runs -- adds to it (hooks.StateGraphHooks on
+#: post_llm_response). The context var goes along into tasks the function starts and into its worker thread.
+CALL_SPEND: contextvars.ContextVar[Optional["_Spend"]] = contextvars.ContextVar("stategraph_call_spend",
+                                                                                default=None)
+
+
 class _Spend:
     """What an agent run cost: its LLM calls and its sub-agents' (their events come as ``sub_run``), each priced by
     the core's rule -- the provider's billed cost wins, else the price table's estimate. A final event repeats its
@@ -609,10 +618,11 @@ class _Spend:
         self.cost = 0.0
         self.estimated = False
         self.unpriced = 0
+        #: the calls counted last (hooks.py): each stategraph instance registers the hook and gets its own copy
+        #: of the call's context -- one call must count once, also while parallel calls interleave their hooks
+        self.counted: collections.deque = collections.deque(maxlen=64)
 
     def add(self, event: dict[str, Any]) -> None:
-        from agent_system.llm.pricing import normalize_usage, resolve_call_cost
-
         run = ""
         if event.get("type") == "sub_run" and isinstance(event.get("event"), dict):
             run, event = str(event.get("run_id") or "?"), event["event"]
@@ -625,11 +635,17 @@ class _Spend:
             self.models[run] = event["model"]  # a final names no model, nor a batch: its run's last call does
             self.batch[run] = event.get("batch") is True
         self.last[run] = usage
+        self.add_call(usage, self.models.get(run), is_batch=self.batch.get(run, False))
+
+    def add_call(self, usage: dict[str, Any], model: Optional[str], *, is_batch: bool = False) -> None:
+        """One LLM call, priced by the core's rule (what the tracker books for it)."""
+        from agent_system.llm.pricing import normalize_usage, resolve_call_cost
+
         call = normalize_usage(usage)
         self.tokens["prompt"] += call.prompt_tokens
         self.tokens["completion"] += call.completion_tokens
         self.tokens["cached"] += call.cached_tokens
-        cost, estimated = resolve_call_cost(usage, self.models.get(run), is_batch=self.batch.get(run, False))
+        cost, estimated = resolve_call_cost(usage, model, is_batch=is_batch)
         if cost is None:
             self.unpriced += 1
             return

@@ -16,7 +16,8 @@ shows a machine as a graph to edit, run and debug it; the agent `stategraph_auth
 - **From Python** `service.run_to_end(machine_id, params, run_key=..., live={...})` runs a machine as a step of
   the caller's own work and waits for its end; `live` objects reach `call` functions as `sg.live`, never the journal
   (guide, "Running a machine from Python").
-- No hook.
+- **Hook** `count_call_spend` (post_llm_response): the LLM calls made under a `call` activity count into its cost;
+  every other call reads one context var and nothing else.
 
 Nothing to enable: `agents/stategraph.yaml` and `agents/stategraph_author.yaml` ship the instances and are included
 by `config/config.yaml`. A tool a machine should call goes into its runner's allowlist: a plugin that ships machines

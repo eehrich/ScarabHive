@@ -1934,12 +1934,27 @@ const CASES = {
     check(result.includes('>~$0.0321<'), 'an activity\'s cost, folded, is the amount alone');
     check(result.includes('spent by run r0, which this fork replays'), 'a copied activity does not say it spent');
     check((result.match(/\$0\.|\$2\./g) || []).length === 3, 'a tool activity reported no cost and shows none');
+    check(!result.includes('Cost by state'), 'one state: no table of states');
     const details = element('details', { 'data-result': '3' });
     details.open = true;
     const body = details.appendChild(element('div', { class: 'sg-result-body' }));
     await $('runResult').fire('toggle', { target: details });
     check(body.innerHTML.includes('<dt>Cost</dt><dd>~$0.0321 · ↑1.2k ↓80') && body.innerHTML.includes('(1.0k cached)'),
       `opened, the cost with its tokens: ${body.innerHTML}`);
+  },
+
+  async the_result_lists_what_each_state_cost_a_phase_with_its_states() {
+    RUN2.spend = { cost: 0.875, activities: 3, tokens: { prompt: 30, completion: 6, cached: 0 }, cost_is_estimate: false,
+      cost_unpriced_calls: 1, by_state: [
+        { path: 'first', cost: 0.25, activities: 1, tokens: { prompt: 10, completion: 2 } },
+        { path: 'phase', cost: 0.625, activities: 2, tokens: { prompt: 20, completion: 4 } },
+        { path: 'phase/a', cost: 0.5, activities: 1, tokens: { prompt: 10, completion: 2 }, cost_unpriced_calls: 1 }] };
+    await boot('?machine=review&run=r2');
+    const result = $('runResult').innerHTML;
+    check(result.includes('<summary>Cost by state</summary>'), `the table: ${result}`);
+    const at = (path) => result.indexOf(`>${path}</td>`);
+    check(at('first') > 0 && at('first') < at('phase') && at('phase') < at('phase/a'), 'the states in the order the server sent');
+    check(result.includes('$0.6250</td>') && result.includes('$0.5000 +1 unpriced</td>'), 'a phase holds the cost of its states');
   },
 
   async a_live_runs_result_reads_on_from_where_it_stopped() {

@@ -163,8 +163,10 @@ async def test_a_run_sums_what_its_agents_cost_and_a_fork_only_what_it_ran_itsel
         """)
     source, row = await run(harness, host, files)
     assert row["status"] == "succeeded", row["error"]
+    each = {"cost": 0.5, "activities": 1, "tokens": {"prompt": 100, "completion": 10}}
     assert harness.store.spend(source) == {"cost": 1.0, "activities": 2, "tokens": {"prompt": 200, "completion": 20,
-                                           "cached": 0}, "cost_is_estimate": False, "cost_unpriced_calls": 0}
+                                           "cached": 0}, "cost_is_estimate": False, "cost_unpriced_calls": 0,
+                                           "by_state": [{"path": "a", **each}, {"path": "b", **each}]}
 
     manager = harness.manager()
     fork = await manager.fork(source, at_step=1, backend_factory=backend_for(host))
@@ -172,6 +174,7 @@ async def test_a_run_sums_what_its_agents_cost_and_a_fork_only_what_it_ran_itsel
 
     assert len(host.calls()) == 3, "the fork replayed a and ran b"
     assert harness.store.spend(fork)["cost"] == 0.5, harness.store.spend(fork)
+    assert "by_state" not in harness.store.spend(fork), "the replayed state is the source's, not split here"
     copied = next(r for r in harness.store.rows(fork, kinds=("activity",)) if r["state"] == "a")["data"]["meta"]
     assert copied["copied_from"] == source and copied["cost"] == 0.5
     assert harness.store.spend("no-such-run") is None

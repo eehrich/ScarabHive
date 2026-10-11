@@ -25,6 +25,7 @@ from agent_system.tools.schema_based import SchemaBasedToolServer
 from . import kinds as _kinds  # noqa: F401  -- registers the built-in activity kinds
 from .engine.journal import RunStore
 from .engine.runner import RunManager, row_event_due as _event_due
+from .hooks import StateGraphHooks
 from .schedules import Scheduler, parse_schedules
 from .service import ServiceError, StateGraphService
 from .model.spec import NAME_PATTERN
@@ -81,6 +82,7 @@ class StateGraphServer(SchemaBasedToolServer):
         base = str(getattr(server_config, "public_url", None) or "").rstrip("/")  # e.g. https://hive.example.com
         self.run_manager.callback_base = f"{base}/plugins/{name}/callback"
         self.service = StateGraphService(self)
+        self.hooks_plugin = StateGraphHooks(name)  # the cost of the LLM calls inside call activities
         # a run's wait put to the person who watches the request that waits for it (wait_questions.py)
         self.wait_questions = WaitBroker(
             lambda run_id, name, data, frame, user_id: self.service.send_event(run_id, name, data, frame,

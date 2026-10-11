@@ -2,6 +2,16 @@
 # stategraph: agent workflows as UML-style state machines (docs/stategraph_design.md).
 # Tools that validate, save, run or control machines require an admin user (§8.3):
 # machines contain Python and run agents and tools.
+
+# What the LLM calls inside a call activity cost (hooks.py): one context var read for every other call.
+hooks:
+  - name: count_call_spend
+    type: post_llm_response
+    enabled: true
+    timeout: 5.0
+    description: "Count the LLM calls a state machine's call activity makes into that activity's cost"
+    category: "monitoring"
+
 tools:
   - type: function
     function:

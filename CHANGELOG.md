@@ -30,7 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before. A forced call (`tool_choice: required`, a named tool) is refused
   either way: the agent never calls the client's tools.
 
+- A state machine run's cost counts the LLM calls made under its `call`
+  activities too -- by the function, the code it calls, a tool it runs
+  (hook `count_call_spend`) -- and with more than one state it is split
+  by state (`spend.by_state`, the panel's Cost by state): a state that runs
+  a submachine holds what its machine's states cost, the cost of a phase.
+
 ### Fixed
+
+- A state machine run's lease is renewed from a thread of its own: a `call`
+  function holding the event loop for more than ~40 seconds let it run
+  out, so a sweep marked the working run interrupted and another process
+  could take it over.
 
 - A state machine run's session in the web chat shows its agents' runs --
   task, steps and answer, read from their sessions -- each under the call

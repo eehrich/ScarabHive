@@ -247,9 +247,12 @@ Run to set there are the submachine's. Its runs list also holds the runs
 it ran in ("in scene_review"): one picked shows the frame picked, else a
 live one, else the last. A fork shows the frames it ran itself; those
 before its fork point are in the run it was forked from.
-@{bullet}The @{b}Result@{ub} card: output or error, what the run's
-agents cost so far (their sub-agents included; tokens in ↑ and out ↓; ~
-marks an amount estimated from the price table), the final state of each
+@{bullet}The @{b}Result@{ub} card: output or error, what the run cost so
+far -- its agents with their sub-agents, and the LLM calls its
+@{tt}call@{utt} functions made (tokens in ↑ and out ↓; ~ marks an amount
+estimated from the price table) -- with more than one state @{b}Cost by
+state@{ub} (a state that runs a submachine holds what its machine's
+states cost: the cost of a phase), the final state of each
 frame, and every finished activity folded with its cost -- open one for
 its full answer, its input, failed attempts, its cost with its tokens,
 the agent's session (@{b}Open@{ub} shows the conversation in the chat) and
@@ -476,7 +479,9 @@ in the debugger. That is what the panel's history and result show -- and
 what makes a run survive its process. A process that stops marks its
 runs @{tt}interrupted@{utt}; one that crashes leaves them
 @{tt}running@{utt} until its lease on them has run out (a minute), then
-the next process that looks marks them. A schedule resumes its slot's
+the next process that looks marks them. The lease says the process lives:
+a thread of its own renews it every 20 seconds, so a @{tt}call@{utt}
+function that holds the event loop for minutes keeps its run. A schedule resumes its slot's
 run, and a callback URL resumes its run before it sends the event.
 Nothing else resumes by itself: resume the run (panel,
 @{tt}control_run@{utt}), or start it again with its run key. A resumed run replays its journal: an
@@ -689,10 +694,12 @@ The answer adds to run_machine's: @{tt}frames@{utt} (each frame's
 machine, state, step, visits, @{tt}ctx@{utt} and params, what it waits
 for), @{tt}inbox@{utt} (events no frame has taken yet),
 @{tt}journal@{utt} and @{tt}debug@{utt} (breakpoints, watchpoints, their
-values, where it is paused), and @{tt}spend@{utt} once an agent or decide
-activity reported a cost: @{tt}cost@{utt}, @{tt}tokens@{utt} (prompt,
+values, where it is paused), and @{tt}spend@{utt} once an agent, decide
+or call activity reported a cost: @{tt}cost@{utt}, @{tt}tokens@{utt} (prompt,
 completion, cached), @{tt}activities@{utt}, @{tt}cost_is_estimate@{utt},
-@{tt}cost_unpriced_calls@{utt} -- a fork's without what it replays. Texts in frames, journal and error are cut at
+@{tt}cost_unpriced_calls@{utt} and, with more than one state,
+@{tt}by_state@{utt} (each state path, a submachine state with what its
+states cost) -- a fork's without what it replays. Texts in frames, journal and error are cut at
 2,000 characters. An answer over 200,000 characters drops the oldest
 journal rows first (@{tt}journal_cut@{utt} says how many), then shows each
 frame's ctx as its keys and their sizes (@{tt}frames_cut@{utt}). A reader
@@ -955,6 +962,21 @@ history marks the resume; a function that needs an object fails there
 (@{tt}call_failed@{utt}) unless it checks. What a call returned is
 journaled as usual, so a resume replays finished calls without the
 objects.
+
+@{b}A machine in several files.@{ub} Keep a long flow maintainable: a
+parent that only sequences, and each phase a machine of its own
+(@{tt}imports: {gate: ./book_gate.yaml}@{utt}, then
+@{tt}do: {machine: gate, params: {...}}@{utt}), its call functions in a
+module of its own. A submachine is a frame of the same run: the
+caller's @{tt}live@{utt} objects reach its calls at every depth, and a
+resume after a restart goes on inside it -- the calls before the one that
+was cut off are replayed from the journal, not run again.
+
+@{b}What a call costs.@{ub} The LLM calls made under a @{tt}call@{utt}
+function -- by it, by the code it calls, by a tool it runs -- count into
+its activity (the hook @{tt}count_call_spend@{utt}), so the run's
+@{tt}spend@{utt} and the panel's cost by state hold them: a phase of a
+pipeline shows what it cost.
 @endnode
 
 @node model "What the model sees"
@@ -1016,9 +1038,14 @@ runs' own sessions.
 @{h2}Known gaps
 
 @{bullet}An agent activity's cost counts its LLM calls and its
-sub-agents'; LLM calls a tool makes on its own are not in it. A call with
-neither a billed cost nor a price for its model counts in
-@{tt}cost_unpriced_calls@{utt}, not in @{tt}cost@{utt}.
+sub-agents'; LLM calls a tool makes on its own are not in it. A
+@{tt}call@{utt} activity's cost counts the calls that reach
+@{tt}post_llm_response@{utt} under it: an agent whose hooks are off, or
+whose @{tt}hooks.overrides@{utt} switch
+@{tt}stategraph.count_call_spend@{utt} off,
+leaves its calls out. A call with neither a billed cost nor a price for
+its model counts in @{tt}cost_unpriced_calls@{utt}, not in
+@{tt}cost@{utt}.
 @{bullet}Of a run another process holds, pause, continue, step,
 terminate and events reach it; run_to, breakpoints, evaluate and set act
 only in its own process.

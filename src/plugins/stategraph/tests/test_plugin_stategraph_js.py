@@ -428,6 +428,7 @@ PANEL_CASES = [
     "an_empty_machine_asks_for_a_first_state",
     "the_result_shows_every_activitys_answer_and_the_end_states",
     "the_result_and_each_activity_say_what_they_cost",
+    "the_result_lists_what_each_state_cost_a_phase_with_its_states",
     "the_history_names_a_callers_live_objects_and_marks_a_resume_without_them",
     "a_live_runs_result_reads_on_from_where_it_stopped",
     "machines_sit_in_their_folders_and_a_closed_folder_stays_closed",
