@@ -195,14 +195,16 @@ user's own connectors never load.
 @{bullet}The web only for a workdir with @{tt}web: true@{utt}: Claude
 Code's @{tt}WebSearch@{utt} and @{tt}WebFetch@{utt}, named in
 @{tt}--tools@{utt} and approved in @{tt}--allowedTools@{utt}. Everything a
-page says reaches the model, so such a workdir's runs never get the shell,
-and a workdir with both @{tt}web@{utt} and @{tt}mcp_servers@{utt} is
+page says reaches the model, so such a workdir's runs get no shell -- unless
+@{tt}web_with_shell@{utt} says the operator accepts that a page could steer
+what the allowed commands run -- and a workdir with both @{tt}web@{utt} and @{tt}mcp_servers@{utt} is
 skipped with a warning. Every URL WebFetch calls carries what the model put
 in it: what the worktree shows can leave.
 @{bullet}The file tools write only inside the worktree; a write elsewhere
 is refused and shows up under @{tt}denials@{utt}.
 @{bullet}The shell exists only when @{tt}allowed_commands@{utt} is set, and
-only in edit mode, never for a @{tt}web@{utt} workdir. It is PowerShell on Windows and Bash elsewhere, and it
+only in edit mode, for a @{tt}web@{utt} workdir only with
+@{tt}web_with_shell@{utt}. It is PowerShell on Windows and Bash elsewhere, and it
 runs exactly the listed commands (Claude Code permission patterns such as
 @{tt}pytest:*@{utt}). @{tt}git push@{utt}, @{tt}git remote@{utt},
 @{tt}git config@{utt} and @{tt}git worktree@{utt} are refused to the shell
@@ -586,6 +588,7 @@ plugins:
           path: "."
           exclude: [config/secrets.env, config/local.env, config/local.yaml, config/config.yaml]
       allowed_commands: []
+      web_with_shell: false
       max_window_utilization: 0.8
       wait_s: 300
       max_run_minutes: 60
@@ -617,10 +620,11 @@ Key | Default | Meaning
 command | claude | the Claude Code executable, a name on the PATH or a path
 workdirs | none | name -> @{tt}{path, exclude}@{utt} or just a path; name of letters, digits, _ and -, at most 40; path relative to the project, must hold @{tt}.git@{utt} -- otherwise skipped with a warning
 workdirs.<name>.exclude | none | tracked files a run never sees (see @{" What a run may do " link lockdown})
-workdirs.<name>.web | false | true: the workdir's runs search and read the web with Claude Code's @{tt}WebSearch@{utt} and @{tt}WebFetch@{utt}, approved, in either mode, and never get the shell; with @{tt}mcp_servers@{utt} as well the workdir is skipped with a warning; anything else than true: neither
+workdirs.<name>.web | false | true: the workdir's runs search and read the web with Claude Code's @{tt}WebSearch@{utt} and @{tt}WebFetch@{utt}, approved, in either mode, and get no shell unless @{tt}web_with_shell@{utt}; with @{tt}mcp_servers@{utt} as well the workdir is skipped with a warning; anything else than true: neither
 workdirs.<name>.mcp_servers | none | names in @{tt}external_servers.remote_servers@{utt} whose servers the workdir's edit runs load -- enabled, with a url without user, password or query, an HTTP or SSE transport, a plain name; otherwise the workdir is skipped with a warning. The server's @{tt}tools.blocked@{utt} stay refused
 allowed_users | none | user ids that may start runs; empty: nobody
 allowed_commands | none | shell commands as Claude Code permission patterns; empty: no shell
+web_with_shell | false | true: a @{tt}web@{utt} workdir's edit runs keep the shell -- a page the run reads could steer what the allowed commands run
 pass_env | none | environment variable names Claude Code gets beyond its allowlist
 model | "" | Claude Code's @{tt}--model@{utt}; empty: the subscription's default
 effort | "" | Claude Code's @{tt}--effort@{utt} (low, medium, high, xhigh, max); empty: its default -- @{tt}--restricted@{utt} leaves the user's settings, their effortLevel too, unread; any other value: a warning in the log, and its default

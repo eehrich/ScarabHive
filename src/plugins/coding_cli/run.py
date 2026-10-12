@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
@@ -79,18 +80,19 @@ def shell_tool() -> str:
 def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_commands: Iterable[str] = (),
                   mcp_servers: Optional[Mapping[str, Iterable[str]]] = None, model: str = "", resume: str = "",
                   rules: Optional[Path] = None, json_schema: Optional[dict] = None, web: bool = False,
-                  effort: str = "") -> list[str]:
+                  effort: str = "", web_with_shell: bool = False) -> list[str]:
     """The whole command line. The task goes in on stdin, so nothing the model
     wrote becomes an argument but json_schema; resume is a session id this
     plugin read, mcp_servers the operator's names, each with the tools its
     entry blocks. web: the workdir's runs search and read the web (WEB_TOOLS), in either mode, and
-    never get the shell: a page can tell the model what to do, and a file it wrote and an allowed
-    command would run it. What the worktree shows can still leave in a URL WebFetch calls."""
+    get no shell: a page can tell the model what to do, and a file it wrote and an allowed command
+    would run it -- unless the operator accepts that (web_with_shell, the instance's setting). What the
+    worktree shows can still leave in a URL WebFetch calls."""
     tools = [*(PLAN_TOOLS if mode == "plan" else EDIT_TOOLS), *(WEB_TOOLS if web else ())]
     cmd = [*exe, "-p", "--output-format", "stream-json", "--verbose", "--restricted",
            "--strict-mcp-config", "--mcp-config", str(mcp_config),
            "--permission-mode", "plan" if mode == "plan" else "acceptEdits"]
-    commands = [c for c in allowed_commands if c] if mode != "plan" and not web else []
+    commands = [c for c in allowed_commands if c] if mode != "plan" and (web_with_shell or not web) else []
     servers = (mcp_servers or {}) if mode != "plan" else {}
     shell = shell_tool()
     # Headless, a command nobody approved is refused (M-CC-9): the shell runs
@@ -129,7 +131,12 @@ def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_comman
 
 def child_env(extra: Iterable[str] = ()) -> dict[str, str]:
     names = ENV_NAMES | {n.upper() for n in extra}
-    return {k: v for k, v in os.environ.items() if k.upper() in names}
+    env = {k: v for k, v in os.environ.items() if k.upper() in names}
+    # An allowed command such as `python -m pytest` runs this process's interpreter, with its packages --
+    # not whichever Python the PATH it was started with finds first.
+    key = next((k for k in env if k.upper() == "PATH"), "PATH")
+    env[key] = os.pathsep.join(p for p in (str(Path(sys.executable).parent), env.get(key, "")) if p)
+    return env
 
 
 def launch(cmd: list[str], cwd: Path, env: dict, stdin: Path, stdout: Path, stderr: Path) -> subprocess.Popen:

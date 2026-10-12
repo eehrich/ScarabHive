@@ -25,8 +25,8 @@ background and wakes the session that started it.
   Measured on Claude Code 2.1.285: the header is expanded from the environment, the server's tools appear as
   `mcp__<server>__*` and run headless once `--allowedTools mcp__<server>` approves them.
 - **Web** -- a workdir with `web: true` gives its runs Claude Code's `WebSearch` and `WebFetch`, approved, in
-  either mode (research and fact checks on the subscription), and never the shell; one with `mcp_servers` as
-  well is skipped. A page can steer the model, and a URL it fetches can carry what the worktree shows.
+  either mode (research and fact checks on the subscription), and no shell unless the instance sets
+  `web_with_shell: true` (tracker: its tests beside the web); one with `mcp_servers` as well is skipped. A page can steer the model, and a URL it fetches can carry what the worktree shows.
 - **Agent** -- `claude_code_agent`, which only relays work to Claude Code; the coder agent has the tools too.
 - **Hooks / panel** -- none.
 

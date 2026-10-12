@@ -219,6 +219,8 @@ class CodingCliServer(SchemaBasedToolServer):
         # `allowed_users: admin` is one user, not five letters.
         self.allowed_users = frozenset([users] if isinstance(users, str) else map(str, users))
         self.allowed_commands = [str(c) for c in getattr(server_config, "allowed_commands", None) or ()]
+        # A web workdir's runs keep their shell only when the operator says so: a page could steer it.
+        self.web_with_shell = getattr(server_config, "web_with_shell", False) is True
         if self.allowed_commands and any(w["mcp_servers"] for w in self.workdirs.values()):
             logger.warning("coding_cli: %s allows shell commands and gives runs MCP servers -- every allowed "
                            "command inherits the environment that holds the servers' tokens", name)
@@ -836,7 +838,7 @@ class CodingCliServer(SchemaBasedToolServer):
                                 mcp_servers={n: (getattr(c, "tools", None) and c.tools.blocked) or []
                                              for n, c in servers.items()}, model=self.model, effort=self.effort, resume=resume,
                                 rules=rules if rules.is_file() else None, json_schema=schema,
-                                web=self.workdirs[workdir]["web"])
+                                web=self.workdirs[workdir]["web"], web_with_shell=self.web_with_shell)
         record = {"run_id": run_id, "instance_name": self.name, "max_run_s": max_run_s, "asked_run_s": asked_run_s,
                   "asked_utilization": asked_utilization,
                   "user_id": user_id,

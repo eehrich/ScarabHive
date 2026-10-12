@@ -337,6 +337,22 @@ async def test_a_web_workdir_searches_and_reads_the_web_and_no_other_does(repo, 
     assert "Web" not in argv[argv.index("--tools") + 1] and "WebSearch" not in argv, argv
 
 
+@pytest.mark.parametrize("setting, shell", [(True, True), ("yes", False), (None, False)])
+async def test_a_web_workdir_keeps_the_shell_only_where_the_operator_says_so(repo, log, setting, shell):
+    """tracker's runs look things up and run their tests: web_with_shell is the operator's yes to a page
+    possibly steering what the allowed commands run -- only a real true, and only in edit mode."""
+    more = {} if setting is None else {"web_with_shell": setting}
+    server = make_server(repo, workdirs={"web": {"path": str(repo), "web": True}}, allowed_commands=["pytest:*"],
+                         **more)
+    await call(server, "run_task", task="look", workdir="web", mode="edit")
+    argv = log()["argv"]
+    tools = argv[argv.index("--tools") + 1].split(",")
+    assert ("WebSearch" in tools, (cli.shell_tool() in tools)) == (True, shell), argv
+    assert (f"{cli.shell_tool()}(pytest:*)" in argv) is shell, argv
+    await call(server, "run_task", task="look", workdir="web", mode="plan")
+    assert cli.shell_tool() not in log()["argv"][log()["argv"].index("--tools") + 1].split(","), "plan: never"
+
+
 def test_a_web_workdir_with_mcp_servers_is_skipped(repo, caplog):
     """A page the run reads could steer the servers' tools, with their tokens."""
     servers = {"scarab4": RemoteMCPConfig(url="http://192.0.2.6:8768/mcp", enabled=True)}
@@ -365,6 +381,15 @@ async def test_the_child_gets_no_key_from_this_process(repo, log, monkeypatch):
     await call(server, "run_task", task="x")
     env = {name.upper() for name in log()["env"]}
     assert "ANTHROPIC_API_KEY" not in env and "OPENAI_API_KEY" not in env and "PATH" in env
+
+
+def test_the_childs_shell_finds_this_process_python_first(monkeypatch, tmp_path):
+    """An allowed `python -m pytest` must run with this interpreter's packages, not a Python an API started
+    without its venv on the PATH would find."""
+    other, tools = str(tmp_path / "other_python"), str(tmp_path / "tools")
+    monkeypatch.setenv("PATH", os.pathsep.join([other, tools]))
+    path = next(v for k, v in cli.child_env().items() if k.upper() == "PATH").split(os.pathsep)
+    assert path == [str(Path(sys.executable).parent), other, tools], path
 
 
 async def test_a_run_a_test_starts_carries_the_test_session_marker(repo):
