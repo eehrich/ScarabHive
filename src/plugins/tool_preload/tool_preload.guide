@@ -199,9 +199,11 @@ contains @{tt}{x}@{utt} is passed on as it is.
 @{bullet}Values that are not text pass unchanged; what JSON cannot hold (an
 unquoted YAML date) becomes text.
 @{bullet}A placeholder with no such group or variable -- or a variable set
-to null -- skips the whole rule, with a warning in the log (for
-@{tt}{keywords}@{utt} without one). The tool is
-never called with a literal @{tt}{doc}@{utt}.
+to null -- skips the whole rule, with a warning in the log; an empty
+@{tt}{keywords}@{utt} skips it without one. The tool is never called with a
+literal @{tt}{doc}@{utt}.
+@{bullet}@{tt}{message}@{utt} and @{tt}{keywords}@{utt} always stay text,
+even when the message is just @{tt}404@{utt}: they are queries, not ids.
 
 @{h2}A rule is all or nothing
 
