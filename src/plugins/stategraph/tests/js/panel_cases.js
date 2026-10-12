@@ -1918,6 +1918,27 @@ const CASES = {
     check(prompt?.[1].includes('1 to 2') && !prompt[1].includes('first'), `asked ${JSON.stringify(prompt)}`);
   },
 
+  async a_fork_is_not_sent_to_a_run_picked_while_its_passes_are_read() {
+    await boot('?machine=review&run=r1');
+    await choose('write');
+    HOLD = (method, path) => path.includes('/runs/r1/journal?kinds=trace&');
+    ANSWERS.prompt.push('1');
+    ANSWERS.dialog = 'run';
+    const button = element('button', { 'data-control': 'fork' });
+    const clicked = $('debugBar').fire('click', { target: button });
+    await settle();
+    check(PENDING.length === 1 && button.disabled, `reading: ${PENDING.length} out, busy ${button.disabled}`);
+    await $('runList').fire('rowselect', { detail: { id: 'r2' } });
+    await settle();
+    HOLD = () => false;
+    await release();
+    await clicked;
+    await settle();
+    check(!button.disabled, 'the button stays busy');
+    check(!ASKED.some(([kind]) => kind === 'prompt'), `asked ${JSON.stringify(ASKED)}`);
+    check(!CALLS.some(([, path, json]) => path.endsWith('/control') && json?.action === 'fork'), 'a fork was sent');
+  },
+
   async a_waiting_frame_says_what_it_waits_for_and_since_when() {
     const frames = RUN.view.frames.map((f) => ({ ...f, accepts: ['approve'], waiting_since: '2026-09-27T10:00:00.000+00:00',
       deadline: '2026-09-27T11:00:00.000+00:00' }));

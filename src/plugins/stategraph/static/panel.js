@@ -2744,16 +2744,21 @@ $('debugBar').addEventListener('click', async (event) => {
   const extra = {};
   if (action === 'run_to') Object.assign(extra, { state: $('runToState').value, machine: S.machine?.id });
   if (action === 'fork') {
-    const fork = await askFork(event.shiftKey ? 'current' : 'snapshot');
+    const id = S.runId;
+    const fork = await askFork(event.shiftKey ? 'current' : 'snapshot', button);
     if (!fork) return;
+    if (id !== S.runId) {  // another run was picked while asking: the step is this one's, not that one's
+      toast(`Not forked: ${id} is no longer the run shown`, { kind: 'error' });
+      return;
+    }
     Object.assign(extra, fork);
   }
   await withBusy(button, () => control(action, extra));
 });
 
 /** A fork's step and whether it holds there, asked: the top-level step a new run replays up to, then runs on from. */
-async function askFork(definition) {
-  const at = await askForkStep();
+async function askFork(definition, button) {
+  const at = await askForkStep(button);
   if (at === null) return null;
   const how = await dialog({
     title: 'Fork the run',
@@ -2770,11 +2775,13 @@ const PASS_PAGES = 50;
 
 /** The step a fork starts at, asked in one dialog: with a state of the run's own machine selected, a pass through it
  * (`2`: the second time the run entered it) or a top-level step as `s7`; without one, the top-level step (`7` or
- * `s7`). {step, label}, or null when cancelled. */
-async function askForkStep() {
+ * `s7`). `button` is busy while the journal is read. {step, label}, or null when cancelled. */
+async function askForkStep(button) {
   const name = S.selection?.kind === 'state' && S.run?.machine_id === S.machine?.id ? S.selection.id : null;
-  const passes = name ? await statePasses(S.runId, name) : null;
-  if (name && !passes) return null;  // not read: toasted
+  const id = S.runId;
+  const passes = name ? await withBusy(button, () => statePasses(id, name)) : null;
+  if (name && !passes) return null;  // not read (toasted), or the button was busy already
+  if (id !== S.runId) return null;  // another run was picked while reading: these are not its passes
   const steps = passes?.steps || [];
   const partly = passes && !passes.complete ? ` (of its first ${PASS_PAGE * PASS_PAGES} journal rows)` : '';
   const replays = 'The new run replays this run up to it.';

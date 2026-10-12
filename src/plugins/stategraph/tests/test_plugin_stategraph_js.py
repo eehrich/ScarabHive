@@ -470,6 +470,7 @@ PANEL_CASES = [
     "a_fork_can_be_held_at_its_fork_point",
     "a_fork_starts_at_a_pass_through_the_state_selected_on_the_graph",
     "a_fork_finds_a_pass_past_the_journals_first_page",
+    "a_fork_is_not_sent_to_a_run_picked_while_its_passes_are_read",
     "a_waiting_frame_says_what_it_waits_for_and_since_when",
     "a_machine_without_an_agent_offers_the_entry_that_makes_one",
     "a_machine_with_one_param_takes_the_message_as_it_and_lists_its_agents",
