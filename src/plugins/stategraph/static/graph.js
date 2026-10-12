@@ -38,16 +38,25 @@ export const ROOT_OPTIONS = {
 };
 
 /** The automatic layout 'flow': top down, in the file's order -- the YAML decides which state comes first and which
- * transition goes back (a loop), not ELK's guess --, long transitions straight and the graph narrow (LINEAR_SEGMENTS;
- * NETWORK_SIMPLEX is wider and takes 0.5 s for 30 states, on the page's thread). 'classic' (ROOT_OPTIONS) is left to
- * right in ELK's own order: the layouts dragged before 'flow' came keep it, their positions were made against it. */
+ * transition goes back (a loop), not ELK's guess. Its states are placed so that lines run straight and a state under
+ * its only predecessor sits right under it (BRANDES_KOEPF: it lines a transition up through its label, where
+ * LINEAR_SEGMENTS bends it round the label and lets a chain of states drift sideways); where that comes out wider than
+ * it is tall, NARROW_FLOW_OPTIONS may be the better fit (autoLayout). NETWORK_SIMPLEX takes 0.5 s for 30 states, on
+ * the page's thread. 'classic' (ROOT_OPTIONS) is left to right in ELK's own order: the layouts dragged before 'flow'
+ * came keep it, their positions were made against it. */
 export const FLOW_OPTIONS = {
   ...ROOT_OPTIONS,
   'elk.direction': 'DOWN',
   'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER',
   'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
-  'elk.layered.nodePlacement.strategy': 'LINEAR_SEGMENTS',
+  'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
 };
+/** 'flow' with the narrowest placement: more bends, but a graph with many loops stays narrow. */
+export const NARROW_FLOW_OPTIONS = { ...FLOW_OPTIONS, 'elk.layered.nodePlacement.strategy': 'LINEAR_SEGMENTS' };
+/** The canvas's width to its height (the panel's, beside its lists, is wider than tall): a straight layout is kept while it fits such a
+ * view no smaller than the narrow one, give or take FIT_SLACK. */
+const VIEW_ASPECT = 1.5;
+const FIT_SLACK = 1.05;
 
 /** A layout's automatic layout: its `auto`; without one 'flow', but 'classic' where it holds positions (dragged
  * before `auto` was written). */
@@ -117,8 +126,8 @@ function childrenOf(graph) {
 }
 
 /** The ELK graph: composites as compound nodes, an initial dot per region, transitions with their labels; laid out
- * 'classic' or 'flow' (autoOf). */
-export function elkInput(graph, auto = 'classic') {
+ * 'classic' or 'flow' (autoOf) -- `options` in place of that one's root options. */
+export function elkInput(graph, auto = 'classic', options = null) {
   const byParent = childrenOf(graph);
   const known = new Set((graph.states || []).map((state) => state.name));
   const edges = [];
@@ -160,7 +169,19 @@ export function elkInput(graph, auto = 'classic') {
       labels: text ? [{ text, width: textWidth(text, 11, true) + 8, height: 16 }] : [],
     });
   }
-  return { id: 'root', layoutOptions: { ...(auto === 'flow' ? FLOW_OPTIONS : ROOT_OPTIONS) }, children, edges };
+  return { id: 'root', layoutOptions: { ...(options || (auto === 'flow' ? FLOW_OPTIONS : ROOT_OPTIONS)) }, children, edges };
+}
+
+/** ELK's answer (layoutFrom) for the graph laid out `auto` (autoOf). 'flow' is the straight layout (FLOW_OPTIONS);
+ * one wider than the canvas's shape (VIEW_ASPECT) is set against the narrow one, and the one such a canvas shows
+ * larger is taken -- the straight one up to FIT_SLACK smaller. */
+export async function autoLayout(elk, graph, auto) {
+  if (auto !== 'flow') return layoutFrom(await elk.layout(elkInput(graph, auto)));
+  const straight = await elk.layout(elkInput(graph, 'flow'));
+  if (straight.width <= straight.height * VIEW_ASPECT) return layoutFrom(straight);
+  const narrow = await elk.layout(elkInput(graph, 'flow', NARROW_FLOW_OPTIONS));
+  const extent = (out) => Math.max(out.width, out.height * VIEW_ASPECT);
+  return layoutFrom(extent(straight) <= extent(narrow) * FIT_SLACK ? straight : narrow);
 }
 
 /** ELK's answer as flat boxes (absolute, with their parent), edge routes, and the state each initial dot points to. */
@@ -1069,7 +1090,7 @@ export class Canvas {
     let auto = { nodes: {}, edges: {} };
     if (this.graph.states.length && this.elk) {
       try {
-        auto = layoutFrom(await this.elk.layout(elkInput(this.graph, autoOf(layout))));
+        auto = await autoLayout(this.elk, this.graph, autoOf(layout));
       } catch (error) {
         console.error('stategraph: layout failed', error);  // eslint-disable-line no-console
         auto = gridLayout(this.graph);
