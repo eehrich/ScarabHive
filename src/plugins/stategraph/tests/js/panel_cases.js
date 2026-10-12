@@ -100,7 +100,7 @@ globalThis.SERVER = (method, path, json) => {
     const query = new URLSearchParams(journal[2]);
     const kinds = (query.get('kinds') || '').split(',');
     return journalOf[journal[1]].filter((row) => row.seq > Number(query.get('after') || 0) && kinds.includes(row.kind))
-      .slice(0, Number(query.get('limit') || 200));
+      .slice(0, Math.min(Number(query.get('limit') || 200), 1000));  // service.journal caps a page at 1000
   }
   throw new Error(`unexpected ${method} ${path}`);
 };
@@ -1899,6 +1899,23 @@ const CASES = {
     await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
     await settle();
     check(sent()?.at_step === 1, `sent ${JSON.stringify(sent())}`);
+  },
+
+  async a_fork_finds_a_pass_past_the_journals_first_page() {
+    const filler = Array.from({ length: 1200 }, (_, i) => ({ seq: 100 + i, kind: 'trace', key: `s3:exit:review`, state: 'review',
+      status: 'exit', data: { frame: '', machine: 'review' } }));
+    const late = { seq: 1400, kind: 'trace', key: 's9:enter:write', state: 'write', status: 'enter', data: { frame: '', machine: 'review' } };
+    journalOf = { ...journalOf, r1: [...RUN.journal, ...filler, late] };
+    await boot('?machine=review&run=r1');
+    await choose('write');
+    ANSWERS.prompt.push('2');
+    ANSWERS.dialog = 'run';
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    const sent = CALLS.filter(([, path, json]) => path.endsWith('/control') && json.action === 'fork').pop()?.[2];
+    check(sent?.at_step === 9, `sent ${JSON.stringify(sent)}`);
+    const prompt = ASKED.find(([kind]) => kind === 'prompt');
+    check(prompt?.[1].includes('1 to 2') && !prompt[1].includes('first'), `asked ${JSON.stringify(prompt)}`);
   },
 
   async a_waiting_frame_says_what_it_waits_for_and_since_when() {

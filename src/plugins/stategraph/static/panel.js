@@ -2764,9 +2764,9 @@ async function askFork(definition) {
   return { at_step: at.step, definition, ...(how === 'hold' && { pause: true }) };
 }
 
-/** Journal rows statePasses reads per request, and at most how many requests. */
-const PASS_PAGE = 2000;
-const PASS_PAGES = 25;
+/** Journal rows statePasses reads per request -- the most the journal endpoint returns -- and at most how many requests. */
+const PASS_PAGE = 1000;
+const PASS_PAGES = 50;
 
 /** The step a fork starts at, asked in one dialog: with a state of the run's own machine selected, a pass through it
  * (`2`: the second time the run entered it) or a top-level step as `s7`; without one, the top-level step (`7` or
