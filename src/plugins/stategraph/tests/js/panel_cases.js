@@ -3295,8 +3295,8 @@ const CASES = {
     check(shows('s3/m/s1/m/'), bar());
     check(await backs() === 20 && headName() === 'other', `not the last 20 frames: on ${headName()}`);
 
-    // another run: the trail and the unfolded frames were the last run's
-    await click(element('button', { 'data-open-frame': 's3/m/s1/m/', 'data-machine': 'other' }));
+    // another run: the trail and the unfolded frames were the last run's (Back left s3/m/s1/m/ on the canvas)
+    await click(element('button', { 'data-open-frame': 's3/m/', 'data-machine': 'other' }));
     check(bar().includes('data-frame-back'), bar());
     await $('runList').fire('rowselect', { detail: { id: 'r2' } });
     await release();
