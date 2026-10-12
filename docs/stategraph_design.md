@@ -1097,7 +1097,11 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
   (§8.3); the run list and the journal endpoint do not filter.
 
 **The panel.** The machine list shows collapsible folders by group (the open ones are
-remembered; a search opens every folder it finds something in). The machines pane and the
+remembered; a search opens every folder it finds something in). It comes from the files' heads
+at once; its error and warning badges follow from `GET /api/machine_checks`, asked after the
+machine the panel opens, after it changes the machines and on a refresh by the viewer, not on the
+timer's -- until a
+check answers, an entry keeps the badges of the last one. The machines pane and the
 inspector fold away (toolbar buttons). A writable machine has a delete button. Double-click on
 a state renames it. **Note** in the palette adds a note (`notes:`, free text) in the middle of the view; it is
 dragged like a state, a click opens its text in the inspector, and emptied or deleted it goes. A state's
