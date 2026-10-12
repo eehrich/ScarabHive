@@ -89,6 +89,7 @@ _BACKTICK_RE = re.compile(r"`([^`\n]+)`")
 _TOKEN_RE = re.compile(r"[^\W\d][\w./-]*\w")
 #: URLs are dropped before tokens are taken: a host name is no keyword.
 _URL_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
+_ESCAPE_RE = re.compile(r"\\[nrt]")
 _CAMEL_RE = re.compile(r"[a-z][A-Z]|[A-Z]{2,}[a-z]{2,}")
 _KEYWORD_MIN_LEN = 3
 _KEYWORD_MAX_LEN = 100
@@ -138,6 +139,11 @@ def extract_keywords(text: str, limit: int = DEFAULT_MAX_KEYWORDS) -> List[str]:
     # The spans are blanked, not scanned twice: `git commit -- <paths>` must
     # not come back as the fragments around its punctuation.
     prose = _URL_RE.sub(" ", _BACKTICK_RE.sub(" ", text))
+    # A section text_from took out of JSON keeps its escapes: "\nsrc/x.py"
+    # must not come back as the path "nsrc/x.py", which greps nothing. A
+    # Windows path pays for it: C:\new_dir gives "ew_dir" -- still a substring
+    # of what it names, so the grep still finds it.
+    prose = _ESCAPE_RE.sub(" ", prose)
     for token in _TOKEN_RE.findall(prose):
         if _looks_like_code(token):
             _add(token)
@@ -156,7 +162,8 @@ def derived_placeholders(text: str, config: Dict[str, Any]) -> Dict[str, str]:
     """The placeholders derived from the user message, for every rule alike.
 
     * ``{message}`` -- the message text as the rules see it (capped at
-      MATCH_TEXT_LIMIT), e.g. as the query of a semantic search.
+      MATCH_TEXT_LIMIT, picked by ``text_from``), e.g. as the query of a
+      semantic search.
     * ``{keywords}`` -- the identifiers of :func:`extract_keywords` as ONE
       regular expression (escaped, joined by ``|``), for a grep with
       ``is_regex: true``. Absent when the message names none: a rule that
@@ -197,6 +204,65 @@ def _user_text(message: Any) -> str:
     for prefix in (prefixed or {}).values():
         text = text.replace(prefix, "", 1)
     return text
+
+
+#: The named group of a ``text_from`` pattern that marks its section; without
+#: it the section is everything after the match.
+TEXT_GROUP = "text"
+
+#: The least of each section ``text_from`` keeps, however many there are:
+#: past the cap the later sections fall away instead of all shrinking to nothing.
+_MIN_SECTION_CHARS = 200
+
+
+def _sections(full: str, config: Dict[str, Any]) -> List[str]:
+    """The parts of the message the ``text_from`` patterns pick, in pattern
+    order, each match once. Empty when no pattern is set or none matches."""
+    patterns = config.get("text_from")
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    if not isinstance(patterns, list):
+        return []
+    sections: List[str] = []
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        try:
+            started = time.monotonic()
+            matches = list(re.finditer(pattern, full))
+            elapsed = time.monotonic() - started
+        except re.error as e:
+            logger.warning(f"tool_preload: invalid text_from regex {pattern!r}: {e}")
+            continue
+        if elapsed > _SLOW_MATCH_WARN_S:
+            logger.warning(
+                f"tool_preload: text_from {pattern!r} took {elapsed:.2f}s on "
+                f"{len(full)} chars -- it runs on the whole message; keep it "
+                f"anchored on a literal, without nested quantifiers")
+        for match in matches:
+            if TEXT_GROUP in match.groupdict():
+                section = match.group(TEXT_GROUP) or ""
+            else:
+                section = full[match.end():]
+            if section.strip():
+                sections.append(section)
+    return sections
+
+
+def _rule_text(full: str, config: Dict[str, Any]) -> str:
+    """The text the rules see: the start of the message, or -- with
+    ``text_from`` -- the sections its patterns pick, sharing the cap equally.
+
+    A message that wraps the request in boilerplate (tracker's brief: role
+    text, rules, then the ticket) would otherwise spend the whole cap on the
+    boilerplate and never reach the request. No section found: the start of
+    the message, as without the setting.
+    """
+    sections = _sections(full, config)
+    if not sections:
+        return full[:MATCH_TEXT_LIMIT]
+    share = max(MATCH_TEXT_LIMIT // len(sections), _MIN_SECTION_CHARS)
+    return "\n".join(s[:share] for s in sections)[:MATCH_TEXT_LIMIT]
 
 
 def _role(message: Any) -> str:
@@ -433,8 +499,9 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
             if agent is None or not hasattr(agent, "dispatch_tool_call"):
                 return unchanged
 
-            # Bounded before it ever reaches a regex — see MATCH_TEXT_LIMIT.
-            text = _user_text(messages[last])[:MATCH_TEXT_LIMIT]
+            # Bounded before it ever reaches a rule's regex — see
+            # MATCH_TEXT_LIMIT; text_from picks which part of it.
+            text = _rule_text(_user_text(messages[last]), config)
             if not text:
                 return unchanged
 

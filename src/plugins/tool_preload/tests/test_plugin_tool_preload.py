@@ -1100,3 +1100,69 @@ class TestDerivedPlaceholders:
             [user("ok, weiter")], [self.GREP, self.SEMANTIC], agent))
         assert result.modified is False
         assert agent.calls == []
+
+    def test_json_escapes_do_not_glue_onto_a_keyword(self):
+        from plugins.tool_preload.hooks import extract_keywords
+
+        assert extract_keywords(r"fix:\n\nsrc/plugins/x.py and\tload_settings") == [
+            "src/plugins/x.py", "load_settings"]
+
+
+# ---------------------------------------------------------------------------
+# text_from: which part of the message the rules see
+# ---------------------------------------------------------------------------
+class TestTextFrom:
+    MESSAGE = {"match": "\\S", "tool": "m", "params": {"q": "{message}"}}
+    GREP = {"match": "\\S", "tool": "g", "params": {"q": "{keywords}"}}
+    TASK = '(?s)<task>\n(?P<text>.*?)\n</task>'
+
+    @pytest.mark.asyncio
+    async def test_the_request_behind_long_boilerplate_is_seen(self, plugin):
+        """A brief whose rules fill the cap: without text_from the keywords
+        are the boilerplate's, with it the task's."""
+        from plugins.tool_preload.hooks import MATCH_TEXT_LIMIT
+
+        text = ("`boiler_plate` " * (MATCH_TEXT_LIMIT // 10)
+                + "\n<task>\nfix load_settings\n</task>\n`after_task`")
+        agent = FakeAgent()
+        await plugin.preload(make_context(
+            [user(text)], [self.GREP, self.MESSAGE], agent,
+            config_extra={"text_from": [self.TASK]}))
+        assert agent.calls == [("g", {"q": "load_settings"}),
+                               ("m", {"q": "fix load_settings"})]
+
+        agent = FakeAgent()
+        await plugin.preload(make_context([user(text)], [self.GREP], agent))
+        assert agent.calls == [("g", {"q": "boiler_plate"})], "fixture: the cap hides the task"
+
+    @pytest.mark.asyncio
+    async def test_sections_come_in_pattern_order_and_share_the_cap(self, plugin):
+        from plugins.tool_preload.hooks import MATCH_TEXT_LIMIT
+
+        long_task = "task_name " + "x" * (MATCH_TEXT_LIMIT * 2)
+        text = (f"<task>\n{long_task}\n</task>\n"
+                '\n  "body": "first_body"\n  "body": "second_body"')
+        agent = FakeAgent()
+        await plugin.preload(make_context(
+            [user(text)], [self.GREP, self.MESSAGE], agent,
+            config_extra={"text_from": ['\n  "body": "(?P<text>[^"]*)"', self.TASK]}))
+        (_, grep), (_, seen) = agent.calls
+        assert grep == {"q": "first_body|second_body|task_name"}
+        assert len(seen["q"]) <= MATCH_TEXT_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_without_a_group_the_section_is_what_follows_the_match(self, plugin):
+        agent = FakeAgent()
+        await plugin.preload(make_context(
+            [user("header_noise\n---\nuse my_tool")], [self.GREP], agent,
+            config_extra={"text_from": "\n---\n"}))
+        assert agent.calls == [("g", {"q": "my_tool"})]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text_from", [["<nowhere>"], ["(broken"], [], 7])
+    async def test_no_section_falls_back_to_the_start(self, plugin, text_from):
+        agent = FakeAgent()
+        await plugin.preload(make_context(
+            [user("use my_tool")], [self.GREP], agent,
+            config_extra={"text_from": text_from}))
+        assert agent.calls == [("g", {"q": "my_tool"})]

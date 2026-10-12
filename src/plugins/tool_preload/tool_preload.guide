@@ -82,6 +82,7 @@ reloaded.
 Key | Default | Meaning
 rules | none | the rules, tried in order; without rules the hook does nothing. See @{" Writing rules " link rules}
 max_keywords | 8 | the most identifiers @{tt}{keywords}@{utt} joins (see @{" Writing rules " link rules})
+text_from | none | regular expressions picking the parts of the message the rules see, for a message whose request stands behind a long preamble (see @{" Writing rules " link rules})
 max_calls_per_turn | 5 | the most tool calls all rules together make in one turn
 dedup | true | skip a rule whose calls are all already in the conversation
 max_seconds | 45 | seconds the preload of a turn may take, counted from the start of the hook; once used up, no further call starts. Anything but a positive number means 45
@@ -129,7 +130,7 @@ in the message (@{tt}re.search@{utt}), case-sensitive unless the pattern
 says @{tt}(?i)@{utt}.
 @{bullet}It sees the text of the user's message only -- the text parts of a
 message with images -- and only its first 2000 characters. A trigger further
-down is not seen.
+down is not seen, unless @{tt}text_from@{utt} picks the part it stands in.
 @{bullet}Every rule that matches runs, not just the first, in the order they
 are listed.
 @{bullet}A pattern that is not a valid expression is skipped with a warning
@@ -147,7 +148,7 @@ Parameter values may contain two kinds of placeholder:
 Placeholder | Filled from
 {name} | the named group @{tt}(?P<name>...)@{utt} of the rule's expression -- something the user typed
 {{ name }} | the session's template variable of that name -- the same value the prompt template gets
-{message} | the text of the user's message, as the rules see it (first 2000 characters)
+{message} | the text of the user's message, as the rules see it (first 2000 characters, or what @{tt}text_from@{utt} picks)
 {keywords} | the code identifiers the message names, as one regular expression
 @{body}
 
@@ -172,6 +173,21 @@ warning -- that is the ordinary case:
 - match: "\\w+(?:\\W+\\w+){4,}"     # five words or more: a request, not "ok"
   tool: coder_fs_semantic_search
   params: {query: "{message}", max_results: 8}
+@{body}
+
+A message whose request stands behind a long preamble -- a generated brief:
+role text, rules, then the ticket -- spends the 2000 characters on the
+preamble, and its backticks fill every keyword slot. @{tt}text_from@{utt}
+lists regular expressions that pick the parts the rules see instead: of
+every match the group @{tt}(?P<text>...)@{utt}, or without one everything
+after the match; in the order of the list, the 2000 characters shared
+equally (at least 200 each, later parts fall away). No match: the start of
+the message, as without the setting. The expressions run on the whole
+message, so anchor them on a literal and keep nested quantifiers out:
+
+@{code yaml}
+text_from:
+  - '(?s)<untrusted source="task">\n(?P<text>.*?)\n</untrusted>'
 @{body}
 
 @{tt}{{ name }}@{utt} is for state the user never types. The variables are

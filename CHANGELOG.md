@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names none is skipped without a warning. The `coder` uses both: before its
   first LLM call of a turn it greps `coder_fs` for the identifiers and runs
   a semantic search with the message (five words or more), so the model
-  starts reading instead of searching.
+  starts reading instead of searching. The setting `text_from` picks the
+  parts of a message the rules see, for a request that stands behind a long
+  preamble the 2000-character cap would otherwise spend itself on.
 
 ### Changed
 
