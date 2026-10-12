@@ -786,6 +786,8 @@ class CodingCliServer(SchemaBasedToolServer):
         try:
             made = (cli.Worktree(prior["base"], prior.get("git_dir") or "", prior.get("hidden") or []) if prior
                     else cli.make_worktree(spec["path"], worktree, branch, spec["exclude"]))
+            if not prior:
+                cli.seed_worktree(spec["path"], worktree, spec.get("seed") or ())
             return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema,
                                asked_run_s, asked_utilization)
         except BaseException:
