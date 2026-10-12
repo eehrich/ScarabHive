@@ -150,6 +150,29 @@ def test_a_head_of_yaml_1_1_bools_is_text(tmp_path):
     assert (listed["title"], listed["description"], listed["group"]) == ("Yes", "On", "off")
 
 
+def test_a_head_libyaml_refuses_is_read_by_the_pure_parser(tmp_path, monkeypatch):
+    """libyaml refuses some inputs the pure parser reads: such a file still lists its title."""
+    import yaml
+
+    from plugins.stategraph import service as service_module
+
+    real = service_module._head_loader
+
+    class Refusing(yaml.SafeLoader):
+        def get_single_node(self):
+            raise yaml.YAMLError("libyaml said no")
+
+    def head_loader(version, *, fast):
+        return Refusing if fast else real(version, fast=False)
+
+    monkeypatch.setattr(service_module, "_head_loader", head_loader)
+    service, _, _ = service_over(tmp_path, ("own", "m.yaml", MACHINE.format(id="m") + "title: Kept\ngroup: G\n"))
+
+    listed = service.list_machines()[0]
+
+    assert (listed["title"], listed["group"]) == ("Kept", "G")
+
+
 def test_the_checks_count_each_machines_problems_and_a_broken_one_hides_no_other(tmp_path):
     importing = MACHINE.format(id="importing").replace("initial: a\n", "imports:\n  gone: missing\ninitial: a\n")
     service, _, _ = service_over(tmp_path, ("own", "fine.yaml", MACHINE.format(id="fine")),
