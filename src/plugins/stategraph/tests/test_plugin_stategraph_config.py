@@ -136,7 +136,11 @@ def test_no_runner_may_call_a_stategraph_tool(config):
 
 
 def test_every_runner_pattern_names_an_enabled_server(config):
-    """A pattern for a server that does not exist is a dead entry nobody notices."""
+    """A pattern for a server that does not exist is a dead entry nobody notices. The default runner's servers are
+    this plugin's and must be enabled; another plugin's runner may name a server shipped disabled until its operator
+    sets it up (tracker's ``mail``), so there the server only has to be configured -- the operator's
+    config/local.yaml decides, and CI has none."""
+    default = resolved(config, INSTANCE).runner_agent
     for name in runners(config):
         runner = resolved(config, name)
         patterns = runner.agent_config.tools.allowed
@@ -144,7 +148,8 @@ def test_every_runner_pattern_names_an_enabled_server(config):
         for pattern in patterns:
             server = pattern.split("/", 1)[0]
             assert "*" not in server, f"{name}: {pattern}: name the server explicitly"
-            assert resolved(config, server).enabled, f"{name}: {pattern}: {server} is not enabled"
+            target = resolved(config, server)  # fails for a server that is not configured
+            assert target.enabled or name != default, f"{name}: {pattern}: {server} is not enabled"
         assert tool_matches_patterns("stategraph_json_manage_json", "stategraph_json", patterns), \
             f"{name}: the store the docs and examples use is not callable"
 
