@@ -50,6 +50,8 @@ const S = {
   evaluation: null,     // {expr, value} | {expr, error}
   result: null,         // loadResult: {runId, rows, after, complete, frames}
   framePrefix: null,    // the frame of the selected run the author picked to see on another machine's canvas
+  frameTrail: [],       // [{machine, prefix}]: the frames the canvas showed before each jump to another, for Back
+  framesOpen: new Set(),  // prefixes of the debug pane's frames the author unfolded
   stateFramesOpen: false,  // the inspector's folded list of a state's submachine runs is open ...
   stateFramesFor: null,    // ... for this state
   resultOpen: new Set(),  // indexes of the result's activities the author opened
@@ -239,9 +241,17 @@ function shownFrame() {
 /** What the journal says of a frame of the selected run (foldTrace): stands in for a frame that has ended. */
 const tracedFrame = (prefix) => (S.result?.runId === S.run?.id ? S.result.frames.get(prefix) : null) || null;
 
-/** A frame of the selected run on the canvas: its machine opened, the run kept. */
-async function openFrame(machine, prefix) {
-  const before = S.framePrefix;
+const TRAIL_DEPTH = 20;
+
+/** A frame of the selected run on the canvas: its machine opened, the run kept. The frame shown before goes onto the
+ * trail Back returns along; Back itself passes the trail it leaves (`trail`). */
+async function openFrame(machine, prefix, trail = null) {
+  const before = { prefix: S.framePrefix, trail: S.frameTrail };
+  const shown = shownFrame();
+  const elsewhere = shown && (S.machine.id !== machine || shown.prefix !== (prefix || ''));
+  const ours = trail ?? (elsewhere ? [...S.frameTrail, { machine: S.machine.id, prefix: shown.prefix }].slice(-TRAIL_DEPTH)
+    : S.frameTrail);
+  S.frameTrail = ours;
   S.framePrefix = prefix || null;
   if (machine === S.machine?.id) {
     drawRun();
@@ -249,7 +259,16 @@ async function openFrame(machine, prefix) {
   }
   await openMachine(machine, { keepRun: true });
   // not opened (the author kept the drafts, or it failed) -- unless a later pick or another run changed it meanwhile
-  if (S.machine?.id !== machine && S.framePrefix === (prefix || null)) S.framePrefix = before;
+  if (S.machine?.id !== machine) {
+    if (S.framePrefix === (prefix || null)) S.framePrefix = before.prefix;
+    if (S.frameTrail === ours) S.frameTrail = before.trail;
+  }
+}
+
+/** Back to the frame the canvas showed before the last jump. */
+function frameBack() {
+  const last = S.frameTrail.at(-1);
+  return last ? openFrame(last.machine, last.prefix, S.frameTrail.slice(0, -1)) : null;
 }
 
 document.addEventListener('click', (event) => {
@@ -2417,6 +2436,8 @@ function selectRun(id) {
   S.runId = id || null;
   S.run = null;
   S.framePrefix = null;
+  S.frameTrail = [];
+  S.framesOpen = new Set();
   S.evaluation = null;
   S.pollError = null;
   S.result = null;
@@ -2536,7 +2557,10 @@ function drawDebugBar() {
   };
   const answers = run.status === 'waiting' ? acceptedEvents(run) : [];
   const choices = runChoices(run);
+  const back = S.frameTrail.at(-1);
   keepingChoices(bar, () => update(bar, html`
+    ${back ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-frame-back
+      title="${`Back to ${back.machine} (${back.prefix || 'top'})`}">${icon('arrow-left', { size: 'sm' })} Back</button>` : ''}
     ${choices.length > 1 ? html`<span class="sg-runpick" role="group" aria-label="Live runs: the one to show">${choices.map((r) => html`<button
       type="button" class="pk-btn pk-btn--sm" data-pick-run="${r.id}" data-key="pick:${r.id}"
       aria-pressed="${String(r.id === run.id)}" title="${r.id}${r.machine_id && r.machine_id !== S.machine?.id ? ` (a run of ${r.machine_id})` : ''}"><span
@@ -2572,8 +2596,8 @@ function runChoices(run) {
   return listed.some((r) => r.id === run.id) ? listed : [run, ...listed];
 }
 
-/** The run's own machine is not the open one: the way back to it, and which frame of the open machine the canvas
- * shows. */
+/** The run's own machine is not the open one: the way down from it to the open one, each frame on it a button that
+ * shows it, and which frame of the open machine the canvas shows. */
 function frameChoice(run) {
   const mine = framesOf(run, S.machine?.id);
   const shown = shownFrame();
@@ -2587,11 +2611,30 @@ function frameChoice(run) {
     const nth = total[where(f)] > 1 ? ` #${seen[where(f)]}` : '';
     return `under ${where(f)}${nth} · ${frameStatus(f)}`;
   };
-  return html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-frame="" data-machine="${run.machine_id}"
-      title="Open the run's own machine">${icon('arrow-up', { size: 'sm' })} ${run.machine_id}</button>
+  const step = html`<span class="pk-muted" aria-hidden="true">${icon('chevron-right', { size: 'sm' })}</span>`;
+  return html`<nav class="sg-crumbs" aria-label="The run's machine down to the one shown"><button type="button"
+      class="pk-btn pk-btn--sm pk-btn--ghost" data-open-frame="" data-machine="${run.machine_id}"
+      title="Open the run's own machine">${run.machine_id}</button>
+    ${frameCrumbs(run, shown).map((f) => html`${step}${S.machines.some((m) => m.id === f.machine)
+      ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-frame="${f.prefix}" data-machine="${f.machine}"
+        title="${`Show ${f.machine} (${f.prefix})`}">${f.machine}</button>` : html`<span class="pk-mono pk-muted">${f.machine}</span>`}`)}
+    ${step}<strong class="pk-mono" aria-current="location">${S.machine?.id}</strong></nav>
     ${mine.length ? html`<select class="pk-select pk-select--sm" data-frame-choice aria-label="The frame of this machine the canvas shows">${mine.map((f) => html`<option
       value="${f.prefix}" ${f.prefix === shown?.prefix ? 'selected' : ''}>${label(f)}</option>`)}</select>`
     : badge(`${S.machine?.id} has not run in it`, 'warn')}`;
+}
+
+/** The submachine frames between the run's root and the frame `shown`, outermost first: one per `/m/` of its prefix
+ * before its own, those whose machine the run names. */
+function frameCrumbs(run, shown) {
+  const prefix = shown?.prefix || '';
+  const frames = runFrames(run);
+  const crumbs = [];
+  for (let at = prefix.indexOf('/m/'); at !== -1 && at + 3 < prefix.length; at = prefix.indexOf('/m/', at + 3)) {
+    const machine = frames.get(prefix.slice(0, at + 3))?.machine;
+    if (machine) crumbs.push({ machine, prefix: prefix.slice(0, at + 3) });
+  }
+  return crumbs;
 }
 
 /** A frame of the selected run: a button that shows it on the canvas, unless the canvas shows it already, or its
@@ -2627,6 +2670,11 @@ function eventHelp(name) {
 }
 
 $('debugBar').addEventListener('click', async (event) => {
+  const back = event.target.closest('[data-frame-back]');
+  if (back) {
+    await withBusy(back, () => frameBack());
+    return;
+  }
   const pick = event.target.closest('[data-pick-run]');
   if (pick) {
     if (pick.dataset.pickRun !== S.runId) selectRun(pick.dataset.pickRun);
@@ -2779,16 +2827,28 @@ function drawDebugPane() {
   keepingChoices($('eventFrame'), () => update($('eventFrame'), html`<option value="">any frame</option>${frames.map((f) => html`<option value="${f.prefix}">${f.prefix || 'top'}</option>`)}`));
   $('framesSection').hidden = !run;
 
-  update($('dbgFrames'), frames.length ? frames.map((f, i) => html`<div class="sg-frame">
-      <div class="sg-frame-head">${badge(f.prefix ? 'submachine' : 'top', f.prefix ? 'info' : '')}<span class="pk-mono">${f.machine}</span>
+  $('framesCount').textContent = frames.length ? `(${frames.length})` : '';
+
+  // one folded line per frame: the submachines are in sight without scrolling past every ctx; unfolded stays
+  // unfolded through the polls
+  update($('dbgFrames'), frames.length ? frames.map((f) => html`<details class="pk-details sg-frame-fold"
+      data-frame-fold="${f.prefix || ''}" ${S.framesOpen.has(f.prefix || '') ? 'open' : ''}>
+      <summary class="sg-frame-head" data-key="${`fold:${f.prefix || ''}`}">${badge(f.prefix ? 'submachine' : 'top', f.prefix ? 'info' : '')}<span class="pk-mono">${f.machine}</span>
         ${f.path ? html`<span class="pk-muted">under ${f.path}</span>` : ''}<span class="pk-grow"></span>
-        <span class="pk-mono">${f.state ?? '—'}</span><span class="pk-muted">step ${f.step}</span>
-        ${showFrameButton(f.machine, f.prefix || '', shown)}</div>
+        ${f.waiting_since ? badge('waits', 'warn') : ''}<span class="pk-mono">${f.state ?? '—'}</span><span class="pk-muted">step ${f.step}</span>
+        ${showFrameButton(f.machine, f.prefix || '', shown)}</summary>
       ${f.waiting_since ? html`<div class="pk-help">waits for ${(f.accepts || []).join(', ') || 'an event'} since ${localTime(f.waiting_since, { seconds: true })}${f.deadline ? `, until ${localTime(f.deadline, { seconds: true })}` : ''}</div>` : ''}
-      <details class="pk-details" ${i === 0 ? 'open' : ''}><summary>ctx</summary>${jsonView(f.ctx ?? {})}</details>
       ${f.visits && Object.keys(f.visits).length ? html`<div class="pk-help">visits: ${Object.entries(f.visits).map(([n, v]) => `${n} ×${v}`).join(', ')}</div>` : ''}
-    </div>`) : html`<p class="pk-help">No live frames: the run has not started or has ended.</p>`);
+      <div class="pk-label">ctx</div>${jsonView(f.ctx ?? {})}
+    </details>`) : html`<p class="pk-help">No live frames: the run has not started or has ended.</p>`);
 }
+
+$('side-debug').addEventListener('toggle', (event) => {
+  const prefix = event.target.dataset?.frameFold;
+  if (prefix === undefined) return;
+  if (event.target.open) S.framesOpen.add(prefix);
+  else S.framesOpen.delete(prefix);
+}, true);
 
 $('side-inspect').addEventListener('click', (event) => {
   if (!event.target.closest?.('[data-act="copy-agent-entry"]') || !S.machine) return;

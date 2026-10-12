@@ -402,6 +402,7 @@ PANEL_CASES = [
     "a_run_from_before_the_frame_record_finds_its_frames_in_the_journal_and_shows_the_last",
     "a_catalog_that_fails_leaves_no_other_machine_s_tools_and_is_asked_again",
     "a_state_that_ran_a_submachine_lists_its_runs_in_the_inspector",
+    "the_debug_frames_are_folded_and_back_returns_the_way_the_canvas_came",
     "the_frames_of_an_interrupted_run_run_no_more",
     "the_run_s_own_graph_counts_the_frames_only_its_journal_names",
     "a_note_is_added_once_and_asked_about_only_as_it_is",

@@ -3193,6 +3193,44 @@ const CASES = {
     check(!/data-state-frames\s+open/.test(box()), `opened for read, the list of another state starts open: ${box()}`);
   },
 
+  async the_debug_frames_are_folded_and_back_returns_the_way_the_canvas_came() {
+    // review's read ran other (s3/m/), whose write ran other again (s3/m/s1/m/)
+    const live = { machine: 'other', prefix: 's3/m/', path: 'read', step: 2, state: 'write', config: ['write'],
+      visits: { write: 1 }, ctx: { draft: 'd' }, params: {}, accepts: [] };
+    runAnswer = { ...RUN, view: { ...RUN.view, frames: [RUN.view.frames[0], live] },
+      frames_started: [{ prefix: 's3/m/', machine: 'other', path: 'read' }, { prefix: 's3/m/s1/m/', machine: 'other', path: 'read/write' }] };
+    await boot('?machine=review&run=r1');
+    const frames = () => $('dbgFrames').innerHTML;
+    const opened = (prefix) => new RegExp(`data-frame-fold="${prefix}"\\s+open`).test(frames());
+    check(frames().includes('data-frame-fold="s3/m/"') && !opened('') && !opened('s3/m/'), `not folded: ${frames()}`);
+    const fold = element('details', { 'data-frame-fold': 's3/m/' });
+    fold.open = true;
+    await $('side-debug').fire('toggle', { target: fold });
+    POLLERS.find((p) => p.ms === 1000).fn();
+    await release();
+    await settle();
+    check(opened('s3/m/') && !opened(''), `unfolded, a frame folds again on a poll: ${frames()}`);
+    const bar = () => $('debugBar').innerHTML;
+    const click = async (target) => {
+      await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target })));
+      await $('debugBar').fire('click', { target });
+      await release();
+      await settle();
+    };
+    const shows = (prefix) => new RegExp(`value="${prefix}"\\s+selected`).test(bar());
+    check(!bar().includes('data-frame-back'), `back before any jump: ${bar()}`);
+    await click(element('button', { 'data-open-frame': 's3/m/s1/m/', 'data-machine': 'other' }));
+    check(headName() === 'other' && shows('s3/m/s1/m/') && bar().includes('data-frame-back'), bar());
+    check(bar().includes('data-open-frame="s3/m/"') && bar().includes('aria-current="location"'), `no way down: ${bar()}`);
+    await click(element('button', { 'data-open-frame': 's3/m/', 'data-machine': 'other' }));  // up by the crumb
+    check(headName() === 'other' && shows('s3/m/') && !bar().includes('data-open-frame="s3/m/"'), bar());
+    await click(element('button', { 'data-frame-back': '' }));
+    check(headName() === 'other' && shows('s3/m/s1/m/'), `back went elsewhere: ${bar()}`);
+    await click(element('button', { 'data-frame-back': '' }));
+    check(headName() === 'review' && !bar().includes('data-frame-back') && !bar().includes('data-frame-choice'),
+      `back is not on the run's machine: ${headName()} ${bar()}`);
+  },
+
   async a_catalog_that_fails_leaves_no_other_machine_s_tools_and_is_asked_again() {
     await boot('?machine=review');
     check($('sgTools').innerHTML.includes('store_put'), 'the catalog of review is not offered');

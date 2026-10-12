@@ -156,6 +156,9 @@ forgets params and undo steps; switching machines restarts the runs list). Redo 
 - [x] **U10 "Again with these inputs"** on the result card; params remembered per machine.
 - [x] **U11 Name dialogs** keep the input on error; an unchanged name is not an error.
 - [x] **U12 Error badge clickable**; overview shows all problems.
+- [x] **U13 Debug pane frames**: one folded line per frame, right under the run; unfolded stays unfolded
+  through the polls. Off the run's machine the debug bar shows the way down to the shown frame (each
+  frame above it a button) and **Back** to the frame shown before the last jump.
 
 ## Phase 5: features
 
