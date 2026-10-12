@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from plugins.stategraph.kinds import ActivityKind, KindSpec, parse_activity
+from plugins.stategraph.kinds.builtin import _MODULE_REF
 from plugins.stategraph.model.code import Namespace
 from plugins.stategraph.model.loader import MachineTree
 from plugins.stategraph.model.spec import MachineSpec, StateSpec, TransitionSpec
@@ -149,3 +151,52 @@ def compile_tree(tree: MachineTree) -> Machine:
         return machine
 
     return build(tree.root)
+
+
+#: Keys whose value is an activity's function reference; keys whose value is data are not searched.
+_REF_KEYS = ("call", "parse", "check")
+_DATA_KEYS = frozenset({"args", "params", "context", "output", "vars"})
+
+
+def _module_refs(value: Any, where: str) -> Iterator[tuple[str, str]]:
+    """Every ``package.module:function`` in a spec dump, at any depth (``each`` of a map, ``finally``,
+    resources), with where it stands."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _REF_KEYS and isinstance(item, str) and _MODULE_REF.match(item):
+                yield where, item
+            elif key not in _DATA_KEYS:
+                yield from _module_refs(item, f"{where}.{key}")
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            yield from _module_refs(item, f"{where}[{i}]")
+
+
+def unresolved_calls(machine: Machine) -> list[str]:
+    """Every ``package.module:function`` the machine and its imports name that this process cannot
+    import: a function missing from a module it has loaded, a module that does not import.
+
+    Checked when a run starts: a process whose code predates its machine files (pulled, not restarted)
+    then fails before any work instead of in the state that first calls the missing function. Not
+    caught: a NEW module, which the check itself imports fresh from disk into the old process."""
+    missing: list[str] = []
+    seen: set[str] = set()
+
+    def walk(m: Machine) -> None:
+        if m.path in seen:
+            return
+        seen.add(m.path)
+        for where, ref in _module_refs(m.spec.model_dump(by_alias=True, exclude_none=True), m.id):
+            module_name, _, attr = ref.partition(":")
+            try:
+                fn = getattr(importlib.import_module(module_name), attr)
+            except Exception as exc:   # also a module that breaks on import (SyntaxError, its own raise)
+                missing.append(f"{where}: cannot import {ref} ({type(exc).__name__}: {exc})")
+                continue
+            if not callable(fn):
+                missing.append(f"{where}: {ref} is not callable")
+        for sub in m.imports.values():
+            walk(sub)
+
+    walk(machine)
+    return missing

@@ -34,7 +34,7 @@ from .backend import CALL_SPEND, NoBackend
 from .debugger import Debugger, UnknownState, apply_edit, check_points, known_states, unknown_state
 from .interpreter import Frame, RunAbort, bind_params
 from .journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore, utc_now
-from .machine import Machine, compile_tree
+from .machine import Machine, compile_tree, unresolved_calls
 
 logger = logging.getLogger(__name__)
 
@@ -901,6 +901,12 @@ class RunManager:
             bind_params(machine.spec.params, params, machine.id)
         except ActivityError as exc:
             raise ValueError(exc.message) from exc
+        # A fork replays its source's steps (a function gone since is never called there), and a run with
+        # mocks may name functions not written yet: both find out at the state, as before.
+        missing = [] if (parent_run or mocks or mock_only) else unresolved_calls(machine)
+        if missing:
+            raise ValueError("the machine calls what this process cannot import (restart after a pull?): "
+                             + "; ".join(missing[:5]))
         run_id = run_id or uuid.uuid4().hex[:12]
         debugger = Debugger(breakpoints=breakpoints, watchpoints=watchpoints, pause_at_start=pause_at_start)
         states = known_states(machine)
