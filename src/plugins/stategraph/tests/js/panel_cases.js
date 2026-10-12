@@ -1901,6 +1901,37 @@ const CASES = {
     check(sent()?.at_step === 1, `sent ${JSON.stringify(sent())}`);
   },
 
+  async a_fork_without_a_pass_to_pick_asks_for_the_step() {
+    await boot('?machine=review&run=r1');
+    const sent = () => CALLS.filter(([, path, json]) => path.endsWith('/control') && json.action === 'fork').pop()?.[2];
+    const prompts = () => ASKED.filter(([kind]) => kind === 'prompt');
+    const reads = () => CALLS.filter(([, path]) => path.includes('/journal?kinds=trace&')).length;
+    // no state selected: the passes are not read, a bare number is the step, and the dialog says a state allows a pass
+    const before = reads();
+    ANSWERS.prompt.push('3');
+    ANSWERS.dialog = 'run';
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    check(sent()?.at_step === 3, `sent ${JSON.stringify(sent())}`);
+    check(reads() === before, 'the passes were read without a state selected');
+    check(prompts()[0]?.[1].includes('select a state on the graph') && !prompts()[0][1].includes('passes, 1 to'),
+      `asked ${JSON.stringify(prompts())}`);
+    check(ASKED.some(([kind, , message]) => kind === 'dialog' && message.includes('at step 3,')), `asked ${JSON.stringify(ASKED)}`);
+    ANSWERS.prompt.push('s4');  // written as a step, too
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    check(sent()?.at_step === 4, `sent ${JSON.stringify(sent())}`);
+    // done is selected but never entered: its passes are read, there are none, a bare number is the step again
+    await choose('done');
+    ANSWERS.prompt.push('5');
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    check(reads() > before, 'the passes of the selected state were not read');
+    check(sent()?.at_step === 5, `sent ${JSON.stringify(sent())}`);
+    const last = prompts().pop()?.[1] || '';
+    check(last.includes('done was not entered at the top level') && !last.includes('select a state'), `asked ${last}`);
+  },
+
   async a_fork_finds_a_pass_past_the_journals_first_page() {
     const filler = Array.from({ length: 1200 }, (_, i) => ({ seq: 100 + i, kind: 'trace', key: `s3:exit:review`, state: 'review',
       status: 'exit', data: { frame: '', machine: 'review' } }));

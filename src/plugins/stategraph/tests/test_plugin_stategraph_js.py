@@ -469,6 +469,7 @@ PANEL_CASES = [
     "the_history_shows_the_time_and_one_kind_of_row_on_request",
     "a_fork_can_be_held_at_its_fork_point",
     "a_fork_starts_at_a_pass_through_the_state_selected_on_the_graph",
+    "a_fork_without_a_pass_to_pick_asks_for_the_step",
     "a_fork_finds_a_pass_past_the_journals_first_page",
     "a_fork_is_not_sent_to_a_run_picked_while_its_passes_are_read",
     "a_waiting_frame_says_what_it_waits_for_and_since_when",
