@@ -41,8 +41,8 @@ export const ROOT_OPTIONS = {
  * transition goes back (a loop), not ELK's guess. Its states are placed so that lines run straight and a state under
  * its only predecessor sits right under it (BRANDES_KOEPF: it lines a transition up through its label, where
  * LINEAR_SEGMENTS bends it round the label and lets a chain of states drift sideways); where that comes out wider than
- * it is tall, NARROW_FLOW_OPTIONS may be the better fit (autoLayout). NETWORK_SIMPLEX takes 0.5 s for 30 states, on
- * the page's thread. 'classic' (ROOT_OPTIONS) is left to right in ELK's own order: the layouts dragged before 'flow'
+ * the canvas's shape (VIEW_ASPECT), NARROW_FLOW_OPTIONS may be the better fit (autoLayout). NETWORK_SIMPLEX is not
+ * used: it takes 0.5 s for 30 states, on the page's thread. 'classic' (ROOT_OPTIONS) is left to right in ELK's own order: the layouts dragged before 'flow'
  * came keep it, their positions were made against it. */
 export const FLOW_OPTIONS = {
   ...ROOT_OPTIONS,
@@ -53,8 +53,8 @@ export const FLOW_OPTIONS = {
 };
 /** 'flow' with the narrowest placement: more bends, but a graph with many loops stays narrow. */
 export const NARROW_FLOW_OPTIONS = { ...FLOW_OPTIONS, 'elk.layered.nodePlacement.strategy': 'LINEAR_SEGMENTS' };
-/** The canvas's width to its height (the panel's, beside its lists, is wider than tall): a straight layout is kept while it fits such a
- * view no smaller than the narrow one, give or take FIT_SLACK. */
+/** The canvas's width to its height (the panel's, beside its lists, is wider than tall): a straight layout is kept
+ * while such a view shows it no smaller than the narrow one, give or take FIT_SLACK (autoLayout). */
 const VIEW_ASPECT = 1.5;
 const FIT_SLACK = 1.05;
 
