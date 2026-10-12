@@ -1877,6 +1877,30 @@ const CASES = {
     check(forks() === 1, 'a cancelled fork was sent');
   },
 
+  async a_fork_starts_at_a_pass_through_the_state_selected_on_the_graph() {
+    const enter = (seq, key, frame) => ({ seq, kind: 'trace', key, state: 'write', status: 'enter', data: { frame, machine: 'review' } });
+    // passes at steps 0 (the fixture's) and 4; a submachine's entry and one a resume set aside are none of them
+    journalOf = { ...journalOf, r1: [...RUN.journal, enter(20, 's4:enter:write', ''), enter(21, 's5/m/s1:enter:write', 's5/m/'),
+      enter(22, 'rewound.1/s6:enter:write', '')] };
+    await boot('?machine=review&run=r1');
+    await choose('write');
+    ANSWERS.prompt.push('3', '2');  // write has two passes: a third is asked again
+    ANSWERS.dialog = 'run';
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    const sent = () => CALLS.filter(([, path, json]) => path.endsWith('/control') && json.action === 'fork').pop()?.[2];
+    check(sent()?.at_step === 4 && !sent().pause, `sent ${JSON.stringify(sent())}`);
+    const prompts = ASKED.filter(([kind]) => kind === 'prompt');
+    check(prompts.length === 2 && prompts[0][1].includes('which of its passes, 1 to 2') && prompts[1][1].includes('no pass 3'),
+      `asked ${JSON.stringify(prompts)}`);
+    check(ASKED.some(([kind, , message]) => kind === 'dialog' && message.includes('pass 2 of write (step 4)')),
+      `asked ${JSON.stringify(ASKED)}`);
+    ANSWERS.prompt.push('s1');  // the top-level step, as before
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    check(sent()?.at_step === 1, `sent ${JSON.stringify(sent())}`);
+  },
+
   async a_waiting_frame_says_what_it_waits_for_and_since_when() {
     const frames = RUN.view.frames.map((f) => ({ ...f, accepts: ['approve'], waiting_since: '2026-09-27T10:00:00.000+00:00',
       deadline: '2026-09-27T11:00:00.000+00:00' }));

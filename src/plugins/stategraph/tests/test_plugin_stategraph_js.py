@@ -468,6 +468,7 @@ PANEL_CASES = [
     "a_run_that_took_no_transition_shows_the_guards_it_evaluated",
     "the_history_shows_the_time_and_one_kind_of_row_on_request",
     "a_fork_can_be_held_at_its_fork_point",
+    "a_fork_starts_at_a_pass_through_the_state_selected_on_the_graph",
     "a_waiting_frame_says_what_it_waits_for_and_since_when",
     "a_machine_without_an_agent_offers_the_entry_that_makes_one",
     "a_machine_with_one_param_takes_the_message_as_it_and_lists_its_agents",

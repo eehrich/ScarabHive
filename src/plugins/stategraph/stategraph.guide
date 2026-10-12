@@ -224,8 +224,10 @@ shows only the controls the run takes now: @{b}Continue@{ub},
 @{b}Run to@{ub} a state, @{b}Terminate@{ub} (its finally activities still
 run), @{b}Resume@{ub} for an interrupted run or one that ended on a resumable failure, and always
 @{b}Fork...@{ub}: a new run that replays this one up to a top-level step
-and goes on live from there. A dialog asks for the step, then whether the
-fork holds there (to look at or set @{tt}ctx@{utt} first) or runs on; with
+and goes on live from there. A dialog asks for the step -- or, with a
+state of the run's machine selected on the graph, for its pass: @{tt}2@{utt}
+forks where the run entered that state the second time, @{tt}s7@{utt} still
+at top-level step 7 -- then whether the fork holds there (to look at or set @{tt}ctx@{utt} first) or runs on; with
 Shift it forks the machine as it is now, not as it was when the run
 started. A run waiting for an event has a button per
 event it takes. "in another process" marks a run another process runs --
