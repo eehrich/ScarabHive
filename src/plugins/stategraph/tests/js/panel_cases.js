@@ -3231,6 +3231,80 @@ const CASES = {
       `back is not on the run's machine: ${headName()} ${bar()}`);
   },
 
+  async the_frame_trail_keeps_failed_and_same_frame_jumps_off_is_bounded_and_ends_with_the_run() {
+    // other's frame s3/m/ waits for approve, its child s3/m/s1/m/ ran under it
+    const live = { machine: 'other', prefix: 's3/m/', path: 'read', step: 2, state: 'write', config: ['write'],
+      visits: {}, ctx: {}, params: {}, accepts: ['approve'], waiting_since: '2026-09-27T10:00:00.000+00:00' };
+    runAnswer = { ...RUN, view: { ...RUN.view, frames: [RUN.view.frames[0], live] },
+      frames_started: [{ prefix: 's3/m/', machine: 'other', path: 'read' }, { prefix: 's3/m/s1/m/', machine: 'other', path: 'read/write' }] };
+    await boot('?machine=review&run=r1');
+    const frames = () => $('dbgFrames').innerHTML;
+    const opened = (prefix) => new RegExp(`data-frame-fold="${prefix}"\\s+open`).test(frames());
+    const summaryOf = (prefix) => frames().split(`data-frame-fold="${prefix}"`)[1]?.split('</summary>')[0] || '';
+    check(!$('framesSection').hidden && $('framesCount').textContent === '(2)', `count: ${$('framesCount').textContent}`);
+    check(summaryOf('s3/m/').includes('waits') && !summaryOf('').includes('waits'), `the waits badge: ${frames()}`);
+    check(frames().includes('waits for approve'), `what it waits for is not in the fold: ${frames()}`);
+    const toggleFold = async (prefix, open) => {
+      const fold = element('details', { 'data-frame-fold': prefix });
+      fold.open = open;
+      await $('side-debug').fire('toggle', { target: fold });
+    };
+    const poll = async () => {
+      POLLERS.find((p) => p.ms === 1000).fn();
+      await release();
+      await settle();
+    };
+    await toggleFold('', true);
+    await toggleFold('s3/m/', true);
+    await toggleFold('s3/m/', false);
+    // a details of the ctx view inside a frame is no frame's fold
+    await $('side-debug').fire('toggle', { target: Object.assign(element('details', {}), { open: true }) });
+    await poll();
+    check(opened('') && !opened('s3/m/'), `folded again, a frame stays open on a poll (or the top one closes): ${frames()}`);
+
+    const bar = () => $('debugBar').innerHTML;
+    const shows = (prefix) => new RegExp(`value="${prefix}"\\s+selected`).test(bar());
+    const click = async (target) => {
+      await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target })));
+      await $('debugBar').fire('click', { target });
+      await release();
+      await settle();
+    };
+    const backs = async () => {  // Back until there is none: how many steps the trail held
+      let n = 0;
+      while (bar().includes('data-frame-back') && n < 40) {
+        await click(element('button', { 'data-frame-back': '' }));
+        n += 1;
+      }
+      return n;
+    };
+    // a jump whose machine does not open takes its entry back off
+    await click(element('button', { 'data-open-frame': 'zz/m/', 'data-machine': 'gone' }));
+    check(headName() === 'review' && !bar().includes('data-frame-back'), `a failed jump left a way back: ${bar()}`);
+    // the frame shown already: no step onto the trail
+    await click(element('button', { 'data-open-frame': 's3/m/', 'data-machine': 'other' }));
+    await click(element('button', { 'data-open-frame': 's3/m/', 'data-machine': 'other' }));
+    check(headName() === 'other' && shows('s3/m/'), bar());
+    check(await backs() === 1 && headName() === 'review', `the frame shown again went onto the trail: ${headName()}`);
+
+    // the trail holds the last 20 frames
+    await click(element('button', { 'data-open-frame': 's3/m/', 'data-machine': 'other' }));
+    for (let i = 0; i < 25; i += 1) {
+      await click(element('button', { 'data-open-frame': i % 2 ? 's3/m/' : 's3/m/s1/m/', 'data-machine': 'other' }));
+    }
+    check(shows('s3/m/s1/m/'), bar());
+    check(await backs() === 20 && headName() === 'other', `not the last 20 frames: on ${headName()}`);
+
+    // another run: the trail and the unfolded frames were the last run's
+    await click(element('button', { 'data-open-frame': 's3/m/s1/m/', 'data-machine': 'other' }));
+    check(bar().includes('data-frame-back'), bar());
+    await $('runList').fire('rowselect', { detail: { id: 'r2' } });
+    await release();
+    await settle();
+    check(!bar().includes('data-frame-back'), `the last run's trail is kept: ${bar()}`);
+    check(frames().includes('data-frame-fold=""') && !opened(''), `the last run's unfolded frame is open: ${frames()}`);
+  },
+
   async a_catalog_that_fails_leaves_no_other_machine_s_tools_and_is_asked_again() {
     await boot('?machine=review');
     check($('sgTools').innerHTML.includes('store_put'), 'the catalog of review is not offered');

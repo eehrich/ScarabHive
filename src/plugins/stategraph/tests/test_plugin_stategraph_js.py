@@ -403,6 +403,7 @@ PANEL_CASES = [
     "a_catalog_that_fails_leaves_no_other_machine_s_tools_and_is_asked_again",
     "a_state_that_ran_a_submachine_lists_its_runs_in_the_inspector",
     "the_debug_frames_are_folded_and_back_returns_the_way_the_canvas_came",
+    "the_frame_trail_keeps_failed_and_same_frame_jumps_off_is_bounded_and_ends_with_the_run",
     "the_frames_of_an_interrupted_run_run_no_more",
     "the_run_s_own_graph_counts_the_frames_only_its_journal_names",
     "a_note_is_added_once_and_asked_about_only_as_it_is",
