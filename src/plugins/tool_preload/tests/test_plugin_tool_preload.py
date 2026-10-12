@@ -1048,6 +1048,18 @@ class TestDerivedPlaceholders:
         assert agent.calls == [("t", {"q": "plan"})]
 
     @pytest.mark.asyncio
+    async def test_derived_placeholders_stay_text_even_when_numeric(self, plugin):
+        """A lone "`404`" must reach grep as the pattern "404", not the int
+        404 that re.compile rejects; a rule's own group still becomes an id."""
+        agent = FakeAgent()
+        message = {"match": "\\S", "tool": "m", "params": {"q": "{message}"}}
+        own = {"match": "(?P<n>\\d+)", "tool": "n", "params": {"id": "{n}"}}
+        await plugin.preload(make_context(
+            [user("`404`")], [self.GREP, message, own], agent))
+        assert agent.calls == [("fs_grep_search", {"query": "404", "is_regex": True}),
+                               ("m", {"q": "`404`"}), ("n", {"id": 404})]
+
+    @pytest.mark.asyncio
     async def test_short_replies_are_not_searched(self, plugin):
         agent = FakeAgent()
         result = await plugin.preload(make_context(

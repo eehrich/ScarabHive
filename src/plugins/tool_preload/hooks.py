@@ -262,6 +262,7 @@ def _fill_params(
     params: Dict[str, Any],
     groups: Dict[str, str],
     ctx_vars: Dict[str, Any] | None = None,
+    text_only: set | frozenset = frozenset(),
 ) -> Dict[str, Any]:
     """Substitute placeholders from two sources.
 
@@ -294,7 +295,7 @@ def _fill_params(
 
     A value that IS exactly one placeholder may become an int — see
     :func:`_as_int_if_lossless` for why "may". A mixed string ("kapitel_{n}")
-    stays a string.
+    stays a string. So does every ``{group}`` named in ``text_only``.
 
     Raises KeyError for a placeholder with no matching group or variable — the
     rule is misconfigured and must be skipped loudly, not called with a literal
@@ -337,6 +338,8 @@ def _fill_params(
         lone = _PLACEHOLDER_RE.fullmatch(value)
         if lone:
             resolved = _resolve(lone)
+            if lone.group("grp") in text_only:
+                return resolved
             return _as_int_if_lossless(resolved)
         return _PLACEHOLDER_RE.sub(_resolve, value)
 
@@ -500,8 +503,11 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                     f"check it for nested quantifiers")
             if not match:
                 continue
-            groups = {**(derived or {}),
-                      **{k: v for k, v in match.groupdict().items() if v is not None}}
+            own = {k: v for k, v in match.groupdict().items() if v is not None}
+            groups = {**(derived or {}), **own}
+            # A derived value is a query, never an id: "`404`" alone must not
+            # reach grep_search as the int 404.
+            text_only = set(derived or {}) - set(own)
 
             # Resolve the whole chain first — dedup and the cap apply to the
             # RULE, never to a single link of it.
@@ -513,7 +519,7 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                     continue
                 try:
                     params = _fill_params(
-                        call.get("params") or {}, groups, ctx_vars)
+                        call.get("params") or {}, groups, ctx_vars, text_only)
                 except KeyError as e:
                     if isinstance(e, MissingGroup) and e.args[0] == KEYWORDS_PLACEHOLDER:
                         # Not a config error: this message names no identifier.
