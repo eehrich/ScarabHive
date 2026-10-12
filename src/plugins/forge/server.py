@@ -130,7 +130,7 @@ def _status_text(s: dict[str, Any]) -> str:
         f"  {w['ref']} -> {w['session_id']}, {w['waiting']} waiting, since {w['since']} UTC" for w in s["work"]
     ] if s["work"] else ["None of your sessions works on a ticket."]
     lines += ["What the webhook did for them (newest first):"] + [
-        f"  {o['at']} UTC {o['event']}{f' by @' + o['by'] if o['by'] else ''}: {o['outcome']}" for o in s["outcomes"][:20]
+        f"  {o['at']} UTC {o['event']}{' by @' + o['by'] if o['by'] else ''}: {o['outcome']}" for o in s["outcomes"][:20]
     ] if s["outcomes"] else []
     return "\n".join(lines)
 
