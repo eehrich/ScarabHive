@@ -36,6 +36,7 @@ globalThis.SERVER = (method, path, json) => {
   }
   if (p.startsWith('/runs/r2?')) return { ...RUN, id: 'r2', status: 'succeeded', active: false, terminal: true, output: { ok: 1 }, debug: { breakpoints: [], watchpoints: [], watch: {}, paused: null } };
   if (p === '/runs/r1/events') return { accepted: true, frame: 's3/m/' };
+  if (p.startsWith('/runs/r1/journal?kinds=trace&')) return RUN.journal.filter((row) => row.kind === 'trace');
   throw new Error(`unexpected ${method} ${path}`);
 };
 
@@ -147,7 +148,7 @@ await step('debug bar: continue, run to, fork', async () => {
   await $('debugBar').fire('click', { target: button({ 'data-control': 'run_to' }) });
   const runTo = CALLS.filter(([m, p]) => p.endsWith('/control')).pop();
   if (runTo[2].action !== 'run_to' || runTo[2].state !== 'review') throw new Error(JSON.stringify(runTo[2]));
-  ANSWERS.prompt.push('2');
+  ANSWERS.prompt.push('s2');  // write is selected: a step is written s2, a bare number is a pass through write
   ANSWERS.dialog = 'run';
   await $('debugBar').fire('click', { target: button({ 'data-control': 'fork' }) });
   ANSWERS.dialog = null;

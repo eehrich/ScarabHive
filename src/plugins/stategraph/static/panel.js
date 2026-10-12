@@ -2621,7 +2621,7 @@ function drawDebugBar() {
     <button type="button" class="pk-btn pk-btn--sm" data-control="run_to" title="Run until the chosen state is entered">${icon('crosshair', { size: 'sm' })} Run to</button>` : ''}
     ${can.terminate ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-control="terminate">${icon('square', { size: 'sm' })} Terminate</button>` : ''}
     ${can.restart ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" data-control="resume" title="${run.status === 'failed' ? 'Resume the run where it stopped: the activity it stopped on runs again, everything finished is replayed, not repeated' : 'Resume the interrupted run: finished activities are replayed, not repeated'}">${icon('play', { size: 'sm' })} Resume</button>` : ''}
-    <button type="button" class="pk-btn pk-btn--sm" data-control="fork" title="A new run from a top-level step of this one (Shift: with the machine's current definition)">${icon('git-branch', { size: 'sm' })} Fork…</button>
+    <button type="button" class="pk-btn pk-btn--sm" data-control="fork" title="A new run from a top-level step of this one, or from a pass through the state selected on the graph (Shift: with the machine's current definition)">${icon('git-branch', { size: 'sm' })} Fork…</button>
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`));
 }
 
@@ -2744,26 +2744,94 @@ $('debugBar').addEventListener('click', async (event) => {
   const extra = {};
   if (action === 'run_to') Object.assign(extra, { state: $('runToState').value, machine: S.machine?.id });
   if (action === 'fork') {
-    const fork = await askFork(event.shiftKey ? 'current' : 'snapshot');
+    const id = S.runId;
+    const fork = await askFork(event.shiftKey ? 'current' : 'snapshot', button);
     if (!fork) return;
+    if (id !== S.runId) {  // another run was picked while asking: the step is this one's, not that one's
+      toast(`Not forked: ${id} is no longer the run shown`, { kind: 'error' });
+      return;
+    }
     Object.assign(extra, fork);
   }
   await withBusy(button, () => control(action, extra));
 });
 
 /** A fork's step and whether it holds there, asked: the top-level step a new run replays up to, then runs on from. */
-async function askFork(definition) {
-  const step = await askUntil('Top-level step to fork from: the new run replays this run up to it.', {
-    title: 'Fork the run', placeholder: '3',
-    problem: (text) => (/^\d+$/.test(text) ? '' : `"${text}" is no step: a whole number, 0 or more.`) });
-  if (step === null) return null;
+async function askFork(definition, button) {
+  const at = await askForkStep(button);
+  if (at === null) return null;
   const how = await dialog({
     title: 'Fork the run',
-    message: `Hold the fork at step ${step}, to look at or set ctx before it goes on, or let it run on?`,
+    message: `Hold the fork at ${at.label}, to look at or set ctx before it goes on, or let it run on?`,
     actions: [{ label: 'Cancel', value: null }, { label: 'Hold it', value: 'hold' }, { label: 'Run on', value: 'run', primary: true }],
   });
   if (!how) return null;
-  return { at_step: Number(step), definition, ...(how === 'hold' && { pause: true }) };
+  return { at_step: at.step, definition, ...(how === 'hold' && { pause: true }) };
+}
+
+/** Journal rows statePasses reads per request -- the most the journal endpoint returns -- and at most how many requests. */
+const PASS_PAGE = 1000;
+const PASS_PAGES = 50;
+
+/** The step a fork starts at, asked in one dialog: with a state of the run's own machine selected, a pass through it
+ * (`2`: the second time the run entered it) or a top-level step as `s7`; without one, the top-level step (`7` or
+ * `s7`). `button` is busy while the journal is read. {step, label}, or null when cancelled. */
+async function askForkStep(button) {
+  const name = S.selection?.kind === 'state' && S.run?.machine_id === S.machine?.id ? S.selection.id : null;
+  const id = S.runId;
+  const passes = name ? await withBusy(button, () => statePasses(id, name)) : null;
+  if (name && !passes) return null;  // not read (toasted), or the button was busy already
+  if (id !== S.runId) return null;  // another run was picked while reading: these are not its passes
+  const steps = passes?.steps || [];
+  const partly = passes && !passes.complete ? ` (of its first ${PASS_PAGE * PASS_PAGES} journal rows)` : '';
+  const replays = 'The new run replays this run up to it.';
+  let message = `Top-level step to fork from. ${replays}`;
+  if (S.selection?.kind !== 'state') message += ' Or select a state on the graph to fork from one of its passes.';
+  if (steps.length) {
+    message = `Fork from the selected state ${name}: which of its passes, 1 to ${steps.length}${partly} -- or a top-level `
+      + `step as before, written s3. ${replays}`;
+  } else if (name) {
+    message = `${name} was not entered at the top level of this run${partly}: a top-level step to fork from. ${replays}`;
+  }
+  const typed = await askUntil(message, {
+    title: 'Fork the run', placeholder: steps.length ? `1 to ${steps.length}, or s3` : '3',
+    problem: (text) => {
+      if (/^s\d+$/i.test(text)) return '';
+      if (!/^\d+$/.test(text)) return `"${text}" is no ${steps.length ? 'pass nor step' : 'step'}.`;
+      if (steps.length && (Number(text) < 1 || Number(text) > steps.length)) {
+        return `${name} has no pass ${text}: 1 to ${steps.length}.`;
+      }
+      return '';
+    } });
+  if (typed === null) return null;
+  if (steps.length && /^\d+$/.test(typed)) {
+    const step = steps[Number(typed) - 1];
+    return { step, label: `pass ${typed} of ${name} (step ${step})` };
+  }
+  const step = Number(typed.replace(/^s/i, ''));
+  return { step, label: `step ${step}` };
+}
+
+/** The top-level steps the run entered its state `name` at, one per pass, in order: the root frame's enter rows
+ * (`s<step>:enter:<name>`; a submachine's or a branch's have a prefix, a resume's set aside start `rewound.`).
+ * {steps, complete}, or null when the journal could not be read. */
+async function statePasses(id, name) {
+  const steps = new Set();
+  let after = 0;
+  try {
+    for (let page = 0; page < PASS_PAGES; page += 1) {
+      const got = await api(`${API}/runs/${enc(id)}/journal?kinds=trace&after=${after}&limit=${PASS_PAGE}`);
+      for (const row of got) {
+        const entered = row.status === 'enter' && row.state === name && /^s(\d+):enter:/.exec(row.key || '');
+        if (entered) steps.add(Number(entered[1]));
+      }
+      if (got.length < PASS_PAGE) return { steps: [...steps].sort((a, b) => a - b), complete: true };
+      after = got[got.length - 1].seq;
+    }
+  } catch (error) {
+    return null;  // toasted
+  }
+  return { steps: [...steps].sort((a, b) => a - b), complete: false };
 }
 
 async function control(action, extra = {}) {

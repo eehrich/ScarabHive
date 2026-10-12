@@ -100,7 +100,7 @@ globalThis.SERVER = (method, path, json) => {
     const query = new URLSearchParams(journal[2]);
     const kinds = (query.get('kinds') || '').split(',');
     return journalOf[journal[1]].filter((row) => row.seq > Number(query.get('after') || 0) && kinds.includes(row.kind))
-      .slice(0, Number(query.get('limit') || 200));
+      .slice(0, Math.min(Number(query.get('limit') || 200), 1000));  // service.journal caps a page at 1000
   }
   throw new Error(`unexpected ${method} ${path}`);
 };
@@ -1875,6 +1875,99 @@ const CASES = {
     await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
     await settle();
     check(forks() === 1, 'a cancelled fork was sent');
+  },
+
+  async a_fork_starts_at_a_pass_through_the_state_selected_on_the_graph() {
+    const enter = (seq, key, frame) => ({ seq, kind: 'trace', key, state: 'write', status: 'enter', data: { frame, machine: 'review' } });
+    // passes at steps 0 (the fixture's) and 4; a submachine's entry and one a resume set aside are none of them
+    journalOf = { ...journalOf, r1: [...RUN.journal, enter(20, 's4:enter:write', ''), enter(21, 's5/m/s1:enter:write', 's5/m/'),
+      enter(22, 'rewound.1/s6:enter:write', '')] };
+    await boot('?machine=review&run=r1');
+    await choose('write');
+    ANSWERS.prompt.push('3', '2');  // write has two passes: a third is asked again
+    ANSWERS.dialog = 'run';
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    const sent = () => CALLS.filter(([, path, json]) => path.endsWith('/control') && json.action === 'fork').pop()?.[2];
+    check(sent()?.at_step === 4 && !sent().pause, `sent ${JSON.stringify(sent())}`);
+    const prompts = ASKED.filter(([kind]) => kind === 'prompt');
+    check(prompts.length === 2 && prompts[0][1].includes('which of its passes, 1 to 2') && prompts[1][1].includes('no pass 3'),
+      `asked ${JSON.stringify(prompts)}`);
+    check(ASKED.some(([kind, , message]) => kind === 'dialog' && message.includes('pass 2 of write (step 4)')),
+      `asked ${JSON.stringify(ASKED)}`);
+    ANSWERS.prompt.push('s1');  // the top-level step, as before
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    check(sent()?.at_step === 1, `sent ${JSON.stringify(sent())}`);
+  },
+
+  async a_fork_without_a_pass_to_pick_asks_for_the_step() {
+    await boot('?machine=review&run=r1');
+    const sent = () => CALLS.filter(([, path, json]) => path.endsWith('/control') && json.action === 'fork').pop()?.[2];
+    const prompts = () => ASKED.filter(([kind]) => kind === 'prompt');
+    const reads = () => CALLS.filter(([, path]) => path.includes('/journal?kinds=trace&')).length;
+    // no state selected: the passes are not read, a bare number is the step, and the dialog says a state allows a pass
+    const before = reads();
+    ANSWERS.prompt.push('3');
+    ANSWERS.dialog = 'run';
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    check(sent()?.at_step === 3, `sent ${JSON.stringify(sent())}`);
+    check(reads() === before, 'the passes were read without a state selected');
+    check(prompts()[0]?.[1].includes('select a state on the graph') && !prompts()[0][1].includes('passes, 1 to'),
+      `asked ${JSON.stringify(prompts())}`);
+    check(ASKED.some(([kind, , message]) => kind === 'dialog' && message.includes('at step 3,')), `asked ${JSON.stringify(ASKED)}`);
+    ANSWERS.prompt.push('s4');  // written as a step, too
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    check(sent()?.at_step === 4, `sent ${JSON.stringify(sent())}`);
+    // done is selected but never entered: its passes are read, there are none, a bare number is the step again
+    await choose('done');
+    ANSWERS.prompt.push('5');
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    check(reads() > before, 'the passes of the selected state were not read');
+    check(sent()?.at_step === 5, `sent ${JSON.stringify(sent())}`);
+    const last = prompts().pop()?.[1] || '';
+    check(last.includes('done was not entered at the top level') && !last.includes('select a state'), `asked ${last}`);
+  },
+
+  async a_fork_finds_a_pass_past_the_journals_first_page() {
+    const filler = Array.from({ length: 1200 }, (_, i) => ({ seq: 100 + i, kind: 'trace', key: `s3:exit:review`, state: 'review',
+      status: 'exit', data: { frame: '', machine: 'review' } }));
+    const late = { seq: 1400, kind: 'trace', key: 's9:enter:write', state: 'write', status: 'enter', data: { frame: '', machine: 'review' } };
+    journalOf = { ...journalOf, r1: [...RUN.journal, ...filler, late] };
+    await boot('?machine=review&run=r1');
+    await choose('write');
+    ANSWERS.prompt.push('2');
+    ANSWERS.dialog = 'run';
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    const sent = CALLS.filter(([, path, json]) => path.endsWith('/control') && json.action === 'fork').pop()?.[2];
+    check(sent?.at_step === 9, `sent ${JSON.stringify(sent)}`);
+    const prompt = ASKED.find(([kind]) => kind === 'prompt');
+    check(prompt?.[1].includes('1 to 2') && !prompt[1].includes('first'), `asked ${JSON.stringify(prompt)}`);
+  },
+
+  async a_fork_is_not_sent_to_a_run_picked_while_its_passes_are_read() {
+    await boot('?machine=review&run=r1');
+    await choose('write');
+    HOLD = (method, path) => path.includes('/runs/r1/journal?kinds=trace&');
+    ANSWERS.prompt.push('1');
+    ANSWERS.dialog = 'run';
+    const button = element('button', { 'data-control': 'fork' });
+    const clicked = $('debugBar').fire('click', { target: button });
+    await settle();
+    check(PENDING.length === 1 && button.disabled, `reading: ${PENDING.length} out, busy ${button.disabled}`);
+    await $('runList').fire('rowselect', { detail: { id: 'r2' } });
+    await settle();
+    HOLD = () => false;
+    await release();
+    await clicked;
+    await settle();
+    check(!button.disabled, 'the button stays busy');
+    check(!ASKED.some(([kind]) => kind === 'prompt'), `asked ${JSON.stringify(ASKED)}`);
+    check(!CALLS.some(([, path, json]) => path.endsWith('/control') && json?.action === 'fork'), 'a fork was sent');
   },
 
   async a_waiting_frame_says_what_it_waits_for_and_since_when() {
