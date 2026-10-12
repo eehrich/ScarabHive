@@ -8,6 +8,7 @@ endpoints into an HTTP error. Nothing here knows about FastAPI or tool params.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import time
 import logging
@@ -983,19 +984,63 @@ def _origin(machine: Any) -> str:
 _HEAD_KEYS = ("title", "description", "group")
 
 
+#: A ``%YAML 1.1`` directive before the document: the loader then reads its scalars by 1.1's rules.
+_YAML_1_1 = re.compile(r"(?:[ \t]*(?:#[^\n]*)?\r?\n)*%YAML[ \t]+1\.1\b")
+_STR_TAG = "tag:yaml.org,2002:str"
+
+
 def _head(path: Path) -> dict[str, str]:
     """``title``, ``description`` and ``group`` of a machine file, those that are text: parsed by libyaml where it is
-    there, some fifty times faster than the loader's round trip. A file that does not read gives none -- its
-    problems are the check's to tell."""
-    from agent_system.utils.yaml_io import safe_load
+    there, some fifty times faster than the loader's round trip, its plain scalars resolved by the loader's rules
+    (ruamel, YAML 1.2: ``title: Yes`` is text, not PyYAML's 1.1 bool). Composed, not constructed: no other value
+    is built by rules that are not the loader's. A file that does not read gives none -- its problems are the
+    check's to tell."""
+    import yaml
 
     try:
-        data = safe_load(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        version = (1, 1) if _YAML_1_1.match(text) else (1, 2)
+        try:
+            node = yaml.compose(text, Loader=_head_loader(version, fast=True))
+        except yaml.YAMLError:  # libyaml refuses some inputs the pure parser reads (agent_system.utils.yaml_io)
+            node = yaml.compose(text, Loader=_head_loader(version, fast=False))
     except Exception:  # unreadable, not YAML, nested too deeply
         return {}
-    if not isinstance(data, dict):
+    if not isinstance(node, yaml.MappingNode):
         return {}
-    return {key: data[key] for key in _HEAD_KEYS if isinstance(data.get(key), str)}
+    head: dict[str, str] = {}
+    for key, value in node.value:
+        if (isinstance(key, yaml.ScalarNode) and key.tag == _TEXT_TAG and key.value in _HEAD_KEYS
+                and isinstance(value, yaml.ScalarNode) and value.tag == _TEXT_TAG):
+            head[key.value] = value.value
+    return head
+
+
+#: The tag ``_head_loader`` gives a scalar that resolves to text without a tag of its own. One that names it
+#: (``!!str 3``) keeps ``tag:yaml.org,2002:str``: ruamel's round trip reads it as a TaggedScalar, not as text.
+_TEXT_TAG = "tag:stategraph,head:text"
+
+
+@functools.cache
+def _head_loader(version: tuple[int, int], *, fast: bool) -> type:
+    """A PyYAML loader -- libyaml's with ``fast`` where it is there -- whose untagged scalars get the tag ruamel's
+    resolver gives them under ``version``, text marked ``_TEXT_TAG``."""
+    import yaml
+    from ruamel.yaml.nodes import ScalarNode as RuamelScalarNode
+    from ruamel.yaml.resolver import VersionedResolver
+
+    rules = VersionedResolver(version=version)
+    base = (getattr(yaml, "CSafeLoader", None) if fast else None) or yaml.SafeLoader
+
+    class HeadLoader(base):  # type: ignore[valid-type, misc]
+        def resolve(self, kind: Any, value: Any, implicit: Any) -> Any:
+            if kind is not yaml.ScalarNode:
+                return super().resolve(kind, value, implicit)
+            tag = rules.resolve(RuamelScalarNode, value, implicit) if implicit[0] else _STR_TAG
+            tag = str(getattr(tag, "value", tag))  # newer ruamel answers a Tag
+            return _TEXT_TAG if tag == _STR_TAG else tag
+
+    return HeadLoader
 
 
 def _same_file(a: Any, b: Any) -> bool:

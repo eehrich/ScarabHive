@@ -2027,6 +2027,18 @@ const CASES = {
     check(checks() === 2, 'a refresh by the viewer did not check the machines');
     check(!item('review').includes('error') && item('other').includes('1 warning'),
       `a new check did not replace review's, or dropped other's that it did not answer: ${$('machineList').innerHTML}`);
+    HOLD = (method, path) => method === 'GET' && path.endsWith('/api/machines');
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: false } }));  // the viewer's (or a save's): checks
+    await settle();
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: true } }));  // the timer's tick aborts that list
+    await settle();
+    check(ABORTED.some((path) => path.endsWith('/api/machines')), `the tick did not abort the list: ${ABORTED}`);
+    checksAnswer = { review: { valid: false, errors: 3, warnings: 0 } };
+    HOLD = () => false;
+    await release((path) => path.endsWith('/api/machines'));
+    await settle();
+    check(checks() === 3 && item('review').includes('3 errors'),
+      `a list the timer aborted lost the check it was asked for: ${checks()} ${item('review')}`);
   },
 
   async a_machine_the_author_made_can_be_deleted_and_a_shipped_one_offers_no_delete() {

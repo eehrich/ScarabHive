@@ -120,6 +120,36 @@ def test_the_list_reads_each_files_head_and_loads_no_machine(tmp_path):
     assert not any("valid" in m for m in service.list_machines()), "the cheap list claims a check it did not make"
 
 
+@pytest.mark.parametrize("head", [
+    "title: Yes\ndescription: On\ngroup: off\n",  # YAML 1.1 bools, 1.2 text
+    "title: 0o17\ndescription: 1_000\ngroup: 12:30\n",  # 1.1 and 1.2 disagree on what is an int
+    "title: true\ndescription: null\ngroup: !!str 3\n",
+    "title: 1e3\ndescription: .5\ngroup: ~\n",
+    "%YAML 1.1\n---\ntitle: Yes\ndescription: '7'\ngroup: n\n",
+])
+def test_the_lists_head_reads_its_scalars_as_the_loader_does(tmp_path, head):
+    """The head was read by PyYAML's YAML 1.1 rules, the machine by ruamel's 1.2: ``title: Yes`` listed no title
+    while the machine opened showed one."""
+    service, _, _ = service_over(tmp_path, ("own", "m.yaml", head + MACHINE.format(id="m")))
+
+    listed = service.list_machines()[0]
+    loaded = service.store.load("m").root_file.doc  # what ruamel, the loader, read
+
+    assert loaded is not None
+    for key in ("title", "description", "group"):
+        assert ((key in listed and listed[key] == loaded[key]) if isinstance(loaded.get(key), str)
+                else listed[key] in ("", "My machines")), (key, listed[key], loaded.get(key))
+
+
+def test_a_head_of_yaml_1_1_bools_is_text(tmp_path):
+    service, _, _ = service_over(tmp_path, ("own", "m.yaml", "title: Yes\ndescription: On\ngroup: off\n"
+                                            + MACHINE.format(id="m")))
+
+    listed = service.list_machines()[0]
+
+    assert (listed["title"], listed["description"], listed["group"]) == ("Yes", "On", "off")
+
+
 def test_the_checks_count_each_machines_problems_and_a_broken_one_hides_no_other(tmp_path):
     importing = MACHINE.format(id="importing").replace("initial: a\n", "imports:\n  gone: missing\ninitial: a\n")
     service, _, _ = service_over(tmp_path, ("own", "fine.yaml", MACHINE.format(id="fine")),

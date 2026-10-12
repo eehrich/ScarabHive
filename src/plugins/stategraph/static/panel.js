@@ -415,24 +415,35 @@ function lineChoices(chosen, { inherit = false, mixed = false } = {}) {
 /** What a machine's check says, the badges of its list entry. */
 const CHECK_KEYS = ['valid', 'errors', 'warnings', 'error'];
 
+/** A check of every machine asked for by a list load that has not arrived yet. */
+let checksWanted = false;
+
 /** The list as the files' heads say it, drawn at once: it loads no machine. Its badges come after it, from a check of
  * every machine that takes seconds (`loadMachineChecks`); until then each keeps what the last check said. `checks:
- * false` leaves that out -- a refresh by the timer, the start before the machine it opens. */
+ * false` leaves that out -- a refresh by the timer, the start before the machine it opens. A check asked for stays
+ * asked for until a list arrives: a load that aborts this one (the timer's) asks for it then. */
 async function loadMachines({ checks = true } = {}) {
-  const before = new Map(S.machines.map((m) => [m.id, m]));
+  if (checks) checksWanted = true;
+  let machines;
   try {
-    S.machines = await api(`${API}/machines`, { latest: 'machines', quiet: true });
+    machines = await api(`${API}/machines`, { latest: 'machines', quiet: true });
   } catch (error) {
     if (isAborted(error)) return;
     update($('machineList'), emptyState('circle-alert', 'Machines could not be loaded', errorText(error)));
     return;
   }
+  // what the list shows on arrival: a check that came while the list was on its way is kept
+  const before = new Map(S.machines.map((m) => [m.id, m]));
+  S.machines = machines;
   for (const m of S.machines) {
     const last = before.get(m.id);
     if (last) CHECK_KEYS.forEach((key) => { if (key in last) m[key] = last[key]; });
   }
   drawMachineList();
-  if (checks) loadMachineChecks();
+  if (checksWanted) {
+    checksWanted = false;
+    loadMachineChecks();
+  }
 }
 
 /** Every machine's problem counts, onto the list. Not said when it fails: the list is there, without badges. */
