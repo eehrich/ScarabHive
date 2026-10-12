@@ -503,6 +503,7 @@ PANEL_CASES = [
     "a_run_switched_to_takes_the_result_of_the_one_left_away_at_once",
     "text_typed_into_one_inspector_form_is_asked_about_by_another",
     "a_deleted_machine_leaves_nothing_of_itself_behind",
+    "the_list_and_the_machine_do_not_wait_for_every_machine_s_check_whose_badges_follow",
     "the_sessions_of_another_users_run_are_not_offered",
 ]
 

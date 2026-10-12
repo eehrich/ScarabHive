@@ -16,6 +16,7 @@ Mutation checks run (each turned the named tests red, then was restored from a c
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from types import SimpleNamespace
 
@@ -742,6 +743,29 @@ async def test_list_and_get_machine_lines_carry_counts(server):
     got, got_line = await run_tool(server, "stategraph_get_machine", {"machine_id": "hello"})
     assert sorted(got["files"]) == ["hello.py", "hello.yaml"]
     assert "hello" in got_line.message and "2 file(s)" in got_line.message
+
+
+async def test_the_list_tool_still_checks_every_machine_off_the_event_loop(server, tmp_path):
+    """The panel's list no longer checks the machines; the tool's still says valid, errors and warnings -- read in a
+    worker thread, since every machine loaded and validated takes seconds."""
+    (tmp_path / "machines" / "broken.yaml").write_text(BROKEN.replace("id: hello", "id: broken"), encoding="utf-8")
+    list_machines = server.service.list_machines
+
+    def off_the_loop(**kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:  # a worker thread
+            return list_machines(**kwargs)
+        raise AssertionError("the tool checked every machine on the event loop")
+
+    server.service.list_machines = off_the_loop
+
+    listed, line = await run_tool(server, "stategraph_list_machines", {})
+
+    by_id = {m["id"]: m for m in listed["machines"]}
+    assert by_id["hello"]["valid"] is True and by_id["hello"]["errors"] == 0 and "warnings" in by_id["hello"]
+    assert by_id["broken"]["valid"] is False and by_id["broken"]["errors"] >= 1
+    assert "3 machine(s), 1 with errors" in line.message
 
 
 # ------------------------------------------------------------------ errors

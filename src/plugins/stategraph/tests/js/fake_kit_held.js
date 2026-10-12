@@ -8,7 +8,7 @@ const latestCalls = new Map();  // name -> abort() of the newest call under that
 globalThis.PENDING = [];         // held calls: {method, path, resolve}
 globalThis.ABORTED = [];         // paths of the calls a newer one or abandon() aborted
 globalThis.POLLERS = [];
-globalThis.HOLD = () => false;
+globalThis.HOLD ||= () => false;  // a case may set it before boot: to hold the panel's start
 
 export async function api(path, { method = 'GET', json, latest = '', quiet = false } = {}) {
   globalThis.CALLS.push([method, path, json, latest]);

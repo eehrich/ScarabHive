@@ -346,7 +346,8 @@ class StateGraphServer(SchemaBasedToolServer):
 
     async def list_machines(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            return {"machines": self.service.list_machines()}
+            # every machine loaded and validated: seconds for a few dozen, which must not hold up the event loop
+            return {"machines": await asyncio.to_thread(self.service.list_machines, checked=True)}
         return await self._run_tool(params, "list_machines", body,
                                     lambda r: f"{len(r['machines'])} machine(s), "
                                               f"{sum(1 for m in r['machines'] if not m.get('valid'))} with errors")

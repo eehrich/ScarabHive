@@ -261,13 +261,14 @@ def test_companion_module_is_not_executed_by_the_service_validate(tmp_path):
         (machines / "m.py").write_text(_side_effect_module(flag), encoding="utf-8")
 
         result = server.service.validate(files={"m.yaml": MACHINE_WITH_MODULE}, machine_id="m")
-        listed = server.service.list_machines()
+        listed = server.service.list_machines(checked=True)
+        checks = server.service.machine_checks()
         got = server.service.get_machine("m")
     finally:
         server.run_store.close()
 
     assert [p for p in result["problems"] if p["level"] == "error"] == []
-    assert listed[0]["valid"] is True
+    assert listed[0]["valid"] is True and checks["m"]["valid"] is True
     assert "m.py" in got["files"]
     assert not flag.exists(), "a front end executed the companion module while only reading the machine"
 

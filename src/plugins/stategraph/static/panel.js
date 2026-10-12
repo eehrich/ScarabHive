@@ -412,13 +412,52 @@ function lineChoices(chosen, { inherit = false, mixed = false } = {}) {
 
 // ------------------------------------------------------------------ machines
 
-async function loadMachines() {
+/** What a machine's check says, the badges of its list entry. */
+const CHECK_KEYS = ['valid', 'errors', 'warnings', 'error'];
+
+/** A check of every machine asked for by a list load that has not arrived yet. */
+let checksWanted = false;
+
+/** The list as the files' heads say it, drawn at once: it loads no machine. Its badges come after it, from a check of
+ * every machine that takes seconds (`loadMachineChecks`); until then each keeps what the last check said. `checks:
+ * false` leaves that out -- a refresh by the timer, the start before the machine it opens. A check asked for stays
+ * asked for until a list arrives: a load that aborts this one (the timer's) asks for it then. */
+async function loadMachines({ checks = true } = {}) {
+  if (checks) checksWanted = true;
+  let machines;
   try {
-    S.machines = await api(`${API}/machines`, { latest: 'machines', quiet: true });
+    machines = await api(`${API}/machines`, { latest: 'machines', quiet: true });
   } catch (error) {
     if (isAborted(error)) return;
     update($('machineList'), emptyState('circle-alert', 'Machines could not be loaded', errorText(error)));
     return;
+  }
+  // what the list shows on arrival: a check that came while the list was on its way is kept
+  const before = new Map(S.machines.map((m) => [m.id, m]));
+  S.machines = machines;
+  for (const m of S.machines) {
+    const last = before.get(m.id);
+    if (last) CHECK_KEYS.forEach((key) => { if (key in last) m[key] = last[key]; });
+  }
+  drawMachineList();
+  if (checksWanted) {
+    checksWanted = false;
+    loadMachineChecks();
+  }
+}
+
+/** Every machine's problem counts, onto the list. Not said when it fails: the list is there, without badges. */
+async function loadMachineChecks() {
+  let checked;
+  try {
+    checked = await api(`${API}/machine_checks`, { latest: 'machine-checks', quiet: true });
+  } catch (error) {
+    return;
+  }
+  for (const m of S.machines) {
+    if (!checked[m.id]) continue;
+    CHECK_KEYS.forEach((key) => { delete m[key]; });
+    Object.assign(m, checked[m.id]);
   }
   drawMachineList();
 }
@@ -3482,7 +3521,7 @@ $('canvas').addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('refresh', async (event) => {
-  await loadMachines();
+  await loadMachines({ checks: !event.detail?.auto });  // the timer's: not every machine checked on each tick
   if (S.machine && !unsaved()) {
     try {
       // a name of its own: under openMachine's, this reload of the open machine would abort a click on another one
@@ -3505,7 +3544,9 @@ async function start() {
   } catch (error) {
     S.kinds = [];  // the palette then offers the pseudostates only
   }
-  await loadMachines();  // the catalog comes with the machine shown: its runner names the tools
+  // the catalog comes with the machine shown: its runner names the tools. The list's checks after that machine: they
+  // load every machine, the viewer waits for the one
+  await loadMachines({ checks: false });
   const query = new URLSearchParams(location.search);
   const wanted = query.get('machine');
   if (wanted && S.machines.some((m) => m.id === wanted)) {
@@ -3513,6 +3554,7 @@ async function start() {
     await openMachine(wanted, { keepRun: true });
     if (S.runId) selectRun(S.runId);
   }
+  loadMachineChecks();
   navigate();
 }
 

@@ -54,15 +54,17 @@ let controlAnswer = null;  // r1's control answer, when it is not runAnswer
 let runsAnswer = null;  // (query) -> the runs list, when not the two runs
 let catalogDown = null;  // (path) -> true: the catalog answers 503
 let startRefused = null;  // the answer to a run's start, when it is refused
+let checksAnswer = null;  // the machines' problem counts, by id, when not review's clean ones
 globalThis.SERVER = (method, path, json) => {
   const p = path.replace('/plugins/stategraph/api', '');
   if (p === '/kinds') return KINDS;
   if (p.split('?')[0] === '/catalog') return catalogDown?.(p) ? new ApiError(503, 'restarting') : CATALOG;
   if (p === '/machines' && method === 'GET') {
     const groups = { review: 'Writer/v6', other: 'Writer', ro: 'stategraph' };
-    return ['review', 'other', 'hooks', 'ro', 'empty', 'plain', 'fields'].map((id) => ({ id, title: id, errors: 0, warnings: 0, writable: id !== 'ro',
+    return ['review', 'other', 'hooks', 'ro', 'empty', 'plain', 'fields'].map((id) => ({ id, title: id, writable: id !== 'ro',
       group: groups[id] || 'My machines' }));
   }
+  if (p === '/machine_checks') return checksAnswer || { review: { valid: true, errors: 0, warnings: 0 } };
   if (p === '/machines/review' && method === 'GET') return reviewAnswer;
   if (p === '/machines/other' && method === 'GET') return OTHER;
   if (p === '/machines/hooks' && method === 'GET') return HOOKS;
@@ -1997,6 +1999,46 @@ const CASES = {
     $('search').value = 'review';
     await $('search').fire('input', {});
     check(folder('Writer/v6')[1] === 'open' && !list().includes('data-machine="hooks"'), 'a search opens what it finds, and only that');
+  },
+
+  async the_list_and_the_machine_do_not_wait_for_every_machine_s_check_whose_badges_follow() {
+    checksAnswer = { review: { valid: false, errors: 2, warnings: 0 }, other: { valid: true, errors: 0, warnings: 1 } };
+    globalThis.HOLD = (method, path) => path.endsWith('/machine_checks');
+    location.search = '?machine=review';  // boot() without its release of every held call
+    await import('./panel_copy.js');
+    await settle();
+    const item = (id) => (new RegExp(`data-machine="${id}"[\\s\\S]*?</button>`).exec($('machineList').innerHTML) || [''])[0];
+    const paths = () => CALLS.filter(([method]) => method === 'GET').map(([, path]) => path);
+    const checks = () => paths().filter((path) => path.endsWith('/machine_checks')).length;
+    check(headName() === 'review' && item('review') && !item('review').includes('pk-badge--danger'),
+      `the list or the machine waited for the checks: ${headName()} ${item('review')}`);
+    check(paths().findIndex((path) => path.endsWith('/machines/review')) < paths().findIndex((path) => path.endsWith('/machine_checks')),
+      `every machine was checked before the one opened: ${paths()}`);
+    await release((path) => path.endsWith('/machine_checks'));
+    check(item('review').includes('2 errors') && item('other').includes('1 warning'), `badges: ${$('machineList').innerHTML}`);
+    HOLD = () => false;
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: true } }));
+    await settle();
+    check(checks() === 1, 'the timer checked every machine');
+    check(item('review').includes('2 errors'), 'a reload of the list dropped the last check');
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: false } }));
+    checksAnswer = { review: { valid: true, errors: 0, warnings: 0 } };
+    await settle();
+    check(checks() === 2, 'a refresh by the viewer did not check the machines');
+    check(!item('review').includes('error') && item('other').includes('1 warning'),
+      `a new check did not replace review's, or dropped other's that it did not answer: ${$('machineList').innerHTML}`);
+    HOLD = (method, path) => method === 'GET' && path.endsWith('/api/machines');
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: false } }));  // the viewer's (or a save's): checks
+    await settle();
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: true } }));  // the timer's tick aborts that list
+    await settle();
+    check(ABORTED.some((path) => path.endsWith('/api/machines')), `the tick did not abort the list: ${ABORTED}`);
+    checksAnswer = { review: { valid: false, errors: 3, warnings: 0 } };
+    HOLD = () => false;
+    await release((path) => path.endsWith('/api/machines'));
+    await settle();
+    check(checks() === 3 && item('review').includes('3 errors'),
+      `a list the timer aborted lost the check it was asked for: ${checks()} ${item('review')}`);
   },
 
   async a_machine_the_author_made_can_be_deleted_and_a_shipped_one_offers_no_delete() {

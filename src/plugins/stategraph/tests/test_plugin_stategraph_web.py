@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,7 +17,7 @@ from http_routes import http_routes
 from plugins.stategraph import web_endpoints
 from plugins.stategraph.service import ServiceError
 from plugins.stategraph.tests.stategraph_testkit import FASTAPI_PY314
-from plugins.stategraph.web_endpoints import StateGraphWebEndpoints
+from plugins.stategraph.web_endpoints import Coalesced, StateGraphWebEndpoints
 
 pytestmark = pytest.mark.filterwarnings(FASTAPI_PY314)
 
@@ -110,6 +111,66 @@ def test_reads_answer_with_what_the_service_returns():
     assert answer.status_code == 200 and answer.json() == [{"id": "review", "valid": True}]
     assert journal.status_code == 200
     assert service.calls[-1] == ("journal", ("r1",), {"after": 5, "limit": 200, "kinds": ["activity", "trace"]})
+
+
+def test_the_machine_checks_run_off_the_event_loop():
+    """Every machine loaded and validated takes seconds: on the event loop it held up every other request -- the
+    machine the panel opens too."""
+    test_client, service = client()
+
+    def machine_checks() -> dict[str, Any]:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:  # a worker thread
+            return {"review": {"valid": True, "errors": 0, "warnings": 0}}
+        raise AssertionError("the checks ran on the event loop")
+
+    service.machine_checks = machine_checks
+
+    answer = test_client.get("/plugins/stategraph/api/machine_checks")
+
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == {"review": {"valid": True, "errors": 0, "warnings": 0}}
+
+
+async def test_checks_asked_while_one_runs_share_the_next_run_which_reads_after_them():
+    runs: list[asyncio.Event] = []
+
+    async def compute() -> int:
+        gate = asyncio.Event()
+        runs.append(gate)
+        number = len(runs)
+        await gate.wait()
+        return number
+
+    async def until(condition) -> None:
+        for _ in range(100):
+            if condition():
+                return
+            await asyncio.sleep(0)
+        raise AssertionError("never came")
+
+    checks = Coalesced(compute)
+    first = asyncio.ensure_future(checks())
+    await until(lambda: len(runs) == 1)
+    second, third, gone = (asyncio.ensure_future(checks()) for _ in range(3))
+    await asyncio.sleep(0)
+    gone.cancel()  # a panel that went away: the others still get their run
+    runs[0].set()
+
+    assert await first == 1
+    await until(lambda: len(runs) == 2)
+    fourth = asyncio.ensure_future(checks())  # while the second run reads: it may have read before this request
+    runs[1].set()
+    assert (await second, await third) == (2, 2)
+    await until(lambda: len(runs) == 3)
+    runs[2].set()
+    assert await fourth == 3
+    assert gone.cancelled() and len(runs) == 3
+    last = asyncio.ensure_future(checks())  # nothing runs any more: a run of its own
+    await until(lambda: len(runs) == 4)
+    runs[3].set()
+    assert await last == 4
 
 
 def test_an_edit_carries_the_operation_and_the_version_read():

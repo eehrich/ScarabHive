@@ -18,7 +18,8 @@ let editAnswer = null;
 globalThis.SERVER = (method, path, json) => {
   const p = path.replace('/plugins/stategraph/api', '');
   if (p === '/kinds') return KINDS;
-  if (p === '/machines' && method === 'GET') return [{ id: 'review', title: 'Review', description: 'd', valid: false, errors: 1, warnings: 2, writable: true, file: '/m/review.yaml' }];
+  if (p === '/machines' && method === 'GET') return [{ id: 'review', title: 'Review', description: 'd', writable: true, file: '/m/review.yaml' }];
+  if (p === '/machine_checks') return { review: { valid: false, errors: 1, warnings: 2 } };
   if (p === '/machines' && method === 'POST') return { ...MACHINE, id: json.id };
   if (p === '/machines/review' && method === 'GET') return MACHINE;
   if (p === '/machines/review' && method === 'PUT') return globalThis.SAVE_ANSWER || { versions: {} };
