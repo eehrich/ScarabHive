@@ -4,7 +4,7 @@
 // The layout test loads the vendored ELK the way the panel does (a classic script defining the global ELK).
 
 import {
-  applyPositions, autoOf, clipToBox, compositeTitleWidth, dropInto, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
+  applyPositions, autoLayout, autoOf, clipToBox, compositeTitleWidth, dropInto, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
   groupedSpots, labelSpot, lanes, lineKeys, orthogonalRoute, renamedLines, selectedTransitions, transitionRoute, selectionOf, statesWithin, toggled,
   NOTE, noteKey, noteLines, notePlaces, foldTrace,
@@ -131,6 +131,59 @@ test('flow lays the states out top down in the order of the file: the loops go b
   const at = (name) => nested[stateId(name)].y;
   assert(at('start') < at('work') && at('write') < at('check') && at('check') < at('fix'),
     `top down from the composite's initial state: ${JSON.stringify(nested)}`);
+});
+
+test('flow runs a chain of states straight down, through a transition\'s label too, each state under the one before', async () => {
+  const state = (name, label = '') => ({ name, parent: null, type: 'state', composite: false, kind: label ? 'call' : null, label, icon: null });
+  const go = (source, target, effect = null) => ({ id: `${source}#0`, source, index: 0, target, trigger: 'done', guard: null, effect });
+  // chapters_3c and the end of chapter_end: boxes of different widths, a label on the first line
+  const graph = { initial: 'context',
+    states: [state('context', 'flows.steps_chapter:context'), state('chapters', 'for chapter_id in ctx.chapters'),
+      state('close', 'flows.steps_chapter:close'), state('late_read', 'x'), { ...state('done'), type: 'final' }],
+    transitions: [go('context', 'chapters', 'ctx.chapters = out["chapters"]'), go('chapters', 'close'), go('close', 'late_read'),
+      go('late_read', 'done', 'ctx.stop = out["stop"]')] };
+  const { nodes, edges } = await autoLayout(new ELK(), graph, 'flow');
+  const middle = (name) => nodes[stateId(name)].x + nodes[stateId(name)].w / 2;
+  for (const t of graph.transitions) {
+    equal(edges[`t:${t.id}`].points.length, 2, `${t.id} runs without a bend: ${JSON.stringify(edges[`t:${t.id}`].points)}`);
+    equal(Math.round(middle(t.source)), Math.round(middle(t.target)), `${t.target} sits right under ${t.source}`);
+  }
+});
+
+test('autoLayout keeps the straight flow while it fits the canvas no smaller, else takes the narrow one', async () => {
+  const graph = { initial: 'a', states: [{ name: 'a', parent: null, type: 'state', composite: false, kind: null, label: '', icon: null }],
+    transitions: [] };
+  // a stand-in for ELK: the size each placement comes out at, and which one was asked for
+  const fake = (sizes) => ({ asked: [], async layout(input) {
+    const strategy = input.layoutOptions['elk.layered.nodePlacement.strategy'] || 'classic';
+    if (strategy !== 'classic') {
+      equal([input.layoutOptions['elk.direction'], input.layoutOptions['elk.layered.cycleBreaking.strategy']], ['DOWN', 'MODEL_ORDER'],
+        `${strategy} is still the flow layout`);
+    }
+    this.asked.push(strategy);
+    const [width, height] = sizes[strategy];
+    return { width, height, strategy, children: [{ id: 's:a', x: 0, y: 0, width, height }], edges: [] };
+  } });
+  const picked = async (sizes, auto = 'flow') => {
+    const elk = fake(sizes);
+    const { nodes } = await autoLayout(elk, graph, auto);
+    return [nodes['s:a'].w, elk.asked];
+  };
+  equal(await picked({ BRANDES_KOEPF: [900, 1000], LINEAR_SEGMENTS: [400, 1000] }), [900, ['BRANDES_KOEPF']],
+    'not wider than the canvas\'s shape: the straight one, without a second layout');
+  equal(await picked({ BRANDES_KOEPF: [1550, 1000], LINEAR_SEGMENTS: [600, 1000] }), [1550, ['BRANDES_KOEPF', 'LINEAR_SEGMENTS']],
+    'a little wider: shown hardly smaller than the narrow one, the straight one');
+  equal(await picked({ BRANDES_KOEPF: [3000, 1000], LINEAR_SEGMENTS: [1400, 1000] }), [1400, ['BRANDES_KOEPF', 'LINEAR_SEGMENTS']],
+    'far wider: the narrow one');
+  equal(await picked({ BRANDES_KOEPF: [1500, 1000], LINEAR_SEGMENTS: [400, 1000] }), [1500, ['BRANDES_KOEPF']],
+    'exactly the canvas\'s shape: the straight one, without a second layout');
+  equal(await picked({ BRANDES_KOEPF: [1575, 1000], LINEAR_SEGMENTS: [400, 1000] }), [1575, ['BRANDES_KOEPF', 'LINEAR_SEGMENTS']],
+    'shown exactly the slack smaller: still the straight one');
+  equal(await picked({ BRANDES_KOEPF: [1580, 1000], LINEAR_SEGMENTS: [400, 1000] }), [400, ['BRANDES_KOEPF', 'LINEAR_SEGMENTS']],
+    'shown more than the slack smaller: the narrow one');
+  equal(await picked({ BRANDES_KOEPF: [1800, 1000], LINEAR_SEGMENTS: [1000, 1200] }), [1800, ['BRANDES_KOEPF', 'LINEAR_SEGMENTS']],
+    'a narrow one taller by as much is shown no larger: the straight one');
+  equal(await picked({ classic: [500, 200] }, 'classic'), [500, ['classic']], 'classic is laid out once, as it was');
 });
 
 // ------------------------------------------------------------------ positions
