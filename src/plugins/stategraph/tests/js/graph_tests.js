@@ -138,8 +138,8 @@ test('flow runs a chain of states straight down, through a transition\'s label t
   const go = (source, target, effect = null) => ({ id: `${source}#0`, source, index: 0, target, trigger: 'done', guard: null, effect });
   // chapters_3c and the end of chapter_end: boxes of different widths, a label on the first line
   const graph = { initial: 'context',
-    states: [state('context', 'flows.steps_chapter:context'), state('chapters', 'for chapter_id in ctx.chapters'),
-      state('close', 'flows.steps_chapter:close'), state('late_read', 'x'), { ...state('done'), type: 'final' }],
+    states: [state('context', 'book_plugin.book_flow.steps_of_a_chapter:context'), state('chapters', 'for chapter_id in ctx.chapters'),
+      state('close', 'book_plugin.book_flow.steps_of_a_chapter:close'), state('late_read', 'x'), { ...state('done'), type: 'final' }],
     transitions: [go('context', 'chapters', 'ctx.chapters = out["chapters"]'), go('chapters', 'close'), go('close', 'late_read'),
       go('late_read', 'done', 'ctx.stop = out["stop"]')] };
   const { nodes, edges } = await autoLayout(new ELK(), graph, 'flow');
