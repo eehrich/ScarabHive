@@ -243,8 +243,10 @@ transition. The frames of the Debug tab and the end states of the Result
 card have the same button (not for a machine of a file's
 @{tt}machines:@{utt}, which has no graph of its own). On the submachine's
 graph the debug bar picks among its frames in the run ("under review
-#2", "running") and its arrow goes back to the run's machine; breakpoints and
-Run to set there are the submachine's. Its runs list also holds the runs
+#2", "running") and shows the way down from the run's machine to the one
+shown (review > critique_round > ...): a click on one of them shows it.
+After such a jump @{b}Back@{ub} returns to the frame shown before, one
+jump at a time. Breakpoints and Run to set there are the submachine's. Its runs list also holds the runs
 it ran in ("in scene_review"): one picked shows the frame picked, else a
 live one, else the last. A fork shows the frames it ran itself; those
 before its fork point are in the run it was forked from.
@@ -266,13 +268,16 @@ a mock-only run, which has none, nor for another user's run).
 @{bullet}The @{b}History@{ub} card: the last 200 journal rows, filtered by
 kind.
 @{bullet}The @{b}Debug@{ub} tab of the inspector: the run's params,
-output and error; watches (a watch pauses the run when its value
-changes); breakpoints; @{b}Evaluate@{ub} and @{b}Set@{ub}, shown while
-the run is paused (Set writes into @{tt}ctx@{utt} -- or, at an exit or
-error breakpoint, sets the activity's answer); @{b}Send event@{ub} with
-data while the run has not ended; and, while a run is selected, every
-frame with its state, step and @{tt}ctx@{utt} (@{b}Show@{ub} shows it on
-its machine's graph).
+output and error; right under them, while a run is selected, its
+@{b}Frames@{ub}, one folded line each with machine, state, step and
+whether it waits (@{b}Show@{ub} shows it on its machine's graph) --
+unfold one for what it waits for, its visits and its @{tt}ctx@{utt}; it
+stays unfolded while the run goes on. Then watches (a watch pauses the
+run when its value changes); breakpoints; @{b}Evaluate@{ub} and
+@{b}Set@{ub}, shown while the run is paused (Set writes into
+@{tt}ctx@{utt} -- or, at an exit or error breakpoint, sets the
+activity's answer); @{b}Send event@{ub} with data while the run has not
+ended.
 
 Watches and breakpoints set while no run is live belong to the next run
 of this machine and are kept in the browser; set during a run they change
