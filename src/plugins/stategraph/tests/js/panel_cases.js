@@ -3287,6 +3287,17 @@ const CASES = {
     check(headName() === 'other' && shows('s3/m/'), bar());
     check(await backs() === 1 && headName() === 'review', `the frame shown again went onto the trail: ${headName()}`);
 
+    // a frame picked in the bar's select is a jump too: Back returns to the frame shown before it
+    await click(element('button', { 'data-open-frame': 's3/m/', 'data-machine': 'other' }));
+    const picker = element('select', { 'data-frame-choice': '' });
+    picker.value = 's3/m/s1/m/';
+    await $('debugBar').fire('change', { target: picker });
+    await settle();
+    check(shows('s3/m/s1/m/'), bar());
+    await click(element('button', { 'data-frame-back': '' }));
+    check(headName() === 'other' && shows('s3/m/'), `back skipped the frame shown before the pick: ${bar()}`);
+    check(await backs() === 1 && headName() === 'review', `the pick left the trail wrong: ${headName()}`);
+
     // the trail holds the last 20 frames
     await click(element('button', { 'data-open-frame': 's3/m/', 'data-machine': 'other' }));
     for (let i = 0; i < 25; i += 1) {

@@ -2646,11 +2646,11 @@ function showFrameButton(machine, prefix, shown = shownFrame()?.prefix, name = m
     data-machine="${machine}" title="${`Show this run on ${machine}'s graph`}" aria-label="${`Show ${name} (${prefix || 'top'})`}">${icon('layers', { size: 'sm' })} Show</button>`;
 }
 
-// the picker has no id: keepingChoices must not keep a frame picked by default -- it shows the one the canvas shows
+// the picker has no id: keepingChoices must not keep a frame picked by default -- it shows the one the canvas shows;
+// a pick is a jump like any other: the frame shown before goes onto the trail
 $('debugBar').addEventListener('change', (event) => {
-  if (event.target.dataset?.frameChoice === undefined) return;
-  S.framePrefix = event.target.value;
-  drawRun();
+  if (event.target.dataset?.frameChoice === undefined || !S.machine) return;
+  openFrame(S.machine.id, event.target.value);
 });
 
 /** The events a run takes now, each with the frames that take it. */
