@@ -48,7 +48,17 @@ hooks:
 #   - match: "document\\s+(?P<doc>[\\w-]+)"
 #     tool: notes_manage_json             # shorthand: one rule, one call
 #     params: {operation: read, doc: "{doc}"}
+#   - match: "\\S"                        # every rule also has, from the message:
+#     tool: coder_fs_grep_search          #   {message}   its text
+#     params:                             #   {keywords}  its identifiers as one regex;
+#       query: "{keywords}"               #               none -> the rule is skipped
+#       is_regex: true
 #
+# max_keywords: 8              # identifiers {keywords} joins at most
+# text_from:                   # the parts of the message the rules see, instead of its
+#   - '(?s)<task>\n(?P<text>.*?)\n</task>'  # first 2000 chars: group "text" (or what follows
+#                              # the match) of every match, in pattern order, sharing the cap;
+#                              # runs on the WHOLE message -- anchor it on a literal
 # max_calls_per_turn: 5        # hard cap across all rules (regex runaway guard)
 # dedup: true                  # skip a rule whose calls are all in the history
 #                              # already, with the same (tool, params)

@@ -24,6 +24,10 @@ agent_config:
             params: {operation: read, doc: "{doc}"}
 ```
 
+Besides its own named groups every rule may use `{message}` (the user's text)
+and `{keywords}` (the code identifiers it names, as one regex) -- the coder
+uses both to search its workspace before it answers (`src/plugins/coder/agents/coder.yaml`).
+
 The full manual -- rules and placeholders, chains, limits, failures, what the
 model sees and the prompt-cache effect -- is `tool_preload.guide` in the Help
 panel.

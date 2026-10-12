@@ -204,6 +204,18 @@ sandbox.
 All four agents read the project's @{tt}AGENTS.md@{utt} from the
 repository root and keep that version for the session; see
 @{" Project Instructions " link project_instructions/main}.
+
+@{h2}The workspace searched before the first answer
+
+Before the coder's first LLM call of a turn, the workspace is searched for
+what the message is about: a @{tt}grep_search@{utt} for the identifiers it
+names (backticked spans, snake_case, CamelCase, dotted names, paths) and a
+@{tt}semantic_search@{utt} with the message itself when it has five words
+or more. Both run through @{tt}coder_fs@{utt} and stand behind the message
+as calls of the coder's own, so it starts reading where it would otherwise
+start searching. The rules are in the agent's
+@{tt}tool_preload.preload@{utt} override; see
+@{" Tool Preload " link tool_preload/rules}.
 @endnode
 
 @node tool "Calling it from another agent"
@@ -314,6 +326,7 @@ context_engineer.engineer_context | on | on
 coder_okf.okf_context_injection | on, bundle @{tt}data/okf/coder@{utt} | --
 project_instructions.inject_project_instructions | on, root @{tt}.@{utt} | on
 file_checkpoints.record_before_change, _after_change | on | on
+tool_preload.preload | on, grep and semantic search of the message | --
 todo.inject_todo_tasks, sequential_thinking.inject_active_sessions, coder_sam.inject_sub_agent_context | off | off
 @{body}
 
@@ -351,7 +364,7 @@ The shared instances in @{tt}config/plugins.yaml@{utt}: @{tt}skills@{utt},
 @{tt}todo@{utt}, @{tt}ask_user@{utt}, @{tt}sequential_thinking@{utt},
 @{tt}datetime@{utt}, @{tt}context_engineer@{utt},
 @{tt}project_instructions@{utt},
-@{tt}file_checkpoints@{utt}; optionally @{tt}coding_cli@{utt} and
+@{tt}file_checkpoints@{utt}, @{tt}tool_preload@{utt}; optionally @{tt}coding_cli@{utt} and
 @{tt}forge@{utt}. The LLM profiles @{tt}code@{utt},
 @{tt}code_fallback@{utt}, @{tt}code_adv@{utt}, @{tt}code_adv_fallback@{utt},
 @{tt}structured@{utt}, @{tt}structured_fallback@{utt}. On the server:

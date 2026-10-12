@@ -472,3 +472,77 @@ def test_every_harness_agent_reads_the_projects_agents_md(config, agent):
     assert roots, f"fixture: {agent} has no file tools"
     root, problem = choose_root(roots, override.get("root") or "")
     assert root is not None, problem
+
+
+# ── The workspace searched before the first LLM call ───────────────────────
+
+def test_the_coders_preload_rules_reach_its_search_tools(config):
+    """Every failure here is silent: an unregistered tool_preload instance
+    leaves the override without effect, and a tool the dispatcher refuses is
+    only a warning in the log -- the turn just starts unsearched."""
+    from plugins.tool_preload.hooks import KEYWORDS_PLACEHOLDER, MESSAGE_PLACEHOLDER
+
+    instance = config.plugins.servers["tool_preload"]
+    assert instance.enabled and instance.type == "tool_preload"
+    override = _agent_config(config, "coder").hooks.overrides["tool_preload.preload"]
+    assert override.get("enabled") is True
+
+    rendered = _rendered_tool_names(config, "coder_fs")
+    allowed = _agent_config(config, "coder").tools.allowed
+    used = set()
+    for rule in override["rules"]:
+        re.compile(rule["match"])
+        assert rule["tool"] in rendered, f"coder_fs offers no {rule['tool']}"
+        assert tool_matches_patterns(rule["tool"], "coder_fs", allowed), (
+            f"the coder may not call {rule['tool']}")
+        used.update(re.findall(r"\{(\w+)\}", str(rule["params"])))
+    assert {KEYWORDS_PLACEHOLDER, MESSAGE_PLACEHOLDER} <= used
+
+
+def _preloading_agents(config):
+    """Every configured agent whose effective config runs tool_preload rules --
+    the coder's own and every instance that inherits them (tracker_coder)."""
+    for name in config.plugins.servers:
+        server = get_tool_server_config(name, config)
+        agent_config = getattr(server, "agent_config", None)
+        hooks = getattr(agent_config, "hooks", None)
+        override = (getattr(hooks, "overrides", None) or {}).get("tool_preload.preload")
+        if isinstance(override, dict) and override.get("enabled") and override.get("rules"):
+            yield name, agent_config, override["rules"]
+
+
+def test_every_agent_with_preload_rules_may_call_their_tools(config):
+    """A type: coder instance inherits the coder's rules but not its tools:
+    with another allowlist the dispatcher refuses coder_fs_* -- a warning on
+    every turn, and the turn starts unsearched."""
+    from plugins.file_ops.plugin import PLUGIN_FACTORY as FILE_OPS
+
+    agents = list(_preloading_agents(config))
+    assert "coder" in {name for name, _, _ in agents}, "fixture: no rules found"
+    # Longest instance name first: "coder_fs_ro_x" belongs to coder_fs_ro.
+    instances = sorted(config.plugins.servers, key=len, reverse=True)
+    problems = []
+    for agent, agent_config, rules in agents:
+        for rule in rules:
+            tool = rule["tool"]
+            instance = next((i for i in instances if tool.startswith(f"{i}_")), None)
+            if instance is None:
+                problems.append(f"{agent}: {tool} belongs to no instance")
+                continue
+            tools = agent_config.tools
+            if not tool_matches_patterns(tool, instance, tools.allowed) or \
+                    tool_matches_patterns(tool, instance, tools.blocked or []):
+                problems.append(f"{agent} may not call {tool}")
+            server_config = config.plugins.servers[instance]
+            if server_config.type == "file_ops":
+                offered = {t["function"]["name"] for t in FILE_OPS(
+                    name=instance, system_config=config,
+                    server_config=server_config).get_tools()}
+                if tool not in offered:
+                    problems.append(f"{agent}: {instance} offers no {tool}")
+                # The tool is offered either way; switched off, every call
+                # only answers that it is (server.py: absent means off).
+                search = getattr(server_config, "search", None) or {}
+                if tool.endswith("_semantic_search") and not search.get("enable_semantic_search"):
+                    problems.append(f"{agent}: {instance} has semantic search off")
+    assert not problems, problems

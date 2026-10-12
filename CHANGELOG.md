@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `tool_preload` rules may use two placeholders taken from the user's
+  message without a group of their own: `{message}` (its text) and
+  `{keywords}` (the code identifiers it names -- backticked spans,
+  snake_case, CamelCase, dotted names, paths -- as one escaped regex, at most
+  `max_keywords`, default 8). A rule using `{keywords}` on a message that
+  names none is skipped without a warning. The `coder` uses both: before its
+  first LLM call of a turn it greps `coder_fs` for the identifiers and runs
+  a semantic search with the message (five words or more), so the model
+  starts reading instead of searching. The setting `text_from` picks the
+  parts of a message the rules see, for a request that stands behind a long
+  preamble the 2000-character cap would otherwise spend itself on.
+
 ### Changed
 
 - The modules of `src/agent_system` above 1000 lines are split along their
