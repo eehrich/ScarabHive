@@ -1060,6 +1060,40 @@ class TestDerivedPlaceholders:
                                ("m", {"q": "`404`"}), ("n", {"id": 404})]
 
     @pytest.mark.asyncio
+    async def test_the_max_keywords_setting_bounds_the_grep_query(self, plugin):
+        import re
+
+        agent = FakeAgent()
+        await plugin.preload(make_context(
+            [user("touch a_one, b_two and c_three")], [self.GREP], agent,
+            config_extra={"max_keywords": 2}))
+        (_, params), = agent.calls
+        query = re.compile(params["query"])
+        assert query.search("a_one") and query.search("b_two")
+        assert not query.search("c_three"), "max_keywords was ignored"
+
+    @pytest.mark.asyncio
+    async def test_derived_placeholders_see_only_the_capped_text(self, plugin):
+        """{message} is the text the rules match, not the whole message; an
+        identifier past the cap is no keyword."""
+        from plugins.tool_preload.hooks import MATCH_TEXT_LIMIT
+
+        agent = FakeAgent()
+        message = {"match": "\\S", "tool": "m", "params": {"q": "{message}"}}
+        text = "first_name " + "x " * MATCH_TEXT_LIMIT + "late_name"
+        await plugin.preload(make_context([user(text)], [self.GREP, message], agent))
+        assert agent.calls[0] == ("fs_grep_search",
+                                  {"query": "first_name", "is_regex": True})
+        assert agent.calls[1] == ("m", {"q": text[:MATCH_TEXT_LIMIT]})
+
+    @pytest.mark.asyncio
+    async def test_keywords_inside_a_longer_value_are_filled_too(self, plugin):
+        agent = FakeAgent()
+        rule = {"match": "\\S", "tool": "t", "params": {"q": "(?:{keywords})\\("}}
+        await plugin.preload(make_context([user("call load_settings")], [rule], agent))
+        assert agent.calls == [("t", {"q": "(?:load_settings)\\("})]
+
+    @pytest.mark.asyncio
     async def test_short_replies_are_not_searched(self, plugin):
         agent = FakeAgent()
         result = await plugin.preload(make_context(
