@@ -255,7 +255,8 @@ class CodingCliServer(SchemaBasedToolServer):
         if self.command is None:
             logger.info("coding_cli: no Claude Code executable found -- %s offers no tools", name)
         elif not self.workdirs:
-            logger.warning("coding_cli: no usable workdir -- %s offers no tools", name)
+            # info, like no executable: an instance whose workdirs a user registers later (tracker) starts this way
+            logger.info("coding_cli: no usable workdir -- %s offers no tools", name)
 
     def get_template_vars(self) -> dict[str, Any]:
         template_vars = super().get_template_vars()
