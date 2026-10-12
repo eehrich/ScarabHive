@@ -58,10 +58,10 @@ logger = logging.getLogger(__name__)
 DATA_ROOT: Optional[Path] = None
 DATA_ROOT_ENV = "CODING_CLI_DATA_ROOT"
 MAX_TASK_CHARS = 20_000
-#: The most max_task_chars may be: a task goes in on stdin, and a long video's revision (its sources and the
-#: script so far) came to ~112k characters, ~120k with the largest script and findings seen (scarab_videos,
-#: 2026-10-09).
-MAX_TASK_CHARS_CAP = 200_000
+#: The most max_task_chars may be. A task goes in on stdin, so no command line bounds it; the real bound is
+#: the model's context window (some 3.5 characters a token in prose, so 1M characters is about 290k tokens).
+#: The cap only catches a runaway task; an instance sets its own limit below it.
+MAX_TASK_CHARS_CAP = 1_000_000
 # A json_schema as it stands on the command line, Windows quoting included (an
 # escaped quote counts up to four times): the rest of the line stays far below
 # Windows' 32,767 characters.
