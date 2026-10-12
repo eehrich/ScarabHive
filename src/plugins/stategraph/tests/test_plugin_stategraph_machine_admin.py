@@ -100,6 +100,50 @@ def test_the_list_names_each_machines_folder(tmp_path):
     assert groups == {"mine": "My machines", "grouped": "Writer/v6", "example": "some_plugin"}
 
 
+def test_the_list_reads_each_files_head_and_loads_no_machine(tmp_path):
+    """Loading a machine with its imports and validating it costs a few dozen machines seconds: the panel's list
+    must not wait for that, and needs only what the heads say."""
+    head = 'title: "The review"\ndescription: Reads it twice\ngroup: Writer/v6\n'
+    service, _, _ = service_over(tmp_path, ("own", "review.yaml", MACHINE.format(id="review") + head),
+                                 ("own", "broken.yaml", "stategraph: 1\nid: [unclosed\n"),
+                                 ("own", "odd.yaml", MACHINE.format(id="odd") + "title: [not, text]\n"))
+
+    def no_load(*args, **kwargs):
+        raise AssertionError("the list loaded a machine")
+
+    service.store.load = no_load
+
+    listed = {m["id"]: (m["title"], m["description"], m["group"]) for m in service.list_machines()}
+
+    assert listed == {"review": ("The review", "Reads it twice", "Writer/v6"), "broken": ("", "", "My machines"),
+                      "odd": ("", "", "My machines")}
+    assert not any("valid" in m for m in service.list_machines()), "the cheap list claims a check it did not make"
+
+
+def test_the_checks_count_each_machines_problems_and_a_broken_one_hides_no_other(tmp_path):
+    importing = MACHINE.format(id="importing").replace("initial: a\n", "imports:\n  gone: missing\ninitial: a\n")
+    service, _, _ = service_over(tmp_path, ("own", "fine.yaml", MACHINE.format(id="fine")),
+                                 ("own", "importing.yaml", importing),
+                                 ("own", "unreadable.yaml", MACHINE.format(id="unreadable")))
+    load = service.store.load
+
+    def load_or_fail(machine_id, **kwargs):
+        if machine_id == "unreadable":
+            raise OSError("the disk said no")
+        return load(machine_id, **kwargs)
+
+    service.store.load = load_or_fail
+
+    checks = service.machine_checks()
+    listed = {m["id"]: m for m in service.list_machines(checked=True)}
+
+    assert checks["fine"] == {"valid": True, "errors": 0, "warnings": 0}
+    assert checks["importing"]["valid"] is False and checks["importing"]["errors"] >= 1
+    assert checks["unreadable"] == {"valid": False, "errors": 1, "warnings": 0, "error": "OSError: the disk said no"}
+    assert {machine_id: {key: entry[key] for key in checks[machine_id]} for machine_id, entry in listed.items()} \
+        == checks, "the tool's checked list says what the checks say"
+
+
 def test_a_shipped_folder_made_writable_keeps_its_plugins_folder(tmp_path):
     service, _, _ = service_over(tmp_path, ("own", "mine.yaml", MACHINE.format(id="mine")),
                                  ("shipped", "example.yaml", MACHINE.format(id="example")),

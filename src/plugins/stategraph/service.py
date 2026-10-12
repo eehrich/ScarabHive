@@ -196,25 +196,34 @@ class StateGraphService:
             raise ServiceError(404, f"no machine {machine_id!r} in the machine roots")
 
     # ------------------------------------------------------------ machines
-    def list_machines(self) -> list[dict[str, Any]]:
+    def list_machines(self, *, checked: bool = False) -> list[dict[str, Any]]:
+        """Every machine with what its root file's head says (title, description, group): read, not loaded -- a
+        load with its imports and the validation cost a few dozen machines seconds. ``checked`` adds each one's
+        problem counts (``machine_checks``)."""
         out = []
         for machine in self.store.list():
+            head = _head(machine.path)
             entry: dict[str, Any] = {"id": machine.id, "file": str(machine.path), "root": machine.root,
-                                     "writable": machine.writable, "title": "", "description": "",
-                                     "group": _origin(machine)}
-            try:
-                tree = self._validate(self.store.load(machine.id))
-                spec = tree.root_file.spec
-                if spec is not None:
-                    entry["title"], entry["description"] = spec.title, spec.description
-                    entry["group"] = spec.group or entry["group"]
-                errors = [p for p in tree.problems if p.level == "error"]
-                entry.update(valid=not errors, errors=len(errors),
-                             warnings=len(tree.problems) - len(errors))
-            except Exception as exc:  # one broken file must not hide the others
-                entry.update(valid=False, errors=1, warnings=0, error=f"{type(exc).__name__}: {exc}")
+                                     "writable": machine.writable, "title": head.get("title", ""),
+                                     "description": head.get("description", ""),
+                                     "group": head.get("group") or _origin(machine)}
+            if checked:
+                entry.update(self._check(machine.id))
             out.append(entry)
         return out
+
+    def machine_checks(self) -> dict[str, dict[str, Any]]:
+        """Each machine's problem counts, by id: every machine loaded with its imports and validated. Costly: the
+        panel asks for it apart from the list, off the event loop."""
+        return {machine.id: self._check(machine.id) for machine in self.store.list()}
+
+    def _check(self, machine_id: str) -> dict[str, Any]:
+        try:
+            tree = self._validate(self.store.load(machine_id))
+        except Exception as exc:  # one broken file must not hide the others
+            return {"valid": False, "errors": 1, "warnings": 0, "error": f"{type(exc).__name__}: {exc}"}
+        errors = [p for p in tree.problems if p.level == "error"]
+        return {"valid": not errors, "errors": len(errors), "warnings": len(tree.problems) - len(errors)}
 
     def get_machine(self, machine_id: str) -> dict[str, Any]:
         self._require(machine_id)
@@ -968,6 +977,25 @@ def _origin(machine: Any) -> str:
         return OWN_GROUP
     folder = Path(machine.path).parent
     return folder.parent.name if folder.name == "machines" else folder.name
+
+
+#: What the machine list shows of a file, read without loading the machine.
+_HEAD_KEYS = ("title", "description", "group")
+
+
+def _head(path: Path) -> dict[str, str]:
+    """``title``, ``description`` and ``group`` of a machine file, those that are text: parsed by libyaml where it is
+    there, some fifty times faster than the loader's round trip. A file that does not read gives none -- its
+    problems are the check's to tell."""
+    from agent_system.utils.yaml_io import safe_load
+
+    try:
+        data = safe_load(path.read_text(encoding="utf-8"))
+    except Exception:  # unreadable, not YAML, nested too deeply
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {key: data[key] for key in _HEAD_KEYS if isinstance(data.get(key), str)}
 
 
 def _same_file(a: Any, b: Any) -> bool:

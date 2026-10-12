@@ -12,10 +12,11 @@ Errors: the service raises ``ServiceError(status, message)``, answered as that s
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -45,10 +46,45 @@ def _field(body: dict[str, Any], key: str, kind: type | tuple[type, ...], *, req
     return value
 
 
+class Coalesced:
+    """A costly read run once for every request that comes while it runs: a request that comes while one runs waits
+    for the next run, which starts when that one has ended and answers every request that came meanwhile. So at
+    most one runs and one waits, however many panels ask -- and no answer was read before its request came."""
+
+    def __init__(self, compute: Callable[[], Awaitable[Any]]):
+        self.compute = compute
+        self._running: Optional[asyncio.Task] = None
+        self._next: Optional[asyncio.Task] = None
+
+    async def __call__(self) -> Any:
+        if self._next is not None:  # queued, not started: it reads after this request came
+            task = self._next
+        elif self._running is not None:  # started before this request: it may have read already
+            task = self._next = asyncio.ensure_future(self._after(self._running))
+        else:
+            task = self._running = asyncio.ensure_future(self._run())
+        # a request that goes away (the panel aborted it) does not cancel a run the others wait for
+        return await asyncio.shield(task)
+
+    async def _after(self, before: asyncio.Task) -> Any:
+        await asyncio.wait([before])
+        self._running, self._next = self._next, None
+        return await self._run()
+
+    async def _run(self) -> Any:
+        try:
+            return await self.compute()
+        finally:
+            if self._running is asyncio.current_task():
+                self._running = None
+
+
 class StateGraphWebEndpoints:
     def __init__(self, server: Any):
         self.server = server
         self.templates = ui_templates(Path(__file__).parent / "templates")
+        # every machine loaded and validated, in a worker thread: seconds that must not hold up the other requests
+        self._machine_checks = Coalesced(lambda: self._call("machine_checks", off_loop=True))
 
     def get_web_router(self) -> APIRouter:
         router = create_schema_router(plugin_name=self.server.name, schema=self.server.get_schema_data(),
@@ -87,14 +123,16 @@ class StateGraphWebEndpoints:
             raise HTTPException(status_code=422, detail="The body must be a JSON object")
         return body
 
-    async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        """``server.service.<method>(...)``, awaited if it is a coroutine; its refusals become HTTP errors."""
+    async def _call(self, method: str, *args: Any, off_loop: bool = False, **kwargs: Any) -> Any:
+        """``server.service.<method>(...)``, awaited if it is a coroutine; its refusals become HTTP errors.
+        ``off_loop``: a plain method that reads much runs in a worker thread."""
         # imported here: the service module brings the engine, which the panel page itself does not need
         from .model.yamledit import EditError
         from .service import ServiceError
 
         try:
-            result = getattr(self.server.service, method)(*args, **kwargs)
+            call = getattr(self.server.service, method)
+            result = await asyncio.to_thread(call, *args, **kwargs) if off_loop else call(*args, **kwargs)
             if inspect.isawaitable(result):
                 result = await result
         except ServiceError as exc:
@@ -114,8 +152,13 @@ class StateGraphWebEndpoints:
     # ------------------------------------------------------------------ machines
 
     async def api_list_machines(self, request: Request):
+        """The list as the files' heads say it: cheap. Its problem counts come apart (``api_machine_checks``)."""
         await self._user(request)
         return await self._call("list_machines")
+
+    async def api_machine_checks(self, request: Request):
+        await self._user(request)
+        return await self._machine_checks()
 
     async def api_create_machine(self, request: Request):
         await self._user(request)

@@ -1075,7 +1075,11 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
 - `GET /` is the panel. `GET /api/catalog` gives its fields the agents, the runner's tools and the
   decision profiles (`machine_id`: the tools of that machine's runner); `GET /api/runs` takes `status`, `before` (the last run id of the page before) and
   `nested` (with `machine_id`: also the runs it ran in as a submachine).
-- **Machines.** `GET /api/machines`; `GET|PUT /api/machines/{id}` (tree and versions,
+- **Machines.** `GET /api/machines` (what each file's head says -- title, description, group --
+  without loading a machine); `GET /api/machine_checks` (each machine's problem counts by id: every
+  machine loaded and validated, seconds for a few dozen -- in a worker thread, one run at a time,
+  a request that comes while one runs gets the next; the panel asks after the machine it opens,
+  not on the timer's refresh); `GET|PUT /api/machines/{id}` (tree and versions,
   409 on conflict); `POST /api/machines` (new from template); `POST /api/validate`;
   `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none; `{op: group_states, names, name}` puts states side by side into a new composite; `{op: set_note, name, text}` sets a note of `notes:` (text empty or null removes it, the last one takes `notes:` along); `{op: move_state, name, into}` puts a state last into a composite, or a simple state without do, which becomes one (`into` null: the top level), the region it leaves taking the first state left there as initial; a composite's last state is neither removed nor moved out; with `expected_version` written at once, with `drafts` -- the caller's unsaved files -- applied to the root file's draft and written nowhere, answering `{graph, problems, draft}`); `PUT /api/machines/{id}/layout`;
   `DELETE /api/machines/{id}` with `{expected_version}`.

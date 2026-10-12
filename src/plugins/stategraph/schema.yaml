@@ -186,6 +186,7 @@ web_ui:
   endpoints:
     - {path: "/", method: GET, handler: render_panel, response_type: html, description: "The State Graph panel"}
     - {path: "/api/machines", method: GET, handler: api_list_machines, response_type: json}
+    - {path: "/api/machine_checks", method: GET, handler: api_machine_checks, response_type: json, description: "Each machine's problem counts, by id: every machine loaded and validated"}
     - {path: "/api/machines", method: POST, handler: api_create_machine, response_type: json}
     - {path: "/api/machines/{machine_id}", method: GET, handler: api_get_machine, response_type: json}
     - {path: "/api/machines/{machine_id}", method: PUT, handler: api_save_machine, response_type: json}
