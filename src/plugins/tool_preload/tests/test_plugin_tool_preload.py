@@ -946,3 +946,111 @@ class TestFailureEndsOnlyItsRule:
         assert "docs_after" not in ran, "the failed rule's chain went on"
         assert ran[-1] == "docs_independent", "the independent rule was dropped"
         assert server.calls[-1] == "docs_independent"
+
+
+# ---------------------------------------------------------------------------
+# Placeholders derived from the message: {message}, {keywords}
+# ---------------------------------------------------------------------------
+class TestExtractKeywords:
+    """Only what names code: a grep for plain words floods the result."""
+
+    def test_code_shapes_are_found_in_order(self):
+        from plugins.tool_preload.hooks import extract_keywords
+
+        text = ("Fix file_ops so HookContext and os.path work, see "
+                "src/plugins/coder/coder.yaml and the coding-harness skill")
+        assert extract_keywords(text) == [
+            "file_ops", "HookContext", "os.path",
+            "src/plugins/coder/coder.yaml", "coding-harness"]
+
+    def test_prose_shapes_are_not_keywords(self):
+        """German and English prose: abbreviations, slashes, hyphenated
+        nouns, acronyms and a URL host are not identifiers."""
+        from plugins.tool_preload.hooks import extract_keywords
+
+        text = ("Bitte z.B. die E-Mail und/oder die LLMs und APIs pruefen, "
+                "siehe https://gitlab.example.com/apps/agent_system und Plugin")
+        assert extract_keywords(text) == []
+
+    def test_backticked_spans_come_first_and_whole(self):
+        from plugins.tool_preload.hooks import extract_keywords
+
+        text = "rename my_var, it is used in `git commit -- <paths>`"
+        assert extract_keywords(text) == ["git commit -- <paths>", "my_var"]
+
+    def test_duplicates_ignore_case_and_the_limit_holds(self):
+        from plugins.tool_preload.hooks import extract_keywords
+
+        text = "a_b A_B c_d e_f g_h"
+        assert extract_keywords(text, limit=2) == ["a_b", "c_d"]
+
+    def test_max_keywords_setting(self):
+        from plugins.tool_preload.hooks import DEFAULT_MAX_KEYWORDS, _max_keywords
+
+        assert _max_keywords({"max_keywords": 3}) == 3
+        for bad in (0, -1, "3", True, None):
+            assert _max_keywords({"max_keywords": bad}) == DEFAULT_MAX_KEYWORDS
+
+
+class TestDerivedPlaceholders:
+    GREP = {"match": "\\S", "tool": "fs_grep_search",
+            "params": {"query": "{keywords}", "is_regex": True}}
+    SEMANTIC = {"match": "\\w+(?:\\W+\\w+){4,}", "tool": "fs_semantic_search",
+                "params": {"query": "{message}"}}
+
+    @pytest.mark.asyncio
+    async def test_the_workspace_is_searched_for_the_request(self, plugin):
+        """The coder's two rules: grep for the identifiers, semantic search
+        for the request in words. The grep query is a regex that finds each
+        identifier literally -- the dot in hooks.py is not a wildcard."""
+        import re
+
+        agent = FakeAgent()
+        text = "Bitte in hooks.py die Funktion load_settings umbauen"
+        result = await plugin.preload(make_context(
+            [user(text)], [self.GREP, self.SEMANTIC], agent))
+
+        assert result.modified is True
+        (grep, grep_params), (semantic, semantic_params) = agent.calls
+        assert (grep, semantic) == ("fs_grep_search", "fs_semantic_search")
+        assert semantic_params == {"query": text}
+        query = re.compile(grep_params["query"])
+        assert grep_params["is_regex"] is True
+        assert query.search("from hooks.py import load_settings")
+        assert not query.search("hooksXpy"), "the dot was not escaped"
+
+    @pytest.mark.asyncio
+    async def test_no_identifier_skips_the_grep_quietly(self, plugin, caplog):
+        """A request in plain words is the ordinary case, not a broken rule:
+        no grep for a literal '{keywords}', and no warning on every turn."""
+        agent = FakeAgent()
+        with caplog.at_level("WARNING", logger="plugins.tool_preload.hooks"):
+            await plugin.preload(make_context(
+                [user("Bitte baue die Suche im Plugin schneller")],
+                [self.GREP, self.SEMANTIC], agent))
+        assert [tool for tool, _ in agent.calls] == ["fs_semantic_search"]
+        assert not caplog.records, caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_missing_context_var_named_keywords_still_warns(self, plugin, caplog):
+        """Only the derived {keywords} is quiet; {{ keywords }} is a session
+        variable the operator relies on, and its absence is a config error."""
+        rule = {"match": "\\S", "tool": "t", "params": {"q": "{{ keywords }}"}}
+        with caplog.at_level("WARNING", logger="plugins.tool_preload.hooks"):
+            await plugin.preload(make_context([user("plain words")], [rule], FakeAgent()))
+        assert "keywords" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_named_group_wins_over_a_derived_placeholder(self, plugin):
+        agent = FakeAgent()
+        rule = {"match": "doc (?P<message>\\w+)", "tool": "t", "params": {"q": "{message}"}}
+        await plugin.preload(make_context([user("read doc plan now")], [rule], agent))
+        assert agent.calls == [("t", {"q": "plan"})]
+
+    @pytest.mark.asyncio
+    async def test_short_replies_are_not_searched(self, plugin):
+        agent = FakeAgent()
+        result = await plugin.preload(make_context(
+            [user("ok, weiter")], [self.GREP, self.SEMANTIC], agent))
+        assert result.modified is False
+        assert agent.calls == []

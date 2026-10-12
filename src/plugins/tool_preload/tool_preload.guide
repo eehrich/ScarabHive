@@ -81,6 +81,7 @@ reloaded.
 @{table}
 Key | Default | Meaning
 rules | none | the rules, tried in order; without rules the hook does nothing. See @{" Writing rules " link rules}
+max_keywords | 8 | the most identifiers @{tt}{keywords}@{utt} joins (see @{" Writing rules " link rules})
 max_calls_per_turn | 5 | the most tool calls all rules together make in one turn
 dedup | true | skip a rule whose calls are all already in the conversation
 max_seconds | 45 | seconds the preload of a turn may take, counted from the start of the hook; once used up, no further call starts. Anything but a positive number means 45
@@ -146,6 +147,31 @@ Parameter values may contain two kinds of placeholder:
 Placeholder | Filled from
 {name} | the named group @{tt}(?P<name>...)@{utt} of the rule's expression -- something the user typed
 {{ name }} | the session's template variable of that name -- the same value the prompt template gets
+{message} | the text of the user's message, as the rules see it (first 2000 characters)
+{keywords} | the code identifiers the message names, as one regular expression
+@{body}
+
+@{tt}{message}@{utt} and @{tt}{keywords}@{utt} need no group in the
+expression; every rule has them. A named group of the same name wins.
+
+@{tt}{keywords}@{utt} collects, in order, at most @{tt}max_keywords@{utt}
+of: spans in backticks, then words shaped like code -- snake_case,
+camelCase, @{tt}os.path@{utt}, @{tt}hooks.py@{utt},
+@{tt}src/plugins/coder@{utt}, @{tt}coding-harness@{utt}. Plain words are
+left out: grepped, "plugin" floods the result; a semantic search with
+@{tt}{message}@{utt} is the tool for those. The identifiers are escaped and
+joined by @{tt}|@{utt}, so the tool must read the value as a regular
+expression (@{tt}is_regex: true@{utt} for @{tt}grep_search@{utt}). When the
+message names none, a rule using @{tt}{keywords}@{utt} is skipped without a
+warning -- that is the ordinary case:
+
+@{code yaml}
+- match: "\\S"
+  tool: coder_fs_grep_search
+  params: {query: "{keywords}", is_regex: true, max_results: 40, context_lines: 1}
+- match: "\\w+(?:\\W+\\w+){4,}"     # five words or more: a request, not "ok"
+  tool: coder_fs_semantic_search
+  params: {query: "{message}", max_results: 8}
 @{body}
 
 @{tt}{{ name }}@{utt} is for state the user never types. The variables are
@@ -173,7 +199,8 @@ contains @{tt}{x}@{utt} is passed on as it is.
 @{bullet}Values that are not text pass unchanged; what JSON cannot hold (an
 unquoted YAML date) becomes text.
 @{bullet}A placeholder with no such group or variable -- or a variable set
-to null -- skips the whole rule, with a warning in the log. The tool is
+to null -- skips the whole rule, with a warning in the log (for
+@{tt}{keywords}@{utt} without one). The tool is
 never called with a literal @{tt}{doc}@{utt}.
 
 @{h2}A rule is all or nothing

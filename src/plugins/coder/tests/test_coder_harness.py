@@ -472,3 +472,28 @@ def test_every_harness_agent_reads_the_projects_agents_md(config, agent):
     assert roots, f"fixture: {agent} has no file tools"
     root, problem = choose_root(roots, override.get("root") or "")
     assert root is not None, problem
+
+
+# ── The workspace searched before the first LLM call ───────────────────────
+
+def test_the_coders_preload_rules_reach_its_search_tools(config):
+    """Every failure here is silent: an unregistered tool_preload instance
+    leaves the override without effect, and a tool the dispatcher refuses is
+    only a warning in the log -- the turn just starts unsearched."""
+    from plugins.tool_preload.hooks import KEYWORDS_PLACEHOLDER, MESSAGE_PLACEHOLDER
+
+    instance = config.plugins.servers["tool_preload"]
+    assert instance.enabled and instance.type == "tool_preload"
+    override = _agent_config(config, "coder").hooks.overrides["tool_preload.preload"]
+    assert override.get("enabled") is True
+
+    rendered = _rendered_tool_names(config, "coder_fs")
+    allowed = _agent_config(config, "coder").tools.allowed
+    used = set()
+    for rule in override["rules"]:
+        re.compile(rule["match"])
+        assert rule["tool"] in rendered, f"coder_fs offers no {rule['tool']}"
+        assert tool_matches_patterns(rule["tool"], "coder_fs", allowed), (
+            f"the coder may not call {rule['tool']}")
+        used.update(re.findall(r"\{(\w+)\}", str(rule["params"])))
+    assert {KEYWORDS_PLACEHOLDER, MESSAGE_PLACEHOLDER} <= used

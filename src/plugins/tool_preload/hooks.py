@@ -16,6 +16,11 @@ Placement of the injected pair — AFTER the user message — keeps the existing
 prefix byte-stable, so provider prompt caching is unaffected: the pair only
 extends it.
 
+Besides the named groups of its regex, every rule may use two placeholders
+derived from the message itself: ``{message}`` and ``{keywords}`` (the code
+identifiers it names, as one regex). That is what lets a coding agent start a
+turn with the workspace already searched for what the request is about.
+
 Fires once per user turn by construction: it only acts when the LAST message is
 a user message, and after acting the last message is a tool result.
 """
@@ -66,6 +71,103 @@ MATCH_TEXT_LIMIT = 2000
 #: interrupted, but the operator must be able to SEE which rule is pathological
 #: instead of hunting a mysteriously slow agent.
 _SLOW_MATCH_WARN_S = 0.1
+
+#: Placeholders every rule may use besides the named groups of its own regex,
+#: derived from the user message (see :func:`derived_placeholders`). A named
+#: group of the same name wins: the rule author asked for it explicitly.
+MESSAGE_PLACEHOLDER = "message"
+KEYWORDS_PLACEHOLDER = "keywords"
+
+#: How many keywords ``{keywords}`` joins at most (setting ``max_keywords``).
+DEFAULT_MAX_KEYWORDS = 8
+
+#: Keyword candidates: a `backticked` span, or a token -- letters, digits,
+#: ``_ . / -`` -- that starts with a letter or underscore and ends in a word
+#: character. Neither has a nested quantifier, so both stay linear on the
+#: capped text.
+_BACKTICK_RE = re.compile(r"`([^`\n]+)`")
+_TOKEN_RE = re.compile(r"[^\W\d][\w./-]*\w")
+#: URLs are dropped before tokens are taken: a host name is no keyword.
+_URL_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
+_CAMEL_RE = re.compile(r"[a-z][A-Z]|[A-Z]{2,}[a-z]{2,}")
+_KEYWORD_MIN_LEN = 3
+_KEYWORD_MAX_LEN = 100
+
+
+def _looks_like_code(token: str) -> bool:
+    """Whether a token names something in code rather than being prose.
+
+    Only shapes prose does not produce: snake_case, camelCase/PascalCase, a
+    dotted name with a real part (``os.path``, ``hooks.py`` -- not ``z.B``), a
+    path of three parts or with an extension (``src/plugins/coder``, not
+    ``und/oder``), lowercase kebab-case (``coding-harness``, not ``E-Mail``).
+    Plain words are left to a semantic search: grepped, "plugin" or "Datei"
+    flood the result with lines nobody asked for.
+    """
+    if "_" in token or _CAMEL_RE.search(token):
+        return True
+    if "/" in token:
+        return "." in token or len(token.split("/")) >= 3
+    if "." in token:
+        return any(len(part) >= 3 for part in token.split("."))
+    if "-" in token:
+        return token.islower() and all(len(part) >= 2 for part in token.split("-"))
+    return False
+
+
+def extract_keywords(text: str, limit: int = DEFAULT_MAX_KEYWORDS) -> List[str]:
+    """The code identifiers a user message names, in order, at most ``limit``.
+
+    `Backticked` spans first -- the user marked them as code -- then the tokens
+    :func:`_looks_like_code` accepts. Duplicates are dropped regardless of
+    case, since the search they feed ignores case too.
+    """
+    found: List[str] = []
+    seen: set = set()
+
+    def _add(candidate: str) -> None:
+        candidate = candidate.strip()
+        key = candidate.lower()
+        if (_KEYWORD_MIN_LEN <= len(candidate) <= _KEYWORD_MAX_LEN
+                and key not in seen and len(found) < limit):
+            seen.add(key)
+            found.append(candidate)
+
+    for span in _BACKTICK_RE.findall(text):
+        _add(span)
+    # The spans are blanked, not scanned twice: `git commit -- <paths>` must
+    # not come back as the fragments around its punctuation.
+    prose = _URL_RE.sub(" ", _BACKTICK_RE.sub(" ", text))
+    for token in _TOKEN_RE.findall(prose):
+        if _looks_like_code(token):
+            _add(token)
+    return found
+
+
+def _max_keywords(config: Dict[str, Any]) -> int:
+    """The ``max_keywords`` setting; anything but a positive integer is the default."""
+    value = config.get("max_keywords", DEFAULT_MAX_KEYWORDS)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return DEFAULT_MAX_KEYWORDS
+    return value
+
+
+def derived_placeholders(text: str, config: Dict[str, Any]) -> Dict[str, str]:
+    """The placeholders derived from the user message, for every rule alike.
+
+    * ``{message}`` -- the message text as the rules see it (capped at
+      MATCH_TEXT_LIMIT), e.g. as the query of a semantic search.
+    * ``{keywords}`` -- the identifiers of :func:`extract_keywords` as ONE
+      regular expression (escaped, joined by ``|``), for a grep with
+      ``is_regex: true``. Absent when the message names none: a rule that
+      uses it is then skipped, quietly -- a message without an identifier
+      is the ordinary case, not a misconfigured rule.
+    """
+    derived = {MESSAGE_PLACEHOLDER: text}
+    keywords = extract_keywords(text, _max_keywords(config))
+    if keywords:
+        derived[KEYWORDS_PLACEHOLDER] = "|".join(re.escape(k) for k in keywords)
+    return derived
 
 
 def _user_text(message: Any) -> str:
@@ -120,6 +222,11 @@ def _json_native(value: Any) -> Any:
         return value
     except (TypeError, ValueError):
         return str(value)
+
+
+class MissingGroup(KeyError):
+    """A ``{group}`` placeholder with no value -- told apart from a missing
+    ``{{ var }}``, so only the derived ``{keywords}`` is skipped quietly."""
 
 
 #: Both placeholder syntaxes in ONE pattern, so a single ``re.sub`` handles
@@ -204,7 +311,10 @@ def _fill_params(
             if name not in ctx or ctx[name] is None:
                 raise KeyError(name)
             return str(ctx[name])
-        return groups[m.group("grp")]                    # {group}, KeyError ok
+        name = m.group("grp")                            # {group}
+        if name not in groups:
+            raise MissingGroup(name)
+        return groups[name]
 
     def _fill(value: Any) -> Any:
         # Containers are templated too. Leaving them out meant a nested
@@ -329,7 +439,8 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
             # receives data, not a context object.
             plan = self._plan_calls(
                 rules, text, config, messages,
-                ctx_vars=_session_context_vars(context))
+                ctx_vars=_session_context_vars(context),
+                derived=derived_placeholders(text, config))
             if not plan:
                 return unchanged
 
@@ -353,10 +464,12 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
     # ------------------------------------------------------------------
     def _plan_calls(self, rules: List[Any], text: str, config: Dict[str, Any],
                     messages: List[Any],
-                    ctx_vars: Dict[str, Any] | None = None) -> List[Tuple[int, str, Dict[str, Any]]]:
+                    ctx_vars: Dict[str, Any] | None = None,
+                    derived: Dict[str, str] | None = None) -> List[Tuple[int, str, Dict[str, Any]]]:
         """Which (rule number, tool, params) to run, in order, after matching
         and dedup. The rule number keeps the chains apart: a failure ends only
-        the chain it happened in."""
+        the chain it happened in. ``derived`` are the placeholders of
+        :func:`derived_placeholders`, beneath each rule's own groups."""
         max_calls = int(config.get("max_calls_per_turn",
                                    DEFAULT_MAX_CALLS_PER_TURN))
         dedup = config.get("dedup", True)
@@ -387,7 +500,8 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                     f"check it for nested quantifiers")
             if not match:
                 continue
-            groups = {k: v for k, v in match.groupdict().items() if v is not None}
+            groups = {**(derived or {}),
+                      **{k: v for k, v in match.groupdict().items() if v is not None}}
 
             # Resolve the whole chain first — dedup and the cap apply to the
             # RULE, never to a single link of it.
@@ -401,6 +515,12 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                     params = _fill_params(
                         call.get("params") or {}, groups, ctx_vars)
                 except KeyError as e:
+                    if isinstance(e, MissingGroup) and e.args[0] == KEYWORDS_PLACEHOLDER:
+                        # Not a config error: this message names no identifier.
+                        logger.debug(f"tool_preload: rule {pattern!r} needs "
+                                     f"keywords, the message has none -- skipped")
+                        broken = True
+                        break
                     logger.warning(
                         f"tool_preload: rule {pattern!r} references {e} — "
                         f"neither a captured group nor a context var. "

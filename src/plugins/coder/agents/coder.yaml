@@ -194,6 +194,34 @@ plugins:
               enabled: true
             file_checkpoints.record_after_change:
               enabled: true
+            # The workspace searched for what the request is about, before
+            # the first LLM call of a turn -- the search the model otherwise
+            # spends its first round trip on. The results stand behind the
+            # user's message as tool calls of its own (preload_ ids), so the
+            # cached prefix is untouched. Through coder_fs: same sandbox,
+            # same allowlist as the model's own calls.
+            #   grep      the identifiers the message names (`backticks`,
+            #             snake_case, CamelCase, dotted names, paths); a
+            #             message without one skips it.
+            #   semantic  the message itself, for requests in plain words;
+            #             five words or more, so "ok" or "weiter" cost nothing.
+            # A follow-up turn searches again for ITS message; one repeated
+            # verbatim is not searched twice (dedup).
+            tool_preload.preload:
+              enabled: true
+              rules:
+                - match: "\\S"
+                  tool: coder_fs_grep_search
+                  params:
+                    query: "{keywords}"
+                    is_regex: true
+                    max_results: 40
+                    context_lines: 1
+                - match: "\\w+(?:\\W+\\w+){4,}"
+                  tool: coder_fs_semantic_search
+                  params:
+                    query: "{message}"
+                    max_results: 8
 
       metadata:
         author: "Enrico Ehrich"
