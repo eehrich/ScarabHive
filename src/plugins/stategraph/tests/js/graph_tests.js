@@ -156,6 +156,10 @@ test('autoLayout keeps the straight flow while it fits the canvas no smaller, el
   // a stand-in for ELK: the size each placement comes out at, and which one was asked for
   const fake = (sizes) => ({ asked: [], async layout(input) {
     const strategy = input.layoutOptions['elk.layered.nodePlacement.strategy'] || 'classic';
+    if (strategy !== 'classic') {
+      equal([input.layoutOptions['elk.direction'], input.layoutOptions['elk.layered.cycleBreaking.strategy']], ['DOWN', 'MODEL_ORDER'],
+        `${strategy} is still the flow layout`);
+    }
     this.asked.push(strategy);
     const [width, height] = sizes[strategy];
     return { width, height, strategy, children: [{ id: 's:a', x: 0, y: 0, width, height }], edges: [] };
@@ -171,6 +175,14 @@ test('autoLayout keeps the straight flow while it fits the canvas no smaller, el
     'a little wider: shown hardly smaller than the narrow one, the straight one');
   equal(await picked({ BRANDES_KOEPF: [3000, 1000], LINEAR_SEGMENTS: [1400, 1000] }), [1400, ['BRANDES_KOEPF', 'LINEAR_SEGMENTS']],
     'far wider: the narrow one');
+  equal(await picked({ BRANDES_KOEPF: [1500, 1000], LINEAR_SEGMENTS: [400, 1000] }), [1500, ['BRANDES_KOEPF']],
+    'exactly the canvas\'s shape: the straight one, without a second layout');
+  equal(await picked({ BRANDES_KOEPF: [1575, 1000], LINEAR_SEGMENTS: [400, 1000] }), [1575, ['BRANDES_KOEPF', 'LINEAR_SEGMENTS']],
+    'shown exactly the slack smaller: still the straight one');
+  equal(await picked({ BRANDES_KOEPF: [1580, 1000], LINEAR_SEGMENTS: [400, 1000] }), [400, ['BRANDES_KOEPF', 'LINEAR_SEGMENTS']],
+    'shown more than the slack smaller: the narrow one');
+  equal(await picked({ BRANDES_KOEPF: [1800, 1000], LINEAR_SEGMENTS: [1000, 1200] }), [1800, ['BRANDES_KOEPF', 'LINEAR_SEGMENTS']],
+    'a narrow one taller by as much is shown no larger: the straight one');
   equal(await picked({ classic: [500, 200] }, 'classic'), [500, ['classic']], 'classic is laid out once, as it was');
 });
 
