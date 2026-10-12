@@ -46,6 +46,40 @@ def test_the_event_name_is_not_squeezed_to_its_arrow_by_the_frame_select():
     assert widths["name"] > 120 and widths["name"] > widths["frame"], widths
 
 
+GRAPHBAR = """<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="/static/kit/kit.css">
+<link rel="stylesheet" href="/src/plugins/stategraph/static/panel.css">
+</head><body style="margin:0"><div style="width: 640px">%s</div>
+<script>
+const bar = document.querySelector('.sg-graphbar');
+const icons = [...bar.querySelectorAll(':scope > .pk-grow ~ * .pk-icon')];
+const middle = (el) => { const box = el.getBoundingClientRect(); return box.top + box.height / 2; };
+const ids = [...bar.querySelectorAll(':scope > .pk-grow ~ *')].map((el) => el.id || el.className);
+fetch('/__results', { method: 'POST', body: JSON.stringify({ middles: icons.map(middle), ids }) });
+</script></body></html>"""
+
+
+def test_the_graph_bar_icons_sit_on_one_line_and_zoom_out_lies_beside_zoom_in():
+    """The help icon is a span, not a button: inline, it hung below the buttons' icons."""
+    template = (PLUGIN / "templates" / "panel.html").read_text(encoding="utf-8")
+    bar = re.search(r'<div class="pk-row sg-graphbar">.*?</div>\s*<div class="sg-canvas-wrap">', template, re.S).group(0)
+    bar = bar.rsplit("<div", 1)[0]
+    bar = re.sub(r"\{\{\s*icon\([^)]*size='sm'[^)]*\)\s*\}\}", '<svg class="pk-icon pk-icon--sm"></svg>', bar)
+    bar = re.sub(r"\{#.*?#\}|\{\{.*?\}\}", "", bar, flags=re.S)
+    page = REPO / "tmp" / f"sg_graphbar_{uuid.uuid4().hex}.html"
+    page.parent.mkdir(exist_ok=True)
+    page.write_text(GRAPHBAR % bar, encoding="utf-8")
+    try:
+        seen = run_test_page(BROWSER, f"tmp/{page.name}", timeout=60)
+    finally:
+        page.unlink(missing_ok=True)
+
+    assert len(seen["middles"]) == 7, seen
+    assert max(seen["middles"]) - min(seen["middles"]) < 0.5, seen
+    zoom_out = seen["ids"].index("zoomOut")
+    assert seen["ids"][zoom_out + 1] == "zoomIn", seen
+
+
 CHOICES = """<!doctype html><html><head><meta charset="utf-8"></head><body>
 <select id="event"><option value="approve">approve</option><option value="reject">reject</option></select>
 <select id="bare"><option value="approve">approve</option><option value="reject">reject</option></select>

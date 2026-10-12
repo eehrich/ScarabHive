@@ -39,12 +39,12 @@
           <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="undo" title="Undo the last edit (Ctrl+Z)" aria-label="Undo" disabled>{{ icon('undo-2', size='sm') }}</button>
           <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="redo" title="Redo what was undone (Ctrl+Shift+Z, Ctrl+Y)" aria-label="Redo" disabled>{{ icon('redo-2', size='sm') }}</button>
           <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="zoomOut" title="Zoom out" aria-label="Zoom out">{{ icon('zoom-out', size='sm') }}</button>
-          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="fit" title="Fit the machine into view" aria-label="Fit">{{ icon('maximize-2', size='sm') }}</button>
           <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="zoomIn" title="Zoom in" aria-label="Zoom in">{{ icon('zoom-in', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="fit" title="Fit the machine into view" aria-label="Fit">{{ icon('maximize-2', size='sm') }}</button>
           <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="autoLayout" title="Auto layout: forget the positions dragged by hand and lay out anew" aria-label="Auto layout">{{ icon('layout-grid', size='sm') }}</button>
           {#- the canvas's gestures behind an icon, not over the graph: a hint there covered states in a recording; every
               shortcut is in the inspector's Shortcuts #}
-          <span class="pk-muted" title="Drag to move · drag the handle to connect · double-click to rename · Shortcuts in the inspector">{{ icon('circle-help', size='sm', label='Canvas help') }}</span>
+          <span class="pk-muted sg-graphbar-help" title="Drag to move · drag the handle to connect · double-click to rename · Shortcuts in the inspector">{{ icon('circle-help', size='sm', label='Canvas help') }}</span>
         </div>
         <div class="sg-canvas-wrap">
           <svg id="canvas" class="sg-canvas" tabindex="0" role="application" aria-label="State machine graph: drag from a state's handle to another state to connect them"></svg>
