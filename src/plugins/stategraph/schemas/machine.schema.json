@@ -1745,6 +1745,12 @@
       "title": "Machines",
       "type": "object"
     },
+    "meta": {
+      "additionalProperties": true,
+      "description": "data for the tools that start this machine, one key each (tracker reads meta.tracker); the engine ignores it",
+      "title": "Meta",
+      "type": "object"
+    },
     "notes": {
       "additionalProperties": {
         "type": "string"
