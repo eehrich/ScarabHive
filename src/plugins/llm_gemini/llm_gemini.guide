@@ -107,7 +107,7 @@ prompt_cache_key, prompt_cache_mode, ... | -- | not read: Gemini caches implicit
 @{code yaml}
 llm_system:
   models:
-    gemini-3-pro:
+    gemini-4-argon:
       provider: gemini_sdk
       model: gemini-4-argon
       api_key: ${GOOGLE_API_KEY}
@@ -118,8 +118,8 @@ llm_system:
       safety_settings:
         HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
         HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
-    gemini-3-pro-nostream:
-      extends: gemini-3-pro
+    gemini-4-argon-nostream:
+      extends: gemini-4-argon
       include_thoughts: false
       capabilities:
         streaming: false
