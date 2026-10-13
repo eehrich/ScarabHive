@@ -88,7 +88,7 @@ are logged as "not wired ... will be ignored" when the client is built.
 @{table}
 Key | Default | What the clients do with it
 provider | -- | gemini or gemini_sdk
-model | -- | the model id, e.g. gemini-3.1-pro-preview
+model | -- | the model id, e.g. gemini-4-argon
 api_key | GEMINI_API_KEY, else GOOGLE_API_KEY | building the client fails without one
 base_url | https://generativelanguage.googleapis.com/v1beta | gemini only; gemini_sdk ignores it
 context_window | the model-config default 32768, 200000 if 0 | only reported to the core, never sent
@@ -109,7 +109,7 @@ llm_system:
   models:
     gemini-3-pro:
       provider: gemini_sdk
-      model: gemini-3.1-pro-preview
+      model: gemini-4-argon
       api_key: ${GOOGLE_API_KEY}
       request_timeout: 240
       max_tokens: 16384

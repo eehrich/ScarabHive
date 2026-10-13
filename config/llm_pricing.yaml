@@ -76,6 +76,14 @@ gemini-3.1-pro-preview:
   cached_input: 0.20
   batch_discount: 0.5
 
+# Regular price from 01.12.2026; Google bills 50 % of it through 30.11.2026
+# (2.00 / 10.00 / 0.10). No long-context tier; implicit caching only.
+gemini-4-argon:
+  input: 4.00
+  output: 20.00
+  cached_input: 0.20
+  batch_discount: 0.5
+
 # =============================================================================
 # Anthropic Claude — Direct API (api.anthropic.com)
 # Cache read = 0.1x of input price (Fable 5.1: $0.25/M flat), cache write premium = 0.25x (5-minute cache)
@@ -300,6 +308,13 @@ google/gemini-3.8-flash:
 google/gemini-3.1-pro-preview:
   input: 2.00
   output: 12.00
+  cached_input: 0.20
+
+# Regular price from 01.12.2026; billed at 50 % through 30.11.2026, which
+# usage_json.cost reports.
+google/gemini-4-argon:
+  input: 4.00
+  output: 20.00
   cached_input: 0.20
 
 # OpenAI via OpenRouter — standard tier (endpoint tag `openai`), <=272K context.

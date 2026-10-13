@@ -38,7 +38,7 @@ llm_system:
     openrouter-gemini:
       extends: openrouter-base
       prompt_cache_ttl_minutes: 5   # implicit cache, about 3-5 min, set by Google (not configurable); from 4096 prompt tokens
-      context_window: 1048576     # Flash and Lite: full window, no long-context tier (Pro: below)
+      context_window: 1048576     # full window: Flash, Lite and Argon have no long-context tier
       tool_schema_dialect: gemini_function_declarations   # otherwise MALFORMED_FUNCTION_CALL
       provider_routing: # make a defined order to avoid reasoning breaks
         # AI Studio first (docs/llm_catalog.md).
@@ -62,8 +62,8 @@ llm_system:
 
     openrouter-gemini-pro:
       extends: openrouter-gemini
-      model: google/gemini-3.1-pro-preview
-      context_window: 200000      # window 1M, but Pro costs double above 200K prompt tokens
+      model: google/gemini-4-argon   # replaces google/gemini-3.1-pro-preview
+      context_window: 1048576     # no long-context tier, unlike 3.1 Pro
 
     openrouter-gemini-pro-unlimited:
       extends: openrouter-gemini-pro
@@ -359,12 +359,12 @@ llm_system:
 
     or-gemini-pro:
       model_ref: openrouter-gemini-pro
-      description: "OpenRouter Gemini Pro"
+      description: "OpenRouter Gemini 4 Argon"
       max_steps: 500
 
     or-gemini-pro-unlimited:
       model_ref: openrouter-gemini-pro-unlimited
-      description: "OpenRouter Gemini Pro - No output token limit"
+      description: "OpenRouter Gemini 4 Argon - No output token limit"
       max_steps: 500
 
     or-claude-sonnet:

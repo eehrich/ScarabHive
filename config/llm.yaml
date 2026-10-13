@@ -77,10 +77,10 @@ llm_system:
     gemini-3-pro:
       provider: gemini_sdk
       prompt_cache_ttl_minutes: 5   # implicit cache, about 3-5 min, set by Google (not configurable); from 4096 prompt tokens
-      model: gemini-3.1-pro-preview
+      model: gemini-4-argon      # replaces gemini-3.1-pro-preview; implicit caching only
       api_key: ${GOOGLE_API_KEY}
       base_url: https://generativelanguage.googleapis.com/v1beta
-      context_window: 200000      # window 1M, but Pro costs double above 200K prompt tokens
+      context_window: 1048576     # no long-context tier, unlike 3.1 Pro; output up to 32768 on the direct API
       request_timeout: 240
       max_tokens: 16384
       thinking_level: high
@@ -119,10 +119,10 @@ llm_system:
 
     gemini-3-pro-batch:
       provider: batch
-      model: gemini-3.1-pro-preview
+      model: gemini-4-argon
       api_key: ${GOOGLE_API_KEY}
       batch_provider: gemini
-      context_window: 200000      # Pro: double price above 200K prompt tokens
+      context_window: 1048576     # no long-context tier
       max_tokens: 16384
       thinking_level: high
       include_thoughts: false
@@ -472,22 +472,22 @@ llm_system:
       
     gemini-pro:
       model_ref: gemini-3-pro-nostream
-      description: "Google Gemini Pro"
+      description: "Google Gemini 4 Argon"
       max_steps: 500
 
     gemini-pro-unlimited:
       model_ref: gemini-3-pro-nostream-unlimited
-      description: "Google Gemini Pro (unlimited)"
+      description: "Google Gemini 4 Argon (unlimited)"
       max_steps: 500
 
     gemini-pro-stream:
       model_ref: gemini-3-pro
-      description: "Google Gemini Pro"
+      description: "Google Gemini 4 Argon"
       max_steps: 500
 
     gemini-pro-batch:
       model_ref: gemini-3-pro-batch
-      description: "Google Gemini Pro (batch)"
+      description: "Google Gemini 4 Argon (batch)"
       max_steps: 500
 
     gpt-pro:
