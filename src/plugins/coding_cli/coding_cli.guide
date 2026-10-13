@@ -368,6 +368,7 @@ branch, base, worktree | the branch, the commit it started from, the worktree fo
 commit | the commit the plugin made at the end; null when nothing changed or in plan mode
 turns, duration_s | as Claude Code reported them
 cost_usd | Claude Code's @{tt}total_cost_usd@{utt}. On the subscription a notional amount -- the measure the stream reports, nothing is billed
+model | the run's model, as the stream's init event names it (a helper model may answer parts of the run); null when it named none
 abo | subscription usage per window, e.g. @{tt}{"five_hour": 0.34, "seven_day": 0.51}@{utt}
 changes | untrusted: @{tt}M<TAB>path@{utt} per file against base, plus @{tt}uncommitted ...@{utt} lines; at most 100 lines and a "... N more"
 denials | untrusted: tool calls Claude Code was refused, e.g. @{tt}Write /elsewhere/x.txt@{utt}; at most 20, 120 characters each

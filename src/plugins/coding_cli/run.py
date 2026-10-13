@@ -278,11 +278,12 @@ def tool_line(name: str, args: Any, root: Path) -> str:
 
 def outcome(stream: Iterable[dict]) -> dict:
     """The parts of a finished stream the plugin keeps (M-CC-1, M-CC-2)."""
-    found: dict[str, Any] = {"session": None, "result": None, "rate_limit": None}
+    found: dict[str, Any] = {"session": None, "result": None, "rate_limit": None, "model": None}
     for event in stream:
         kind = event.get("type")
         if kind == "system" and event.get("subtype") == "init":
             found["session"] = event.get("session_id")
+            found["model"] = event.get("model")     # the run's model (a helper model may answer parts of it)
         elif kind == "rate_limit_event" and isinstance(event.get("rate_limit_info"), dict):
             found["rate_limit"] = event["rate_limit_info"]
         elif kind == "result":

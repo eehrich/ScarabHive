@@ -1059,6 +1059,8 @@ class CodingCliServer(SchemaBasedToolServer):
                 (self._root() / "quota.json").write_text(json.dumps(found["rate_limit"]), encoding="utf-8")
             if found["session"]:
                 record["claude_session"] = found["session"]
+            if isinstance(found["model"], str) and found["model"]:
+                record["model"] = found["model"][:100]
             # A success result wins over a stop that came too late: a killed
             # run never gets as far as one.
             if result and not result.get("is_error") and result.get("subtype") == "success":
@@ -1118,7 +1120,7 @@ class CodingCliServer(SchemaBasedToolServer):
         # File names, denied paths and git's or Claude Code's messages are the run's words too.
         answer = {"status": "success", **{k: record.get(k) for k in (
             "run_id", "state", "mode", "workdir", "branch", "base", "commit", "worktree", "turns",
-            "duration_s", "abo", "cost_usd")}, "changes": _untrusted(changes),
+            "duration_s", "abo", "cost_usd", "model")}, "changes": _untrusted(changes),
             "denials": _untrusted(record.get("denials") or [])}
         hidden = record.get("hidden") or []
         if hidden:
