@@ -1060,7 +1060,7 @@ class CodingCliServer(SchemaBasedToolServer):
             if found["session"]:
                 record["claude_session"] = found["session"]
             if isinstance(found["model"], str) and found["model"]:
-                record["model"] = found["model"][:100]
+                record["model"] = found["model"]
             # A success result wins over a stop that came too late: a killed
             # run never gets as far as one.
             if result and not result.get("is_error") and result.get("subtype") == "success":
