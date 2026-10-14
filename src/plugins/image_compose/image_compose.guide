@@ -343,9 +343,13 @@ command-line flag: a machine policy that sets the browser's proxy
 
 A script runs for at most @{tt}canvas_timeout@{utt} seconds (default
 60); then the browser is killed and the layer fails with "the script ran
-longer than 60s (an endless loop?)". On Windows the browser's child
-processes end with it (tested). On Linux that is not measured: a
-renderer caught in an endless loop may outlive its browser. Each canvas
+longer than 60s (an endless loop?)". Its child processes end with it,
+the renderer in the endless loop included -- tested with Edge on Windows
+and with Debian's Chromium as root (--no-sandbox) in a container
+(tests/linux.Dockerfile builds it and runs the canvas tests). A
+container whose first process is the plugin's own Python keeps them as
+zombies, dead but unreaped; start it with an init (docker run --init).
+Each canvas
 layer starts a browser of its own -- about a second, a 4096 x 4096 layer
 about five; one of random pixels takes 19 seconds and 300 MB in the
 plugin's process.

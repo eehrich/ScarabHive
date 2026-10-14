@@ -283,10 +283,12 @@ def render_canvas(script: str, size: tuple[int, int], images: dict[str, str] | N
         # as much as it likes, and the size is known before anything is read.
         with open(d / "dom.html", "wb") as dom:
             try:
-                # The timeout kills the browser process. On Windows its
-                # renderer, busy in the endless script, ends with it
-                # (test_canvas_layer: no process of this run is left; killing
-                # the tree changed nothing). Not measured on Linux.
+                # The timeout kills the browser process; its renderer, busy in
+                # the endless script, ends with it (test_canvas_layer: no
+                # process of this run is left). Measured with Edge on Windows
+                # and with Debian's Chromium as root with --no-sandbox in a
+                # container; without an init process there the children stay
+                # as zombies, dead but unreaped.
                 done = subprocess.run(cmd, stdout=dom, stderr=subprocess.PIPE, timeout=timeout, env=env)
             except subprocess.TimeoutExpired:
                 raise CanvasError(f"the script ran longer than {timeout:.0f}s (an endless loop?)") from None
