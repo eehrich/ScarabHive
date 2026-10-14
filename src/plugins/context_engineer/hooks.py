@@ -80,6 +80,10 @@ class _HysteresisMark:
     tokens: int | None = None
     stale_readings: int = 0
     provisional: bool = False
+    #: The run left the session over max_messages (Pre-Layer P could not take
+    #: enough: the rest is protected). Over the limit only a mark without it
+    #: is passed, or every call ran P and a trial again.
+    over_limit: bool = False
     #: The run that set the mark was one the window forced (window_is_tight).
     #: A mark without it does not hold such a run back: a run thrown away as
     #: too shallow at 78 % of the window held the forced one until the reading
@@ -1058,9 +1062,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # layers that rewrite messages, the next waits until the context has
             # grown by that many tokens — unless a deeper layer has become due
             # since. Never for a manual run or the byte limit. The media passes
-            # are not held: they used to bypass the old time limit ENTIRELY —
-            # and took the token layers along, so with always_compact_media on
-            # (production) the limit never held at all.
+            # used to bypass the old time limit ENTIRELY -- and took the token
+            # layers along, so with always_compact_media on (production) the
+            # limit never held at all. Under min_reduction the strategy holds
+            # them with the layers (compact: rewrite_layers=False).
             growth = None
             held = False
             if mark is not None:
@@ -1074,7 +1079,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 # the next forced run came past the window's end.
                 if window_tight and mark.forced and mark.tokens is not None:
                     hold = min(hold, max(0, context_window - mark.tokens) // 2)
+                # Never over max_messages either: a media-only run thrown away
+                # sets the mark too, and Pre-Layer P must run before the
+                # summarizer's message limit -- unless the run that set it was
+                # over the limit as well, and P could not get under it.
                 held = (not is_manual and not bytes_exceeded
+                        and not (over_message_limit and not mark.over_limit)
                         and growth < hold
                         and _due_level(gate_tokens, cfg) <= mark.level
                         and (mark.forced or not window_tight))
@@ -1134,15 +1144,18 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
 
             # Only a run of a rewriting layer sets the mark — also one that
             # found nothing to take: that is exactly the run which would
-            # otherwise repeat on every call. A media-only pass must not, or it
-            # would hold the token layers back for good.
+            # otherwise repeat on every call. A media-only pass that was kept
+            # does not (it would hold the token layers back); one thrown away
+            # does, through discarded_saving, at the level then due -- a layer
+            # that becomes due later is not held by it.
             # The level is what was due once Pre-Layer T had taken its share.
             # A run thrown away as too shallow (min_reduction) sets it as well:
             # it would be tried again on every call, and thrown away again.
             if (any(layer in (1, 2, 3, "P") for layer in result.layers_applied)
                     or result.discarded_saving is not None):
                 self._hysteresis_marks[session_id] = _HysteresisMark(
-                    level=_due_level(gate_tokens, cfg), forced=window_tight)
+                    level=_due_level(gate_tokens, cfg), forced=window_tight,
+                    over_limit=0 < cfg.max_messages < len(result.modified_messages))
                 self._hysteresis_marks.move_to_end(session_id)
                 while len(self._hysteresis_marks) > _MAX_HYSTERESIS_MARKS:
                     self._hysteresis_marks.popitem(last=False)

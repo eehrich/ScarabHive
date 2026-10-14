@@ -40,6 +40,9 @@ class TestEventBasedMediaCompaction:
         impl.layer1_threshold = 60000  # High threshold to ensure we're below it
         impl.compact_media_after_user_message = True  # Enable event-based compaction
         impl.min_tokens_between_compactions = 0  # No hysteresis in these tests
+        # The trigger is under test, not the yield gate: a 1 KB clip in three
+        # short messages is not worth a cache break.
+        impl.min_reduction = 0
         # Pinned at its default: above 0 this compacts media whatever the
         # trigger says, and every assertion about the trigger goes green on its
         # own.

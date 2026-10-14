@@ -344,19 +344,31 @@ Every rewrite of old messages breaks the provider's prompt cache from
 there on, so after a run of Pre-Layer P or a layer the next such run waits
 until the reading has grown by @{tt}min_tokens_between_compactions@{utt}
 (20000) since -- unless a deeper layer has become due, the byte limit is
-exceeded, or a person typed /compact. The media passes and Pre-Layer T are
-not held.
+exceeded, or a person typed /compact. Pre-Layer T is not held; the media
+passes are held with the layers while @{tt}min_reduction@{utt} is above 0.
 
 @{h2}Only when it is worth it
 
-A run of layers 1 to 3 is tried on a copy first, storing nothing. It is
-kept when it takes @{tt}min_reduction@{utt} (0.2) of the context;
+A run of the media passes and layers 1 to 3 is tried on a copy first,
+storing nothing. It is kept when it takes @{tt}min_reduction@{utt} (0.2)
+of the context;
 otherwise the context goes out unchanged and the hysteresis holds the
 next attempt. The reason is the price of the break: the call after a
 rewrite pays the whole context at the input price instead of the cached
 one, and a few percent fewer tokens do not earn that back. Kept whatever
-it takes: a /compact, a run for the byte limit, and a run of a context
-past @{tt}force_above_window_share@{utt} (0.85) of the model's window.
+it takes: a /compact, a run for the byte limit, a run of a context past
+@{tt}force_above_window_share@{utt} (0.85) of the model's window, and one
+with more than @{tt}always_compact_media_max@{utt} (20) pictures where
+Pre-Layer M can take some (over 20 images per request Anthropic accepts at
+most 2000 px a side).
+
+The media passes are in it because they rewrite old messages too. Measured
+on production agents over two weeks: 99 of 114 calls that found
+only part of their prefix in the cache followed a run of Pre-Layer M, each
+taking ~9k tokens of images and breaking the cache at ~10 % of the context
+-- costly each time. Under the gate the images pile up past
+@{tt}always_compact_media_keep_last@{utt} until taking them out is worth
+it, and then go in one cut.
 
 A rewrite that costs no cache is not held to the share: one that touches
 only the round no request has carried yet (on a call that tries a run, a
@@ -676,6 +688,7 @@ compact_media_after_user_message | false | take media out when a person writes
 compact_media_after_final_response | false | no effect
 always_compact_media_keep_last | 0 | messages with media that keep it; 0 off
 always_compact_media_headroom | 0 | how far below keep_last an eviction goes
+always_compact_media_max | 20 | past this many pictures Pre-Layer M runs whatever it takes; 0 off
 store_media_before_compaction | true | save inline media to disk before taking it out
 media_store_ttl_seconds | 604800 | how long a saved media file is kept after its last use
 media_store_max_files | 500 | saved media files per session, the oldest go first

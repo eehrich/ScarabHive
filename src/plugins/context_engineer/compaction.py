@@ -161,8 +161,9 @@ class CompactionConfig:
     compact_media_after_user_message: bool = False  # Compact all media when a new user message arrives
     compact_media_after_final_response: bool = False  # Compact all media when agent sends final response
     
-    # Always compact media setting - runs regardless of token count
-    # Removes ALL media items except those in the last N messages that contain media
+    # Pre-Layer M: media items leave all but the last N messages that contain
+    # media, whatever the token count -- under min_reduction only when that is
+    # worth the cache break (see always_compact_media_max).
     # Set to 0 to disable, >0 to enable and keep last N media-containing messages
     always_compact_media_keep_last: int = 0  # 0 = disabled, 5 = keep last 5 messages with media
 
@@ -173,10 +174,17 @@ class CompactionConfig:
     # Without it each new media message evicts the oldest kept one on the next
     # call: an old message rewritten and the prompt cache broken from there,
     # every call. With it `headroom` new media messages arrive without a break
-    # after each one (while keep_last - headroom >= 1), and keep_last
-    # stays the most the context carries -- except for media the model has not
-    # seen yet, which always stays for one call. 0 = evict down to keep_last.
+    # after each one (while keep_last - headroom >= 1). Media the model has
+    # not seen yet always stays for one call. 0 = evict down to keep_last.
     always_compact_media_headroom: int = 0
+    # Under min_reduction the media pile up past keep_last until taking them
+    # out is worth the cache break. Past this many PICTURES (items, not
+    # messages: a round of parallel results carries several) Pre-Layer M runs
+    # however little it takes. 20 because Anthropic accepts at most 2000 px a
+    # side once a request carries more than 20 images; before the gate the
+    # window kept about keep_last (12). Only where M can evict (keep_last > 0
+    # and more messages with media than that). 0 = no cap.
+    always_compact_media_max: int = 20
 
     # Media store settings (for storing inline base64 before compaction)
     store_media_before_compaction: bool = True  # Save inline media to disk before removing
@@ -941,8 +949,9 @@ class LayeredCompactionStrategy:
                 by its own rules (keep_last, min_size). Layers 2 and 3 keep
                 their thresholds.
             rewrite_layers: False holds back the layers that rewrite messages
-                (P, 1, 2, 3) — the hook's hysteresis. The media passes and
-                Pre-Layer T still run.
+                (P, 1, 2, 3) — the hook's hysteresis. Under min_reduction the
+                media passes are held as well, except past
+                always_compact_media_max or the byte limit; Pre-Layer T runs.
             context_window: The model's window, for Pre-Layer T. None skips it.
             arrivals_only: The hook came in for Pre-Layer T alone (below its
                 gate or held): no other pass runs.
@@ -1094,42 +1103,53 @@ class LayeredCompactionStrategy:
                 result.final_tokens = self._estimate_messages_tokens(result.modified_messages)
                 current_tokens = result.final_tokens + self._scale_offset(result)
 
-        # Pre-Layer M: Always compact media (keep last N) - runs regardless of token count
-        # This is the most aggressive media compaction, runs first if enabled
-        if self.config.always_compact_media_keep_last > 0:
-            await self._compact_media_always(result)
-            # Mark that always-compact media was applied (shown as "M" in UI)
-            if result.media_always_compacted > 0 and "M" not in result.layers_applied:
-                result.layers_applied.append("M")
-        
-        # Pre-Layer: Media deduplication (always run if enabled)
-        # This is independent of token thresholds - duplicates waste space regardless
-        if self.config.deduplicate_media:
-            await self._deduplicate_media(result)
-        
-        # Pre-Layer: Event-triggered media compaction
-        # Compact all media if configured to do so on user message or final response
-        if media_event:
-            await self._compact_media_after_event(result, trigger=media_event)
-        
-        # If byte size is the issue, compact media aggressively
-        # Keep media only in the last 2 messages (of any role), evict the large
-        # items (10 KB and up) in all others. Measured again: request_bytes is
-        # from before the passes above, and when they already brought the
-        # request under the limit, this one took every large item outside the
-        # last two messages for nothing.
-        bytes_exceeded = bytes_exceeded and (
-            self._estimate_request_bytes(result.modified_messages)
-            > self.config.max_request_bytes)
-        if bytes_exceeded:
-            await self._compact_media_for_byte_limit(result)
-            # Mark that size-limit compaction was applied (shown as "B" in UI)
-            if "B" not in result.layers_applied:
-                result.layers_applied.append("B")
-        
-        if not rewrite_layers:
+        # The media passes rewrite messages a request has carried, like the
+        # layers, and under min_reduction they are weighed with them: measured
+        # on production agents over two weeks, 99 of 114 partial cache hits
+        # followed a run of Pre-Layer M, each breaking the cache at ~10 % of
+        # the context for ~9k tokens of images -- costly each time. Held by
+        # the hook's hysteresis, none of them runs; past always_compact_media_max
+        # or the byte limit they run whatever they take -- they alone.
+        forced_media = bytes_exceeded or self._media_past_cap(result.modified_messages)
+        if not rewrite_layers and min_reduction > 0 and not forced_media:
             return self._finalize(result)
+        if manual or min_reduction <= 0 or self.window_is_tight(current_tokens, context_window):
+            await self._apply_rewrites(result, current_tokens, manual, bytes_exceeded,
+                                       media_event, rewrite_layers)
+            return self._finalize(result)
+        if forced_media:
+            # The layers are weighed after them, from the first message they
+            # rewrote (_free_from): forced along, a Layer 1 that took 4 % broke
+            # the cache before the first picture. Forced only while the request
+            # is still over the byte limit. The trial does not run them again:
+            # a second Pre-Layer M finds nothing and set its count to 0.
+            await self._apply_media_passes(result, bytes_exceeded, media_event)
+            if not rewrite_layers:
+                return self._finalize(result)
+            if self._estimate_request_bytes(result.modified_messages) > self.config.max_request_bytes:
+                await self._apply_layers(result, current_tokens, False, True)
+                return self._finalize(result)
+        return self._finalize(await self._apply_layers_if_worth_it(
+            result, current_tokens, min_reduction, media_event, rewrite_layers, media=not forced_media))
 
+    def _media_past_cap(self, messages: list[dict[str, Any]]) -> bool:
+        """More evictable pictures than always_compact_media_max, and Pre-Layer M can
+        take some: without it (keep_last 0, or no message over keep_last) forcing
+        the run took nothing out and let the layers past the gate."""
+        cap, keep_last = self.config.always_compact_media_max, self.config.always_compact_media_keep_last
+        if cap <= 0 or keep_last <= 0:
+            return False
+        items, with_media = self._evictable_media(messages)
+        return len(items) > cap and len(with_media) > keep_last
+
+    async def _apply_rewrites(self, result: CompactionResult, current_tokens: int, manual: bool,
+                              bytes_exceeded: bool, media_event: str | None, layers: bool,
+                              media: bool = True) -> None:
+        """The passes that rewrite sent messages: (``media``) the media passes, then (``layers``) 1-3."""
+        if media:
+            await self._apply_media_passes(result, bytes_exceeded, media_event)
+        if not layers:
+            return
         # Apply layers progressively based on TOKEN thresholds
         # Layer 1/2/3 should ONLY run based on token thresholds
         # The 'force' flag is used to enter compact() even when below threshold,
@@ -1148,18 +1168,48 @@ class LayeredCompactionStrategy:
         # before them, on purpose: a media pass that evicted has broken the
         # cache on this call already, and Layer 1 rides along. Read after it,
         # a growing loop crossed the threshold again one quiet call later and
-        # paid Layer 1 as a break of its own. (Under min_reduction it rides
-        # along from the pass's first change on -- _free_from; what it would
-        # rewrite before that is a break of its own and has to be worth it.)
+        # paid Layer 1 as a break of its own. (Under min_reduction the media
+        # passes and the layers are weighed together, see compact.)
         bytes_exceeded = bytes_exceeded and (
             self._estimate_request_bytes(result.modified_messages)
             > self.config.max_request_bytes)
-        must = manual or bytes_exceeded or self.window_is_tight(current_tokens, context_window)
-        if must or min_reduction <= 0:
-            await self._apply_layers(result, current_tokens, manual, bytes_exceeded)
-            return self._finalize(result)
-        return self._finalize(await self._apply_layers_if_worth_it(
-            result, current_tokens, min_reduction))
+        await self._apply_layers(result, current_tokens, manual, bytes_exceeded)
+
+    async def _apply_media_passes(self, result: CompactionResult, bytes_exceeded: bool,
+                                  media_event: str | None) -> None:
+        """Pre-Layer M, the duplicates, the event pass and Pre-Layer B."""
+        # Pre-Layer M: Always compact media (keep last N), whatever the token count
+        # This is the most aggressive media compaction, runs first if enabled
+        if self.config.always_compact_media_keep_last > 0:
+            await self._compact_media_always(result)
+            # Mark that always-compact media was applied (shown as "M" in UI)
+            if result.media_always_compacted > 0 and "M" not in result.layers_applied:
+                result.layers_applied.append("M")
+
+        # Pre-Layer: Media deduplication (if enabled)
+        # This is independent of token thresholds - duplicates waste space regardless
+        if self.config.deduplicate_media:
+            await self._deduplicate_media(result)
+
+        # Pre-Layer: Event-triggered media compaction
+        # Compact all media if configured to do so on user message or final response
+        if media_event:
+            await self._compact_media_after_event(result, trigger=media_event)
+
+        # If byte size is the issue, compact media aggressively
+        # Keep media only in the last 2 messages (of any role), evict the large
+        # items (10 KB and up) in all others. Measured again: request_bytes is
+        # from before the passes above, and when they already brought the
+        # request under the limit, this one took every large item outside the
+        # last two messages for nothing.
+        bytes_exceeded = bytes_exceeded and (
+            self._estimate_request_bytes(result.modified_messages)
+            > self.config.max_request_bytes)
+        if bytes_exceeded:
+            await self._compact_media_for_byte_limit(result)
+            # Mark that size-limit compaction was applied (shown as "B" in UI)
+            if "B" not in result.layers_applied:
+                result.layers_applied.append("B")
 
     def window_is_tight(self, current_tokens: int, context_window: int | None) -> bool:
         """Whether the context is past force_above_window_share of the model's window."""
@@ -1167,12 +1217,14 @@ class LayeredCompactionStrategy:
         return bool(context_window and share > 0 and current_tokens >= context_window * share)
 
     async def _apply_layers_if_worth_it(self, result: CompactionResult, current_tokens: int,
-                                        min_reduction: float) -> CompactionResult:
-        """Layers 1-3 on a copy; the copy when they took min_reduction of the context.
+                                        min_reduction: float, media_event: str | None = None,
+                                        layers: bool = True, media: bool = True) -> CompactionResult:
+        """The media passes and layers 1-3 on a copy; for real when together they
+        took min_reduction of the context.
 
-        Otherwise ``result`` as it came in -- the media passes' work included,
-        the layers' not -- with ``discarded_saving`` set, which the hook reads
-        to hold the next attempt back (min_tokens_between_compactions).
+        Otherwise ``result`` as it came in -- what T and P did included, the
+        rest not -- with ``discarded_saving`` set, which the hook reads to hold
+        the next attempt back (min_tokens_between_compactions).
 
         A run that costs no cache is kept whatever it takes: one that changes
         nothing before ``_free_from`` -- the round no request carried yet, or
@@ -1189,26 +1241,28 @@ class LayeredCompactionStrategy:
         trial = copy.deepcopy(result)
         token = _TRIAL.set(True)
         try:
-            await self._apply_layers(trial, current_tokens, False, False)
+            await self._apply_rewrites(trial, current_tokens, False, False, media_event, layers, media)
         finally:
             _TRIAL.reset(token)
-        if not any(layer in (1, 2, 3) for layer in trial.layers_applied):
-            return result  # none was due
         before, after = result.modified_messages, trial.modified_messages
-        saved = self._estimate_messages_tokens(before) - self._estimate_messages_tokens(after)
         first_change = next((i for i, (old, new) in enumerate(zip(before, after)) if old != new),
                             None if len(before) == len(after) else min(len(before), len(after)))
+        # A layer that ran and found nothing is weighed too (and thrown away,
+        # which holds the next try): it would run again on every call.
+        if first_change is None and not any(layer in (1, 2, 3) for layer in trial.layers_applied):
+            return result  # nothing was due
+        saved = self._estimate_messages_tokens(before) - self._estimate_messages_tokens(after)
         free_from = self._free_from(result)
         if saved >= min_reduction * current_tokens or (
                 first_change is not None and first_change >= free_from):
-            await self._apply_layers(result, current_tokens, False, False)
+            await self._apply_rewrites(result, current_tokens, False, False, media_event, layers, media)
             return result
         logger.info(
             f"Compaction not worth the cache break: layers {trial.layers_applied} would take "
             f"{saved} of {current_tokens} tokens ({saved / max(1, current_tokens):.1%} "
             f"< {min_reduction:.0%}) -- context left as it is")
         result.discarded_saving = max(0, saved)
-        if 1 in trial.layers_applied and free_from < len(before):
+        if layers and 1 in trial.layers_applied and free_from < len(before):
             # Shapes, not the list: Layer 1 writes into it in place.
             shapes = [_message_shape(m) for m in before]
             await self._apply_layer1(result, only_from=free_from)
@@ -1523,7 +1577,8 @@ class LayeredCompactionStrategy:
 
         if result.media_deduplicated > 0:
             result.final_tokens = self._estimate_messages_tokens(result.modified_messages)
-            logger.info(f"Media deduplication: {result.media_deduplicated} duplicates compacted")
+            if not _TRIAL.get():
+                logger.info(f"Media deduplication: {result.media_deduplicated} duplicates compacted")
 
     def _store_inline_media(
         self,
@@ -1725,6 +1780,7 @@ class LayeredCompactionStrategy:
 
         if result.media_compacted_after_event > 0:
             result.final_tokens = self._estimate_messages_tokens(messages)
+        if result.media_compacted_after_event > 0 and not _TRIAL.get():
             logger.info(
                 f"Media compaction after {trigger}: "
                 f"{result.media_compacted_after_event} items compacted"
@@ -1751,19 +1807,7 @@ class LayeredCompactionStrategy:
         if not messages or keep_count <= 0:
             return
 
-        # Selection: the last N messages that CARRY media keep theirs, the rest
-        # lose it. multimodal_content is narrowed to real media here, unlike
-        # everywhere else — this is the only rule that lets an item decide
-        # whether a whole MESSAGE counts as recent, so a stray attachment must
-        # not spend one of the N slots.
-        # Only what can be evicted counts: a message whose sole media is a
-        # remote URL never loses it, and counted it kept the window one over
-        # the limit, so every new image broke the cache again.
-        found = [(msg_idx, item_idx, item, in_mm)
-                 for msg_idx, item_idx, item, in_mm
-                 in self._iter_media(messages, mm_types=("image", "audio", "video"))
-                 if self._can_evict(item, in_mm)]
-        with_media = sorted({msg_idx for msg_idx, _, _, _ in found})
+        found, with_media = self._evictable_media(messages)
         if len(with_media) <= keep_count:
             return
 
@@ -1782,14 +1826,33 @@ class LayeredCompactionStrategy:
 
         compacted_count = await self._evict_media(result, picks, store=True)
         result.media_always_compacted = compacted_count
-
         if compacted_count > 0:
             result.final_tokens = self._estimate_messages_tokens(messages)
+
+        if compacted_count > 0 and not _TRIAL.get():
             logger.info(
                 f"Always-compact media: {compacted_count} items compacted, "
                 f"{len(protected & set(with_media))} of {len(with_media)} messages with media kept "
                 f"(keep_last={keep_count}, headroom={headroom})"
             )
+
+    def _evictable_media(self, messages: list[dict[str, Any]]) -> tuple[list[tuple], list[int]]:
+        """The media Pre-Layer M can take, and the messages that carry it.
+
+        Selection: the last N messages that CARRY media keep theirs, the rest
+        lose it. multimodal_content is narrowed to real media here, unlike
+        everywhere else — this is the only rule that lets an item decide
+        whether a whole MESSAGE counts as recent, so a stray attachment must
+        not spend one of the N slots.
+        Only what can be evicted counts: a message whose sole media is a
+        remote URL never loses it, and counted it kept the window one over
+        the limit, so every new image broke the cache again.
+        """
+        found = [(msg_idx, item_idx, item, in_mm)
+                 for msg_idx, item_idx, item, in_mm
+                 in self._iter_media(messages, mm_types=("image", "audio", "video"))
+                 if self._can_evict(item, in_mm)]
+        return found, sorted({msg_idx for msg_idx, _, _, _ in found})
 
     async def _compact_multimodal_content(
         self,

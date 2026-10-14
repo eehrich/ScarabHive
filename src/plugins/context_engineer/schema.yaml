@@ -298,13 +298,19 @@ config:
     type: integer
     default: 0
     minimum: 0
-    description: "Always compact media regardless of token count. Keeps only the last N messages that contain media, plus what arrived since the model's last answer (a round of parallel tool calls may bring several images; the model sees each of them once). Set to 0 to disable, 5 to keep last 5 messages with media."
+    description: "Pre-Layer M, whatever the token count: media stays in the last N messages that contain media, plus what arrived since the model's last answer (a round of parallel tool calls may bring several images; the model sees each of them once). Under min_reduction an eviction waits until it is worth the cache break (at the latest always_compact_media_max). Set to 0 to disable, 5 to keep last 5 messages with media."
 
   always_compact_media_headroom:
     type: integer
     default: 0
     minimum: 0
-    description: "How far below always_compact_media_keep_last an eviction goes. Nothing is evicted while at most keep_last messages carry media; once more do, only the newest max(1, keep_last - headroom) keep theirs. Each eviction rewrites an old message and breaks the provider prompt cache from there; with headroom that many new media messages arrive without a break after each one (one break per headroom+1 while keep_last - headroom >= 1), at the cost of fewer visible media right after it. keep_last stays the most the context carries, except for media the model has not seen yet. 0 = evict down to keep_last on every new media message."
+    description: "How far below always_compact_media_keep_last an eviction goes. Nothing is evicted while at most keep_last messages carry media; once more do, only the newest max(1, keep_last - headroom) keep theirs. Each eviction rewrites an old message and breaks the provider prompt cache from there; with headroom that many new media messages arrive without a break after each one (one break per headroom+1 while keep_last - headroom >= 1), at the cost of fewer visible media right after it. Under min_reduction keep_last is where an eviction may start, not the most the context carries: it waits until it is worth the cache break, at the latest until always_compact_media_max. 0 = evict down to keep_last on every new media message."
+
+  always_compact_media_max:
+    type: integer
+    default: 20
+    minimum: 0
+    description: "Past this many evictable pictures (items, not messages) Pre-Layer M runs however little it takes (min_reduction); below it the media wait until taking them out is worth the cache break. 20: past 20 images per request Anthropic accepts at most 2000 px a side. Only where M can evict (keep_last above 0 and more messages with media than keep_last). 0 = no cap."
 
   # Pre-Layer P: message limit
   max_messages:

@@ -14,6 +14,7 @@ the model a call goes to.
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
 from pathlib import Path
@@ -244,6 +245,263 @@ class TestWhatCostsNoCache:
         assert "P" in result.layers_applied, "fixture: nothing was pruned"
         assert result.tool_results_stored >= 1 and result.discarded_saving is None
 
+
+def _media_run(tmp_path, images: int, task: str = "go", same_picture: bool = False,
+               inline: bool = False) -> list[dict]:
+    """An agent run of ``images`` steps, each answered by a result with a picture; all of it sent.
+
+    ``inline``: the picture as a payload in the content (Pre-Layer M writes those to the
+    media store before it takes them out), not as a file the result points to.
+    """
+    messages = [{"role": "user", "content": task}]
+    for i in range(images):
+        data = b"\x89PNG\r\n\x1a\n" + bytes([i % 250]) * 4000
+        picture = tmp_path / f"shot_{0 if same_picture else i}.png"
+        picture.write_bytes(data)
+        result = {"role": "tool", "tool_call_id": f"m{i}", "name": "shot", "content": f"shot {i}"}
+        if inline:
+            result["content"] = [{"type": "text", "text": f"shot {i}"}, {"type": "image_url", "image_url": {
+                "url": "data:image/png;base64," + base64.b64encode(data).decode()}}]
+        else:
+            result["multimodal_content"] = [{"type": "image", "path": str(picture), "mime_type": "image/png"}]
+        messages += [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": f"m{i}", "type": "function", "function": {"name": "shot", "arguments": "{}"}}]},
+            result,
+        ]
+    return messages + [{"role": "assistant", "content": "seen them"}]
+
+
+def _pictures(messages: list[dict]) -> int:
+    inline = sum(1 for m in messages if isinstance(m.get("content"), list)
+                 for item in m["content"] if isinstance(item, dict) and item.get("type") == "image_url")
+    return inline + sum(len(m.get("multimodal_content") or []) for m in messages)
+
+
+def _stored_media(tmp_path, session: str) -> list[Path]:
+    return list((tmp_path / session / "media").rglob("media_*.png"))
+
+
+class TestTheMediaPassesPayToo:
+    """Pre-Layer M rewrites old messages like the layers: measured: a costly
+    break for ~9k tokens of images, most of the partial cache hits of 14 days."""
+
+    #: The media window alone: newest 1 of more than 3 keep their picture; no layer is due.
+    MEDIA = {"layer1_threshold": 10**9, "target_tokens": 10**8, "always_compact_media_keep_last": 3,
+             "always_compact_media_headroom": 2, "always_compact_media_max": 20, "deduplicate_media": False}
+
+    @pytest.mark.asyncio
+    async def test_a_few_pictures_in_a_long_context_stay(self, plugin, tmp_path):
+        """Five pictures (5600 tokens) of ~45k: a break for 12 %."""
+        strategy, _ = _session(plugin, "few", **self.MEDIA)
+        messages = _media_run(tmp_path, 6, task=BIG * 40, inline=True)
+        tokens = strategy._estimate_messages_tokens(messages)
+
+        result = await strategy.compact(copy.deepcopy(messages), tokens, min_reduction=0.2)
+
+        assert result.discarded_saving is not None and 0 < result.discarded_saving < 0.2 * tokens
+        assert _pictures(result.modified_messages) == 6 and result.media_always_compacted == 0
+        assert not _stored_media(tmp_path, "few"), "the trial wrote the pictures to the media store"
+
+    @pytest.mark.asyncio
+    async def test_pictures_that_are_most_of_the_context_go(self, plugin, tmp_path):
+        strategy, _ = _session(plugin, "most", **self.MEDIA)
+        messages = _media_run(tmp_path, 6, inline=True)
+
+        result = await strategy.compact(messages, strategy._estimate_messages_tokens(messages),
+                                        min_reduction=0.2)
+
+        assert result.discarded_saving is None and "M" in result.layers_applied
+        assert _pictures(result.modified_messages) == 1
+        assert len(_stored_media(tmp_path, "most")) == 5, "the real run did not keep the pictures it took"
+
+    @pytest.mark.asyncio
+    async def test_past_the_cap_they_go_whatever_they_take(self, plugin, tmp_path):
+        """More messages with pictures than a provider may accept in one request."""
+        strategy, _ = _session(plugin, "cap", **{**self.MEDIA, "always_compact_media_max": 5})
+        messages = _media_run(tmp_path, 6, task=BIG * 40)
+
+        result = await strategy.compact(messages, strategy._estimate_messages_tokens(messages),
+                                        min_reduction=0.2)
+
+        assert result.discarded_saving is None and _pictures(result.modified_messages) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("gate, cap, left", [(0.2, 20, 6), (0.0, 20, 1), (0.2, 5, 1)])
+    async def test_held_by_the_hysteresis_the_pictures_wait_too(self, plugin, tmp_path, gate, cap, left):
+        """rewrite_layers=False is the hook's hold; without the gate the media pass ran anyway,
+        and past the cap it runs held or not -- after a discarded run every call is held."""
+        strategy, _ = _session(plugin, f"held-{gate}-{cap}", **{**self.MEDIA, "always_compact_media_max": cap})
+        messages = _media_run(tmp_path, 6)
+
+        result = await strategy.compact(messages, strategy._estimate_messages_tokens(messages),
+                                        rewrite_layers=False, min_reduction=gate)
+
+        assert _pictures(result.modified_messages) == left
+
+    @pytest.mark.asyncio
+    async def test_the_cap_forces_nothing_where_the_media_window_takes_nothing(self, plugin, tmp_path):
+        """Three messages with pictures, keep_last 3, cap 2: Pre-Layer M has nothing to take,
+        and forcing the run let a shallow Layer 1 past the gate."""
+        strategy, _ = _session(plugin, "cap-idle", **{**self.MEDIA, "always_compact_media_max": 2,
+                                                      "layer1_threshold": 1000, "target_tokens": 500})
+        messages = _media_run(tmp_path, 3, task=BIG * 40)
+
+        result = await strategy.compact(messages, strategy._estimate_messages_tokens(messages),
+                                        min_reduction=0.2)
+
+        assert result.discarded_saving is not None, "a run that takes nothing was forced"
+
+    @pytest.mark.asyncio
+    async def test_the_pass_after_a_persons_message_is_weighed_not_lost(self, plugin, tmp_path):
+        """compact_media_after_user_message (only with keep_last 0): the trial has to run it too."""
+        strategy, _ = _session(plugin, "event", **{**self.MEDIA, "always_compact_media_keep_last": 0,
+                                                   "compact_media_after_user_message": True,
+                                                   "target_tokens": 500})
+        messages = [*_media_run(tmp_path, 6), {"role": "user", "content": "and now?"}]
+
+        result = await strategy.compact(messages, strategy._estimate_messages_tokens(messages),
+                                        trigger_event="user_message", min_reduction=0.2)
+
+        assert result.discarded_saving is None and _pictures(result.modified_messages) < 6
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("keep_last", [0, 3])
+    async def test_an_old_copy_of_a_picture_is_weighed_too(self, plugin, tmp_path, keep_last):
+        """Duplicates: the older copies of one picture in a long context."""
+        # target_tokens low: without the media window compact() is entered from there on only.
+        # cap 2 under three pictures: the media window off (0) or with nothing to take (3 of 3), the
+        # cap has nothing to force -- forced anyway, it took the duplicates whatever they saved.
+        strategy, _ = _session(plugin, f"dup-{keep_last}", **{**self.MEDIA,
+                                                 "always_compact_media_keep_last": keep_last,
+                                                 "deduplicate_media": True, "target_tokens": 500,
+                                                 "always_compact_media_max": 2})
+        messages = _media_run(tmp_path, 3, task=BIG * 40, same_picture=True)
+        tokens = strategy._estimate_messages_tokens(messages)
+
+        kept_whole = await strategy.compact(copy.deepcopy(messages), tokens, min_reduction=0.2)
+        without_gate = await strategy.compact(copy.deepcopy(messages), tokens)
+
+        assert _pictures(without_gate.modified_messages) == 1, "fixture: no duplicate was found"
+        assert _pictures(kept_whole.modified_messages) == 3 and kept_whole.discarded_saving is not None
+
+    @pytest.mark.asyncio
+    async def test_through_the_hook_a_shallow_eviction_is_tried_once_per_growth(
+            self, plugin, tmp_path, monkeypatch):
+        """Tried and thrown away, then held: the media window runs on every call, the trial must not."""
+        messages = _media_run(tmp_path, 6, task=BIG * 40)
+        trials = []
+        original = LayeredCompactionStrategy._apply_layers_if_worth_it
+
+        async def counted(self, *args, **kwargs):
+            trials.append(1)
+            return await original(self, *args, **kwargs)
+
+        monkeypatch.setattr(LayeredCompactionStrategy, "_apply_layers_if_worth_it", counted)
+
+        async def call(reading):
+            monkeypatch.setattr(plugin, "_read_tokens", lambda *a: (reading, True))
+            return await plugin.engineer_context(HookContext(
+                hook_type=HookType.PRE_LLM_CALL, request_id="r", session_id="hook-media",
+                messages=[ChatMessage(**m) for m in copy.deepcopy(messages)],
+                hook_config={**self.MEDIA, "min_tokens_between_compactions": 20_000}))
+
+        first = await call(45_000)
+        held = await call(46_000)
+        tried_after_held = len(trials)
+        await call(70_000)
+
+        assert first.metadata.get("reason") == "not_worth_it", first.metadata
+        assert _pictures([m.model_dump() for m in held.context.messages]) == 6, "the held call evicted"
+        assert (tried_after_held, len(trials)) == (1, 2), "tried on every call, or never again"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("forced_by", ["cap", "bytes"])
+    async def test_forced_media_leave_the_layers_weighed(self, plugin, tmp_path, forced_by):
+        """Past the cap or the byte limit the media passes run whatever they take -- they alone. Forced
+        along, a Layer 1 that took ~4 % rewrote the old results before the first picture."""
+        strategy, _ = _session(plugin, f"forced-{forced_by}", **{
+            **self.MEDIA, "always_compact_media_max": 5 if forced_by == "cap" else 20,
+            "layer1_threshold": 1000, "target_tokens": 500, "tool_result_keep_last": 0})
+        head = _run_messages(2, task=BIG * 40)
+        messages = head + _media_run(tmp_path, 6, inline=True)[1:]
+        if forced_by == "bytes":
+            strategy.config.max_request_bytes = strategy._estimate_request_bytes(messages) - 8000
+        before = copy.deepcopy(messages)
+
+        result = await strategy.compact(messages, strategy._estimate_messages_tokens(messages), min_reduction=0.2)
+
+        assert "M" in result.layers_applied and result.discarded_saving is not None, result.layers_applied
+        first = next(i for i, (old, new) in enumerate(zip(before, result.modified_messages)) if old != new)
+        assert first > len(head), f"rewritten before the first picture (message {first})"
+
+    @pytest.mark.asyncio
+    async def test_a_thrown_away_media_run_does_not_hold_the_message_limit(self, plugin, tmp_path, monkeypatch):
+        """The mark a discarded media-only trial sets held Pre-Layer P too, past max_messages --
+        where the summarizer's message limit comes next."""
+        messages = _media_run(tmp_path, 6, task=BIG * 40)
+        monkeypatch.setattr(plugin, "_read_tokens", lambda *a: (45_000, True))
+
+        async def call(sent):
+            return await plugin.engineer_context(HookContext(
+                hook_type=HookType.PRE_LLM_CALL, request_id="r", session_id="hook-limit",
+                messages=[ChatMessage(**m) for m in copy.deepcopy(sent)],
+                hook_config={**self.MEDIA, "min_tokens_between_compactions": 20_000, "max_messages": 20}))
+
+        first = await call(messages)
+        more = messages + [{"role": "user" if i % 2 else "assistant", "content": f"note {i}"} for i in range(10)]
+        second = await call(more)
+
+        assert first.metadata.get("reason") == "not_worth_it", first.metadata
+        assert len(more) > 20 and len(second.context.messages) <= 20, len(second.context.messages)
+
+
+    @pytest.mark.asyncio
+    async def test_a_forced_eviction_keeps_its_count_when_the_layers_follow(self, plugin, tmp_path):
+        """The trial after a forced run ran Pre-Layer M again: it found nothing and set the count
+        of evicted media to 0 -- status line, history and panel showed none."""
+        strategy, _ = _session(plugin, "count", **{**self.MEDIA, "always_compact_media_headroom": 0,
+                                                   "always_compact_media_max": 5, "layer1_threshold": 1000,
+                                                   "target_tokens": 500, "tool_result_keep_last": 0})
+        messages = _media_run(tmp_path, 6, inline=True)[:-1] + [{"role": "assistant", "content": "ok"}]
+        messages += [{"role": "assistant", "content": None, "tool_calls": [
+            {"id": f"p{i}", "type": "function", "function": {"name": "shot", "arguments": "{}"}}
+            for i in range(4)]}]
+        # an unsent parallel round: more pictures than keep_last, and a big result Layer 1 takes for free
+        messages += [{"role": "tool", "tool_call_id": f"p{i}", "name": "shot", "content": [
+            {"type": "text", "text": BIG * 5 if i == 3 else f"shot {i}"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(
+                b"\x89PNG\r\n\x1a\n" + bytes([100 + i]) * 4000).decode()}}]} for i in range(4)]
+
+        result = await strategy.compact(messages, strategy._estimate_messages_tokens(messages), min_reduction=0.2)
+
+        assert 1 in result.layers_applied and result.discarded_saving is None, result.layers_applied
+        assert result.media_always_compacted == 6, result.media_always_compacted
+
+    @pytest.mark.asyncio
+    async def test_over_a_limit_pre_layer_p_cannot_reach_the_hold_still_holds(self, plugin, monkeypatch):
+        """Past max_messages the hold is passed -- but not where the run that set the mark stayed over
+        the limit too (the rest is protected): there every call ran P and a trial again."""
+        trials = []
+        original = LayeredCompactionStrategy._apply_layers_if_worth_it
+
+        async def counted(self, *args, **kwargs):
+            trials.append(1)
+            return await original(self, *args, **kwargs)
+
+        monkeypatch.setattr(LayeredCompactionStrategy, "_apply_layers_if_worth_it", counted)
+        messages = [{"role": "system", "content": f"note {i}"} for i in range(12)] + _run_messages()
+        config = {**LAYER_ONE, "tool_result_keep_last": RESULTS - 1, "min_tokens_between_compactions": 20_000,
+                  "max_messages": 10, "min_reduction": 0.2}
+        for reading in (15_000, 15_100, 15_200):
+            monkeypatch.setattr(plugin, "_read_tokens", lambda *a, r=reading: (r, True))
+            answer = await plugin.engineer_context(HookContext(
+                hook_type=HookType.PRE_LLM_CALL, request_id="r", session_id="stuck",
+                messages=[ChatMessage(**m) for m in copy.deepcopy(messages)], hook_config=config))
+            messages = [m.model_dump(exclude_none=True) for m in answer.context.messages]
+
+        assert len(messages) > 10, "fixture: P got under the limit"
+        assert len(trials) == 1, f"tried {len(trials)} times"
 
 class TestTheHook:
     """Through the real hook: its gates, its hold, the window of the model."""

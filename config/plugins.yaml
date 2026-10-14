@@ -992,8 +992,8 @@ plugins:
         compact_media_after_user_message: true  # Compact media files after user messages 
         compact_media_after_final_response: true  # Compact media files after final agent response
         
-        # Always compact media - runs regardless of token count
-        # Removes ALL media items except those in the last N messages that contain media
+        # Pre-Layer M, whatever the token count: media items leave all but the last N
+        # messages that contain media
         # and what arrived since the model's last answer (parallel previews: each seen once).
         # Set to 0 to disable, >0 to enable. Agents that need more (cover_artist,
         # cover_feedback_judge) set their own value in their agent YAML.
@@ -1001,6 +1001,11 @@ plugins:
         # Past keep_last, evict down to keep_last - headroom (at least 1): one
         # cache break per headroom+1 new media messages instead of one per message.
         always_compact_media_headroom: 10
+        # Under min_reduction an eviction past keep_last waits until it is worth
+        # the cache break (measured: a costly break for ~9k
+        # tokens of images); past this many pictures it runs anyway (Anthropic:
+        # over 20 images per request at most 2000 px a side).
+        always_compact_media_max: 20
 
     context_usage_tracker:
       type: context_usage_tracker

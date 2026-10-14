@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `context_engineer`: the media passes (Pre-Layer M, duplicates, the
+  event pass) are weighed with layers 1-3 under `min_reduction` and held with
+  them. Measured on production agents over two weeks: 99 of 114
+  partial cache hits followed a run of Pre-Layer M, ~9k tokens of images for
+  a break at ~10 % of the context, each one costly. Past
+  `always_compact_media_max` (20) pictures Pre-Layer M runs whatever it
+  takes.
 - `context_engineer` compacts only when it is worth the cache break. A run of
   layers 1-3 is tried on a copy, storing nothing, and kept when it takes
   `min_reduction` (default 0.2) of the context; a shallower one leaves the
