@@ -1,47 +1,45 @@
 # image_compose — Bundled Fonts
 
-This directory holds the TTF/OTF files that map to font-aliases used by
-`image_compose_render` (see `LAYER: text` in `schema.yaml`). The fonts are
-plugin assets, not user data — they live with the plugin code so the
-plugin renders deterministically on any clean checkout.
+The fonts here ship with the plugin, so a render looks the same on every
+machine — a server often carries a single family (DejaVu). Each has a
+built-in name (`BUNDLED_FONTS` in `compositor.py`) that text layers
+(`"font": "serif_display"`) and canvas layers (`"fonts": ["serif_display"]`,
+then `ctx.font = '80px "serif_display"'`) both accept; no configuration is
+needed. A `font_aliases` entry of the same name in the server config wins.
+Every font is from Google Fonts; the licence of each family is in
+`licenses/` (SIL Open Font License, Apache 2.0 for Special Elite and
+Permanent Marker).
 
-The compositor (`compositor.py`) consults `font_aliases` first; if the
-alias resolves to a file in this directory, that file is used. If the
-alias isn't mapped or the file isn't found, the compositor falls back to
-platform fonts (`SYSTEM_FONT_FALLBACKS` table), then to PIL's bitmap
-default.
-
-## Alias Inventory
-
-Aliases that the cover_artist agent and image_compose schema reference.
-Each alias **should** have a TTF here; until it does, the system fallback
-is used (so things still render, just less distinctively).
-
-| Alias | Font (Google Fonts, OFL) | Use case |
+| Name | Font | Character |
 |---|---|---|
-| `sans` | Inter Regular | body / generic |
-| `sans_bold` | Inter Bold | bold body, small caps |
-| `serif` | Crimson Pro Regular | classical / literary |
-| `serif_bold` | Crimson Pro Bold | titles in serif-dominant covers |
-| `mono` | JetBrains Mono | technical / system look |
-| `display` | Bebas Neue | display caps (current generic display) |
-| `display_grotesk` | Oswald Bold | Type-Driven covers — condensed display |
-| `script` | Caveat Regular | handwritten / personal / memoir |
-| `stencil` | Stardos Stencil Bold | grunge / military / street |
-| `display_block` | Bungee Inline | dramatic block display |
+| `sans` / `sans_bold` | Inter Regular / Bold | neutral sans |
+| `sans_black` | Archivo Black | heavy grotesque |
+| `geometric` | Montserrat Bold | geometric sans |
+| `rounded` | Nunito ExtraBold | soft, friendly |
+| `condensed` | Anton | tall condensed caps |
+| `serif` / `serif_bold` | Crimson Pro Regular / Bold | book serif |
+| `serif_old` | EB Garamond | classical old style |
+| `serif_display` | Playfair Display Bold | high-contrast display serif |
+| `serif_fat` | Abril Fatface | fat face, poster |
+| `roman_caps` | Cinzel Bold | inscriptional capitals |
+| `slab` | Alfa Slab One | heavy slab |
+| `mono` | JetBrains Mono | monospace |
+| `typewriter` | Special Elite | worn typewriter |
+| `display` | Bebas Neue | condensed display caps |
+| `display_grotesk` | Oswald Bold | condensed grotesque |
+| `display_block` | Bungee Inline | inline block letters |
+| `stencil` | Stardos Stencil Bold | stencil |
+| `art_deco` | Limelight | Art Deco |
+| `art_deco_thin` | Poiret One | thin Art Deco |
+| `retro` | Righteous | 1970s rounded |
+| `neon` | Monoton | multi-line neon |
+| `script` | Caveat | handwriting |
+| `brush` | Permanent Marker | marker, brush |
+| `calligraphy` | Great Vibes | formal script |
+| `blackletter` | UnifrakturMaguntia | Fraktur |
+| `horror` | Creepster | dripping horror |
+| `pixel` | Press Start 2P | 8-bit pixel |
 
-## Downloading
-
-All listed fonts are on Google Fonts under the SIL Open Font License.
-Drop the matching TTF into this directory and add an entry to
-`font_aliases` in `config/plugins.yaml` (or rely on the alias defaults
-once those land in the default config).
-
-```yaml
-image_compose:
-  font_aliases:
-    display_grotesk: "Oswald-Bold.ttf"
-    script: "Caveat-Regular.ttf"
-    stencil: "StardosStencil-Bold.ttf"
-    display_block: "BungeeInline-Regular.ttf"
-```
+All cover German (ä ö ü ß „“ – €). A new font: put the static TTF and its
+licence here, add a name to `BUNDLED_FONTS`; `tests/test_bundled_fonts.py`
+checks that every name has its file and every file its licence.

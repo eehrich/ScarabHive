@@ -22,7 +22,7 @@ tools:
                             Or a model name: birefnet-general-lite keeps thin parts (whiskers, rope) but is ~5x slower, isnet-anime for anime, u2net for a second opinion),
                      trim(true: crop to the visible bounding box before fit — a sprite fills its canvas instead of the frame around it),
                      alpha_threshold(1-255: alpha becomes 0 or 255 after the fit — pixel art, kills the soft halo a cutout leaves. Omit to keep soft edges)
-              text:  text, font(sans|sans_bold|serif|serif_bold|mono|display|display_grotesk|script|stencil|display_block|filename), size, color("#rrggbb[aa]"),
+              text:  text, font(built-in name: sans|serif|display|script|… all in the guide; or a filename), size, color("#rrggbb[aa]"),
                      align(left|center|right), max_width(px|{width_pct}), line_height, tracking, uppercase,
                      stroke:{width,color}, shadow:{offset:[dx,dy], blur, color}
               rect:  rect:[x,y,w,h], fill, radius, border:{width,color}

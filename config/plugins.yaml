@@ -139,17 +139,12 @@ plugins:
       enabled: true
       description: "Compose layered images (background + text + shapes + gradients + SVG)"
       fonts_dir: "src/plugins/image_compose/fonts"   # plugin-bundled assets
-      # font_aliases: drop a TTF into fonts_dir and map an alias name to its filename.
-      # Available aliases (used in image_compose schema + cover_artist prompt):
-      #   sans, sans_bold, serif, serif_bold, mono, display,
-      #   display_grotesk (Type-Driven), script (handwritten), stencil (grunge),
-      #   display_block (dramatic display)
-      # Example:
+      # The built-in font names (sans, serif_display, script, ... -- table in
+      # fonts/README.md) ship with the plugin and need no entry here.
+      # font_aliases: a name to an absolute path for a font of your own (a file
+      # added to this folder also needs a name in BUNDLED_FONTS -- the test checks).
       # font_aliases:
-      #   display_grotesk: "Oswald-Bold.ttf"
-      #   script: "Caveat-Regular.ttf"
-      #   stencil: "StardosStencil-Bold.ttf"
-      #   display_block: "BungeeInline-Regular.ttf"
+      #   display: "/srv/fonts/MyHouseFont-Bold.ttf"
       overlap_check_enabled: true   # warn on text/svg BBox overlap pairs after render
       overlap_min_gap_px: 30        # required clearance between text/svg layers (px)
 

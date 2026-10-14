@@ -231,9 +231,9 @@ async def test_a_font_of_the_fonts_directory_is_loaded_before_the_script_draws(t
               "  throw new Error('font not loaded');\n"
               "ctx.font = '20px \"%s\"'; ctx.fillStyle = '#f00'; ctx.fillText('Hg', 4, 30);")
     # The family is the alias, the file's name (of an absolute path too), or
-    # a built-in name of the text layer -- `sans` is the Arial or DejaVu above.
+    # a built-in name of the text layer -- `sans` is the bundled Inter.
     for name, fonts_field in (("brand", ["brand"]), ("Brand.ttf", ["Brand.ttf"]),
-                              ("Brand.ttf", [str(fonts / "Brand.ttf")]), ("sans", ["sans"]),
+                              ("Brand.ttf", [str(fonts / "Brand.ttf")]), ("sans", ["sans"]), ("blackletter", ["blackletter"]),
                               ("Gr\u00fc\u00dfe.ttf", ["Gr\u00fc\u00dfe.ttf"])):
         result, img = await draw(tmp_path, {"fonts": fonts_field, "script": script % (name, name)}, server=server)
         assert result["status"] == "success", (fonts_field, result)

@@ -173,7 +173,7 @@ per computer into @{tt}~/.rembg@{utt} on first use (isnet about 170 MB).
 @{table}
 Key | Meaning
 text | the text (required); line breaks as \n
-font | an alias (sans, sans_bold, serif, serif_bold, mono, display, display_grotesk, script, stencil, display_block), a file in the fonts folder, an absolute path, or a system font name; default sans
+font | a built-in name (see Fonts under @{" Setting it up " link setup}), a configured alias, a file in the fonts folder, an absolute path, or a system font name; default sans
 size | font size in pixels, default 48, at least 4
 color | default white
 align | left (default), center or right, within the block
@@ -191,9 +191,10 @@ stroke and shadow (the larger of the stroke width and blur plus offset,
 plus 4 pixels), and position places that box.
 
 Where a font comes from, in order: an absolute path; a file of that name
-in the fonts folder; @{tt}font_aliases@{utt}; a list of common system
-fonts for each alias (Georgia, Arial, Consolas, Impact, DejaVu ...); the
-name as a system font; Pillow's small built-in font, with a warning.
+in the fonts folder; @{tt}font_aliases@{utt}; the fonts that ship with
+the plugin; a list of common system fonts for the older names (Georgia,
+Arial, Consolas, Impact, DejaVu ...), should a bundled file be missing;
+the name as a system font; Pillow's small built-in font, with a warning.
 
 @{h2}rect
 
@@ -278,11 +279,11 @@ seed is the same picture, another seed is a variation of it.
 of an image, or SVG markup -- the browser rasterises an SVG at the size
 it is drawn, with everything SVG can do. A file named .svg has to be
 SVG.
-@{bullet}A font is a configured alias, one of the text layer's built-in
-names (display, serif_bold, ...: the same system font), a file of the
-fonts folder or an absolute path, loaded before the script runs. Its
-family in the script is the alias, or the file's name ("Oswald-Bold.ttf",
-for an absolute path too) -- in quotes, since a name with a dot is no
+@{bullet}A font is a built-in name (display, serif_display, ...: the
+fonts that ship with the plugin, as for a text layer), a configured alias,
+a file of the fonts folder or an absolute path, loaded before the script
+runs. Its family in the script is the name as it was given, or for a path
+the file's name ("Oswald-Bold.ttf") -- in quotes, since a name with a dot is no
 family without them and the browser then ignores the whole
 @{tt}ctx.font@{utt} line. It must be a font file -- anything else is
 refused, since the script could read it back out of the page. A font the
@@ -621,16 +622,27 @@ relative folder counts from the folder the server started in.
 
 @{h2}Fonts
 
-The plugin's @{tt}fonts/@{utt} folder holds a README with the intended
-set -- Inter, Crimson Pro, JetBrains Mono, Bebas Neue, Oswald, Caveat,
-Stardos Stencil, Bungee Inline, all from Google Fonts -- but no font
-files. Until you add them and map them, every alias falls back to the
-system fonts:
+Twenty-nine fonts ship with the plugin, in its @{tt}fonts/@{utt} folder
+with their licences (Google Fonts; OFL, two under Apache 2.0). Each has a
+built-in name that text and canvas layers take as it is -- no
+configuration, the same picture on every machine:
+
+@{table}
+Names | Character
+sans, sans_bold, sans_black, geometric, rounded, condensed | sans serifs, neutral to heavy
+serif, serif_bold, serif_old, serif_display, serif_fat, roman_caps, slab | serifs: book, classical, high contrast, poster, capitals, slab
+mono, typewriter, pixel | monospace, worn typewriter, 8-bit
+display, display_grotesk, display_block, stencil | display: condensed caps, grotesque, inline blocks, stencil
+art_deco, art_deco_thin, retro, neon | period styles
+script, brush, calligraphy, blackletter, horror | hands: handwriting, marker, formal script, Fraktur, dripping
+@{body}
+
+The README in that folder names each font. A @{tt}font_aliases@{utt}
+entry of the same name wins:
 
 @{code yaml}
       font_aliases:
-        display_grotesk: "Oswald-Bold.ttf"
-        script: "Caveat-Regular.ttf"
+        display: "MyHouseFont-Bold.ttf"
 @{body}
 
 @{h2}The browser for canvas layers

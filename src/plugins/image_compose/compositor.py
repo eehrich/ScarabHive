@@ -41,11 +41,30 @@ ANCHORS = {
     "bottom_left": (0.0, 1.0), "bottom_center": (0.5, 1.0), "bottom_right": (1.0, 1.0),
 }
 
-# Common platform font fallbacks tried when no alias matches.
-# Display-family fallbacks lean on Impact / DejaVu-Bold because few systems
-# carry a true display font out of the box — the cover_artist prompt assumes
-# real display fonts will be dropped into the plugin fonts_dir (see
-# src/plugins/image_compose/fonts/README.md for the recommended set).
+# The fonts that ship with the plugin (fonts/, their licences in
+# fonts/licenses/), each under a built-in name: the same picture on every
+# machine. A server often has a single family (DejaVu), which made every
+# title look alike. A configured alias of the same name wins.
+BUNDLED_FONTS_DIR = Path(__file__).parent / "fonts"
+BUNDLED_FONTS = {
+    "sans": "Inter_18pt-Regular.ttf", "sans_bold": "Inter_18pt-Bold.ttf",
+    "sans_black": "ArchivoBlack-Regular.ttf", "geometric": "Montserrat-Bold.ttf",
+    "rounded": "Nunito-ExtraBold.ttf", "condensed": "Anton-Regular.ttf",
+    "serif": "CrimsonPro-Regular.ttf", "serif_bold": "CrimsonPro-Bold.ttf",
+    "serif_old": "EBGaramond-Regular.ttf", "serif_display": "PlayfairDisplay-Bold.ttf",
+    "serif_fat": "AbrilFatface-Regular.ttf", "roman_caps": "Cinzel-Bold.ttf",
+    "slab": "AlfaSlabOne-Regular.ttf", "mono": "JetBrainsMono-Regular.ttf",
+    "typewriter": "SpecialElite-Regular.ttf", "display": "BebasNeue-Regular.ttf",
+    "display_grotesk": "Oswald-Bold.ttf", "display_block": "BungeeInline-Regular.ttf",
+    "stencil": "StardosStencil-Bold.ttf", "art_deco": "Limelight-Regular.ttf",
+    "art_deco_thin": "PoiretOne-Regular.ttf", "retro": "Righteous-Regular.ttf",
+    "neon": "Monoton-Regular.ttf", "script": "Caveat-Regular.ttf",
+    "brush": "PermanentMarker-Regular.ttf", "calligraphy": "GreatVibes-Regular.ttf",
+    "blackletter": "UnifrakturMaguntia-Regular.ttf", "horror": "Creepster-Regular.ttf",
+    "pixel": "PressStart2P-Regular.ttf",
+}
+
+# Platform fonts, tried when a bundled file is missing.
 SYSTEM_FONT_FALLBACKS = {
     "serif":           ["georgia.ttf", "Georgia.ttf", "DejaVuSerif.ttf", "Times New Roman.ttf", "times.ttf"],
     "serif_bold":      ["georgiab.ttf", "Georgia Bold.ttf", "DejaVuSerif-Bold.ttf", "timesbd.ttf"],
@@ -1342,8 +1361,8 @@ def _canvas_font(spec: Any, fonts_dir: Path, aliases: dict[str, str]) -> tuple[s
     """An entry of a canvas layer's `fonts` as (family, data URI), by the
     rules of `_load_font`: an absolute path, a file in the fonts directory,
     a configured alias for either, or a built-in name (`display`, `serif`,
-    ...: the system font a text layer draws it with). The family the script
-    names is the alias, or the file's name. The file travels into the page,
+    ...: the font a text layer draws it with). The family the script names
+    is the alias or built-in name, or the file's name. The file travels into the page,
     where the script can read it back, so it has to BE a font: FreeType
     must open it. Other system fonts need no entry; the browser has them by
     their family name."""
@@ -1354,17 +1373,13 @@ def _canvas_font(spec: Any, fonts_dir: Path, aliases: dict[str, str]) -> tuple[s
     path = Path(mapped) if Path(mapped).is_absolute() else fonts_dir / mapped
     family = spec if spec in aliases else path.name
     if not path.is_file():
-        for fname in SYSTEM_FONT_FALLBACKS.get(spec, []):
-            try:
-                path, family = Path(str(ImageFont.truetype(fname, 10).path)), spec
-                break
-            except OSError:
-                continue
-        else:
+        found = _bundled_font(spec) or _system_font(spec)
+        if found is None:
             raise CompositionError(
                 f"canvas layer: font {spec!r} is no file in {fonts_dir}, no alias with one and no built-in "
-                f"name ({', '.join(SYSTEM_FONT_FALLBACKS)}). A font the system has needs no entry -- name "
+                f"name ({', '.join(BUNDLED_FONTS)}). A font the system has needs no entry -- name "
                 f"its family in ctx.font")
+        path, family = found, spec
     if '"' in family or "\\" in family:     # it is written into CSS and into the script as it is
         raise CompositionError(f"canvas layer: font name {family!r} may not contain a quote or a backslash")
     try:
@@ -1611,6 +1626,22 @@ def _fit_image(img: Image.Image, target: tuple[int, int], fit: str) -> Image.Ima
 
 # ── Font loading ──────────────────────────────────────────────────────────
 
+def _bundled_font(spec: str) -> Path | None:
+    """The plugin's own font file for a built-in name or a bundled file name."""
+    name = BUNDLED_FONTS.get(spec, spec)
+    path = BUNDLED_FONTS_DIR / name
+    return path if Path(name).name == name and path.is_file() else None
+
+
+def _system_font(spec: str) -> Path | None:
+    for fname in SYSTEM_FONT_FALLBACKS.get(spec, []):
+        try:
+            return Path(str(ImageFont.truetype(fname, 10).path))
+        except OSError:
+            continue
+    return None
+
+
 def _load_font(font_spec: str, size: int, fonts_dir: Path,
                aliases: dict[str, str], warnings: list[str]) -> ImageFont.FreeTypeFont:
     # 1) Absolute / existing path
@@ -1631,13 +1662,17 @@ def _load_font(font_spec: str, size: int, fonts_dir: Path,
             if candidate.exists():
                 return ImageFont.truetype(str(candidate), size=size)
             warnings.append(f"font alias '{font_spec}' → '{mapped}' not found at {candidate}")
-        # 4) System fallback by alias category
+        # 4) A font that ships with the plugin, by its built-in name or file name
+        bundled = _bundled_font(font_spec)
+        if bundled is not None:
+            return ImageFont.truetype(str(bundled), size=size)
+        # 5) System fallback by alias category
         for fname in SYSTEM_FONT_FALLBACKS.get(font_spec, []):
             try:
                 return ImageFont.truetype(fname, size=size)
             except OSError:
                 continue
-        # 5) Try the spec itself as a system font name
+        # 6) Try the spec itself as a system font name
         try:
             return ImageFont.truetype(font_spec, size=size)
         except OSError:
