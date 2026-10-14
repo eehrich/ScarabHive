@@ -81,7 +81,21 @@ disk is opened:
 @{bullet}A relative path counts from the folder the server runs in, the
 project -- also when the
 allowed folder is @{tt}.@{utt} and you started elsewhere; there an agent has
-to use absolute paths.
+to use absolute paths. The tools' descriptions name the folders as a
+relative path names them (@{tt}Path under data/runs, relative as
+written or absolute@{utt}), and so does a refusal: a prompt never has to
+know where the project lies on this machine.
+@{bullet}A read behind a root this machine does not have reads from the
+project: models write @{tt}/workspace/data/...@{utt} or
+@{tt}/home/user/data/...@{utt} for a @{tt}data/...@{utt} that is right as it
+stands. Folders are dropped from the first one that does not exist on, as
+many as it takes -- the path as written names nothing here -- and only when the rest begins with an
+allowed folder, never with @{tt}.@{utt} or a folder above it, where
+@{tt}/tmp/x.txt@{utt} would become @{tt}./x.txt@{utt}. A change (create,
+replace, delete, move, rename) behind such a root is refused: it would land
+wherever the rest points, the project's own @{tt}src@{utt} for
+@{tt}/tmp/build/src/...@{utt}. Its refusal says how to write it
+(@{tt}Write it as data/runs/...@{utt}).
 @{bullet}The path is resolved first -- @{tt}..@{utt} collapsed, links and
 junctions followed -- and then it must lie inside one of the folders.
 @{tt}notes/../notes/a.md@{utt} is allowed, @{tt}../outside.txt@{utt} is
@@ -315,6 +329,12 @@ one that only reads -- as @{tt}coder_fs_ro@{utt} does with
 
 Only an instance that is not read-only has these tools; a read-only one
 answers @{tt}ReadOnlyError@{utt} if they are called anyway.
+
+The calls of one step run side by side. Writes to one file -- replace,
+create, delete, move and rename of it -- go one after the other, also across
+instances in one process: five edits of one file in a step all stay. Before,
+each read the file and wrote it back whole with its own edit, all said
+success and one stayed.
 
 @{h2}manage
 

@@ -90,9 +90,12 @@ class PathValidator:
         """The resolved allow-list (kept for callers and tests that read it)."""
         return list(self._sandbox.roots)
 
-    def validate_path(self, path: str, must_exist: bool = False) -> Path:
+    def validate_path(self, path: str, must_exist: bool = False, write: bool = False) -> Path:
         """
         Validate that a path is safe and within allowed directories.
+
+        ``write``: the caller changes what the path names -- an imagined root
+        before it is then refused, not read past (PathSandbox).
 
         Returns:
             Resolved absolute Path object
@@ -103,7 +106,7 @@ class PathValidator:
         """
         path = from_git_bash(path)
         try:
-            resolved = self._sandbox.resolve(path)
+            resolved = self._sandbox.resolve(path, write=write)
         except PathSandboxDenied as exc:
             raise SecurityError(str(exc)) from exc
 
@@ -128,14 +131,18 @@ class PathValidator:
         named = Path(path)
         if named.name not in ("", ".", ".."):
             try:
-                folder = self.validate_path(str(named.parent))
+                folder = self.validate_path(str(named.parent), write=True)
             except SecurityError:
                 folder = None  # judged below, like any other path
             if folder is not None:
                 entry = folder / named.name
                 if entry.is_symlink() or entry.is_junction():
                     return entry
-        return self.validate_path(path, must_exist=True)
+        return self.validate_path(path, must_exist=True, write=True)
+
+    def describe_roots(self) -> str:
+        """The allowed directories as a relative path names them (PathSandbox.describe_roots)."""
+        return self._sandbox.describe_roots()
 
     def is_allowed_directory(self, path: Path) -> bool:
         """Check if a path is one of the allowed directories itself."""

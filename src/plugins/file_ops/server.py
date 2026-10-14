@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict
@@ -188,6 +189,11 @@ class FileOpsServer(SchemaBasedToolServer):
         # What read_file promises the model is what it does with THIS instance's limits.
         vars['max_unpaginated_kb'] = self.operations.max_unpaginated_size // 1024
         vars['default_line_limit'] = self.operations.default_line_limit
+        # The folders as a relative path names them: "Absolute path" here made models invent one
+        # (/workspace/data/..., /home/user/data/...), and no prompt can name the machine's.
+        # Escaped for the double-quoted YAML string it goes into: a folder outside the project is
+        # absolute, and a Windows one is all backslashes.
+        vars['allowed'] = json.dumps(self.validator.describe_roots())[1:-1]
         return vars
 
     def file_access_roots(self) -> list[Path]:
@@ -384,7 +390,7 @@ class FileOpsServer(SchemaBasedToolServer):
         if status:
             await status.progress(f"Writing: {Path(path).name}")
 
-        safe_path = self.validator.validate_path(path)
+        safe_path = self.validator.validate_path(path, write=True)
 
         result = await self.operations.create_file_safe(
             safe_path,
@@ -444,7 +450,7 @@ class FileOpsServer(SchemaBasedToolServer):
 
         safe_source = self.validator.validate_entry(path)
         self._refuse_root(safe_source, "move")
-        safe_dest = self.validator.validate_path(destination)
+        safe_dest = self.validator.validate_path(destination, write=True)
 
         result = await self.operations.move_path_safe(safe_source, safe_dest)
 
@@ -486,7 +492,7 @@ class FileOpsServer(SchemaBasedToolServer):
 
         # Validate destination is also in allowed directories
         new_path = safe_path.parent / new_name
-        self.validator.validate_path(str(new_path))
+        self.validator.validate_path(str(new_path), write=True)
 
         result = await self.operations.rename_path_safe(safe_path, new_name)
 
@@ -525,7 +531,7 @@ class FileOpsServer(SchemaBasedToolServer):
                 await status.progress(f"Replacing in: {Path(file_path).name}")
 
             # Validate path
-            safe_path = self.validator.validate_path(file_path, must_exist=True)
+            safe_path = self.validator.validate_path(file_path, must_exist=True, write=True)
 
             result = await self.operations.edit_file_safe(
                 safe_path,

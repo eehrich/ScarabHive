@@ -690,3 +690,30 @@ class TestReach:
 
         assert not rig.store.exists() or not any(rig.store.rglob("journal.db"))
         assert (await rig.rewind(agent=agent))["status"] == NOTHING
+
+
+@pytest.mark.parametrize("operation", ["delete", "create", "replace"])
+def test_a_change_behind_an_imagined_root_is_not_planned(tmp_path, monkeypatch, operation):
+    """file_ops reads past an imagined root (/workspace/...) but refuses a change behind one; planned as a read,
+    the refused delete recorded the whole tree the rest pointed at."""
+    from unittest.mock import Mock
+    from plugins.file_checkpoints.targets import plan_for
+    from plugins.file_ops.server import FileOpsServer
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "books" / "one").mkdir(parents=True)
+    (tmp_path / "books" / "one" / "a.md").write_text("inside", encoding="utf-8")
+    config = ToolServerConfig(type="file_ops", enabled=True)
+    config.allowed_directories = ["books/"]
+    config.search = {"enable_indexing": False}
+    server = FileOpsServer("fs", Mock(spec=AgentSystemConfig), config)
+    imagined = "/imagined-sandbox-root-4e1f"
+    assert not Path(imagined).exists()
+
+    def plan(prefix):
+        if operation == "replace":
+            return plan_for("file_ops", server, "replace_string_in_file", {"filePath": f"{prefix}books/one/a.md"})
+        path = f"{prefix}books" if operation == "delete" else f"{prefix}books/one/b.md"
+        return plan_for("file_ops", server, "manage", {"operation": operation, "path": path, "content": "x"})
+
+    assert plan("") is not None, "the fixture plans nothing even without the imagined root"
+    assert plan(f"{imagined}/") is None

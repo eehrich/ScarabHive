@@ -11,7 +11,7 @@ tools:
         properties:
           filePath:
             type: string
-            description: "Absolute path"
+            description: "Path under {{ allowed }}, relative as written or absolute"
           offset:
             type: integer
             minimum: 1
@@ -43,7 +43,7 @@ tools:
               - rename: to new_name, same directory
           path:
             type: string
-            description: "Absolute path"
+            description: "Path under {{ allowed }}, relative as written or absolute"
           content:
             type: string
             description: "File content (create)"
@@ -74,7 +74,7 @@ tools:
         properties:
           filePath:
             type: string
-            description: "Absolute path"
+            description: "Path under {{ allowed }}, relative as written or absolute"
           oldString:
             type: string
             description: "Exact literal text, unescaped, whitespace and indentation included. Must occur exactly once: include ~3 lines of context before and after."
@@ -98,7 +98,7 @@ tools:
         properties:
           dir_path:
             type: string
-            description: "Path to directory"
+            description: "Directory under {{ allowed }}, relative as written or absolute"
           recursive:
             type: boolean
             default: false

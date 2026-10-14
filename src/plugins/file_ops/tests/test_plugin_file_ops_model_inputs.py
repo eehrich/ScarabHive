@@ -4,6 +4,7 @@ Three inputs the tools handled badly: numbers as text, paths in Git Bash form,
 and an answer that grew with the file instead of with the edit.
 """
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -164,6 +165,37 @@ def test_read_file_describes_this_instances_limits(tmp_path):
                        if t["function"]["name"] == "fs_read_file")
     assert "200 KB" in description and "first 300 lines" in description, description
     assert "2000" not in description
+
+
+# ── what a path is ───────────────────────────────────────────────────────────
+
+async def test_paths_are_described_by_the_folders_and_an_imagined_root_still_finds_them(tmp_path, monkeypatch):
+    """"Absolute path" in the schema made models invent one -- /workspace/data/..., /home/user/data/... --
+    and the refusal then taught them this machine's. The description names the folders as the agent writes
+    them, and a read reads past the invented root; a change behind one is refused (it would land wherever
+    the rest points, the project's own src for /tmp/build/src/...)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "books" / "one").mkdir(parents=True)
+    (tmp_path / "books" / "one" / "a.md").write_text("inside", encoding="utf-8")
+    server = _server(["books/"])
+    params = {t["function"]["name"]: t["function"]["parameters"]["properties"] for t in server.get_tools()}
+    for tool, field in (("read_file", "filePath"), ("manage", "path"), ("replace_string_in_file", "filePath"),
+                        ("list_directory", "dir_path")):
+        text = params[f"file_ops_{tool}"][field]["description"]
+        assert "under books," in text and str(tmp_path) not in text, (tool, text)
+    imagined = "/imagined-sandbox-root-4e1f/home/user"
+    assert not Path(imagined).exists()
+    read = await server.read_file({"filePath": f"{imagined}/books/one/a.md"})
+    assert read["status"] == "success" and read["content"].strip().endswith("inside"), read
+    for change in ({"operation": "create", "path": f"{imagined}/books/one/b.md", "content": "new"},
+                   {"operation": "delete", "path": f"{imagined}/books/one/a.md"}):
+        refused = await server.manage(change)
+        assert refused["error_type"] == "SecurityError" and "Allowed: books" in refused["error"], refused
+    edit = await server.replace_string_in_file({"filePath": f"{imagined}/books/one/a.md", "oldString": "inside",
+                                                "newString": "x"})
+    assert edit["error_type"] == "SecurityError", edit
+    assert (tmp_path / "books" / "one" / "a.md").read_text(encoding="utf-8") == "inside"
+    assert not (tmp_path / "books" / "one" / "b.md").exists()
 
 
 # ── yes/no as text ───────────────────────────────────────────────────────────

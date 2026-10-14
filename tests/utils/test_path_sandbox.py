@@ -202,10 +202,15 @@ class TestLeadingTildeIsRefused:
 class TestMessagesNameTheBoundary:
     """The refusal is what the model acts on — it has to say what is allowed."""
 
-    def test_the_refusal_names_the_roots(self, sandbox, workspace):
+    def test_the_refusal_names_the_roots_as_a_relative_path_names_them(self, sandbox, workspace, tmp_path):
+        """The absolute form taught the model to write absolute paths, which no prompt can name for every
+        machine: below the base a root is named as written relative to it, elsewhere absolute."""
         with pytest.raises(PathSandboxDenied) as exc:
             sandbox.resolve(str(workspace.parent / "outside" / "secret.txt"))
-        assert str(workspace) in str(exc.value)
+        assert str(exc.value).endswith("Allowed: allowed") and str(workspace) not in str(exc.value), exc.value
+        apart = PathSandbox.from_config([str(workspace)], base=tmp_path / "outside")
+        assert apart.describe_roots() == str(workspace.resolve())
+        assert PathSandbox.from_config(["."], base=workspace).describe_roots() == "."
 
     def test_relative_reports_the_path_below_its_root(self, sandbox, workspace):
         assert sandbox.relative((workspace / "sub" / "file.txt").resolve()) == \
@@ -214,6 +219,76 @@ class TestMessagesNameTheBoundary:
     def test_relative_falls_back_to_absolute_outside(self, sandbox, tmp_path):
         stranger = (tmp_path / "outside" / "secret.txt").resolve()
         assert sandbox.relative(stranger) == str(stranger)
+
+
+IMAGINED = "/imagined-sandbox-root-4e1f"
+
+
+@pytest.fixture
+def same_drive(tmp_path, monkeypatch):
+    """A rooted path without a drive is on the current one (Windows): the test's, not wherever pytest started."""
+    monkeypatch.chdir(tmp_path)
+    assert not Path(IMAGINED).exists(), "the fixture needs a root folder this machine does not have"
+
+
+def rooted(path: Path) -> str:
+    return "/" + path.resolve().as_posix().split("/", 1)[1]
+
+
+class TestAnImaginedRootIsReadFromTheBase:
+    """Models put their own sandbox's root before a path that is right relative to the project:
+    /workspace/data/..., /home/user/data/... (36 refusals in a week, every one such a path)."""
+
+    @pytest.mark.parametrize("prefix", [IMAGINED, IMAGINED + "/home/user"])
+    def test_a_read_drops_the_folders_this_machine_lacks(self, sandbox, workspace, same_drive, prefix):
+        assert sandbox.resolve(f"{prefix}/allowed/sub/file.txt") == (workspace / "sub" / "file.txt").resolve()
+
+    def test_a_write_is_never_read_past_it(self, sandbox, same_drive):
+        """Behind /tmp/build/src/... a delete or write would land on the project's own src."""
+        with pytest.raises(PathSandboxDenied) as exc:
+            sandbox.resolve(f"{IMAGINED}/allowed/sub/file.txt", write=True)
+        assert str(exc.value).endswith("Allowed: allowed. Write it as allowed/sub/file.txt"), exc.value
+
+    def test_a_path_that_exists_outside_keeps_its_meaning(self, sandbox, tmp_path, same_drive):
+        """outside/allowed/sub/file.txt is a file of its own: reading it is refused, not redirected inside."""
+        twin = tmp_path / "outside" / "allowed" / "sub"
+        twin.mkdir(parents=True)
+        (twin / "file.txt").write_text("outside")
+        with pytest.raises(PathSandboxDenied):
+            sandbox.resolve(rooted(twin / "file.txt"))
+
+    def test_the_rest_must_name_a_root(self, sandbox, same_drive):
+        with pytest.raises(PathSandboxDenied):
+            sandbox.resolve(f"{IMAGINED}/sub/file.txt")
+
+    @pytest.mark.parametrize("entry", [".", ".."])
+    def test_never_where_every_rest_lands_inside(self, workspace, same_drive, entry):
+        """With a root at or above the base, /tmp/x.txt would have been ./x.txt."""
+        sandbox = PathSandbox.from_config([entry], base=workspace)
+        with pytest.raises(PathSandboxDenied):
+            sandbox.resolve(f"{IMAGINED}/sub/file.txt")
+
+    def test_a_folder_it_may_not_look_at_is_a_refusal_not_an_error(self, sandbox, same_drive, monkeypatch):
+        """Linux: exists() raises for a name too long or a folder not readable -- every caller catches
+        PathSandboxDenied alone."""
+        def refuse(self, *args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(self))
+        monkeypatch.setattr(Path, "exists", refuse)
+        with pytest.raises(PathSandboxDenied):
+            sandbox.resolve(f"{IMAGINED}/allowed/sub/file.txt")
+
+    def test_a_data_directory_elsewhere_is_found_too(self, tmp_path, same_drive, monkeypatch):
+        from agent_system import paths
+        monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "elsewhere"))
+        (tmp_path / "elsewhere" / "books").mkdir(parents=True)
+        (tmp_path / "elsewhere" / "books" / "a.md").write_text("inside")
+        sandbox = PathSandbox.from_config(["data/books"], base=tmp_path / "project")
+        assert sandbox.resolve(f"{IMAGINED}/data/books/a.md") == (tmp_path / "elsewhere" / "books" / "a.md").resolve()
+        assert sandbox.describe_roots() == "data/books"
+        # A root that is the base is ".", also inside the data directory: ssh_control joins a relative
+        # path to its root, and data/ssh_control/files nested there.
+        own = PathSandbox.from_config(["data/books"], base=tmp_path / "elsewhere" / "books")
+        assert own.describe_roots() == "."
 
 
 class TestBothPluginsShareOneResolution:

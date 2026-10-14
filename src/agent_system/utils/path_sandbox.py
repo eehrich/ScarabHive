@@ -51,6 +51,16 @@ reads it that way. A refused editor lock file is friction the caller sees and
 routes around by naming its directory; a silent write into a directory called
 ``~`` is a wrong result nobody sees. Do not "fix" this without reopening that
 trade.
+
+**A read reads past an imagined root, a write does not.** Models put the root
+of a sandbox they picture before a path that is right relative to the base
+(``/workspace/data/...``, ``/home/user/data/...``). For a read, folders are
+dropped from the first one this machine does not have on, as many as it takes
+-- the path as written names nothing -- when the rest names a root that is not the base or above it
+(there every rest lands inside). A write behind such a root is refused: it
+would land wherever the rest points, also on a real file. Refusals
+name the roots as a relative path names them, not absolute: the absolute form
+taught the model this machine's paths, which no prompt can carry.
 """
 from __future__ import annotations
 
@@ -60,7 +70,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Iterable
 
-from agent_system.paths import resolve_data_path
+from agent_system.paths import data_path, resolve_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -186,17 +196,69 @@ class PathSandbox:
             # resolves to \\.\NUL, which then fails containment.
             raise PathSandboxDenied(f"Path cannot be resolved: {path} ({exc})") from exc
 
-        if not any(full == root or root in full.parents for root in self.roots):
+        if not self._inside(full):
+            behind = self._behind_an_imagined_root(Path(path))
+            if behind is not None and not write:
+                logger.info("PathSandbox read %r from the base, as %s", path, behind)
+                return behind
             logger.warning("PathSandbox rejected out-of-root path: %r", path)
+            # The read of the same path went through: say how to write it.
+            hint = f". Write it as {self._as_named(behind)}" if behind is not None else ""
             raise PathSandboxDenied(
                 f"Path is outside the allowed directories: {path}. "
-                f"Allowed: {self.describe_roots()}")
+                f"Allowed: {self.describe_roots()}{hint}")
 
         return full
 
+    def _inside(self, full: Path) -> bool:
+        return any(full == root or root in full.parents for root in self.roots)
+
+    def _behind_an_imagined_root(self, named: Path) -> Path | None:
+        """For a READ: an absolute ``named`` that cannot exist here, read from the base past its
+        leading folders, or None.
+
+        Models put the root of a sandbox they imagine before a path that is right as it stands
+        relative to the project: measured 2026-10-07..14, 36 refusals, every one a correct
+        ``data/...`` behind ``/workspace`` or ``/home/user``. Folders are dropped from the first
+        one that does not exist on, as many as it takes: the path as written names nothing on this
+        machine, so reading the file inside takes nothing it could have meant. Never for a write (the caller
+        passes ``write``): a write, move or delete behind ``/tmp/build/src/...`` would land on the
+        project's own ``src``. And the rest must name a root that is not the base or above it --
+        there every rest lands inside, ``/tmp/x.txt`` as ``./x.txt``.
+        """
+        if not named.anchor or named.drive:
+            return None             # relative; or a drive or share, a real place whatever is behind it
+        parts = named.parts[1:]
+        for cut in range(1, len(parts)):
+            try:
+                if Path(named.anchor, *parts[:cut]).exists():
+                    continue
+                full = (self.base / resolve_data_path(Path(*parts[cut:]))).resolve()
+            except (OSError, ValueError):
+                return None         # too long, not allowed to look: refused as before
+            if any((full == root or root in full.parents)
+                   and not (root == self.base or root in self.base.parents) for root in self.roots):
+                return full
+        return None
+
     def describe_roots(self) -> str:
-        """The roots as the model sees them in a refusal message."""
-        return ", ".join(str(r) for r in self.roots) or "(none)"
+        """The roots as the model sees them in a refusal message: as a relative path names them where one
+        does (``data/...``, or below the base). The absolute form taught the model to write absolute paths,
+        which no prompt can name for every machine."""
+        return ", ".join(self._as_named(r) for r in self.roots) or "(none)"
+
+    def _as_named(self, root: Path) -> str:
+        # abspath, not resolve: naming the roots asks the file system nothing -- a refused host path
+        # must not reach it (remote_outside).
+        # The base first: a root that is the base is "." -- named data/..., a caller that joins
+        # relative paths to its root (ssh_control's local_root) nested it in itself.
+        for anchor, prefix in ((self.base, ""), (Path(os.path.abspath(self.base / data_path())), "data")):
+            try:
+                below = root.relative_to(anchor)
+            except ValueError:
+                continue
+            return Path(prefix, below).as_posix()
+        return str(root)
 
     def relative(self, resolved: Path) -> str:
         """Path relative to the closest root, absolute when none matches."""

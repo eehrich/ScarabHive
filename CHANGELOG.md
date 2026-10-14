@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `file_ops` and the shared path sandbox: the tools' path parameters name the
+  instance's folders (`Path under data/runs, relative as written or
+  absolute`) instead of asking for an "Absolute path", and refusals name them
+  the same way, not as this machine's absolute paths. A read behind an
+  invented root (`/workspace/data/...`, `/home/user/data/...`) reads from the
+  project when the path as written cannot exist and the rest names an allowed
+  folder; a change behind one is refused. Measured 7-14 Oct: 36 refusals, every one such a path.
+- `file_ops`: writes to one file run one at a time (a lock per file, shared
+  by the instances of a process). Parallel replace_string_in_file calls of
+  one step each read the file and wrote it whole: all said success, one
+  edit stayed (one-shot run: 1 of 5).
 - `coding_cli`: a stored subscription state that would refuse a run and is
   over five minutes old is asked anew (one turn on haiku) before the refusal:
   only a finished run wrote it, so a weekly window that reset early refused

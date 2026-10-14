@@ -129,11 +129,13 @@ def _file_ops_plan(instance: Any, tool: str, arguments: Mapping[str, Any]) -> Op
     validator = getattr(instance, "validator", None)
     if validator is None:
         return None
+    # write=True as the tool's own checks: a read reads past an imagined root (/workspace/...), a change
+    # does not -- planned without it, a refused delete behind one recorded the whole tree it pointed at.
     if tool == "replace_string_in_file":
         path = arguments.get("filePath")
         if not isinstance(path, str) or not path:
             return None
-        return Plan([Target(validator.validate_path(path, must_exist=True))])
+        return Plan([Target(validator.validate_path(path, must_exist=True, write=True))])
     if tool != "manage":
         return None
     operation = arguments.get("operation")
@@ -141,24 +143,24 @@ def _file_ops_plan(instance: Any, tool: str, arguments: Mapping[str, Any]) -> Op
     if not isinstance(path, str) or not path:
         return None
     if operation == "create":
-        target = validator.validate_path(path)
+        target = validator.validate_path(path, write=True)
         return Plan(_missing_parents(target) + [Target(target)])
     if operation == "delete":
-        return Plan([Target(validator.validate_path(path, must_exist=True), with_contents=True)])
+        return Plan([Target(validator.validate_path(path, must_exist=True, write=True), with_contents=True)])
     if operation == "move":
         destination = arguments.get("destination")
         if not isinstance(destination, str) or not destination:
             return None
-        source = validator.validate_path(path, must_exist=True)
-        target = validator.validate_path(destination)
+        source = validator.validate_path(path, must_exist=True, write=True)
+        target = validator.validate_path(destination, write=True)
         return Plan([Target(source, with_contents=True, contents_to=target)]
                     + _missing_parents(target) + [Target(target)])
     if operation == "rename":
         new_name = arguments.get("new_name")
         if not isinstance(new_name, str) or not new_name or "/" in new_name or "\\" in new_name:
             return None
-        source = validator.validate_path(path, must_exist=True)
-        target = validator.validate_path(str(source.parent / new_name))
+        source = validator.validate_path(path, must_exist=True, write=True)
+        target = validator.validate_path(str(source.parent / new_name), write=True)
         return Plan([Target(source, with_contents=True, contents_to=target), Target(target)])
     return None
 

@@ -219,3 +219,43 @@ async def test_parallel_mixed_operations(file_ops_server, tmp_allowed_dir, statu
     completion_ids = {e.request_id for e in completion_events}
     expected_ids = {"req_a", "req_b", "req_c", "req_d"}
     assert completion_ids == expected_ids, f"Missing completion events for: {expected_ids - completion_ids}"
+
+
+@pytest.mark.parametrize("instances", [1, 2])
+async def test_parallel_edits_of_one_file_all_stay(tmp_allowed_dir, instances):
+    """The tool calls of one step run side by side: five replace_string_in_file on one file each read it and
+    wrote it whole with their own edit, and all said success -- one stayed. Two instances on one tree (the
+    one-shot author's and a second) share the lock."""
+    servers = []
+    for i in range(instances):
+        server_config = ToolServerConfig(type="file_ops", enabled=True)
+        server_config.allowed_directories = [str(tmp_allowed_dir)]
+        server_config.search = {"enable_indexing": False}
+        servers.append(FileOpsServer(f"fs{i}", Mock(spec=AgentSystemConfig), server_config))
+    target = tmp_allowed_dir / "chapter.md"
+    target.write_text("".join(f"line {n} old\n" for n in range(5)), encoding="utf-8")
+
+    results = await asyncio.gather(*(servers[n % instances].replace_string_in_file(
+        {"filePath": str(target), "oldString": f"line {n} old", "newString": f"line {n} new"}) for n in range(5)))
+
+    assert all(r["status"] == "success" for r in results), results
+    assert target.read_text(encoding="utf-8") == "".join(f"line {n} new\n" for n in range(5))
+    for server in servers:
+        await server.search_engine.stop()
+
+
+@pytest.mark.parametrize("operation", ["move", "rename"])
+async def test_a_move_onto_a_name_being_created_loses_nothing(file_ops_server, tmp_allowed_dir, operation):
+    """The create checked "not there" and wrote its temp; the move landed meanwhile and the temp replaced
+    it -- both said success, the moved file was gone (20 runs of 20). Its target is locked now too."""
+    source, target = tmp_allowed_dir / "x.md", tmp_allowed_dir / "d.md"
+    source.write_text("moved", encoding="utf-8")
+    change = ({"operation": "move", "path": str(source), "destination": str(target)} if operation == "move"
+              else {"operation": "rename", "path": str(source), "new_name": "d.md"})
+
+    created, moved = await asyncio.gather(
+        file_ops_server.manage({"operation": "create", "path": str(target), "content": "created"}),
+        file_ops_server.manage(change))
+
+    survivors = {p.read_text(encoding="utf-8") for p in (source, target) if p.exists()}
+    assert survivors == {"moved", "created"}, (survivors, created, moved)
