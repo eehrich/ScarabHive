@@ -949,13 +949,14 @@ plugins:
         media_store_ttl_seconds: 604800      # 7 days
         media_store_max_files: 500           # Max files per session
 
-        # Request size limits (bytes). OpenRouter (or-gemini-pro, or-gemini-flash)
-        # has a HARD 30 MB cap on downloaded image content per request — direct
-        # Gemini accepts up to 100 MB. We target near the OpenRouter cap since
-        # everything outside the images is just text (tokens are tiny in bytes).
-        # Direct-Gemini agents are unaffected (just compact a bit earlier).
-        max_request_bytes: 30408704    # 29 MB - trigger compaction (1 MB buffer under the OpenRouter 30 MB cap)
-        target_request_bytes: 25165824 # 24 MB - target after compaction (5 MB headroom for the next calls)
+        # Request size limits (bytes). OpenRouter caps a request at 30 MB, but routed
+        # to Google AI Studio (or-gemini-pro, or-gemini-flash) the body may hold at
+        # most 20,000,000 bytes -- above that HTTP 413 on every Gemini profile
+        # (an image agent, measured: 20.66 MB). The estimate leaves out the
+        # tool schemas, hence the 1 MB buffer. Direct-Gemini agents (100 MB) just
+        # compact a bit earlier.
+        max_request_bytes: 18874368    # 18 MiB - trigger compaction (1.1 MB under the Google AI Studio 20 MB cap)
+        target_request_bytes: 15728640 # 15 MiB - target after compaction (3 MB headroom for the next calls)
         
         # Core memory settings
         core_memory_max_tokens: 5000   # Max tokens for always-present facts
