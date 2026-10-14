@@ -80,7 +80,7 @@ def test_the_graph_bar_icons_sit_on_one_line_and_zoom_out_lies_beside_zoom_in():
     assert seen["ids"][zoom_out + 1] == "zoomIn", seen
 
 
-DEBUGBAR = """<!doctype html><html><head><meta charset="utf-8">
+DEBUGBAR = """<!doctype html><html class="pk-root"><head><meta charset="utf-8">
 <link rel="stylesheet" href="/static/kit/kit.css">
 <link rel="stylesheet" href="/src/plugins/stategraph/static/panel.css">
 </head><body style="margin:0"><section class="sg-main" style="width: 900px; height: 500px">%s</section>
@@ -91,7 +91,8 @@ bar.innerHTML = '<strong class="pk-mono">134260535d1d</strong><span class="pk-gr
   + '<button type="button" class="pk-btn pk-btn--sm">Fork</button>';
 document.getElementById('runHistory').style.height = '3000px';  // a machine with many runs
 const show = (tab) => document.querySelectorAll('.sg-tab').forEach((el) => { el.hidden = el.id !== `tab-${tab}`; });
-const measure = () => ({ height: bar.getBoundingClientRect().height, cut: bar.scrollHeight - bar.clientHeight });
+const measure = () => ({ height: bar.getBoundingClientRect().height, cut: bar.scrollHeight - bar.clientHeight,
+  shown: [...document.querySelectorAll('.sg-tab')].filter((el) => el.offsetParent !== null).map((el) => el.id) });
 show('graph');
 const graph = measure();
 show('runs');
@@ -115,6 +116,7 @@ def test_the_debug_bar_keeps_its_height_in_a_tall_runs_tab():
     finally:
         page.unlink(missing_ok=True)
 
+    assert seen["graph"]["shown"] == ["tab-graph"] and seen["runs"]["shown"] == ["tab-runs"], seen
     assert seen["graph"]["cut"] == 0 and seen["runs"]["cut"] == 0, seen
     assert seen["runs"]["height"] == seen["graph"]["height"], seen
 
