@@ -332,7 +332,7 @@ class MachineSpec(Strict):
     notes: dict[str, str] = Field(default_factory=dict, description="name -> free text for the reader, drawn as a note "
                                                                      "on the canvas; the engine ignores it")
     meta: dict[str, Any] = Field(default_factory=dict, description="data for the tools that start this machine, one "
-                                                                   "key each (tracker reads meta.tracker); the engine "
+                                                                   "key each (a tool reads its own key); the engine "
                                                                    "ignores it")
     group: str = Field("", description="its folder in the panel's machine list, nested by / (Reviews/nightly); empty: "
                                        "the folder of where it comes from")

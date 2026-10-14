@@ -501,7 +501,7 @@ def test_the_coders_preload_rules_reach_its_search_tools(config):
 
 def _preloading_agents(config):
     """Every configured agent whose effective config runs tool_preload rules --
-    the coder's own and every instance that inherits them (tracker_coder)."""
+    the coder's own and every instance that inherits them."""
     for name in config.plugins.servers:
         server = get_tool_server_config(name, config)
         agent_config = getattr(server, "agent_config", None)

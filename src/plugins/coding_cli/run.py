@@ -456,7 +456,7 @@ def make_worktree(repo: Path, path: Path, branch: str, exclude: Iterable[str]) -
 
 def seed_worktree(repo: Path, path: Path, folders: Iterable[str]) -> None:
     """Untracked folders of the repo copied into a fresh worktree (it holds only what is committed): a
-    caller's files for the run to read, set by code only (tracker's ticket attachments), never by the
+    caller's files for the run to read, set by code only (files a caller hands the run), never by the
     config. The caller keeps them out of git (info/exclude): commit_all's add would take them along."""
     for rel in folders:
         if Path(rel).is_absolute() or ".." in Path(rel).parts:

@@ -44,7 +44,7 @@ LEFT_OUT = {
     ("MachineAgentSpec", "visibility", "ui"): "one agent: block shows one choice of each",
     ("MachineAgentSpec", "visibility", "tool"): "one agent: block shows one choice of each",
     ("MachineAgentSpec", "visibility", "both"): "one agent: block shows one choice of each",
-    ("MachineSpec", "meta"): "data for another tool (tracker's meta.tracker); the engine ignores it, a run shows nothing",
+    ("MachineSpec", "meta"): "data for another tool (its own key under meta); the engine ignores it, a run shows nothing",
 }
 
 

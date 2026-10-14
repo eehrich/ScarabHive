@@ -138,7 +138,7 @@ def test_no_runner_may_call_a_stategraph_tool(config):
 def test_every_runner_pattern_names_an_enabled_server(config):
     """A pattern for a server that does not exist is a dead entry nobody notices. The default runner's servers are
     this plugin's and must be enabled; another plugin's runner may name a server shipped disabled until its operator
-    sets it up (tracker's ``mail``), so there the server only has to be configured -- the operator's
+    sets it up (a ``mail`` server, say), so there the server only has to be configured -- the operator's
     config/local.yaml decides, and CI has none."""
     default = resolved(config, INSTANCE).runner_agent
     for name in runners(config):

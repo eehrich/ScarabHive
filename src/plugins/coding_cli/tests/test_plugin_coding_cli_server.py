@@ -240,7 +240,7 @@ async def test_a_rewritten_git_file_does_not_move_the_commit(repo):
 
 
 async def test_a_seeded_folder_is_in_the_runs_worktree_and_stays_out_of_its_commit(tmp_path):
-    """tracker's ticket attachments: untracked in the repo, so a fresh worktree would not have them."""
+    """Files a caller hands the run: untracked in the repo, so a fresh worktree would not have them."""
     repo = fresh_repo(tmp_path / "repo")
     (repo / ".seed").mkdir()
     (repo / ".seed" / "shot.png").write_bytes(b"\x89PNG")
@@ -263,7 +263,7 @@ def test_a_seed_outside_the_repository_is_refused(tmp_path):
 
 
 def test_a_seed_folder_the_repository_does_not_have_is_skipped(tmp_path):
-    """A ticket without attachments: tracker names the folder all the same."""
+    """A caller with no files to hand over may name the folder all the same."""
     (tmp_path / "repo").mkdir()
     (tmp_path / "wt").mkdir()
     cli.seed_worktree(tmp_path / "repo", tmp_path / "wt", [".seed"])
@@ -339,7 +339,7 @@ async def test_a_web_workdir_searches_and_reads_the_web_and_no_other_does(repo, 
 
 @pytest.mark.parametrize("setting, shell", [(True, True), ("yes", False), (None, False)])
 async def test_a_web_workdir_keeps_the_shell_only_where_the_operator_says_so(repo, log, setting, shell):
-    """tracker's runs look things up and run their tests: web_with_shell is the operator's yes to a page
+    """A run may look things up and run its tests: web_with_shell is the operator's yes to a page
     possibly steering what the allowed commands run -- only a real true, and only in edit mode."""
     more = {} if setting is None else {"web_with_shell": setting}
     server = make_server(repo, workdirs={"web": {"path": str(repo), "web": True}}, allowed_commands=["pytest:*"],

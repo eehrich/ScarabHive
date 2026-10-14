@@ -253,8 +253,8 @@ def _rule_text(full: str, config: Dict[str, Any]) -> str:
     """The text the rules see: the start of the message, or -- with
     ``text_from`` -- the sections its patterns pick, sharing the cap equally.
 
-    A message that wraps the request in boilerplate (tracker's brief: role
-    text, rules, then the ticket) would otherwise spend the whole cap on the
+    A message that wraps the request in boilerplate (role text, rules,
+    then the actual request) would otherwise spend the whole cap on the
     boilerplate and never reach the request. No section found: the start of
     the message, as without the setting.
     """
