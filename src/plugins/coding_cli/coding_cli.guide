@@ -298,6 +298,13 @@ resets 2026-09-30 14:00". A call may ask for a lower threshold
 (@{tt}max_window_utilization@{utt} of @{" run_task " link run_task}), never a
 higher one.
 
+Only a finished run writes that file, and a refused run never finishes: a
+stored state that would refuse and is older than five minutes is asked anew
+first -- one turn on haiku without tools, under the login the runs use, at
+most once in five minutes per instance and process, and only for a user
+in @{tt}allowed_users@{utt}. A window that reset early (it happens) no longer
+refuses until its old reset.
+
 Such a refusal says so as a field too, @{tt}limit@{utt}: @{tt}window@{utt},
 @{tt}utilization@{utt}, @{tt}threshold@{utt}, @{tt}resets_at@{utt} (epoch
 seconds) and @{tt}resets@{utt} (local time). So does a run the subscription
@@ -478,7 +485,8 @@ Error: "no run <id> of yours".
 @{h1}quota
 
 Reads the subscription's windows as the last run reported them
-(@{tt}data/coding_cli/quota.json@{utt}) and the budget limit a new run would
+(@{tt}data/coding_cli/quota.json@{utt}; asked anew when that would refuse
+and is older than five minutes, as run_task does) and the budget limit a new run would
 be refused for now, without starting one -- the reading
 @{" run_task " link run_task} refuses by. A state machine asks it at a run's
 start, before it pays for anything that a refused Claude Code step would
@@ -684,8 +692,9 @@ differently (split, encoded) stays readable. A task that has to change an
 excluded or hidden file is not one for this plugin.
 @{bullet}@{b}allowed_users compares names.@{ub} An account named
 @{tt}cli_user@{utt} made before that name was reserved passes the check.
-@{bullet}@{b}The quota guard is a lower bound.@{ub} It knows the usage as of
-the last run; the operator's own Claude Code sessions have used more since.
+@{bullet}@{b}Below the threshold the quota guard is a lower bound.@{ub} It
+knows the usage as of the last run; the operator's own Claude Code sessions
+have used more since.
 @{bullet}@{b}A one-shot agent-cli run is never woken:@{ub} its process ends
 with its turn. There, @{tt}get_run@{utt} with @{tt}wait_s@{utt} waits.
 @{bullet}@{b}Whether a run outlives an API restart depends on how the API

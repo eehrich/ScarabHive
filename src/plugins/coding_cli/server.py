@@ -81,6 +81,12 @@ STALE_LEASE_S = 10
 # How often a started instance looks for runs whose owner is gone and for rings that were lost.
 SWEEP_S = 30
 SAVE_ATTEMPTS = 40
+# Only a finished run writes quota.json, and a refused one never finishes: a window that reset early kept refusing
+# until its old reset (measured: the file far above what the subscription reported, the reset moved). A state that
+# would refuse and is older than this is asked anew first (cli.probe_quota), at most once in that time per
+# instance and process.
+QUOTA_FRESH_S = 300
+PROBE_TIMEOUT_S = 60
 # Claude Code's --effort levels.
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Run ids are made here; anything else the model passes never becomes a path.
@@ -183,6 +189,22 @@ def _no_claude(command: str) -> str:
             "its full path)")
 
 
+def _replace(path: Path, text: str) -> None:
+    """`text` as the file at `path`, put in place in one step."""
+    tmp = path.with_name(f"{path.stem}.{os.getpid()}-{threading.get_ident()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    for attempt in range(SAVE_ATTEMPTS):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            # Windows refuses the replace while another process reads the file.
+            if attempt == SAVE_ATTEMPTS - 1:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
+
+
 class CodingCliServer(SchemaBasedToolServer):
     """Claude Code runs. Offered only when the executable and a workdir are there."""
 
@@ -251,6 +273,8 @@ class CodingCliServer(SchemaBasedToolServer):
         self._sweeper: Optional[asyncio.Task] = None
         self._stopped = False
         self._start_lock = asyncio.Lock()
+        self._probe_lock = asyncio.Lock()
+        self._probed_at = 0.0
         self._instance = secrets.token_hex(6)
         self._me = {"pid": os.getpid(), "started": cli.process_start(os.getpid()), "instance": self._instance}
 
@@ -412,20 +436,17 @@ class CodingCliServer(SchemaBasedToolServer):
         return None
 
     def _save(self, record: dict) -> None:
-        path = self._file(record["run_id"], "json")
-        tmp = path.with_name(f"{path.stem}.{os.getpid()}-{threading.get_ident()}.tmp")
         # ASCII: a lone surrogate from the stream (a broken escape in a result) is escaped, not a failed save.
-        tmp.write_text(json.dumps(record, indent=1), encoding="utf-8")
-        for attempt in range(SAVE_ATTEMPTS):
-            try:
-                os.replace(tmp, path)
-                return
-            except PermissionError:
-                # Windows refuses the replace while another process reads the file.
-                if attempt == SAVE_ATTEMPTS - 1:
-                    tmp.unlink(missing_ok=True)
-                    raise
-                time.sleep(0.05)
+        _replace(self._file(record["run_id"], "json"), json.dumps(record, indent=1))
+
+    def _store_quota(self, state: dict) -> None:
+        # Whole or not at all: a reader that caught it half written read no state, and no state refuses nothing.
+        try:
+            _replace(self._root() / "quota.json", json.dumps(state))
+        except OSError as exc:
+            # A hint for the next start, not the run's outcome: a run that finished stays finished, a probe's
+            # answer still answers (Windows refuses the replace while a reader holds the file).
+            logger.warning("coding_cli: %s: the subscription's state not stored: %s", self.name, exc)
 
     def _records(self) -> list[dict]:
         folder = self._root() / "runs"
@@ -467,6 +488,44 @@ class CodingCliServer(SchemaBasedToolServer):
             return json.loads((self._root() / "quota.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
+
+    def _no_mcp(self) -> Path:
+        mcp = self._root() / "no_mcp.json"
+        if not mcp.exists():
+            mcp.write_text('{"mcpServers": {}}', encoding="utf-8")
+        return mcp
+
+    async def _quota_now(self, threshold: float, user_id: str) -> Any:
+        """The last known state (_quota) -- asked anew when it would refuse a run at `threshold` and is older than
+        QUOTA_FRESH_S, by a user who may run on the subscription (allowed_users). Without an answer the state on
+        file stands."""
+        state = self._quota()
+        if (self.command is None or user_id not in self.allowed_users
+                or not cli.quota_limit(state, threshold, time.time())):
+            return state
+        async with self._probe_lock:
+            path = self._root() / "quota.json"
+            try:
+                written = path.stat().st_mtime
+            except OSError:
+                written = 0.0
+            if time.time() - max(written, self._probed_at) < QUOTA_FRESH_S:
+                return self._quota()
+            self._probed_at = time.time()
+            # Stored in the thread: a caller cancelled meanwhile does not take the answer along.
+            found = await asyncio.to_thread(self._probe_and_store)
+            if not isinstance(found, dict):
+                logger.warning("coding_cli: %s: asking the subscription's state anew gave no answer -- the one on "
+                               "file from %s stands", self.name, time.strftime("%Y-%m-%d %H:%M", time.localtime(written)))
+                return self._quota()
+            return found
+
+    def _probe_and_store(self) -> Optional[dict]:
+        found = cli.probe_quota(self.command, self._no_mcp(), self._root(), cli.child_env(self.pass_env),
+                                PROBE_TIMEOUT_S)
+        if isinstance(found, dict):
+            self._store_quota(found)
+        return found
 
     def _mark_read(self, run_id: str, session_id: str) -> None:
         if _SESSION_KEY.fullmatch(session_id or ""):
@@ -556,7 +615,8 @@ class CodingCliServer(SchemaBasedToolServer):
                                             f"nested at most {cli.MAX_NESTING} deep")
         # The call's threshold, lower only; else the instance's. A budget limit is said as a field too (limit), so a
         # caller tells it from every other refusal -- "N run(s) still going" is a wait, not the budget.
-        blocked = cli.quota_limit(self._quota(), min(utilization or 1.0, self.max_utilization), time.time())
+        threshold = min(utilization or 1.0, self.max_utilization)
+        blocked = cli.quota_limit(await self._quota_now(threshold, user_id), threshold, time.time())
         if blocked:
             return await self._fail(status, f"not started: {cli.limit_text(blocked)}", limit=blocked)
         # Held until the process runs: a run being prepared is not on disk as running yet.
@@ -721,15 +781,16 @@ class CodingCliServer(SchemaBasedToolServer):
         return answer
 
     async def quota(self, params: dict[str, Any]) -> dict[str, Any]:
-        """The subscription's windows as the last run reported them, and the budget limit a run would be refused for
-        now (limit, as run_task's: None when none) -- at the instance's threshold, or the lower one asked. Read
-        only. No run has reported yet: known false, no limit -- nothing to go by refuses nothing."""
+        """The subscription's windows as the last run reported them -- asked anew when that would refuse and is
+        older than QUOTA_FRESH_S, as run_task does -- and the budget limit a run would be refused for now (limit, as
+        run_task's: None when none), at the instance's threshold, or the lower one asked. No run has reported yet:
+        known false, no limit -- nothing to go by refuses nothing."""
         status = params.get("_status") or _NoStatus()
         utilization = params.get("max_window_utilization")
         if utilization is not None and not _utilization_ok(utilization):
             return await self._fail(status, "max_window_utilization: a share above 0 and at most 1")
         threshold = min(utilization or 1.0, self.max_utilization)
-        state = self._quota()
+        state = await self._quota_now(threshold, str(params.get("_user_id") or ""))
         limit = cli.quota_limit(state, threshold, time.time())
         await status.end(cli.limit_text(limit) if limit else f"below {threshold:.0%}")
         return {"status": "success", "known": isinstance(state, dict), "windows": cli.windows(state),
@@ -830,9 +891,7 @@ class CodingCliServer(SchemaBasedToolServer):
             mcp.write_text(json.dumps({"mcpServers": config}, indent=1), encoding="utf-8")
             env.update(values)
         else:
-            mcp = self._root() / "no_mcp.json"
-            if not mcp.exists():
-                mcp.write_text('{"mcpServers": {}}', encoding="utf-8")
+            mcp = self._no_mcp()
         rules = worktree / "CLAUDE.md"
         cmd = cli.build_command(self.command, mode=mode, mcp_config=mcp, allowed_commands=self.allowed_commands,
                                 mcp_servers={n: (getattr(c, "tools", None) and c.tools.blocked) or []
@@ -1056,7 +1115,7 @@ class CodingCliServer(SchemaBasedToolServer):
                     notes.append("changes not read")
                     details.append(str(exc))
             if found["rate_limit"]:
-                (self._root() / "quota.json").write_text(json.dumps(found["rate_limit"]), encoding="utf-8")
+                self._store_quota(found["rate_limit"])
             if found["session"]:
                 record["claude_session"] = found["session"]
             if isinstance(found["model"], str) and found["model"]:

@@ -342,6 +342,37 @@ def quota_block(rate_limit: Any, limit: float, now: float) -> str:
     return limit_text(found) if found else ""
 
 
+# The smallest request there is, for the subscription's state now: Claude Code reports it before the answer
+# (measured on 2.1.285, 2026-10-14: a rate_limit_event with both windows, 2.3 s on haiku, no tool, one turn).
+PROBE_TASK = "Reply with: ok"
+
+
+def probe_command(exe: list[str], mcp_config: Path) -> list[str]:
+    return [*exe, "-p", "--output-format", "stream-json", "--verbose", "--restricted", "--strict-mcp-config",
+            "--mcp-config", str(mcp_config), "--tools", "", "--model", "haiku", "--max-turns", "1",
+            "--no-session-persistence"]
+
+
+def probe_quota(exe: list[str], mcp_config: Path, cwd: Path, env: dict, timeout: float) -> Optional[dict]:
+    """The subscription's state as Claude Code reports it now (a rate_limit_event's rate_limit_info), asked under
+    the login the runs use; None when the answer says none."""
+    options: dict[str, Any] = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+    try:
+        done = subprocess.run(probe_command(exe, mcp_config), input=PROBE_TASK.encode(), capture_output=True,
+                              cwd=cwd, env=env, timeout=timeout, **options)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    events = []
+    for line in done.stdout.decode("utf-8", "replace").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return outcome(events)["rate_limit"]
+
+
 # What a run the subscription stopped midway ends with (measured on Claude Code 2.1.295, 2026-10-09, 7 runs): its
 # result is_error with api_error "usage_limit_reached" (HTTP 429), its text "You've hit your session limit · resets
 # 1:10am (Europe/Berlin)", and the stream's last rate_limit_event "rejected" with the window and resetsAt.

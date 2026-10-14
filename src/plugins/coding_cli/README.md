@@ -17,7 +17,9 @@ background and wakes the session that started it.
   subscription stopped midway (its result `api_error: usage_limit_reached`, the stream's last rate_limit_event
   `rejected`; measured on Claude Code 2.1.295), answer with a field `limit`: the window, its use, the threshold, when
   it resets. A caller tells the budget by it, not by words -- "N run(s) still going" carries none. `quota` reads the
-  windows as the last run reported them and the limit a new run would be refused for, without starting one.
+  windows as the last run reported them and the limit a new run would be refused for, without starting one. A state
+  that would refuse and is over five minutes old is asked anew first (one turn on haiku): only a finished run writes
+  it, and a window that reset early refused every run until its old reset.
 - **MCP servers** -- a workdir's `mcp_servers` names servers of `external_servers.remote_servers` (enabled, with a
   url free of credentials, an HTTP or SSE transport); its edit runs load exactly these, their blocked tools
   denied, through a per-run MCP config whose auth headers are `${CODING_CLI_MCP_<n>}` placeholders -- the

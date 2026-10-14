@@ -569,6 +569,54 @@ async def test_what_a_run_reports_of_the_subscription_guards_the_next(repo):
     assert "90%" in second["error"]
 
 
+def aged(data_root, seconds):
+    old = time.time() - seconds
+    os.utime(data_root / "quota.json", (old, old))
+
+
+@pytest.mark.parametrize("age, refused", [(server_module.QUOTA_FRESH_S + 60, False), (10, True)])
+async def test_an_old_state_that_refuses_is_asked_anew(repo, data_root, age, refused):
+    """Only a finished run writes quota.json and a refused one never finishes: a window that reset early refused
+    every run until its old reset. Asked anew (the fake reports 34 % and 51 %), the run starts and the file holds
+    the new state; a young state is refused on as it is."""
+    full_window(data_root, used=0.91, name="seven_day")
+    aged(data_root, age)
+    server = make_server(repo)
+    asked, _ = await call(server, "quota")
+    windows = cli.windows(json.loads((data_root / "quota.json").read_text()))
+    assert windows["seven_day"] == (0.91 if refused else 0.51) and (asked["limit"] is not None) is refused, asked
+    result, _ = await call(server, "run_task", task="x")
+    assert ("seven_day window is at 91%" in result.get("error", "")) is refused, result
+    assert (result.get("state") == "done") is not refused, result
+
+
+async def test_without_an_answer_the_state_on_file_stands_and_is_not_asked_again_at_once(repo, data_root,
+                                                                                         monkeypatch):
+    full_window(data_root, used=0.91, name="seven_day")
+    aged(data_root, server_module.QUOTA_FRESH_S + 60)
+    server = make_server(repo)
+    probes = []
+    monkeypatch.setattr(cli, "probe_quota", lambda *a: probes.append(a))
+    first, _ = await call(server, "run_task", task="x")
+    second, _ = await call(server, "quota")
+    assert "seven_day window is at 91%" in first["error"] and second["limit"]["utilization"] == 0.91
+    assert len(probes) == 1, "asked again within QUOTA_FRESH_S"
+
+
+@pytest.mark.parametrize("used, user", [(None, "admin"), (0.5, "admin"), (0.91, "someone")])
+async def test_asked_anew_only_when_it_would_refuse_and_only_for_who_may_run(repo, data_root, monkeypatch, used,
+                                                                            user):
+    """The probe is a call on the operator's subscription: none for a state that refuses nothing (or none known),
+    none for a user who may not run there -- the quota tool is open to them."""
+    if used is not None:
+        full_window(data_root, used=used, name="seven_day")
+        aged(data_root, server_module.QUOTA_FRESH_S + 60)
+    probes = []
+    monkeypatch.setattr(cli, "probe_quota", lambda *a: probes.append(a))
+    answer, _ = await call(make_server(repo), "quota", user=user)
+    assert answer["status"] == "success" and not probes, answer
+
+
 async def test_resume_continues_the_conversation_in_the_same_worktree(repo, log):
     server = make_server(repo)
     first, _ = await call(server, "run_task", task="WRITE b.txt one")

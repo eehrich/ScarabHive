@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `coding_cli`: a stored subscription state that would refuse a run and is
+  over five minutes old is asked anew (one turn on haiku) before the refusal:
+  only a finished run wrote it, so a weekly window that reset early refused
+  every run until its old reset.
 - `context_engineer`: the media passes (Pre-Layer M, duplicates, the
   event pass) are weighed with layers 1-3 under `min_reduction` and held with
   them. Measured on production agents over two weeks: 99 of 114
