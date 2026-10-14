@@ -32,7 +32,8 @@ import os
 import time
 import weakref
 from collections import defaultdict
-from dataclasses import dataclass, field, fields
+from contextvars import ContextVar
+from dataclasses import dataclass, field, fields, replace
 from fnmatch import fnmatchcase
 from typing import Any, Awaitable, Callable, Iterator, NamedTuple
 
@@ -127,6 +128,32 @@ class CompactionConfig:
     # and a turn is a user message nobody injected — a whole agent run is one.
     min_tokens_between_compactions: int = 20000
 
+    # A run of the layers that rewrite messages (1, 2, 3) is kept only when it
+    # takes at least this share of the context; a shallower one is thrown away
+    # and the context goes out as it was. Every kept run breaks the provider
+    # prompt cache from the first changed message on: the next call pays the
+    # whole context at the input price instead of the cached one (10-20x), and
+    # a few percent fewer tokens do not earn that back before the next run
+    # (measured: 2-5 % saved every ~10 calls, each break ten times a cached call).
+    # Not for /compact, the byte limit, or a context past
+    # force_above_window_share. 0 keeps every run.
+    min_reduction: float = 0.2
+
+    # The thresholds as shares of the model's context window (for_window): each
+    # lowers its token value to share x window where that is less. The token
+    # values assume a 200k-1M model -- on a 128k model layer1_threshold 140000
+    # lies beyond the window and nothing ever ran. They stay the ceiling: a
+    # large window is no reason to carry more, every call pays for what it
+    # carries, cached or not. 0 switches a share off; an agent that overrides a
+    # token threshold switches the inherited share for it off (the hook).
+    layer1_window_share: float = 0.55
+    layer2_window_share: float = 0.65
+    layer3_window_share: float = 0.75
+    target_window_share: float = 0.30
+    # Past this share of the window a run is kept however little it takes:
+    # the next call would not fit. 0 = never forced by the window.
+    force_above_window_share: float = 0.85
+
     # Media deduplication settings
     deduplicate_media: bool = True  # Auto-compact older duplicate media (by file hash)
     
@@ -155,6 +182,47 @@ class CompactionConfig:
     store_media_before_compaction: bool = True  # Save inline media to disk before removing
     media_store_ttl_seconds: int = 86400 * 7  # 7 days TTL for stored media
     media_store_max_files: int = 500  # Max files per session
+
+    def for_window(self, window: int | None) -> "CompactionConfig":
+        """This config with its thresholds bound to a model's context window.
+
+        Itself where nothing changes -- no window known, no share set, or every
+        token value already below its share.
+        """
+        if not isinstance(window, int) or window <= 0:
+            return self
+        changed = {}
+        for name, share_name in WINDOW_SHARES.items():
+            share = getattr(self, share_name)
+            if share > 0 and int(window * share) < getattr(self, name):
+                changed[name] = int(window * share)
+        # The hold between two runs comes down with them: no longer than the
+        # way from the target back up to Layer 1. On a 32k model the 20000 of
+        # min_tokens_between_compactions were more than the way from the target
+        # to the window's end -- after its first run nothing ran until the
+        # reading stood at 100 % of the window.
+        if "layer1_threshold" in changed:
+            way_back = changed["layer1_threshold"] - changed.get("target_tokens", self.target_tokens)
+            if 0 < way_back < self.min_tokens_between_compactions:
+                changed["min_tokens_between_compactions"] = way_back
+        return replace(self, **changed) if changed else self
+
+
+#: True while layers 1-3 run on a copy to measure what they would take
+#: (_apply_layers_if_worth_it): nothing is stored then, the placeholders are
+#: stand-ins of the real size. A context variable, not an attribute of the
+#: strategy: a /compact for the same session can run beside the hook, and a
+#: flag on the strategy would switch ITS storing off -- placeholders to nothing.
+_TRIAL: ContextVar[bool] = ContextVar("context_engineer_trial", default=False)
+
+
+#: Token threshold -> the share of the context window that bounds it.
+WINDOW_SHARES = {
+    "layer1_threshold": "layer1_window_share",
+    "layer2_threshold": "layer2_window_share",
+    "layer3_threshold": "layer3_window_share",
+    "target_tokens": "target_window_share",
+}
 
 
 #: Config keys the plugin consumes that are NOT CompactionConfig fields.
@@ -288,6 +356,10 @@ class CompactionResult:
     # What the list looked like when compact() started (see _message_shape):
     # _finalize compares against it to find the first message a pass changed.
     shapes_before: list[tuple] | None = field(default=None, repr=False)
+
+    # Tokens a run of layers 1-3 would have taken when it was thrown away as
+    # too shallow (min_reduction); None when no run was thrown away.
+    discarded_saving: int | None = None
 
     @property
     def reduction_percent(self) -> float:
@@ -659,6 +731,7 @@ class LayeredCompactionStrategy:
         self.tool_store = tool_store
         self.core_memory = core_memory
         self.archival_memory = archival_memory
+        self._window_config: CompactionConfig | None = None
         self.config = config or CompactionConfig()
         self.media_store = media_store
         self.summarize = summarize
@@ -675,6 +748,26 @@ class LayeredCompactionStrategy:
         #: unreferenced task can be garbage collected while it runs.
         self._index_tasks: set[asyncio.Task[None]] = set()
     
+    @property
+    def config(self) -> CompactionConfig:
+        """The config every pass reads: bound to the window of the current call
+        (bind_window) where that changes a threshold, as configured otherwise."""
+        return self._window_config or self._config
+
+    @config.setter
+    def config(self, value: CompactionConfig) -> None:
+        self._config = value
+        self._window_config = None
+
+    def bind_window(self, window: int | None) -> CompactionConfig:
+        """Bind the thresholds to the model this call goes to; the config in force.
+
+        Per call, not per session: a fallback model has another window.
+        """
+        bound = self._config.for_window(window)
+        self._window_config = None if bound is self._config else bound
+        return self.config
+
     def _add_media_hint_to_content(
         self,
         msg: dict[str, Any],
@@ -835,6 +928,7 @@ class LayeredCompactionStrategy:
         context_window: int | None = None,
         arrivals_only: bool = False,
         tokens_after_arrivals: int | None = None,
+        min_reduction: float = 0.0,
     ) -> CompactionResult:
         """Apply layered compaction to messages.
 
@@ -855,6 +949,9 @@ class LayeredCompactionStrategy:
             tokens_after_arrivals: The caller's reading with T's results left
                 out. Without it the estimate of what T stored is subtracted —
                 wrong where a provider count from before the arrival dominates.
+            min_reduction: The hook's yield gate (config.min_reduction): a run
+                of layers 1-3 that takes less than this share of the context is
+                thrown away -- see _apply_layers_if_worth_it. 0 keeps every run.
             trigger_event: Optional event that triggered compaction:
                 - 'user_message': New user message arrived
                 - 'final_response': Agent sent final response
@@ -1051,10 +1148,93 @@ class LayeredCompactionStrategy:
         # before them, on purpose: a media pass that evicted has broken the
         # cache on this call already, and Layer 1 rides along. Read after it,
         # a growing loop crossed the threshold again one quiet call later and
-        # paid Layer 1 as a break of its own.
+        # paid Layer 1 as a break of its own. (Under min_reduction it rides
+        # along from the pass's first change on -- _free_from; what it would
+        # rewrite before that is a break of its own and has to be worth it.)
         bytes_exceeded = bytes_exceeded and (
             self._estimate_request_bytes(result.modified_messages)
             > self.config.max_request_bytes)
+        must = manual or bytes_exceeded or self.window_is_tight(current_tokens, context_window)
+        if must or min_reduction <= 0:
+            await self._apply_layers(result, current_tokens, manual, bytes_exceeded)
+            return self._finalize(result)
+        return self._finalize(await self._apply_layers_if_worth_it(
+            result, current_tokens, min_reduction))
+
+    def window_is_tight(self, current_tokens: int, context_window: int | None) -> bool:
+        """Whether the context is past force_above_window_share of the model's window."""
+        share = self.config.force_above_window_share
+        return bool(context_window and share > 0 and current_tokens >= context_window * share)
+
+    async def _apply_layers_if_worth_it(self, result: CompactionResult, current_tokens: int,
+                                        min_reduction: float) -> CompactionResult:
+        """Layers 1-3 on a copy; the copy when they took min_reduction of the context.
+
+        Otherwise ``result`` as it came in -- the media passes' work included,
+        the layers' not -- with ``discarded_saving`` set, which the hook reads
+        to hold the next attempt back (min_tokens_between_compactions).
+
+        A run that costs no cache is kept whatever it takes: one that changes
+        nothing before ``_free_from`` -- the round no request carried yet, or
+        the first message an earlier pass of this call rewrote already. And of
+        a run thrown away, Layer 1 still takes that part: a new result over
+        tool_result_max_inline_size sent once inline is in the cached prefix,
+        and taking it out later is a break of its own.
+
+        The run on the copy stores nothing (_TRIAL): a result or a message in
+        the stores that the conversation still carries would show up in the
+        agent's catalogue and in its searches, beside the original. A run that
+        is worth it is done a second time, for real.
+        """
+        trial = copy.deepcopy(result)
+        token = _TRIAL.set(True)
+        try:
+            await self._apply_layers(trial, current_tokens, False, False)
+        finally:
+            _TRIAL.reset(token)
+        if not any(layer in (1, 2, 3) for layer in trial.layers_applied):
+            return result  # none was due
+        before, after = result.modified_messages, trial.modified_messages
+        saved = self._estimate_messages_tokens(before) - self._estimate_messages_tokens(after)
+        first_change = next((i for i, (old, new) in enumerate(zip(before, after)) if old != new),
+                            None if len(before) == len(after) else min(len(before), len(after)))
+        free_from = self._free_from(result)
+        if saved >= min_reduction * current_tokens or (
+                first_change is not None and first_change >= free_from):
+            await self._apply_layers(result, current_tokens, False, False)
+            return result
+        logger.info(
+            f"Compaction not worth the cache break: layers {trial.layers_applied} would take "
+            f"{saved} of {current_tokens} tokens ({saved / max(1, current_tokens):.1%} "
+            f"< {min_reduction:.0%}) -- context left as it is")
+        result.discarded_saving = max(0, saved)
+        if 1 in trial.layers_applied and free_from < len(before):
+            # Shapes, not the list: Layer 1 writes into it in place.
+            shapes = [_message_shape(m) for m in before]
+            await self._apply_layer1(result, only_from=free_from)
+            if _first_changed_index(shapes, before) is not None:
+                result.layers_applied.append(1)
+        return result
+
+    @staticmethod
+    def _free_from(result: CompactionResult) -> int:
+        """The position from which a rewrite costs no cache in this call.
+
+        The round no request carried yet (_arrival_indices), or earlier: the
+        first message a pass before the layers (T, P, the media passes) has
+        rewritten in this call -- the cache behind it is lost either way.
+        """
+        messages = result.modified_messages
+        free = _arrival_indices(messages).start
+        if result.shapes_before is not None:
+            changed = _first_changed_index(result.shapes_before, messages)
+            if changed is not None:
+                free = min(free, changed)
+        return free
+
+    async def _apply_layers(self, result: CompactionResult, current_tokens: int,
+                            manual: bool, bytes_exceeded: bool) -> None:
+        """Layers 1, 2 and 3, each from its threshold on (see compact)."""
         layer1_needed = manual or current_tokens >= self.config.layer1_threshold or bytes_exceeded
         if layer1_needed:
             await self._apply_layer1(result, bytes_exceeded=bytes_exceeded)
@@ -1064,7 +1244,7 @@ class LayeredCompactionStrategy:
             final_bytes = self._estimate_request_bytes(result.modified_messages)
             if (result.final_tokens <= self.config.target_tokens and
                 final_bytes <= self.config.target_request_bytes):
-                return self._finalize(result)
+                return
 
         # Layers 2 and 3 read their thresholds on the hook's scale. After Layer 1
         # final_tokens is an estimate of the messages alone, while the hook
@@ -1080,15 +1260,13 @@ class LayeredCompactionStrategy:
             result.layers_applied.append(2)
 
             if result.final_tokens <= self.config.target_tokens:
-                return self._finalize(result)
+                return
 
         # Layer 3: Only apply if above threshold (turn-based dropping)
         if result.final_tokens + offset >= self.config.layer3_threshold:
             await self._apply_layer3(result)
             result.layers_applied.append(3)
-        
-        return self._finalize(result)
-    
+
     def _compute_media_hash(self, item: dict[str, Any]) -> str | None:
         """Identity of a media item, for duplicate detection.
 
@@ -1367,7 +1545,7 @@ class LayeredCompactionStrategy:
         Returns:
             File path if stored successfully, None if media_store not available or failed
         """
-        if not self.media_store or not self.config.store_media_before_compaction:
+        if not self.media_store or not self.config.store_media_before_compaction or _TRIAL.get():
             return None
 
         # media_store_max_files is a PER-SESSION quota, so everyone who arrives
@@ -1661,8 +1839,7 @@ class LayeredCompactionStrategy:
                         f"file_{file_name}_"
                         f"{hashlib.sha256(file_content.encode()).hexdigest()[:16]}"
                     )
-                    reference = await asyncio.to_thread(
-                        self.tool_store.store_and_reference,
+                    reference = await self._store_and_reference(
                         tool_call_id=file_key,
                         tool_name=file_name,
                         content=file_content,
@@ -1781,7 +1958,8 @@ class LayeredCompactionStrategy:
                 result.media_compacted_after_event += 1
                 result.media_bytes_saved += item_bytes
                 
-                logger.info(f"Compacted {item_type} file: {inline_tokens:,} tokens, {item_bytes / 1024:.0f}KB saved (path: {file_path})")
+                if not _TRIAL.get():
+                    logger.info(f"Compacted {item_type} file: {inline_tokens:,} tokens, {item_bytes / 1024:.0f}KB saved (path: {file_path})")
                 # Don't append to compacted - item is removed
                     
             else:
@@ -1862,14 +2040,22 @@ class LayeredCompactionStrategy:
         # is enough to point it at find=.
         preview = " ".join(content.split())[:200]
         written = await self._written_summary(msg, content) if on_arrival else None
-        return await asyncio.to_thread(
-            self.tool_store.store_and_reference,
+        return await self._store_and_reference(
             tool_call_id=msg.get("tool_call_id", ""),
             tool_name=msg.get("name", "unknown"),
             content=content,
             summary=written or preview,
             inline_summary=written,
         )
+
+    async def _store_and_reference(self, **stored: Any) -> str:
+        """Store a result and return its placeholder -- in a trial run (_TRIAL)
+        the placeholder alone, with a stand-in id of the real length."""
+        if _TRIAL.get():
+            return ToolResultStore.reference(
+                "TR_0000000000", stored["tool_name"], "0" * 8,
+                estimate_content_tokens(stored["content"]), stored.get("inline_summary"))
+        return await asyncio.to_thread(self.tool_store.store_and_reference, **stored)
 
     async def _written_summary(self, msg: dict[str, Any], content: str) -> str | None:
         """What a cheap model says this result contains, or None for the preview.
@@ -1911,12 +2097,17 @@ class LayeredCompactionStrategy:
             return None
         return summary[:SUMMARY_CHARS] + ("…" if len(summary) > SUMMARY_CHARS else "")
 
-    async def _apply_layer1(self, result: CompactionResult, bytes_exceeded: bool = False) -> None:
+    async def _apply_layer1(self, result: CompactionResult, bytes_exceeded: bool = False,
+                            only_from: int = 0) -> None:
         """Layer 1: Reversible compaction.
 
         - Store tool outputs with references (auto-archives large results > max_size)
         - Move attached text files to the tool-result store
         - Evict inline media, storing it to disk first
+
+        ``only_from``: rewrite nothing before this position (the part of a run
+        that costs no cache, see _apply_layers_if_worth_it). The rules still
+        count from the end of the whole conversation.
         """
         logger.debug("Applying Layer 1: Reversible compaction")
         self._take_baseline(result)
@@ -1940,6 +2131,8 @@ class LayeredCompactionStrategy:
             is_tool = msg.get("role") == "tool"
             if is_tool:
                 tool_results_seen += 1
+            if i < only_from:
+                continue
 
             # Process multimodal_content (file paths that will be base64-encoded
             # at call time) — but not on the newest tool results, and not on a
@@ -2671,6 +2864,8 @@ class LayeredCompactionStrategy:
         The ids are derived from the messages for that (see _entry_id): the
         next pass writes onto the same rows instead of beside them.
         """
+        if _TRIAL.get():
+            return [f"arch_{i:012x}" for i in range(len(payload))]  # stand-ins of the real length
         if len(payload) <= _SEMANTIC_INDEX_MAX_BATCH:
             return await asyncio.to_thread(self.archival_memory.store_many, payload, None)
         ids, documents, metadatas = await asyncio.to_thread(

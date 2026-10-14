@@ -30,6 +30,7 @@ from .archival_memory import ARCHIVAL_COLLECTION, ArchivalMemory
 from .compaction import (
     PLUGIN_LEVEL_KEYS,
     TOOL_RESULTS_SECTION,
+    WINDOW_SHARES,
     CompactionConfig,
     LayeredCompactionStrategy,
     _coerce,
@@ -79,6 +80,13 @@ class _HysteresisMark:
     tokens: int | None = None
     stale_readings: int = 0
     provisional: bool = False
+    #: The run that set the mark was one the window forced (window_is_tight).
+    #: A mark without it does not hold such a run back: a run thrown away as
+    #: too shallow at 78 % of the window held the forced one until the reading
+    #: stood at 99 % (measured on a 128k model: the gap from
+    #: force_above_window_share to the window's end is smaller than
+    #: min_tokens_between_compactions).
+    forced: bool = False
 
 
 @dataclass
@@ -692,10 +700,18 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # A key left blank (None) sets nothing and keeps the plugin's value.
         # Read as a value, a blank tool_result_summary_tools became the empty
         # list -- every tool -- over the plugin's own patterns.
+        set_here = {k: v for k, v in overrides.items()
+                    if k not in PLUGIN_LEVEL_KEYS and v is not None}
+        # Who writes tokens means tokens: an agent's own threshold is not bound
+        # to the window by a share it merely inherited. book_launcher's 800k on
+        # a 1M model, or a test agent's 9,000,000 for "never", would otherwise
+        # come down to the plugin's share of the window.
+        unbound = {share: 0.0 for tokens, share in WINDOW_SHARES.items()
+                   if tokens in set_here and share not in set_here}
         return compaction_config_from({
             **{f.name: getattr(self, f.name) for f in fields(CompactionConfig)},
-            **{k: v for k, v in overrides.items()
-               if k not in PLUGIN_LEVEL_KEYS and v is not None},
+            **set_here,
+            **unbound,
         })
 
     def _summarizer(self, context: HookContext, cfg: CompactionConfig):
@@ -915,7 +931,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Every decision below reads the SESSION's config. Reading the
             # plugin-level attributes here ignored an agent's own thresholds at
             # the gate, before the strategy that honours them was ever asked.
-            cfg = strategy.config
+            # Bound to the window of the model THIS call goes to: the token
+            # thresholds assume a large one (CompactionConfig.for_window).
+            context_window = _context_window(context)
+            cfg = strategy.bind_window(context_window)
             # Before the gate asks what arrives: whether a long result is worth
             # a summary is part of that question, and the LLM layer is reached
             # through the agent of THIS call, while the strategy outlives it.
@@ -930,7 +949,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # again rather than subtracted: a provider count from the previous
             # call never contained them, and max(count, estimate) minus their
             # estimate undercut it.
-            context_window = _context_window(context)
             arrivals = strategy.oversized_arrivals(messages_as_dicts, context_window)
             gate_tokens = current_tokens
             gate_messages = messages_as_dicts
@@ -1034,6 +1052,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     }
                 )
 
+            window_tight = strategy.window_is_tight(gate_tokens, context_window)
+
             # Hysteresis (min_tokens_between_compactions): after a run of the
             # layers that rewrite messages, the next waits until the context has
             # grown by that many tokens — unless a deeper layer has become due
@@ -1046,15 +1066,24 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             if mark is not None:
                 # No base yet (only partial readings since the run): no growth.
                 growth = 0 if mark.tokens is None else gate_tokens - mark.tokens
+                hold = cfg.min_tokens_between_compactions
+                # A run the window forced that did not get the context out of
+                # the tight part is tried again once half of what is left of
+                # the window is used up: above force_above_window_share there
+                # is less room than the hold (128k: 19200 against 20000), and
+                # the next forced run came past the window's end.
+                if window_tight and mark.forced and mark.tokens is not None:
+                    hold = min(hold, max(0, context_window - mark.tokens) // 2)
                 held = (not is_manual and not bytes_exceeded
-                        and growth < cfg.min_tokens_between_compactions
-                        and _due_level(gate_tokens, cfg) <= mark.level)
+                        and growth < hold
+                        and _due_level(gate_tokens, cfg) <= mark.level
+                        and (mark.forced or not window_tight))
             held_back = held and not event_media_compaction_needed and not always_compact_media_enabled
             if held_back and not arrivals:
                 logger.debug(
                     f"[ContextEngineer] Session {session_id}: held by hysteresis - "
                     f"{growth} tokens since the last compaction "
-                    f"(min: {cfg.min_tokens_between_compactions})"
+                    f"(min: {hold})"
                 )
                 return HookResult(
                     success=True,
@@ -1064,7 +1093,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                         "reason": "hysteresis",
                         "current_tokens": current_tokens,
                         "tokens_since_last": growth,
-                        "min_tokens_between_compactions": cfg.min_tokens_between_compactions,
+                        "min_tokens_between_compactions": hold,
                     }
                 )
 
@@ -1098,6 +1127,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     # gates above would have kept out (media dedup, Pre-Layer P).
                     arrivals_only=below_gate or held_back,
                     tokens_after_arrivals=gate_tokens,
+                    min_reduction=cfg.min_reduction,
                 )
             finally:
                 self._active_compactions.discard(session_id)
@@ -1107,9 +1137,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # otherwise repeat on every call. A media-only pass must not, or it
             # would hold the token layers back for good.
             # The level is what was due once Pre-Layer T had taken its share.
-            if any(layer in (1, 2, 3, "P") for layer in result.layers_applied):
+            # A run thrown away as too shallow (min_reduction) sets it as well:
+            # it would be tried again on every call, and thrown away again.
+            if (any(layer in (1, 2, 3, "P") for layer in result.layers_applied)
+                    or result.discarded_saving is not None):
                 self._hysteresis_marks[session_id] = _HysteresisMark(
-                    level=_due_level(gate_tokens, cfg))
+                    level=_due_level(gate_tokens, cfg), forced=window_tight)
                 self._hysteresis_marks.move_to_end(session_id)
                 while len(self._hysteresis_marks) > _MAX_HYSTERESIS_MARKS:
                     self._hysteresis_marks.popitem(last=False)
@@ -1391,6 +1424,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     # modified is True on every run that got this far; this says
                     # whether the messages actually changed.
                     "compacted": something_compacted,
+                    # A run of the layers tried and thrown away (min_reduction):
+                    # the caller of the compact tool reads why nothing happened.
+                    **({"reason": "not_worth_it", "discarded_saving": result.discarded_saving}
+                       if result.discarded_saving is not None and not something_compacted else {}),
                     "original_tokens": result.original_tokens,
                     "final_tokens": result.final_tokens,
                     "tokens_saved": result.tokens_saved,

@@ -236,8 +236,8 @@ class ContextEngineerServer(SchemaBasedHookToolServer):
             {"status": "success", "modified", "original_tokens", "final_tokens",
             "tokens_saved", "reduction_percent", "layers_applied",
             "tool_results_stored", "messages_archived", "messages_dropped",
-            "messages_pruned"}, plus "reason" (below_threshold, hysteresis) for
-            a run turned away -- or {"status": "error", "error": ...}.
+            "messages_pruned"}, plus "reason" (below_threshold, hysteresis,
+            not_worth_it) for a run turned away -- or {"status": "error", "error": ...}.
         """
         status = params.get("_status")
         
@@ -364,7 +364,8 @@ class ContextEngineerServer(SchemaBasedHookToolServer):
             if status:
                 tokens_saved = metadata.get("tokens_saved", 0)
                 reduction = metadata.get("reduction_percent", 0)
-                await status.end(f"Compacted: saved {tokens_saved} tokens ({reduction:.1f}% reduction)")
+                await status.end(f"Nothing compacted ({metadata['reason']})" if metadata.get("reason") else
+                                 f"Compacted: saved {tokens_saved} tokens ({reduction:.1f}% reduction)")
             
             # A run turned away (below the thresholds, or held by the hysteresis)
             # carries no before/after figures; its reading is current_tokens.

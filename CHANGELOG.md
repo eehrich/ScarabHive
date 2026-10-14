@@ -23,6 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `context_engineer` compacts only when it is worth the cache break. A run of
+  layers 1-3 is tried on a copy, storing nothing, and kept when it takes
+  `min_reduction` (default 0.2) of the context; a shallower one leaves the
+  context as it is. Measured on a long agent run: Layer 1 ran every ~20k
+  tokens of growth for 2-5 %, and each run re-billed the context at the input
+  price. `/compact`, the byte limit and a context past
+  `force_above_window_share` (0.85) of the model's window are kept whatever
+  they take.
+- `context_engineer` binds its thresholds to the window of the model a call
+  goes to: `layer1_window_share` (0.55), `layer2_window_share` (0.65),
+  `layer3_window_share` (0.75) and `target_window_share` (0.30) lower the
+  token values where the window is small -- on a 128k model `layer1_threshold:
+  140000` lay beyond the window and no layer ever ran. The token values stay
+  the ceiling. An agent that overrides a token threshold is not bound by the
+  plugin's share for it. `min_tokens_between_compactions` comes down with
+  Layer 1, to the way from the target back up to it (32k model: 8000).
+
 - The modules of `src/agent_system` above 1000 lines are split along their
   responsibilities; every name other code imports stays importable from where
   it was. `Agent` is built from mixins (`servers/agent/mixins/`, the step loop

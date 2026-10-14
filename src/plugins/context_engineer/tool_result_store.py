@@ -295,6 +295,12 @@ class ToolResultStore:
         # the other way: a caller that had a model write a few hundred tokens
         # about twenty thousand wants exactly those resent instead of a pointer
         # the next model must page through. Only that caller pays it.
+        return self.reference(short_id, tool_name, content_hash, token_count, inline_summary)
+
+    @staticmethod
+    def reference(short_id: str, tool_name: str, content_hash: str, token_count: int,
+                  inline_summary: str | None = None) -> str:
+        """The placeholder that stands for a stored result in the conversation."""
         import json
         reference = {
             "type": "tool_result_ref",

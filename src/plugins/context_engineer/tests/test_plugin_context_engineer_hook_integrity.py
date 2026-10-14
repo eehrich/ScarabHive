@@ -273,7 +273,10 @@ class TestHysteresis:
     BIG = "a large tool result line with enough words to count " * 60
     CONFIG = {"layer1_threshold": 100_000, "layer2_threshold": 10**9, "layer3_threshold": 10**9,
               "min_tokens_between_compactions": 20_000, "always_compact_media_keep_last": 2,
-              "tool_result_keep_last": 5}
+              "tool_result_keep_last": 5,
+              # The token readings here are made up, far above what the messages hold: no run
+              # could take a fifth of them. The yield gate has its own tests (..._yield_gate.py).
+              "min_reduction": 0}
 
     def _run_messages(self, results: int):
         return [

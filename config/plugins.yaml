@@ -929,13 +929,26 @@ plugins:
         # Cache hysteresis: ANY mutation before the end of the prefix breaks
         # provider prompt caching completely. So compact rarely and deep
         # (high watermark -> low watermark, ~140k -> 70k), never incrementally.
-        # The thresholds are high on purpose: writer profiles run 200k-1M
-        # contexts; small models are still protected by max_request_bytes.
+        # The token values are the ceiling, whatever the model's window: every
+        # call pays for what the context carries, cached or not, and a cache
+        # that expires (5 minutes) re-bills all of it at the input price.
         layer1_threshold: 140000  # Start reversible compaction (tool refs, variables)
         layer2_threshold: 170000  # Start semi-reversible compaction (archival with summaries)
         layer3_threshold: 200000  # Start irreversible compaction (drop old messages)
         target_tokens: 70000      # Target token count after compaction (low watermark, large drop)
         min_tokens_between_compactions: 20000  # Growth since the last compaction; avoids compacting on every turn just above a threshold
+        # A run of layers 1-3 is tried on a copy and kept only when it takes
+        # this share of the context; a shallower one would break the cache for
+        # nothing (measured: 2-5 % saved, the next call at ten times its cached price).
+        min_reduction: 0.2
+        # For a model with a smaller window the thresholds come down to these
+        # shares of it (128k: 70k / 83k / 96k, target 38k). An agent that sets
+        # a token threshold of its own is not bound by the share for it.
+        layer1_window_share: 0.55
+        layer2_window_share: 0.65
+        layer3_window_share: 0.75
+        target_window_share: 0.30
+        force_above_window_share: 0.85  # past this share of the window a run is kept however little it takes
 
         store_media_before_compaction: true  # Enables the media store
         media_store_ttl_seconds: 604800      # 7 days
