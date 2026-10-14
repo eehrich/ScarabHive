@@ -2,8 +2,10 @@
 
 _call_step_llm calls the step's LLM (_call_llm_with_streaming, llm_call.py) until it answers, and
 decides what each failure means: an error in the body is asked once more on the same model, then
-moves on; a reasoning loop is retried on the same model, unwatched; a rate limit, an exhausted quota
-or a refused key blocks the LLM for every agent (llm/model_health.py) and moves on; a 5xx or a
+moves on; a reasoning loop is retried on the same model, unwatched; a rate limit is asked once more
+after a short wait (the model entry's rate_limit_retry_seconds) while no agent has blocked the model;
+then a rate limit, an exhausted quota or a refused key blocks the LLM for every agent
+(llm/model_health.py) and moves on; a 5xx or a
 transport error moves on without a block; running out of file descriptors moves nowhere. "Moves on"
 is the next fallback of the step (step_llm.py), and when the chain is used up the error goes to the
 caller. A cancel or a timeout ends the run. Its own module because what each error means is the one
@@ -71,6 +73,18 @@ def _is_local_resource_exhaustion(exc: BaseException) -> bool:
     return False
 
 
+async def _wait_unless_cancelled(seconds: float, token: Any) -> None:
+    """Sleep *seconds*; a cancel of *token* ends the wait as CancelledError."""
+    if token is None:
+        await asyncio.sleep(seconds)
+        return
+    try:
+        await asyncio.wait_for(token.wait_for_cancellation(), timeout=seconds)
+    except asyncio.TimeoutError:
+        return
+    raise asyncio.CancelledError()
+
+
 class FallbackMixin:
     """The step's LLM call and its recoveries (see the module docstring).
 
@@ -92,9 +106,18 @@ class FallbackMixin:
                     yield event
             if st.ended():
                 return
-            st.call_started = asyncio.get_event_loop().time()
-            st.health_asked_at = model_health.now()
             try:
+                if st.rate_limit_wait is not None:
+                    # Inside the try: a cancel during the wait ends the run like one during a call
+                    (seconds, limit), st.rate_limit_wait = st.rate_limit_wait, None
+                    await _wait_unless_cancelled(seconds, run.main_token)
+                    if not model_health.available(st.current_llm, run.request_id):
+                        # Another request's 429 blocked the model meanwhile (or probes it after the
+                        # block ran out): this step walks around it too, as one failure of that
+                        # burst (health_asked_at is still the call's)
+                        raise limit
+                st.call_started = asyncio.get_event_loop().time()
+                st.health_asked_at = model_health.now()
                 async with contextlib.aclosing(self._attempt_llm_call(run, st)) as events:
                     async for event in events:
                         yield event
@@ -415,6 +438,8 @@ class FallbackMixin:
         """A rate limit or an exhausted quota: the LLM is blocked, the step moves to the next
         fallback. False (logged) when none is left -- the error goes up."""
         is_quota_exhausted = isinstance(e, LLMQuotaExhaustedError)
+        if not is_quota_exhausted and await self._retry_after_rate_limit(run, st, e):
+            return True
         reason = "quota exhausted" if is_quota_exhausted else "rate limit hit"
         # A block of the LLM, not of this agent: every agent walks
         # around it until it runs out or the LLM answers someone. A
@@ -442,6 +467,32 @@ class FallbackMixin:
             return True
         logger.error(f"[{self.name}] No fallback profiles available, {reason}")
         return False
+
+    async def _retry_after_rate_limit(self: Agent, run: LoopState, st: StepState,
+                                      e: LLMRateLimitError) -> bool:
+        """A 429 on a model nobody has blocked yet: the next call waits the model entry's
+        rate_limit_retry_seconds and asks the same client again, once per client and step. True
+        when it will; False sends the step to the block and the fallback.
+
+        An upstream 429 on OpenRouter mostly clears within seconds (measured on the server
+        06-10/2026: of 11 calls a few seconds after one, 10 answered), while the block lasts at
+        least 60 s and moves every agent's calls onto the fallback model.
+        """
+        seconds = float(getattr(st.current_llm, "rate_limit_retry_seconds", 0) or 0)
+        if (seconds <= 0
+                or getattr(e, "retried", False)            # the client waited and asked again itself
+                or (e.retry_after or 0) > seconds          # the provider asks for longer
+                or model_health.remaining(st.current_llm) > 0  # another request blocked it already
+                or any(c is st.current_llm for c in st.rate_limit_retried)):
+            return False
+        st.rate_limit_retried.append(st.current_llm)
+        st.rate_limit_wait = (seconds, e)
+        model = getattr(st.current_llm, "model", "?")
+        logger.warning(f"[{self.name}] {e.__class__.__name__}: {e}. Asking {model} again in {seconds:.0f}s")
+        await run.status_worker.progress(
+            f"Rate limit hit, retrying {model} in {seconds:.0f}s",
+            meta={"step": st.step + 1, "retry_in_seconds": seconds})
+        return True
 
     async def _fall_back_on_server_error(self: Agent, run: LoopState, st: StepState,
                                          e: LLMServerError) -> bool:

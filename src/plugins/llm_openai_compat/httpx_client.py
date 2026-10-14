@@ -1386,7 +1386,8 @@ class HTTPXOpenAIClient(LLMClient):
                                 )
                             raise LLMRateLimitError(
                                 f"Rate limit exceeded: {error_text}",
-                                provider="httpx", model=self.model, retry_after=retry_after
+                                provider="httpx", model=self.model, retry_after=retry_after,
+                                retried=attempt > 0
                             )
 
                         # Handle server errors (5xx) - retry with exponential backoff
@@ -2028,7 +2029,8 @@ class HTTPXOpenAIClient(LLMClient):
                                     )
                                 raise LLMRateLimitError(
                                     f"Rate limit exceeded: {error_text}",
-                                    provider="httpx", model=self.model, retry_after=retry_after
+                                    provider="httpx", model=self.model, retry_after=retry_after,
+                                    retried=attempt > 0
                                 )
 
                             # Handle server errors (5xx) - retry with exponential backoff
@@ -2595,7 +2597,7 @@ class HTTPXOpenAIClient(LLMClient):
                     if _body_429_retry_msg:
                         raise LLMRateLimitError(
                             f"Upstream 429 body-error after retries: {_body_429_retry_msg[:200]}",
-                            provider="openai_httpx", model=self.model)
+                            provider="openai_httpx", model=self.model, retried=attempt > 0)
                     if _body_400_sig_retry_msg or _body_400_enc_retry_msg:
                         _msg = _body_400_sig_retry_msg or _body_400_enc_retry_msg
                         _msg = f"Unrecoverable body-400 in stream: {_msg[:300]}"

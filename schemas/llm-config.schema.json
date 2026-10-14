@@ -367,6 +367,12 @@
           "title": "Request Timeout",
           "type": "integer"
         },
+        "rate_limit_retry_seconds": {
+          "default": 5.0,
+          "minimum": 0,
+          "title": "Rate Limit Retry Seconds",
+          "type": "number"
+        },
         "stream_silence_timeout": {
           "anyOf": [
             {

@@ -296,7 +296,7 @@ class OpenAIAsyncClient(LLMClient):
                 return LLMQuotaExhaustedError(f"Quota exhausted: {text}", provider="openai",
                                               model=self.model, retry_after=wait)
             return LLMRateLimitError(f"Rate limit exceeded: {text}", provider="openai",
-                                     model=self.model, retry_after=wait)
+                                     model=self.model, retry_after=wait, retried=attempt > 1)
         if status is not None and status >= 500:
             return LLMServerError(f"HTTP {status}: {text}", provider="openai", model=self.model, status_code=status)
         if status is not None:

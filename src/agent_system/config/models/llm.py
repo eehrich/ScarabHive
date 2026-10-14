@@ -162,6 +162,7 @@ class LLMModelConfig(BaseModel):
     context_window: int = 32768  # default num_ctx for Ollama-compatible models
     ollama_mode: Literal["openai_compat", "native"] = "openai_compat"
     request_timeout: int = 120  # seconds for LLM API calls
+    rate_limit_retry_seconds: float = Field(5.0, ge=0)  # A 429 (rate limit, not an exhausted quota) on a model no agent has blocked yet: the step waits this long and asks the same model once more before it blocks the model for every agent and moves to the fallback. 0 = straight to the fallback. A provider's Retry-After above it, or a client that already waited on its own 429 retries (openai_httpx, the OpenAI SDK route), skips the wait. Measured on the server 06-10/2026: of 40 upstream 429s on OpenRouter, the next call on that model a few seconds later answered in 10 of 11 cases -- the block lasts at least 60 s.
     stream_silence_timeout: Optional[float] = Field(None, gt=0)  # Seconds a stream may deliver only keep-alive comments (they reset the read timeout) before the attempt is retried; None = no limit of ours. See docs/llm_catalog.md.
     parallel_tool_calls: Optional[bool] = True  # Enable parallel tool execution (set to False if LLM concatenates tool names/args). None = leave the field out of the request, for a backend that refuses what it does not know. No catalogue entry needs that today; the value exists because "send true", "send false" and "say nothing" are three different requests.
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # HTTPX-specific timeout overrides

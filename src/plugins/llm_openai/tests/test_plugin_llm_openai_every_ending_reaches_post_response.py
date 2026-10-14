@@ -256,7 +256,20 @@ async def test_a_rate_limit_longer_than_the_backoff_cap_is_not_slept(streaming):
             await asyncio.wait_for(call(client, streaming), 10)
         hits = upstream.hits
     assert hits == 1 and limited.value.retry_after == 360.0
+    assert limited.value.retried is False, "nothing was asked again: the agent loop's short wait may"
     assert len(hooks.post) == 1
+
+
+@both
+async def test_a_429_after_the_clients_own_retries_says_so(streaming):
+    """The agent loop's short wait (rate_limit_retry_seconds) would only repeat them."""
+    async with Upstream(_rate_limited("")) as upstream:
+        client = make_client(upstream.url, attempts=2)
+        with pytest.raises(LLMRateLimitError) as limited:
+            await asyncio.wait_for(call(client, streaming), 10)
+        hits = upstream.hits
+    assert hits == 2, "fixture: the client did not retry"
+    assert limited.value.retried is True
 
 
 @both

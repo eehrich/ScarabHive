@@ -421,8 +421,11 @@ def build_client(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
     logger.debug(
         "build_client provider=%s model=%s api_key_set=%s base_url=%s",
         cfg.provider, cfg.model, bool(cfg.api_key), cfg.base_url)
-    return _construct(get_provider(cfg.provider), cfg, "provides", "provider",
-                      ssl_verify=ssl_verify)
+    client = _construct(get_provider(cfg.provider), cfg, "provides", "provider",
+                        ssl_verify=ssl_verify)
+    # Read by the agent loop, not by the client: set here, once for every provider
+    client.rate_limit_retry_seconds = cfg.rate_limit_retry_seconds
+    return client
 
 
 def reset_for_tests() -> None:

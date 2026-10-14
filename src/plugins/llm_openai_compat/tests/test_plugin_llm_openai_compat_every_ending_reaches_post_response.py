@@ -303,6 +303,32 @@ async def test_a_stream_refused_after_its_retries_is_reported(script, raised, er
 
 
 @pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])
+@pytest.mark.parametrize("own_retries", [0, 1])
+async def test_a_429_says_whether_the_client_already_waited_and_asked_again(streaming, own_retries):
+    """The agent loop's short wait (rate_limit_retry_seconds) is for a 429 nobody waited on yet:
+    after this client's own 429 retries it would only start that cycle over."""
+    async with Upstream(status(429, "slow down")) as upstream:
+        client = chat_client(upstream.url, streaming=streaming, rate_limit_max_retries=own_retries,
+                             rate_limit_backoff=0)
+        with pytest.raises(LLMRateLimitError) as limited:
+            await client.chat_tools(MESSAGES, [])
+        hits = upstream.hits
+    assert hits == own_retries + 1, "fixture: the client did not retry as configured"
+    assert limited.value.retried is bool(own_retries)
+
+
+@pytest.mark.parametrize("own_retries", [0, 1])
+async def test_a_body_429_says_whether_the_client_already_waited_and_asked_again(own_retries):
+    async with Upstream(sse(_body_error(429, "too many requests"), then="end")) as upstream:
+        client = chat_client(upstream.url, rate_limit_max_retries=own_retries, rate_limit_backoff=0)
+        with pytest.raises(LLMRateLimitError) as limited:
+            await client.chat_tools(MESSAGES, [])
+        hits = upstream.hits
+    assert hits == own_retries + 1, "fixture: the client did not retry as configured"
+    assert limited.value.retried is bool(own_retries)
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])
 async def test_a_refusal_reaches_the_caller_as_the_status_error(streaming):
     """The agent server falls back to the next profile (and blocks a dead key or model) on
     httpx.HTTPStatusError; the streaming path used to hand over a plain Exception instead."""

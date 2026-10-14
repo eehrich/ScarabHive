@@ -8,12 +8,18 @@ from enum import Enum
 
 
 class LLMRateLimitError(Exception):
-    """Raised when LLM rate limit is hit - triggers fallback to alternative profile."""
-    def __init__(self, message: str, provider: str = "", model: str = "", retry_after: Optional[float] = None):
+    """Raised when LLM rate limit is hit - triggers fallback to alternative profile.
+
+    *retried*: the client already waited and asked again on its own 429 retries -- the agent loop's
+    short wait (rate_limit_retry_seconds) would only repeat that, so it moves on at once.
+    """
+    def __init__(self, message: str, provider: str = "", model: str = "", retry_after: Optional[float] = None,
+                 retried: bool = False):
         super().__init__(message)
         self.provider = provider
         self.model = model
         self.retry_after = retry_after
+        self.retried = retried
 
 
 class LLMQuotaExhaustedError(LLMRateLimitError):
@@ -354,6 +360,11 @@ class LLMClient:
     #: How long that backend stays the one a new run starts on. None = the
     #: default of backend_affinity, 0 = off. Set from the model entry.
     provider_affinity_minutes: Optional[float] = None
+    #: How long a step waits after a 429 before it asks this client once more instead of moving
+    #: to the fallback (llm_loop/fallback.py). Set from the model entry by registry.build_client;
+    #: 0 for a client built another way, the batch wrapper included (a queued job is not a call
+    #: to ask again in seconds).
+    rate_limit_retry_seconds: float = 0.0
     #: The response_format kinds this client's ROUTE has a wire field for
     #: (structured_output.JSON_SCHEMA / JSON_OBJECT) -- a fact about the API,
     #: not about a model. Empty for every client that has not wired the field,

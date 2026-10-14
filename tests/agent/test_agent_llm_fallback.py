@@ -1,6 +1,9 @@
 """The agent's LLM fallback chain, and the blocks it honours: a rate limit, an
 exhausted quota or a refused key blocks the LLM for every agent
 (llm/model_health.py), not the agent that ran into it."""
+import asyncio
+import time
+
 import httpx
 import pytest
 from unittest.mock import MagicMock, patch
@@ -489,6 +492,151 @@ async def test_a_blocked_fallback_is_walked_past(system_config_with_profiles):
     events = await _run(agent)
 
     assert blocked.call_count == 0 and "FINAL-free" in _final(events)
+
+
+# ------------------------------------------------- a short wait before the block (rate_limit_retry_seconds)
+
+
+class _LimitedThenAnsweringLLM(_ScriptedLLM):
+    """Its first *limited* calls get a 429, then it answers like _ScriptedLLM. *during_limit* runs
+    inside each 429 call (another request blocking the model, a cancel)."""
+
+    def __init__(self, name, *, limited=1, wait=0.01, exc=None, during_limit=None):
+        super().__init__(name, model="m-" + name)
+        self.rate_limit_retry_seconds = wait
+        self.limited = limited
+        self.exc = exc or LLMRateLimitError("429 upstream", model=self.model)
+        self.during_limit = during_limit
+        self.limits = 0
+
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
+        if self.limits < self.limited:
+            self.limits += 1
+            if self.during_limit:
+                self.during_limit(self, cancellation_token)
+            raise self.exc
+        return await super().chat_tools(messages, tools, cancellation_token, status_scope)
+
+
+@pytest.mark.asyncio
+async def test_a_429_is_asked_again_after_the_wait_instead_of_blocking(system_config_with_profiles):
+    """14.10.2026: one upstream 429 on gemini-4-argon sent ~30 reviewer steps to Flash for minutes;
+    the next call a few seconds later mostly answers."""
+    primary = _LimitedThenAnsweringLLM("primary")
+    fallback = _ScriptedLLM("fallback")
+    agent = _chain_agent(system_config_with_profiles, primary, fallback)
+
+    events = await _run(agent)
+
+    assert primary.limits == 1, "fixture: no 429"
+    assert "FINAL-primary" in _final(events) and fallback.call_count == 0
+    assert model_health.remaining(primary) == 0, "a 429 that cleared within the wait blocked the model"
+    assert any("retrying m-primary in" in str(e) for e in events), "the wait is not shown"
+
+
+@pytest.mark.asyncio
+async def test_a_second_429_blocks_and_moves_on(system_config_with_profiles):
+    primary = _LimitedThenAnsweringLLM("primary", limited=5)
+    fallback = _ScriptedLLM("fallback")
+    agent = _chain_agent(system_config_with_profiles, primary, fallback)
+
+    events = await _run(agent)
+
+    assert primary.limits == 2, f"asked {primary.limits} times: the wait is once per step and model"
+    assert "FINAL-fallback" in _final(events)
+    assert 0 < model_health.remaining(primary) <= FIRST_RATE_LIMIT_PAUSE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("make", [
+    lambda: _LimitedThenAnsweringLLM("primary", wait=0),
+    lambda: _LimitedThenAnsweringLLM(
+        "primary", exc=LLMRateLimitError("429", model="m-primary", retry_after=30.0)),
+    lambda: _LimitedThenAnsweringLLM("primary", exc=LLMQuotaExhaustedError("daily quota", model="m-primary")),
+    lambda: _LimitedThenAnsweringLLM(
+        "primary", during_limit=lambda llm, token: model_health.block(
+            llm, max_pause=3600, rate_limit=True, reason="another request")),
+    lambda: _LimitedThenAnsweringLLM(
+        "primary", exc=LLMRateLimitError("429", model="m-primary", retried=True)),
+], ids=["switched_off", "provider_asks_for_longer", "quota", "already_blocked_by_another_request",
+        "client_waited_itself"])
+async def test_no_wait_where_it_cannot_help(system_config_with_profiles, make):
+    primary = make()
+    agent = _chain_agent(system_config_with_profiles, primary, _ScriptedLLM("fallback"))
+
+    events = await _run(agent)
+
+    assert primary.limits == 1 and "FINAL-fallback" in _final(events)
+    assert not any("retrying m-primary in" in str(e) for e in events), "the step waited for nothing"
+
+
+@pytest.mark.asyncio
+async def test_a_block_set_during_the_wait_is_honoured_as_the_same_burst(system_config_with_profiles):
+    """The wait ends after another request's 429 blocked the model: the step does not call it
+    against the block, and its 429 does not double that block."""
+    holder = {}
+
+    def block_meanwhile(llm, token):
+        # lands inside the 0.5 s wait that this 429 starts
+        asyncio.get_running_loop().call_later(0.05, lambda: holder.setdefault("pause", model_health.block(
+            llm, max_pause=3600, rate_limit=True, reason="another request")))
+
+    primary = _LimitedThenAnsweringLLM("primary", limited=5, wait=0.5, during_limit=block_meanwhile)
+    agent = _chain_agent(system_config_with_profiles, primary, _ScriptedLLM("fallback"))
+
+    events = await _run(agent)
+
+    assert holder.get("pause"), "fixture: the block was not set during the wait"
+    assert primary.limits == 1, "the step called the model against the block"
+    assert "FINAL-fallback" in _final(events)
+    assert model_health.remaining(primary) <= FIRST_RATE_LIMIT_PAUSE, "the step's 429 doubled the block"
+
+
+@pytest.mark.asyncio
+async def test_a_probe_taken_by_another_request_during_the_wait_is_honoured(system_config_with_profiles):
+    """Another request's short block runs out within the wait and a third request takes the probe:
+    the model is not blocked any more, but the probe is not this step's to make."""
+    probed = {}
+
+    def block_and_probe_meanwhile(llm, token):
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.05, lambda: model_health.block(llm, max_pause=0.05, rate_limit=True, reason="another"))
+        loop.call_later(0.2, lambda: probed.setdefault("taken", model_health.available(llm, "third-request")))
+
+    primary = _LimitedThenAnsweringLLM("primary", limited=5, wait=0.5, during_limit=block_and_probe_meanwhile)
+    agent = _chain_agent(system_config_with_profiles, primary, _ScriptedLLM("fallback"))
+
+    events = await _run(agent)
+
+    assert probed.get("taken") and model_health.remaining(primary) == 0, "fixture: no probe after the block"
+    assert primary.limits == 1, "the step called the model past another request's probe"
+    assert "FINAL-fallback" in _final(events)
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_ends_the_wait(system_config_with_profiles):
+    primary = _LimitedThenAnsweringLLM("primary", wait=30, during_limit=lambda llm, token: token.cancel())
+    agent = _chain_agent(system_config_with_profiles, primary, _ScriptedLLM("fallback"))
+
+    started = time.monotonic()
+    events = await asyncio.wait_for(_run(agent), timeout=10)
+
+    assert time.monotonic() - started < 10
+    assert primary.limits == 1 and primary.call_count == 0
+    assert any(e.get("type") == "cancelled" for e in events), [e.get("type") for e in events]
+
+
+def test_the_model_entry_sets_the_wait_on_every_built_client():
+    """The loop reads it off the client; build_client is the one seam every provider goes through."""
+    from agent_system.llm import registry
+
+    for provider in ("openai_responses", "openai_httpx", "anthropic", "gemini"):
+        cfg = LLMModelConfig(provider=provider, model="some/model", api_key="k",
+                             base_url="https://openrouter.ai/api/v1", rate_limit_retry_seconds=7.5)
+        # the real seam: the root conftest swaps build_client for a fake
+        assert registry._orig_build_client(cfg).rate_limit_retry_seconds == 7.5, provider
+    assert LLMModelConfig(provider="openai_responses", model="x").rate_limit_retry_seconds > 0, (
+        "the wait is meant to be on unless a model entry turns it off")
 
 
 @pytest.mark.asyncio

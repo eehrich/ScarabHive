@@ -149,6 +149,12 @@ class StepState:
     #: The clients themselves, not id()s: a dropped fallback client's id
     #: can come back on the next one built.
     body_error_retried: list = field(default_factory=list)
+    #: Clients this step already asked again after a short wait on a 429 -- once each, like
+    #: body_error_retried and for the same reason the clients themselves.
+    rate_limit_retried: list = field(default_factory=list)
+    #: (seconds, the 429) when the next call of the retry loop waits first and asks the same
+    #: client again; None otherwise.
+    rate_limit_wait: Optional[tuple] = None
     budget_note: Optional[ChatMessage] = None
 
     # -- the call and its retries (fallback.py)

@@ -575,7 +575,7 @@ Full chain semantics (advanced chain, `llm_params`, migration script
 
 | Error | Block on the LLM (for all agents) | This request |
 |---|---|---|
-| `LLMRateLimitError` (429) | 60 s, doubled on each further failure up to `fallback_recovery_seconds`; the provider's `retry_after` is the lower bound | next profile in the chain |
+| `LLMRateLimitError` (429) | 60 s, doubled on each further failure up to `fallback_recovery_seconds`; the provider's `retry_after` is the lower bound | first **the same client once more after `rate_limit_retry_seconds`** (model entry, default 5 s; once per client and step) — not when a block on the model is running, when the provider's `retry_after` is longer, or when the client already waited and asked again on its own (`LLMRateLimitError.retried`: `openai_httpx`, the OpenAI SDK route); a block set during the wait is honoured. Then the block and the next profile in the chain |
 | `LLMQuotaExhaustedError` | immediately `fallback_recovery_seconds` | next profile in the chain |
 | HTTP 401/402/403/404 | immediately `fallback_recovery_seconds` | next profile; if the base had failed, it becomes the base of the run |
 | 5xx, connection errors, any other 4xx (400/408/409/413/422 …) | none | next profile; if the base had failed, it becomes the base of the run |
