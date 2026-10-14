@@ -178,7 +178,7 @@ size | font size in pixels, default 48, at least 4
 color | default white
 align | left (default), center or right, within the block
 max_width | wrapping width in pixels or {"width_pct": %}; default the canvas width less 160
-line_height | factor, default 1.1
+line_height | line pitch as a multiple of size (as in CSS), default 1.1
 tracking | extra pixels between letters, default 0
 uppercase | true: capitals
 stroke | {"width": px, "color": default black}

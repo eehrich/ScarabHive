@@ -1036,16 +1036,17 @@ def _render_text_layer(layer: dict, canvas_size: tuple[int, int],
     lines = _wrap_text(text, font, max_w, tracking)
 
     # Measure layout
-    line_metrics: list[tuple[str, int, int]] = []  # (line, width, ascent)
-    for line in lines:
-        w = _text_width(line, font, tracking)
-        ascent, descent = font.getmetrics()
-        line_metrics.append((line, w, ascent + descent))
-    if not line_metrics:
-        line_metrics = [("", 0, font.getmetrics()[0] + font.getmetrics()[1])]
+    ascent, descent = font.getmetrics()
+    line_metrics: list[tuple[str, int, int]] = [  # (line, width, glyph height)
+        (line, _text_width(line, font, tracking), ascent + descent) for line in lines
+    ] or [("", 0, ascent + descent)]
     block_w = max(w for _, w, _ in line_metrics)
-    line_h = int(line_metrics[0][2] * line_height)
-    block_h = line_h * len(line_metrics)
+    # The pitch is line_height times the font size, as in CSS -- a font's own
+    # ascent + descent runs from 1.0 to 1.6 times its size, so a multiple of
+    # that put the lines of the same spec over 50 % further apart in one font
+    # than in another, past the layer below them.
+    line_h = max(1, round(size_pt * line_height))
+    block_h = line_h * (len(line_metrics) - 1) + ascent + descent
 
     # Padding for stroke / shadow bleed. stroke/shadow must be objects —
     # tolerate a non-dict (LLM passed a string/number) by ignoring it.
