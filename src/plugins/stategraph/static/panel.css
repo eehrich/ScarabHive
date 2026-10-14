@@ -115,8 +115,9 @@
 .sg-preview { max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* the debug bar: the selected run and its controls, above every view */
-/* one row whatever the run offers: controls that come and go scroll it sideways instead of wrapping the view below down */
-.sg-debugbar { display: flex; flex-wrap: nowrap; overflow-x: auto; align-items: center; gap: var(--space-2); margin: 0 var(--space-4) var(--space-2); padding: var(--space-2) var(--space-3);
+/* one row whatever the run offers: controls that come and go scroll it sideways instead of wrapping the view below down.
+   flex: none -- its overflow lets it shrink to nothing, and a tall Runs tab squeezed it, its buttons cut square */
+.sg-debugbar { flex: none; display: flex; flex-wrap: nowrap; overflow-x: auto; align-items: center; gap: var(--space-2); margin: 0 var(--space-4) var(--space-2); padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-subtle); border-left: 3px solid var(--info); border-radius: var(--radius-md); background: var(--surface-1); font-size: var(--text-sm); white-space: nowrap; }
 .sg-debugbar > :not(.pk-grow) { flex: none; }
 .sg-debugbar[data-status="paused"] { border-left-color: var(--warn); background: var(--warn-subtle); }

@@ -80,6 +80,45 @@ def test_the_graph_bar_icons_sit_on_one_line_and_zoom_out_lies_beside_zoom_in():
     assert seen["ids"][zoom_out + 1] == "zoomIn", seen
 
 
+DEBUGBAR = """<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="/static/kit/kit.css">
+<link rel="stylesheet" href="/src/plugins/stategraph/static/panel.css">
+</head><body style="margin:0"><section class="sg-main" style="width: 900px; height: 500px">%s</section>
+<script>
+const bar = document.getElementById('debugBar');
+bar.innerHTML = '<strong class="pk-mono">134260535d1d</strong><span class="pk-grow"></span>'
+  + '<button type="button" class="pk-btn pk-btn--sm pk-btn--primary">Resume</button>'
+  + '<button type="button" class="pk-btn pk-btn--sm">Fork</button>';
+document.getElementById('runHistory').style.height = '3000px';  // a machine with many runs
+const show = (tab) => document.querySelectorAll('.sg-tab').forEach((el) => { el.hidden = el.id !== `tab-${tab}`; });
+const measure = () => ({ height: bar.getBoundingClientRect().height, cut: bar.scrollHeight - bar.clientHeight });
+show('graph');
+const graph = measure();
+show('runs');
+const runs = measure();
+fetch('/__results', { method: 'POST', body: JSON.stringify({ graph, runs }) });
+</script></body></html>"""
+
+
+def test_the_debug_bar_keeps_its_height_in_a_tall_runs_tab():
+    """The debug bar sits above every tab: a Runs tab taller than the pane squeezed it, its buttons cut square."""
+    template = (PLUGIN / "templates" / "panel.html").read_text(encoding="utf-8")
+    machine = re.search(r'<div id="machineView".*?<div id="runHistory"></div>\s*</section>\s*</div>', template, re.S).group(0)
+    machine = re.sub(r"\{#.*?#\}|\{\{.*?\}\}|\{%.*?%\}", "", machine, flags=re.S)
+    machine = machine.replace('class="sg-machine" hidden>', 'class="sg-machine">', 1)
+    machine = machine.replace('class="sg-debugbar" hidden>', 'class="sg-debugbar">', 1)
+    page = REPO / "tmp" / f"sg_debugbar_{uuid.uuid4().hex}.html"
+    page.parent.mkdir(exist_ok=True)
+    page.write_text(DEBUGBAR % machine, encoding="utf-8")
+    try:
+        seen = run_test_page(BROWSER, f"tmp/{page.name}", timeout=60)
+    finally:
+        page.unlink(missing_ok=True)
+
+    assert seen["graph"]["cut"] == 0 and seen["runs"]["cut"] == 0, seen
+    assert seen["runs"]["height"] == seen["graph"]["height"], seen
+
+
 CHOICES = """<!doctype html><html><head><meta charset="utf-8"></head><body>
 <select id="event"><option value="approve">approve</option><option value="reject">reject</option></select>
 <select id="bare"><option value="approve">approve</option><option value="reject">reject</option></select>
