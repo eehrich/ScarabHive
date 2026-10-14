@@ -5,13 +5,38 @@
 ![Status](https://img.shields.io/badge/status-beta-orange.svg)
 [![YouTube](https://img.shields.io/badge/YouTube-playlist-red.svg?logo=youtube)](https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI)
 
+**Self-hosted LLM agents that keep your API bill down -- and show you where every token went.**
+
+ScarabHive runs multi-agent workflows on the models you pay for: OpenRouter, OpenAI, Anthropic,
+Gemini, DeepSeek or a local Ollama. Every request is built so the provider's prompt cache keeps
+hitting, large tool results stay out of the context, and every call's tokens, cache hits and cost
+are recorded per agent and model.
+
+## What the prompt cache saves, measured
+
+On our own production server, 192,000 LLM calls of long multi-agent content runs
+(August to October 2026, DeepSeek, Gemini, Claude and GPT models):
+
+| | |
+|---|---|
+| Input tokens sent | 8.8 billion |
+| Read from the providers' prompt caches | **61 %** |
+| The bill compared with the same tokens at full input price | **more than a third lower** (estimate: 38 %) |
+
+The providers offer the cache; a read typically costs a tenth of the normal input price. It only
+hits when a request starts with the previous one, byte for byte -- calling an API directly gets you
+that only if your own code builds every request so. ScarabHive's agent loop does: it appends to the
+conversation instead of rewriting it, and keeps clocks and step counters out of the system prompt
+(tests guard that).
+
+How the numbers were taken: tokens and billed cost per call from the usage tracker that ships with
+ScarabHive; the saving estimated from each model's ratio of cached to full input price, cache-write
+surcharges included. It reflects our mix of long runs that reuse their context; yours will differ,
+and your installation shows its own figures per call in the **Context & Cost Usage** panel.
+
 <a href="https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI"><img src="docs/images/video.jpg" alt="Video: ScarabHive, open-source AI agents you can see through" width="640"></a>
 
 ▶ **Watch the [ScarabHive playlist](https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI) on YouTube.**
-
-ScarabHive is a self-hosted framework for LLM agents, built around plugins. You define an agent
-in YAML: its model, its prompt and the tools it may use. You run it in the browser, from the
-command line or through an OpenAI-compatible API.
 
 ![The chat with an agent's steps, tool calls and a sub-agent, next to the cost and context of the session](docs/images/shell.png)
 
@@ -22,9 +47,11 @@ command line or through an OpenAI-compatible API.
 > people you do not trust. Keep backups of everything under `data/`, and watch your providers'
 > spending limits. Please report problems (security issues privately, see [SECURITY.md](SECURITY.md)).
 
-It is made for **developers and content creators who build agent workflows and want them to run
-well**: several agents that hand work to each other, a person who approves at the right step,
-and a clear view of what every call costs and why a run went the way it did.
+## Who it is for
+
+**Developers and content creators who build agent workflows and want them to run well**: several
+agents that hand work to each other, a person who approves at the right step, and a clear view of
+what every call costs and why a run went the way it did.
 
 - **Developers** write plugins in plain Python, script runs from the command line, call agents
   as models from their own code, and get a coding agent that works in their repositories.
@@ -33,17 +60,53 @@ and a clear view of what every call costs and why a run went the way it did.
 - **Both** see every LLM request and response, the tokens, the cache hits and the cost per call,
   agent and model -- the numbers a workflow is tuned by.
 
-**Everything is a plugin** -- tools, hooks around the model call, panels in the UI, even the LLM
-providers. About 75 ship with it, and a new one is a folder with three small files.
+## Getting started
 
-![A workflow as a state machine: an agent builds, a second one reviews, a person approves](src/plugins/stategraph/docs/readme.png)
+You need Python 3.11 or newer (3.12 recommended), git, about 2 GB of disk and an LLM provider.
+For the simplest start, take an [OpenRouter API key](https://openrouter.ai/keys): as shipped,
+every agent that is switched on runs on OpenRouter. To use OpenAI, Anthropic,
+Google Gemini, DeepSeek or a local Ollama instead, point the profiles in `config/llm.yaml` and
+`config/llm_openrouter.yaml` at their models ([how](docs/configuration.md#the-shipped-profiles)).
+
+```bash
+git clone https://github.com/eehrich/ScarabHive.git ScarabHive
+cd ScarabHive
+./install.sh                                            # Linux, macOS, Git Bash
+powershell -ExecutionPolicy Bypass -File install.ps1    # Windows PowerShell
+```
+
+The script installs everything into `.venv`, creates a signing key for this installation, asks
+for a password for the `admin` account (Enter generates one) and opens `http://127.0.0.1:8000`.
+Log in as `admin`, open the **Setup** panel and enter your key.
+
+Docker, a manual installation and troubleshooting: [INSTALLATION.md](INSTALLATION.md).
+
+## How it keeps costs down
+
+- **Cache-friendly requests.** Each request extends the previous one; nothing that changes from
+  call to call sits at the front. Cache breakpoints for Anthropic and newer OpenAI models, a cache
+  key per prompt prefix for GPT models, and on OpenRouter a new run starts on the backend that
+  already holds its prompt in cache.
+- **Context that stays small.** Agents that enable it get large tool results moved out of the
+  context (readable again on demand) and long conversations compacted and summarised by a cheap
+  model.
+- **Fewer tool definitions per call.** Rarely used tools reach the model as a name and one line;
+  the full schema is loaded only when the model asks for it.
+- **The right model per job.** Profiles name a model per role -- a cheap one for summaries and
+  structured work, a stronger one where it counts -- with fallback chains when one fails or is
+  rate-limited. Batch APIs where the provider has one; a local Ollama costs nothing.
+- **Runs that stop wasting.** Tool-call loops and reasoning loops are detected and stopped,
+  and predictable opening tool calls can run before the first LLM call.
+- **Everything visible.** Every call's tokens, cache hits and cost per session, agent and model,
+  and the raw requests and responses, to see why a run cost what it did.
 
 ## Built on plugins
 
-A plugin is a folder under `src/plugins/`. It can give agents tools, run hooks before and after
-each LLM call, add a panel to the UI and endpoints to the API, ship agents, prompts and skills of
-its own, or add an LLM provider -- any mix of these. The core finds it by its `plugin.toml`; one
-line in the configuration switches it on.
+**Everything is a plugin** -- tools, hooks around the model call, panels in the UI, even the LLM
+providers. About 75 ship with it. A plugin is a folder under `src/plugins/`: it can give agents
+tools, run hooks before and after each LLM call, add a panel to the UI and endpoints to the API,
+ship agents, prompts and skills of its own, or add an LLM provider -- any mix of these. The core
+finds it by its `plugin.toml`; one line in the configuration switches it on.
 
 A complete tool plugin:
 
@@ -95,9 +158,11 @@ own -- a prompt, a model, some tools -- is a YAML file and no plugin at all.
 More: [docs/plugin_authoring.md](docs/plugin_authoring.md), [docs/plugin_hooks.md](docs/plugin_hooks.md)
 and the [example plugin](src/plugins/example/).
 
+![A workflow as a state machine: an agent builds, a second one reviews, a person approves](src/plugins/stategraph/docs/readme.png)
+
 ## What ships with it
 
-**Agents from configuration**
+**Agents and workflows**
 - An agent is a YAML file: LLM profile, system prompt, the tools it may use (allow and deny
   patterns) and the hooks that run around each model call. There is a panel to create and edit
   them; comments in the file are kept.
@@ -106,13 +171,12 @@ and the [example plugin](src/plugins/example/).
 - Workflows as state machines: model a workflow in a panel, run it deterministically, and
   debug it with breakpoints and watchpoints.
 - Mid-run steering: a message you send while an agent works reaches it at its next step.
+- Approvals: rules per agent, and in ask mode a question to the person watching before a tool
+  runs.
 
-**Many models, one interface**
+**Models**
 - Providers: OpenAI (Chat Completions and Responses), Anthropic, Google Gemini, OpenRouter,
-  Ollama and any OpenAI-compatible endpoint. Batch APIs where the provider has one.
-- Profiles with fallback chains: when a model fails or is rate-limited, the next one takes
-  over.
-- Every call's tokens and cost are recorded; reasoning loops are detected and stopped.
+  Ollama and any OpenAI-compatible endpoint.
 
 **Tools**
 - Files and shell: file operations confined to configured folders; a terminal (unrestricted
@@ -126,13 +190,6 @@ and the [example plugin](src/plugins/example/).
 - Media: images, audio and video into and out of the context, image composition, ComfyUI.
 - Integrations: external MCP servers as tools, n8n workflows, an OpenAI-compatible API where
   every agent is a model.
-- Approvals: rules per agent, and in ask mode a question to the person watching before a tool
-  runs.
-
-**Context**
-- Agents that enable it get long conversations compacted and summarised, and large tool
-  results moved out of the context, readable again on demand. Prompts are built so the
-  provider's prompt cache keeps working.
 
 **Web UI and CLI**
 - A browser UI with a streaming chat, sessions per user and panels you dock as tabs or open
@@ -151,27 +208,6 @@ and the [example plugin](src/plugins/example/).
 | Cost, tokens and cache use of every call | The sub-agents of a session as a map |
 | ![The agent editor: agents in their YAML files, edited in a form](src/plugins/agent_editor/docs/panel.png) | ![The setup panel: keys, admin password, a test of the chat](src/plugins/setup/docs/panel.png) |
 | Agents edited in a form, their YAML and comments kept | Setup: what the installation still lacks |
-
-## Getting started
-
-You need Python 3.11 or newer (3.12 recommended), git, about 2 GB of disk and an LLM provider.
-For the simplest start, take an [OpenRouter API key](https://openrouter.ai/keys): as shipped,
-every agent that is switched on runs on OpenRouter. To use OpenAI, Anthropic,
-Google Gemini, DeepSeek or a local Ollama instead, point the profiles in `config/llm.yaml` and
-`config/llm_openrouter.yaml` at their models ([how](docs/configuration.md#the-shipped-profiles)).
-
-```bash
-git clone https://github.com/eehrich/ScarabHive.git ScarabHive
-cd ScarabHive
-./install.sh                                            # Linux, macOS, Git Bash
-powershell -ExecutionPolicy Bypass -File install.ps1    # Windows PowerShell
-```
-
-The script installs everything into `.venv`, creates a signing key for this installation, asks
-for a password for the `admin` account (Enter generates one) and opens `http://127.0.0.1:8000`.
-Log in as `admin`, open the **Setup** panel and enter your key.
-
-Docker, a manual installation and troubleshooting: [INSTALLATION.md](INSTALLATION.md).
 
 ## Documentation
 
