@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict
 from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
+from .canvas import DEFAULT_TIMEOUT, CanvasError, find_browser
 from .compositor import (
     CompositionError,
     analyze_image,
@@ -76,6 +77,20 @@ class ImageComposeServer(SchemaBasedToolServer):
         except (TypeError, ValueError):
             self.overlap_min_gap_px = 30
 
+        # Canvas layers run a script in a headless Chromium. `browser` is a
+        # path or a name on PATH (unset: looked for), `browser_args` extra
+        # flags -- a container that runs as root needs ["--no-sandbox"].
+        args_cfg = getattr(server_config, "browser_args", None) or []
+        try:
+            timeout = float(getattr(server_config, "canvas_timeout", None) or DEFAULT_TIMEOUT)
+        except (TypeError, ValueError):
+            timeout = DEFAULT_TIMEOUT
+        self.canvas_opts: dict[str, Any] = {
+            "browser": getattr(server_config, "browser", None) or None,
+            "browser_args": [str(a) for a in ([args_cfg] if isinstance(args_cfg, str) else args_cfg)],
+            "timeout": timeout if timeout > 0 else DEFAULT_TIMEOUT,
+        }
+
         self.fonts_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
             "ImageComposeServer initialized — fonts_dir=%s, write_sandbox=%s, aliases=%d, "
@@ -88,6 +103,10 @@ class ImageComposeServer(SchemaBasedToolServer):
         problem = svg_backend_problem()
         if problem:
             logger.warning("image_compose (%s): svg layers will fail -- %s", name, problem)
+        try:
+            find_browser(self.canvas_opts["browser"])
+        except CanvasError as e:
+            logger.warning("image_compose (%s): canvas layers will fail -- %s", name, e)
 
     async def render(self, params: Dict[str, Any]) -> Dict[str, Any]:
         status = params.get("_status")
@@ -158,6 +177,7 @@ class ImageComposeServer(SchemaBasedToolServer):
                 compose, spec, out_full, self.fonts_dir, self.font_aliases,
                 self.project_root, layers_dir,
                 self.overlap_check_enabled, self.overlap_min_gap_px,
+                self.canvas_opts,
             )
 
             warnings_list = meta.get("warnings", []) or []

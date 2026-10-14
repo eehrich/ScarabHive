@@ -13,7 +13,7 @@ tools:
             description: >
               Composition spec. Inner layer structure is freeform — see prompt for full per-layer field reference.
 
-              LAYER COMMON: type(image|text|rect|gradient|svg|vignette), opacity(0-1), rotation(deg), blend_mode(normal|multiply|screen|overlay),
+              LAYER COMMON: type(image|text|rect|gradient|svg|vignette|canvas), opacity(0-1), rotation(deg), blend_mode(normal|multiply|screen|overlay),
                 position: [x,y] OR {anchor, offset:[dx,dy]} OR {anchor, offset_pct:[%,%]}
                 anchor ∈ top_left|top_center|top_right|center_left|center|center_right|bottom_left|bottom_center|bottom_right
 
@@ -31,6 +31,9 @@ tools:
                         Enum: right|bottom_right|bottom|bottom_left|left|top_left|top|top_right OR angle° (0=right, 90=down).
               svg:   svg(raw SVG string), size:[w,h]
               vignette: strength(0-1), color
+              canvas: script(JS function body: draw on `ctx`, a browser canvas 2D context of w x h px; `img`, `await` available; no network),
+                      size:[w,h], seed(int: Math.random, noise), images:{name: path|data-URI|"<svg…>"} → img.name, fonts:[alias|file] → ctx.font='40px "alias or file name"'.
+                      Helpers: noise(x,y,period), fbm(x,y,octaves,period) → 0..1, repeating every `period` units; pixels(ctx,(x,y)=>[r,g,b,a]); tile(ctx,()=>{…}) wraps shapes across edges.
             properties:
               size:
                 type: array
@@ -143,6 +146,24 @@ config:
         Example: { "serif_bold": "CrimsonPro-Bold.ttf" }
       additionalProperties:
         type: string
+    browser:
+      type: string
+      description: >
+        The Chromium that draws canvas layers: a path, or a name on PATH.
+        Unset, Edge, Chrome or Chromium is looked for where the system
+        puts it, then on PATH, then where Playwright downloads one.
+    browser_args:
+      type: array
+      items:
+        type: string
+      default: []
+      description: >
+        Extra flags for that browser. A container that runs as root needs
+        ["--no-sandbox"].
+    canvas_timeout:
+      type: number
+      default: 60
+      description: Seconds a canvas script may run before its browser is killed.
     output_directories:
       type: array
       items:

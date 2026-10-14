@@ -208,6 +208,8 @@ plugins:
         - "data/comfyui"
         - "data/writer/assets"
         - "data/writer/covers"
+        # the image agent's own drawings, as reference for img2img / IPAdapter
+        - "data/workspace/images"
       workflows:
         - id: stable_audio
           name: "Stable Audio Generation"
@@ -537,7 +539,7 @@ plugins:
                 Step to start denoising from (controls denoise strength).
                 Formula: int(steps * (1 - denoise)). Examples for steps=30:
                 denoise=0.75 → 7, denoise=0.60 → 12, denoise=0.85 → 4.
-                Lower = more faithful to reference; higher = more creative freedom.
+                Higher = closer to the reference; lower = more creative freedom.
               node_id: "40"
               field: inputs.start_at_step
             - name: cfg_scale

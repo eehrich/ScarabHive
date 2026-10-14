@@ -32,7 +32,7 @@ DEFAULT_SIZE = (1024, 1536)  # 2:3 portrait book cover
 # only warns up to twice its 89 Mpx default, and a layer's size is not
 # decoded at all -- rect [0,0,100000,100000] would allocate 40 GB.
 MAX_PIXELS = 8192 * 8192
-LAYER_TYPES = {"image", "text", "rect", "gradient", "svg", "vignette"}
+LAYER_TYPES = {"image", "text", "rect", "gradient", "svg", "vignette", "canvas"}
 BLEND_MODES = {"normal", "multiply", "screen", "overlay"}
 
 ANCHORS = {
@@ -130,12 +130,16 @@ def compose(spec: dict, output_path: Path, fonts_dir: Path,
             font_aliases: dict[str, str], project_root: Path,
             layers_dir: Path | None = None,
             overlap_check_enabled: bool = True,
-            overlap_min_gap_px: int = 30) -> dict:
+            overlap_min_gap_px: int = 30,
+            canvas_opts: dict | None = None) -> dict:
     """Render `spec` to `output_path`. Returns a small metadata dict.
 
     If `layers_dir` is given, each layer is additionally saved there as a
     standalone transparent PNG (`layer_{NN}_{type}.png`) — useful for
     re-editing or for series covers that reuse individual layers.
+
+    `canvas_opts`: browser, browser_args and timeout for canvas layers
+    (canvas.render_canvas); omitted, the browser is looked for.
     """
     if not isinstance(spec, dict):
         raise CompositionError("spec must be an object")
@@ -165,7 +169,7 @@ def compose(spec: dict, output_path: Path, fonts_dir: Path,
             canvas = _render_layer(
                 canvas, layer, size, fonts_dir, font_aliases, project_root,
                 warnings, layer_index=idx, layer_exports=layer_exports,
-                placed_bboxes=placed_bboxes,
+                placed_bboxes=placed_bboxes, canvas_opts=canvas_opts,
             )
             rendered += 1
         except CompositionError as e:
@@ -778,7 +782,8 @@ def _render_layer(base: Image.Image, layer: Any, canvas_size: tuple[int, int],
                   project_root: Path, warnings: list[str],
                   layer_index: int = 0,
                   layer_exports: list | None = None,
-                  placed_bboxes: list | None = None) -> Image.Image:
+                  placed_bboxes: list | None = None,
+                  canvas_opts: dict | None = None) -> Image.Image:
     if not isinstance(layer, dict):
         raise CompositionError("layer must be an object")
     t = layer.get("type")
@@ -811,6 +816,9 @@ def _render_layer(base: Image.Image, layer: Any, canvas_size: tuple[int, int],
         layer_img, pos = _render_svg_layer(layer, canvas_size)
     elif t == "vignette":
         layer_img, pos = _render_vignette_layer(layer, canvas_size)
+    elif t == "canvas":
+        layer_img, pos = _render_canvas_layer(layer, canvas_size, project_root, fonts_dir,
+                                              font_aliases, canvas_opts or {})
     else:  # pragma: no cover - guarded above
         raise CompositionError(f"unknown layer type: {t}")
 
@@ -1277,6 +1285,125 @@ def _render_svg_layer(layer: dict, canvas_size: tuple[int, int]) -> tuple[Image.
         raise CompositionError("svg layer: 'svg' (raw SVG string) is required")
     target = _resolve_size_field(layer.get("size"), canvas_size, default=None)
     img = _render_svg_to_image(svg_str, target)
+    pos = _resolve_position(layer.get("position"), img.size, canvas_size)
+    return img, pos
+
+
+# ── Canvas (a script draws in a headless browser) ────────────────────────
+
+_FONT_MIME = {".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2"}
+
+
+def _data_uri(mime: str, raw: bytes) -> str:
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def _canvas_image_uri(name: str, src: Any, project_root: Path) -> str:
+    """An entry of a canvas layer's `images` as a data URI: a path, a data
+    URI, or SVG markup. The page has no file access, so everything it may
+    draw travels inside it."""
+    if not isinstance(src, str) or not src.strip():
+        raise CompositionError(f"canvas layer: images.{name} must be a path, a data URI or SVG markup")
+    if src.lstrip().startswith("<"):
+        return _data_uri("image/svg+xml", src.encode("utf-8"))
+    if src.startswith("data:"):
+        if not src.startswith("data:image/"):
+            raise CompositionError(f"canvas layer: images.{name} is a data URI but not an image")
+        if not src.startswith("data:image/svg"):
+            try:        # the header and the pixel limit, as for a file
+                _open_image(io.BytesIO(base64.b64decode(src.split(",", 1)[1])), f"images.{name}").close()
+            except CompositionError:
+                raise
+            except Exception as e:
+                raise CompositionError(f"canvas layer: images.{name}: failed to decode the data URI: {e}")
+        return src
+    check_local(src, f"images.{name}")
+    p = (project_root / resolve_data_path(src)).resolve()
+    if not p.is_file():
+        raise CompositionError(f"canvas layer: images.{name} not found: {p}")
+    if p.suffix.lower() == ".svg":
+        raw = p.read_bytes()
+        # The script can read an image's bytes back out of the page, so a
+        # file is not SVG by its name alone.
+        if b"<svg" not in raw[:4096].lower():
+            raise CompositionError(f"canvas layer: images.{name} ({p.name}) is not an SVG file")
+        return _data_uri("image/svg+xml", raw)
+    try:
+        with _open_image(p, f"images.{name}") as img:      # the header: format and the pixel limit
+            mime = Image.MIME.get(img.format or "", "image/png")
+    except CompositionError:
+        raise
+    except Exception as e:
+        raise CompositionError(f"canvas layer: failed to load images.{name} ({p}): {e}")
+    return _data_uri(mime, p.read_bytes())
+
+
+def _canvas_font(spec: Any, fonts_dir: Path, aliases: dict[str, str]) -> tuple[str, str]:
+    """An entry of a canvas layer's `fonts` as (family, data URI), by the
+    rules of `_load_font`: an absolute path, a file in the fonts directory,
+    a configured alias for either, or a built-in name (`display`, `serif`,
+    ...: the system font a text layer draws it with). The family the script
+    names is the alias, or the file's name. The file travels into the page,
+    where the script can read it back, so it has to BE a font: FreeType
+    must open it. Other system fonts need no entry; the browser has them by
+    their family name."""
+    if not isinstance(spec, str) or not spec.strip():
+        raise CompositionError("canvas layer: fonts must be a list of aliases or font files")
+    mapped = aliases.get(spec, spec)
+    check_local(mapped, "font")
+    path = Path(mapped) if Path(mapped).is_absolute() else fonts_dir / mapped
+    family = spec if spec in aliases else path.name
+    if not path.is_file():
+        for fname in SYSTEM_FONT_FALLBACKS.get(spec, []):
+            try:
+                path, family = Path(str(ImageFont.truetype(fname, 10).path)), spec
+                break
+            except OSError:
+                continue
+        else:
+            raise CompositionError(
+                f"canvas layer: font {spec!r} is no file in {fonts_dir}, no alias with one and no built-in "
+                f"name ({', '.join(SYSTEM_FONT_FALLBACKS)}). A font the system has needs no entry -- name "
+                f"its family in ctx.font")
+    if '"' in family or "\\" in family:     # it is written into CSS and into the script as it is
+        raise CompositionError(f"canvas layer: font name {family!r} may not contain a quote or a backslash")
+    try:
+        ImageFont.truetype(str(path), 10)
+    except Exception:
+        raise CompositionError(f"canvas layer: font {spec!r} ({path.name}) is not a font file")
+    return family, _data_uri(_FONT_MIME.get(path.suffix.lower(), "font/ttf"), path.read_bytes())
+
+
+def _render_canvas_layer(layer: dict, canvas_size: tuple[int, int], project_root: Path,
+                         fonts_dir: Path, font_aliases: dict[str, str],
+                         opts: dict) -> tuple[Image.Image, tuple[int, int]]:
+    from .canvas import CanvasError, render_canvas
+
+    size = _resolve_size_field(layer.get("size"), canvas_size, default=canvas_size) or canvas_size
+    if size[0] <= 0 or size[1] <= 0:
+        raise CompositionError(f"canvas layer: size must be positive, got {list(size)}")
+    if size[0] > 8192 or size[1] > 8192:        # the canvas' own limit; a browser canvas ends at 32767
+        raise CompositionError(f"canvas layer: size too large (max 8192 per side): {list(size)}")
+    images = layer.get("images") or {}
+    if not isinstance(images, dict):
+        raise CompositionError("canvas layer: images must be an object {name: path | data URI | SVG markup}")
+    fonts = layer.get("fonts") or []
+    if isinstance(fonts, str):
+        fonts = [fonts]
+    if not isinstance(fonts, list):
+        raise CompositionError("canvas layer: fonts must be a list of aliases or font files")
+    try:
+        seed = int(_coerce_num(layer.get("seed"), 1))
+    except (TypeError, ValueError, OverflowError):
+        raise CompositionError(f"canvas layer: seed must be an integer, got {layer.get('seed')!r}")
+    try:
+        img = render_canvas(
+            layer.get("script"), size,
+            images={str(k): _canvas_image_uri(str(k), v, project_root) for k, v in images.items()},
+            fonts=dict(_canvas_font(f, fonts_dir, font_aliases) for f in fonts),
+            seed=seed, **opts)
+    except CanvasError as e:
+        raise CompositionError(f"canvas layer: {e}")
     pos = _resolve_position(layer.get("position"), img.size, canvas_size)
     return img, pos
 

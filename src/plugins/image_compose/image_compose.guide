@@ -1,22 +1,24 @@
 @database "image_compose"
 @author "Enrico Ehrich"
-@$VER: image_compose.guide 1.0 (30.09.2026)
+@$VER: image_compose.guide 1.1 (14.10.2026)
 @smartwrap
 
 @node main "Image composition"
 @{h1}Image composition
 
 Lets an agent build a picture from layers it describes in JSON: a
-background colour, images, text, rectangles, gradients, SVG graphics and a
-vignette, stacked bottom-up and written as PNG, WEBP or JPEG. Every pixel
+background colour, images, text, rectangles, gradients, SVG graphics, a
+vignette and drawings a script makes on a browser canvas, stacked
+bottom-up and written as PNG, WEBP or JPEG. Every pixel
 lands where the description says, so typography on a cover or an icon of
-an exact size comes out the same every time. Two measuring tools go with
+an exact size comes out the same every time. The canvas layer is the one
+for anything drawn: icons, logos, illustrations, patterns, textures. Two measuring tools go with
 it: one tells how bright and how busy a part of an image is, the other
 finds the calmest place for a block of text.
 
 The plugin also brings @{tt}image_agent@{utt}, a sub-agent that makes
-game assets: it generates with ComfyUI, composes with these tools and
-looks at the result.
+game assets: it draws them on a canvas or generates them with ComfyUI,
+composes with these tools and looks at the result.
 
 The plugin has no panel and no hooks.
 
@@ -24,6 +26,7 @@ The plugin has no panel and no hooks.
 For agents and developers
   @{"  Rendering: render  " link render}
   @{"  The layers  " link layers}
+  @{"  Drawing with a script: canvas  " link canvas}
   @{"  Measuring: analyze, find_region  " link measure}
   @{"  Paths and limits  " link limits}
   @{"  The image agent  " link agent}
@@ -127,7 +130,7 @@ or shadow that is not an object.
 @{h1}The layers
 
 Every layer is an object with a @{tt}type@{utt}: image, text, rect,
-gradient, svg or vignette.
+gradient, svg, vignette or canvas (@{" Drawing with a script " link canvas}).
 
 @{h2}What every layer takes
 
@@ -240,6 +243,116 @@ black). The centre area, up to 40 % of the way to the corners, stays
 clear.
 @endnode
 
+@node canvas "Drawing with a script: canvas"
+@{h1}Drawing with a script
+
+A canvas layer is drawn by JavaScript: the script runs in a headless
+Chromium against the canvas 2D API a model knows from the web -- paths,
+@{tt}Path2D@{utt} (also from SVG path strings), gradients, shadows,
+@{tt}ctx.filter@{utt}, patterns, text, @{tt}getImageData@{utt}. Models
+draw far better this way than by stacking rect and gradient layers, and
+the result is a layer like any other: it takes position, opacity,
+rotation and blend mode, and other layers go above and below it.
+
+@{table}
+Key | Meaning
+script | the drawing, a function body (required); in scope: ctx, w, h, img
+size | [w, h] of the layer's canvas, at most 8192 per side; default: the whole canvas
+seed | a number, default 1 (anything else counts as 1); Math.random and the noise are seeded with it
+images | {name: source} -- each is img.name in the script, ready for ctx.drawImage
+fonts | [alias or file] -- each is a font family in ctx.font, named in quotes: '40px "display"'
+@{body}
+
+@{h2}The script
+
+@{bullet}It is the body of an async function: @{tt}ctx@{utt} is the 2D
+context, @{tt}w@{utt} and @{tt}h@{utt} the layer's size in pixels, one
+canvas pixel is one picture pixel. @{tt}await@{utt} works; waiting costs
+no real time. The script may declare @{tt}w@{utt}, @{tt}h@{utt} or
+@{tt}ctx@{utt} again, as a model does by habit. A script that changes the
+canvas' size is refused: the size is the layer's.
+@{bullet}What it does not paint stays transparent.
+@{bullet}@{tt}Math.random@{utt} is seeded: the same script with the same
+seed is the same picture, another seed is a variation of it.
+@{bullet}An image source is a path (as for an image layer), a data: URI
+of an image, or SVG markup -- the browser rasterises an SVG at the size
+it is drawn, with everything SVG can do. A file named .svg has to be
+SVG.
+@{bullet}A font is a configured alias, one of the text layer's built-in
+names (display, serif_bold, ...: the same system font), a file of the
+fonts folder or an absolute path, loaded before the script runs. Its
+family in the script is the alias, or the file's name ("Oswald-Bold.ttf",
+for an absolute path too) -- in quotes, since a name with a dot is no
+family without them and the browser then ignores the whole
+@{tt}ctx.font@{utt} line. It must be a font file -- anything else is
+refused, since the script could read it back out of the page. A font the
+system has needs no entry; name its family.
+@{bullet}An error message is cut at 500 characters.
+@{bullet}An error answers with the script's own line: "layer 0 (canvas):
+canvas layer: line 12: nope is not defined". Nothing is written then.
+
+@{h2}What the page adds
+
+@{table}
+Function | Meaning
+noise(x, y, period) | smooth noise from 0 to 1 on a unit grid; with a period it repeats every that many units
+fbm(x, y, octaves, period) | layered noise (default 4 octaves), same range, same rule
+pixels(ctx, (x, y) => [r, g, b, a]) | sets every pixel from the function, 0 to 255; a is optional
+tile(ctx, () => { ... }) | draws at the nine offsets of a tiling, each with the same random numbers
+@{body}
+
+For a seamless texture, sample the noise so that the layer is a whole
+number of periods wide: @{tt}noise(x / w * 8, y / h * 8, 8)@{utt}. Shapes
+become seamless through @{tt}tile@{utt}: whatever crosses an edge comes
+back in on the opposite one. Fill the background outside @{tt}tile@{utt}
+and wrap each shape (or group) in its own call -- a background painted
+inside would cover the copies drawn before it.
+
+@{code json}
+{"type": "canvas", "size": [512, 512], "seed": 11, "script":
+ "pixels(ctx, (x, y) => { const v = 60 + fbm(x / w * 8, y / h * 8, 4, 8) * 40; return [v, v, v]; });\nfor (let i = 0; i < 40; i++) { const x = Math.random() * w, y = Math.random() * h, r = 20 + Math.random() * 30;\n  tile(ctx, () => { ctx.fillStyle = `hsl(30 20% ${40 + Math.random() * 30}%)`; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }); }"}
+@{body}
+
+@{h2}What the page cannot do
+
+It has no network, reads no files and saves none. Three walls, each
+with its own test:
+
+@{bullet}The page is served from a loopback address of the plugin's own
+process, not opened as a file. A file page may navigate to any file URL
+-- on Windows also to file://host/share, which signs in to that host --
+an http page may not.
+@{bullet}The browser is started with a proxy nobody listens on, for
+every address but the page's own. No request of the page or of the
+browser itself leaves the machine: not a fetch, not a navigation, not a
+form.
+@{bullet}A Content-Security-Policy allows only what is inside the page
+(images and fonts travel into it as data: URIs) -- no name is looked up
+either -- and puts it in a sandbox that may run scripts and nothing
+else: no download -- without it a script saved files into the user's
+Downloads folder -- no form, no window.
+
+A page that navigates away has no picture to give: "the browser returned
+no picture". One gap is known: WebRTC can send UDP past a proxy. In
+eleven runs without the proxy one such packet reached a local listener,
+in eleven behind it none -- too rare to test, so it is not claimed
+closed. What a script could send that way is what it was given: its own
+text and the images and fonts the layer names. And the proxy is a
+command-line flag: a machine policy that sets the browser's proxy
+(ProxyMode) overrides it.
+
+A script runs for at most @{tt}canvas_timeout@{utt} seconds (default
+60); then the browser is killed and the layer fails with "the script ran
+longer than 60s (an endless loop?)". On Windows the browser's child
+processes end with it (tested). On Linux that is not measured: a
+renderer caught in an endless loop may outlive its browser. Each canvas
+layer starts a browser of its own -- about a second, a 4096 x 4096 layer
+about five; one of random pixels takes 19 seconds and 300 MB in the
+plugin's process.
+
+Needs a Chromium on the server (@{" Setting it up " link setup}).
+@endnode
+
 @node measure "Measuring: analyze, find_region"
 @{h1}Measuring
 
@@ -331,7 +444,8 @@ drives a folder of its own this way, as the image agent's
 @{bullet}The canvas is at most 8192 x 8192.
 @{bullet}No picture any step holds may have more pixels than that: an image
 file or data URI (checked from its header, before it is decoded), a
-layer's size, a text block, an SVG's drawing size, a PNG or JPEG embedded in
+layer's size (a canvas layer's too), an image a canvas layer loads, a
+text block, an SVG's drawing size, a PNG or JPEG embedded in
 an SVG (checked from its header too), and the intermediate
 picture a cover fit scales to. Anything larger is refused: "layer 0
 (rect): layer 100000x100000 is too large (max 67108864 pixels)".
@@ -341,8 +455,11 @@ on, each is saved as a PNG the size of the canvas.
 @{bullet}Gradients and vignettes are computed pixel by pixel in Python: a
 full 1024 x 1536 canvas takes a second or two, a full 8192 x 8192 one
 close to a minute (measured: 4096 x 4096 in 8-12 seconds).
-@{bullet}There is no timeout; a cancelled call returns, the render in its
-thread runs to the end.
+@{bullet}A canvas script is at most 200,000 characters and runs for at
+most @{tt}canvas_timeout@{utt} seconds; what its page prints back is
+capped at 512 MB, more than any picture needs.
+@{bullet}There is no other timeout; a cancelled call returns, the render in
+its thread runs to the end.
 
 @{h2}What is left behind
 
@@ -367,8 +484,9 @@ Its loop, from its prompt and the always-loaded skill
 
 @{bullet}Read the brief for five facts: what, exact size, tileable or not,
 background, style; fill a missing one with a plain default and say so.
-@{bullet}Geometric or typographic assets (icons, buttons, frames) are only
-composed; anything painterly is generated with ComfyUI first.
+@{bullet}What can be drawn is drawn, with a canvas layer: icons, UI
+elements, logos, flat illustrations, patterns, procedural textures, pixel
+art. Anything photographic or painterly is generated with ComfyUI first.
 @{bullet}Look at every generated picture and regenerate on a miss, at most
 three times.
 @{bullet}Compose onto a canvas of the exact size; sprites get their
@@ -414,6 +532,12 @@ output_path \\\\host\\share\\x.png is a network or device path
 layers_dir <path> is the directory the composite is written to; the per-layer export needs one of its own (omit layers_dir for <name>_layers, or pass "" to skip it)
 region_size (900, 200) must fit inside image 800x600
 max_candidates must be an integer 1-10
+layer 0 (canvas): canvas layer: line 12: nope is not defined
+layer 0 (canvas): canvas layer: the script ran longer than 60s (an endless loop?)
+layer 0 (canvas): canvas layer: the script resized the canvas to 2048x2048; the layer is 512x512 -- set `size` on the layer instead
+layer 0 (canvas): canvas layer: font 'notes.txt' (notes.txt) is not a font file
+layer 0 (canvas): canvas layer: images.wood not found: <path>
+layer 0 (canvas): canvas layer: no Chromium browser found for canvas layers (Edge, Chrome or Chromium): install one, or set `browser` in this server's config to its path
 layer 0 (svg): SVG layers need reportlab's cairo backend (rlPyCairo), which is not installed on this server. To add it: install cairo, pkg-config, a C compiler and Python's headers (macOS: brew install cairo pkg-config; Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y build-essential libcairo2-dev pkg-config [python<3.X>-dev, where Python.h is missing]; Windows needs none of them), then pip install -r requirements/optional.txt in the server's virtual environment, or run install.sh (Windows: install.ps1) again. Every other layer type works without it. (import rlPyCairo: <reason>)
 @{body}
 
@@ -483,6 +607,9 @@ font_aliases | none | alias name to a file in fonts_dir, or an absolute path
 output_directories | [] (write anywhere) | the write sandbox (@{" Paths and limits " link limits})
 overlap_check_enabled | true | the overlap warnings
 overlap_min_gap_px | 30 | the gap two text or SVG layers must keep
+browser | looked for | the Chromium that draws canvas layers: a path, or a name on PATH
+browser_args | [] | extra flags for it; a container running as root needs ["--no-sandbox"]
+canvas_timeout | 60 | seconds a canvas script may run
 @{body}
 
 The keys are read from the entry itself when the server starts. A
@@ -501,6 +628,24 @@ system fonts:
         display_grotesk: "Oswald-Bold.ttf"
         script: "Caveat-Regular.ttf"
 @{body}
+
+@{h2}The browser for canvas layers
+
+Canvas layers need a Chromium on the server: Edge (part of Windows),
+Chrome or Chromium. Without @{tt}browser@{utt} it is looked for where
+Windows and macOS put it, then as @{tt}chromium@{utt},
+@{tt}chromium-browser@{utt}, @{tt}google-chrome@{utt} or
+@{tt}microsoft-edge@{utt} on PATH, then where Playwright downloads one.
+On Debian or Ubuntu: @{tt}sudo apt-get install -y chromium@{utt}. A
+server that runs as root (a container) also needs
+@{tt}browser_args: ["--no-sandbox"]@{utt}. Without a browser the plugin
+logs a WARNING at start and every canvas layer answers with that fix; all
+other layers work. For the length of a render the plugin listens on a
+loopback port of its own choosing and serves the page there, once, at an
+address with a random token. The token is on the browser's command line:
+where other users of the machine can read that (Linux without hidepid),
+one of them can fetch the page -- the script, its images and fonts --
+before the browser does; the render then fails.
 
 @{h2}Dependencies
 

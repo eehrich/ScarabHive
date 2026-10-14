@@ -1,8 +1,8 @@
 ---
 name: image-assets
-description: The loop for producing a game image asset — read the brief for size, tiling, background and style; decide between generation and pure composition; prompt SDXL for game assets; look and judge; compose onto the exact canvas; verify tiling; report the path. Use for any texture, sprite, icon or UI element request.
+description: The loop for producing an image asset — read the brief for size, tiling, background and style; decide between drawing it with a canvas script and generating it; draw icons, UI, logos, patterns, procedural textures and pixel art; prompt SDXL for the rest; look and judge; compose onto the exact canvas; verify tiling; report the path. Use for any texture, sprite, icon, illustration or UI element request.
 metadata:
-  version: '1.0.0'
+  version: '1.1.0'
 ---
 
 # 1. Read the brief into five facts
@@ -15,23 +15,91 @@ metadata:
 | Background | opaque for textures; transparent for sprites (a cutout, see 5) |
 | Style | "clean game asset, flat lighting" |
 
-# 2. Generate, or only compose?
+# 2. Draw it, or generate it?
 
-**Compose only** (`images_render`, no ComfyUI) when the asset is geometric
-or typographic: icons, buttons, panels, bars, frames, placeholder
-sprites. Rect, gradient, svg and text layers on a `transparent` canvas
-give real alpha and exact pixels. It is instant and deterministic; prefer
-it whenever it can plausibly satisfy the brief.
+**Draw** (`images_render` with a `canvas` layer, no ComfyUI) whatever a
+drawing can be: icons, buttons, panels, bars, frames, logos, badges, flat
+or vector-style illustrations, patterns, procedural textures (stone,
+wood grain, fabric, metal, clouds, noise), pixel art, placeholder
+sprites. It takes a second, has real alpha and exact pixels, is the same
+picture every time, and you change one line to change one thing. Prefer
+it whenever it can plausibly satisfy the brief — section 2a.
 
-**Generate** (`comfyui_workflow`) for anything organic or painterly:
-textures, characters, props, backgrounds. Then compose the result onto the
-exact canvas.
+**Generate** (`comfyui_workflow`) what a drawing cannot be: anything
+photographic or painterly — characters, creatures, props with material
+detail, painted backgrounds. Then compose the result onto the exact
+canvas (section 5).
 
-# 3. Prompting SDXL for game assets
+Both in one asset is normal: a generated picture as an `image` layer
+under a drawn frame, or a drawing loaded into another through `images`.
+
+# 2a. Drawing with a canvas script
+
+```json
+{"size": [W, H], "background": "transparent",
+ "layers": [{"type": "canvas", "seed": 1, "script": "<JavaScript>"}]}
+```
+
+The script is a function body. `ctx` is a browser canvas 2D context of
+`w`×`h` pixels — the whole API you know: paths, `Path2D` (also from an
+SVG path string), gradients, `shadowBlur`, `ctx.filter`, patterns, text,
+`getImageData`. What you do not paint stays transparent. An error comes
+back with the line of your script; fix that line and render again.
+
+**Build it like a drawing, not like a diagram.** Big readable shapes
+first, then the details that make it this thing. A palette of five to
+seven colours, chosen before the first shape. Volume from a gradient and
+one soft shadow under big shapes, not from many small ones. One outline
+weight (`lineJoin = 'round'`, `lineCap = 'round'`), or none at all.
+Derive every coordinate from `w` and `h`, so the same script draws any
+size. An icon reads at its real size: look at it there, not enlarged.
+
+| You need | Do |
+|---|---|
+| Randomness | `Math.random()` — it is seeded: same `seed`, same picture; another `seed` is a variation |
+| A seamless noise texture | `pixels(ctx, (x, y) => { const v = fbm(x / w * 8, y / h * 8, 4, 8) * 255; return [v, v, v]; })` — the layer must span a whole number of periods (here 8) |
+| Seamless shapes | fill the background first, then wrap each shape: `tile(ctx, () => { /* one stone */ })` — what crosses an edge re-enters on the other side. Pick its position before the call and keep overlaps in mind across the edges too |
+| An existing picture | `"images": {"wood": "data/workspace/images/wood.png"}` → `ctx.drawImage(img.wood, …)`, `ctx.createPattern(img.wood, 'repeat')`; SVG markup works as a source too |
+| A particular font | `"fonts": ["display"]` → `ctx.font = '64px "display"'` — a text layer's font name (`display`, `serif_bold`, `script`, …) or a file of the fonts folder, named in quotes exactly as listed; system fonts need no entry |
+| Pixel art | draw at the native size on `new OffscreenCanvas(16, 16)` with whole-number `fillRect`s, then `ctx.imageSmoothingEnabled = false; ctx.drawImage(small, 0, 0, w, h)` |
+| A filter over everything | draw on an `OffscreenCanvas`, then `ctx.filter = 'blur(2px)'; ctx.drawImage(off, 0, 0)` |
+
+`noise(x, y, period)` and `fbm(x, y, octaves, period)` return 0..1 on a
+unit grid; without a period they do not repeat. **The one rule for a
+seamless result: each axis runs through a whole number of periods.** With
+period `P`, sample `fbm(x / w * P * a, y / h * P * b, 4, P)` for whole
+numbers `a` and `b` — `a = b = 1` is even noise, `a = 1, b = 8` is
+stretched along x (wood grain, brushed metal), and a fraction in `a` or
+`b` shows as a seam. Layer several for material: a low frequency for
+colour patches, a high one for grain. Warping stays seamless when the
+offset is itself periodic noise: `fbm(u + 2 * noise(u, v, P), v, 4, P)`.
+
+A drawing is checked like a generated picture (section 4): does it read
+at once as what the brief asks, at the size it is used? If a second look
+says "a blob" or "a diagram", redraw the shapes; do not add detail to a
+shape that is wrong.
+
+# 3. Generating with ComfyUI
+
+**Is it there?** `comfyui_workflow(operation="server_status")` once,
+before the first generation. Offline is not an error to wait out or
+retry: draw the asset if a drawing can carry the brief and say so in the
+report (`Verified: drawn — ComfyUI offline`); if only a generated picture
+can, report that and stop.
 
 `comfyui_workflow(operation="list", category="image_generation")` once —
 `juggernaut_xl` for realistic, `sdxl_txt2img` for stylised. Sizes
 divisible by 8; generate at 1024 on the long side, near the target aspect.
+
+**Your drawing as the composition.** When the layout matters — where the
+object sits, its silhouette, the colour areas — draw it first as flat
+shapes into the workspace, at the generation size and on an opaque
+background (the picture comes out at the drawing's size), then let
+`sdxl_img2img` paint over it: `reference_image` is the path the render
+returned, `start_at_step` sets how much it may change (steps 30: 12
+keeps the layout, 7 keeps only the masses; higher stays closer).
+`sdxl_ipadapter` takes a reference the same way for style instead of
+layout.
 
 | Asset | Add to the prompt |
 |---|---|
@@ -50,7 +118,8 @@ execute → prompt_id → wait_for_completion(prompt_id) → result(prompt_id, d
 
 # 4. Look, then judge against the brief
 
-`result` with `include_content: true`, or `media_ops_load` the path.
+A render with `include_content: true` shows a drawing; for a generated
+picture `result` with `include_content: true`, or `media_ops_load` the path.
 Check, in this order: one object or a filled texture; the view asked for;
 no text; background as asked; nothing cropped. One miss → change the part
 of the prompt that caused it, keep the seed; regenerate. Three misses →
@@ -93,7 +162,9 @@ plainer one rather than accepting it.
 ```
 
 Render it with `layers_dir=""` — a throwaway needs no layer export — and
-look at the cross in the middle. A visible seam → regenerate with
+look at the cross in the middle. A visible seam in a drawn texture is a
+bug in the script — noise sampled without its period, or a shape outside
+`tile` — fix it. In a generated one → regenerate with
 `seamless tileable` moved to the front of the prompt and a new seed; two
 seams later, deliver and say "seam visible at the horizontal edge".
 

@@ -1,5 +1,6 @@
-# The image agent: generation (ComfyUI) + composition (image_compose) +
-# a look at the result, delivering game-ready PNGs into the image workspace.
+# The image agent: drawing (a canvas script) + generation (ComfyUI) +
+# composition (image_compose) + a look at the result, delivering
+# game-ready PNGs into the image workspace.
 #
 # A sub-agent by design, and the reason it is one: its loop is generate,
 # look, judge, regenerate -- every step carries a picture. Those belong in
@@ -24,7 +25,7 @@ plugins:
     image_agent:
       type: basic_agent
       enabled: true
-      description: "Produce a texture, sprite, icon or UI element as a PNG of an exact size: generates with ComfyUI, composes and resizes with image_compose, checks tiling and looks at the result before reporting the path"
+      description: "Produce a texture, sprite, icon, logo, illustration or UI element as a PNG of an exact size: draws it with a canvas script or generates it with ComfyUI, composes and resizes with image_compose, checks tiling and looks at the result before reporting the path"
 
       self_tool_descriptions:
         image_agent_execute_task: "Produce one image asset from a brief (what, exact size, tileable or not, background, style) and return the PNG path plus what was verified"
