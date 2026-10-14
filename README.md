@@ -5,34 +5,27 @@
 ![Status](https://img.shields.io/badge/status-beta-orange.svg)
 [![YouTube](https://img.shields.io/badge/YouTube-playlist-red.svg?logo=youtube)](https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI)
 
-**Self-hosted LLM agents that keep your API bill down -- and show you where every token went.**
+**The right model for every agent, as much structure as each task needs -- and a live view of
+what every agent really does.**
 
-ScarabHive runs multi-agent workflows on the models you pay for: OpenRouter, OpenAI, Anthropic,
-Gemini, DeepSeek or a local Ollama. Every request is built so the provider's prompt cache keeps
-hitting, large tool results stay out of the context, and every call's tokens, cache hits and cost
-are recorded per agent and model.
+ScarabHive is a self-hosted framework for LLM agents, built entirely on plugins. You define an
+agent in YAML -- its model, its prompt, the few tools it may use -- and run it in the browser,
+from the command line or as a model behind an OpenAI-compatible API.
 
-## What the prompt cache saves, measured
+**Built on current technology throughout**: the providers' newest APIs and features -- OpenAI's
+Responses and Realtime APIs, extended and adaptive thinking, prompt-cache breakpoints, batch
+APIs -- and the open standards around agents: MCP (stdio and streamable HTTP), the
+[Agent Skills](https://agentskills.io) format and OpenTelemetry's GenAI conventions. CI runs on
+Python 3.11, 3.12 and 3.14.
 
-On our own production server, 192,000 LLM calls of long multi-agent content runs
-(August to October 2026, DeepSeek, Gemini, Claude and GPT models):
+It is made for three kinds of users:
 
-| | |
-|---|---|
-| Input tokens sent | 8.8 billion |
-| Read from the providers' prompt caches | **61 %** |
-| The bill compared with the same tokens at full input price | **more than a third lower** (estimate: 38 %) |
-
-The providers offer the cache; a read typically costs a tenth of the normal input price. It only
-hits when a request starts with the previous one, byte for byte -- calling an API directly gets you
-that only if your own code builds every request so. ScarabHive's agent loop does: it appends to the
-conversation instead of rewriting it, and keeps clocks and step counters out of the system prompt
-(tests guard that).
-
-How the numbers were taken: tokens and billed cost per call from the usage tracker that ships with
-ScarabHive; the saving estimated from each model's ratio of cached to full input price, cache-write
-surcharges included. It reflects our mix of long runs that reuse their context; yours will differ,
-and your installation shows its own figures per call in the **Context & Cost Usage** panel.
+- **Developers** who build on agents: plugins in plain Python, scripted runs, agents called as
+  models from their own code, and a coding agent that works in their repositories.
+- **Teams that bring agents into their company's workflows**: users and roles, an
+  OpenAI-compatible API, n8n, external MCP servers, Docker.
+- **Content creators** who build multi-step workflows -- research, images, audio, video --
+  from agents and tools, with little or no code.
 
 <a href="https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI"><img src="docs/images/video.jpg" alt="Video: ScarabHive, open-source AI agents you can see through" width="640"></a>
 
@@ -47,18 +40,72 @@ and your installation shows its own figures per call in the **Context & Cost Usa
 > people you do not trust. Keep backups of everything under `data/`, and watch your providers'
 > spending limits. Please report problems (security issues privately, see [SECURITY.md](SECURITY.md)).
 
-## Who it is for
+## Why ScarabHive
 
-**Developers and content creators who build agent workflows and want them to run well**: several
-agents that hand work to each other, a person who approves at the right step, and a clear view of
-what every call costs and why a run went the way it did.
+### The right model for every agent
 
-- **Developers** write plugins in plain Python, script runs from the command line, call agents
-  as models from their own code, and get a coding agent that works in their repositories.
-- **Content creators** build workflows in a graph editor, with research, image, audio and video
-  tools and n8n automations as steps, with little or no code.
-- **Both** see every LLM request and response, the tokens, the cache hits and the cost per call,
-  agent and model -- the numbers a workflow is tuned by.
+- **One model per job.** Every agent names its own LLM profile: a cheap, fast model for
+  summaries and lookups, a strong one for code or judgement. Sub-agents and plugins (a
+  summariser, for example) name their own. A profile is a fallback chain: when a model fails or
+  is rate-limited, the next one takes over.
+- **A stronger model when the task gets hard.** An agent can carry a second, stronger chain. A
+  caller asks for it when it hands over a hard task. With `auto_escalate_on_stuck` switched on,
+  the run also switches up by itself when it gets stuck -- caught in a tool-call loop, or failing
+  tool after tool -- for a few steps within a call budget, then drops back to the normal model
+  ([LLM profiles](docs/basic_agent_llm_profiles.md)).
+- **Any provider, local models included.** OpenAI (Chat Completions and Responses), Anthropic,
+  Google Gemini, OpenRouter, DeepSeek, Ollama, and any OpenAI-compatible server such as vLLM or
+  llama.cpp. Batch APIs for Gemini, OpenAI and Anthropic, picked like any other model
+  ([batch](docs/llm_batch_api.md)).
+- **Your Claude Code subscription as a tool** *(experimental)*. An agent can hand a coding task
+  to Claude Code, which runs on your Claude Code login instead of an API key, in an isolated
+  copy of the repository; its changes come back for you to review
+  ([coding_cli](src/plugins/coding_cli/README.md)).
+
+### As much freedom as the task needs
+
+Pick the structure that fits, from loose to fixed:
+
+1. **One agent that does it all**, with [skills](skills/README.md) (packaged instructions it
+   loads when needed) and [OKF](src/plugins/okf/README.md) knowledge bundles (Markdown files
+   linked into a graph, which it reads and keeps up to date).
+2. **One agent with specialised sub-agents**, each with its own model and only the tools its job
+   needs. The coding agent that ships works this way: an explorer and a reviewer that can only
+   read, a test runner, and the coder that writes. Sub-agents run in parallel or in the
+   background and wake their caller when done ([sub-agents](docs/sub_agent_usage.md)).
+3. **A fixed workflow as a state machine** *(young: 0.1)*. Agents, tools and Python functions are
+   the steps; branches, parallel steps and a person's approval are part of the graph. Runs are
+   journaled and resume after a crash, and a graph editor with breakpoints and watchpoints
+   debugs them ([stategraph](src/plugins/stategraph/README.md)). A machine can itself be offered
+   as an agent.
+
+![A workflow as a state machine: an agent builds, a second one reviews, a person approves](src/plugins/stategraph/docs/readme.png)
+
+### Built to spend less
+
+- **Optimised for the prompt cache.** Each request extends the previous one; nothing that
+  changes from call to call sits at the front, and tests guard it. Cache breakpoints and cache
+  keys are set where a provider needs them.
+- **A context that stays lean.** For agents that switch on the context engineer (the shipped
+  multi-turn agents do), large tool results move out of the context and stay readable on demand,
+  and long conversations are compacted. Old messages are summarised by a cheap model.
+- **Fewer turns and fewer tokens.** A script can chain several dependent tool calls in one model
+  turn; predictable opening tool calls can run before the first LLM call; rarely used tools reach
+  the model as a name and one line until it asks for them -- for the coding agent that made the
+  first prompt 31 % smaller in a paired run ([measured](docs/deferred_tools.md)).
+- **Runs that stop wasting.** Tool-call loops and reasoning loops are detected and stopped, and
+  a message you send while an agent works reaches it at its next step.
+
+### See what the model really does
+
+- **While it runs**: every LLM step with its thinking, every tool call with its result, and every
+  sub-agent, live in the chat; a map of all sub-agents of a session and what each one is doing.
+- **Down to the wire**: the raw requests and responses each model got and gave, in the Message
+  Debugger.
+- **What it cost**: tokens, cache hits and cost of every call, per session, agent and model.
+- **A second opinion**, for agents that switch it on: a watchdog in which a cheap model judges
+  every few steps whether a run is still making progress. Traces can go to OpenTelemetry once
+  you enable that plugin.
 
 ## Getting started
 
@@ -81,32 +128,23 @@ Log in as `admin`, open the **Setup** panel and enter your key.
 
 Docker, a manual installation and troubleshooting: [INSTALLATION.md](INSTALLATION.md).
 
-## How it keeps costs down
-
-- **Cache-friendly requests.** Each request extends the previous one; nothing that changes from
-  call to call sits at the front. Cache breakpoints for Anthropic and newer OpenAI models, a cache
-  key per prompt prefix for GPT models, and on OpenRouter a new run starts on the backend that
-  already holds its prompt in cache.
-- **Context that stays small.** Agents that enable it get large tool results moved out of the
-  context (readable again on demand) and long conversations compacted and summarised by a cheap
-  model.
-- **Fewer tool definitions per call.** Rarely used tools reach the model as a name and one line;
-  the full schema is loaded only when the model asks for it.
-- **The right model per job.** Profiles name a model per role -- a cheap one for summaries and
-  structured work, a stronger one where it counts -- with fallback chains when one fails or is
-  rate-limited. Batch APIs where the provider has one; a local Ollama costs nothing.
-- **Runs that stop wasting.** Tool-call loops and reasoning loops are detected and stopped,
-  and predictable opening tool calls can run before the first LLM call.
-- **Everything visible.** Every call's tokens, cache hits and cost per session, agent and model,
-  and the raw requests and responses, to see why a run cost what it did.
-
 ## Built on plugins
 
-**Everything is a plugin** -- tools, hooks around the model call, panels in the UI, even the LLM
-providers. About 75 ship with it. A plugin is a folder under `src/plugins/`: it can give agents
-tools, run hooks before and after each LLM call, add a panel to the UI and endpoints to the API,
-ship agents, prompts and skills of its own, or add an LLM provider -- any mix of these. The core
-finds it by its `plugin.toml`; one line in the configuration switches it on.
+**Everything is a plugin** -- tools, hooks around the model call, panels in the UI, agents with
+their prompts and skills, slash commands, even the LLM providers. About 75 ship with it.
+
+- **An agent gets only the tools it needs.** Its allowlist starts empty; patterns allow and deny
+  tools per plugin instance, and rarely used ones can be deferred. An agent can also be put in
+  ask mode, where a person approves each tool call before it runs. Fewer tools mean a smaller
+  attack surface and fewer tokens on every call.
+- **Built for debugging.** The Message Debugger, the cost panel, a log viewer, the state-machine
+  debugger, `agent-cli hooks inspect`, and a Help panel with a manual for every plugin -- for
+  those that give the model tools, exactly what the model sees of them.
+- **Your own plugin is a small folder.** Three files for a tool, a panel built on the shipped UI
+  kit, hooks before and after every LLM call. Skills that know how plugins and panels are built
+  ship with the repository, for Claude Code and for ScarabHive's own coding agent
+  ([plugin-authoring](.claude/skills/plugin-authoring/SKILL.md),
+  [panel-authoring](.claude/skills/panel-authoring/SKILL.md)); validators check the result.
 
 A complete tool plugin:
 
@@ -158,47 +196,30 @@ own -- a prompt, a model, some tools -- is a YAML file and no plugin at all.
 More: [docs/plugin_authoring.md](docs/plugin_authoring.md), [docs/plugin_hooks.md](docs/plugin_hooks.md)
 and the [example plugin](src/plugins/example/).
 
-![A workflow as a state machine: an agent builds, a second one reviews, a person approves](src/plugins/stategraph/docs/readme.png)
+## Web UI, CLI and API
+
+- **Web UI**: a streaming chat with sessions per user, and panels you dock as tabs or open as
+  windows -- agents, sub-agents, state machines, costs, raw requests, logs, setup and more.
+- **CLI**: `agent-cli chat` and `agent-cli run` work without a server and share the sessions with
+  the web UI; `agent-run` for scripted runs ([CLI reference](docs/cli_reference.md)).
+- **API**: every agent is a model behind an OpenAI-compatible endpoint (`/chat/completions` and
+  `/responses`, text in and out), next to the REST and streaming API the web UI uses
+  ([openai_api](src/plugins/openai_api/README.md)).
+
+**In a company setting**: users with roles, API keys and route security per role; n8n workflows
+built as drafts and tested with every outbound call mocked; external MCP servers as tools;
+Docker Compose.
 
 ## What ships with it
 
-**Agents and workflows**
-- An agent is a YAML file: LLM profile, system prompt, the tools it may use (allow and deny
-  patterns) and the hooks that run around each model call. There is a panel to create and edit
-  them; comments in the file are kept.
-- Sub-agents: an agent can start other agents, wait for them or let them run in the
-  background. They keep their conversation, and a finished one can wake the caller.
-- Workflows as state machines: model a workflow in a panel, run it deterministically, and
-  debug it with breakpoints and watchpoints.
-- Mid-run steering: a message you send while an agent works reaches it at its next step.
-- Approvals: rules per agent, and in ask mode a question to the person watching before a tool
-  runs.
-
-**Models**
-- Providers: OpenAI (Chat Completions and Responses), Anthropic, Google Gemini, OpenRouter,
-  Ollama and any OpenAI-compatible endpoint.
-
-**Tools**
-- Files and shell: file operations confined to configured folders; a terminal (unrestricted
-  by default -- a command whitelist, or write confinement on Linux and macOS, narrows it);
-  file checkpoints with undo, SSH to remote machines, scripts, SQLite queries.
-- Web: search (Tavily, DuckDuckGo), page scraping, a research agent that answers with sources.
-- Knowledge: memory, a todo list, lessons an agent learns from its runs, knowledge bundles in
-  Markdown with a link graph (OKF), skills (packaged instructions with reference files).
-- Development: a coding agent with explorer, reviewer and test-runner sub-agents; GitLab and
-  GitHub (issues, merge requests, CI); Claude Code as a delegate; Godot and Blender agents.
-- Media: images, audio and video into and out of the context, image composition, ComfyUI.
-- Integrations: external MCP servers as tools, n8n workflows, an OpenAI-compatible API where
-  every agent is a model.
-
-**Web UI and CLI**
-- A browser UI with a streaming chat, sessions per user and panels you dock as tabs or open
-  as windows. Panels exist for setup, sub-agents, the raw LLM requests and responses, logs,
-  batch jobs, lessons, memory, archived sessions, users and more.
-- A Help panel with a manual for the framework and for every plugin: what the panel shows,
-  each tool with its parameters, and what the model sees.
-- `agent-cli` for interactive chat and one-off runs, `agent-run` for scripted runs.
-- Users with roles, JWT and API-key login, route security per role.
+- **Files and shell**: file operations confined to configured folders; a terminal (unrestricted
+  by default -- a command whitelist, or write confinement on Linux and macOS, narrows it); file
+  checkpoints with undo, SSH to remote machines, SQLite queries.
+- **Web**: search (Tavily, DuckDuckGo), page scraping, a research agent that answers with sources.
+- **Knowledge**: memory, a todo list, lessons an agent learns from its runs, skills, OKF bundles.
+- **Development**: the coding agent with its sub-agents, Claude Code as a delegate, Godot and
+  Blender agents.
+- **Media**: images, audio and video into and out of the context, image composition, ComfyUI.
 
 ## A look inside
 
