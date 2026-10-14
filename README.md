@@ -1,44 +1,103 @@
 # ScarabHive
 
+[![CI](https://github.com/eehrich/ScarabHive/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/eehrich/ScarabHive/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.14-brightgreen.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-brightgreen.svg)](https://www.python.org/)
 ![Status](https://img.shields.io/badge/status-beta-orange.svg)
 [![YouTube](https://img.shields.io/badge/YouTube-playlist-red.svg?logo=youtube)](https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI)
 
 **The right model for every agent, as much structure as each task needs -- and a live view of
 what every agent really does.**
 
-ScarabHive is a self-hosted framework for LLM agents, built entirely on plugins. You define an
-agent in YAML -- its model, its prompt, the few tools it may use -- and run it in the browser,
-from the command line or as a model behind an OpenAI-compatible API.
+ScarabHive is a flexible, powerful, self-hosted framework for LLM agents, built entirely on
+plugins. You define an agent in YAML -- its model, its prompt, the few tools it may use -- and run
+it in the browser, from the command line or as a model behind an OpenAI-compatible API. Not a
+library to build an app on: the whole runtime ships -- agent loop, sessions, tools, a web UI and
+the API -- so agents are configured, not coded.
 
 **Built on current technology throughout**: the providers' newest APIs and features -- OpenAI's
 Responses and Realtime APIs, extended and adaptive thinking, prompt-cache breakpoints, batch
 APIs -- and the open standards around agents: MCP (stdio and streamable HTTP), the
-[Agent Skills](https://agentskills.io) format and OpenTelemetry's GenAI conventions. CI runs on
-Python 3.11, 3.12 and 3.14.
+[Agent Skills](https://agentskills.io) format and OpenTelemetry's GenAI conventions.
 
-It is made for three kinds of users:
+[Quick start](#quick-start) · [Why ScarabHive](#why-scarabhive) · [Plugins](#built-on-plugins) ·
+[Web UI, CLI and API](#web-ui-cli-and-api) · [Documentation](#documentation) ·
+[Discussions](https://github.com/eehrich/ScarabHive/discussions)
 
-- **Developers** who build on agents: plugins in plain Python, scripted runs, agents called as
-  models from their own code, and a coding agent that works in their repositories.
-- **Teams that bring agents into their company's workflows**: users and roles, an
-  OpenAI-compatible API, n8n, external MCP servers, Docker.
-- **Content creators** who build multi-step workflows -- research, images, audio, video --
-  from agents and tools, with little or no code.
+![The chat with an agent's steps, tool calls and a sub-agent, next to the cost and context of the session](docs/images/shell.png)
+
+## Highlights
+
+- **[A model per agent](#the-right-model-for-every-agent)** -- fallback chains, a stronger model
+  for hard tasks, any provider, local models, batch APIs, Claude Code as a tool.
+- **[From one agent to fixed workflows](#as-much-freedom-as-the-task-needs)** -- one agent with
+  skills, an agent with specialised sub-agents, or a state machine.
+- **[Lean on tokens](#built-to-spend-less)** -- cache-friendly requests, a context that stays
+  small, fewer turns per task.
+- **[Live observability](#see-what-the-model-really-does)** -- every step, every tool call, the raw
+  requests, the cost of every call.
+- **[Plugins all the way down](#built-on-plugins)** -- about 75 ship with it; tools, panels and
+  hooks of your own are a small folder each.
+- **[Every agent is a model](#web-ui-cli-and-api)** -- behind an OpenAI-compatible API, next to
+  a web UI and a CLI.
+
+## Quick start
+
+You need Python 3.11 or newer (3.12 recommended), git, about 2 GB of disk and an LLM provider.
+For the simplest start, take an [OpenRouter API key](https://openrouter.ai/keys): as shipped,
+every agent that is switched on runs on OpenRouter. To use OpenAI, Anthropic,
+Google Gemini, DeepSeek or a local Ollama instead, point the profiles in `config/llm.yaml` and
+`config/llm_openrouter.yaml` at their models ([how](docs/configuration.md#the-shipped-profiles)).
+
+```bash
+git clone https://github.com/eehrich/ScarabHive.git ScarabHive
+cd ScarabHive
+./install.sh                                            # Linux, macOS, Git Bash
+powershell -ExecutionPolicy Bypass -File install.ps1    # Windows PowerShell
+```
+
+The script installs everything into `.venv`, creates a signing key for this installation, asks
+for a password for the `admin` account (Enter generates one) and opens `http://127.0.0.1:8000`.
+Log in as `admin`, open the **Setup** panel and enter your key. Docker, a manual installation and
+troubleshooting: [INSTALLATION.md](INSTALLATION.md).
+
+**Your first agent** is one YAML file, `config/agents/summarizer.yaml`:
+
+```yaml
+plugins:
+  servers:
+    summarizer:
+      type: basic_agent
+      enabled: true
+      metadata: {visibility: both}
+      agent_config:
+        llm_profile: [turbo, normal]     # a cheap, fast model first, then a fallback
+        system_prompt: "Summarise what you are given in five bullet points."
+        tools:
+          allowed: ["web_scraper/*"]     # the only tools it may call
+```
+
+```bash
+source .venv/bin/activate          # Linux, macOS; Git Bash: .venv/Scripts/activate; PowerShell: .venv\Scripts\Activate.ps1
+agent-cli run --agent summarizer "Summarise https://example.com"
+```
+
+After a restart of the server, the same agent is in the web UI and is the model `summarizer`
+behind the OpenAI-compatible API. More: [config-based agents](docs/config_based_agents.md).
+
+## See it in action
 
 <a href="https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI"><img src="docs/images/video.jpg" alt="Video: ScarabHive, open-source AI agents you can see through" width="640"></a>
 
 ▶ **Watch the [ScarabHive playlist](https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI) on YouTube.**
 
-![The chat with an agent's steps, tool calls and a sub-agent, next to the cost and context of the session](docs/images/shell.png)
+## Who it is for
 
-> [!WARNING]
-> **ScarabHive is beta software.** It is under heavy development and **may contain serious
-> bugs**, including ones that lose data, run up LLM costs or weaken security. Behaviour,
-> configuration and APIs can change without notice. Do not expose it to the internet or to
-> people you do not trust. Keep backups of everything under `data/`, and watch your providers'
-> spending limits. Please report problems (security issues privately, see [SECURITY.md](SECURITY.md)).
+- **Developers** who build on agents: plugins in plain Python, scripted runs, agents called as
+  models from their own code, and a coding agent that works in their repositories.
+- **Teams that bring agents into their company's workflows** ([more](#in-a-company)).
+- **Content creators** who build multi-step workflows -- research, images, audio, video --
+  from agents and tools, with little or no code.
 
 ## Why ScarabHive
 
@@ -91,8 +150,7 @@ Pick the structure that fits, from loose to fixed:
   and long conversations are compacted. Old messages are summarised by a cheap model.
 - **Fewer turns and fewer tokens.** A script can chain several dependent tool calls in one model
   turn; predictable opening tool calls can run before the first LLM call; rarely used tools reach
-  the model as a name and one line until it asks for them -- for the coding agent that made the
-  first prompt 31 % smaller in a paired run ([measured](docs/deferred_tools.md)).
+  the model as a name and one line until it asks for them ([deferred tools](docs/deferred_tools.md)).
 - **Runs that stop wasting.** Tool-call loops and reasoning loops are detected and stopped, and
   a message you send while an agent works reaches it at its next step.
 
@@ -106,27 +164,6 @@ Pick the structure that fits, from loose to fixed:
 - **A second opinion**, for agents that switch it on: a watchdog in which a cheap model judges
   every few steps whether a run is still making progress. Traces can go to OpenTelemetry once
   you enable that plugin.
-
-## Getting started
-
-You need Python 3.11 or newer (3.12 recommended), git, about 2 GB of disk and an LLM provider.
-For the simplest start, take an [OpenRouter API key](https://openrouter.ai/keys): as shipped,
-every agent that is switched on runs on OpenRouter. To use OpenAI, Anthropic,
-Google Gemini, DeepSeek or a local Ollama instead, point the profiles in `config/llm.yaml` and
-`config/llm_openrouter.yaml` at their models ([how](docs/configuration.md#the-shipped-profiles)).
-
-```bash
-git clone https://github.com/eehrich/ScarabHive.git ScarabHive
-cd ScarabHive
-./install.sh                                            # Linux, macOS, Git Bash
-powershell -ExecutionPolicy Bypass -File install.ps1    # Windows PowerShell
-```
-
-The script installs everything into `.venv`, creates a signing key for this installation, asks
-for a password for the `admin` account (Enter generates one) and opens `http://127.0.0.1:8000`.
-Log in as `admin`, open the **Setup** panel and enter your key.
-
-Docker, a manual installation and troubleshooting: [INSTALLATION.md](INSTALLATION.md).
 
 ## Built on plugins
 
@@ -146,18 +183,7 @@ their prompts and skills, slash commands, even the LLM providers. About 75 ship 
   ([plugin-authoring](.claude/skills/plugin-authoring/SKILL.md),
   [panel-authoring](.claude/skills/panel-authoring/SKILL.md)); validators check the result.
 
-A complete tool plugin:
-
-```toml
-# src/plugins/greeter/plugin.toml
-[plugin]
-name = "greeter"
-version = "0.1.0"
-description = "Greets people."
-entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["tool-server"]
-requires = { agent_system = ">=0.6.0" }
-```
+A tool, beside a short `plugin.toml` that names the plugin:
 
 ```yaml
 # src/plugins/greeter/schema.yaml -- what the model sees
@@ -188,13 +214,9 @@ class GreeterServer(SchemaBasedToolServer):
 PLUGIN_FACTORY = GreeterServer
 ```
 
-Switch it on in `config/plugins.yaml` (`greeter: {type: greeter, enabled: true}` under
-`plugins: servers:`) and give an agent `+greeter/*` in its tool list. A tool plugin can run
-several times under different names with different settings. An agent that needs no code of its
-own -- a prompt, a model, some tools -- is a YAML file and no plugin at all.
-
-More: [docs/plugin_authoring.md](docs/plugin_authoring.md), [docs/plugin_hooks.md](docs/plugin_hooks.md)
-and the [example plugin](src/plugins/example/).
+Switch it on in `config/plugins.yaml` and give an agent `+greeter/*` in its tool list. The whole
+walk-through, `plugin.toml` included: [docs/plugin_authoring.md](docs/plugin_authoring.md); hooks:
+[docs/plugin_hooks.md](docs/plugin_hooks.md); a working [example plugin](src/plugins/example/).
 
 ## Web UI, CLI and API
 
@@ -206,9 +228,16 @@ and the [example plugin](src/plugins/example/).
   `/responses`, text in and out), next to the REST and streaming API the web UI uses
   ([openai_api](src/plugins/openai_api/README.md)).
 
-**In a company setting**: users with roles, API keys and route security per role; n8n workflows
-built as drafts and tested with every outbound call mocked; external MCP servers as tools;
-Docker Compose.
+### In a company
+
+- **Users and roles**: `admin`, `user` and `guest`, logins by password or API key, and rules per
+  role for which routes and panels each one may open.
+- **Agents with limits**: each agent can be restricted to a minimum role, starts without tools
+  until its allowlist names some, and can ask a person before a tool runs.
+- **Integration**: agents as models for your own code and tools; n8n workflows built as drafts
+  and tested with every outbound call mocked; external MCP servers as tools.
+- **Deployment**: install scripts, or Docker Compose with the port on loopback only
+  ([INSTALLATION.md](INSTALLATION.md)); report vulnerabilities privately ([SECURITY.md](SECURITY.md)).
 
 ## What ships with it
 
@@ -240,10 +269,20 @@ Docker Compose.
   — writing your own plugins
 - [docs/](docs/) — architecture and design notes
 
-## Contributing
+## Questions and contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Report security vulnerabilities privately, as described
-in [SECURITY.md](SECURITY.md).
+Questions, ideas and what you built with it: [GitHub Discussions](https://github.com/eehrich/ScarabHive/discussions).
+Bugs: [issues](https://github.com/eehrich/ScarabHive/issues). Contributions: see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Status
+
+> [!WARNING]
+> **ScarabHive is beta software.** It is under heavy development and **may contain serious
+> bugs**, including ones that lose data, run up LLM costs or weaken security. Behaviour,
+> configuration and APIs can change without notice. Do not expose it to the internet or to
+> people you do not trust. Keep backups of everything under `data/`, and watch your providers'
+> spending limits. Report security issues privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
