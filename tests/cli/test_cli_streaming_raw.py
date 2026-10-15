@@ -245,13 +245,12 @@ SAID_NO = {"type": "error", "message": "the model said no"}
 @pytest.mark.parametrize("flag", ["--raw", "--no-status"])
 def test_a_run_that_ends_in_errors_shows_them(stubbed_cli, monkeypatch, capsys, flag):
     """Both modes collect the run through collect_final_result; the errors show
-    after the run. The exit code stays 0, as before: a failed run exiting 1 is
-    a contract the callers (publish_pipeline, the writer bench) have to learn
-    first."""
+    after the run, and the run exits 1 (test_cli_exit_code)."""
     monkeypatch.setattr(sys.modules[__name__], "DEFAULT_EVENTS", [SAID_NO, {"type": "end"}])
     monkeypatch.setattr("sys.argv", ["agent-cli", flag, "run", "do it"])
 
-    cli.main()
+    with pytest.raises(SystemExit, match="1"):
+        cli.main()
 
     assert "the model said no" in capsys.readouterr().out
 
@@ -305,7 +304,8 @@ def test_an_error_no_event_showed_is_named_after_the_run(stubbed_cli, monkeypatc
     monkeypatch.setattr(AgentStub, "run_events", run_events)
     monkeypatch.setattr("sys.argv", ["agent-cli", "--no-status", "run", "do it"])
 
-    cli.main()
+    with pytest.raises(SystemExit, match="1"):
+        cli.main()
 
     out = capsys.readouterr().out
     assert "the store went away" in out, "an error without an event was never shown"

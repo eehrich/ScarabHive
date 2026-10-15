@@ -429,7 +429,9 @@ def test_a_run_refused_before_it_ran_is_not_saved(run_env, monkeypatch):
     monkeypatch.setattr(agent_run, "run_agent_request", REAL_RUN_AGENT_REQUEST)
     monkeypatch.setattr(_DummyAgent, "run_events", refused, raising=False)
 
-    _run(session_id="s1")
+    with pytest.raises(SystemExit) as failed:   # refused is not done: publish_pipeline reads the code
+        _run(session_id="s1")
 
+    assert failed.value.code == 1
     assert run_env.seen["saved"] == {}, f"a refused run was saved: {run_env.seen['saved']}"
 

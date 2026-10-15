@@ -643,6 +643,10 @@ def run_in_session(args: Any, config: AgentSystemConfig, boot: Bootstrapped, age
 
     print_result(result, raw=getattr(args, "raw", False), show_tools=show_tools,
                  verbose=getattr(args, "verbose", False), streamed_errors=control.streamed_errors)
+    # Every error of the loop ends the run ("completed with errors", run_phases): exit 1, or a
+    # caller that checks the code -- a batch, a script -- counts a crashed or refused run as done.
+    if result.get("errors") and not result.get("cancelled"):
+        sys.exit(1)
 
 
 def run_agent_command(args: Any, config: AgentSystemConfig,

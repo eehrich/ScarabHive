@@ -406,6 +406,10 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 import json
                 # default=str: a non-JSON tool value must not fail a finished run.
                 print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+            # Every error of the loop ends the run, as in agent-cli: exit 1, or the caller
+            # (publish_pipeline) counts a crashed run as done.
+            if result.get("errors"):
+                sys.exit(1)
 
     except (asyncio.CancelledError, KeyboardInterrupt):
         stopped = True   # before or around the run: its user stopped it all the same

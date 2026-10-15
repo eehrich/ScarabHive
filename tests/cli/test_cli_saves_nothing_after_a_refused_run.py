@@ -64,8 +64,10 @@ def test_a_one_shot_run_refused_before_it_ran_leaves_the_session_file_alone(cli,
     if raw:
         monkeypatch.setattr(sys, "argv", sys.argv[:1] + ["--raw"] + sys.argv[1:])
 
-    agent_cli.main()
+    with pytest.raises(SystemExit) as exited:   # refused is not done (test_cli_exit_code)
+        agent_cli.main()
 
+    assert exited.value.code == 1
     assert _stored(tmp_path) == before, "the refused run's session was saved"
 
 
