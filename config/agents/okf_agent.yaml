@@ -26,5 +26,5 @@ plugins:
         author: "Enrico Ehrich"
         version: "1.0.0"
         tags: ["okf", "knowledge", "wiki", "curation"]
-        category: "knowledge"
+        category: "Research"
         visibility: "ui"

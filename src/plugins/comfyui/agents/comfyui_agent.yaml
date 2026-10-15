@@ -49,6 +49,7 @@ plugins:
         hooks:
           enabled: true
       metadata:
+        category: "Media"
         visibility: "both"
         tags:
           - media

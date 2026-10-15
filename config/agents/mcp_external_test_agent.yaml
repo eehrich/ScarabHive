@@ -33,5 +33,5 @@ plugins:
         author: "Enrico Ehrich"
         version: "1.0.0"
         tags: ["test", "mcp", "external", "development"]
-        category: "development"
+        category: "Testing"
         visibility: "ui"

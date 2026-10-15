@@ -33,6 +33,7 @@ notes:                                     # free text for the reader, drawn as 
 #   promote: [title]                       # output keys its final event carries at the top
 #   on_wait: ask                           # a wait reaches the caller as a question
 #   visibility: private                    # tool or both: a SAM offers it to its LLM
+#   category: Examples                     # the group the agent picker lists it under (none: Other)
 
 params:                                    # bound by whoever starts the run
   topic:     {type: string, required: true, description: What the article is about}

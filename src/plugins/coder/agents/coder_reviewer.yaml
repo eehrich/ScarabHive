@@ -78,6 +78,6 @@ plugins:
         author: "Enrico Ehrich"
         version: "1.0.0"
         tags: ["coding", "review", "read-only", "adversarial"]
-        category: "development"
+        category: "Development"
         visibility: "tool"
         min_role: "admin"  # role gate (auth/agent_access.py): reads the whole checkout, config/secrets.env and data/users.db included

@@ -71,5 +71,5 @@ plugins:
         author: "Enrico Ehrich"
         version: "1.0.0"
         tags: ["images", "textures", "sprites", "comfyui", "gamedev"]
-        category: "media"
+        category: "Media"
         visibility: "both"

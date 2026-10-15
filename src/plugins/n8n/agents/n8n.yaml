@@ -103,5 +103,5 @@ plugins:
         author: "Enrico Ehrich"
         version: "0.1.0"
         tags: ["n8n", "workflow", "automation"]
-        category: "automation"
+        category: "Automation"
         visibility: "both"

@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Every agent names its group for the agent picker (`metadata.category`):
+  Assistant, Development, Testing, Writer, Writer sub-agents, Video, Media,
+  Research, Automation, Collaboration, Operations -- 21 of the 49 agents the
+  picker lists had none and stood under "Other", the rest spelled the same
+  group several ways. Set for the tool-only and private agents too;
+  docs/agent_visibility.md lists the groups. A stategraph machine's `agent:`
+  block takes a `category` too.
 - `file_ops` and the shared path sandbox: the tools' path parameters name the
   instance's folders (`Path under data/runs, relative as written or
   absolute`) instead of asking for an "Absolute path", and refusals name them

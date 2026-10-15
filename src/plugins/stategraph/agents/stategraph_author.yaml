@@ -51,5 +51,5 @@ plugins:
         author: "Enrico Ehrich"
         version: "0.1.0"
         tags: ["stategraph", "workflow", "state-machine", "authoring"]
-        category: "automation"
+        category: "Automation"
         visibility: "both"

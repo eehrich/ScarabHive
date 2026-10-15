@@ -54,6 +54,7 @@ plugins:
           Do not invent and do not guess; rather say that you cannot find it.
 
       metadata:
+        category: "Testing"
         visibility: "both"
         tags:
           - test

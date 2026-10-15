@@ -297,6 +297,8 @@ class MachineAgentSpec(Strict):
     visibility: Literal["ui", "tool", "both", "private"] = Field(
         "private", description="private (default): only callers that name it; tool: a SAM may start it; ui: the chat "
                                "lists it; both")
+    category: Optional[str] = Field(None, description="the group the agent picker lists it under (metadata.category); "
+                                                      "none: Other")
 
     @field_validator("name")
     @classmethod
@@ -314,7 +316,7 @@ def agent_entry(spec: "MachineSpec", instance: str) -> tuple[str, dict[str, Any]
         "type": "stategraph_machine", "enabled": True, "machine": spec.id, "stategraph": instance,
         "description": block.description or spec.title or spec.description or f"Runs the state machine {spec.id}",
         "input": mode, "on_wait": block.on_wait, "params": dict(block.params), "promote": list(block.promote),
-        "metadata": {"visibility": block.visibility},
+        "metadata": {"visibility": block.visibility, **({"category": block.category} if block.category else {})},
         "agent_config": {},  # an Agent needs one, a machine runs no LLM: the defaults (or the config's) will do
         "from_machine_file": True}  # offered by the block: a config entry of the same name is another thing
     if mode == "text":

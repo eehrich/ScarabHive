@@ -130,6 +130,6 @@ plugins:
         author: "Enrico Ehrich"
         version: "1.1.1"
         tags: ["ssh", "server", "Administrator", "security"]
-        category: "it"
+        category: "Operations"
         visibility: "both"
         min_role: "admin"  # role gate (auth/agent_access.py): commands on the configured SSH hosts and a local shell

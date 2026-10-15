@@ -150,7 +150,7 @@ def writer_task(ctx, params):
 | `vars_from` | agent name | | Import the `template_vars` of that agent's configuration under `vars`. This keeps shared prompt blocks (e.g. v6's Verbote/Klischees) in one place. |
 | `limits` | `{max_steps, timeout, concurrency}` | | `max_steps` (default 1000) bounds the dispatches of each frame of this machine. `timeout` bounds the running time of a whole run; it is honoured on the root machine only. `concurrency` bounds the leaf activities (agent, tool, decide, call, emit, callback -- every activity that is not a composite) of the whole run that run at once -- also in parallel branches, map items and submachines; the others wait for their turn before they start (a crash meanwhile finds them not started). A call's own `sg.tool()` runs within the call's turn. Root machine only. |
 | `resources` | name → `{open, fork, close, description}` | | External state that belongs to each frame of this machine (§2.8). |
-| `agent` | `{name, description, input, task_param, on_wait, params, promote, visibility}` | | This machine offered as an agent without a config entry (§10, the agent facade): every process declares it as it starts. |
+| `agent` | `{name, description, input, task_param, on_wait, params, promote, visibility, category}` | | This machine offered as an agent without a config entry (§10, the agent facade): every process declares it as it starts. `category` is the group the agent picker lists it under (metadata.category). |
 | `finally` | activity | | Runs once when a frame of this machine ends, whatever the cause (§2.8). |
 | `initial` | state name | yes | Target of the top-level initial pseudostate: a top-level state or a choice/junction. |
 | `states` | name → state | yes | The top-level region. |
@@ -1283,7 +1283,8 @@ covered by tests.
    `plugins.stategraph.facade.MachineAgent`). A server entry names one machine
    (`machine: v6_story`); SAM spawns, AgentCaller and writer_jobs' `/events` address it like any
    agent. Or the machine's own file offers it: an `agent:` block (`{name, description, input,
-   task_param, on_wait, params, promote, visibility}`, all defaulted; `visibility` private) stands for
+   task_param, on_wait, params, promote, visibility, category}`, all defaulted; `visibility` private,
+   `category` none) stands for
    such an entry (marked `from_machine_file`), and every process declares it as it starts -- the
    core's `Runtime.declare`, asked through the type's `offered_servers`, which reads the file as the
    loader does; a config reload keeps it. A name the config holds stays the config's (SG111, a

@@ -27,6 +27,7 @@ plugins:
               enabled: true      
 
       metadata:
+        category: "Assistant"
         visibility: "tool"
         tags:
           - multi_turn
@@ -90,6 +91,7 @@ plugins:
           You cannot excute /commands directly. You can load the skill with the name-of-the-skill and then use the skill to perform the operation.
           
       metadata:
+        category: "Assistant"
         visibility: "both"
         min_role: "admin"  # role gate (auth/agent_access.py): a shell on the server (terminal)
         tags:
@@ -132,6 +134,7 @@ plugins:
           enabled: true
       
       metadata:
+        category: "Assistant"
         visibility: "both"
         tags:
           - chat

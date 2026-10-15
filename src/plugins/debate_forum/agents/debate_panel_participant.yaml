@@ -30,6 +30,7 @@ plugins:
               enabled: true              
 
       metadata:
+        category: "Collaboration"
         visibility: "tool"
         tags:
           - debate
@@ -42,6 +43,8 @@ plugins:
       agent_config:
         llm_profile: [or-gpt-mini]
         llm_profile_advanced: []
+      metadata:
+        category: "Collaboration"
 
     debate_panel_participant_chat:
       type: debate_panel_participant_flash
@@ -49,3 +52,5 @@ plugins:
       agent_config:
         llm_profile: [or-deepseek-flash, chat]
         llm_profile_advanced: []
+      metadata:
+        category: "Collaboration"

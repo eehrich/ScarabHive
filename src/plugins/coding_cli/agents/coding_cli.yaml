@@ -81,5 +81,6 @@ plugins:
             - "+coding_cli/*"
 
       metadata:
+        category: "Development"
         # role gate (auth/agent_access.py): Claude Code on the operator's subscription, in this checkout
         min_role: "admin"

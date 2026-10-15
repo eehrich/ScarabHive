@@ -1638,6 +1638,18 @@ def test_a_machine_with_an_agent_block_is_offered_as_the_entry_it_stands_for(tmp
         "promote": [], "metadata": {"visibility": "both"}, "agent_config": {}, "from_machine_file": True}}, offered
 
 
+def test_an_agent_block_s_category_is_the_group_the_agent_picker_lists_it_under(tmp_path):
+    """The picker groups by metadata.category; a machine agent could not name one and listed under Other."""
+    from agent_system.config.models import ToolServerConfig
+    from plugins.stategraph.facade import offered_servers
+
+    grouped = OFFERED.replace("id: helper", "id: grouped").replace("visibility: both}", 'visibility: both, category: "Video"}')
+    offered = offered_servers(offering_config(tmp_path, helper=OFFERED, grouped=grouped))
+
+    assert ToolServerConfig(**offered["grouped_agent"]).metadata.category == "Video", offered["grouped_agent"]
+    assert offered["helper_agent"]["metadata"] == {"visibility": "both"}, "no category: the entry as before"
+
+
 def test_an_agent_block_is_read_as_the_loader_reads_the_file_and_is_private_unless_it_says_otherwise(tmp_path):
     import json
 

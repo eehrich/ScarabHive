@@ -47,7 +47,7 @@ plugins:
         author: "AgentSystem"
         version: "1.0.0"
         tags: ["test", "wake"]
-        category: "development"
+        category: "Testing"
         visibility: "tool"
 
     wake_test_agent:
@@ -120,5 +120,5 @@ plugins:
         author: "AgentSystem"
         version: "1.0.0"
         tags: ["test", "wake"]
-        category: "development"
+        category: "Testing"
         visibility: "ui"

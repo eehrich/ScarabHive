@@ -51,6 +51,7 @@ plugins:
           json_store briefly and precisely.
 
       metadata:
+        category: "Testing"
         visibility: "both"
         tags:
           - test

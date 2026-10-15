@@ -32,6 +32,6 @@ plugins:
         author: "Enrico Ehrich"
         version: "1.0.0"
         tags: ["gamedev", "godot", "tests"]
-        category: "development"
+        category: "Development"
         visibility: "tool"
         min_role: "admin"  # role gate (auth/agent_access.py): a shell and read access to the whole checkout

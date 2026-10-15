@@ -30,6 +30,8 @@ plugins:
         system_prompt: |
           You are a reviewer. Judge the text you are given in exactly
           one sentence.
+      metadata:
+        category: "Testing"
 
     required_spawns_test_agent:
       type: basic_agent
@@ -65,6 +67,7 @@ plugins:
           You are a test agent. Answer the question yourself right away in one
           sentence. Do not call any tool on your own.
       metadata:
+        category: "Testing"
         visibility: "both"
         tags:
           - test

@@ -95,5 +95,5 @@ plugins:
         author: "AgentSystem"
         version: "1.0.0"
         tags: ["debate", "moderation", "orchestration", "panel"]
-        category: "collaboration"
+        category: "Collaboration"
         visibility: "both"

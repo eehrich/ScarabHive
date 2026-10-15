@@ -85,6 +85,31 @@ nothing itself, and **`min_role: null` does not clear an inherited value** (null
 when merging). Whoever wants a lower value sets it explicitly (`guest` or
 `user`); measured with `load_settings` + `get_tool_server_config`.
 
+## The picker's group: `metadata.category`
+
+The agent picker groups the agents it lists by `metadata.category`; one
+without a category stands under "Other". The value is shown as it is
+written, so the groups are a fixed list -- an agent joins one of them
+rather than opening a group for itself:
+
+| Group | For |
+|---|---|
+| Assistant | general chat and tool-use agents |
+| Development | coding agents and their helpers (coder, gamedev, Godot, Amiga, tracker, Claude Code) |
+| Testing | test harnesses and their workers |
+| Writer | the book system's entry agents |
+| Writer sub-agents | the book system's helpers, judges and pipeline participants |
+| Video | the Papierkino video producers and their helpers |
+| Media | images, 3D, ComfyUI |
+| Research | web research and knowledge bundles |
+| Automation | workflows: n8n, stategraph, scripted tool chains |
+| Collaboration | panels and debates |
+| Operations | system administration |
+
+Set it on tool-only and private agents too: an agent made visible later is
+grouped already. A stategraph machine offered as an agent names its group in
+its `agent:` block (`category:`).
+
 ## Configuration
 
 ### YAML configuration
@@ -109,7 +134,7 @@ plugins:
           allowed: ["web_scraper/*"]
       metadata:
         visibility: "ui"       # in the UI dropdown, NOT as a tool
-        category: "support"
+        category: "Assistant"  # the group the agent picker lists it under
 
     # Tool-only agent (backend service)
     text_summarizer:

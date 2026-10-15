@@ -64,6 +64,7 @@ on_wait | ask | ask or block, see @{" When the run waits " link waits}
 params | {} | params every run gets; the message's win over them
 promote | [] | output keys copied onto the top level of the final event
 visibility | private | private: only callers that name it; tool: a SAM offers it to its model; ui: the chat lists it; both
+category | none | the group the agent picker lists it under; none: Other
 @{body}
 
 The block is read when a process starts: a new or changed block takes
@@ -112,6 +113,7 @@ on_wait | block | ask or block -- note: the block's default is ask
 params | {} | params every run gets
 promote | [] | output keys copied onto the final event
 metadata.visibility | private | as above
+metadata.category | none | as above
 @{body}
 
 A wrong value (no @{tt}machine@{utt}, an @{tt}input@{utt} or

@@ -48,5 +48,5 @@ plugins:
         author: "AgentSystem"
         version: "1.0.0"
         tags: ["workflow", "tool_script", "json", "reference"]
-        category: "tools"
+        category: "Automation"
         visibility: "both"

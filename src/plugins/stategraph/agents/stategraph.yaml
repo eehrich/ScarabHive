@@ -60,6 +60,7 @@ plugins:
           allowed:
             - "stategraph_json/*"           # the machines' own JSON documents
       metadata:
+        category: "Automation"
         visibility: private                # not a chat partner
 
     # The agent of the example machines (machines/*.yaml): plain text in, plain
@@ -76,6 +77,7 @@ plugins:
         hooks:
           enabled: true
       metadata:
+        category: "Automation"
         visibility: private                # runs from machines, not a chat partner
 
     # JSON working documents for machines' tool activities

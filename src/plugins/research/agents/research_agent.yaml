@@ -68,6 +68,6 @@ plugins:
         author: "Enrico Ehrich"
         version: "1.0.0"
         tags: ["research", "web", "search", "citations"]
-        category: "research"
+        category: "Research"
         # UI: usable directly. Tool: other agents call it or spawn it.
         visibility: "both"

@@ -26,6 +26,6 @@ plugins:
         author: "Enrico Ehrich"
         version: "1.0.0"
         tags: ["test", "file_ops", "development"]
-        category: "development"
+        category: "Testing"
         visibility: "ui"
         min_role: "admin"  # role gate (auth/agent_access.py): a shell on the server (terminal)

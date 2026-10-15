@@ -41,5 +41,5 @@ plugins:
         author: "AgentSystem"
         version: "1.0.0"
         tags: ["test", "escalation"]
-        category: "development"
+        category: "Testing"
         visibility: "private"

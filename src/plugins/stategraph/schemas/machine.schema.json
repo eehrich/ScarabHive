@@ -1133,6 +1133,19 @@
       "additionalProperties": false,
       "description": "``agent:`` -- the machine offered as an agent (docs/stategraph_design.md \u00a710): no config entry, every process\nthat starts declares it (the stategraph_machine type's offer). The keys of a ``type: stategraph_machine`` entry.",
       "properties": {
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the group the agent picker lists it under (metadata.category); none: Other",
+          "title": "Category"
+        },
         "description": {
           "default": "",
           "description": "what a caller reads; default the machine's title or description",
