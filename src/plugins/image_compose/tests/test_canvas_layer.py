@@ -530,7 +530,7 @@ async def test_a_canvas_layer_is_refused_before_a_browser_starts(tmp_path, monke
         "images.a 9000x9000 is too large": {"script": ok, "images": {
             "a": "data:image/png;base64," + base64.b64encode(huge.getvalue()).decode()}},
         "images.a: failed to decode the data URI": {"script": ok, "images": {"a": "data:image/png;base64,AAAA"}},
-        "size must be positive": {"script": ok, "size": [0, 10]},
+        "size must be at least 1x1": {"script": ok, "size": [0, 10]},
         "characters (max": {"script": "//" + "x" * canvas.MAX_SCRIPT_CHARS},
         "images.a not found": {"script": ok, "images": {"a": "missing.png"}},
         "images.a (notes.svg) is not an SVG file": {"script": ok, "images": {"a": "notes.svg"}},

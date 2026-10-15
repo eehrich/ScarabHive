@@ -72,6 +72,7 @@ plugins:
 
       metadata:
         visibility: "both"
+        tags: [chat, simple, assistant]
 @{body}
 
 Every key of @{tt}agent_config@{utt} -- the prompt, @{tt}max_steps@{utt},
@@ -124,7 +125,10 @@ sub-agent manager is the better way: see
 
 @{h2}Dependencies and data
 
-None beyond the core. The server is built when the system starts. The
+None beyond the core. The server is built when the system starts; because
+the type is lazy (@{tt}lazy = true@{utt} in @{tt}plugin.toml@{utt}), its
+configuration -- the @{tt}agent_config@{utt}, the primary LLM profile, the
+prompt template -- is also checked then without building it. The
 agent's conversations are sessions like any other; the plugin stores
 nothing of its own.
 @endnode
@@ -151,6 +155,15 @@ use_advanced_model | true runs on the first profile of @{tt}llm_profile_advanced
 Without either argument the agent runs its default chain -- or, when its
 @{tt}agent_config.inherit_parent_llm@{utt} is true and the calling run was
 switched to another profile, on the caller's profile.
+
+With @{tt}agent_config.auto_escalate_on_stuck: true@{utt} the core loop
+moves a run that is stuck -- a tool-call loop, or
+@{tt}escalate_error_streak@{utt} (default 2) tool steps in a row that all
+failed -- to the advanced profile for @{tt}escalate_rounds@{utt} (2) steps,
+at most @{tt}escalate_max_calls@{utt} (6) advanced calls per run. It stays
+off when the run is on @{tt}use_advanced_model@{utt} already, on the
+advanced profile or on a profile outside the default chain, and when the
+agent has no advanced profile other than its default.
 
 @{h2}Its session
 
@@ -186,6 +199,7 @@ LLM profile '<p>' not found in system configuration. Available system profiles: 
 Failed to initialize LLM profile '<p>': <reason> | the client could not be built (a missing key, an unknown provider)
 <agent> is running above this call already (in session <s>): an agent does not call itself, ... | error_type recursive_call: the agent would call itself, directly or through other agents
 Session <s> belongs to another user | error_type foreign_session
+the sub-agent budget of session <s> could not be read, and <agent> does not run without it: <reason> | error_type tool_session_unavailable: the caller's sub-agent budget could not be read, or the new session could not be stored with it (then "the session of <agent> ... could not be stored with its caller's sub-agent budget, and it does not run without it: <reason>")
 Session <s> is currently locked by another request (<r>). Please wait for that request to complete. | error_type session_locked: a second call from the same conversation while the first still runs
 the run's own error | the loop failed: max steps reached without an answer, a timeout, empty answers, ... -- with its error_type where the run gives one
 @{body}

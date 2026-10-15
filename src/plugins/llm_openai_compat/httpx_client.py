@@ -1344,6 +1344,7 @@ class HTTPXOpenAIClient(LLMClient):
         # strip, 1=full strip). See _recover_encrypted_reasoning.
         _enc_retries = 0
         try:
+            rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
             for attempt in range(_effective_max + 1):
                 # Check cancellation before each attempt
                 if cancellation_token and cancellation_token.is_cancelled:
@@ -1373,6 +1374,7 @@ class HTTPXOpenAIClient(LLMClient):
                                 logger.warning(f"Rate limited (429), retrying in {backoff_time:.0f}s (attempt {attempt + 1}/{self.rate_limit_max_retries})")
                                 await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)")
                                 await self._notify_retry("openai_httpx", self.model, url, False, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
+                                rate_limit_waits += 1
                                 await self._cancellable_sleep(backoff_time, cancellation_token)
                                 continue
                             # Retries exhausted - raise for fallback
@@ -1387,7 +1389,7 @@ class HTTPXOpenAIClient(LLMClient):
                             raise LLMRateLimitError(
                                 f"Rate limit exceeded: {error_text}",
                                 provider="httpx", model=self.model, retry_after=retry_after,
-                                retried=attempt > 0
+                                retried=rate_limit_waits > 0
                             )
 
                         # Handle server errors (5xx) - retry with exponential backoff
@@ -1549,6 +1551,7 @@ class HTTPXOpenAIClient(LLMClient):
                                 f"Upstream 429 body-error{tier_note}",
                                 attempt, self.rate_limit_max_retries + 1,
                             )
+                            rate_limit_waits += 1
                             await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
 
@@ -1924,6 +1927,7 @@ class HTTPXOpenAIClient(LLMClient):
         # _recover_encrypted_reasoning.
         _enc_retries = 0
         try:
+            rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
             for attempt in range(_effective_max + 1):
                 # Accumulators for building the complete response. MUST be reset at
                 # the start of every attempt: a stream that drops mid-response
@@ -2015,6 +2019,7 @@ class HTTPXOpenAIClient(LLMClient):
                                     logger.warning(f"Rate limited (429), retrying in {backoff_time:.0f}s (attempt {attempt + 1}/{self.rate_limit_max_retries})")
                                     await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)")
                                     await self._notify_retry("openai_httpx", self.model, url, True, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
+                                    rate_limit_waits += 1
                                     await self._cancellable_sleep(backoff_time, cancellation_token)
                                     continue
                                 # Retries exhausted - raise for fallback
@@ -2030,7 +2035,7 @@ class HTTPXOpenAIClient(LLMClient):
                                 raise LLMRateLimitError(
                                     f"Rate limit exceeded: {error_text}",
                                     provider="httpx", model=self.model, retry_after=retry_after,
-                                    retried=attempt > 0
+                                    retried=rate_limit_waits > 0
                                 )
 
                             # Handle server errors (5xx) - retry with exponential backoff
@@ -2589,6 +2594,7 @@ class HTTPXOpenAIClient(LLMClient):
                             f"Upstream 429 body-error{tier_note}",
                             attempt, self.rate_limit_max_retries + 1,
                         )
+                        rate_limit_waits += 1
                         await self._cancellable_sleep(backoff_time, cancellation_token)
                         continue
 
@@ -2597,7 +2603,7 @@ class HTTPXOpenAIClient(LLMClient):
                     if _body_429_retry_msg:
                         raise LLMRateLimitError(
                             f"Upstream 429 body-error after retries: {_body_429_retry_msg[:200]}",
-                            provider="openai_httpx", model=self.model, retried=attempt > 0)
+                            provider="openai_httpx", model=self.model, retried=rate_limit_waits > 0)
                     if _body_400_sig_retry_msg or _body_400_enc_retry_msg:
                         _msg = _body_400_sig_retry_msg or _body_400_enc_retry_msg
                         _msg = f"Unrecoverable body-400 in stream: {_msg[:300]}"

@@ -58,7 +58,8 @@ The script:
    an admin still on a password the repository has printed (`admin123` of older versions) is
    asked for a new one, which also revokes that account's API key. If you aborted this step, the script stops
    and does not start the API.
-5. Starts the API and opens `http://127.0.0.1:8000` in the browser as soon as it answers.
+5. Starts the API and opens `http://127.0.0.1:8000` in the browser as soon as it answers. On
+   Linux without a desktop (no `DISPLAY` or `WAYLAND_DISPLAY`) it only prints the address.
 
 Running the script again installs what a `git pull` added and starts the API; stop a running
 API first. To start the API later without the script, run `.venv\Scripts\agent-api.exe` (Windows) or `.venv/bin/agent-api`
@@ -109,7 +110,7 @@ source .venv/bin/activate          # Linux/macOS
 
 pip install -U pip
 pip install -e .
-pip install -r requirements/optional.txt   # optional: SVG layers; outside Windows needs cairo, pkg-config, a compiler
+pip install -r requirements/optional.txt   # optional: SVG layers; outside Windows needs cairo, pkg-config, a compiler, Python's headers
 python -m agent_system.config.local_layer signing-key
 python -m agent_system.auth.first_admin
 agent-api

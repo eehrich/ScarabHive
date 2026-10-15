@@ -106,7 +106,7 @@ for the hook.
 @{table}
 Parameter | Meaning
 reason | free text, returned in the answer and logged; without it "manual_trigger"
-chunk_size | 2 to 50: older messages summarized together; without it the configured summarization_chunk_size (10)
+chunk_size | 2 to 50: older messages summarized together; without it the configured summarization_chunk_size (10); max_chunks can still make the chunks larger
 preserve_recent | 2 to 100: recent messages kept as they are; without it the configured preserve_recent_count (10)
 @{body}
 
@@ -191,7 +191,9 @@ context window. The shipped configuration sets 80%.
 In practice it is the message count that fires it: tool-call chains
 reach 200 messages long before 80% of a large window. For an agent that
 also runs context_engineer's hook -- it is off by default and on for
-@{tt}multi_turn_agent@{utt} and the agents built on it -- context_engineer
+@{tt}multi_turn_agent@{utt} and the agents built on it, and for the few
+that switch it on themselves (the debate_forum and image_compose
+agents) -- context_engineer
 prunes at 190 messages first, and the summarizer steps in when that did
 not bring the count under 200. For every other agent the summarizer is
 the first to act.

@@ -277,7 +277,8 @@ class OpenAIAsyncClient(LLMClient):
             return f"Network error: {error}", backoff
         return None
 
-    def _final_error(self, error: Exception, attempt: int) -> Optional[Exception]:
+    def _final_error(self, error: Exception, attempt: int,
+                     rate_limit_waits: int = 0) -> Optional[Exception]:
         """What a failure no retry covers reaches the agent server as.
 
         The types its fallback chain reads: a rate limit blocks the model, a
@@ -296,7 +297,8 @@ class OpenAIAsyncClient(LLMClient):
                 return LLMQuotaExhaustedError(f"Quota exhausted: {text}", provider="openai",
                                               model=self.model, retry_after=wait)
             return LLMRateLimitError(f"Rate limit exceeded: {text}", provider="openai",
-                                     model=self.model, retry_after=wait, retried=attempt > 1)
+                                     model=self.model, retry_after=wait,
+                                     retried=rate_limit_waits > 0)
         if status is not None and status >= 500:
             return LLMServerError(f"HTTP {status}: {text}", provider="openai", model=self.model, status_code=status)
         if status is not None:
@@ -444,6 +446,7 @@ class OpenAIAsyncClient(LLMClient):
         try:
             try:
                 resp = None
+                rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
                 for attempt in range(1, max_attempts + 1):
                     if cancellation_token and cancellation_token.is_cancelled:
                         raise asyncio.CancelledError("Request cancelled by user")
@@ -462,9 +465,10 @@ class OpenAIAsyncClient(LLMClient):
                             await report_status(f"{label}, retry {attempt}/{max_attempts} in {wait:.0f}s: {self.model}")
                             logger.warning("OpenAI %s, retrying in %.1f sec (attempt %d/%d)", label, wait, attempt, max_attempts)
                             await self._notify_retry("openai", self.model, self._base_url, False, label, attempt - 1, max_attempts)
+                            rate_limit_waits += _status_of(e) == 429
                             await self._cancellable_sleep(wait, cancellation_token)
                             continue
-                        final = self._final_error(e, attempt)
+                        final = self._final_error(e, attempt, rate_limit_waits)
                         if final is None or final is e:
                             raise
                         raise final from e
@@ -666,6 +670,7 @@ class OpenAIAsyncClient(LLMClient):
             })
 
         try:
+            rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
             for attempt in range(1, max_attempts + 1):
                 # CancelledError is what the agent server reports as a cancel; a
                 # plain Exception would reach it as an upstream error (fallback).
@@ -812,9 +817,10 @@ class OpenAIAsyncClient(LLMClient):
                         await report_status(f"{label}, retry {attempt}/{max_attempts} in {wait:.0f}s: {self.model}")
                         logger.warning("OpenAI stream: %s, retrying in %.1f sec (attempt %d/%d)", label, wait, attempt, max_attempts)
                         await self._notify_retry("openai", self.model, self._base_url, True, label, attempt - 1, max_attempts)
+                        rate_limit_waits += _status_of(e) == 429
                         await self._cancellable_sleep(wait, cancellation_token)
                         continue
-                    final = self._final_error(e, attempt)
+                    final = self._final_error(e, attempt, rate_limit_waits)
                     if final is e:
                         raise
                     if final is not None:

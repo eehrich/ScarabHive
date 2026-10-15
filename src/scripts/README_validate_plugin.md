@@ -51,17 +51,14 @@ python src/scripts/validate_plugin.py --plugin basic_operations --extract-config
 python src/scripts/validate_plugin.py --all --extract-config
 ```
 
-**Output Example:**
+**Output Example** (`--plugin file_ops --extract-config`, shortened):
 ```
-======================================================================
-Extracted Config: file_ops
-======================================================================
-
-max_file_size: 10485760
-allowed_extensions: ['.txt', '.md', '.json', '.py']
-security:
-  audit_log: true
-  read_only_paths: []
+  file_ops: Found 16 config parameter(s):
+    allowed_directories: ['data/workspace']
+    read_only: False
+    default_line_limit: 500
+    search.enable_indexing: True
+    search.auto_reindex_interval: 3600
 ```
 
 ### Merge Config into schema.yaml
@@ -86,7 +83,7 @@ python src/scripts/validate_plugin.py --all --merge-config
 
 ### File Structure
 - ✓ Required files exist (plugin.toml)
-- ✓ Entrypoint module exists (plugin.py or server.py); `library` and `llm-provider` plugins have no entrypoint
+- ✓ The module the `entrypoint` names exists; `library` and `llm-provider` plugins have no entrypoint
 - ✓ schema.yaml exists (warning if missing)
 
 ### plugin.toml Validation
@@ -100,8 +97,8 @@ python src/scripts/validate_plugin.py --all --merge-config
 - ✓ Tool definitions with required fields
 - ✓ Parameter schemas with type and description
 - ✓ Hook definitions for hook plugins
-- ✓ Web UI configuration for web/hybrid plugins
-- ✓ Template variable usage ({{ name }}, etc.)
+- ✓ `web_ui` section wherever it is (known keys: `endpoints`, `panel`); a `web` plugin without one gets a warning
+- ✓ Template variables: any other than `{{ name }}` gets a warning (the server must provide it)
 
 ### Cross-Validation
 - ✓ Plugin type matches schema content
@@ -120,7 +117,7 @@ python src/scripts/validate_plugin.py --all --merge-config
 - ✓ Hook names are unique
 - ✓ Valid hook types (pre_llm_call, post_tool_call, etc.)
 - ✓ Hook ordering (before/after directives)
-- ✓ Hook timeout settings
+- ✓ `on_error`: only `block`, and only on a `pre_tool_call` hook
 
 ### Config Extraction (--extract-config)
 - ✓ AST-based code analysis to find config usage
@@ -147,17 +144,20 @@ Validation Results: web_scraper
 [OK] All checks passed!
 ```
 
+Only warnings, no errors: `[OK] No errors found (warnings only)`, and the
+plugin counts as passed.
+
 ### Errors
 ```
 ======================================================================
-Validation Results: basic_operations
+Validation Results: my_plugin
 ======================================================================
 
 [X] ERRORS (1):
    * plugin.toml schema validation failed: 'requires' is a required property at []
 
 [!] WARNINGS (1):
-   * Factory name 'BasicOperationsServer' doesn't follow conventions
+   * Factory name 'MyFactory' doesn't follow conventions (PLUGIN_FACTORY or *Server)
 
 [X] Validation failed with errors
 ```
@@ -169,18 +169,17 @@ SUMMARY
 ======================================================================
 
   [OK] PASS  web_scraper
-  [X] FAIL   basic_operations
+  [X] FAIL  my_plugin
   [OK] PASS  duckduckgo_search
-  ...
 
-Total: 39 plugins
-Passed: 10
-Failed: 29
+Total: 3 plugins
+Passed: 2
+Failed: 1
 ```
 
 ## Exit Codes
 
-- **0**: All validations passed
+- **0**: All validations passed (warnings do not count); `--extract-config` and `--merge-config` end with 0 even when a plugin cannot be analyzed
 - **1**: At least one validation failed
 
 ## Common Issues Found
@@ -232,9 +231,6 @@ validate-plugins:
 ```bash
 # Test on a known-good plugin
 python src/scripts/validate_plugin.py --plugin web_scraper
-
-# Test on a plugin with issues
-python src/scripts/validate_plugin.py --plugin basic_operations
 
 # Test on all plugins
 python src/scripts/validate_plugin.py --all

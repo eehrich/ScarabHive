@@ -1,5 +1,8 @@
 # godot_mcp addon — on-demand GDScript tests
 
+This folder comes with the vendored addon (see `../../VENDORED.md`); the text below is the upstream's, with its
+links pointed at the upstream repository and the copy step of this plugin added.
+
 These are `SceneTree` scripts (TAP-ish output, exit 0 = pass) that validate engine
 behaviour the addon relies on. **They are not wired into CI** (CI has no Godot).
 Run them on demand against any project that has the addon copied in:
@@ -13,8 +16,9 @@ Run them on demand against any project that has the addon copied in:
 when the host project has autoloads — they come from the host, not the tests, and
 don't affect the pass/fail result. Run against a minimal project for clean output.
 
-Everything in this directory is stripped from the shipped npm addon
-(`server/scripts/copy-addon.ts` drops `test/`), so these are dev-only.
+Upstream strips this directory from its shipped npm addon (`server/scripts/copy-addon.ts`
+drops `test/`). This plugin's `godot_setup` copies the whole addon folder, `test/`
+included, so every project it sets up can run them as shown above.
 
 ## Mouse-injection spike — retained evidence (godot-mcp #228)
 
@@ -22,9 +26,9 @@ A 2026 research spike asked whether `godot_input` could add comprehensive
 mouse/coordinate input. **It was decided no-go** — injection cannot drive the
 *polled* mouse cursor on a real window without `warp_mouse` (which hijacks the
 developer's physical pointer). The full reasoning, genre support matrix, and
-rationale are in **[`docs/design/mouse-input-spike.md`](../../../../docs/design/mouse-input-spike.md)**
-(the decision) and **[`docs/design/mouse-injection-spike.md`](../../../../docs/design/mouse-injection-spike.md)**
-(the build-oriented writeup).
+rationale are in **[`docs/design/mouse-input-spike.md`](https://github.com/satelliteoflove/godot-mcp/blob/028b68d51b2e9801d6f186b2f0b28a3e259c9b9e/docs/design/mouse-input-spike.md)**
+(the decision) and **[`docs/design/mouse-injection-spike.md`](https://github.com/satelliteoflove/godot-mcp/blob/028b68d51b2e9801d6f186b2f0b28a3e259c9b9e/docs/design/mouse-injection-spike.md)**
+(the build-oriented writeup), both in the upstream repository; they are not vendored here.
 
 The spike produced 13 probe scripts. A **keystone subset is retained here** as
 runnable evidence for the load-bearing findings; the rest are recorded as findings
@@ -43,9 +47,13 @@ bridge (see its header).
 
 ### The shipped bug this spike found
 
-One real fix shipped from the investigation (PR #231) and is guarded by a test
+One real fix shipped from the investigation (upstream PR #231) and is guarded by a test
 that lives here permanently, independent of the mouse decision:
 
 | File | What it guards | Run mode |
 |---|---|---|
 | `input_sequence_stuck_held_test.gd` | A stuck-held bug in the shipped `MCPGameBridge.execute_input_sequence`: clearing the queue mid-flight dropped already-pressed actions' releases, latching them. Drives the real bridge node; fails pre-fix, passes post-fix. | both |
+
+The other `*_test.gd` files in this folder each guard one addon behaviour (input injection, the game-time
+watch and timeline contract, the log query, the exec guard, mesh validation, 3D and tilemap digests, and so on);
+each states what it checks in its header.

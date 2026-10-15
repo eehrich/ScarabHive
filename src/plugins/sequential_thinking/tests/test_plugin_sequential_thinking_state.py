@@ -327,3 +327,32 @@ async def test_zero_thoughts_in_prompt_shows_three_per_session_with_several_sess
     block = context.messages[-1].content
     assert "one-1" not in block and "one-2" in block
     assert "two-1" not in block and "two-2" in block
+
+
+@pytest.mark.asyncio
+async def test_an_estimate_held_constant_is_raised_once_it_is_overtaken():
+    server = make_server()
+    sid = None
+    for i in range(3):
+        result = await server.execute({**BASE, "thought": f"t{i}", "total_thoughts": 2,
+                                       "session_id": sid, "_session_id": "conv"})
+        sid = result["session_id"]
+    assert result["total_thoughts_estimate"] == 3
+    assert any("adjusted to 3" in w for w in result["warnings"])
+    context = hook_context("conv")
+    await server.on_pre_llm_call(context)
+    assert "**Progress**: 3/3 thoughts" in context.messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_an_expired_session_is_neither_shown_nor_summarized():
+    server = make_server(session_ttl_seconds=60)
+    sid = (await server.execute({**BASE, "thought": "a", "_session_id": "conv"}))["session_id"]
+    server._sessions[sid].last_accessed -= timedelta(seconds=120)
+    context = hook_context("conv")
+    await server.on_pre_llm_call(context)
+    assert sid not in context.messages[-1].content
+    other = make_server(session_ttl_seconds=60)  # the summary must sweep on its own
+    sid = (await other.execute({**BASE, "thought": "a"}))["session_id"]
+    other._sessions[sid].last_accessed -= timedelta(seconds=120)
+    assert (await other.get_summary({"session_id": sid}))["status"] == "error"

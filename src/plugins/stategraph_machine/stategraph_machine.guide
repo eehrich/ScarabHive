@@ -1,6 +1,6 @@
 @database "stategraph_machine"
 @author "Enrico Ehrich"
-@$VER: stategraph_machine.guide 1.0 (30.09.2026)
+@$VER: stategraph_machine.guide 1.0 (15.10.2026)
 @smartwrap
 
 @node main "A machine as an agent"
@@ -207,7 +207,7 @@ who watches that request: in the web chat as a box under the run's row
 (a button per event, a field for the data where an event takes some), in
 @{tt}agent-cli chat@{utt} under the status lines, where the next line
 typed answers it. Nobody watches agent-run, a one-shot
-@{tt}agent-cli "task"@{utt}, a writer job or a schedule: nothing is asked
+@{tt}agent-cli "task"@{utt}, a background job or a schedule: nothing is asked
 there.
 
 The question names the waiting state with its description and offers the

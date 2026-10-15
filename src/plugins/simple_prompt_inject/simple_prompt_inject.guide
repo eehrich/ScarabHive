@@ -80,9 +80,9 @@ position the plugin logs an error and places it there anyway.
 @{tt}prompt_file@{utt} is read once, when the plugin starts. HTML comments
 (@{tt}<!-- ... -->@{utt}) are removed from it -- notes for whoever edits the
 file never reach the model; @{tt}prompt_text@{utt} is sent as written. A
-file that does not exist stops this plugin from starting ("Failed to register
-plugin simple_prompt_inject" in the log, with the path); everything else
-starts.
+file that does not exist, or a path that is not a file, stops this plugin
+from starting ("Failed to instantiate plugin 'simple_prompt_inject'" in the
+log, with the path); everything else starts.
 
 @{h2}Template variables
 
@@ -168,8 +168,6 @@ task are the task's own. @{tt}/retry@{utt} in the web chat gives back the
 words without the text, and the hook writes it anew. An archive
 placeholder of @{tt}context_engineer@{utt} is never the task.
 @{tt}tool_preload@{utt} matches its rules on the task without the text.
-On writer agents a list of overused motifs was followed a little more
-here than as a message of its own; the difference was not significant.
 
 @{h2}before_last_user
 

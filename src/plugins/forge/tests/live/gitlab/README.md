@@ -1,11 +1,12 @@
 # GitLab test instance for the live tests
 
-GitLab CE with a Docker runner, tuned to be frugal (Puma in single mode,
-no Prometheus, no registry; `mem_limit: 4g`, uses about 2.6 GB).
+GitLab CE 19.4 with a Docker runner, tuned to be frugal (Puma in single mode,
+no Prometheus, no registry, no KAS; `mem_limit: 4g`).
 
 ## Setup
 
-On a Docker host, in a folder of its own with the `compose.yaml` from here:
+On a Docker host, in a folder of its own with `compose.yaml` and
+`bootstrap.py` from here:
 
 ```sh
 cat > .env <<EOF
@@ -25,11 +26,15 @@ chmod 600 root_token.out
 python3 bootstrap.py
 ```
 
-`bootstrap.py` creates: the group `forge-test`, the project `forge-test/app` with
-a `.gitlab-ci.yml` (job `unit` fails if a file `FAIL` is in the tree;
-`lint` with `allow_failure`), the user `scarabhive-bot` as Developer with its
-own token, `main` protected (push Maintainer, merge Developer) and an
-instance runner. It writes `CREDENTIALS` (0600).
+`bootstrap.py` (standard library only) creates: the private group `forge-test`,
+the private project `forge-test/app` with a `.gitlab-ci.yml` (job `unit` fails
+if a file `FAIL` is in the tree; `lint` with `allow_failure`), the user
+`scarabhive-bot` as Developer with a token of scope `api`, `main` protected
+(push Maintainer, merge Developer) and, when there is none yet, an instance
+runner with the Docker executor. It writes `CREDENTIALS` (0600):
+`FORGE_TEST_GITLAB_URL`, `FORGE_TEST_GITLAB_PROJECT`,
+`FORGE_TEST_GITLAB_ROOT_TOKEN`, `FORGE_TEST_GITLAB_BOT_TOKEN`. It is safe to run
+again; each run makes a new bot token.
 
 ## Running the live tests
 
@@ -38,5 +43,11 @@ eval "$(ssh <host> cat <folder>/CREDENTIALS | sed 's/^/export /')"
 FORGE_LIVE=1 .venv/Scripts/python.exe -m pytest src/plugins/forge/tests/test_plugin_forge_live.py -o timeout=900
 ```
 
-Each run creates an issue and a merge request and merges it; the red
-branch is deleted at the end.
+Without `FORGE_LIVE=1` the tests are skipped. They need `git` on the machine
+that runs them, and `git-lfs` for the LFS test; your own git config is not
+read (an empty global config, no system config).
+
+Each run creates an issue and two merge requests: one is merged (its branch
+goes with the merge, and the issue closes), the other is closed. The other
+branches -- line comments, LFS, the red pipeline -- are deleted at the end.
+The red pipeline's job is retried once.

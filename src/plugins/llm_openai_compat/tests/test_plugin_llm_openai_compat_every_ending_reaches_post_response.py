@@ -328,6 +328,34 @@ async def test_a_body_429_says_whether_the_client_already_waited_and_asked_again
     assert limited.value.retried is bool(own_retries)
 
 
+@pytest.mark.parametrize("streaming, refusal", [
+    (True, status(429, "slow down")), (False, status(429, "slow down")),
+    (True, sse(_body_error(429, "too many requests"), then="end")),
+], ids=["stream", "no stream", "body-429"])
+async def test_a_429_after_a_5xx_retry_was_not_waited_on(streaming, refusal):
+    """A 5xx retry before the 429 is no 429 wait: the agent loop's short retry is still due."""
+    async with Upstream(status(503, "busy"), refusal) as upstream:
+        client = chat_client(upstream.url, streaming=streaming, max_retries=1,
+                             rate_limit_max_retries=0, rate_limit_backoff=0)
+        with pytest.raises(LLMRateLimitError) as limited:
+            await client.chat_tools(MESSAGES, [])
+        hits = upstream.hits
+    assert hits == 2, "fixture: the 5xx was not retried"
+    assert limited.value.retried is False
+
+
+async def test_a_429_after_a_body_429_wait_was_waited_on():
+    """The non-streaming body-429 retry sleeps too: the 429 after it is one the client waited on."""
+    body = json.dumps({"error": {"code": 429, "message": "too many requests"}})
+    async with Upstream(status(200, body), status(429, "slow down")) as upstream:
+        client = chat_client(upstream.url, streaming=False, rate_limit_max_retries=1, rate_limit_backoff=0)
+        with pytest.raises(LLMRateLimitError) as limited:
+            await client.chat_tools(MESSAGES, [])
+        hits = upstream.hits
+    assert hits == 2, "fixture: the body-429 was not retried"
+    assert limited.value.retried is True
+
+
 @pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])
 async def test_a_refusal_reaches_the_caller_as_the_status_error(streaming):
     """The agent server falls back to the next profile (and blocks a dead key or model) on

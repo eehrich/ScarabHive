@@ -230,8 +230,8 @@ error | see below
 @{table}
 error | When
 vars is not valid JSON: ... | the string does not parse
-vars must be a JSON object (e.g. '{"book_id": 42}') | it parses to something else
-No context variables provided. Pass them via the `vars` argument as a JSON object string, e.g. vars='{"book_id": 42}'. | nothing is left to set
+vars must be a JSON object (e.g. '{"item_id": 42}') | it parses to something else
+No context variables provided. Pass them via the `vars` argument as a JSON object string, e.g. vars='{"item_id": 42}'. | nothing is left to set
 'current_task' is the task variable: switch it with task_switch_set_task | the task variable is among them (named after the setting and the instance)
 No session_tracker or agent_config available | called with no agent to set them on
 @{body}

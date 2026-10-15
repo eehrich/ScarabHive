@@ -1331,6 +1331,17 @@ async def test_list_executions_shows_running_runs_unless_a_status_is_asked(no_pa
     assert [e["id"] for e in only["executions"]] == ["7"]
 
 
+@pytest.mark.parametrize("told, asked", [("false", False), ("no", False), ("maybe", False), (True, True),
+                                         ("true", True)])
+async def test_include_data_sent_as_text_false_asks_for_no_data(told, asked):
+    """"false" is a true value in Python: get_execution asked n8n for every node's data."""
+    server = make_server()
+    ended(server)
+    await server.get_execution({"workflow_id": "w1", "execution_id": "7", "include_data": told})
+    sent = dict(server._client.calls)["get_workflow_execution"]
+    assert sent["includeData"] is asked
+
+
 async def test_stop_plugin_ends_the_watches():
     server = make_server()
     server._client.executions["7"] = running("7")

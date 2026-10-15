@@ -32,6 +32,7 @@ from urllib.parse import urlencode
 from agent_system.core.session_presence import presence_for, wake_blocked, wake_depth, wake_session
 from agent_system.plugins.cache import PluginCache
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.params import bool_param
 
 from .client import N8nClient, N8nError, N8nNoAnswer, N8nNotFound, mcp_error
 from .validate import (DEFAULT_BLOCKED_NODE_TYPES, DEFAULT_REVIEW_NODE_TYPES, blocking_save_settings, callee_ids,
@@ -118,6 +119,14 @@ def _bounded(value: Any, default: int, low: int, high: int) -> Optional[int]:
         return max(low, min(int(value if value not in (None, "") else default), high))
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _flag(params: dict[str, Any], key: str) -> bool:
+    """A yes/no argument: "false" as text is false, not a true value; anything unusable is no."""
+    try:
+        return bool_param(params, key)
+    except ValueError:
+        return False
 
 
 class N8nServer(SchemaBasedToolServer):
@@ -681,7 +690,7 @@ class N8nServer(SchemaBasedToolServer):
         if not workflow_id or not execution_id:
             return await self._fail(status, "workflow_id and execution_id are required")
         arguments: dict = {"workflowId": str(workflow_id), "executionId": str(execution_id),
-                           "includeData": bool(params.get("include_data")), "truncateData": 2000}
+                           "includeData": _flag(params, "include_data"), "truncateData": 2000}
         if params.get("nodes"):
             arguments["nodeNames"] = [str(n) for n in params["nodes"]][:10]
         execution_id = str(execution_id)

@@ -64,6 +64,12 @@ agent_config:
 The hook is off until an agent switches it on; see
 @{" The session hook " link hook}. No extra packages.
 
+For a quick check without an agent, @{tt}python -m plugins.sequential_thinking --thought 'x'@{utt}
+(with @{tt}src@{utt} on the Python path) adds one thought and prints the
+answer; @{tt}--operation summary@{utt} and @{tt}--operation clear@{utt}
+call the other two tools. Each run is a process of its own with an empty
+store, so it never sees the sessions of a running server.
+
 @{h2}Server settings
 
 The settings stand directly in the server entry, as above -- not under a
@@ -123,7 +129,8 @@ idempotency_key | -- | a retry with the same key returns the first thought inste
 
 The camelCase spellings (@{tt}thoughtNumber@{utt}, @{tt}sessionId@{utt},
 ...) are accepted too. A number must be whole: 3, 3.0 and "3" are taken,
-2.5 and true are refused. A flag takes true or false, also as text.
+2.5 and true are refused. A flag takes true or false, also as text or as
+1 and 0.
 The length limits in the schema (10000 characters for a thought, 100 for a
 branch name, 200 for a key) are not checked by the plugin.
 
@@ -261,7 +268,8 @@ session_id | the session to remove; unknown: "Session X not found"
 Without @{tt}session_id@{utt} it removes every session of the calling
 conversation; called outside a conversation (directly, or from the
 command line), only the sessions no conversation uses. The answer: @{tt}status@{utt}, @{tt}cleared_sessions@{utt}
-and a @{tt}message@{utt} ("Cleared session k3x9q2m7ab (6 thoughts)").
+and a @{tt}message@{utt} ("Cleared session k3x9q2m7ab (6 thoughts)", or
+"Cleared all 2 sessions" without @{tt}session_id@{utt}).
 @endnode
 
 @node hook "The session hook"
@@ -332,7 +340,9 @@ format | markdown | anything else: plain lines with shorter thoughts and no hint
 
 A key in the agent's override wins; otherwise the key in the plugin's
 server entry; otherwise the default above. The range in the schema (1 to
-20, 1 to 5) is not enforced.
+20, 1 to 5) is not enforced: @{tt}max_sessions_in_prompt: 0@{utt} shows
+only the reminder, and a value that is not a whole number makes the hook
+fail (logged) and add nothing once the conversation has a thinking session.
 @endnode
 
 @node state "Where the state lives"
@@ -361,8 +371,10 @@ revision or a new branch could name.
 the versions before it.
 @{bullet}There is no limit on the number of sessions. A session is removed
 when no thought was added for @{tt}session_ttl_seconds@{utt} (one hour).
-The check runs at the start of each call of the thinking tool -- with no
-calls, an expired session stays in memory until the next one.
+The check runs at the start of each call of the thinking tool and of
+the summary, and before the hook shows the sessions, so the prompt never
+shows a session the next call finds gone. Without any of these, an
+expired session stays in memory until the next one.
 @{bullet}Idempotency keys and the conversation lookup are dropped with the
 sessions and thoughts they point to.
 @endnode

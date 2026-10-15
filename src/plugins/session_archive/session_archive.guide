@@ -257,7 +257,7 @@ retention_days | 30 | the age every session of a tree must reach; at least 1
 sweep_interval_hours | 24.0 | the time between two periodic sweeps
 first_sweep_delay_seconds | 300.0 | the wait after the start before the first one
 max_trees_per_sweep | 0 | the most trees one pass archives; 0 means no cap
-archive_path | session_archive in the data directory | where the zips and index lie
+archive_path | session_archive next to the session store's folder (data/session_archive) | where the zips and index lie
 @{body}
 
 Changes need a restart. The plugin has no settings of its own and no

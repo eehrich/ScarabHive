@@ -186,7 +186,7 @@ class UsageDatabase:
         """True for EXACTLY ONE caller, across processes. False for everyone else.
 
         A check-then-act over two transactions is not enough here: `agent-api`
-        and `agent-writer-worker` are restarted together, both open the store in
+        and a worker process are restarted together, both open the store in
         the same instant, both see "not imported yet" and both import.
         Reproduced — the legacy history landed twice. `INSERT OR IGNORE` plus
         rowcount decides it in one atomic step.

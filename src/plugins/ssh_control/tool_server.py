@@ -16,6 +16,7 @@ from agent_system.core.session_presence import wake_blocked, wake_session
 from agent_system.paths import PROJECT_ROOT, resolve_data_path
 from agent_system.plugins.cache import PluginCache
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.params import bool_param
 from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
 
 from . import machine_store
@@ -37,6 +38,25 @@ _RECORDED_STREAM_CAP = 30_000
 #: files inside a folder; older Windows opens the device instead.
 _reserved = getattr(os.path, "isreserved",
                     lambda path: os.name == "nt" and PureWindowsPath(path).is_reserved())
+
+
+async def _flags(params: dict[str, Any], defaults: dict[str, bool]) -> dict[str, Any] | None:
+    """Read the yes/no parameters in ``defaults`` into ``params`` as real
+    booleans (left out: the default), or the error to answer. Models send them
+    as text too, and ``"false"`` is a true value: ``background: "false"``
+    started the command in the background, ``force: "false"`` sent SIGKILL."""
+    try:
+        for key, default in defaults.items():
+            value = params.get(key)
+            blank = value is None or (isinstance(value, str) and not value.strip())
+            params[key] = default if blank else bool_param(params, key)
+    except ValueError as exc:
+        status = params.get("_status")
+        if status:
+            await status.error(str(exc))
+        return {"status": "error", "success": False, "error": str(exc),
+                "error_type": "InvalidArgument"}
+    return None
 
 
 def _short(command: str, limit: int = 60) -> str:
@@ -403,6 +423,9 @@ class SSHControlToolServer(SchemaBasedToolServer):
 
     async def get_output(self, params: dict[str, Any]) -> dict[str, Any]:
         """Read what a background command has written so far."""
+        refused = await _flags(params, {"clear_buffer": False})
+        if refused:
+            return refused
         status = params.get("_status")
         process_id = params["process_id"]
         result = await self.processes.get_output(
@@ -442,6 +465,9 @@ class SSHControlToolServer(SchemaBasedToolServer):
 
     async def kill_process(self, params: dict[str, Any]) -> dict[str, Any]:
         """Stop a background command."""
+        refused = await _flags(params, {"force": False})
+        if refused:
+            return refused
         status = params.get("_status")
         process_id = params["process_id"]
         result = await self.processes.kill_process(
@@ -464,7 +490,10 @@ class SSHControlToolServer(SchemaBasedToolServer):
         Returns:
             Dict with command results for each machine
         """
-        if params.get('background'):
+        refused = await _flags(params, {"background": False, "wake": False, "check_exit_code": True})
+        if refused:
+            return refused
+        if params['background']:
             return await self._execute_background(params)
 
         machine = params.get('machine')
@@ -922,6 +951,9 @@ class SSHControlToolServer(SchemaBasedToolServer):
         """
         from .models import MachineConfig
 
+        refused = await _flags(params, {"persistent": False})
+        if refused:
+            return refused
         status = params.get('_status')
 
         # Extract and validate required parameters
@@ -1131,9 +1163,12 @@ class SSHControlToolServer(SchemaBasedToolServer):
             Dict with success status
         """
 
+        refused = await _flags(params, {"remove_from_config": False})
+        if refused:
+            return refused
         status = params.get('_status')
         name = params.get('name')
-        remove_from_config = params.get('remove_from_config', False)
+        remove_from_config = params['remove_from_config']
 
         if not name:
             error_msg = "Missing required parameter: name"

@@ -42,7 +42,8 @@ To make the running session take the new version:
 /vars unset project_instructions
 @{body}
 
-(in the terminal, or through @{tt}POST /chat/vars@{utt} with the same text).
+(in the terminal or the web chat, or through @{tt}POST /chat/vars@{utt}
+with the payload @{tt}unset project_instructions@{utt}).
 The next call reads the file again. A new session always reads the current
 file.
 
@@ -129,7 +130,8 @@ A sub-agent inherits its parent's session variables, the snapshot among
 them. When the sub-agent's own root is the parent's, it keeps the parent's
 version, so a whole orchestration works by one set of instructions, even
 after the parent took a new one. With another root it reads its own
-project's file. The coder's three sub-agents have it on as well.
+project's file. The coder and its three sub-agents (explorer, reviewer,
+tester) have it on, each with @{tt}root: "."@{utt}.
 @endnode
 
 @node file "Which file is read"

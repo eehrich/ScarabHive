@@ -131,6 +131,9 @@ says @{tt}(?i)@{utt}.
 @{bullet}It sees the text of the user's message only -- the text parts of a
 message with images -- and only its first 2000 characters. A trigger further
 down is not seen, unless @{tt}text_from@{utt} picks the part it stands in.
+A text another hook wrote in front of the task (@{tt}simple_prompt_inject@{utt}
+with @{tt}task_start@{utt}) is taken out first: the rules see what the user
+wrote.
 @{bullet}Every rule that matches runs, not just the first, in the order they
 are listed.
 @{bullet}A pattern that is not a valid expression is skipped with a warning
@@ -175,8 +178,12 @@ warning -- that is the ordinary case:
   params: {query: "{message}", max_results: 8}
 @{body}
 
+These two are the coder's rules (@{tt}src/plugins/coder/agents/coder.yaml@{utt}):
+it starts each turn with its workspace already searched for what the request
+is about.
+
 A message whose request stands behind a long preamble -- a generated brief:
-role text, rules, then the ticket -- spends the 2000 characters on the
+role text, rules, then the request itself -- spends the 2000 characters on the
 preamble, and its backticks fill every keyword slot. @{tt}text_from@{utt}
 lists regular expressions that pick the parts the rules see instead: of
 every match the group @{tt}(?P<text>...)@{utt}, or without one everything
@@ -187,7 +194,7 @@ message, so anchor them on a literal and keep nested quantifiers out:
 
 @{code yaml}
 text_from:
-  - '(?s)<untrusted source="task">\n(?P<text>.*?)\n</untrusted>'
+  - '(?s)<task>\n(?P<text>.*?)\n</task>'
 @{body}
 
 @{tt}{{ name }}@{utt} is for state the user never types. The variables are

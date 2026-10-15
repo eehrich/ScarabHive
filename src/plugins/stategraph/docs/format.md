@@ -20,6 +20,8 @@ title: My machine
 # group: Reviews/nightly            # folder in the panel's machine list
 # python: my_machine.py             # companion module: its public functions are in scope
 # imports: {sub: ./sub.yaml}        # submachines, by alias: do: {machine: sub, params: {...}}
+# machines: {step: {initial: ..., states: ...}}  # machines inside this file: do: {machine: step}
+# agent: {visibility: tool}         # offer the machine as an agent (plugin stategraph_machine)
 params:                             # run input / submachine parameters
   text: {type: string, required: true}
   rounds: {type: integer, default: 3}
@@ -28,7 +30,7 @@ events:                             # named events this machine accepts
   approve: {description: go on}
 context: {draft: null, round: 0}    # ctx: the machine's variables (JSON)
 vars: {tone: "{{ params.tone }}"}   # template vars for every agent it spawns
-limits: {max_steps: 1000, timeout: 2h}
+limits: {max_steps: 1000, timeout: 2h}   # also concurrency: leaf activities at once
 initial: write
 states:
   write:                            # a state with an activity: completes when it ends
@@ -56,20 +58,23 @@ states:
     transitions:
       - {trigger: approve, target: done}
       - {trigger: error, target: failed}
+  # cool_down: {after: 10m, transitions: [{target: write}]}   # a timer state: completes after that time
   done: {type: final, output: {draft: "{{ ctx.draft }}"}}
   failed: {type: final, status: failed}
 ```
 
 | Kind (`do:`) | Keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task`, `schema`, `parse`, `parse_retries`, `vars`, `llm_profile`, `llm_params`, `advanced`, `continue` | answer text or parsed value |
+| `agent: <name>` | `task`, `schema`, `parse`, `check`, `parse_retries`, `vars`, `llm_profile`, `llm_params`, `advanced`, `continue` | answer text or parsed value |
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result |
 | `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile` -- or `by` (an agent decides), `advanced`, `parse_retries` | `{value, confidence, probabilities}` |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`, `input`, `profile` or `by` | `{name: {...}}` |
 | `call: <function>` | `args` | return value; `fn(sg, …)` gets `sg.tool()` (journaled tool calls), `sg.Error` and `sg.live` (objects a Python caller handed, read-only, empty without them); a sync function runs in a worker thread (a timeout or terminate drops its late result and sets `sg.cancelled`, a `threading.Event` a long one checks; `sg.tool()` only from an async one, or returned) |
 | `machine: <alias>` | `params` | the submachine's final output |
-| `parallel: {branch: activity}` | `fail: fast\|collect` | `{branch: out}` |
-| `map: <expression>` | `each`, `as`, `concurrency`, `fail` | list in item order |
+| `parallel: {branch: activity}` | `fail: fast\|collect`, or `join: first\|{count: n}` | `{branch: out}` |
+| `map: <expression>` | `each`, `as`, `concurrency`, `fail`, `until` | list in item order |
+| `emit: <text>` | -- | the text (a status line for the caller, a message in the run's session) |
+| `callback: <event>` | `expires` (default 168h, at most 720h), `frame` | `{url, event, expires}`: a one-time URL that sends the event |
 
 Common keys: `retry {attempts, backoff, errors}`, `timeout`, `idempotent`, `description`.
 
@@ -80,8 +85,8 @@ one template that renders to an object.
 
 | Field kind | Fields | Syntax |
 |---|---|---|
-| code (Python, no braces) | `guard`, `effect`, `entry`, `exit`, `map`, `error_if` | `ctx.round < params.rounds` |
-| template (literal unless `{{ }}`) | `task`, `args`, `params`, `vars`, `question`, `criteria`, `input`, `continue`, `output` | `"{{ ctx.draft }}"` keeps the type; mixed text interpolates |
+| code (Python, no braces) | `guard`, `effect`, `entry`, `exit`, `map`, `until`, `error_if` | `ctx.round < params.rounds` |
+| template (literal unless `{{ }}`) | `task`, `args`, `params`, `vars`, `question`, `criteria`, `input`, `continue`, `emit`, `frame`, `output` | `"{{ ctx.draft }}"` keeps the type; mixed text interpolates |
 
 | Bound | Where |
 |---|---|
@@ -97,8 +102,8 @@ access -- `ctx.notes["x"]`, `out["value"]`, `event.data["reason"]`. Only `effect
 and `ending` are read-only (SG004). A blank guard is no guard. Code and templates are pure:
 no I/O, clock, randomness, environment, sets or `hash()`.
 
-Error types: `agent_failed`, `schema_invalid`, `parse_failed`, `tool_failed`,
-`tool_denied`, `decision_failed`, `call_failed`, `submachine_failed`, `activity_failed`, `timeout`,
+Error types: `agent_failed`, `schema_invalid`, `parse_failed`, `check_failed`, `tool_failed`,
+`tool_denied`, `decision_failed`, `call_failed`, `submachine_failed`, `join_failed`, `activity_failed`, `timeout`,
 `interrupted`, `template_failed`, `params_invalid`, `unmocked`, `no_backend`, `config`;
 engine: `loop_limit`, `no_transition`, `guard_failed`, `action_failed`,
 `wait_timeout`, `not_serialisable`. Not catchable: `step_limit`, `timed_out`,

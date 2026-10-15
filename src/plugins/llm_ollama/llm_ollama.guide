@@ -147,8 +147,7 @@ shows and what the model holds agree.
 For Ollama the context is memory: it reserves room for @{tt}num_ctx@{utt}
 tokens when it loads the model. A context that does not fit into the
 graphics card next to the model's weights makes Ollama run part of the model
-on the CPU, which is many times slower. Measured on a local setup: a 256k
-context pushed an 8B model onto the CPU. Set @{tt}context_window@{utt} to
+on the CPU, which is much slower. Set @{tt}context_window@{utt} to
 what the card holds, not to the most the model can take; @{tt}ollama ps@{utt}
 on the server shows how a loaded model is split between CPU and GPU.
 

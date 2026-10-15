@@ -484,6 +484,9 @@ coder_fs_ro:
       - '**/node_modules/**'
       - '**/.venv/**'
       - '**/*.pyc'
+      - '**/*.min.js'
+      - '**/*.min.css'
+      - '**/*.map'
       - '**/dist/**'
       - '**/build/**'
 @{body}
@@ -536,4 +539,23 @@ Each instance also tells other plugins which folders it works on: the
 project-instructions plugin reads an @{tt}AGENTS.md@{utt} from them, and
 the file checkpoints plugin takes them as the folders whose changes it
 records.
+
+@{h2}Trying it from the command line
+
+For development, the plugin has a small command line of its own that
+builds a throwaway instance allowed only the folder it is pointed at, with
+indexing off, and prints the tool's answer as JSON:
+
+@{code}
+PYTHONPATH=src python -m plugins.file_ops read <file> [--offset N] [--limit N]
+PYTHONPATH=src python -m plugins.file_ops list <dir> [--recursive] [--pattern GLOB] [--include-hidden]
+PYTHONPATH=src python -m plugins.file_ops search <glob> [--search-dir DIR] [--max-results N]
+PYTHONPATH=src python -m plugins.file_ops grep <query> [--search-dir DIR] [--regex] [--case-sensitive]
+                                         [--context N] [--include-pattern GLOB] [--max-results N]
+@{body}
+
+@{tt}read@{utt} allows the file's folder, @{tt}list@{utt} the listed
+folder, @{tt}search@{utt} and @{tt}grep@{utt} the @{tt}--search-dir@{utt}
+(the current folder without it). The exit code is 1 when the answer is an
+error.
 @endnode

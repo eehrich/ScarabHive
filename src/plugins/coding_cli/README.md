@@ -3,38 +3,20 @@
 Hands programming tasks to Claude Code: each task is one headless Claude Code process on the operator's
 subscription (the Claude Code login of the account ScarabHive runs under), in a fresh git worktree of a listed
 repository. What the run changed is committed on a branch of its own; nothing is merged or pushed. Runs are locked
-down (no MCP server but those the operator names per workdir, a fixed tool list, no shell unless allowed), only
-listed users start them, and none starts while the subscription is near its limit. A long run goes on in the
-background and wakes the session that started it.
+down (no MCP server but those the operator names per workdir, a fixed tool list, no shell unless allowed, files with
+secrets kept out of the worktree), only listed users start them, and none starts while a subscription window is at
+or past the configured share (`max_window_utilization`). A long run goes on in the background and wakes the session that started it.
 
-- **Tools** -- `coding_cli_run_task`, `coding_cli_get_run`, `coding_cli_cancel_run`, `coding_cli_quota`; offered
-  only when the Claude Code executable and a usable workdir are there. `run_task` takes an optional `json_schema`:
-  the answer then carries `output`, an object matching it (untrusted). An optional `max_run_minutes` gives the run a
-  shorter time limit than the instance's, an optional `max_window_utilization` a lower threshold for the
-  subscription's windows (a resume without one keeps either). Every answer of an ended run carries `cost_usd`, on the
-  subscription a notional amount -- the measure the stream reports.
-- **Budget** -- a run refused for the subscription's budget (a window at or past the threshold), and one the
-  subscription stopped midway (its result `api_error: usage_limit_reached`, the stream's last rate_limit_event
-  `rejected`; measured on Claude Code 2.1.295), answer with a field `limit`: the window, its use, the threshold, when
-  it resets. A caller tells the budget by it, not by words -- "N run(s) still going" carries none. `quota` reads the
-  windows as the last run reported them and the limit a new run would be refused for, without starting one. A state
-  that would refuse and is over five minutes old is asked anew first (one turn on haiku): only a finished run writes
-  it, and a window that reset early refused every run until its old reset.
-- **MCP servers** -- a workdir's `mcp_servers` names servers of `external_servers.remote_servers` (enabled, with a
-  url free of credentials, an HTTP or SSE transport); its edit runs load exactly these, their blocked tools
-  denied, through a per-run MCP config whose auth headers are `${CODING_CLI_MCP_<n>}` placeholders -- the
-  values go only into Claude Code's environment. The user's own connectors never load (`--strict-mcp-config`).
-  Measured on Claude Code 2.1.285: the header is expanded from the environment, the server's tools appear as
-  `mcp__<server>__*` and run headless once `--allowedTools mcp__<server>` approves them.
-- **Web** -- a workdir with `web: true` gives its runs Claude Code's `WebSearch` and `WebFetch`, approved, in
-  either mode (research and fact checks on the subscription), and no shell unless the instance sets
-  `web_with_shell: true` (tests beside the web); one with `mcp_servers` as well is skipped. A page can steer the model, and a URL it fetches can carry what the worktree shows.
+- **Tools** -- `coding_cli_run_task` (start a run, optionally with a `json_schema` for a structured answer, or
+  `resume` an ended one), `coding_cli_get_run`, `coding_cli_cancel_run` and `coding_cli_quota` (the subscription's
+  windows, without starting a run). They are offered only when the Claude Code executable and a usable workdir are
+  there.
 - **Agent** -- `claude_code_agent`, which only relays work to Claude Code; the coder agent has the tools too.
 - **Hooks / panel** -- none.
 
-Configured in the plugin's own `agents/coding_cli.yaml` (workdirs with `exclude`, `mcp_servers` and `web`,
-`allowed_users`, `allowed_commands`, limits such as `max_task_chars`); an agent gets the tools with
-`+coding_cli/*`.
+The entry ships in the plugin's own `agents/coding_cli.yaml` (workdirs with `exclude`, `mcp_servers` and `web`,
+`allowed_users`, `allowed_commands`, limits such as `max_parallel` and `max_window_utilization`); an agent gets the
+tools with `+coding_cli/*` in its tool list.
 
 The full manual -- how a run goes, what a run may do, the tools and their answers, the settings and the known gaps --
 is the plugin's guide, `coding_cli.guide`, in the Help panel.

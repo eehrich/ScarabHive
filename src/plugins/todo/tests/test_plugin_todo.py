@@ -1378,5 +1378,23 @@ async def test_a_refused_create_takes_no_task_id(server: TodoServer):
     assert (bad_priority["status"], bad_dependency["status"]) == ("validation_failed", "validation_failed")
     assert created["task_id"] == "task_001"
 
+
+@pytest.mark.asyncio
+async def test_a_refused_update_changes_nothing(server: TodoServer):
+    # the status came first: a later refusal (progress, circular dependency) left it changed and the dependent freed
+    call = {"operation": "update", "task_id": "task_001", "session_id": "s-refused"}
+    await server.execute({"operation": "create", "title": "Lay the base", "session_id": "s-refused"})
+    await server.execute({"operation": "create", "title": "Build on it", "depends_on": ["task_001"],
+                          "session_id": "s-refused"})
+
+    bad_progress = await server.execute({"status": "in-progress", "progress": 150, **call})
+    circular = await server.execute({"status": "completed", "depends_on": ["task_002"], **call})
+    base = await server.execute({"operation": "get", "task_id": "task_001", "session_id": "s-refused"})
+    dependent = await server.execute({"operation": "get", "task_id": "task_002", "session_id": "s-refused"})
+
+    assert (bad_progress["status"], circular["status"]) == ("validation_failed", "validation_failed")
+    assert (base["task"]["status"], base["task"]["started_at"], base["task"]["depends_on"]) == ("not-started", None, [])
+    assert dependent["task"]["status"] == "blocked"
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--cov=plugins.todo.server", "--cov-report=html"])

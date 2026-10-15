@@ -125,12 +125,14 @@ def rest_client(port: int, *, streaming: bool = True, read: float = 5.0, max_ret
                         max_retries=max_retries, capabilities={"streaming": streaming})
 
 
-def sdk_client(port: int, *, streaming: bool = True, read: float = 5.0, max_retries: int = 0):
+def sdk_client(port: int, *, streaming: bool = True, read: float = 5.0, max_retries: int = 0,
+               rate_limit_max_retries: int = 0):
     from google import genai
     from google.genai import types
 
     client = GeminiSDKClient(model="m", api_key="k", request_timeout=read, max_retries=max_retries,
-                             rate_limit_max_retries=0, capabilities={"streaming": streaming})
+                             rate_limit_max_retries=rate_limit_max_retries,
+                             capabilities={"streaming": streaming})
     client._client = genai.Client(api_key="k", http_options=types.HttpOptions(
         base_url=f"http://127.0.0.1:{port}/"))
     return client
@@ -307,6 +309,45 @@ async def test_a_refusal_raises_what_the_fallback_catches_and_is_reported_once(
         assert status_code == code
     assert len(hooks.post) == 1, hooks.post
     assert hooks.post[0]["error"] and hooks.post[0]["is_streaming"] is streaming
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])
+@pytest.mark.parametrize("retries", [0, 1])
+@pytest.mark.parametrize("route", ["rest", "sdk"])
+async def test_a_rate_limit_says_whether_the_client_already_asked_again(route, retries, streaming,
+                                                                       monkeypatch):
+    """The agent loop skips its own short 429 retry for a client that already waited and asked
+    again; without the marker a short Retry-After got a second wait and a second call."""
+    async def no_wait(self, seconds, token):
+        pass
+
+    monkeypatch.setattr(GeminiClient, "_cancellable_sleep", no_wait)
+    monkeypatch.setattr(GeminiSDKClient, "_cancellable_sleep", no_wait)
+    async with Upstream(status(429, _refusal(429, "slow down"))) as upstream:
+        client = (rest_client(upstream.port, streaming=streaming, max_retries=retries) if route == "rest"
+                  else sdk_client(upstream.port, streaming=streaming, rate_limit_max_retries=retries))
+        with pytest.raises(LLMRateLimitError) as limited:
+            await asyncio.wait_for(_ask(client, streaming), 10)
+        assert upstream.hits == retries + 1
+    assert limited.value.retried is (retries > 0)
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])
+@pytest.mark.parametrize("route", ["rest", "sdk"])
+async def test_a_429_after_a_5xx_retry_was_not_waited_on(route, streaming, monkeypatch):
+    """A 5xx retry before the 429 is no 429 wait: the agent loop's short retry is still due."""
+    async def no_wait(self, seconds, token):
+        pass
+
+    monkeypatch.setattr(GeminiClient, "_cancellable_sleep", no_wait)
+    monkeypatch.setattr(GeminiSDKClient, "_cancellable_sleep", no_wait)
+    async with Upstream(status(503, _refusal(503, "busy")), status(429, _refusal(429, "slow down"))) as upstream:
+        client = (rest_client(upstream.port, streaming=streaming, max_retries=1) if route == "rest"
+                  else sdk_client(upstream.port, streaming=streaming, max_retries=1))
+        with pytest.raises(LLMRateLimitError) as limited:
+            await asyncio.wait_for(_ask(client, streaming), 10)
+        assert upstream.hits == 2, "fixture: the 5xx was not retried"
+    assert limited.value.retried is False
 
 
 @pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])

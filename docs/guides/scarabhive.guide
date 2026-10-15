@@ -92,6 +92,11 @@ Agents can call other agents as tools (sub-agents), hold a persistent,
 multi-turn session, and stream their progress over Server-Sent Events to the
 web UI or the terminal while they work. Tools can also come from external
 servers that speak the Model Context Protocol (MCP).
+
+Beyond the chat, a fixed workflow can be a state machine whose steps are
+agents, tools and Python functions (@{" stategraph " link stategraph/main}),
+and every agent can be called as a model through an OpenAI-compatible API
+(@{" openai_api " link openai_api/main}).
 @endnode
 
 
@@ -101,7 +106,20 @@ servers that speak the Model Context Protocol (MCP).
 @{h2}1. Install
 
 ScarabHive needs Python 3.11 or newer. No Node.js: the web UI is served by
-the Python application itself. From the repository folder:
+the Python application itself. The simplest way is the install script in the
+repository folder:
+
+@{code bash}
+./install.sh                                            # Linux, macOS, Git Bash
+powershell -ExecutionPolicy Bypass -File install.ps1    # Windows PowerShell
+@{body}
+
+It installs everything into @{tt}.venv@{utt}, gives this installation its
+own signing key (kept in @{tt}config/local.env@{utt}, named in
+@{tt}config/local.yaml@{utt}), asks for a password for the @{tt}admin@{utt}
+account (Enter generates one) and starts the server. Run it again after a
+@{tt}git pull@{utt}: it installs what was added.
+Docker and troubleshooting: @{tt}INSTALLATION.md@{utt}. By hand:
 
 @{code bash}
 python -m venv .venv
@@ -238,10 +256,10 @@ opening it again brings it to the front.
 
 @{table}
 Part | What is there
-Header | the panel starter (panels by category, with a search), the theme button (system, light, dark), the user menu (@{b}Settings@{ub}, @{b}System@{ub}, @{b}Log out@{ub})
+Header | the sessions toggle; the title of the open session (opens it in the Session panel); the search field (the command palette, Ctrl+K); the help button (this manual); the panel starter (panels by category, with a search, pins and the recently opened); the theme button (system, light, dark); the user menu (@{b}Settings@{ub}, @{b}System@{ub}, @{b}Log out@{ub}); the dock toggle
 Sessions, left | your sessions grouped by day, with their sub-agent sessions; @{b}New@{ub}, rename, delete; a marker on sessions that are running right now. Ctrl+B hides it; its edge can be dragged
 Chat, middle | the conversation; while the agent works, a progress line per tool call, which ends in the tool's result line
-Message box | the text field; under it the @{b}Agent@{ub} and @{b}Model profile@{ub} buttons, attach, send, and @{b}Stop@{ub} while a run is going
+Message box | the text field; under it the @{b}Agent@{ub}, @{b}Model profile@{ub} and @{b}Thinking@{ub} buttons, attach, send, and @{b}Stop@{ub} while a run is going
 Dock, right | docked panels as tabs; drag a tab or use Shift+Left/Right to reorder; a button opens the panel in its own browser tab. Ctrl+Alt+B hides the dock
 Windows | floating panels, above everything else
 Status bar | connection, the open windows, the version
@@ -259,8 +277,17 @@ running turn.
 @{bullet}@{b}Stop@{ub} cancels the running turn.
 @{bullet}Attach files with the paper clip, by dropping them on the message
 box, or by pasting: images, audio and text, up to 20 MB each.
-@{bullet}The agent and the model profile are chosen with the two buttons
-under the message box, see @{" Choosing an agent " link agents}.
+@{bullet}The agent and the model profile are chosen with the buttons
+under the message box, see @{" Choosing an agent " link agents}. The
+@{b}Thinking@{ub} button next to them sets the thinking level of this
+chat, or leaves the model's own (@{tt}/think@{utt} does the same).
+@{bullet}Arrow-Up in an empty line, or at the top of the text, brings back
+what you sent before in this session; Arrow-Down walks forward again.
+@{bullet}Typing @{tt}/@{utt} opens the list of commands; Tab or Enter
+completes the one picked.
+@{bullet}An agent with tool approval switched on asks before a tool runs:
+the call appears under the run with its buttons, see
+@{" Tool Approval " link tool_approval/main}.
 @{bullet}A sub-agent's run is shown under the call that started it. What is
 folded -- a run's steps, thinking, sub-agents, their answers -- is set per
 account in @{b}Settings@{ub}.
@@ -310,6 +337,7 @@ Ctrl+K | command palette
 Ctrl+B | show or hide the sessions list
 Ctrl+Alt+B | show or hide the panel dock
 Ctrl+Enter | send
+Arrow-Up, Arrow-Down | at the edge of the text: earlier messages of this session
 Escape | close the palette, a picker, a menu or a dialog
 Shift+Left, Shift+Right | move the focused dock tab
 @{body}
@@ -317,7 +345,8 @@ Shift+Left, Shift+Right | move the focused dock tab
 @{h2}What is remembered
 
 The theme is kept in this browser. The arrangement of docked and floating
-panels is kept in this browser, per account. The chat folding settings
+panels is kept in this browser, per account; the panel starter's pins and
+recently opened panels are kept in this browser. The chat folding settings
 belong to the account and follow you to other browsers.
 @endnode
 
@@ -347,9 +376,10 @@ Command | What it does
 @{tt}/last@{utt} | the tool calls and results of the last turn, in full
 @{tt}/undo [files]@{utt} | drop the last exchange from the session; @{tt}files@{utt} also puts back the files it changed
 @{tt}/retry [files]@{utt} | drop the last exchange and ask it again
-@{tt}/rewind [n]@{utt} | put files back as they were before a checkpoint; bare lists them
+@{tt}/rewind [n]@{utt} | put files back as they were before a checkpoint, the conversation stays; bare lists them. Checkpoints come from the @{" file_checkpoints " link file_checkpoints/main} plugin
 @{tt}/export [path]@{utt} | write the conversation to a Markdown file
 @{tt}/model [profile]@{utt} (@{tt}/llm@{utt}) | bare: list the LLM profiles; a name switches this session's profile. In the browser it works through the @{b}Model profile@{ub} button
+@{tt}/think [level\|default]@{utt} (@{tt}/reasoning@{utt}) | the thinking level of this session: bare shows it, @{tt}default@{utt} takes the model's own. In the browser: the @{b}Thinking@{ub} button
 @{tt}/copy@{utt} | copy the last answer to the clipboard
 @{tt}/attach [path \| clear]@{utt} | attach a file to the next message; bare lists, @{tt}clear@{utt} empties; in the browser a path opens the file picker
 @{tt}/edit [text]@{utt} | write the next message in @{tt}$EDITOR@{utt}; in the browser, in the message box
@@ -360,13 +390,15 @@ Command | What it does
 
 @{table}
 Command | What it does
-@{tt}/exit@{utt} (@{tt}/quit@{utt}, @{tt}/q@{utt}, @{tt}/bye@{utt}) | end the chat; Ctrl-D works too
+@{tt}/exit@{utt} (@{tt}/quit@{utt}, @{tt}/q@{utt}, @{tt}/bye@{utt}) | end the chat; Ctrl-D (on Windows Ctrl-Z, Enter) works too
 @{body}
 
 @{h2}Commands from plugins and skills
 
 @{bullet}A plugin can declare commands in its @{tt}schema.yaml@{utt}; each
-runs one of its tools directly. It is offered only when the current agent
+runs one of its tools directly, without an LLM call. Among them
+@{tt}/subagents@{utt} and @{tt}/cancel@{utt} of the Sub-Agent Manager. A
+command is offered only when the current agent
 may call that tool. When two plugins use the same name, it is
 @{tt}/<plugin>:name@{utt}. See @{" Tools " link tools}.
 @{bullet}Every discovered skill runs as @{tt}/skill-name arguments@{utt}:
@@ -395,7 +427,9 @@ started with, else @{tt}default_agent@{utt} from
 
 @{b}In the web UI@{ub}: the @{b}Agent@{ub} button under the message box
 lists every agent whose @{tt}metadata.visibility@{utt} is @{tt}ui@{utt} or
-@{tt}both@{utt}; the command palette (Ctrl+K) lists them too. The choice
+@{tt}both@{utt} and that your role may run (an agent can require a
+minimum role, @{tt}metadata.min_role@{utt}); the command palette (Ctrl+K)
+lists them too. The choice
 applies to the next message. @{tt}/agent NAME@{utt} switches and starts a
 new session, so a conversation does not mix two agents' prompts and tools;
 @{tt}/agent@{utt} alone lists the agents. Opening a session from the list
@@ -436,6 +470,24 @@ Sessions belong to a user. The web UI uses the logged-in account (the name
 session that a running process holds is locked; @{tt}--force@{utt} takes it
 over from a process that got stuck.
 
+@{h2}Running sessions and waking
+
+With @{tt}session_presence.enabled@{utt} (on as shipped) a process that
+works on a session holds an OS lock on @{tt}<session id>.lock@{utt} next to
+the session file. The sessions list marks such a session as running, like
+one the server itself is running, and the lock keeps two processes from
+writing the same conversation: the second one is told the session is busy. The OS lets go of the lock however the
+process ends, so a crashed run never looks running.
+
+Input that arrives for a session nobody holds -- a message, a background
+sub-agent that finished -- @{b}wakes@{ub} it: a new @{tt}agent-cli@{utt}
+process continues the session on its stored agent and profile. A woken run
+that wakes another counts one level deeper; at
+@{tt}session_presence.max_wake_depth@{utt} (default 3, 0 = never wake) it
+wakes nobody, so sessions that answer each other cannot start each other
+forever. A session whose last run its user stopped is not woken; the input
+waits for the next run somebody starts.
+
 @{h2}Working with them
 
 @{table}
@@ -472,7 +524,8 @@ Key | Shipped | Meaning
 
 Changes need a restart. Restore a tree in the @{b}Session Archive@{ub}
 panel, with @{tt}agent-cli run --restore-session ID@{utt}, or with
-@{tt}POST /plugins/session_archive/archived/{id}/restore@{utt}.
+@{tt}POST /plugins/session_archive/archived/{id}/restore@{utt}
+(@{" Session Archive " link session_archive/main}).
 @{tt}agent-cli run --list-archived [N]@{utt} lists the archive;
 @{tt}--archive-sessions [DAYS]@{utt} runs a sweep by hand, and with
 @{tt}--dry-run@{utt} only reports what it would move.
@@ -509,11 +562,16 @@ server needed. They write their log to @{tt}logs/cli.log@{utt}.
 Option | Effect
 @{tt}--config PATH@{utt} | the configuration; default @{tt}AGENT_CONFIG_PATH@{utt}, else @{tt}config/config.yaml@{utt}
 @{tt}-v@{utt}, @{tt}--verbose@{utt} | progress and debug messages on the console
-@{tt}--color auto\|always\|never\|ansi\|html\|text@{utt} | how output is rendered: the answer's Markdown with colours on a terminal (@{tt}auto@{utt}, @{tt}ansi@{utt}), as HTML (@{tt}html@{utt}), or as the agent wrote it (@{tt}never@{utt}, @{tt}text@{utt}, and into a pipe); @{tt}--no-color@{utt} = @{tt}never@{utt}
+@{tt}--color auto\|always\|never\|ansi\|html\|text@{utt} | how output is rendered: the answer's Markdown with colours (@{tt}auto@{utt} on a terminal; @{tt}always@{utt} and @{tt}ansi@{utt} force it), as HTML (@{tt}html@{utt}), or as the agent wrote it (@{tt}never@{utt}, @{tt}text@{utt}; @{tt}auto@{utt} into a pipe, under @{tt}NO_COLOR@{utt} or @{tt}TERM=dumb@{utt}); @{tt}--no-color@{utt} = @{tt}never@{utt}
 @{tt}--show-tools@{utt} | show tool calls and their results
 @{tt}--no-status@{utt} | hide the status lines while a run works
 @{tt}--raw@{utt} | print the raw JSON result
 @{body}
+
+These may also stand after the subcommand, except after @{tt}users@{utt}. A first word that is no
+subcommand is a task: @{tt}agent-cli "task"@{utt} is
+@{tt}agent-cli run "task"@{utt}. @{tt}agent-cli@{utt} alone prints the
+help.
 
 @{h2}run and chat
 
@@ -528,25 +586,28 @@ Both take the same options:
 Option | Effect
 @{tt}--agent NAME@{utt} | the agent; default: the session's, else @{tt}default_agent@{utt}
 @{tt}--llm PROFILE@{utt} | the LLM profile
-@{tt}--llm-params KEY=VALUE ...@{utt} | extra LLM parameters
-@{tt}--max-steps N@{utt} | the step budget
+@{tt}--llm-params KEY=VALUE ...@{utt} | LLM parameters for this run, laid over the profile (@{tt}thinking_level=max max_tokens=16384@{utt}); values are typed (number, true/false, none); an unknown key is an error
+@{tt}--max-steps N@{utt} | the step budget for this run (at least 1); nothing is written to the YAML
 @{tt}--session ID@{utt} | continue a session
 @{tt}--session-user USER@{utt} | whose sessions (default @{tt}cli_user@{utt})
 @{tt}--session-title TEXT@{utt} | name the session
 @{tt}--force@{utt} | take over a session a stuck process still holds
-@{tt}--vars KEY=VALUE ...@{utt} | session template variables
+@{tt}--vars KEY=VALUE ...@{utt} | session template variables (also @{tt}--template-vars@{utt})
 @{tt}--attach PATH ...@{utt} | attach files; image, audio or text, detected per file
-@{tt}--list-sessions [N\|all]@{utt} | list sessions
+@{tt}--list-sessions [N\|all]@{utt} | list this user's sessions of the chat agents (0 = no limit; @{tt}all@{utt} adds the runs pipelines started); sub-agent sessions are not listed
 @{tt}--list-archived [N]@{utt} | list archived sessions
 @{tt}--restore-session ID@{utt} | bring an archived tree back
-@{tt}--archive-sessions [DAYS]@{utt} | archive old trees now; with @{tt}--dry-run@{utt} only report
+@{tt}--archive-sessions [DAYS]@{utt} | archive this user's trees older than DAYS now (default: @{tt}session_archive.retention_days@{utt})
+@{tt}--dry-run@{utt} | with @{tt}--archive-sessions@{utt}: report, change nothing
 @{body}
+
+Without a task, @{tt}run@{utt} asks "What can you do?".
 
 Ctrl-C cancels a running turn; see @{" Chat commands " link commands} for
 the commands inside @{tt}agent-cli chat@{utt}. The exit code is 1 when the
 run could not start (unknown agent or profile, a session it may not use, a
-rejected attachment); a run that ends with errors in its answer, or is
-cancelled, still exits with 0.
+rejected attachment) and when it ends with errors -- a script or a batch
+that checks the code sees a failed run as failed. A cancelled run exits with 0.
 
 @{h2}The other subcommands
 
@@ -572,8 +633,16 @@ server needed. @{tt}users create USERNAME EMAIL@{utt} takes
 @{tt}--password@{utt}, @{tt}--name@{utt}, @{tt}--role user|admin|guest@{utt},
 @{tt}--admin@{utt}, @{tt}--inactive@{utt}; @{tt}users update USERNAME@{utt}
 takes @{tt}--email@{utt}, @{tt}--name@{utt}, @{tt}--password@{utt},
-@{tt}--role@{utt}, @{tt}--activate@{utt}, @{tt}--deactivate@{utt}. See
+@{tt}--role@{utt}, @{tt}--activate@{utt}, @{tt}--deactivate@{utt};
+@{tt}users list@{utt} (also @{tt}users@{utt} alone) takes @{tt}--limit@{utt}
+(100) and @{tt}--skip@{utt}; @{tt}delete@{utt}, @{tt}info@{utt},
+@{tt}generate-api-key@{utt} and @{tt}revoke-api-key@{utt} take a
+USERNAME, @{tt}delete@{utt} and @{tt}revoke-api-key@{utt} also
+@{tt}--force@{utt} (no question first). @{tt}create@{utt} without
+@{tt}--password@{utt} asks for one. See
 @{" Users, roles and login " link auth}.
+@{bullet}@{tt}reload --timeout@{utt}: seconds to wait for the server
+(default @{tt}network.cli_request_timeout@{utt}).
 
 Turning a plugin or an MCP server on is an edit of the configuration, not a
 command.
@@ -603,6 +672,10 @@ Variable | Effect
 folder when they start, so relative paths mean the project, wherever the
 command was typed. @{tt}127.0.0.1@{utt} accepts connections from this machine only; set
 @{tt}network.host@{utt} (or @{tt}HOST@{utt}) to serve others.
+@{tt}network.remote_paths@{utt} (a list of exact paths, unset as shipped)
+then narrows what a client on another machine may reach -- a webhook, say:
+every other path answers it 404, before any other check. Clients on this
+machine (loopback) are not affected; unset, nothing is restricted.
 
 @{h2}Logs
 
@@ -610,9 +683,11 @@ command was typed. @{tt}127.0.0.1@{utt} accepts connections from this machine on
 @{tt}logging.file_api@{utt} (@{tt}logs/api.log@{utt} as shipped),
 @{tt}agent-cli@{utt} writes @{tt}logging.file_cli@{utt}
 (@{tt}logs/cli.log@{utt}), so the two never share a file. The files rotate
-by @{tt}max_bytes@{utt} and @{tt}backup_count@{utt}. The first admin's
-credentials, missing @{tt}${NAME}@{utt} variables and hooks that failed
-show up there.
+by @{tt}max_bytes@{utt} and @{tt}backup_count@{utt}. Missing
+@{tt}${NAME}@{utt} variables and hooks that failed show up there. The first
+admin's generated password does not: it is printed on the console only,
+once. With authentication on, @{tt}logs/security.log@{utt} holds the route
+audit (who called what, allowed or denied).
 
 @{h2}Reload or restart
 
@@ -620,8 +695,11 @@ show up there.
 makes a running server read its configuration again, without dropping
 sessions or runs. It changes only what a plugin can take over live:
 
-@{bullet}an agent's @{tt}max_steps@{utt} and a few escalation and fallback
-settings;
+@{bullet}an agent's @{tt}max_steps@{utt}, @{tt}auto_escalate_on_stuck@{utt},
+@{tt}escalate_rounds@{utt}, @{tt}escalate_max_calls@{utt},
+@{tt}escalate_error_streak@{utt}, @{tt}fallback_recovery_seconds@{utt},
+@{tt}inherit_parent_llm@{utt} and its role gate
+@{tt}metadata.min_role@{utt};
 @{bullet}a SAM's @{tt}allowed_agents@{utt}, @{tt}blocked_agents@{utt},
 @{tt}allow_advanced_model@{utt}, @{tt}advanced_create_only_agents@{utt} and
 its limits.
@@ -779,9 +857,39 @@ Layer | How it decides
 The shipped rules keep @{tt}/docs@{utt}, @{tt}/redoc@{utt},
 @{tt}/openapi.json@{utt}, @{tt}/admin/*@{utt}, @{tt}/debug/*@{utt},
 @{tt}/hooks@{utt}, @{tt}/tools/*@{utt} and the agent debug routes to admins,
-and the Setup, Users, Agent Editor and State Graph panels too. The same two
-layers decide which panels the catalog offers: a panel appears only for the
-roles that may open it, without anything extra in the plugin.
+and the Setup, Users, Agent Editor, State Graph, Forge, Logs and SSH
+Machines panels too. The same two layers decide which panels the catalog offers: a
+panel appears only for the roles that may open it, without anything extra in
+the plugin.
+
+@{h2}Which agents a role may run
+
+An agent can require a minimum role with @{tt}metadata.min_role@{utt}
+(@{tt}guest@{utt}, @{tt}user@{utt} or @{tt}admin@{utt}; unset: anybody).
+For a caller below it the agent is missing from the picker, and a run of it
+-- from the chat, @{tt}POST /run@{utt}, as a sub-agent or as another
+agent's tool -- is refused as if it did not exist. The gate applies only
+with authentication on. @{tt}agent-cli@{utt} and @{tt}agent-run@{utt} run
+as the local operator: their default user @{tt}cli_user@{utt} passes every
+gate while no account has that name.
+
+@{h2}Other auth settings
+
+@{table}
+Key | Shipped | Meaning
+@{tt}secret_key@{utt} | a public development key | signs the login tokens; set your own (the install scripts do). A published key logs an error at the start; an empty key or one under 32 characters stops it
+@{tt}reject_default_secret_key@{utt} | @{tt}false@{utt} | true: refuse to start with a published key
+@{tt}refresh_token_expire_days@{utt} | @{tt}3650@{utt} | lifetime of a refresh token
+@{tt}database_path@{utt} | @{tt}data/users.db@{utt} | the user database
+@{tt}registration.default_role@{utt} | @{tt}user@{utt} | the role of a registered account (@{tt}guest@{utt} or @{tt}user@{utt})
+@{tt}rate_limit_enabled@{utt}, @{tt}requests_per_minute@{utt} | @{tt}false@{utt}, @{tt}60@{utt} | requests per client and minute
+@{tt}security_headers_enabled@{utt} | @{tt}true@{utt} | security headers on every answer
+@{tt}cors_enabled@{utt}, @{tt}cors_origins@{utt}, @{tt}cors_credentials@{utt}, @{tt}cors_methods@{utt}, @{tt}cors_headers@{utt} | on, @{tt}*@{utt}, off | CORS for a front end on another origin; the web UI needs none
+@{tt}trusted_hosts@{utt} | unset | the host names the server answers to (patterns such as @{tt}*.example.com@{utt}); unset, any
+@{body}
+
+All of them are read at the start and only from @{tt}config.yaml@{utt} or
+@{tt}local.yaml@{utt}; changing one needs a restart.
 @endnode
 
 
@@ -824,6 +932,7 @@ Section | Holds
 @{tt}default_profile@{utt} | the profile used when nothing else is chosen
 @{tt}batch@{utt} | batch settings per provider
 @{tt}httpx_timeouts@{utt} | HTTP timeouts of the clients
+@{tt}openrouter_routing@{utt} | the default OpenRouter provider routing for every model with an openrouter.ai @{tt}base_url@{utt}; a model entry's own @{tt}provider_routing@{utt} wins per key
 @{tt}tts_models@{utt}, @{tt}tts_profiles@{utt} | text-to-speech
 @{tt}decision_models@{utt}, @{tt}decision_profiles@{utt} | small models for yes/no decisions
 @{body}
@@ -855,11 +964,14 @@ reported as unknown, not as free.
 
 @{bullet}An agent's @{tt}agent_config.llm_profile@{utt} is a chain: the
 primary profile, then fallbacks; @{tt}llm_profile_advanced@{utt} is a second
-chain for harder work. See @{" Writing an agent " link agentdev}.
+chain for harder work; @{tt}llm_params@{utt} changes parameters of the
+models it uses without a model entry of its own. See
+@{" Writing an agent " link agentdev}.
 @{bullet}In the web UI: the @{b}Model profile@{ub} button under the message
 box (the list comes from @{tt}GET /llm/profiles@{utt}).
 @{bullet}In the terminal: @{tt}--llm PROFILE@{utt} on @{tt}agent-cli run@{utt}
-and @{tt}chat@{utt}, @{tt}/model PROFILE@{utt} inside @{tt}agent-cli chat@{utt}.
+and @{tt}chat@{utt}, @{tt}/model PROFILE@{utt} inside @{tt}agent-cli chat@{utt};
+@{tt}--llm-params@{utt} for single parameters.
 
 An agent builds its LLM client when it starts: changes to
 @{tt}llm.yaml@{utt} or to an agent's profiles reach running agents only
@@ -916,6 +1028,11 @@ external_servers:
 (@{tt}command@{utt}, optionally @{tt}args@{utt} and @{tt}env@{utt});
 @{tt}streaming@{utt} (streamable HTTP) and @{tt}sse@{utt} connect to a
 @{tt}url@{utt}.
+@{bullet}@{tt}enabled@{utt} defaults to false. @{tt}timeout@{utt} per
+server (seconds) overrides @{tt}connection.timeout@{utt} for a slow one.
+@{tt}connect: on_demand@{utt} (instead of @{tt}startup@{utt}, the
+default) connects -- and for stdio starts -- the server only in a process
+that runs an agent whose allowlist names it.
 @{bullet}A key or token belongs in @{tt}config/secrets.env@{utt},
 referenced as @{tt}${NAME}@{utt}.
 @{bullet}@{b}Keep the whole section in this one file.@{ub} A later included
@@ -948,7 +1065,8 @@ agent-cli mcp tools SERVER
 
 These open connections of their own, which end with the command. The
 @{b}System@{ub} panel shows the external servers of the running server.
-Switching a server on or off is an edit of the file and a restart.
+Switching a server on or off is an edit of the file and a restart. More in
+the @{" mcp_client " link mcp_client/main} guide.
 @endnode
 
 
@@ -960,7 +1078,10 @@ a login (see @{" Users, roles and login " link auth}): the
 @{tt}access_token@{utt} cookie of the browser, @{tt}Authorization: Bearer
 <token>@{utt}, or @{tt}X-API-Key: <key>@{utt}. The interactive documentation
 is at @{tt}/docs@{utt} and @{tt}/redoc@{utt} -- admin only under the shipped
-rules. The main groups:
+rules. The routes under @{tt}/auth@{utt}, and those under
+@{tt}/admin@{utt} but @{tt}GET /admin/config@{utt}, exist only with
+authentication on; with it off, @{tt}/api/sessions@{utt} acts as the user
+@{tt}anonymous@{utt}. The main groups:
 
 @{table}
 Route | Purpose
@@ -969,13 +1090,14 @@ Route | Purpose
 @{tt}POST /events/{request_id}/append@{utt} | add a message to a running turn
 @{tt}POST /run@{utt} | run a task; also accepts files (multipart), which the web chat uses for attachments
 @{tt}GET /api/requests/{id}/status@{utt}, @{tt}POST /api/requests/{id}/cancel@{utt} | a run's state; cancel it
+@{tt}POST /sessions@{utt}, @{tt}POST /sessions/{id}/append@{utt} | a new session id; add a user message to a session without a run
 @{tt}/api/sessions@{utt} | @{tt}POST@{utt} create, @{tt}GET@{utt} list; also @{tt}/hierarchy@{utt}, @{tt}/active@{utt}, @{tt}/resolve@{utt}, @{tt}/listing@{utt}
 @{tt}/api/sessions/{id}@{utt} | @{tt}GET@{utt}, @{tt}PUT@{utt} or @{tt}PATCH@{utt}, @{tt}DELETE@{utt}; @{tt}/messages@{utt}, @{tt}/children@{utt}, @{tt}POST /restore@{utt}
 @{tt}GET /agents@{utt} | the agents for the picker
 @{tt}GET /agents/{name}/tools@{utt}, @{tt}/allowed-tools@{utt} | an agent's tools
 @{tt}GET /agents/debug/{name}/system-prompt@{utt}, @{tt}/allowed-tools@{utt} | what the agent finally sees (admin)
 @{tt}GET /llm/profiles@{utt} | the LLM profiles
-@{tt}/chat/...@{utt} | the chat commands: @{tt}GET /chat/commands@{utt}, @{tt}POST /chat/resolve@{utt}, @{tt}POST /chat/command@{utt}, @{tt}GET@{utt}/@{tt}POST /chat/vars@{utt}, @{tt}POST /chat/undo@{utt}, @{tt}GET /chat/checkpoints@{utt}, @{tt}POST /chat/rewind@{utt}, @{tt}GET /chat/context@{utt}, @{tt}GET /chat/transcript@{utt}
+@{tt}/chat/...@{utt} | the chat commands: @{tt}GET /chat/commands@{utt}, @{tt}POST /chat/resolve@{utt}, @{tt}POST /chat/command@{utt}, @{tt}GET@{utt}/@{tt}POST /chat/vars@{utt}, @{tt}POST /chat/undo@{utt}, @{tt}GET /chat/checkpoints@{utt}, @{tt}POST /chat/rewind@{utt}, @{tt}GET /chat/context@{utt}, @{tt}GET /chat/transcript@{utt}, @{tt}GET /chat/last_answer@{utt}
 @{tt}/auth/...@{utt} | @{tt}POST register@{utt}, @{tt}login@{utt}, @{tt}logout@{utt}, @{tt}refresh@{utt}; @{tt}GET@{utt}/@{tt}PATCH /auth/me@{utt}; @{tt}GET@{utt}/@{tt}PUT /auth/me/preferences@{utt}; @{tt}POST@{utt}/@{tt}DELETE /auth/api-key@{utt}
 @{tt}/admin/...@{utt} | admin: @{tt}POST reload-config@{utt}, @{tt}GET config@{utt}, @{tt}users@{utt} (@{tt}GET@{utt}, @{tt}POST@{utt}; @{tt}users/{id}@{utt}: @{tt}GET@{utt}, @{tt}PATCH@{utt}, @{tt}DELETE@{utt}, @{tt}POST activate@{utt}, @{tt}deactivate@{utt}, @{tt}promote@{utt}, @{tt}demote@{utt}), @{tt}GET active-sessions@{utt}, @{tt}POST active-sessions/{id}/cancel@{utt}, @{tt}GET system@{utt}, @{tt}GET security/audit@{utt}
 @{tt}GET /api/ui/catalog@{utt}, @{tt}/ui/kit@{utt}, @{tt}/ui/panels/{name}@{utt} | the panel catalog and the core panels
@@ -983,9 +1105,13 @@ Route | Purpose
 @{tt}/hooks@{utt}, @{tt}/hooks/{name}@{utt}, @{tt}/hooks/stats/...@{utt} | registered hooks and their statistics (admin)
 @{tt}/tools/status@{utt}, @{tt}/tools/cache/...@{utt} | tool servers and the tool cache (admin)
 @{tt}/debug/memory/...@{utt}, @{tt}/debug/profile/...@{utt} | profiling (admin, and only with the environment flags, see @{" Running the server " link running})
+@{tt}GET /status/meta@{utt} | the metrics of the status event queues; with @{tt}AGENT_STATUS_REQUIRE_AUTH=1@{utt} it also wants the @{tt}X-Status-Token@{utt} header to equal @{tt}AGENT_STATUS_TOKEN@{utt}
 @{tt}GET /health@{utt}, @{tt}/api/health@{utt}, @{tt}/api/version@{utt} | open without login
 @{tt}/plugins/<instance>/...@{utt} | each plugin's own endpoints and @{tt}static/@{utt} files
 @{body}
+
+Every agent can also be called as a model, through the OpenAI Responses
+and Chat Completions API: see @{" OpenAI-compatible API " link openai_api/main}.
 
 The web UI talks to the server only over HTTP and Server-Sent Events; there
 is no WebSocket.
@@ -1008,7 +1134,7 @@ Where | What
 @{tt}config/@{utt} | @{tt}models/@{utt} (the Pydantic models, root @{tt}AgentSystemConfig@{utt}), @{tt}settings.py@{utt} (@{tt}load_settings@{utt}, @{tt}get_tool_server_config@{utt}) with its steps beside it: @{tt}layers.py@{utt} (includes, the local layer), @{tt}environment.py@{utt} (secrets files, @{tt}${NAME}@{utt}), @{tt}merging.py@{utt}, @{tt}inheritance.py@{utt}
 @{tt}plugins/@{utt} | discovery, manifests (@{tt}plugin.toml@{utt}), @{tt}schema.yaml@{utt} loading, the tool and web adapters, the schema router
 @{tt}tools/@{utt} | tool server base classes (@{tt}SchemaBasedToolServer@{utt}), @{tt}ToolServerRegistry@{utt}, status lines, the tool cache
-@{tt}servers/agent/@{utt} | the @{tt}Agent@{utt} (@{tt}server.py@{utt}; its responsibilities one mixin each in @{tt}mixins/@{utt}: @{tt}run_events@{utt} in @{tt}run.py@{utt}, the step loop in @{tt}llm_loop.py@{utt}), prompt strategies, tool discovery and the allowlist, the components for hooks, tool execution, session tracking and status
+@{tt}servers/agent/@{utt} | the @{tt}Agent@{utt} (@{tt}server.py@{utt}; its responsibilities one mixin each in @{tt}mixins/@{utt}: @{tt}run_events@{utt} in @{tt}run.py@{utt}, the step loop in the package @{tt}llm_loop/@{utt}), prompt strategies, tool discovery and the allowlist, the components for hooks, tool execution, session tracking and status
 @{tt}hooks/@{utt} | @{tt}HookType@{utt}, @{tt}SchemaBasedPluginHook@{utt}, @{tt}HookRegistry@{utt}
 @{tt}llm/@{utt} | @{tt}ChatMessage@{utt} and the other models, the provider registry, @{tt}create_llm_from_profile@{utt} (@{tt}factory.py@{utt}), pricing, token counting
 @{tt}services/@{utt} | session manager and service, agent service, configuration service and reload, the session archive, background jobs, system status
@@ -1033,7 +1159,9 @@ and, if one was chosen, an LLM profile, and calls the agent's
 skills), works out its tools from the allowlist, and on a new session runs
 the @{tt}session_start@{utt} hooks.
 @{number}Each step: @{tt}pre_llm_call@{utt} hooks, the LLM call,
-@{tt}post_llm_call@{utt} hooks, then the tool calls, with status events
+@{tt}post_llm_call@{utt} hooks, then the tool calls
+(@{tt}pre_tool_call@{utt} hooks before each, @{tt}post_tool_call@{utt}
+hooks on its result), with status events
 streamed to the browser -- until the model answers without a tool call or
 the step budget is spent.
 @{number}The session is saved, then the @{tt}session_end@{utt} hooks run.
@@ -1088,7 +1216,8 @@ src/plugins/my_plugin/
   plugin.py        # the entrypoint module, directly in the folder
   server.py
   schema.yaml      # tools; lies next to the class's module
-  README.md        # with a "Model Experience" section
+  README.md        # a short overview
+  my_plugin.guide  # the manual, shown in the Help panel
   tests/test_plugin_my_plugin_*.py
 @{body}
 
@@ -1100,7 +1229,7 @@ description = "One line."
 entrypoint = "plugin:PLUGIN_FACTORY"   # the default; "server:MyServer" works too
 type = ["tool-server"]
 category = "tools"
-requires = { agent_system = ">=0.6.0" }
+requires = { agent_system = ">=0.7.0" }
 dependencies = []                        # pip requirement strings
 @{body}
 
@@ -1294,9 +1423,16 @@ commands:
   - name: compact
     description: "Compact the context now"
     tool: "{{ name }}_compact"
-    argument: focus          # optional
-    argument_hint: "<topic>"
+    argument: focus          # optional: the rest of the line goes into this parameter
+    argument_hint: "<topic>" # optional: shown in /help
+    params: {mode: now}      # optional: fixed for every call
 @{body}
+
+@{tt}params@{utt} is what makes one operation of a multi-operation tool a
+command of its own (@{tt}{operation: list}@{utt}); it may not fix the
+parameter @{tt}argument@{utt} binds. Neither may name a parameter that
+starts with @{tt}_@{utt} or is a request id, session id or agent name. A
+malformed entry is dropped with a warning in the log.
 
 A command runs the tool directly, without an LLM turn, through the agent's
 allowlist: if the current agent may not call the tool, the command is not
@@ -1318,12 +1454,16 @@ Type | Fires | What takes effect
 @{tt}pre_llm_call@{utt} | every step, before the LLM call | @{tt}messages@{utt} -- sent as changed, and kept in the session
 @{tt}llm_progress@{utt} | while a reply streams, every 2000 characters of thinking | nothing
 @{tt}post_llm_call@{utt} | after the assistant message is appended | its content and tool calls; @{tt}continue@{utt} in the metadata asks for another step
+@{tt}pre_tool_call@{utt} | before each tool call of the model, and of a @{tt}tool_script@{utt} script | @{tt}tool_call["arguments"]@{utt}; @{tt}metadata["block"]@{utt} (a text, or true) stops the call -- the model reads the text as its result and the run goes on
+@{tt}post_tool_call@{utt} | after the calls of a step ran, before their results join the history (for a script: after its call) | @{tt}tool_result["result"]@{utt}
 @{tt}session_end@{utt} | after the session is saved | nothing
 @{tt}pre_llm_request@{utt}, @{tt}post_llm_response@{utt} | in the LLM client: the exact request and response | read-only
 @{body}
 
-@{tt}pre_tool_call@{utt} and @{tt}post_tool_call@{utt} exist as names but
-never fire; registering one logs a warning.
+The first @{tt}pre_tool_call@{utt} hook that blocks ends the chain. A
+@{tt}pre_tool_call@{utt} hook that fails lets the call run, unless its
+schema entry says @{tt}on_error: block@{utt} -- for a hook that exists to
+stop calls, such as @{" tool_approval " link tool_approval/main}.
 
 @{h2}A minimal hook plugin
 
@@ -1655,10 +1795,29 @@ failure the agent tries the rest of its own chain, then the other chain.
 @{tt}llm_profile: []@{utt} is an error. See
 @{" LLM models and profiles " link llm}.
 
+@{table}
+Key | Default | Meaning
+@{tt}llm_params@{utt} | none | model parameters laid over the chain's model entries: flat (@{tt}{max_tokens: 8000}@{utt}, for every member) or keyed by profile (@{tt}"*"@{utt} for all, a profile name for one). Which model it is (@{tt}provider@{utt}, @{tt}model@{utt}, @{tt}api_key@{utt}, @{tt}base_url@{utt}) cannot be set here; an unknown key fails the load
+@{tt}inherit_parent_llm@{utt} | @{tt}false@{utt} | true: when the run that starts this agent was switched to another profile (the model picker, @{tt}--llm@{utt}, @{tt}/model@{utt}, the advanced model), this agent runs on that profile too; its own chain stays the fallback
+@{tt}auto_escalate_on_stuck@{utt} | @{tt}false@{utt} | true: when the run is stuck -- a tool-call loop, or @{tt}escalate_error_streak@{utt} (2) steps in a row whose tool calls all failed -- switch to @{tt}llm_profile_advanced@{utt} for @{tt}escalate_rounds@{utt} (2) steps, at most @{tt}escalate_max_calls@{utt} (6) advanced calls per run
+@{tt}fallback_recovery_seconds@{utt} | @{tt}3600@{utt} | the longest a failing model is set aside: a rate limit starts at 60 s and doubles up to this; a refused key (401, 402, 403, 404) or an exhausted quota blocks this long at once
+@{tt}loop_detection@{utt} | on | repeated identical tool calls: a warning after @{tt}exact_match_threshold@{utt} (3) of them or @{tt}sequence_threshold@{utt} (2) repeated sequences, the tool blocked after @{tt}block_after_threshold@{utt} (5), released after @{tt}auto_unblock_after_steps@{utt} (3) steps
+@{tt}reasoning_loop@{utt} | on | a call whose thinking keeps repeating itself is aborted and the same model tried once more (streaming calls only; @{tt}repetition_threshold@{utt} 0.5)
+@{tt}output_cap_notes@{utt} | @{tt}0@{utt} | how often in a row an answer cut off at the output limit is sent back with a note instead of delivered; for agents that work through tool calls
+@{tt}timeouts@{utt} | see @{tt}config/plugins.yaml@{utt} | internal safety timeouts (status queue, session lock, tool clean-up)
+@{body}
+
+@{tt}metadata.min_role@{utt} limits who may run the agent, see
+@{" Users, roles and login " link auth}. Asking a person before a tool
+runs is the @{" tool_approval " link tool_approval/main} hook, switched on
+per agent.
+
 @{h2}Reload or restart
 
-@{tt}agent-cli reload@{utt} changes only @{tt}max_steps@{utt} and a few
-escalation and fallback settings of a running agent.
+@{tt}agent-cli reload@{utt} changes only @{tt}max_steps@{utt}, the
+escalation settings, @{tt}fallback_recovery_seconds@{utt},
+@{tt}inherit_parent_llm@{utt} and @{tt}metadata.min_role@{utt} of a
+running agent.
 @{tt}llm_profile@{utt}, tools, timeouts, hook settings and a new agent need
 a restart. Prompt templates need neither. See
 @{" Running the server " link running}.
@@ -1693,9 +1852,11 @@ in a root listed in @{tt}skills.skill_dirs@{utt} of
 @{tt}config/config.yaml@{utt}. The shipped list is
 @{tt}.claude/skills@{utt}, @{tt}skills/*/@{utt} (grouped as
 @{tt}skills/<group>/<skill>/@{utt}) and @{tt}src/plugins*/*/skills@{utt}
-(the skills a plugin ships). Without the key, the roots are
-@{tt}skills@{utt} and @{tt}.claude/skills@{utt}. The first root that
-defines a name wins.
+(the skills a plugin ships). Without the key, the roots are those in the
+environment variable @{tt}AGENT_SKILL_DIRS@{utt} (separated like
+@{tt}PATH@{utt}), else @{tt}skills@{utt} and @{tt}.claude/skills@{utt}. A
+list replaces those defaults entirely. The first root that defines a name
+wins.
 
 @{b}Being found puts nothing into a prompt.@{ub} Only an agent's own
 configuration does that:
@@ -1757,8 +1918,10 @@ The SAM's knobs are @{b}top-level keys of its server entry@{ub}, not under a
 not read): @{tt}allowed_agents@{utt}, @{tt}blocked_agents@{utt},
 @{tt}allow_advanced_model@{utt} (default true; false drops a caller's
 request for the advanced model), @{tt}advanced_create_only_agents@{utt}, and
-limits such as @{tt}max_sub_agents@{utt}, @{tt}max_nesting_depth@{utt} and
-@{tt}max_sub_agents_per_type@{utt}.
+the limits @{tt}max_sub_agents_per_session@{utt} (10),
+@{tt}max_nesting_depth@{utt} (5) and @{tt}max_sub_agents_per_type@{utt}
+(3). Everything else -- operations, waiting, background runs, the map
+panel: the @{" Sub-Agent Manager " link sub_agent_manager/main} guide.
 
 @{code yaml}
 plugins:

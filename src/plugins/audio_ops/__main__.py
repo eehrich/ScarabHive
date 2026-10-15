@@ -23,7 +23,7 @@ from pathlib import Path
 
 from agent_system.paths import data_path, resolve_data_path
 
-from .server import export_audio
+from .server import encode_into, export_audio
 
 # Global workdir override (set by CLI --workdir)
 _workdir_override: Path | None = None
@@ -810,8 +810,10 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
             copy_cmd.extend(["-c", "copy"])
         elif dest_path.suffix.lower() == ".mp3":
             copy_cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k"])
-        copy_cmd.append(str(dest_path))
-        subprocess.run(copy_cmd, capture_output=True, check=True)
+        copied = encode_into(dest_path, copy_cmd, _run)
+        if copied.returncode != 0:
+            print(f"Error: ffmpeg failed: {copied.stderr[-500:]}", file=sys.stderr)
+            return 1
         print(f"Copied to: {dest_path.name}")
         return 0
     
@@ -850,8 +852,10 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
             copy_cmd.extend(["-c", "copy"])
         elif dest_path.suffix.lower() == ".mp3":
             copy_cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k"])
-        copy_cmd.append(str(dest_path))
-        subprocess.run(copy_cmd, capture_output=True, check=True)
+        copied = encode_into(dest_path, copy_cmd, _run)
+        if copied.returncode != 0:
+            print(f"Error: ffmpeg failed: {copied.stderr[-500:]}", file=sys.stderr)
+            return 1
         print(f"Copied to: {dest_path.name}")
         return 0
     
@@ -899,9 +903,7 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
     elif ext == '.mp3':  # .wav: ffmpeg writes PCM
         ffmpeg_cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k"])
     
-    ffmpeg_cmd.append(str(dest_path))
-    
-    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+    result = encode_into(dest_path, ffmpeg_cmd, _run)
     
     if result.returncode != 0:
         print(f"Error: ffmpeg failed: {result.stderr[:500]}", file=sys.stderr)

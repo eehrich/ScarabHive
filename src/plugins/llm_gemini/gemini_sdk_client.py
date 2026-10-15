@@ -707,6 +707,7 @@ class GeminiSDKClient(LLMClient):
 
         last_exception = None
         _effective_max = max(self.max_retries, self.rate_limit_max_retries)
+        rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
         for attempt in range(_effective_max + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
@@ -1163,6 +1164,7 @@ class GeminiSDKClient(LLMClient):
                         )
                         await report_status(f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {wait_time:.0f}s)")
                         await self._notify_retry("gemini_sdk", self.model, "", True, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
+                        rate_limit_waits += 1
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         # Keep got_malformed_function_call for mode=ANY if it was set
                         continue
@@ -1176,7 +1178,8 @@ class GeminiSDKClient(LLMClient):
                         )
                     raise LLMRateLimitError(
                         f"Rate limit exceeded: {error_str}",
-                        provider="gemini_sdk", model=self.model, retry_after=wait_time
+                        provider="gemini_sdk", model=self.model, retry_after=wait_time,
+                        retried=rate_limit_waits > 0
                     )
                 
                 # Handle "too many states" error (sporadic server-side issue)
@@ -1309,6 +1312,7 @@ class GeminiSDKClient(LLMClient):
 
         last_exception = None
         _effective_max = max(self.max_retries, self.rate_limit_max_retries)
+        rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
         for attempt in range(_effective_max + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
@@ -1455,6 +1459,7 @@ class GeminiSDKClient(LLMClient):
                             f"(attempt {attempt + 1}/{self.rate_limit_max_retries})"
                         )
                         await self._notify_retry("gemini_sdk", self.model, "", False, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
+                        rate_limit_waits += 1
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         continue
                     
@@ -1467,7 +1472,8 @@ class GeminiSDKClient(LLMClient):
                         )
                     raise LLMRateLimitError(
                         f"Rate limit exceeded: {error_str}",
-                        provider="gemini_sdk", model=self.model, retry_after=wait_time
+                        provider="gemini_sdk", model=self.model, retry_after=wait_time,
+                        retried=rate_limit_waits > 0
                     )
                 
                 # Handle 500 INTERNAL errors (transient Google infrastructure issues)

@@ -1104,11 +1104,10 @@ class LayeredCompactionStrategy:
                 current_tokens = result.final_tokens + self._scale_offset(result)
 
         # The media passes rewrite messages a request has carried, like the
-        # layers, and under min_reduction they are weighed with them: measured
-        # on production agents over two weeks, 99 of 114 partial cache hits
-        # followed a run of Pre-Layer M, each breaking the cache at ~10 % of
-        # the context for ~9k tokens of images -- costly each time. Held by
-        # the hook's hysteresis, none of them runs; past always_compact_media_max
+        # layers, and under min_reduction they are weighed with them: a run of
+        # Pre-Layer M breaks the cache early in the context to save a few
+        # thousand tokens of images.
+        # Held by the hook's hysteresis, none of them runs; past always_compact_media_max
         # or the byte limit they run whatever they take -- they alone.
         forced_media = bytes_exceeded or self._media_past_cap(result.modified_messages)
         if not rewrite_layers and min_reduction > 0 and not forced_media:

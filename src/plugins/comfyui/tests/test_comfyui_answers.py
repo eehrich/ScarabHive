@@ -253,6 +253,36 @@ async def test_a_result_without_download_keeps_the_saved_outputs(server):
     assert result["count"] == 1, result
 
 
+async def test_flags_sent_as_text_are_read_as_what_they_say(server):
+    """`"false"` is a true value in Python: download and include_content read it as yes."""
+    history = {"job-1": {"outputs": {"9": {"images": [{"filename": "x.png"}]}}, "status": {"status_str": "success"}}}
+    client = MagicMock(get_history=AsyncMock(return_value=history), get_file=AsyncMock(return_value=b"png"),
+                       get_status=AsyncMock(return_value={"status": "completed", "prompt_id": "job-1"}))
+    with patch.object(server, "_client_for_job", AsyncMock(return_value=client)):
+        result = await server.workflow({"operation": "result", "prompt_id": "job-1", "include_content": "false"})
+        assert client.get_file.await_count == 1 and "_multimodal_content" not in result, result
+        await server.workflow({"operation": "result", "prompt_id": "job-1", "download": "false"})
+        assert client.get_file.await_count == 1
+        waited = await server.workflow({"operation": "wait_for_completion", "prompt_id": "job-1",
+                                        "include_content": "false"})
+        assert "outputs" not in waited and client.get_file.await_count == 1, waited
+        refused = await server.workflow({"operation": "result", "prompt_id": "job-1", "download": "maybe"})
+        assert refused == {"error": "download: true or false, got 'maybe'"}
+        refused = await server.workflow({"operation": "wait_for_completion", "prompt_id": "job-1",
+                                         "include_content": "maybe"})
+        assert refused == {"error": "include_content: true or false, got 'maybe'"}
+
+
+async def test_a_blank_download_keeps_the_default(server):
+    """download defaults to yes; blank text read as a no skipped the download."""
+    history = {"job-1": {"outputs": {"9": {"images": [{"filename": "x.png"}]}}, "status": {"status_str": "success"}}}
+    client = MagicMock(get_history=AsyncMock(return_value=history), get_file=AsyncMock(return_value=b"png"),
+                       get_status=AsyncMock(return_value={"status": "completed", "prompt_id": "job-1"}))
+    with patch.object(server, "_client_for_job", AsyncMock(return_value=client)):
+        await server.workflow({"operation": "result", "prompt_id": "job-1", "download": "  "})
+    assert client.get_file.await_count == 1
+
+
 async def test_a_result_whose_queue_check_fails_is_not_a_lost_job(server):
     client = MagicMock(get_history=AsyncMock(return_value={}), get_status=AsyncMock(
         return_value={"status": "unknown", "prompt_id": "job-1", "error": "Cannot connect"}))

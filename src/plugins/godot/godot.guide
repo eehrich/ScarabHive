@@ -88,7 +88,7 @@ chain, same 300 steps, same file sandbox @{tt}coder_fs@{utt} and shell
 
 @{table}
 What | Change
-tools | adds @{tt}godot/*@{utt} and @{tt}media_ops/*@{utt}; @{tt}gamedev_sam@{utt} replaces @{tt}coder_sam@{utt}, @{tt}gamedev_okf@{utt} replaces @{tt}coder_okf@{utt}
+tools | adds @{tt}godot/*@{utt} and @{tt}media_ops/*@{utt}; @{tt}gamedev_sam@{utt} replaces @{tt}coder_sam@{utt}, @{tt}gamedev_okf@{utt} replaces @{tt}coder_okf@{utt}; the coder's headless browser (@{tt}playwright.*@{utt}) is taken away -- a Godot project has no page to open
 sub-agents | via @{tt}gamedev_sam@{utt}: @{tt}coder_explorer@{utt}, @{tt}coder_reviewer@{utt}, @{tt}gamedev_tester@{utt}, @{tt}blender_agent@{utt}, @{tt}image_agent@{utt}
 skills | always @{tt}gamedev-loop@{utt}; on demand @{tt}godot-conventions@{utt}, @{tt}asset-pipeline@{utt}, @{tt}adversarial-review@{utt}, @{tt}diagnosing-bugs@{utt}, @{tt}tdd@{utt}
 knowledge | its own OKF bundle @{tt}data/okf/gamedev@{utt}, injected by the @{tt}gamedev_okf@{utt} hook; the coder's bundle hook is off
@@ -222,8 +222,8 @@ Answer: @{tt}project@{utt}, @{tt}created@{utt}, @{tt}addon@{utt}
 <old> -> 4.1.11"), @{tt}plugin_enabled@{utt},
 @{tt}autoload_registered@{utt}, @{tt}import@{utt} (@{tt}exit@{utt},
 @{tt}timed_out@{utt}, @{tt}errors@{utt}, @{tt}stderr@{utt}).
-@{tt}status@{utt} is @{tt}error@{utt} when the autoload did not land or the
-import timed out. A binary that does not answer @{tt}--version@{utt} stops
+@{tt}status@{utt} is @{tt}error@{utt} when the autoload did not land, the
+addon is not in the enabled list, or the import timed out. A binary that does not answer @{tt}--version@{utt} stops
 setup before any @{tt}project.godot@{utt} is written.
 @endnode
 

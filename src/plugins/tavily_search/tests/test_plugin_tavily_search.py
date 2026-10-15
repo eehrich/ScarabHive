@@ -124,6 +124,38 @@ class TestTavilyWebSearch:
             assert "Empty query" in result["error"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("query", [None, 42, ["a"]])
+    async def test_web_search_query_not_text_is_an_empty_query(self, mock_system_config, mock_server_config, query):
+        """A null or non-string query answers the empty-query error instead of raising."""
+        with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
+            result = await server.web_search({"query": query, "_status": AsyncMock()})
+            assert result["error"] == "Empty query provided"
+            assert result["results"] == []
+
+    @pytest.mark.asyncio
+    async def test_flags_sent_as_text_false_are_false(self, mock_system_config, mock_server_config):
+        """"false" as text is a true value in Python: ignore_cache skipped the cache and bought a
+        new paid request, and the include_* flags went to Tavily as the string."""
+        with patch.dict('os.environ', {'TAVILY_API_KEY': 'test'}):
+            server = TavilySearchServer("tavily", mock_system_config, mock_server_config)
+            server.cache_enabled = True
+            client = AsyncMock()
+            client.search = AsyncMock(return_value={"results": []})
+
+            async def get_client():
+                return client
+
+            with patch.object(server, '_get_client', get_client):
+                for _ in range(2):
+                    await server.web_search({"query": "q", "ignore_cache": "false",
+                                             "include_raw_content": "false", "include_answer": "false",
+                                             "_status": AsyncMock()})
+            assert client.search.await_count == 1, "the second call should come from the cache"
+            kwargs = client.search.await_args.kwargs
+            assert kwargs["include_raw_content"] is False and kwargs["include_answer"] is False
+
+    @pytest.mark.asyncio
     async def test_web_search_no_api_key(self, mock_system_config, mock_server_config):
         """Test web_search without API key returns error."""
         with patch.dict('os.environ', {}, clear=True):

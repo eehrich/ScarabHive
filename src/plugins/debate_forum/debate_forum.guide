@@ -137,8 +137,10 @@ with web search.
 
 @{h2}panel_moderator
 
-A smaller panel: the task names the agent that does the work, the
-moderator spawns @{tt}panel_size@{utt} of them (3), hands each the others'
+A smaller panel: the task has to name the agent that does the work --
+@{tt}panel_participant@{utt}, the only one its sub-agent manager allows;
+without a name it stops. The moderator spawns @{tt}panel_size@{utt} of
+them (3), hands each the others'
 results over @{tt}min_rounds@{utt} to @{tt}max_rounds@{utt} rounds (3 to
 10) and returns the one result they agree on -- or, when the last round
 ends without agreement, the best one it has. The participants
@@ -147,8 +149,6 @@ not from the forum; the moderator posts every request and answer into a
 channel so the discussion can be read afterwards. A task that names a
 channel id reuses that channel; one that names a group id opens the
 channel in that group.
-
-The prompts of both are German.
 @endnode
 
 @node channels "Groups and channels"
@@ -365,7 +365,8 @@ variable, @{tt}debate_counters@{utt}: per channel each post and how much
 of it. It lives outside the message list, so it holds after compression.
 A note the session inherited from the agent that spawned it counts as
 none: a new sub-agent is given the whole thread first. A session moved to
-another channel and back is given only what it has not seen in either.
+another channel and back is given only what it has not seen of that
+channel.
 
 Earlier batches stay in the conversation and are compressed with it like
 any other message; the hook keeps no window of its own. Nothing is ever
@@ -424,7 +425,7 @@ status | Means
 delivered_next_step | the session is running; it reads the message on its next step
 woke_session | the session was idle and has been started to read it
 being_woken | a start is already on its way and will read it
-queued | it waits for the session's next run; the note says why (stopped by its user, wake chain limit, not allowed to run)
+queued | it waits for the session's next run; the note says why (stopped by its user, a sub-agent's session, wake chain limit, not allowed to run, a start that failed)
 unknown | the session vanished in the meantime
 @{body}
 
@@ -521,8 +522,9 @@ agent_config:
 
 The debate agents bring their own sub-agent manager (and
 debate_panel_moderator its task_switch) in their YAMLs. Both moderators
-and the participants of debate_panel_moderator also use context_engineer,
-those participants tavily_search as well; panel_participant has no tools.
+and the participants of debate_panel_moderator also use context_engineer;
+debate_panel_moderator sequential_thinking as well, its participants
+tavily_search; panel_participant has no tools.
 Direct messages need
 session presence (see @{" Direct messages between sessions " link direct}).
 

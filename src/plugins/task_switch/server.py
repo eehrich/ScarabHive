@@ -39,7 +39,7 @@ plugins:
           execute:
             tool: "some_validation_tool"
             params:
-              book_id: "{{ book_id }}"  # Jinja2 template from agent's template_vars
+              item_id: "{{ item_id }}"  # Jinja2 template from agent's template_vars
             gate_field: "can_proceed"   # Field in result that must be true
             error_field: "gate_reason"  # Field with error message
 ```
@@ -146,7 +146,7 @@ class TaskSwitchServer(SchemaBasedToolServer):
         if agent and hasattr(agent, 'agent_config') and agent.agent_config:
             template_vars = dict(agent.agent_config.template_vars or {})
         
-        # Get session-scoped template vars (highest priority - includes book_id from set_context)
+        # Get session-scoped template vars (highest priority - includes what set_context set)
         session_id = params.get("_session_id") if params else None
         if session_id and agent and hasattr(agent, '_session_tracker') and agent._session_tracker:
             session_template_vars = agent._session_tracker.get_session_template_vars(session_id)
@@ -267,7 +267,7 @@ class TaskSwitchServer(SchemaBasedToolServer):
     async def set_context(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Set runtime context variables (template_vars) for the agent.
 
-        This allows setting values like book_id at runtime, which can then be
+        This allows setting values like item_id at runtime, which can then be
         used in precondition checks and prompt templates.
 
         Args:
@@ -310,7 +310,7 @@ class TaskSwitchServer(SchemaBasedToolServer):
             if not isinstance(vars_arg, dict):
                 if status:
                     await status.error("vars must be a JSON object or dict")
-                return {"status": "error", "error": "vars must be a JSON object (e.g. '{\"book_id\": 42}')"}
+                return {"status": "error", "error": "vars must be a JSON object (e.g. '{\"item_id\": 42}')"}
             # Same hygiene as in the legacy branch (no _-prefixed/framework
             # keys as template_vars -- they would otherwise be inherited by
             # all sub-agents), and do not silently drop flat non-internal keys
@@ -331,7 +331,7 @@ class TaskSwitchServer(SchemaBasedToolServer):
                 "error": (
                     "No context variables provided. Pass them via the `vars` "
                     "argument as a JSON object string, e.g. "
-                    "vars='{\"book_id\": 42}'."
+                    "vars='{\"item_id\": 42}'."
                 ),
             }
 
@@ -360,7 +360,7 @@ class TaskSwitchServer(SchemaBasedToolServer):
         # which tool call the LLM listed first.
         #
         # Add an await above this line and that guarantee silently disappears.
-        # tests/plugins/test_plugin_task_switch_ordering.py pins it.
+        # tests/test_plugin_task_switch_ordering.py (in this plugin) pins it.
         if session_id and agent and hasattr(agent, '_session_tracker') and agent._session_tracker:
             session_vars = agent._session_tracker.get_session_template_vars(session_id)
             for key in context_vars:

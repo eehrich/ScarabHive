@@ -93,8 +93,8 @@ start from:
 
 @{bullet}@{b}Blank agent@{ub}: @{tt}type: basic_agent@{utt},
 enabled.
-@{bullet}@{b}Inherit from an agent@{ub}: @{tt}type@{utt} is that agent;
-everything else comes from it.
+@{bullet}@{b}Inherit from an agent@{ub}: @{tt}type@{utt} is that agent,
+enabled; everything else comes from it.
 @{bullet}@{b}Copy of an agent@{ub}: its own entry, copied.
 
 The form then opens with the new agent, marked "new, not saved yet";
@@ -573,7 +573,7 @@ the master config must include that folder (the default includes
 Key | Default | Meaning
 config_path | the app's config, else config/config.yaml | the master config of the tree to edit
 root | the working directory | the repository root: files outside it are read-only, templates resolve against it
-writable_dirs | the master config's folder | folders, relative to the root, whose files the panel writes; new agents go into config/agents, which must be one of them
+writable_dirs | the master config's folder | a folder or a list of folders, relative to the root, whose files the panel writes (subfolders included); new agents go into config/agents, which must lie in one of them
 @{body}
 
 @{tt}config_path@{utt} and @{tt}root@{utt} are for tests; the running app

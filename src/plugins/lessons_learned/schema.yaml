@@ -83,7 +83,7 @@ web_ui:
       method: "POST"
       handler: "cleanup"
       response_type: "json"
-      description: "Preview or delete the lessons matching at least one filter"
+      description: "Preview or delete the lessons matching every filter set"
 
 hooks:
   - name: inject_lessons

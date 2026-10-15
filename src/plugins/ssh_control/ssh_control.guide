@@ -254,6 +254,14 @@ background | true: start it and return at once, see @{" Background commands " li
 wake, process_id | background commands only
 @{body}
 
+@{tt}check_exit_code@{utt}, @{tt}background@{utt} and @{tt}wake@{utt} --
+like @{tt}clear_buffer@{utt}, @{tt}force@{utt}, @{tt}persistent@{utt} and
+@{tt}remove_from_config@{utt} of the other tools -- take true/false, also
+as text ("false", "no" and "0" are false, "true", "yes" and "1" true; left
+out or blank is the default). Anything else answers
+@{tt}error_type: InvalidArgument@{utt} ("background: true or false, got
+'maybe'") and does nothing.
+
 @{h2}The answer
 
 @{code json}

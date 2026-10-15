@@ -133,7 +133,7 @@ def create_parser() -> ArgumentParser:
     # Read command
     read_p = subparsers.add_parser("read", help="Read file contents")
     read_p.add_argument("file_path", help="Path to file to read")
-    read_p.add_argument("--offset", type=int, help="Starting line number (0-indexed)")
+    read_p.add_argument("--offset", type=int, help="Starting line number (1-based)")
     read_p.add_argument("--limit", type=int, help="Maximum number of lines to read")
 
     # List command

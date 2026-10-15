@@ -64,8 +64,10 @@ and read any of them. The roots are @{tt}skills.skill_dirs@{utt} in
 is missing or empty, the environment variable
 @{tt}AGENT_SKILL_DIRS@{utt} (roots separated by the system's path
 separator) is used, and without that, @{tt}skills@{utt} and
-@{tt}.claude/skills@{utt}. When two roots hold a skill of the same name,
-the first root wins.
+@{tt}.claude/skills@{utt}. A root may be a wildcard pattern
+(@{tt}skills/*/@{utt}, @{tt}**@{utt} too); each folder directly under a
+root that has a @{tt}SKILL.md@{utt} with a YAML header is a skill. When two
+roots hold a skill of the same name, the first root wins.
 
 The roots are scanned once per process, and again only when the list of
 roots changes. A skill added later, or a changed name, description or
@@ -252,12 +254,10 @@ skills or files would not fit one row.
 
 @{h2}Size of an answer
 
-The list of all skills carries name and description only; with the 42
-skills of this repository that is about 14,500 characters, most of it
-descriptions (up to 1,024 characters each). It carried every file of every
-skill before -- 273 files and about 25,700 characters -- and the files now
-come with a name: 4,200 characters for the largest skill (61 files). A
-read is at most 100,000 characters of content.
+The list of all skills carries name and description only, so its size
+grows with the number of skills and their descriptions (up to 1,024
+characters each). The files of a skill come only when it is asked for by
+name. A read is at most 100,000 characters of content.
 
 @{h2}Tokens and cache
 

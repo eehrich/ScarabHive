@@ -63,7 +63,8 @@ sets another interval or turns it off.
 @{bullet}Four figures over every compaction of the session (or of all):
 how many, the tokens saved, the average reduction, and the media items
 taken out -- split into the media window (always_compact_media_keep_last),
-duplicates, and other events.
+duplicates, and the rest (after a person's message, for the byte limit,
+by Layer 1).
 @{bullet}For a session, three more from its stores on disk: the stored
 tool results and attached files, the archived messages, and the core
 memory facts, each with its tokens -- the facts against the core memory
@@ -74,7 +75,7 @@ importance, by category, the most important first.
 above the table says when there are more. Each row has the time, the
 agent, the tokens before and after, the tokens saved, the reduction, the
 tool results stored, the media taken out (with the megabytes) and the
-layers that ran. A click on a column head sorts by it.
+layers that ran. A click on a column head (all but Layers) sorts by it.
 
 The layer badges (hover one for its meaning):
 
@@ -120,7 +121,8 @@ limit | 1 to 50 lines, per section when filtering; without it 20
 role | history only: user, assistant or tool
 @{body}
 
-Every section is in order of storing, oldest first. How a filter
+Browsing, every section is in order of storing, oldest first; a filter
+returns tool results newest first and messages by rank. How a filter
 matches in history: with semantic search on (the shipped configuration),
 the messages closest in meaning together with those holding every word;
 when the meaning search finds nothing, or semantic search is off, the
@@ -245,8 +247,12 @@ added twice; a higher importance raises the kept one.
 @{tt}importance@{utt} the fact is kept under and @{tt}total_facts@{utt}.
 @{bullet}@{tt}status: "error"@{utt}: "Fact parameter is required" (also for a blank fact),
 "This fact alone is larger than core memory (N tokens); store a shorter
-summary of it.", or "Core memory is full of more important facts; this
-one was not stored. Use a higher importance if it matters more."
+summary of it.", "Core memory is full of more important facts; this
+one was not stored. Use a higher importance if it matters more.", or --
+when a store_fact of the same session running at the same moment pushed
+it out again -- "The fact was stored and pushed out again at once by a
+more important one; it is not kept. ..." A refusal carries the
+@{tt}importance@{utt} and @{tt}total_facts@{utt} as well.
 
 @{h2}An example
 
@@ -282,7 +288,9 @@ the media passes apply; Layers 2 and 3 only above their thresholds (see
 @{tt}messages_archived@{utt}, @{tt}messages_dropped@{utt} and
 @{tt}messages_pruned@{utt}. A run turned away adds @{tt}reason@{utt}
 (@{tt}below_threshold@{utt} or @{tt}hysteresis@{utt}), with the current
-reading as both token counts. An empty conversation answers "No messages
+reading as both token counts; a run tried on a copy and thrown away
+(see @{"  The compaction hook  " link hook}) adds @{tt}reason:
+not_worth_it@{utt}. An empty conversation answers "No messages
 in conversation"; without a session @{tt}{"status": "error", "error":
 "Session context not available"}@{utt}.
 
@@ -294,8 +302,12 @@ the only way a compaction happens.
 @{h1}The compaction hook
 
 @{tt}engineer_context@{utt} runs before each LLM call of an agent that
-switches it on -- it is off by default, on for @{tt}multi_turn_agent@{utt}
-and the agents built on it. It runs before context_summarizer's hook.
+switches it on. It is off by default; the shipped @{tt}multi_turn_agent@{utt}
+switches it on, so every agent of that type inherits it, and a few others
+switch it on in their own YAML (@{tt}image_agent@{utt}, the debate panel's
+moderator and participants). It runs before context_summarizer's hook and
+has 60 seconds (the @{tt}timeout@{utt} in the plugin's schema); when it
+runs out of time, that call goes out without it.
 
 @{h2}Switching it on
 
@@ -315,6 +327,12 @@ the plugin's alone and are ignored here (logged): session_ttl_seconds,
 max_tracked_sessions, session_data_ttl_days, enable_semantic_search,
 core_memory_max_tokens, storage_path. A misspelled key is logged too.
 
+Where a setting comes from: the plugin's default, the @{tt}config:@{utt}
+block of the server entry over it, the agent's override over both. A
+@{tt}hook_config:@{utt} block in the server entry carries no settings for
+this plugin; only its @{tt}enabled: false@{utt} is read, and switches
+the hook off for that instance. The compact tool reads the same override.
+
 @{h2}The reading
 
 The hook measures the call as the larger of the prompt tokens of the
@@ -332,7 +350,7 @@ nothing, and adds nothing:
 @{bullet}the conversation has more messages than @{tt}max_messages@{utt}
 (when that is above 0);
 @{bullet}@{tt}always_compact_media_keep_last@{utt} is above 0 (the
-shipped configuration: 2, so every call is taken up);
+shipped configuration: 12, so every call is taken up);
 @{bullet}the last message is from a person and
 @{tt}compact_media_after_user_message@{utt} is on;
 @{bullet}a new tool result is due for Pre-Layer T (see
@@ -344,8 +362,12 @@ Every rewrite of old messages breaks the provider's prompt cache from
 there on, so after a run of Pre-Layer P or a layer the next such run waits
 until the reading has grown by @{tt}min_tokens_between_compactions@{utt}
 (20000) since -- unless a deeper layer has become due, the byte limit is
-exceeded, or a person typed /compact. Pre-Layer T is not held; the media
-passes are held with the layers while @{tt}min_reduction@{utt} is above 0.
+exceeded, a person typed /compact, the conversation is over
+@{tt}max_messages@{utt} when the last run had left it under, or the
+reading is past @{tt}force_above_window_share@{utt} when the last run was
+not. After a run the window forced, the hold is at most half of what is
+left of the window. Pre-Layer T is not held; the media passes are held
+with the layers while @{tt}min_reduction@{utt} is above 0.
 
 @{h2}Only when it is worth it
 
@@ -356,19 +378,17 @@ otherwise the context goes out unchanged and the hysteresis holds the
 next attempt. The reason is the price of the break: the call after a
 rewrite pays the whole context at the input price instead of the cached
 one, and a few percent fewer tokens do not earn that back. Kept whatever
-it takes: a /compact, a run for the byte limit, a run of a context past
-@{tt}force_above_window_share@{utt} (0.85) of the model's window, and one
-with more than @{tt}always_compact_media_max@{utt} (20) pictures where
-Pre-Layer M can take some (over 20 images per request Anthropic accepts at
-most 2000 px a side).
+it takes: a /compact, and a run of a context past
+@{tt}force_above_window_share@{utt} (0.85) of the model's window. Over
+the byte limit, or with more than @{tt}always_compact_media_max@{utt} (20)
+pictures where Pre-Layer M can take some (over 20 images per request
+Anthropic accepts at most 2000 px a side), the media passes run whatever
+they take; the layers after them run as well while the request is still
+over the byte limit, and are weighed otherwise.
 
-The media passes are in it because they rewrite old messages too. Measured
-on production agents over two weeks: 99 of 114 calls that found
-only part of their prefix in the cache followed a run of Pre-Layer M, each
-taking ~9k tokens of images and breaking the cache at ~10 % of the context
--- costly each time. Under the gate the images pile up past
-@{tt}always_compact_media_keep_last@{utt} until taking them out is worth
-it, and then go in one cut.
+The media passes are in it because they rewrite old messages too. Under
+the gate the images pile up past @{tt}always_compact_media_keep_last@{utt}
+until taking them out is worth it, and then go in one cut.
 
 A rewrite that costs no cache is not held to the share: one that touches
 only the round no request has carried yet (on a call that tries a run, a
@@ -457,7 +477,8 @@ An inline item is saved to disk first (with
 @{tt}store_media_before_compaction@{utt}, kept
 @{tt}media_store_ttl_seconds@{utt} since its last use, at most
 @{tt}media_store_max_files@{utt} per session); in its place stands a hint
-naming the file, which read loads again. An image given only by a remote
+naming the file, which read loads again. A duplicate is not saved: its
+newest copy is still in the conversation. An image given only by a remote
 URL stays. @{tt}compact_media_after_final_response@{utt} has no effect.
 
 @{h2}Layer 1: reversible
@@ -496,9 +517,10 @@ From @{tt}layer3_threshold@{utt}: messages at least
 @{tt}drop_after_turns@{utt} turns old are archived and removed, and then
 more of the oldest until the estimate is at @{tt}target_tokens@{utt}.
 Always kept: system messages (with keep_system_messages), the prune note,
-the first input, the current request's messages, the round the model has
-not seen yet, and the newest @{tt}tool_result_keep_last@{utt} units
-before it.
+the first input, the current request's messages and the round the model
+has not seen yet; the cut down to the target also leaves the newest
+@{tt}tool_result_keep_last@{utt} units before that round. A tool call
+and its results leave together or not at all.
 
 @{h2}After a run
 
@@ -520,7 +542,7 @@ nodes. The call's status line ends with its result: "history: 20 of 143
 (from #123, 123 older)", "'QS-4711': 2 message, 1 tool_result",
 "TR_4f1c2a9b3e: 2000 of 9340 chars, 7340 left", "Stored fact: The API
 runs on port 8000 behind nginx...", "Compacted: saved 81200 tokens (53.4%
-reduction)".
+reduction)" or "Nothing compacted (hysteresis)".
 
 @{h2}Placeholders
 
@@ -575,8 +597,12 @@ messages and breaks the provider's prompt cache from the first changed
 message on; the next call pays the rest of the conversation once. That is
 why the layers cut deep (to @{tt}target_tokens@{utt}, to
 @{tt}max_messages_prune_to@{utt}) and the hysteresis spaces them out.
-Pre-Layer T touches only the round no request has carried yet, and the
-note stands at the end: neither breaks the cache.
+Pre-Layer T touches only the round no request has carried yet and breaks
+nothing. The note is appended at the end and keeps its place for the rest
+of the run, so within a run it costs no cache. It is not saved with the
+conversation, though: the next request's history no longer has it, and
+that request's first call reads everything behind the place where it
+stood at the input price again.
 
 @{h2}Known gaps
 
@@ -590,6 +616,12 @@ with; a media store setting changed for an agent reaches only sessions it
 starts.
 @{bullet}Without a known context window the size cap of Pre-Layer T
 does not run; its summaries (tool_result_summary_from) still do.
+@{bullet}The stored-information note is not saved with the conversation
+(see above), so every new request breaks the cache once at the place it
+stood in the request before.
+@{bullet}A call the hook turns away (below its gate, or held) adds no
+note; in a new request whose calls are all turned away the model does
+not see the core memory facts.
 @endnode
 
 @node setup "Setting it up"
@@ -618,8 +650,8 @@ plugins:
         store_media_before_compaction: true
         media_store_ttl_seconds: 604800
         media_store_max_files: 500
-        max_request_bytes: 30408704
-        target_request_bytes: 25165824
+        max_request_bytes: 18874368
+        target_request_bytes: 15728640
         core_memory_max_tokens: 5000
         tool_result_min_size: 500
         tool_result_keep_last: 5
@@ -635,8 +667,9 @@ plugins:
         deduplicate_media: true
         compact_media_after_user_message: true
         compact_media_after_final_response: true
-        always_compact_media_keep_last: 2
-        always_compact_media_headroom: 1
+        always_compact_media_keep_last: 12
+        always_compact_media_headroom: 10
+        always_compact_media_max: 20
 @{body}
 
 The hook runs for an agent that switches it on (see

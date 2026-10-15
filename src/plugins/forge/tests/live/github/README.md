@@ -35,8 +35,14 @@ FORGE_TEST_GITHUB_TOKEN="$(gh auth token)" \
 .venv/Scripts/python.exe -m pytest src/plugins/forge/tests/test_plugin_forge_live_github.py -o timeout=900
 ```
 
-Each run creates one issue and two pull requests; one is merged, the
-other closed, and all branches are deleted. The test only runs against
-a private repo whose name ends in `-forge-live` — every run merges into
-the default branch. Actions costs minutes of the quota in a
-private repo (about ten per run).
+Without `FORGE_LIVE_GITHUB=1` the tests are skipped. They need `git` on the
+machine that runs them; your own git config is not read.
+
+Every run merges into the default branch, so each test first checks the
+repo: one that is not private or whose name does not end in `-forge-live`
+fails the test before anything is created.
+
+Each run creates one issue and two pull requests; one is merged, the other
+closed, the issue is closed, and all branches are deleted. The red run's job
+is re-run once. Actions costs minutes of the quota in a private repo (about
+ten per run).

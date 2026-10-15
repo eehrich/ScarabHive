@@ -1,6 +1,6 @@
 @database "forge"
 @author "Enrico Ehrich"
-@$VER: forge.guide 1.1 (11.10.2026)
+@$VER: forge.guide 1.2 (15.10.2026)
 @smartwrap
 
 @node main "Forge"
@@ -261,7 +261,7 @@ you_may_use_it | whether you may call the other operations; @{tt}why_not@{utt} s
 repos | the usable repositories: provider, host, project, allow_merge, require_ci, tls_verify
 left_out | each repository left out and why: a host not under hosts, the token's variable not set, ...; @{tt}(config)@{utt} when hosts or repos is no mapping
 branch_prefix, merge_method | the policy
-webhook | null without a webhook; else its settings, @{tt}last_hour@{utt} and, when the store cannot be read, @{tt}error@{utt}
+webhook | null without a webhook; else its settings, @{tt}route@{utt} (whether a host has a webhook secret), @{tt}last_hour@{utt} and, when the store cannot be read, @{tt}error@{utt}
 work, outcomes | with the webhook on: your part of it (below)
 @{body}
 
@@ -281,8 +281,12 @@ every user's sessions. It shows the repositories with the ones left out and
 their reason, the policy (allowed users, branch prefix, merge method,
 webhook settings), the sessions at work with their waiting news -- a
 session opens in the chat only for its own user -- and the webhook's
-events with their outcome. Its data comes from @{tt}GET
-/plugins/forge/status@{utt} (JSON, admins only).
+events with their outcome. It refreshes itself every 15 seconds. Its data
+comes from @{tt}GET /plugins/forge/status@{utt} (JSON, admins only): a
+user who is not logged in gets 401 @{tt}Not authenticated@{utt}, one who is
+no admin 403 @{tt}The forge panel lists every user's sessions: admins
+only@{utt}. An installation without auth has one user, and the panel is
+theirs.
 
 @{h2}Outcomes
 
@@ -326,7 +330,8 @@ base | where a new branch starts; default the default branch; ignored without @{
 
 Branch names are letters, digits, @{tt}. _ / -@{utt}, starting with a
 letter or digit, at most 200 characters, without @{tt}..@{utt},
-@{tt}//@{utt}, @{tt}\@{@{utt} or a part starting with a dot. Switching is
+@{tt}//@{utt}, @{tt}\@{@{utt} or a part starting with a dot, and not ending
+in @{tt}.lock@{utt}, @{tt}/@{utt} or @{tt}.@{utt}. Switching is
 refused while tracked files have uncommitted changes (untracked files do
 not block).
 
@@ -376,8 +381,8 @@ files in Git LFS, the LFS objects are pushed first; without
 own @{tt}remote:@{utt} lines.
 
 The answer: @{tt}remote_branch@{utt}, @{tt}head@{utt} (12 characters),
-@{tt}note@{utt} when the checked-out branch has uncommitted changes that
-were not pushed, and either @{tt}pr: {number, url, draft}@{utt} -- the
+@{tt}note@{utt} when the pushed branch is the checked-out one and has
+uncommitted changes (they were not pushed), and either @{tt}pr: {number, url, draft}@{utt} -- the
 branch's open request -- or @{tt}next: "pr create with
 source_branch=..."@{utt}. When that lookup fails, @{tt}pr_lookup@{utt} says
 the push stands anyway.
@@ -912,7 +917,7 @@ host | -- | a key under @{tt}hosts@{utt}; required
 project | -- | GitLab: the path with namespace; GitHub: owner/name; required
 allow_merge | off | only the value true offers and allows pr merge
 require_ci | on | only the value false lets pr merge go without green CI
-path | data/workspace/forge/<name> | the local clone, relative to the project
+path | data/workspace/forge/<name> | the local clone; a relative path starting with @{tt}data/@{utt} lands in the data directory, any other relative path in the project folder
 @{body}
 
 @{h2}Instance settings
@@ -947,8 +952,9 @@ network:
 
 Without @{tt}remote_paths@{utt} the whole API is on the network, the
 self-registration included.
-@{number}The route is opened in both auth layers, each rule above any rule
-that matches other plugin routes:
+@{number}The route is open in both auth layers. @{tt}config/security.yaml@{utt}
+ships these two rules, each above any rule that matches other plugin
+routes (the forge panel's admin rule among them); keep them there:
 
 @{code yaml}
 auth:

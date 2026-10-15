@@ -59,6 +59,8 @@ cache_ttl | both | seconds to keep this page when it is fetched now; absent or 0
 
 A number the model sends as text, null, nonsense ("lots") or not finite
 ("inf", "nan", 1e400) falls back to the default instead of failing the call.
+A yes/no flag sent as text is read as such ("true", "1", "yes" and "false",
+"0", "no"); any other value counts as false.
 
 @{h2}What counts as text
 
@@ -134,7 +136,7 @@ the tool.
 Parameter | Meaning
 url | required; http or https only
 path | required; the file to write, inside an allowed directory
-overwrite | true: replace an existing file (default false: refused)
+overwrite | true: replace an existing file (default false: refused). As text, "true", "1", "yes" and "false", "0", "no" count; any other value is an error
 timeout | seconds any single network wait may take, default 60; the transfer as a whole has no time limit
 @{body}
 
@@ -160,11 +162,13 @@ On success: @{tt}url@{utt}, @{tt}final_url@{utt}, @{tt}status_code@{utt},
 
 @{table}
 error | When
-Path is outside the allowed directories | the path leaves every allowed directory, or names a network share or device
+Path is outside the allowed directories | the path leaves every allowed directory, or names a network share or device. The message names the allowed directories, and for an absolute path behind a folder this machine does not have (@{tt}/workspace/data/...@{utt}) how to write it ("Write it as data/...")
 Path starts with '~' | the home directory is not expanded here
-Path cannot be resolved | the path holds a null byte or is too long for the file system
+Path contains a null byte | the path holds a null character
+Path cannot be resolved | the path is too long for the file system
 path names a directory | give the file name
 File exists | pass overwrite=true
+overwrite: true or false | overwrite is neither, e.g. "maybe"
 Blocked URL (SSRF protection) | the URL or a redirect hop is refused
 HTTP <code> | the server answered 400 or above
 Download exceeds max_download_mb | the file is larger than the cap

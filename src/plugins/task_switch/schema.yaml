@@ -38,7 +38,7 @@ tools:
           vars:
             type: string
             description: |
-              Context variables as a JSON object string, e.g. '{"book_id": 42, "phase": "review"}'.
+              Context variables as a JSON object string, e.g. '{"item_id": 42, "phase": "review"}'.
               JSON-as-string is deliberate: freeform objects (additionalProperties)
               are mangled by some provider tool-call serializers.
         required:

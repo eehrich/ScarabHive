@@ -2957,3 +2957,83 @@ class TestWriteAndListRobustness:
         result = await server.list({})
         assert result["status"] == "success", result
         assert [f["name"] for f in result["files"]] == [sample_wav.name]
+
+
+class TestDocAuditFindings:
+    """Bugs found checking the guide against the code (15.10.2026)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key, value", [("start_time", "soon"), ("end_time", "nan"), ("start_time", [1])])
+    async def test_load_refuses_a_time_that_is_no_number_by_its_name(self, server, sample_wav, key, value):
+        result = await server.load({"file": sample_wav.name, key: value})
+        assert result["status"] == "error" and result["error_type"] == "ValidationError", result
+        assert result["error"].startswith(f"{key} must be a number of seconds"), result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key, value", [("start_time", "nan"), ("end_time", "nan"), ("end_time", "later")])
+    async def test_cut_refuses_a_time_that_is_no_number_by_its_name(self, server, sample_wav, key, value):
+        params = {"source_file": sample_wav.name, "dest_file": "cut.wav", "start_time": 0.1, "end_time": 0.2}
+        result = await server.cut({**params, key: value})
+        assert result["status"] == "error" and result["error_type"] == "ValidationError", result
+        assert result["error"].startswith(f"{key} must be a number of seconds"), result
+
+    @pytest.mark.asyncio
+    async def test_list_names_a_file_in_a_subfolder_by_its_path(self, server, sample_wav, temp_storage):
+        import shutil
+        (temp_storage / "voices").mkdir()
+        shutil.copy(sample_wav, temp_storage / "voices" / "take1.wav")
+        result = await server.list({"pattern": "voices/*.wav"})
+        assert [f["name"] for f in result["files"]] == ["voices/take1.wav"]
+        assert (await server.info({"file": result["files"][0]["name"]}))["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_volume_reads_normalize_false_as_text_as_false(self, server, sample_wav):
+        params = {"source_file": sample_wav.name, "dest_file": "out.wav"}
+        result = await server.volume({**params, "normalize": "false"})
+        assert result["error_type"] == "ValidationError", result  # nothing left to do
+        result = await server.volume({**params, "normalize": "maybe"})
+        assert result["error_type"] == "ValidationError" and "normalize" in result["error"]
+        result = await server.volume({**params, "normalize": "true"})
+        assert result["status"] == "success" and result["normalized"] is True
+
+    @pytest.mark.asyncio
+    async def test_compress_silence_keeps_the_old_file_when_ffmpeg_dies_mid_write(self, temp_storage, sample_wav, monkeypatch):
+        dest = temp_storage / "old.wav"
+        dest.write_bytes(b"previous take")
+
+        def fake_run(cmd, *args, **kwargs):
+            if "-filter_complex" in cmd:
+                Path(cmd[-1]).write_bytes(b"half")  # ffmpeg had begun writing its output
+                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+            out = '{"format": {"duration": "5.0"}}' if cmd[0] == "ffprobe" else ""
+            stderr = "silence_start: 1.0\nsilence_end: 4.0 | silence_duration: 3.0\n" if "null" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr=stderr)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        server = _limited_server(temp_storage)
+        result = await server.compress_silence({"source_file": sample_wav.name, "dest_file": "old.wav"})
+        assert result["error_type"] == "Timeout"
+        assert dest.read_bytes() == b"previous take"
+        assert sorted(p.name for p in temp_storage.iterdir()) == ["old.wav", sample_wav.name]
+
+    @pytest.mark.asyncio
+    async def test_cli_compress_silence_keeps_the_old_file_when_ffmpeg_fails_mid_write(self, sample_wav, temp_storage, monkeypatch):
+        import argparse
+        import plugins.audio_ops.__main__ as cli
+        monkeypatch.setattr(cli, "_workdir_override", temp_storage)
+        dest = temp_storage / "old.wav"
+        dest.write_bytes(b"previous take")
+
+        def fake_run(cmd, *args, **kwargs):
+            if "-filter_complex" in cmd:
+                Path(cmd[-1]).write_bytes(b"half")
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="No space left on device")
+            out = '{"format": {"duration": "5.0"}}' if cmd[0] == "ffprobe" else ""
+            stderr = "silence_start: 1.0\nsilence_end: 4.0 | silence_duration: 3.0\n" if "null" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr=stderr)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        args = argparse.Namespace(source=sample_wav.name, dest="old.wav", max_silence=1.0, threshold=-40, bitrate=192)
+        assert await cli.cmd_compress_silence(args) == 1
+        assert dest.read_bytes() == b"previous take"
+        assert sorted(p.name for p in temp_storage.iterdir()) == ["old.wav", sample_wav.name]

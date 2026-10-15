@@ -1,6 +1,6 @@
 @database "coding_cli"
 @author "Enrico Ehrich"
-@$VER: coding_cli.guide 1.1 (02.10.2026)
+@$VER: coding_cli.guide 1.2 (15.10.2026)
 @smartwrap
 
 @node main "Coding CLI"
@@ -49,12 +49,14 @@ For agents and developers
 @{h2}Starting
 
 @{tt}run_task@{utt} checks, in this order: the user is in
-@{tt}allowed_users@{utt}; the task is text of at most
-@{tt}max_task_chars@{utt} (20,000) characters; the mode; the
-@{tt}json_schema@{utt}, if given; for a resume, that the run is the user's, has ended and left a
-conversation and a worktree; the workdir is known; no subscription window
-is at or past @{tt}max_window_utilization@{utt}; fewer than
-@{tt}max_parallel@{utt} runs are going. Then:
+@{tt}allowed_users@{utt}; Claude Code is installed and a workdir is
+usable; the task is text of at most @{tt}max_task_chars@{utt} (20,000)
+characters; the mode, @{tt}wake@{utt}, @{tt}max_run_minutes@{utt} and
+@{tt}max_window_utilization@{utt}; for a resume, that the run is the
+user's, has ended and left a conversation and a worktree; the workdir is
+known; the @{tt}json_schema@{utt}, given or inherited; no subscription
+window is at or past the threshold; fewer than @{tt}max_parallel@{utt}
+runs are going. Then:
 
 @{bullet}@{tt}git worktree add@{utt} of the repository's HEAD on a new
 branch @{tt}coding_cli/<run_id>@{utt}, under
@@ -82,7 +84,8 @@ the worktree and branch made for it are removed again.
 
 @{h2}Waiting
 
-The call waits up to @{tt}wait_s@{utt} (300 s by default) for the end.
+The call waits up to the instance's @{tt}wait_s@{utt} (300 s by default)
+for the end.
 Meanwhile the chat shows the run the way it shows a sub-agent: a box under
 the call with Claude Code's steps, its text and every tool call with its
 arguments and result, and a status line per tool call. The box goes on
@@ -115,8 +118,8 @@ shorter limit its call gave (@{tt}run_task@{utt}'s own
 @{tt}max_run_minutes@{utt}). A stop -- time
 limit, cancel, stopped turn -- kills Claude Code and everything it started.
 Then, once per run, the plugin commits everything left in the worktree as
-one commit @{tt}coding_cli <run_id>: <first line of the task>@{utt} (edit
-mode only), lists the changes against the base, stores the subscription
+one commit @{tt}coding_cli <run_id>: <first line of the task>@{utt} (its
+first 60 characters; edit mode only), lists the changes against the base, stores the subscription
 usage, the cost and the structured output Claude Code reported and records
 the state:
 
@@ -250,7 +253,7 @@ MCP client included.
 @{bullet}Plan mode loads no server: it only reads, and a server's tools may
 write.
 
-Measured on Claude Code 2.1.285 (concept M-CC-10) with a bearer token in
+Measured on Claude Code 2.1.285 with a bearer token in
 the child's environment only: the server came up @{tt}connected@{utt} (so
 @{tt}${VAR}@{utt} in a header is expanded from the environment), its 12
 tools appeared as @{tt}mcp__<server>__*@{utt} beside Read, Glob, Grep and
@@ -266,6 +269,13 @@ temp, locale, proxies, @{tt}CLAUDE_CONFIG_DIR@{utt},
 @{tt}CODING_CLI_MCP_<n>@{utt}. None of the keys ScarabHive loaded from
 @{tt}config/secrets.env@{utt} reaches it -- an @{tt}ANTHROPIC_API_KEY@{utt}
 would even switch Claude Code from the subscription to paid API use.
+
+Two values are set by the plugin: @{tt}PATH@{utt} starts with the folder
+of ScarabHive's own Python, so an allowed @{tt}python -m pytest@{utt} runs
+that interpreter with its packages; and
+@{tt}CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT@{utt} is the run's time limit, so
+Claude Code does not give up on an MCP tool that works quietly for longer
+than its own default of five minutes.
 
 @{h2}Secrets kept out of the worktree
 
@@ -306,8 +316,9 @@ in @{tt}allowed_users@{utt}. A window that reset early (it happens) no longer
 refuses until its old reset.
 
 Such a refusal says so as a field too, @{tt}limit@{utt}: @{tt}window@{utt},
-@{tt}utilization@{utt}, @{tt}threshold@{utt}, @{tt}resets_at@{utt} (epoch
-seconds) and @{tt}resets@{utt} (local time). So does a run the subscription
+@{tt}utilization@{utt} (or @{tt}status@{utt}, when the subscription refuses
+requests), @{tt}threshold@{utt}, @{tt}resets_at@{utt} (epoch seconds) and
+@{tt}resets@{utt} (local time). So does a run the subscription
 stopped midway: its result is an error with @{tt}api_error@{utt}
 "usage_limit_reached" (HTTP 429, "You've hit your session limit · resets
 1:10am (Europe/Berlin)"), the stream's last rate_limit_event says
@@ -343,7 +354,7 @@ metadata.visibility | not set: private -- neither in the agent list nor a tool o
 @{body}
 
 As shipped it is therefore reached by name, e.g.
-@{tt}agent-cli run claude_code_agent "..."@{utt}. The coder agent has the
+@{tt}agent-cli run --agent claude_code_agent "..."@{utt}. The coder agent has the
 four tools itself (deferred: loaded on demand with @{tt}tool_search@{utt}).
 @endnode
 
@@ -417,7 +428,7 @@ mode: edit (change the code) or plan (read and answer with a plan) | another mod
 wake: true (woken at the end) or false (you wait with get_run) | not true or false
 max_run_minutes: a number of minutes above 0 -- a shorter limit for this run; the instance's <n> at most | not a number, or 0 or less
 max_window_utilization: a share above 0 and at most 1 -- a lower threshold for this run; the instance's <n> at most | not a number, 0 or less, above 1, or a boolean
-json_schema: a JSON schema as an object, at most 20000 characters as JSON on the command line, its quotes escaped | not an object, too long, nested deeper than 100, or holding NaN or Infinity -- also the one a resume would inherit
+json_schema: a JSON schema as an object, at most 20000 characters as JSON on the command line, its quotes escaped, nested at most 100 deep | not an object, too long, nested deeper than 100, or holding NaN or Infinity -- also the one a resume would inherit
 resume: no run <id> of yours | unknown run, or another user's
 resume: run <id> has not ended yet | still running
 resume: run <id> left no conversation or worktree to continue -- start a new run | no Claude Code session, or the worktree was removed
@@ -558,8 +569,8 @@ box, its latest tool call), "(+N)" for the others. At the end "run <id>
 done: 3 turn(s), 2 file(s), 41 s, 5h window 34%" -- as an error line with
 the note for a failed or cancelled run -- or "run <id> still going after 300
 s, wake armed" (or ", no wake"). @{tt}get_run@{utt} on a running run: "run
-<id> running, <n> recent action(s)". Errors show their text, cut to 140
-characters.
+<id> running, <n> recent action(s)". @{tt}quota@{utt}: the limit in
+words, or "below 80%". Errors show their text, cut to 140 characters.
 
 @{h2}Tokens and cache
 
@@ -597,13 +608,13 @@ plugins:
           path: "."
           exclude: [config/secrets.env, config/local.env, config/local.yaml, config/config.yaml]
       allowed_commands: []
-      web_with_shell: false
       max_window_utilization: 0.8
       wait_s: 300
       max_run_minutes: 60
       max_parallel: 1
       max_task_chars: 20000
       model: ""
+      effort: ""
       pass_env: []
 @{body}
 
@@ -612,9 +623,9 @@ A workdir that gives its runs MCP servers names them; each must be in
 
 @{code yaml}
       workdirs:
-        scarab:
-          path: "../ScarabAnimator"
-          mcp_servers: [scarab4]
+        other:
+          path: "../other-repo"
+          mcp_servers: [docs_server]
 @{body}
 
 An agent gets the tools with @{tt}+coding_cli/*@{utt} in its
@@ -662,6 +673,8 @@ runs/<id>.json | the run's record
 runs/<id>.task, .jsonl, .err | the task, Claude Code's stream, its stderr
 runs/<id>.cancel, .wake, .rung, .final | a stop and its reason, the session to wake, the ring's lease, the finalize claim
 runs/<id>.answered | the starting call answered with the run id of a run still going: a process taking the run over lets it go on
+runs/<id>.read-<session> | that session has read the run's end: it is not woken for it
+runs/<id>.released-<instance>, .adopt-<instance> | a stopped instance let the run go; the claim of the instance that took it over
 quota.json | the last subscription report
 runs/<id>.mcp.json | the run's MCP config, for a workdir with @{tt}mcp_servers@{utt}: urls and placeholders, no secret; deleted when the run ends, or when it did not start
 no_mcp.json | the empty MCP config

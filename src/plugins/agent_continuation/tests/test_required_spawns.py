@@ -167,6 +167,21 @@ class TestRequiredSpawns:
             _writers(), hook_config={**GATE, "required_spawns": spec}))
         assert not result.metadata.get("continue")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("agents", ['""', "'  '", "none", "[]"])
+    async def test_an_empty_result_requires_nothing(self, agents):
+        """An empty text was wrapped as [""] and sent the answer back for an agent named ""."""
+        result = await _plugin().evaluate_completion(_context(
+            _writers(), hook_config={**GATE, "required_spawns": {"agents": agents, "tool": TOOL}}))
+        assert not result.metadata.get("continue")
+
+
+    @pytest.mark.asyncio
+    async def test_an_empty_name_in_the_list_is_no_agent(self):
+        result = await _plugin().evaluate_completion(_context(
+            _writers(), hook_config={**GATE, "required_spawns": {"agents": "['', ' ']", "tool": TOOL}}))
+        assert not result.metadata.get("continue")
+
 
 @pytest.fixture(scope="module")
 def panel():

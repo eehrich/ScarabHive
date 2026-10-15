@@ -585,3 +585,15 @@ class TestInfoSaysWhatTheSubAgentIsDoing:
         running = await server._handle_info(_params(sub_id, session_service))
 
         assert (idle["status"], running["status"]) == ("idle", "running")
+
+
+class TestDeleteTakesALoneIdAsOne:
+    @pytest.mark.asyncio
+    async def test_instance_ids_given_as_a_string_archives_that_instance(self, server, session_service, sub_session):
+        """A model sends `instance_ids` as one string now and then: it was split into its characters, each one
+        "not found", and the instance stayed open."""
+        sub_id, _ = sub_session
+        result = await server._handle_delete({**_params(sub_id, session_service), "instance_id": None,
+                                              "instance_ids": sub_id})
+
+        assert (result["status"], result["instance_id"]) == ("archived", sub_id), result

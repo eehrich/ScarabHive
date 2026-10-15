@@ -253,7 +253,8 @@ answer of that session is final or its budget runs out. A create that pruning la
 the history still counts.
 @{bullet}Missing @{tt}agents@{utt} or @{tt}tool@{utt}, an expression that
 fails, or one that gives no list: the check is off for that answer, with a
-warning. It can cost a continuation, never block an answer.
+warning (an empty result -- none, an empty text -- turns it off without
+one). It can cost a continuation, never block an answer.
 @endnode
 
 @node limits "What stops it"

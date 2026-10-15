@@ -148,6 +148,18 @@ def _number(params: dict[str, Any], key: str, default: float) -> float:
     return default
 
 
+def _flag(params: dict[str, Any], key: str) -> bool:
+    """A yes/no argument: "false" as text is false, not a true value; nonsense is no.
+
+    Like _number, an unusable value takes the default instead of failing the call.
+    """
+    try:
+        return bool_param(params, key)
+    except ValueError:
+        logger.info("web_scraper: ignoring unusable %s=%r, using false", key, params.get(key))
+        return False
+
+
 def _scrub(value: Any) -> Any:
     """``value`` with _CONTROL_CHARS removed from every string inside it."""
     if isinstance(value, str):
@@ -622,7 +634,7 @@ class WebScraperServer(SchemaBasedToolServer):
 
         key = self._create_cache_key(url, params.get("_session_id"))
         page = None
-        if self.cache_enabled and not params.get("ignore_cache", False):
+        if self.cache_enabled and not _flag(params, "ignore_cache"):
             page = await self.cache.get(key)
         cached = page is not None
 
@@ -672,9 +684,9 @@ class WebScraperServer(SchemaBasedToolServer):
         where = f"{'(cached) ' if cached else ''}HTTP {code} -- {url[:60]}"
         if operation == "links":
             links = page["links"]
-            if not params.get("include_nofollow", False):
+            if not _flag(params, "include_nofollow"):
                 links = [link for link in links if "nofollow" not in link["rel"]]
-            if params.get("only_same_domain", False):
+            if _flag(params, "only_same_domain"):
                 domain = urllib.parse.urlparse(page["final_url"]).netloc
                 links = [link for link in links if urllib.parse.urlparse(link["abs_url"]).netloc == domain]
             max_links = int(_number(params, "max_links", 0))
@@ -691,9 +703,9 @@ class WebScraperServer(SchemaBasedToolServer):
         result = {"url": url, "final_url": page["final_url"], "status_code": code,
                   "content_type": page.get("content_type"), "title": page.get("title"),
                   "text": piece, "total_chars": len(text), "truncated": truncated}
-        if params.get("extract_tables") and page.get("tables"):
+        if _flag(params, "extract_tables") and page.get("tables"):
             result["tables"] = page["tables"]
-        if params.get("extract_lists") and page.get("lists"):
+        if _flag(params, "extract_lists") and page.get("lists"):
             result["lists"] = page["lists"]
         got = f"{len(piece)} of {len(text)} chars" if truncated or offset else f"{len(text)} chars"
         await status.end(f"{got} {where}", meta={"total_chars": len(text), "truncated": truncated})

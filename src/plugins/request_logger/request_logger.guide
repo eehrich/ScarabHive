@@ -60,7 +60,7 @@ written directly in the entry are not read:
 
 @{table}
 Key | Default | Meaning
-log_level | INFO | the level of every line the plugin writes: DEBUG, INFO, WARNING or ERROR; anything else is INFO
+log_level | INFO | the level of every line the plugin writes: a Python level name such as DEBUG, INFO, WARNING or ERROR; an unknown name is INFO
 log_message_content | true | false: no text from the conversation, only counts, IDs and times
 log_timing | true | false: no durations
 max_content_preview | 100 | characters of a message or answer shown; held to 10 ... 1000

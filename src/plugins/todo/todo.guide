@@ -118,7 +118,8 @@ task, with @{tt}reason@{utt}), @{tt}updated@{utt}, @{tt}deleted@{utt} (with
 @{tt}cascade_deleted@{utt}), @{tt}not_found@{utt}, @{tt}rejected@{utt}
 (a delete with dependents: @{tt}dependent_tasks@{utt}),
 @{tt}limit_reached@{utt} or @{tt}validation_failed@{utt} with a
-@{tt}message@{utt} saying what to change. @{tt}get@{utt} and
+@{tt}message@{utt} saying what to change; a refused update changes
+nothing of the task. @{tt}get@{utt} and
 @{tt}update@{utt} add @{tt}dependency_info@{utt} (@{tt}blocked_by@{utt},
 @{tt}blocking@{utt}); @{tt}list@{utt} adds counts and
 @{tt}has_more@{utt}/@{tt}next_offset@{utt} for paging;
@@ -155,7 +156,8 @@ the title with every task not completed (cancelled ones count):
 task with @{tt}status: exists@{utt}, @{tt}reason: duplicate_title@{utt}
 and the similarity.
 @{bullet}80 to 95 % alike: the task is created. The answer does not
-mention the similar one; only the log does.
+mention the similar one; only the log and the chat's status line
+("Similar task exists: task_003 (88% match)") do.
 @{bullet}An @{tt}idempotency_key@{utt} is checked first, against all
 tasks: a retry with the same key returns the first task.
 
@@ -276,7 +278,10 @@ never rewrites the system prompt or an earlier message.
 
 @{bullet}Tags can be added, not removed.
 @{bullet}@{tt}depends_on@{utt} on update replaces the whole list; to add
-one dependency, send the old ones with it.
+one dependency, send the old ones with it. The code also takes
+@{tt}add_depends_on@{utt} and @{tt}remove_depends_on@{utt} (lists of ids,
+used only without @{tt}depends_on@{utt}), but the schema does not offer
+them to the model.
 @{bullet}With more open tasks than @{tt}max_tasks@{utt}, the hook shows
 the oldest; the newest wait until older ones are done.
 @endnode

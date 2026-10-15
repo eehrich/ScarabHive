@@ -1,6 +1,6 @@
 @database "audio_ops"
 @author "Enrico Ehrich"
-@$VER: audio_ops.guide 1.0 (30.09.2026)
+@$VER: audio_ops.guide 1.1 (15.10.2026)
 @smartwrap
 
 @node main "Audio operations"
@@ -57,9 +57,12 @@ Parameter | Meaning
 pattern | a glob inside the storage folder, e.g. *.wav or voices/*.flac; without it, the .flac, .mp3 and .wav files directly in the folder
 @{body}
 
-Only files with one of the three extensions are listed, sorted by path.
-Each is decoded in full to measure its length, so a folder of long files
-takes a while. An entry has @{tt}name@{utt}, @{tt}size_bytes@{utt},
+Only files with one of the three extensions are listed, sorted by path;
+the temp files the writing tools make (@{tt}.audio_ops_...@{utt}) are left
+out. Each is decoded in full to measure its length, so a folder of long
+files takes a while. An entry has @{tt}name@{utt} (the path inside the
+storage folder, @{tt}voices/take1.flac@{utt} for a file in a subfolder --
+the name the other tools take), @{tt}size_bytes@{utt},
 @{tt}duration_seconds@{utt} and @{tt}format@{utt}, or @{tt}error@{utt}
 ("Cannot read: ...") instead of the last two when it cannot be decoded.
 The answer adds @{tt}storage_path@{utt} and @{tt}total_count@{utt}. A
@@ -190,7 +193,7 @@ Parameter | Meaning
 source_file, dest_file | input and result
 gain_db | a fixed change, -60 to +24 dB
 envelope | instead of gain_db: two or more points {"time": seconds, "gain_db": -60 to +24}
-normalize | true: afterwards raise the loudest peak to 0 dB
+normalize | true: afterwards raise the loudest peak to 0 dB; "true"/"false", "yes"/"no" and "1"/"0" as text count too, anything else is a ValidationError
 @{body}
 
 At least one of the three is needed; gain_db and envelope exclude each
@@ -213,7 +216,10 @@ channels | 1 or 2 (default)
 @{body}
 
 A length above @{tt}max_duration_seconds@{utt} is refused
-(@{tt}TooLong@{utt}); the silence is built in memory.
+(@{tt}TooLong@{utt}); the silence is built in memory. The answer:
+@{tt}destination@{utt}, @{tt}duration_seconds@{utt},
+@{tt}duration_ms@{utt}, @{tt}format@{utt}, @{tt}channels@{utt} and
+@{tt}sample_rate@{utt}.
 @endnode
 
 @node silence "Pauses: detect_silence, compress_silence"
@@ -253,7 +259,10 @@ mp3_bitrate | kbit/s for an .mp3 result, default 192
 @{body}
 
 The result is always encoded anew, also when nothing had to be shortened.
-The answer: @{tt}compressed_count@{utt}, @{tt}time_saved@{utt},
+ffmpeg writes it to a temp file next to the destination
+(@{tt}.audio_ops_...@{utt}), which replaces the destination only when
+ffmpeg succeeded: a failed or timed-out run leaves the old file as it was,
+and the destination may be the source itself. The answer: @{tt}compressed_count@{utt}, @{tt}time_saved@{utt},
 @{tt}original_duration@{utt}, @{tt}new_duration@{utt},
 @{tt}source_file@{utt}, @{tt}dest_file@{utt}; with nothing shortened only
 the count (0), @{tt}time_saved@{utt} (0.0) and the two names.
@@ -299,7 +308,7 @@ out -- the folder that holds all the session folders.
 
 @{h2}What is left behind
 
-The plugin deletes nothing, apart from a piece @{tt}load@{utt} had to
+The plugin deletes nothing but its own temp files and a piece @{tt}load@{utt} had to
 refuse. The @{tt}_temp_segment_...wav@{utt} pieces of @{tt}load@{utt}
 stay, because every later request of the run reads them again
 (@{" What the model sees " link model}); @{tt}list@{utt} shows them like
@@ -338,7 +347,11 @@ The @{tt}error_type@{utt} values: ValidationError, SecurityError,
 FormatError, FileNotFoundError, AudioLoadError, DependencyError (pydub
 missing), TimeRangeError, FileTooLarge, TooLong, Timeout,
 ProcessingError, and in the two pause tools ValueError and
-UnexpectedError. The limits are not in the tool descriptions; the model
+UnexpectedError. Any other failure answers with the name of the Python
+exception as @{tt}error_type@{utt} and no @{tt}details@{utt}. A
+@{tt}start_time@{utt} or @{tt}end_time@{utt} of @{tt}load@{utt} that is
+not a number is a ValidationError: "start_time must be a number of
+seconds, got 'soon'". The limits are not in the tool descriptions; the model
 learns them from the refusal, which names the limit.
 
 The chat's status line ends with what was done: "Created scene.flac
@@ -439,6 +452,9 @@ differs:
 not stripped, and network paths are not refused on their text.
 @{bullet}@{tt}mix@{utt} and @{tt}volume@{utt} take no envelope;
 @{tt}detect-silence@{utt} reports pauses from 0.5 seconds on by default.
+@{bullet}@{tt}compress-silence@{utt} with nothing to shorten copies the
+file unchanged when source and destination have the same extension,
+instead of encoding it anew.
 @{bullet}@{tt}load@{utt} plays nothing: it prints the file's data, and
 with @{tt}-s@{utt}/@{tt}-e@{utt} writes the piece to
 @{tt}_temp_segment_<name>.wav@{utt}.

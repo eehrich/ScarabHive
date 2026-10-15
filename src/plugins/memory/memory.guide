@@ -31,7 +31,7 @@ For agents and developers
 @node panel "The Memory panel"
 @{h1}The Memory panel
 
-Open it from the launcher (@{b}Context@{ub}, "Memory"), or from a session's
+Open it from the launcher (@{b}Context & memory@{ub}, "Memory"), or from a session's
 info button, which opens it on that session.
 
 @{image docs/panel.png "The Memory panel"}
@@ -92,13 +92,13 @@ delete | memory_id | removes the memory
 Parameter | Used by | Meaning
 title | store, update | up to 200 characters
 content | store, update | up to 5000 characters; the text the search compares
-keywords | store, update | up to 20; left out on store, up to ten are taken from title and text
+keywords | store, update | a list of words; left out on store, up to ten are taken from title and text
 importance | store, update | 1 to 10; a store without it is 5
 tags | store, update | free labels, returned by recall
 memory_id | recall, update, delete | an id an earlier answer returned
 query | search | what to look for, in words
-n_results | search | 1 to 20; without it the server's search_n_results (5)
-limit, offset | list | a page: up to 100, without limit 50
+n_results | search | how many results; without it the server's search_n_results (5). The schema says 1 to 20; the code passes any number on
+limit, offset | list | a page: without limit 50, offset 0. The schema says at most 100; the code takes any number
 sort_by | list | accessed (default), created, updated or importance
 sort_order | list | desc (default) or asc
 @{body}
@@ -119,7 +119,8 @@ with a fixed number.
 or which value is out of range (an importance of 11, a title over 200
 characters); nothing is kept then.
 An id that does not exist also brings @{tt}available@{utt}: the 15 most
-recently used memories with id and title, so the agent can pick the right
+recently used memories with id, title and up to five keywords, and
+@{tt}total@{utt}, so the agent can pick the right
 one without another call. Only recall adds a @{tt}did_you_mean@{utt} --
 update and delete never guess, so no memory is changed or lost by a
 guess.
@@ -240,6 +241,9 @@ plugins:
       enabled: true
       max_memories: 10
       max_memories_per_session: 1000
+      auto_extract_keywords: true
+      search_n_results: 5
+      use_semantic_injection: true
 @{body}
 
 An agent sees the tool when its allowlist names it:

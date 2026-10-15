@@ -855,8 +855,10 @@ class ForgeServer(SchemaBasedToolServer):
             body = params.get("description") or ""
             target = params.get("target_branch") or ""
             closes = params.get("closes_issue")
-            if not isinstance(body, str) or not isinstance(target, str) or len(body) > 60_000:
+            if not isinstance(body, str) or not isinstance(target, str):
                 raise ForgeError("description and target_branch must be text")
+            if len(body) > 60_000:
+                raise ForgeError(f"description is {len(body)} characters; at most 60000")
             if closes not in (None, ""):
                 number = _number(closes)
                 if number is None:
@@ -896,6 +898,11 @@ class ForgeServer(SchemaBasedToolServer):
             if (title is not None and (not isinstance(title, str) or not title.strip())) or \
                     (body is not None and not isinstance(body, str)) or (draft is not None and not isinstance(draft, bool)):
                 raise ForgeError("title: text, description: text, draft: true|false")
+            # The limits pr create applies; without them the platform's 422 came back instead.
+            if title is not None and len(title) > 250:
+                raise ForgeError(f"title is {len(title)} characters; at most 250")
+            if body is not None and len(body) > 60_000:
+                raise ForgeError(f"description is {len(body)} characters; at most 60000")
             if title is None and body is None and draft is None:
                 raise ForgeError("nothing to change: give title, description or draft")
             pr = await backend.pr_update(number, title=title, body=body, draft=draft)

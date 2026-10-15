@@ -62,7 +62,9 @@ MALFORMED_FUNCTION_CALL | retried when streamed or not | retried only when strea
 rate-limit retries | up to 3, sharing the attempts | up to 2, with 0-50 % jitter
 @{body}
 
-The shipped @{tt}gemini-3-*@{utt} entries use gemini_sdk.
+The shipped direct entries (@{tt}gemini-4-argon*@{utt},
+@{tt}gemini-3-flash*@{utt}) use gemini_sdk; their @{tt}-batch@{utt}
+variants go through the batch client.
 
 @{h2}Direct or via OpenRouter
 
@@ -331,7 +333,7 @@ the run.
 
 @{table}
 Raised | When
-LLMRateLimitError | a rate limit after the retries
+LLMRateLimitError | a rate limit after the retries; marked retried when the client waited on a 429 itself, so the agent loop skips its own short retry
 LLMQuotaExhaustedError | the same, with "quota" or "exhausted" in the error
 LLMServerError | 5xx after the retries
 httpx.HTTPStatusError | any other 4xx, without retries (except the two 400s retried above); its status is Google's (gemini_sdk too)

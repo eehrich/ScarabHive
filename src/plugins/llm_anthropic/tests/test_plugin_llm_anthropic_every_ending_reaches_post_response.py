@@ -436,6 +436,37 @@ async def test_a_retry_after_that_is_no_wait_counts_as_not_asked(header, monkeyp
     assert len(waits) == 1 and 60.0 <= waits[0] <= 90.0
 
 
+@pytest.mark.parametrize("retries", [0, 1])
+async def test_a_rate_limit_says_whether_the_client_already_asked_again(retries, monkeypatch):
+    """The agent loop skips its own short 429 retry for a client that already waited and asked
+    again; without the marker a short Retry-After got a second wait and a second call."""
+    async def sleep(self, seconds, token):
+        pass
+
+    monkeypatch.setattr(AnthropicAsyncClient, "_cancellable_sleep", sleep)
+    async with Upstream(api_error(429, "rate_limit_error", headers="retry-after: 1\r\n")) as upstream:
+        client = client_for(upstream.url, rate_retries=retries)
+        with pytest.raises(LLMRateLimitError) as limited:
+            await client.chat_tools(MESSAGES, [])
+        assert upstream.hits == retries + 1
+    assert limited.value.retried is (retries > 0)
+
+
+async def test_a_429_after_a_5xx_retry_was_not_waited_on(monkeypatch):
+    """A 5xx retry before the 429 is no 429 wait: the agent loop's short retry is still due."""
+    async def sleep(self, seconds, token):
+        pass
+
+    monkeypatch.setattr(AnthropicAsyncClient, "_cancellable_sleep", sleep)
+    async with Upstream(api_error(529, "overloaded_error"),
+                        api_error(429, "rate_limit_error", headers="retry-after: 1\r\n")) as upstream:
+        client = client_for(upstream.url, retries=1, rate_retries=0)
+        with pytest.raises(LLMRateLimitError) as limited:
+            await client.chat_tools(MESSAGES, [])
+        assert upstream.hits == 2, "fixture: the 5xx was not retried"
+    assert limited.value.retried is False
+
+
 async def test_a_long_retry_after_goes_to_the_server_instead_of_being_slept(monkeypatch):
     """While the client sleeps a day, the server's fallback chain cannot run."""
     async def sleep(self, seconds, token):

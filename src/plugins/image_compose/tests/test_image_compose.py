@@ -261,6 +261,23 @@ class TestResolveSizeField:
         result = _resolve_size_field({"height": 200}, (1024, 1600), default=(100, 50))
         assert result == (400, 200)
 
+    @pytest.mark.parametrize("size", [{"width": 10}, {"height_pct": 50}])
+    def test_one_side_without_default_is_refused(self, size):
+        with pytest.raises(CompositionError, match="both width and height"):
+            _resolve_size_field(size, (100, 100))
+
+    @pytest.mark.parametrize("size", [[10, 0], [-5, 10], {"width": 0, "height": 10}])
+    def test_side_below_one_is_refused(self, size):
+        with pytest.raises(CompositionError, match="at least 1x1"):
+            _resolve_size_field(size, (100, 100))
+
+    def test_image_layer_with_one_side_fails_instead_of_drawing_nothing(self, tmp_path, fonts_dir):
+        src = tmp_path / "src.png"
+        Image.new("RGBA", (40, 60), (255, 0, 0, 255)).save(src)
+        with pytest.raises(CompositionError, match=r"layer 0 \(image\): size needs both"):
+            _render({"size": [50, 50], "layers": [
+                {"type": "image", "src": str(src), "size": {"width": 30}}]}, tmp_path, fonts_dir)
+
 
 # ── Direction → angle ─────────────────────────────────────────────────────
 

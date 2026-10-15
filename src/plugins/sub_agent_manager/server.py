@@ -1450,7 +1450,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             # Support both single instance_id and array instance_ids
             instance_id = params.get("instance_id")
             instance_ids = params.get("instance_ids", [])
-            
+            if isinstance(instance_ids, str):  # one id, not a list of its characters
+                instance_ids = [instance_ids]
+
             # Build list of IDs to delete
             ids_to_delete: list[str] = []
             if instance_id:

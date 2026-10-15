@@ -164,7 +164,7 @@ def _due_level(tokens: int, cfg: CompactionConfig) -> int:
 # chromadb parks one System per persist directory in a process-global
 # registry, and each System owns a tokio runtime (~6 descriptors, 4 threads).
 # Giving every session its own directory therefore meant one runtime PER
-# SESSION — 229 of them on the writer host, which exhausted the API's
+# SESSION — 229 of them on one production host, which exhausted the API's
 # descriptor limit and turned every API-key request into a 401. The vectors
 # never needed separate directories: every write carries the session_id and
 # every query filters on it. So all sessions — and all plugin instances in
@@ -525,8 +525,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
     # ------------------------------------------------------------------
     # Session data TTL
     #
-    # Nothing ever deleted a session directory: 1833 of them on the writer
-    # host since June, one per (mostly short-lived) writer sub-agent run. The
+    # Nothing ever deleted a session directory: 1833 of them on one production
+    # host since June, one per (mostly short-lived) sub-agent run. The
     # sweep removes directories idle for longer than session_data_ttl_days,
     # together with the session's vectors in the shared store — one criterion
     # for both, so neither can outlive the other. Rate-limited and on its own

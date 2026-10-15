@@ -217,6 +217,7 @@ class GeminiClient(LLMClient):
         yielded_delta = False
 
         last_exception = None
+        rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
         for attempt in range(self.max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
@@ -583,6 +584,7 @@ class GeminiClient(LLMClient):
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
                         await self._notify_retry("gemini", self.model, url.split("?")[0], True, f"Rate limit (429): {error_str[:200]}", attempt, self.max_retries + 1)
+                        rate_limit_waits += 1
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         continue
                     
@@ -595,7 +597,8 @@ class GeminiClient(LLMClient):
                         )
                     raise LLMRateLimitError(
                         f"Rate limit exceeded: {error_str}",
-                        provider="gemini", model=self.model, retry_after=wait_time
+                        provider="gemini", model=self.model, retry_after=wait_time,
+                        retried=rate_limit_waits > 0
                     )
                 
                 # Check if this is a 400 error that might be caused by mode=ANY
@@ -732,6 +735,7 @@ class GeminiClient(LLMClient):
         # Track MALFORMED_FUNCTION_CALL for auto-retry
         got_malformed_function_call = False
         last_exception = None
+        rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
         for attempt in range(self.max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled before attempt")
@@ -942,6 +946,7 @@ class GeminiClient(LLMClient):
                             f"(attempt {attempt + 1}/{self.max_retries + 1})"
                         )
                         await self._notify_retry("gemini", self.model, url.split("?")[0], False, f"Rate limit (429): {error_str[:200]}", attempt, self.max_retries + 1)
+                        rate_limit_waits += 1
                         await self._cancellable_sleep(wait_time, cancellation_token)
                         continue
                     
@@ -954,7 +959,8 @@ class GeminiClient(LLMClient):
                         )
                     raise LLMRateLimitError(
                         f"Rate limit exceeded: {error_str}",
-                        provider="gemini", model=self.model, retry_after=wait_time
+                        provider="gemini", model=self.model, retry_after=wait_time,
+                        retried=rate_limit_waits > 0
                     )
                 
                 # Check if this is a 400 error that might be caused by mode=ANY

@@ -165,16 +165,10 @@ without an agent, the way the decisions and speech clients report theirs:
 the message debugger and OpenTelemetry see them, and the usage tracker
 books their cost once, under the provider's name (openai_httpx, ...) with a
 context window of 0, in the calling session. The calling agent's own
-totals do not include them. This holds only for clients that report their
-plain chat calls -- see the gaps below.
-
-@{h2}Known gaps
-
-@{bullet}Not every client reports a plain chat call to the hooks. The
-batch client (a model entry with @{tt}provider: batch@{utt}), the
-@{tt}anthropic@{utt} client and the @{tt}openai@{utt} SDK client (outside
-realtime) never do, so a profile on one of them is neither seen nor booked.
-The fix belongs to those clients, not to the router.
+totals do not include them. Every chat client reports its plain
+@{tt}chat()@{utt} call this way, the batch client (a model entry with
+@{tt}provider: batch@{utt}) included; a client without
+@{tt}set_llm_hooks@{utt} would simply not be reported.
 @endnode
 
 @node setup "Setting it up"

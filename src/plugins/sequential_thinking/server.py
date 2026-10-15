@@ -620,7 +620,10 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             warnings = []
 
             # Update estimate if needed with auto-clamp and validation
-            if needs_more_thoughts or total_thoughts != session.total_thoughts_estimate:
+            # The last condition: an estimate held constant, as the schema asks,
+            # equals the stored one and skipped the clamp once it was overtaken.
+            if (needs_more_thoughts or total_thoughts != session.total_thoughts_estimate
+                    or total_thoughts < session.last_number):
                 old_estimate = session.total_thoughts_estimate
 
                 # Auto-clamp: the estimate must not be below the thoughts so far
@@ -842,6 +845,7 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             # Read AFTER status, and explicitly: params["session_id"] raised
             # KeyError while `status` was still unbound, so the except block
             # below reported an UnboundLocalError instead of the real reason.
+            self._cleanup_old_sessions()  # an expired session is gone for the summary too
             session_id = params.get("session_id")
             if not session_id:
                 await safe_status_call("error", "session_id is required")
@@ -941,6 +945,8 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             return HookResult(success=True, modified=False, context=context)
 
         try:
+            # The same sweep as a thinking call: never show a session the next call finds gone
+            self._cleanup_old_sessions()
             # The server entry's keys, with the calling agent's own
             # hooks.overrides entry on top -- the registry hands that over as
             # context.hook_config, and without this it was read by nobody.

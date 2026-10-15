@@ -1,6 +1,6 @@
 @database "stategraph"
 @author "Enrico Ehrich"
-@$VER: stategraph.guide 1.0 (30.09.2026)
+@$VER: stategraph.guide 1.0 (15.10.2026)
 @smartwrap
 
 @node main "State Graph"
@@ -33,6 +33,7 @@ For agents and developers
   @{"  Schedules  " link schedules}
   @{"  Callback URLs  " link callbacks}
   @{"  Running a machine from Python  " link python}
+  @{"  The cost hook  " link hook}
   @{"  What the model sees  " link model}
   @{"  Setting it up  " link setup}
   @{"  Security  " link security}
@@ -55,7 +56,7 @@ The panel has three parts; the toolbar buttons fold the outer two away.
 Every machine in the machine folders, in folders by the machine's
 @{tt}group@{utt} (@{tt}Reviews/nightly@{utt} is a folder inside another).
 Folders sort by name, so a group can lead with its order
-(@{tt}Writer/1 Front@{utt}, @{tt}Writer/2 Chapters@{utt}). A machine without a group sits in "My machines" when it lies in the
+(@{tt}Reviews/1 Draft@{utt}, @{tt}Reviews/2 Final@{utt}). A machine without a group sits in "My machines" when it lies in the
 folder new machines are saved to, else in a folder named after the plugin
 it comes with -- also when that folder is made writable.
 Each entry shows the title, the id when it says more than the title, the
@@ -577,9 +578,10 @@ own user, whoever triggered it.
 The tools are named after the plugin instance: @{tt}stategraph_catalog@{utt}
 and so on in the default setup. Every answer carries @{tt}status@{utt}
 @{tt}success@{utt}, or @{tt}error@{utt} with @{tt}error@{utt} (the reason)
-and @{tt}error_type@{utt} (@{tt}http_404@{utt}, @{tt}http_409@{utt},
-@{tt}http_422@{utt}). Validate and save need an admin or a user in
-@{tt}allowed_users@{utt} when auth is on; the others are open.
+and @{tt}error_type@{utt} (@{tt}http_403@{utt}, @{tt}http_404@{utt},
+@{tt}http_409@{utt}, @{tt}http_422@{utt}). Validate and save need an admin
+or a user in @{tt}allowed_users@{utt} when auth is on (else
+@{tt}http_403@{utt}); the others are open.
 
 @{h2}stategraph_catalog
 
@@ -625,7 +627,7 @@ Checks without saving.
 Parameter | Meaning
 files | relative path to text; the root is <machine_id>.yaml
 yaml | one machine file instead of files
-machine_id | the root machine; default the id in yaml, or the one file <id>.yaml whose id says so
+machine_id | the root machine; default the id in yaml, or the first top-level file <id>.yaml whose id says so
 @{body}
 
 Answer: @{tt}machine_id@{utt}, @{tt}problems@{utt} (level, code, message,
@@ -958,9 +960,9 @@ activities find no runner.
 @{code}
 server = registry.get("stategraph")          # the StateGraphServer instance
 row = await server.service.run_to_end(
-    "issue_loop", {"chapter": 3},
-    run_key=f"book-956:ch3:{attempt}",       # one key per pass
-    live={"pipeline": pipeline})             # objects that cannot be journaled
+    "nightly_report", {"day": day},
+    run_key=f"report:{day}:{attempt}",       # one key per pass
+    live={"client": client})                 # objects that cannot be journaled
 if row["status"] != "succeeded": ...         # not done: failed, cancelled, interrupted
 @{body}
 
@@ -980,8 +982,8 @@ work -- a graceful shutdown cancels the request that waits here -- need
 not end the run: pass @{tt}keep_on_cancel@{utt}, a function asked after
 the cancel. True interrupts the run instead (@{tt}interrupted@{utt}, its
 journal kept), and a later call under its key resumes it from the step in
-flight; False, or a function that raises, terminates as before. The
-writer asks its book's cancellation token: set means the user cancelled.
+flight; False, or a function that raises, terminates as before. A job
+runner, say, asks its own cancel flag: set means the user cancelled.
 
 @{b}run_key.@{ub} A key whose run ended answers that run's row again,
 without running anything -- after a transient failure a new run tries it
@@ -1004,7 +1006,7 @@ objects.
 
 @{b}A machine in several files.@{ub} Keep a long flow maintainable: a
 parent that only sequences, and each phase a machine of its own
-(@{tt}imports: {gate: ./book_gate.yaml}@{utt}, then
+(@{tt}imports: {gate: ./review_gate.yaml}@{utt}, then
 @{tt}do: {machine: gate, params: {...}}@{utt}), its call functions in a
 module of its own. A submachine is a frame of the same run: the
 caller's @{tt}live@{utt} objects reach its calls at every depth, and a
@@ -1013,9 +1015,43 @@ was cut off are replayed from the journal, not run again.
 
 @{b}What a call costs.@{ub} The LLM calls made under a @{tt}call@{utt}
 function -- by it, by the code it calls, by a tool it runs -- count into
-its activity (the hook @{tt}count_call_spend@{utt}), so the run's
-@{tt}spend@{utt} and the panel's cost by state hold them: a phase of a
-pipeline shows what it cost.
+its activity (the hook @{tt}count_call_spend@{utt}, see
+@{" The cost hook " link hook}), so the run's @{tt}spend@{utt} and the
+panel's cost by state hold them: a phase of a pipeline shows what it cost.
+@endnode
+
+@node hook "The cost hook"
+@{h1}The cost hook
+
+The plugin has one hook, @{tt}count_call_spend@{utt}
+(@{tt}post_llm_response@{utt}). It runs after every LLM call in the
+process and adds the call's usage -- tokens and cost -- to the
+@{tt}call@{utt} activity the call runs under: a @{tt}call@{utt}
+function's own model calls, those of the code it calls and of a tool it
+runs. An @{tt}agent@{utt} activity does not need it: it counts its calls
+from its run's events.
+
+It changes nothing in the call, the history or the answer. Outside a
+@{tt}call@{utt} activity -- a chat, a job, every other agent -- it reads
+one context variable, finds no activity to count into, and returns. A
+call that reports no usage (a retry, a failed attempt) is not counted;
+the attempt that succeeds reports again. Each instance's copy of the hook
+sees the same call, so a call is counted once however many stategraph
+instances run. A failure to count is logged as a warning, never raised
+into the call.
+
+It is on by default (@{tt}enabled: true@{utt} in @{tt}schema.yaml@{utt})
+and has no settings. An agent whose hooks are off does not report its
+calls; one that sets
+
+@{code yaml}
+hooks:
+  overrides:
+    stategraph.count_call_spend: {enabled: false}
+@{body}
+
+in its @{tt}agent_config@{utt} leaves its calls out of the cost (see
+@{" What the model sees " link model}, "Known gaps").
 @endnode
 
 @node model "What the model sees"
@@ -1050,7 +1086,7 @@ key is the same request -- use a new key for a new one"
 @{tt}stategraph_author@{utt}'s system prompt is its own prompt (about 4 KB)
 and the body of the skill @{tt}stategraph-authoring@{utt} (about 11 KB):
 the method, one whole machine, the rules, the kinds, the mock syntax, the
-validation codes. It reads the full format reference (about 59 KB),
+validation codes. It reads the full format reference (about 60 KB),
 @{tt}patterns.md@{utt} (20 KB) and @{tt}debugging.md@{utt} (15 KB) on
 demand; those are appended to the conversation. @{tt}context_engineer@{utt}
 is on for it.
@@ -1071,8 +1107,9 @@ changes. They grow with the machine: @{tt}get_machine@{utt} returns every
 file, @{tt}get_run@{utt} up to @{tt}steps@{utt} journal rows (at most
 200,000 characters). The author's system prompt holds no ticking values:
 a stable cache prefix. Runs cost the author no tokens -- the engine calls
-agents and tools itself. The plugin has no hook: it writes only into its
-runs' own sessions.
+agents and tools itself. The plugin writes only into its runs' own
+sessions; its one hook (@{" The cost hook " link hook}) only reads what a
+call cost and changes no prompt.
 
 @{h2}Known gaps
 
@@ -1106,8 +1143,7 @@ The plugin ships its own configuration,
 @{tt}agents/stategraph_author.yaml@{utt}, which
 @{tt}config/config.yaml@{utt} includes
 (@{tt}../src/plugins*/*/agents/*.yaml@{utt}); nothing needs registering.
-The entry of the tool instance, without its comments and the lines for
-other plugins' machines (an @{tt}inject_params@{utt} entry among them):
+The entry of the tool instance, without its comments:
 
 @{code yaml}
 plugins:
@@ -1124,6 +1160,7 @@ plugins:
       runs_db: data/stategraph/runs.db
       runner_agent: stategraph_runner
       allowed_users: []
+      inject_params: {}
       default_max_wait: 600
 @{body}
 
@@ -1230,7 +1267,12 @@ plugin code, and they run agents and tools. So:
 
 @{bullet}The panel and its API are for admins: the route rule
 @{tt}/plugins/stategraph/*@{utt} in @{tt}config/security.yaml@{utt}, and
-the plugin checks the role itself as well.
+the plugin checks the role itself as well. Two routes are the exception:
+@{tt}/plugins/stategraph/answer@{utt} and @{tt}/pending@{utt}, where a
+person answers the wait of a machine agent their own request runs into
+(@{" When the run waits " link stategraph_machine/waits}); their rules in
+@{tt}config/security.yaml@{utt} let any user in, and the route lets only
+the run's own user or an admin answer.
 @{bullet}With auth on, the tools that validate, save, run, control and send
 events need an admin or a user in @{tt}allowed_users@{utt}. Validating
 and saving never run a machine's Python module; only a run does.

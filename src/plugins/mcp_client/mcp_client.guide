@@ -108,7 +108,7 @@ with @{tt}_@{utt} (the runtime's own) are removed first. The answer:
 @{table}
 The server sends | The model gets
 an error result (isError) | an error with the server's text blocks
-image or audio blocks | the files, written to disk and shown to the model as media; the text blocks as message
+image or audio blocks | the files, written to disk and shown to the model as media; the text blocks as message (none: "2 media item(s) returned by <tool>")
 text blocks | all of them in order, a blank line apart, as one string; resource blocks next to them are dropped
 no text block | the structured content, or else the whole result as JSON
 @{body}
@@ -169,13 +169,24 @@ for the process. A connect that fails is logged and not tried again for
 five minutes; the run goes on without that server's tools. Views that
 only show an agent's tools (system prompt, token count) do not connect.
 
-When a connection drops -- a stdio program exits, a remote server goes
-away -- nothing reconnects it by itself. Its calls fail with "External MCP
-server '<server>' is not connected" until someone reconnects it with
-@{tt}/mcp-connect@{utt} or the management tool, or the process restarts.
-An on_demand server is reconnected by the next run that names it.
-The agents' tool list may keep showing the dropped server's tools until
-the next connect or disconnect.
+When a connection drops -- a stdio program exits, a remote server
+hangs up -- it counts as not connected at once, and the next call to the
+server starts it again: one restart, shared by calls that arrive at the
+same time. The call that saw the connection close fails with "MCP server
+'<server>' closed the connection -- its process ended or the remote hung
+up (...). The next call starts it again." when its request had reached
+the server, because repeating it could do the work twice; a request that
+never left goes out once more on the new connection. A restart that
+fails is not tried again for five minutes; calls in that time answer
+"External MCP server '<server>' died and did not start again; next try
+in Ns". A restarted HTTP server that forgot the session gets a new one.
+A dead server's tools stay in the agents' tool list.
+
+A server closed on purpose -- @{tt}/mcp-disconnect@{utt}, the management
+tool, the process shutting down -- is not started again by a call: its
+calls fail with "External MCP server '<server>' is not connected" until
+someone connects it, or, for an on_demand server, the next run that
+names it.
 @endnode
 
 @node tools "The management tools"
@@ -302,6 +313,10 @@ such as:
 @{bullet}"MCP server 'everything' did not answer within 5.0s"
 @{bullet}"Tool call failed: <the server's error text>"
 @{bullet}"MCP server 'everything' disconnected: <cause>"
+@{bullet}"MCP server 'everything' closed the connection -- its process
+ended or the remote hung up (<cause>). The next call starts it again."
+@{bullet}"External MCP server 'everything' died and did not start again;
+next try in 240s"
 
 @{h2}The status line
 
@@ -381,6 +396,7 @@ external_servers:
 @{table}
 Key | Default | Meaning
 enabled | false | only enabled servers are connected, listed and callable
+connect | startup | startup: connected when the plugin starts; on_demand: when a run names the server, see @{" External tools " link external}
 transport | streaming | streaming, streamable_http, streamable-http, http, smithery: streamable HTTP; sse, http_sse, http+sse: HTTP with SSE; stdio, local: start a program
 url | empty | the endpoint, for the HTTP transports
 command, args, env | none | the program, its arguments and extra environment, for stdio

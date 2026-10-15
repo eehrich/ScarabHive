@@ -15,6 +15,7 @@ from agent_system.core.session_presence import wake_blocked, wake_session
 from agent_system.plugins.cache import PluginCache
 from agent_system.paths import launch_dir
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.params import bool_param
 
 from .executor import CommandExecutor
 from .platform_detect import PlatformDetector
@@ -46,6 +47,22 @@ _HOST_CAP_FACTOR = 4
 def _yaml_quoted_fragment(text: str) -> str:
     """``text`` as the inside of a double-quoted YAML (= JSON-escaped) string."""
     return json.dumps(text)[1:-1]
+
+
+async def _flags(params: dict[str, Any], *keys: str) -> dict[str, Any] | None:
+    """Read the yes/no parameters ``keys`` into ``params`` as real booleans, or
+    the error to answer. Models send them as text too, and ``"false"`` is a
+    true value: ``background: "false"`` started the command in the background,
+    ``force: "false"`` sent SIGKILL."""
+    try:
+        for key in keys:
+            params[key] = bool_param(params, key)
+    except ValueError as exc:
+        status = params.get("_status")
+        if status is not None:
+            await status.error(str(exc))
+        return {"status": "error", "error": str(exc), "error_type": "InvalidArgument"}
+    return None
 
 
 def _short_cmd(command: str, limit: int = _CMD_DISPLAY_LIMIT) -> str:
@@ -253,9 +270,10 @@ class TerminalServer(SchemaBasedToolServer):
         Returns:
             dict: Execution result (foreground) or process info (background)
         """
-        background = params.get("background", False)
-        
-        if background:
+        refused = await _flags(params, "background", "wake")
+        if refused:
+            return refused
+        if params["background"]:
             # Route to background execution
             return await self.execute_background(params)
         # Route to foreground execution
@@ -650,7 +668,10 @@ class TerminalServer(SchemaBasedToolServer):
         """
         process_id = params["process_id"]
         stream = params.get("stream") or "both"
-        clear_buffer = params.get("clear_buffer", False)
+        refused = await _flags(params, "clear_buffer")
+        if refused:
+            return refused
+        clear_buffer = params["clear_buffer"]
 
         # Get status context
         status = params["_status"]
@@ -727,7 +748,10 @@ class TerminalServer(SchemaBasedToolServer):
             dict: Status with killed flag and signal used
         """
         process_id = params["process_id"]
-        force = params.get("force", False)
+        refused = await _flags(params, "force")
+        if refused:
+            return refused
+        force = params["force"]
 
         # Get status context
         status = params["_status"]

@@ -670,7 +670,7 @@ def _resolve_size_field(size: Any, canvas_size: tuple[int, int],
         return default
     cw, ch = canvas_size
     if isinstance(size, (list, tuple)) and len(size) == 2:
-        return (int(size[0]), int(size[1]))
+        return _positive_size(int(size[0]), int(size[1]), size)
     if isinstance(size, dict):
         w = size.get("width")
         h = size.get("height")
@@ -688,8 +688,19 @@ def _resolve_size_field(size: Any, canvas_size: tuple[int, int],
                 w = int(h * aspect)
             elif h is None and w is not None:
                 h = int(w / aspect) if aspect else w
-        return (int(w or 0), int(h or 0))
+        # No default to take the other side from (image, svg): a missing side
+        # was 0 -- an image layer came out empty, an svg one ignored the size.
+        if w is None or h is None:
+            raise CompositionError(f"size needs both width and height, got {size!r}")
+        return _positive_size(int(w), int(h), size)
     raise CompositionError(f"invalid size: {size!r}")
+
+
+def _positive_size(w: int, h: int, given: Any) -> tuple[int, int]:
+    """A layer size of at least 1x1: a side of 0 drew an empty layer silently."""
+    if w < 1 or h < 1:
+        raise CompositionError(f"size must be at least 1x1, got {given!r}")
+    return (w, h)
 
 
 def _resolve_rect(rect: Any, position: Any, size: Any,
@@ -1396,8 +1407,6 @@ def _render_canvas_layer(layer: dict, canvas_size: tuple[int, int], project_root
     from .canvas import CanvasError, render_canvas
 
     size = _resolve_size_field(layer.get("size"), canvas_size, default=canvas_size) or canvas_size
-    if size[0] <= 0 or size[1] <= 0:
-        raise CompositionError(f"canvas layer: size must be positive, got {list(size)}")
     if size[0] > 8192 or size[1] > 8192:        # the canvas' own limit; a browser canvas ends at 32767
         raise CompositionError(f"canvas layer: size too large (max 8192 per side): {list(size)}")
     images = layer.get("images") or {}

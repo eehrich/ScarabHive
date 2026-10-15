@@ -150,10 +150,11 @@ def merge_frontmatter(base: Optional[Dict[str, Any]],
     fidelity the module promises. Nested mappings merge recursively so updating
     one sub-key does not drop its siblings; non-mapping values are replaced.
     Setting a key to ``None`` in ``updates`` removes it (lets a caller clear a
-    field). ``base`` None -> a shallow copy of ``updates``.
+    field). ``base`` None -> a new dict, built by the same rules: a null key
+    is left out instead of written as an empty ``key:``.
     """
     if base is None:
-        return dict(updates)
+        base = {}
     for k, v in updates.items():
         if v is None:
             base.pop(k, None)

@@ -135,13 +135,12 @@ itself; branching costs a full prompt per branch.
 
 @{h2}The worker
 
-@{tt}research_worker@{utt} is the research agent minus three things:
+@{tt}research_worker@{utt} is the research agent with less:
 @{bullet}no sub-agent manager, so a branch cannot branch again -- wherever
 the research agent itself runs, from the UI or as another agent's
 sub-agent;
 @{bullet}no @{tt}ask_user@{utt}: its questions are the coordinator's to ask;
-@{bullet}25 steps instead of 40, no Markdown formatting of its answer and
-no list of running sub-agents.
+@{bullet}25 steps instead of 40, and no list of running sub-agents.
 
 It shares the prompt file; the section about branching is left out of its
 prompt, so it is never told to use a tool it does not have.

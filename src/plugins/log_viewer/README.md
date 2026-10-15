@@ -7,7 +7,8 @@ panel and by the tools alike.
 
 - **Tools** `log_viewer_list`, `log_viewer_tail` and `log_viewer_search` -- the configured files, the newest lines of
   one, and lines matching a regular expression.
-- **Panel** Logs -- entries with time and level, level buttons, search, count, Follow and automatic reload.
+- **Panel** Logs (admins only) -- entries with time and level, level buttons, search, count, Follow and automatic
+  reload.
 
 Enable it in `config/plugins.yaml` (`log_viewer: {type: log_viewer, enabled: true, log_files: [...]}`) and allow
 `+log_viewer/*` in an agent's tool list.

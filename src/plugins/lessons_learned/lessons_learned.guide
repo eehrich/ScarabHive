@@ -196,7 +196,8 @@ the figures unchanged.
 @{bullet}delete: @{tt}status: deleted@{utt}.
 @{bullet}What still worked but could not be done completely comes as
 @{tt}warnings@{utt}: a lesson stored without the duplicate check, or left
-out of the search index; agents whose lessons a search could not reach.
+out of the search index; an update whose new text the index did not
+take; agents whose lessons a search could not reach.
 @{bullet}A refusal is @{tt}{"error": "..."}@{utt}: a parameter missing, a
 title over 200 characters, a priority outside 1 to 10, a lesson id not
 found, the agent's lesson limit reached, a search that could not run at
@@ -295,7 +296,7 @@ The following are verified lessons from past sessions. Apply them where relevant
 
 ### Domain Knowledge
 - ● **Check every date against the timeline** [P8]
-  Dates drift between chapters; check each one against the timeline.
+  Dates drift between documents; check each one against the timeline.
   Tags: continuity, dates
 ### Workflow
 - ◐ **Run the targeted tests before a commit** [P7]
@@ -430,8 +431,9 @@ only the panel can switch it on again."}@{utt},
 delete older lessons."}@{utt} and the like. In the chat, the call's status
 line ends with the result: "Lesson stored: coder_les_004", "Not stored:
 similar to coder_les_001, evidence added", "Found 3 lessons", "Retrieved
-12 lessons", "Evidence added: confirm (confidence: 0.583)", "Lesson taught
-to editor: editor_les_002".
+12 lessons", "Evidence added: confirm (confidence: 0.583)", "Not
+counted, this session gave or made it: confirm (confidence: 0.583)",
+"Lesson taught to editor: editor_les_002".
 
 @{h2}Tokens and cache
 
@@ -470,6 +472,7 @@ plugins:
     lessons_learned:
       type: lessons_learned
       enabled: true
+      description: "Persistent lessons learned across sessions with semantic search and cross-agent teaching"
       database_path: "data/lessons_learned/lessons.db"
       max_lessons_per_agent: 500
       dedup_similarity_threshold: 0.82

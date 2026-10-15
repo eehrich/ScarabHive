@@ -37,6 +37,13 @@ Open it from the launcher (@{b}Debugging@{ub}, "Logs") or the command
 palette. It belongs to no session: it shows the log files of the server,
 whichever chat is open.
 
+Only admins get it. The logs carry every user's prompts, names and
+session ids, so the panel and its two calls need the admin role -- the
+plugin asks for it under any instance name, and
+@{tt}config/security.yaml@{utt} says the same for
+@{tt}/plugins/log_viewer/*@{utt}. For everyone else the launcher does not
+list it, and a direct request is refused.
+
 @{image docs/panel.png "The Logs panel"}
 
 @{h2}What you see

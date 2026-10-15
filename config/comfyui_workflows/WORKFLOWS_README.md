@@ -1,226 +1,183 @@
-# ComfyUI Workflows — Requirements & Notes
+# ComfyUI workflows -- requirements and notes
+
+What each workflow configured in `config/plugins.yaml` needs on the ComfyUI server: model files, custom nodes,
+and the parameters worth knowing. How to add a workflow of your own: `README.md` in this folder.
 
 ## Overview
 
-| Workflow ID | File | Category | Dependencies |
+| Workflow ID | File | Category | Needs |
 |---|---|---|---|
-| `stable_audio` | stable_audio.json | audio | Stable Audio Open 1.0 |
-| `sdxl_txt2img` | sdxl_txt2img.json | image_generation | SDXL Base |
-| `sdxl_base_refiner` | sdxl_base_refiner.json | image_generation | SDXL Base + Refiner |
-| `sdxl_img2img` | sdxl_img2img.json | image_generation | SDXL Base + Refiner |
-| `sdxl_ipadapter` | sdxl_ipadapter.json | image_generation | SDXL Base + Refiner + IPAdapter-Plus |
+| `stable_audio` | stable_audio.json | audio | Stable Audio Open 1.0, T5 base |
+| `sdxl_txt2img` | sdxl_txt2img.json | image_generation | SDXL base |
+| `juggernaut_xl` | juggernaut_xl.json | image_generation | Juggernaut XL v9, 4x-UltraSharp |
+| `sdxl_base_refiner` | sdxl_base_refiner.json | image_generation | SDXL base + refiner, 4x-UltraSharp |
+| `sdxl_img2img` | sdxl_img2img.json | image_generation | SDXL base + refiner |
+| `sdxl_ipadapter` | sdxl_ipadapter.json | image_generation | SDXL base + refiner, IPAdapter Plus |
+| `qwenvl_caption` | qwenvl_caption.json | image_describe | a QwenVL custom node, Qwen3-VL-8B-Instruct-FP8 |
+
+Paths below are relative to the ComfyUI installation.
 
 ---
 
-## Workflow Details
+## `stable_audio` -- Stable Audio Generation
 
-### `stable_audio` — Stable Audio Generation
-**Purpose:** Generate ambient/background audio clips.
+A sound clip from a text prompt (`duration` in seconds, up to 47).
 
-**Model files required:**
-- `ComfyUI/models/checkpoints/stable-audio-open-1.0.safetensors`
-  - Source: `stabilityai/stable-audio-open-1.0` → `model.safetensors` (rename on copy!)
-- `ComfyUI/models/text_encoders/t5-base.safetensors`
-  - Source: `stabilityai/stable-audio-open-1.0` → `text_encoder/model.safetensors` (rename on copy!)
+**Model files:**
+- `models/checkpoints/stable-audio-open-1.0.safetensors`
+  - Source: `stabilityai/stable-audio-open-1.0` → `model.safetensors` (rename on copy)
+- `models/text_encoders/t5-base.safetensors`
+  - Source: `stabilityai/stable-audio-open-1.0` → `text_encoder/model.safetensors` (rename on copy)
 
-**Custom nodes:** None
-
----
-
-### `sdxl_txt2img` — SDXL Text-to-Image
-**Purpose:** Simple single-pass SDXL image generation (faster, slightly lower quality).
-
-**Model files required:**
-- `ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors`
-  - Download: https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0
-
-**Custom nodes:** None (built-in ComfyUI nodes only)
+**Custom nodes:** none.
 
 ---
 
-### `sdxl_base_refiner` — SDXL Base + Refiner (High Quality) ⭐ Default
-**Purpose:** Two-pass SDXL: base model generates structure (steps 0–26), refiner polishes details
-(steps 26–30). Significantly fewer artifacts and deformations than single-pass.
+## `sdxl_txt2img` -- SDXL Text-to-Image
 
-**Model files required:**
-- `ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors`
-- `ComfyUI/models/checkpoints/sd_xl_refiner_1.0.safetensors`
-  - Download: https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0
+A single SDXL pass: the fastest of the image workflows.
 
-**Custom nodes:** None (built-in ComfyUI nodes only)
+**Model files:**
+- `models/checkpoints/sd_xl_base_1.0.safetensors`
+  - Source: https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0
+
+**Custom nodes:** none.
 
 ---
 
-### `sdxl_img2img` — SDXL Image-to-Image (Style Continuation)
-**Purpose:** Encode a reference image as the starting latent and denoise from a given step.
-Preserves composition/colour palette of the reference proportional to `start_at_step`.
-Designed for **series cover continuation** — gives structural and colour continuity with a
-predecessor cover.
+## `juggernaut_xl` -- Juggernaut XL v9 + hires fix
 
-**Denoise control via `start_at_step`** (for `steps=30`):
-| `start_at_step` | Effective denoise | Effect |
+A base render at `width` x `height` (default 1024 x 1536), a 4x model upscale, a scale down to 1536 x 2304 and a
+low-denoise refine pass. The scale-down size is fixed in the workflow file (node 12): with another base size the
+result is still 1536 x 2304.
+
+**Model files:**
+- `models/checkpoints/Juggernaut-XL_v9.safetensors`
+- `models/upscale_models/4x-UltraSharp.safetensors`
+
+**Custom nodes:** none.
+
+---
+
+## `sdxl_base_refiner` -- SDXL Base + Refiner
+
+Two passes: the base model lays down the structure, the refiner works on the details; then a hires-fix pass
+(4x model upscale, a scale to `hires_width` x `hires_height`, a refine at `hires_denoise`).
+
+**Model files:**
+- `models/checkpoints/sd_xl_base_1.0.safetensors`
+- `models/checkpoints/sd_xl_refiner_1.0.safetensors`
+  - Source: https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0
+- `models/upscale_models/4x-UltraSharp.safetensors`
+
+**Custom nodes:** none.
+
+---
+
+## `sdxl_img2img` -- SDXL Image-to-Image
+
+Encodes a reference image (`reference_image`) as the starting latent and denoises from `start_at_step`. The later
+it starts, the more of the reference's composition and colours survive.
+
+**`start_at_step`** (with `steps=30`):
+
+| `start_at_step` | Steps that change the picture | Effect |
 |---|---|---|
-| 4 | ~0.87 | Very close to reference structure |
-| 7 | ~0.75 | Balanced (recommended default) |
-| 12 | ~0.60 | Loose reference, more creative |
-| 18 | ~0.40 | Just colour palette hints |
+| 4 | 26 of 30 | loose: mostly a new picture |
+| 7 | 23 of 30 | balanced (the default) |
+| 12 | 18 of 30 | close to the reference |
+| 18 | 12 of 30 | little more than a touch-up |
 
-**Workflow — before executing:**
-```python
-# 1. Upload reference cover to ComfyUI input folder
-upload_result = comfyui_workflow(operation="upload_image",
-                                  file_path="data/writer/covers/book_X.webp")
-filename = upload_result["filename"]  # e.g. "book_40.webp"
+The base model runs from `start_at_step` to step 26, the refiner from 26 to 30.
 
-# 2. Run img2img
-comfyui_workflow(operation="execute", workflow_id="sdxl_img2img", parameters={
-    "reference_image": filename,
-    "start_at_step": 7,   # 0.75 denoise
-    ...
-})
+**The reference image:** pass a local path. The plugin uploads the file to the ComfyUI server that runs the job,
+as long as it lies in one of `upload_source_dirs` and has an image extension:
+
+```json
+{"operation": "execute", "workflow_id": "sdxl_img2img",
+ "parameters": "{\"prompt\": \"a harbour at dawn\", \"reference_image\": \"data/workspace/images/sketch.png\", \"start_at_step\": 7}"}
 ```
 
-**Model files required:**
-- `ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors`
-- `ComfyUI/models/checkpoints/sd_xl_refiner_1.0.safetensors`
+A name that is no local file is passed on as the name of a file already in ComfyUI's input folder
+(`operation: upload_image` puts one there, on the primary server only).
 
-**Custom nodes:** None (built-in `VAEEncode` + `LoadImage`)
+**Model files:** SDXL base and refiner, as above.
+
+**Custom nodes:** none (`LoadImage` and `VAEEncode` are built in).
 
 ---
 
-### `sdxl_ipadapter` — SDXL + IP-Adapter (Style Transfer) ⭐ Best for Series
-**Purpose:** Extracts a style/mood/colour embedding from the reference image and injects it as
-an additional conditioning signal alongside the text prompt. The composition is completely new
-(txt2img style), but the visual aesthetic matches the reference. Best choice for series covers.
+## `sdxl_ipadapter` -- SDXL + IP-Adapter (style transfer)
 
-**Weight control via `weight`:**
+Takes a style embedding from the reference image and adds it to the text prompt as a second conditioning: the
+composition is new, the look follows the reference. `reference_image` as for `sdxl_img2img`.
+
+**`weight`:**
+
 | `weight` | Effect |
 |---|---|
-| 0.5 | Subtle style hint |
-| 0.7 | Clear style match (recommended) |
-| 0.9 | Very close to reference aesthetic |
+| 0.5 | a hint of the style |
+| 0.7 | a clear match (the default) |
+| 0.9 | very close to the reference |
 
-**Workflow — before executing:**
-```python
-# Same upload step as img2img:
-upload_result = comfyui_workflow(operation="upload_image",
-                                  file_path="data/writer/covers/book_X.webp")
-filename = upload_result["filename"]
-
-comfyui_workflow(operation="execute", workflow_id="sdxl_ipadapter", parameters={
-    "reference_image": filename,
-    "weight": 0.7,
-    ...
-})
-```
-
-**Model files required:**
-- `ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors`
-- `ComfyUI/models/checkpoints/sd_xl_refiner_1.0.safetensors`
-- `ComfyUI/models/ipadapter/ip-adapter_sdxl.safetensors` (~671 MB)
+**Model files:**
+- SDXL base and refiner, as above
+- `models/ipadapter/ip-adapter_sdxl.safetensors`
   - Source: `h94/IP-Adapter` → `sdxl_models/ip-adapter_sdxl.safetensors`
-  - Alternative: `ip-adapter_sdxl_vit-h.safetensors` → then also change CLIP Vision below
-- `ComfyUI/models/clip_vision/CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors` (~3.5 GB)
-  - Source: `h94/IP-Adapter` → `sdxl_models/image_encoder/model.safetensors` (rename on copy!)
-  - For `ip-adapter_sdxl_vit-h`: use `CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors` instead
-    (Source: `h94/IP-Adapter` → `models/image_encoder/model.safetensors`)
+- `models/clip_vision/CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors`
+  - Source: `h94/IP-Adapter` → `sdxl_models/image_encoder/model.safetensors` (rename on copy)
 
-**Download via `hf` CLI** (Windows, ComfyUI at `C:\Users\...\Documents\ComfyUI`):
+With the `hf` CLI (set `COMFYUI` to your ComfyUI folder):
+
 ```bash
-# Set COMFYUI path
-COMFYUI="C:/Users/enric/Documents/ComfyUI"
+COMFYUI="/path/to/ComfyUI"
 
-# 1. IPAdapter model
 hf download h94/IP-Adapter "sdxl_models/ip-adapter_sdxl.safetensors" --local-dir tmp/hf_dl
-cp tmp/hf_dl/sdxl_models/ip-adapter_sdxl.safetensors  "$COMFYUI/models/ipadapter/ip-adapter_sdxl.safetensors"
+cp tmp/hf_dl/sdxl_models/ip-adapter_sdxl.safetensors "$COMFYUI/models/ipadapter/ip-adapter_sdxl.safetensors"
 
-# 2. CLIP Vision (downloaded as model.safetensors → rename)
 hf download h94/IP-Adapter "sdxl_models/image_encoder/model.safetensors" --local-dir tmp/hf_dl
 cp tmp/hf_dl/sdxl_models/image_encoder/model.safetensors \
    "$COMFYUI/models/clip_vision/CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors"
 ```
 
-**Custom nodes required:**
-- **ComfyUI-IPAdapter-Plus** by cubiq
-  - Install via ComfyUI Manager: search "IPAdapter Plus"
-  - Or manually: `cd ComfyUI/custom_nodes && git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus`
-  - Provides: `IPAdapterModelLoader`, `CLIPVisionLoader`, `IPAdapterAdvanced`
-
-**Installation checklist:**
-```
-ComfyUI/
-├── custom_nodes/
-│   └── ComfyUI_IPAdapter_plus/    ← git clone here
-├── models/
-│   ├── checkpoints/
-│   │   ├── sd_xl_base_1.0.safetensors
-│   │   └── sd_xl_refiner_1.0.safetensors
-│   ├── ipadapter/
-│   │   └── ip-adapter_sdxl.safetensors
-│   └── clip_vision/
-│       └── CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors
-```
+**Custom nodes:** **ComfyUI_IPAdapter_plus** by cubiq (ComfyUI Manager: search "IPAdapter Plus", or
+`git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus` into `custom_nodes/`). It provides
+`IPAdapterModelLoader` and `IPAdapterAdvanced`.
 
 **Troubleshooting:**
-- Error `IPAdapterAdvanced not found` → custom node not installed/restarted
-- Error `ip-adapter_sdxl.safetensors not found` → wrong folder (must be `models/ipadapter/`, not `models/`)
-- Error `CLIP-ViT not found` → wrong folder (`models/clip_vision/`) or wrong filename
+- `IPAdapterAdvanced not found` → the custom node is not installed, or ComfyUI was not restarted.
+- `ip-adapter_sdxl.safetensors not found` → wrong folder (it must be `models/ipadapter/`).
+- `CLIP-ViT ... not found` → wrong folder (`models/clip_vision/`) or wrong file name.
 
 ---
 
-## Windows-Only: KSamplerAdvanced `[Errno 22] Invalid argument`
+## `qwenvl_caption` -- describe an image
 
-**Symptom:** Every workflow fails in KSamplerAdvanced with `OSError: [Errno 22] Invalid argument`.
-The traceback ends in `tqdm → wandb/sdk/lib/console_capture.py → comfyui_manager/prestartup_script.py`.
+Runs a vision-language model over `image` and answers with text: people, objects, setting and anything notable,
+as the default `prompt` asks. `image` is a local path as for `sdxl_img2img`. The text comes back in the result's
+`outputs.text`.
 
-**Cause:** `wandb` hooks into `sys.stderr` via `console_capture.py`. On Windows the ComfyUI
-stderr handle becomes invalid after the Electron shell redirects it, causing the write call to
-fail. Not an issue on Linux (stderr always has a valid file descriptor).
-
-**Fix:**
-```bash
-# Uninstall wandb from ComfyUI's venv
-"C:\Users\<user>\Documents\ComfyUI\.venv\Scripts\pip.exe" uninstall wandb -y
-
-# Then fully kill ALL ComfyUI/Python processes (the Desktop App's "Restart" button
-# does NOT kill the Python backend — use Task Manager or:
-taskkill /F /IM python.exe /T
-taskkill /F /IM ComfyUI.exe /T
-
-# Start ComfyUI fresh
-```
-
-**Note:** `wandb` is not required by ComfyUI or any standard workflow. It is installed as a
-transitive dependency of some custom nodes. Removing it has no impact on functionality.
+**Nodes the workflow uses:** `LoadImage` (built in), `AILab_QwenVL` with the model `Qwen3-VL-8B-Instruct-FP8`,
+and `TextOutput` -- both from custom node packs that have to be installed on the server.
 
 ---
 
-## Series Cover Strategy
+## Windows: KSamplerAdvanced fails with `[Errno 22] Invalid argument`
 
-The `cover_artist` agent uses this fallback chain for series follow-up books
-(`series_id ≠ ""` AND `predecessor_book_id ≠ ""`):
+**Symptom:** every workflow fails in KSamplerAdvanced with `OSError: [Errno 22] Invalid argument`; the traceback
+ends in `tqdm → wandb/sdk/lib/console_capture.py → comfyui_manager/prestartup_script.py`.
 
-```
-1. sdxl_ipadapter  (best: new composition, same style)
-        ↓ fallback if IPAdapter node not installed
-2. sdxl_img2img    (good: composition influenced by predecessor)
-        ↓ fallback if no predecessor cover found
-3. sdxl_base_refiner  (standard: standalone txt2img)
-```
+**Cause:** `wandb` hooks into `sys.stderr`; in the ComfyUI desktop app on Windows that handle can become invalid,
+and the write fails.
+
+**Fix:** uninstall `wandb` from ComfyUI's own virtual environment
+(`<ComfyUI>\.venv\Scripts\pip.exe uninstall wandb -y`), then end the ComfyUI processes completely -- the desktop
+app's Restart leaves its Python backend running -- and start ComfyUI again. `wandb` comes in as a dependency of
+some custom nodes; no standard workflow needs it.
 
 ---
 
-## Testing Against localhost
+## Pointing the plugin at a local ComfyUI
 
-The ComfyUI plugin is configured with `host: 192.0.2.5` in `config/plugins.yaml`.
-For local testing without affecting the production ComfyUI instance, override via env or
-test config:
-
-```yaml
-# test override
-comfyui:
-  host: "127.0.0.1"
-  port: 8188
-```
-
-Or run ComfyUI locally on port 8188 and the plugin will connect automatically.
+For a ComfyUI on the same machine, set the entry's `host` to `127.0.0.1` and `port` to `8188` (and leave
+`servers` out, or list only that one). With `servers` set, `host` and `port` are not used.

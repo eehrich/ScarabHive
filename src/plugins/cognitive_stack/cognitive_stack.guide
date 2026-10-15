@@ -92,8 +92,9 @@ clear | removes all frames; the stack itself stays
 
 @{bullet}Without @{tt}stack_id@{utt}: the stack of this conversation. The
 first push creates it with a random 10-character ID; every later call of
-the conversation finds it again. Until then, every operation but a push
-answers "No active cognitive stack found".
+the conversation finds it again. Until then, peek, list and pop_batch
+answer "No active cognitive stack found", and clear refuses with a text of
+its own.
 @{bullet}With @{tt}stack_id@{utt}: that stack, whichever conversation made
 it. A push to an ID the plugin does not know creates a stack under that ID,
 and from then on it is this conversation's stack. The other operations
@@ -106,7 +107,7 @@ own stack unless it is given an ID.
 @{table}
 Parameter | Used by | Meaning
 operation | all | push_batch, pop_batch, peek, list or clear
-items | push_batch | a list of objects: @{tt}context@{utt} (text, not empty) and optional @{tt}data@{utt} (an object, stored as sent)
+items | push_batch | a list of objects: @{tt}context@{utt} (text, not empty) and optional @{tt}data@{utt} (an object, stored as sent; an empty value such as [] or "" counts as no data)
 count | pop_batch | frames to pop; default 1, must be 1 or more; more than the stack holds pops all
 depth | peek | top frames to return; default 1; 0 or less returns all
 stack_id | all | see above
@@ -143,7 +144,7 @@ items array cannot be empty for push_batch. ... | no items (the text shows the r
 items must be an array | items is not a list
 Each item must be an OBJECT with 'context' key, got: str. ... | an item that is not an object
 Each item must have non-empty 'context' | a context that is missing, empty or not text
-'data' must be an object | data that is not an object
+'data' must be an object | data that is not an object and not empty
 Batch would exceed max depth (50). Current: 49, trying to add: 2 | the depth limit, with a hint to pop or clear first
 No active cognitive stack found. Use push_batch first to create a stack. | no stack_id and the conversation has no stack
 Stack X not found | an unknown stack_id

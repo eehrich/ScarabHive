@@ -426,7 +426,7 @@ nodes' data.
 @{table}
 Name | Meaning
 workflow_id, execution_id | required
-include_data | the nodes' output, n8n cutting each at 2,000 chars
+include_data | true: the nodes' output, n8n cutting each at 2,000 chars ("false" as text is false)
 nodes | only these nodes' data, at most 10
 @{body}
 
@@ -531,7 +531,8 @@ workflow still published?@{utt}).
 
 @{h2}The wake
 
-With @{tt}wake: true@{utt} the plugin watches the run over the public API
+With @{tt}wait: wake@{utt} (the default) and a run still going, the
+answer says @{tt}wake: true@{utt} and the plugin watches the run over the public API
 (every 2 s at first, backing off to 30 s) and, when it ends, starts a new
 run of the chat's agent with the framework's wake sentence. The agent is
 told to give you the execution id and end its turn, and when woken to read
@@ -578,6 +579,7 @@ workflow w1 is not managed by ScarabHive (tag 'scarabhive' missing); it stays un
 operation 0: node type n8n-nodes-base.executeCommand is blocked by policy
 n8n MCP rate limit reached (100 requests per IP and 5 minutes); retry in 102 s
 n8n MCP refused the key -- check N8N_MCP_KEY (it may have been rotated)
+the n8n public API refused the key -- check N8N_API_KEY
 n8n not reachable at http://n8n:5678 (ConnectError) -- is the container running?
   http://n8n:5678/healthz tells
 @{body}

@@ -215,7 +215,7 @@ row cap from a truncated answer.
 While the statement runs the chat shows "Executing: " and its first 50
 characters. It ends with "Query returned 12 row(s)", "Query returned 500
 row(s), more cut off", "Query affected 1 row(s)", or the error: "SQL error:
-no such column: titel -- did you mean 'title'?", "Database not found:
+no such column: titel — did you mean 'title'?", "Database not found:
 <path>", "Stopped on cancel: <sql>".
 
 @{h2}Values

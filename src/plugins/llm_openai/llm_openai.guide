@@ -180,6 +180,12 @@ the failed attempt, the stream first sends one
 @{tt}{"type": "stream_restart"}@{utt} chunk, and the caller drops what it has
 shown of that attempt.
 
+An LLMRateLimitError after the client waited on a 429 itself is marked as
+retried, so the agent loop skips its own short wait-and-ask-again on the
+same model (@{tt}rate_limit_retry_seconds@{utt}); one without such a wait
+(the first 429, a wait above 300 s, or a 429 after a 5xx retry) is not
+marked.
+
 The Realtime path does not retry (see @{" The Realtime API " link realtime}).
 The agent server's own fallback chain (@{tt}llm_profile@{utt} with more than
 one profile) takes over where these retries end; see
@@ -244,9 +250,10 @@ part becomes a note that audio input is not supported.
 
 @{h2}Known gap
 
-No retry and no LLMRateLimitError: how the Realtime API reports a rate limit
-has not been observed yet. Until then a limit is an ordinary error answer,
-and the agent falls back to the next profile.
+No retry. Only a handshake refused with 429 becomes an LLMRateLimitError;
+how the Realtime API reports a rate limit inside an open session has not
+been observed yet. Until then such a limit is an ordinary error answer, and
+the agent falls back to the next profile.
 @endnode
 
 @node usage "Usage, cost and the hooks"

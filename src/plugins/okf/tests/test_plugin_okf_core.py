@@ -106,6 +106,14 @@ class TestMergeFrontmatter:
         out = core.merge_frontmatter(None, {"type": "T"})
         assert out == {"type": "T"}
 
+    def test_base_none_leaves_out_null_keys(self):
+        # A new concept (or one whose header could not be parsed) wrote
+        # {"status": None} as an empty "status:" line instead of omitting it.
+        updates = {"type": "T", "status": None}
+        out = core.merge_frontmatter(None, updates)
+        assert out == {"type": "T"}
+        assert updates == {"type": "T", "status": None}  # the input is not mutated
+
 
 # --------------------------------------------------------------------------
 # Link resolution

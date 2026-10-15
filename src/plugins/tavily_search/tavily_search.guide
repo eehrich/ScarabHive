@@ -104,7 +104,7 @@ sends one query to Tavily and answers with its results.
 
 @{table}
 Parameter | Meaning
-query | required; a question or keywords. Empty or only spaces is an error
+query | required; a question or keywords. Empty, only spaces or not text is an error
 max_results | how many results; default @{tt}default_max_results@{utt} (5)
 search_depth | basic, or advanced for a more thorough search at twice the credits; default @{tt}default_search_depth@{utt} (basic)
 topic | general (default), news or finance
@@ -193,7 +193,7 @@ failed tool call. The texts:
 
 @{table}
 error | When
-Empty query provided | search without a query
+Empty query provided | search without a query, or a query that is not text
 No URLs provided | extract without URLs
 Too many URLs (N). Maximum is 20 per request. | extract with more than 20
 Search cancelled, Extraction cancelled | the run was stopped before the request went out; the answer also has @{tt}cancelled: true@{utt}

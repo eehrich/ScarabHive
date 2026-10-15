@@ -80,8 +80,9 @@ a line names the phase and the agents it lets the SAM start.
 The filter in the toolbar (on the List only) shows the open ones
 (running, idle, interrupted), only the running ones, or all, archived
 included. Each card has the state, the instance id, the agent type, the
-messages and tokens, when it was last used, the task, and for a running
-one its current activity.
+messages and tokens, when it was last used, the task, and the activity it
+last reported while one is stored: what a running one is doing, or for an
+interrupted one where its run was cut off.
 
 @{table}
 State | Means
@@ -158,7 +159,7 @@ blocking | create | true (default): the answer comes when the run is over; false
 wake_when_done | create | with blocking false: the session is woken when the run ends (see @{" Instances, limits and waking " link rules}); default false
 use_advanced_model | create, continue | runs the agent on its advanced model chain; default false; ignored when the SAM sets allow_advanced_model false, and on continue for the agent types in advanced_create_only_agents
 instance_id | continue, poll, wait, cancel, info, delete | the id an answer returned
-instance_ids | wait_all, delete | a list; duplicates count once
+instance_ids | wait_all, delete | a list; duplicates count once. delete also takes a single id given as a string, and instance_id and instance_ids together
 message | continue | the follow-up
 include_completed | list | true: archived ones too; failed and cancelled ones are always listed
 limit | info | messages per page; default 20, at most 200 (info_default_limit, info_max_limit)
@@ -326,8 +327,9 @@ Continue: `sub_agent_manager_manage_sub_agent(operation='continue', instance_id=
 The "Available agents" line names the phase's agents while phase filtering
 is on and a phase is set -- by the session, or else by the agent's
 configured default; otherwise @{tt}allowed_agents@{utt} as written, and
-nothing when that contains @{tt}*@{utt}. With @{tt}format: text@{utt} the
-block is a plain numbered list. When the last sub-agent is archived, the
+nothing when that contains @{tt}*@{utt}. With @{tt}format: text@{utt} (any
+value but @{tt}markdown@{utt}) the block is a plain numbered list, without
+the "Available agents" line. When the last sub-agent is archived, the
 hook says so once ("None left -- every sub-agent of this session is
 archived.").
 
@@ -373,7 +375,10 @@ format | markdown | markdown, or text
 
 The defaults come from the code; the SAM's server entry changes them for
 every agent in a @{tt}hook_config.inject_sub_agent_context@{utt} block,
-and the agent's own override wins over both.
+and the agent's own override wins over both -- except @{tt}enabled@{utt}:
+in the override it is the switch that turns the hook on for that agent
+(the hook system keeps it for itself), so the @{tt}enabled@{utt} setting
+is read from the server entry only.
 @endnode
 
 @node model "What the model sees"
@@ -405,8 +410,9 @@ The texts say what to change, for example:
 The chat's status line ends with the result: "Created sub-agent x (type:
 y), 1234 chars", "Continued sub-agent ...", "Async execution started: x",
 "Listed 3 sub-agents: a, b, c", "Retrieved info for x (type: y, showing 20
-of 45 messages)", "Completed: 2, Failed: 0 of 2 instances", "Cancelled x",
-"Archived sub-agent x (type: y)". An aborted run shows as an error line.
+of 45 messages)", "Completed: 2, Failed: 0 of 2 instances", "Cancelled x"
+(a background run), "Cancel requested for x" (a waiting create or
+continue), "Archived sub-agent x (type: y)". An aborted run shows as an error line.
 
 @{h2}Slash commands
 
@@ -455,8 +461,9 @@ DELETE /sub-agents/{id} | archives it, as delete does
 
 On the @{tt}/sub-agents/{id}@{utt} routes a sub-agent that is not in the
 session, or a session that is not yours, answers 404; the list and the
-map answer a session that is not yours as an empty one. Any other
-failure answers 500 with its reason. The list and the map only read: unlike the tool's list they never mark anything interrupted.
+map answer a session that is not yours as an empty one. Without a running
+session service every route answers 503. Any other failure answers 500
+with its reason. The list and the map only read: unlike the tool's list they never mark anything interrupted.
 @endnode
 
 @node setup "Setting it up"
@@ -550,8 +557,9 @@ phase set: no narrowing.
 @{h2}Reloading
 
 @{tt}agent-cli reload@{utt} (POST @{tt}/admin/reload-config@{utt}) applies
-changed lists, limits, the timeout, the info settings, the hook settings
-and phase filtering to a running SAM without touching its running
+changed lists, limits, the timeout, the info settings, the two
+advanced-model settings, the hook settings and phase filtering to a
+running SAM without touching its running
 sub-agents. A new agent needs a restart.
 
 @{h2}Where the data lives

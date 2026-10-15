@@ -194,7 +194,7 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
         nothing else, is billed per character, and arrives with ``llm_usage``
         empty -- skipped two lines below, because a row that invents a number
         is worse than no row. Its spend stays where it was (the message
-        debugger and writer_audio's own accounting).
+        debugger).
 
         What such a row is NOT is a context: it is recorded with a window of
         0, and that zero is what keeps it off every context reading --

@@ -7,8 +7,8 @@ context window. The **Context Summarizer** panel lists every run with what it sa
 
 - **Tools** `context_summarizer_summarize` (summarize now; `/summarize`) and `context_summarizer_check_stats`
   (message count, tokens, utilization, a recommendation; `/stats`).
-- **Hook** `summarize_context` (on for every agent) -- rewrites the history behind the prompts when it fires, so the
-  cached prompt prefix is lost once per run; off or a different `max_messages` per agent via
+- **Hook** `summarize_context` (on for every agent) -- rewrites the history behind the prompts when a run is applied,
+  so the cached prompt prefix is lost once per applied run (a skipped or rejected run changes nothing); off or a different `max_messages` per agent via
   `hooks.overrides.context_summarizer.summarize_context`.
 - **Panel** Context Summarizer -- the runs of a session or of all, their figures, the summaries and the messages they
   replaced.

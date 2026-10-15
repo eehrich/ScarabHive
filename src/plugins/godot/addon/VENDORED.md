@@ -1,7 +1,9 @@
 # Vendored editor addon
 
 `godot_mcp/` is the Godot editor addon from
-https://github.com/satelliteoflove/godot-mcp, copied verbatim (MIT, see LICENSE).
+https://github.com/satelliteoflove/godot-mcp, copied verbatim (MIT, see LICENSE)
+-- except `test/README.md`, whose links point at the upstream repository and
+which says what `setup` copies; re-apply that after an update.
 
 | | |
 |---|---|

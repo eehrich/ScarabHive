@@ -163,7 +163,9 @@ does a key of only whitespace.
 The batch backend is the exception: it always talks to api.openai.com with
 the entry's @{tt}api_key@{utt} or OPENAI_API_KEY, whatever base_url says.
 
-TLS verification follows the app's setting.
+TLS verification of the chat routes follows the app's setting
+(@{tt}network.ssl_verify@{utt}); the batch backend and openai_speech always
+check certificates.
 @endnode
 
 @node timeouts "Timeouts and streaming"
@@ -274,7 +276,7 @@ connect/read timeout, network error | 2 retries after 2 s and 4 s, then the http
 HTTP 5xx | 2 retries after 2 s and 4 s (none if a pin was released), then LLMServerError
 HTTP 429 | once: drop service_tier and retry (no attempt used); once: release an OpenRouter pin and retry (no attempt used); then at once LLMQuotaExhaustedError / LLMRateLimitError -- no backed-off 429 retries on this route
 404 under an OpenRouter pin | pin released, retried (no attempt used)
-400 or 404 rejecting replayed reasoning (encrypted content, thought signature, "produced under a different model") | once: all reasoning artifacts stripped from the session, request rebuilt (no attempt used)
+400 or 404 rejecting replayed reasoning (encrypted content, thought signature, "produced under a different model"), or such a rejection inside a 200 body | once: all reasoning artifacts stripped from the session, request rebuilt (no attempt used)
 stream without a terminal event | 2 retries after 2 s, then the partial text (see timeouts)
 body that is no JSON | 2 retries after 2 s, then the JSON error
 rate limit inside a 200 body | drop service_tier once (no attempt used), then retries with 2 s, 4 s
@@ -282,8 +284,12 @@ server_error inside a 200 body | 2 retries after 2 s, 4 s
 any other error inside a 200 body | handed to the agent as an answer carrying the error (see errors)
 @{body}
 
-The agent server's own fallback chain (@{tt}llm_profile@{utt} with more than
-one profile) takes over where these retries end; see
+A rate-limit error after openai_httpx's own 429 retries is marked as
+retried, so the agent loop skips its short same-model retry
+(@{tt}rate_limit_retry_seconds@{utt}); the one from openai_responses is not,
+so the loop may wait and ask the same model once more. The agent server's
+own fallback chain (@{tt}llm_profile@{utt} with more than one profile) takes
+over where these retries end; see
 @{" Writing an agent " link scarabhive/agentdev}.
 @endnode
 
@@ -399,11 +405,19 @@ prompt cache lives, else 30; 0 turns this off), as @{tt}order: [that one],
 allow_fallbacks: false@{utt}. That backend holds the prompt cache and is the
 only one that can verify the reasoning the run replays. A configured
 @{tt}order@{utt} that does not list the backend is left alone. When the
-pinned backend refuses (a 429, a 5xx that is retried, a 404, a rate limit
-or server error in the body), the pin is released and the retry goes out as configured. The
+pinned backend refuses (a 429, a 5xx that is retried, a 404; inside a 200
+body a rate limit on openai_httpx, a server error on openai_responses), the
+pin is released and the retry goes out as configured. The
 gateway's backend names are translated to routing slugs from its
 @{tt}/providers@{utt} list, reloaded at most every ten minutes; until it
 loads, nothing is pinned.
+@{bullet}@{b}The model pin (openai_responses).@{ub} An entry whose model is
+an OpenRouter alias (a name starting with @{tt}~@{utt}, such as
+@{tt}~google/gemini-flash-latest@{utt}) is resolved by the gateway per
+request, and it may answer with an older model when the newest fails. So
+the run's next request names the model that answered its latest turn (the
+stored reasoning block records it); a refusal sends the retry to the alias
+again. A run without a turn of its own starts at the alias.
 @{bullet}@{tt}plugins@{utt} (context-compression, response-healing, ...)
 are passed through verbatim, and only here -- on another endpoint they are
 not sent, with a warning when the client is built.

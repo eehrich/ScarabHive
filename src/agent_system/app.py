@@ -719,17 +719,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Include auth and admin routers
         from .api.auth_endpoints import router as auth_router
         from .api.admin_endpoints import router as admin_router
-        from .api.session_endpoints import session_router
 
         app.include_router(auth_router)
         app.include_router(admin_router)
-        app.include_router(session_router)
 
         # Note: SessionManager is stored in app.state during async lifespan startup
 
         logger.info("Authentication system initialized successfully")
     else:
         logger.info("Multi-user authentication is disabled")
+
+    # The session routes take an optional user: with auth off a request acts as
+    # "anonymous", the user its runs are made as. The shell's session list reads
+    # them either way, so they are mounted either way. /{id}/messages and
+    # /{id}/restore still want a signed-in user and answer 401 with auth off.
+    from .api.session_endpoints import session_router
+    app.include_router(session_router)
 
     # The app's own routes, in the order they were always registered: FastAPI
     # matches in order (/agents/{name}/... before /agents/debug/{name}/...,

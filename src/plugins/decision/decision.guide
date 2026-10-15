@@ -111,7 +111,7 @@ follows is what the code does with them.
 
 @{table}
 Parameter | Meaning
-items | required; a list of 1 to max_batch_size items. An item is an object with @{tt}context@{utt} and an optional @{tt}id@{utt}, or plain text
+items | required; a list of 1 to max_batch_size items. An item is an object with @{tt}context@{utt} and an optional @{tt}id@{utt}, or plain text. Without @{tt}items@{utt}, a top-level @{tt}context@{utt} is taken as the one item @{tt}item_1@{utt}
 items[].id | the item's key in the answer; missing or empty: @{tt}item_1@{utt}, @{tt}item_2@{utt}, ... by position. Two items with the same id: an error
 items[].context | required; the content to judge. Leading and trailing spaces are removed; empty is an error. An object or array is also taken and sent as it is
 questions | required; a list of 1 to max_questions questions, each an object or plain text
@@ -279,9 +279,10 @@ as well.
 
 While a call runs: "Evaluating <n> items against <m> questions" (or
 "scores"), then "Evaluated <k>/<n> items" about every fifth of the batch.
-At the end: "<n> items evaluated (<m> questions each)", or "<k>/<n> items
-evaluated (<f> failed)"; a refusal shows the error text, cut to 140
-characters.
+At the end: "<n> items evaluated (<m> questions each)" (or "scores
+each"), or "<k>/<n> items evaluated (<f> failed)". A refusal shows the
+error text behind a short label ("Items validation error: ...",
+"Questions limit error: ..."), all of it cut to 140 characters.
 
 @{h2}Tokens and cache
 

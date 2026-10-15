@@ -1,6 +1,6 @@
 @database "image_compose"
 @author "Enrico Ehrich"
-@$VER: image_compose.guide 1.1 (14.10.2026)
+@$VER: image_compose.guide 1.2 (15.10.2026)
 @smartwrap
 
 @node main "Image composition"
@@ -163,7 +163,7 @@ trim | true: crops to the visible part before the fit, so an object fills its si
 alpha_threshold | 1-255: after the fit, every pixel becomes fully opaque (alpha at or above it) or fully clear -- for pixel art
 @{body}
 
-A size needs both sides; one alone is an error. "true"/"false" as
+A size needs both sides, each at least 1; one alone is an error. "true"/"false" as
 strings work for cutout and trim. An alpha_threshold of 0 or true is
 refused -- leave the key out instead. The rembg model is downloaded once
 per computer into @{tt}~/.rembg@{utt} on first use (isnet about 170 MB).
@@ -259,7 +259,7 @@ rotation and blend mode, and other layers go above and below it.
 Key | Meaning
 script | the drawing, a function body (required); in scope: ctx, w, h, img
 size | [w, h] of the layer's canvas, at most 8192 per side; default: the whole canvas
-seed | a number, default 1 (anything else counts as 1); Math.random and the noise are seeded with it
+seed | a whole number, default 1 (a value that is no number counts as 1); Math.random and the noise are seeded with it
 images | {name: source} -- each is img.name in the script, ready for ctx.drawImage
 fonts | [alias or file] -- each is a font family in ctx.font, named in quotes: '40px "display"'
 @{body}
@@ -350,10 +350,9 @@ and with Debian's Chromium as root (--no-sandbox) in a container
 (tests/linux.Dockerfile builds it and runs the canvas tests). A
 container whose first process is the plugin's own Python keeps them as
 zombies, dead but unreaped; start it with an init (docker run --init).
-Each canvas
-layer starts a browser of its own -- about a second, a 4096 x 4096 layer
-about five; one of random pixels takes 19 seconds and 300 MB in the
-plugin's process.
+Each canvas layer starts a browser of its own, and the picture comes back
+through the plugin's process: a large layer, or one that sets every pixel
+from a function, takes far longer and more memory than a small drawing.
 
 Needs a Chromium on the server (@{" Setting it up " link setup}).
 @endnode
@@ -397,8 +396,8 @@ prefer | any (default), top_third, bottom_third, top_half or bottom_half: the ba
 max_candidates | how many places to return; default 3, held to 1-10
 @{body}
 
-The window moves in steps of a sixteenth of the free room, so at most
-17 x 17 places are tried. With top_third or top_half the window starts in
+The window moves in steps of a sixteenth of the free room, at least one
+pixel: 17 to 32 places per axis, fewer where the room is under 16 pixels. With top_third or top_half the window starts in
 that band but may reach below it when it is taller than the band.
 
 The answer: @{tt}image_size@{utt}, @{tt}search_size@{utt},
@@ -457,9 +456,9 @@ picture a cover fit scales to. Anything larger is refused: "layer 0
 @{bullet}There is no limit on the number of layers. Memory grows with them:
 every layer is held until the file is written, and with the layer export
 on, each is saved as a PNG the size of the canvas.
-@{bullet}Gradients and vignettes are computed pixel by pixel in Python: a
-full 1024 x 1536 canvas takes a second or two, a full 8192 x 8192 one
-close to a minute (measured: 4096 x 4096 in 8-12 seconds).
+@{bullet}Gradients and vignettes are computed pixel by pixel in Python:
+the time grows with their area, and a full canvas near the 8192 x 8192
+limit is slow.
 @{bullet}A canvas script is at most 200,000 characters and runs for at
 most @{tt}canvas_timeout@{utt} seconds; what its page prints back is
 capped at 512 MB, more than any picture needs.
@@ -553,8 +552,8 @@ image_compose_render again. Don't accept the cover as-is when warnings are
 present." -- with the plugin's own tool name, not the instance's.
 
 The chat's status line ends with "Rendered title.png: 1024x512 (48213
-bytes) -- 1 warning(s)", "brightness=0.23 std=0.08 -> light_text" or
-"best region x=112,y=1180,w=800,h=200 homogeneity=0.91 -> light_text".
+bytes) — 1 warning(s)", "brightness=0.23 std=0.08 → light_text" or
+"best region x=112,y=1180,w=800,h=200 homogeneity=0.91 → light_text".
 
 @{h2}The attached picture
 

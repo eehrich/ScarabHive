@@ -116,13 +116,14 @@ continues a cut-off read.
 A miss returns `files` (what the bundle actually holds) and, when the request was
 close enough to be a typo, `did_you_mean`. Agents slip on `reference/` vs
 `references/` in particular — **pick one spelling per repo**. Ours is the
-plural `references/`, in every bundle, matching the folder layout in Anthropic's
-skill guide; keep it that way when you add one, and the slip mostly stops
+plural `references/`, matching the folder layout in Anthropic's skill guide
+(only `mcp-builder`, taken over as it was published, keeps a singular
+`reference/`); keep it that way when you add one, and the slip mostly stops
 happening. (It used to be the singular here — the rename was purely about
 following the published convention, not because one spelling reads better. The
 `did_you_mean` hint stays either way: a shared spelling makes the slip rare, it
 does not make it impossible.) No suggestion is offered when the only
-difference is a number: `kapitel_15.md` and `kapitel_16.md` are two chapters, not
+difference is a number: `chapter_15.md` and `chapter_16.md` are two chapters, not
 two spellings, and pointing an agent at the neighbour is worse than the miss.
 
 Without the plugin, `always` skills still work — you just lose the ability to
@@ -149,8 +150,9 @@ what the repo currently uses:
 ```yaml
 skills:
   skill_dirs:
-    - .claude/skills    # what other tools drop into the project
-    - skills/*/         # our own, grouped: skills/<group>/<skill>/SKILL.md
+    - .claude/skills          # what other tools drop into the project
+    - skills/*/               # our own, grouped: skills/<group>/<skill>/SKILL.md
+    - src/plugins*/*/skills   # the skills that ship with a plugin
 ```
 
 Wildcards work like in the config `includes`. **A pattern expands to roots**, and
@@ -167,7 +169,9 @@ Note the middle row: `skills/*/` does **not** include flat skills sitting
 directly in `skills/`. Either list `skills` alongside it, or use `**`.
 
 Overlapping entries (`skills` and `skills/**/`) are scanned once, so mixing plain
-roots and patterns is safe. A pattern that matches nothing is logged — an empty
+roots and patterns is safe. A pattern that matches nothing is logged at INFO (it
+may simply wait for its first skill); a fixed path that does not exist, and a
+list from which no directory resolves at all, are logged as warnings — an empty
 skill list is otherwise hard to explain.
 
 Relative paths resolve config-folder-first, then repo root — for a pattern that
@@ -187,6 +191,6 @@ skipped — one bad directory never stops startup. A skill referenced by an agen
 but not found is logged as an ERROR (once per agent) and omitted, so a typo is
 visible instead of silently changing behaviour.
 
-Two cases are reported louder, because the failure is otherwise invisible: a
-directory that still carries a retired `skill.toml`, and a `skill_dirs` pattern
-that matches nothing. Both look identical to "there are simply no skills here".
+Two cases are reported as warnings, because the failure is otherwise invisible: a
+directory that still carries a retired `skill.toml`, and `skill_dirs` from which
+no directory resolves. Both look identical to "there are simply no skills here".

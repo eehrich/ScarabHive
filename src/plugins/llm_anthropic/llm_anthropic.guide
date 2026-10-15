@@ -324,7 +324,7 @@ exceptions is such a type, so the client translates them.
 
 @{table}
 Raised | When
-LLMRateLimitError | 429 after the retries, with a retry_after
+LLMRateLimitError | 429 after the retries, with a retry_after; marked retried when the client waited on a 429 itself, so the agent loop skips its own short retry
 LLMQuotaExhaustedError | the same, with "quota" or "exhausted" in the message. Unverified: an exhausted credit balance is said to come as a 400 invalid_request_error ("Your credit balance is too low"), which is raised as httpx.HTTPStatusError, not as this; no such answer has been seen here
 LLMServerError | 5xx or an overload/api error event after the retries; its status is the HTTP status, 529 for an overload event inside a stream
 httpx.HTTPStatusError | any other 4xx; the message is @{tt}HTTP <status>: <the API's message>@{utt}. 401 to 404 make the server block this model for every agent for a while
@@ -432,7 +432,7 @@ provides_batch | anthropic
 @{h2}Dependencies
 
 The @{tt}anthropic@{utt} SDK, at least 0.77.0 (the first version that takes
-@{tt}output_config@{utt}); it is imported when the first client is built, so
+@{tt}output_config@{utt}) and below 1.0 (1.x is untested here); it is imported when the first client is built, so
 a missing package fails there with the plugin named. @{tt}httpx@{utt} comes
 with it.
 
@@ -440,7 +440,7 @@ with it.
 
 With the app's @{tt}network.ssl_verify: false@{utt} the client uses its own
 HTTP connection without certificate checks, for TLS-intercepting proxies. The
-batch backend follows the app's setting too.
+batch backend does not follow that setting: it always checks certificates.
 
 @{h2}Where things live
 

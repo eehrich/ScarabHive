@@ -14,7 +14,7 @@ cd "$(dirname "$0")"
 # "py -3": Windows with python.org's installer but no PATH entry, where python/python3 are the Store's stand-ins.
 # python3.1x: a distribution whose python3 is older than the one installed beside it.
 PY=""
-for candidate in python3 python python3.13 python3.12 python3.11 "py -3"; do
+for candidate in python3 python python3.14 python3.13 python3.12 python3.11 "py -3"; do
   if command -v ${candidate%% *} >/dev/null 2>&1 &&
      $candidate -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
     PY=$candidate

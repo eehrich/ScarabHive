@@ -911,6 +911,24 @@ async def test_pr_create_names_the_closed_issue_once(tmp_path, monkeypatch, desc
     assert result["created"] and sent == [expected]
 
 
+async def test_pr_create_names_an_overlong_description_as_too_long(tmp_path, monkeypatch):
+    """It answered "description and target_branch must be text" for a text that was only too long."""
+    server = make_server(tmp_path, monkeypatch)
+    result, _ = await call(server, "pr_create", source_branch="scarabhive/9-x", title="T", description="x" * 60_001)
+    assert result["error"] == "description is 60001 characters; at most 60000"
+
+
+@pytest.mark.parametrize("field, value, error", [
+    ("description", "x" * 60_001, "description is 60001 characters; at most 60000"),
+    ("title", "t" * 251, "title is 251 characters; at most 250"),
+], ids=["description", "title"])
+async def test_pr_update_applies_the_limits_of_pr_create(tmp_path, monkeypatch, field, value, error):
+    """pr update sent an overlong text on to the platform unchecked."""
+    server = make_server(tmp_path, monkeypatch)
+    result, _ = await call(server, "pr_update", number=1, **{field: value})
+    assert result["error"] == error
+
+
 async def test_ci_retry_passes_the_backends_note(tmp_path, monkeypatch):
     server = make_server(tmp_path, monkeypatch)
     result, line = await call(server, "ci_retry", job_id=3)

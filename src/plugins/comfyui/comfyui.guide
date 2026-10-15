@@ -1,6 +1,6 @@
 @database "comfyui"
 @author "Enrico Ehrich"
-@$VER: comfyui.guide 1.0 (30.09.2026)
+@$VER: comfyui.guide 1.1 (15.10.2026)
 @smartwrap
 
 @node main "ComfyUI"
@@ -122,6 +122,10 @@ output_prefix | result, wait_for_completion | saved files are named <prefix>_<na
 file_path | load, upload_image | load: a file in the output folder; upload_image: the image to upload
 filename | load | a file name looked for in the output folder
 @{body}
+
+@{tt}include_content@{utt} and @{tt}download@{utt} also take "true"/"false", "yes"/"no" and "1"/"0"
+as text; any other value fails the call ("download: true or false,
+got 'maybe'").
 
 A parameter the workflow does not name is ignored. One it names but the
 call leaves out gets its default from the workflow's configuration; with
@@ -328,15 +332,16 @@ plugins:
     comfyui:
       type: comfyui
       enabled: true
-      host: "comfy.example"
+      description: "Execute ComfyUI workflows for image, audio, and video generation"
+      host: "comfyui-host"  # primary / fallback
       port: 8188
-      strategy: "least_loaded"
+      strategy: "least_loaded"  # "least_loaded" (probe queues) or "random"
       timeout_seconds: 1200
-      servers:
-        - host: "comfy.example"
+      servers:  # ComfyUI instances, load-balanced
+        - host: "comfyui-host"
           port: 8188
-        - host: "comfy.example"
-          port: 8189
+        #- host: "comfyui-host-2"
+        #  port: 8189
       unknown_threshold_seconds: 60
       output_dir: "data/comfyui/outputs"
       workflow_files_dir: "config/comfyui_workflows"
@@ -344,9 +349,14 @@ plugins:
       upload_source_dirs:
         - "data/comfyui/outputs"
         - "data/comfyui"
+        - "data/workspace/images"   # the image agent's drawings, as references
       workflows:
-        - id: sdxl_txt2img
+        - id: stable_audio
           ...
+
+@{tt}comfyui-host@{utt} stands for the address of your ComfyUI server
+(@{tt}http://comfyui-host:8188@{utt} in a browser). The shipped entry
+configures seven workflows; see @{" Workflows " link workflows}.
 @{body}
 
 An agent sees the tool when its allowlist names it:
@@ -424,4 +434,22 @@ A parameter's @{tt}node_id@{utt} is the number ComfyUI shows on the node
 (@{tt}inputs.text@{utt}). The value is written as the agent sends it;
 @{tt}type@{utt} only tells the model what to send. The workflow file is
 read on every execute: a changed file needs no restart.
+
+@{h2}The shipped workflows
+
+The default configuration names these; the files are in
+@{tt}config/comfyui_workflows@{utt}, and its @{tt}WORKFLOWS_README.md@{utt}
+lists the model files and custom nodes each one needs on the ComfyUI
+server.
+
+@{table}
+id | category | What it makes
+stable_audio | audio | a sound clip from a text (Stable Audio Open 1.0)
+sdxl_txt2img | image_generation | an image from a text, SDXL base in one pass
+juggernaut_xl | image_generation | an image from a text, Juggernaut XL v9 with a hires-fix pass
+sdxl_base_refiner | image_generation | an image from a text, SDXL base and refiner with a hires-fix pass
+sdxl_img2img | image_generation | an image from a text and a reference image (reference_image, start_at_step)
+sdxl_ipadapter | image_generation | a new image in the style of a reference image (reference_image, weight)
+qwenvl_caption | image_describe | a text that describes an image (Qwen3-VL)
+@{body}
 @endnode

@@ -1,31 +1,36 @@
-# ComfyUI Workflows Directory
-# Place your ComfyUI workflow JSON files here.
+# ComfyUI workflows
 
-## How to export workflows from ComfyUI:
-1. Build your workflow in ComfyUI
-2. Click "Save (API Format)" to export the workflow as JSON
-3. Save the file to this directory
-4. Add configuration to config/plugins.yaml under comfyui.workflows
+The workflow files the `comfyui` plugin runs, in ComfyUI's API format. The plugin reads them from
+`workflow_files_dir` (this folder by default), once per `execute`: a changed file needs no restart.
 
-## Example workflow configuration in plugins.yaml:
+## Adding a workflow
+
+1. Build the workflow in ComfyUI and test it there.
+2. Export it with **Save (API Format)** and save the JSON file in this folder.
+3. Name it, with the inputs an agent may set, in the `comfyui` entry of `config/plugins.yaml`:
+
 ```yaml
-comfyui:
-  workflows:
-    - id: my_workflow
-      name: "My Custom Workflow"
-      description: "Description of what this workflow does"
-      category: image_generation
-      workflow_file: my_workflow.json
-      parameters:
-        - name: prompt
-          type: string
-          required: true
-          node_id: "3"
-          field: inputs.text
+plugins:
+  servers:
+    comfyui:
+      workflows:
+        - id: my_workflow
+          name: "My Custom Workflow"
+          description: "What this workflow does"
+          category: image_generation
+          workflow_file: my_workflow.json   # without it: <id>.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              node_id: "3"          # the number ComfyUI shows on the node
+              field: inputs.text    # the dot path of the value in that node
 ```
 
-## Tips:
-- Use descriptive workflow IDs (e.g., sd15_txt2img, flux_img2img)
-- Group similar workflows by category
-- Document required parameters for each workflow
-- Test workflows manually in ComfyUI before automating
+A parameter left out of a call gets its `default`; without one the file keeps its own value. A `required`
+parameter left out fails the call.
+
+## More
+
+- `WORKFLOWS_README.md` -- the shipped workflows and the model files and custom nodes each needs.
+- The plugin's guide, `comfyui.guide` in the Help panel -- every parameter key, the tool and its answers.

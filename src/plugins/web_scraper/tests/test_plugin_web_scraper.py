@@ -259,6 +259,20 @@ async def test_tables_and_lists_come_only_when_asked(server):
     assert rich["lists"] == [{"type": "ul", "items": ["MOVE", "WAIT"]}]
 
 
+@pytest.mark.parametrize("told", ["false", "False", "0", "no", "maybe"])
+async def test_a_flag_sent_as_text_false_is_false(server, told):
+    # "false" is a true value in Python: it switched on what it was meant to keep off
+    with mock_httpx():
+        await call(server, "web_scraper_page", url="https://example.com/")
+        page, status = await call(server, "web_scraper_page", url="https://example.com/",
+                                  extract_tables=told, extract_lists=told, ignore_cache=told)
+        links, _ = await call(server, "web_scraper_page", url="https://example.com/", operation="links",
+                              include_nofollow=told, only_same_domain=told)
+    assert "tables" not in page and "lists" not in page
+    assert "(cached)" in status.end.call_args.args[0], "ignore_cache 'false' still uses the cache"
+    assert [l["abs_url"] for l in links["links"]] == ["https://example.com/home", "https://other.example/x"]
+
+
 async def test_a_transport_failure_is_retried_then_reported(server):
     with no_ssrf_check(), patch.object(WebScraperServer, "_fetch_html_once",
                                        AsyncMock(side_effect=httpx.ConnectError("refused"))), \

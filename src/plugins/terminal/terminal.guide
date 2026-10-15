@@ -49,6 +49,13 @@ process_id | background | a name of your own for the process, instead of @{tt}bg
 wake | background | wake this session when the process ends
 @{body}
 
+@{tt}background@{utt} and @{tt}wake@{utt}, like @{tt}clear_buffer@{utt}
+and @{tt}force@{utt} of the other two tools, take true/false, also as text
+("false", "no" and "0" are false, "true", "yes" and "1" true; left out or
+blank is the default). Anything else answers
+@{tt}InvalidArgument@{utt} ("background: true or false, got 'maybe'") and
+starts nothing.
+
 Each call is a new shell: a @{tt}cd@{utt} or an @{tt}export@{utt} does not
 carry over to the next command. The start directory is
 @{tt}platform.initial_cwd@{utt}, or the directory the server was started
@@ -95,6 +102,7 @@ before it is put into its job object.
 error_type | When
 SecurityError | the command is refused: a built-in or configured pattern, the whitelist, or a second command where chains are off
 ConfiguredOnly | cwd or env_vars sent to a whitelisted terminal; nothing is started
+InvalidArgument | background or wake is neither true nor false
 InvalidTimeout | timeout is no number, or less than 1
 TimeoutExceeded | timeout above max_timeout_seconds
 TimeoutError | the command ran longer than its timeout

@@ -16,6 +16,7 @@ from typing import Any, TYPE_CHECKING
 from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.multimodal_tool_content import DEFAULT_MAX_AUDIO_SIZE_MB
+from agent_system.utils.params import bool_param
 from agent_system.utils.path_sandbox import remote_outside
 
 if TYPE_CHECKING:
@@ -136,6 +137,23 @@ def export_audio(audio: Any, dest_path: Path, fmt: str, run: Any) -> None:
             name.unlink(missing_ok=True)
 
 
+def encode_into(dest_path: Path, cmd: builtins.list[str], run: Any) -> subprocess.CompletedProcess:
+    """Run the ffmpeg ``cmd`` (output path left out) into a temp file next to
+    dest_path; dest is replaced only when ffmpeg succeeded. Writing dest
+    directly left a half-written file after a timeout or a failure."""
+    import tempfile
+    fd, name = tempfile.mkstemp(prefix=TEMP_PREFIX, suffix=dest_path.suffix, dir=dest_path.parent)
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        done = run([*cmd, str(tmp)])
+        if done.returncode == 0:
+            _replace(tmp, dest_path)
+        return done
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 class AudioOpsError(Exception):
     """Base exception for audio operations."""
     
@@ -143,6 +161,20 @@ class AudioOpsError(Exception):
         super().__init__(message)
         self.error_type = error_type
         self.details = details or {}
+
+
+def _seconds(value: Any, key: str) -> float:
+    """A time in seconds from the model, or a ValidationError naming the parameter.
+
+    float() on its own answered "could not convert string to float" as a ValueError, and let
+    "nan" through every range check below it."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        seconds = math.nan
+    if not math.isfinite(seconds):
+        raise AudioOpsError(f"{key} must be a number of seconds, got {value!r}", "ValidationError", {key: value})
+    return seconds
 
 
 def _int32_to_int24_bytes(samples: "np.ndarray") -> bytes:
@@ -512,15 +544,8 @@ class AudioOpsServer(SchemaBasedToolServer):
                 )
             
             # Validate time values
-            try:
-                start_time = float(start_time)
-                end_time = float(end_time)
-            except (ValueError, TypeError):
-                raise AudioOpsError(
-                    "start_time and end_time must be numbers",
-                    error_type="ValidationError",
-                    details={"start_time": start_time, "end_time": end_time}
-                )
+            start_time = _seconds(start_time, "start_time")
+            end_time = _seconds(end_time, "end_time")
             
             if start_time < 0:
                 raise AudioOpsError(
@@ -1025,10 +1050,13 @@ class AudioOpsServer(SchemaBasedToolServer):
                 if filepath.name.startswith(TEMP_PREFIX):
                     continue
                 if filepath.is_file() and filepath.suffix.lower() in SUPPORTED_FORMATS:
+                    # The path inside the storage folder: a file a pattern found
+                    # in a subfolder must be named so the other tools find it.
+                    name = filepath.relative_to(effective_storage).as_posix()
                     try:
                         audio = await self._load_audio(filepath)
                         files.append({
-                            "name": filepath.name,
+                            "name": name,
                             "size_bytes": filepath.stat().st_size,
                             "duration_seconds": round(len(audio) / 1000.0, 2),
                             "format": filepath.suffix[1:].lower()
@@ -1040,7 +1068,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                         except OSError:
                             continue  # gone meanwhile
                         files.append({
-                            "name": filepath.name,
+                            "name": name,
                             "size_bytes": size_bytes,
                             "error": f"Cannot read: {str(e)}"
                         })
@@ -1125,8 +1153,8 @@ class AudioOpsServer(SchemaBasedToolServer):
             
             if start_time is not None or end_time is not None:
                 # Validate time range
-                actual_start = float(start_time) if start_time is not None else 0.0
-                actual_end = float(end_time) if end_time is not None else duration_sec
+                actual_start = _seconds(start_time, "start_time") if start_time is not None else 0.0
+                actual_end = _seconds(end_time, "end_time") if end_time is not None else duration_sec
                 
                 if actual_start < 0:
                     raise AudioOpsError(
@@ -1725,8 +1753,11 @@ class AudioOpsServer(SchemaBasedToolServer):
             dest_file = params.get("dest_file")
             gain_db = params.get("gain_db")
             envelope = params.get("envelope")
-            normalize = params.get("normalize", False)
-            
+            try:
+                normalize = bool_param(params, "normalize")  # "false" as text is a true value in Python
+            except ValueError as e:
+                raise AudioOpsError(str(e), error_type="ValidationError")
+
             # Validate required parameters
             if not source_file:
                 raise AudioOpsError("source_file is required", "ValidationError")
@@ -2275,10 +2306,9 @@ class AudioOpsServer(SchemaBasedToolServer):
                 # No silences found, just copy file
                 if status:
                     await status.progress("No silences detected, copying file...")
-                copied = await asyncio.to_thread(self._run, [
-                    "ffmpeg", "-y", "-i", str(source_path),
-                    *codec_args, str(dest_path)
-                ])
+                copied = await asyncio.to_thread(encode_into, dest_path, [
+                    "ffmpeg", "-y", "-i", str(source_path), *codec_args
+                ], self._run)
                 if copied.returncode != 0:
                     raise AudioOpsError(f"ffmpeg failed: {copied.stderr[-500:]}", error_type="ProcessingError")
 
@@ -2321,10 +2351,9 @@ class AudioOpsServer(SchemaBasedToolServer):
                 # No silences exceed threshold, copy file
                 if status:
                     await status.progress("No silences exceed max duration, copying file...")
-                copied = await asyncio.to_thread(self._run, [
-                    "ffmpeg", "-y", "-i", str(source_path),
-                    *codec_args, str(dest_path)
-                ])
+                copied = await asyncio.to_thread(encode_into, dest_path, [
+                    "ffmpeg", "-y", "-i", str(source_path), *codec_args
+                ], self._run)
                 if copied.returncode != 0:
                     raise AudioOpsError(f"ffmpeg failed: {copied.stderr[-500:]}", error_type="ProcessingError")
 
@@ -2399,9 +2428,7 @@ class AudioOpsServer(SchemaBasedToolServer):
             ]
             
             ffmpeg_cmd.extend(codec_args)
-            ffmpeg_cmd.append(str(dest_path))
-            
-            result = await asyncio.to_thread(self._run, ffmpeg_cmd)
+            result = await asyncio.to_thread(encode_into, dest_path, ffmpeg_cmd, self._run)
             
             if result.returncode != 0:
                 raise AudioOpsError(

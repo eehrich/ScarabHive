@@ -543,6 +543,38 @@ class TodoServer(SchemaBasedHookToolServer):
         for dep_id in task.depends_on:
             visit(dep_id)
 
+    def _update_refusal(
+        self,
+        task: Task,
+        collection: TaskCollection,
+        progress: Optional[int],
+        priority: Optional[str],
+        set_depends_on: Optional[List[str]],
+        add_depends_on: Optional[List[str]],
+    ) -> Optional[str]:
+        """Why an update would be refused, before it changes anything; None when it may go ahead."""
+        if progress is not None and not 0 <= progress <= 100:
+            return "Progress must be between 0 and 100"
+        if priority and priority.lower() not in {p.value for p in TaskPriority}:
+            return f"Invalid priority '{priority}'. Must be: low, medium, high, critical"
+        if set_depends_on is not None:
+            asked, new_deps = set_depends_on, list(set_depends_on)
+        else:
+            asked = add_depends_on or []
+            new_deps = task.depends_on + [d for d in asked if d not in task.depends_on]
+        missing = next((dep for dep in asked if dep not in collection.tasks), None)
+        if missing is not None:
+            return f"Dependency '{missing}' does not exist"
+        if new_deps != task.depends_on:
+            old_deps, task.depends_on = task.depends_on, new_deps
+            try:
+                self._detect_circular_deps(task, collection)
+            except DependencyError as e:
+                return str(e)
+            finally:
+                task.depends_on = old_deps
+        return None
+
     def _is_blocked(self, task: Task, collection: TaskCollection) -> bool:
         """
         Check if task is blocked by incomplete dependencies.
@@ -1172,6 +1204,18 @@ class TodoServer(SchemaBasedHookToolServer):
             # Save old values BEFORE any updates (for accurate change tracking)
             old_progress = task.progress if progress is not None else None
 
+            # Decided before anything changes: a refused update must leave the task as it was
+            refusal = self._update_refusal(task, collection, progress, priority, set_depends_on, add_depends_on)
+            if refusal:
+                logger.info(f"Update rejected: {task_id}: {refusal}")
+                if status:
+                    await status.error(refusal)
+                return {
+                    "task_id": task_id,
+                    "status": "validation_failed",
+                    "message": refusal,
+                }
+
             # Update status
             if new_status:
                 try:
@@ -1213,17 +1257,6 @@ class TodoServer(SchemaBasedHookToolServer):
 
             # Update progress
             if progress is not None:
-                if not 0 <= progress <= 100:
-                    msg = "Progress must be between 0 and 100"
-                    logger.info(f"Update rejected (invalid progress): {progress}")
-                    if status:
-                        await status.error(msg)
-                    return {
-                        "task_id": task_id,
-                        "status": "validation_failed",
-                        "message": msg,
-                    }
-
                 task.progress = progress
                 task.updated_at = datetime.now(UTC)
 
@@ -1231,22 +1264,7 @@ class TodoServer(SchemaBasedHookToolServer):
 
             # Update priority
             if priority:
-                try:
-                    priority_enum = TaskPriority(priority.lower())
-                except ValueError:
-                    msg = (
-                        f"Invalid priority '{priority}'. "
-                        f"Must be: low, medium, high, critical"
-                    )
-                    logger.info(f"Update rejected (invalid priority): {priority}")
-                    if status:
-                        await status.error(msg)
-                    return {
-                        "task_id": task_id,
-                        "status": "validation_failed",
-                        "message": msg,
-                    }
-
+                priority_enum = TaskPriority(priority.lower())
                 old_priority = task.priority
                 task.priority = priority_enum
                 task.updated_at = datetime.now(UTC)
@@ -1279,19 +1297,6 @@ class TodoServer(SchemaBasedHookToolServer):
 
             # Manage dependencies - SET (replace all)
             if set_depends_on is not None:
-                # Validate all new dependencies exist
-                for dep_id in set_depends_on:
-                    if dep_id not in collection.tasks:
-                        msg = f"Dependency '{dep_id}' does not exist"
-                        logger.info(f"Update rejected (dependency not found): {dep_id}")
-                        if status:
-                            await status.error(msg)
-                        return {
-                            "task_id": task_id,
-                            "status": "validation_failed",
-                            "message": msg,
-                        }
-
                 # Remove old dependencies (update reverse links)
                 old_deps = task.depends_on.copy()
                 for dep_id in old_deps:
@@ -1305,28 +1310,6 @@ class TodoServer(SchemaBasedHookToolServer):
                 for dep_id in task.depends_on:
                     if task_id not in collection.tasks[dep_id].blocks:
                         collection.tasks[dep_id].blocks.append(task_id)
-
-                # Check for circular dependencies
-                try:
-                    self._detect_circular_deps(task, collection)
-                except DependencyError as e:
-                    msg = str(e)
-                    logger.info(f"Update rejected (circular dependency): {msg}")
-                    if status:
-                        await status.error(msg)
-                    # Rollback to old dependencies
-                    for dep_id in task.depends_on:
-                        if dep_id in collection.tasks and task_id in collection.tasks[dep_id].blocks:
-                            collection.tasks[dep_id].blocks.remove(task_id)
-                    task.depends_on = old_deps
-                    for dep_id in old_deps:
-                        if dep_id in collection.tasks and task_id not in collection.tasks[dep_id].blocks:
-                            collection.tasks[dep_id].blocks.append(task_id)
-                    return {
-                        "task_id": task_id,
-                        "status": "validation_failed",
-                        "message": msg,
-                    }
 
                 task.updated_at = datetime.now(UTC)
                 changes["depends_on"] = {
@@ -1343,16 +1326,6 @@ class TodoServer(SchemaBasedHookToolServer):
             elif add_depends_on:
                 added = []
                 for dep_id in add_depends_on:
-                    if dep_id not in collection.tasks:
-                        msg = f"Dependency '{dep_id}' does not exist"
-                        logger.info(f"Update rejected (dependency not found): {dep_id}")
-                        if status:
-                            await status.error(msg)
-                        return {
-                            "task_id": task_id,
-                            "status": "validation_failed",
-                            "message": msg,
-                        }
                     if dep_id not in task.depends_on:
                         task.depends_on.append(dep_id)
                         # Update reverse dependency
@@ -1360,24 +1333,6 @@ class TodoServer(SchemaBasedHookToolServer):
                         added.append(dep_id)
 
                 if added:
-                    # Check for circular dependencies
-                    try:
-                        self._detect_circular_deps(task, collection)
-                    except DependencyError as e:
-                        msg = str(e)
-                        logger.info(f"Update rejected (circular dependency): {msg}")
-                        if status:
-                            await status.error(msg)
-                        # Rollback changes
-                        for dep_id in added:
-                            task.depends_on.remove(dep_id)
-                            collection.tasks[dep_id].blocks.remove(task_id)
-                        return {
-                            "task_id": task_id,
-                            "status": "validation_failed",
-                            "message": msg,
-                        }
-
                     task.updated_at = datetime.now(UTC)
                     changes["dependencies_added"] = ", ".join(added)  # type: ignore[assignment]
 

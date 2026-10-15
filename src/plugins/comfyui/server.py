@@ -18,6 +18,7 @@ from fastapi import APIRouter
 
 from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.params import bool_param
 from .comfyui_client import ComfyUIClient
 from .job_tracker import ACTIVE_STATUSES, ComfyUIJobTracker
 from .web_endpoints import ComfyUIWebEndpoints
@@ -978,8 +979,16 @@ class ComfyUIServer(SchemaBasedToolServer):
                 await status.error("prompt_id is required")
             return {"error": "prompt_id is required"}
         
-        download = params.get("download", True)
-        include_content = params.get("include_content", False)
+        # Not params.get(): models send booleans as text too, and "false" is a true value.
+        try:
+            raw = params.get("download")    # left out or blank: the default, yes
+            download = raw is None or (isinstance(raw, str) and not raw.strip()) \
+                or bool_param(params, "download")
+            include_content = bool_param(params, "include_content")
+        except ValueError as e:
+            if status:
+                await status.error(str(e))
+            return {"error": str(e)}
         output_prefix = params.get("output_prefix", "comfy")
         refusal = bad_prefix(output_prefix)
         if refusal:
@@ -1528,7 +1537,12 @@ class ComfyUIServer(SchemaBasedToolServer):
             poll_interval = max(1, int(params.get("poll_interval", 2)))
         except (TypeError, ValueError):
             poll_interval = 2
-        include_content = params.get("include_content", False)
+        try:
+            include_content = bool_param(params, "include_content")
+        except ValueError as e:
+            if status:
+                await status.error(str(e))
+            return {"error": str(e)}
         refusal = bad_prefix(params.get("output_prefix", "comfy")) if include_content else None
         if refusal:
             if status:

@@ -9,7 +9,8 @@ approval would reach (Claude Code, a state machine, a sub-agent with approvals
 off) is asked with a warning or blocked.
 
 - **Hook:** `check_tool_call` (`pre_tool_call`), off for every agent until it
-  sets `hooks.overrides.tool_approval.check_tool_call.enabled: true`.
+  sets `enabled: true` under the key `tool_approval.check_tool_call` of its
+  `hooks.overrides`.
 - **Approval UI:** the question appears as a row of the run in the web chat,
   with the call's arguments and the buttons; the answer goes to
   `POST /plugins/tool_approval/answer`. No tools, no panel.

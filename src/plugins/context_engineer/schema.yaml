@@ -332,7 +332,7 @@ config:
     type: integer
     default: 20000
     minimum: 0
-    description: "Tokens the context must grow after a compaction before the message-rewriting layers (P, 1, 2, 3) run again, unless a deeper layer has become due since. Not for /compact or the byte limit; media passes are not held. Per agent overridable."
+    description: "Tokens the context must grow after a compaction before the message-rewriting layers (P, 1, 2, 3) run again, unless a deeper layer has become due since. Not for /compact or the byte limit; media passes are held too while min_reduction > 0, unless the byte limit or always_compact_media_max forces them. Per agent overridable."
 
   min_reduction:
     type: number

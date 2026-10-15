@@ -124,7 +124,7 @@ def _retry_after(error: BaseException) -> Optional[float]:
 
 
 def _typed_error(error: BaseException, kind: Optional[str], model: str,
-                 retry_after: Optional[float] = None) -> BaseException:
+                 retry_after: Optional[float] = None, retried: bool = False) -> BaseException:
     """The error the agent server falls back on for *error* -- or *error* itself.
 
     The SDK's own exceptions are none of the types the server's profile fallback
@@ -138,7 +138,7 @@ def _typed_error(error: BaseException, kind: Optional[str], model: str,
         cls = (LLMQuotaExhaustedError if "quota" in lowered or "exhausted" in lowered
                else LLMRateLimitError)
         return cls(f"Rate limit: {message}", provider="anthropic", model=model,
-                   retry_after=retry_after)
+                   retry_after=retry_after, retried=retried)
     if kind == "server":
         # 529 for an overload that came as an error event inside a stream (status 200)
         code = status if status and status >= 500 else (529 if _error_type(error) == "overloaded_error" else 500)
@@ -893,6 +893,7 @@ class AnthropicAsyncClient(LLMClient):
         cancelled = asyncio.ensure_future(wait_for_cancel()) if callable(wait_for_cancel) else None
         _effective_max = max(self.max_retries, self.rate_limit_max_retries)
         try:
+            rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
             for attempt in range(_effective_max + 1):
                 if cancellation_token and cancellation_token.is_cancelled:
                     raise asyncio.CancelledError("Request cancelled by user")
@@ -1046,10 +1047,11 @@ class AnthropicAsyncClient(LLMClient):
                                 f"(attempt {attempt + 1}/{self.rate_limit_max_retries})"
                             )
                             await self._notify_retry("anthropic", self.model, url, True, f"Rate limit (429): {error_str[:200]}", attempt, self.rate_limit_max_retries + 1)
+                            rate_limit_waits += 1
                             await self._cancellable_sleep(wait_time, cancellation_token)
                             continue
                         await report_status(f"Rate limit exceeded after {attempt + 1} attempts: {self.model}")
-                        raise _typed_error(e, kind, self.model, wait_time) from e
+                        raise _typed_error(e, kind, self.model, wait_time, retried=rate_limit_waits > 0) from e
 
                     # Overloaded, other 5xx, an error event mid-stream, a dropped or
                     # timed-out connection: retried from scratch with backoff.

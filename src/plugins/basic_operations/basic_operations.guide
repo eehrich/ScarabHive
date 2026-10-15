@@ -58,9 +58,10 @@ max_wait_seconds | 3600 | the longest wait accepted, also shown to the model as 
 default_update_interval | 1.0 | how long the wait loop sleeps between looks at the clock; it must be above 0, or every wait answers "Update interval must be positive"
 @{body}
 
-The interval does not set how often the status line changes (every 10
-seconds, fixed) nor how fast a stop is noticed (within a second, fixed); in
-practice it changes nothing a user sees. The model cannot set it.
+The interval does not set how fast a stop is noticed (within a second,
+fixed). The status line changes at the first look after 10 seconds have
+passed -- every 10 seconds when the interval divides 10, once per interval
+when it is longer. The model cannot set it.
 
 Waking a session (see @{" Waking instead of waiting " link wake}) needs
 session presence, @{tt}session_presence.enabled@{utt} in

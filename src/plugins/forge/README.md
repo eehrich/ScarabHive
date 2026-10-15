@@ -5,7 +5,7 @@ platforms, under ScarabHive's policy. It pushes only to branches under a prefix 
 default branch and never forced; it merges only the reviewed head of an open, non-draft request without open
 threads and with green CI, and only where a repository allows it; text from the platform comes back marked
 untrusted. On GitLab a project webhook starts the coder for an issue assigned to the bot and wakes the session
-that works on a commented request or a failed pipeline.
+that works on an issue or request someone commented on, or on a branch whose pipeline failed.
 
 - **Tools** -- four tools, each with an `operation`: `forge_repo` (status, checkout, push on a local clone),
   `forge_issue` (list, get, comment, update), `forge_pr` (list, get, diff, discussions, create, update, comment,

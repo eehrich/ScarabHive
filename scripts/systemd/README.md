@@ -29,7 +29,8 @@ sudo systemctl status scarabhive.service
 
 Then make the config read the signing key from there -- `config/config.yaml`
 ships a published development key, and the environment alone does not replace
-it:
+it. Put this into `config/local.yaml`, this machine's own layer (read after
+`config/config.yaml`, never in the repository):
 
 ```yaml
 auth:
@@ -39,8 +40,8 @@ auth:
 
 A new key signs out everyone who is logged in; API keys keep working. Provider
 keys referenced as `${VAR}` come from the environment file the same way -- a
-real environment variable wins over `config/secrets.env`, so keep the keys out
-of the checkout.
+real environment variable wins over `config/local.env` and `config/secrets.env`,
+so keep the keys out of the checkout.
 
 ### Access from other machines: a reverse proxy
 
@@ -146,5 +147,5 @@ sudo journalctl -u scarabhive.service --since "2026-01-07 14:00"
 | `ORT_DISABLE_THREAD_AFFINITY` | `1` | Disable onnxruntime thread affinity (prevents SEGV) |
 | `AGENT_ENABLE_PROFILING` | unset | Enable performance profiling |
 | `AGENT_ENABLE_MEMORY_PROFILING` | unset | Enable memory profiling |
-| `AGENT_MEMORY_SNAPSHOT_INTERVAL` | `3600` | Memory snapshot interval (seconds) |
+| `AGENT_MEMORY_SNAPSHOT_INTERVAL` | unset (the code's default: 300; the commented-out line: 3600) | Memory snapshot interval (seconds) |
 | `AUTH_SECRET_KEY` etc. | from `/etc/scarabhive/env` | Secrets, never in the unit file |

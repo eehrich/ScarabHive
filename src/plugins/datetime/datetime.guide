@@ -275,8 +275,10 @@ today in @{tt}timezone@{utt}) to @{tt}target_date@{utt}, dates only:
 The code also reads parameters the model is not offered: @{tt}weeks@{utt}
 for add and subtract, @{tt}from_timezone@{utt} and @{tt}to_timezone@{utt}
 for convert_timezone (to_timezone wins over timezone), @{tt}start_date@{utt},
-@{tt}end_date@{utt} and @{tt}add_business_days@{utt} for business_days and
-days_until (they win over datetime, target_date and days),
+@{tt}end_date@{utt} and @{tt}add_business_days@{utt} for business_days
+(they win over datetime, target_date and days), @{tt}start_date@{utt} for
+days_until (it wins over datetime), @{tt}datetime_string@{utt} for parse
+(it wins over datetime),
 @{tt}timestamp@{utt} for to_timestamp (the other direction: a date from a
 Unix timestamp), @{tt}year@{utt} and @{tt}month@{utt} for calendar_info,
 and @{tt}format: custom@{utt} with @{tt}custom_format@{utt} for current.

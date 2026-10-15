@@ -1,6 +1,6 @@
 @database "json_store"
 @author "Enrico Ehrich"
-@$VER: json_store.guide 1.0 (30.09.2026)
+@$VER: json_store.guide 1.0 (15.10.2026)
 @smartwrap
 
 @node main "JSON Store"
@@ -75,9 +75,9 @@ the instance starts.
 Key | Default | Meaning
 session_scoped | true | a call without namespace uses the caller's session; false: all such calls share one space, "global"
 require_namespace | false | true: every call without namespace is refused (for stores that exist only to be shared)
-default_write_access | owner | owner or shared, for documents created without write_access; any other value makes every create fail
+default_write_access | owner | owner or shared, for documents created without write_access; any other value makes every such create fail
 max_docs | 50 | documents per namespace
-max_doc_bytes | 2097152 | size limit of one document, in characters of its compact JSON
+max_doc_bytes | 2097152 | size limit of one document, in characters of its JSON without indentation
 undo_depth | 5 | changes per document that undo can revert; 0 turns undo off
 namespace_ttl_hours | 48 | a namespace nobody touched this long is dropped from memory (reloaded from disk when used again); 0: never
 persist | true | save every document to disk; false: memory only
@@ -89,9 +89,10 @@ key_aliases | none | fixed renames of wrong keys, used with key_models
 @{body}
 
 With a data directory configured (@{tt}paths.data_dir@{utt} or
-@{tt}AGENT_DATA_DIR@{utt}), the default storage path lies in it. A relative
-@{tt}storage_path@{utt} you set yourself counts from the directory the
-process was started in.
+@{tt}AGENT_DATA_DIR@{utt}), the default storage path lies in it, and so does
+a @{tt}storage_path@{utt} of your own that starts with @{tt}data/@{utt}. Any
+other relative @{tt}storage_path@{utt} counts from the project root, where
+the API and the command line work.
 @endnode
 
 @node tool "The tool"
@@ -135,7 +136,7 @@ paths | delete_keys | required, a non-empty list of paths
 array_mode | merge, merge_doc | replace (default): a list overwrites a list; concat: appended
 depth | outline | how deep, default 3; below 0 counts as 0
 min_children | stats | a term must occur in this many children, default 2; values below 2 count as 2
-top | stats | how many terms, default 12 (also for 0)
+top | stats | how many terms, default 12 (also for 0); below 0 counts as 1
 exclude | stats | terms to leave out: a list, or one comma-separated text; an entry matches as part of a term, ignoring case; entries under 3 characters are ignored
 @{body}
 
@@ -157,7 +158,8 @@ brackets, so the document may be shorter than intended -- the answer's
 @{tt}chars@{utt} shows it.
 
 @{tt}data@{utt} is taken as it is. A text sent as @{tt}data@{utt} is
-stored as a text, not parsed.
+stored as a text, not parsed. A write or merge with neither answers
+"Provide the JSON either as 'data' (object) or 'json_text' (string)."
 
 @{h2}Answers
 
@@ -166,7 +168,7 @@ Every answer has @{tt}status@{utt}, ok or error; an error has
 
 @{table}
 operation | Fields besides status
-write | doc, chars (size of the compact JSON), top_level (the keys, at most 15 and then "+N more"; "array[N]"; or the type), replaced; repairs, remapped, persist_error when they apply
+write | doc, chars (size of the JSON without indentation), top_level (the keys, at most 15 and then "+N more"; "array[N]"; or the type), replaced; repairs, remapped, persist_error when they apply
 merge | as write, with created and merged_keys (the incoming top-level keys) instead of replaced
 merge_doc | as merge, with merged_from
 set_value | doc, chars, top_level, set_path
@@ -194,8 +196,8 @@ Existing: [...]" with the fields @{tt}did_you_mean@{utt} and
 Objects show their keys, texts their length (@{tt}string(1200)@{utt}),
 other values their type (@{tt}int@{utt}, @{tt}float@{utt}, @{tt}bool@{utt},
 @{tt}null@{utt}). Of a list only the first element is shown, followed by
-"... +N more". Below the depth, objects become "object(N keys)" and lists
-"array(N)".
+"... +N more"; an empty list is "array(empty)". Below the depth, objects
+become "object(N keys)" and lists "array(N)".
 
 @{h2}Recurring terms
 
@@ -244,9 +246,11 @@ removes the first and the originally third element.
 
 @{tt}merge@{utt} and @{tt}merge_doc@{utt} work the same way: objects are
 merged key by key, all the way down; any other value overwrites. Two lists
-are replaced, or joined with @{tt}array_mode: concat@{utt}. When one side
-is an object and the other is not, the merge is refused ("Root type
-mismatch ... use write to replace"), because the document would be lost.
+are replaced, or joined with @{tt}array_mode: concat@{utt}. When the
+document is an object and the incoming value is not, or the other way
+round, the merge is refused ("Root type mismatch ... use write to
+replace"), because the document would be lost. Below the top level such a
+pair is not refused: the incoming value overwrites.
 A merge into a document that does not exist creates it. @{tt}merge_doc@{utt}
 copies the source, so the two documents are independent afterwards; both
 must be in the same namespace.
@@ -256,7 +260,8 @@ must be in the same namespace.
 Before a write, merge, merge_doc or set_value is stored, in this order: the
 caller may change the document (see @{" Namespaces and ownership " link sharing});
 a new document fits under @{tt}max_docs@{utt} ("Too many documents (50).
-Delete unused ones."); the key model accepts it; the result fits under
+Delete unused ones.") and has a valid write access ("write_access must be
+'owner' or 'shared'"); the key model accepts it; the result fits under
 @{tt}max_doc_bytes@{utt} ("Document too large (N chars > limit M).").
 A refused change leaves the stored document as it was.
 
@@ -269,7 +274,11 @@ the change that created a document removes it, undoing a delete_doc brings
 the document back with its owner. A change that changed nothing (the same
 value again, delete_keys that found nothing) takes no step. Only the
 document's owner may undo, and on a shared document anyone -- also someone
-else's change. The copies are kept in memory only: a restart, or a
+else's change. With @{tt}undo_depth: 0@{utt} the answer is "undo is
+disabled for this store". Copies are kept for at most twice
+@{tt}max_docs@{utt} documents per namespace; beyond that the copies of
+deleted documents go first, then those of the documents touched longest
+ago. The copies are kept in memory only: a restart, or a
 namespace dropped for being idle, loses them ("Nothing to undo for 'x' (no
 recorded history)."). When another process changed the document, the
 copies are dropped too; see @{" Where the data lives " link storage}.
@@ -337,7 +346,7 @@ config:
 
 @{table}
 Model node | Means
-an object of keys | only these keys; "*" among them allows any other key, modelled by its value
+an object of keys | only these keys; "*" among them allows any other key, modelled by its value; a list there is checked element by element
 {} | anything below
 a type name | the value must be string, number, integer, boolean, array, object, null or any; null always passes; an unknown name allows anything
 a list with one model | the value must be a list; each element follows the model
@@ -371,8 +380,8 @@ from there on first use -- so a run that was aborted and continued, or a
 restarted server, finds its documents again. A document that cannot be
 saved stays in memory, and the answer says so in @{tt}persist_error@{utt}.
 
-Names are made safe for the file system: anything but letters, digits,
-@{tt}_ . -@{utt} is replaced, and a name that had to change, has capitals,
+Names are made safe for the file system: anything but ASCII letters,
+digits, @{tt}_ . -@{utt} is replaced, and a name that had to change, has capitals,
 ends in a dot, is a reserved Windows name or is longer than 60 characters
 gets a short hash of the original. A namespace or document name cannot
 reach outside the storage directory, and two names never share a file.
@@ -415,7 +424,8 @@ directory whose newest file is older than @{tt}file_retention_hours@{utt}
 
 @{h2}How big it can grow
 
-@{bullet}A document: @{tt}max_doc_bytes@{utt} characters of compact JSON.
+@{bullet}A document: @{tt}max_doc_bytes@{utt} characters of JSON without
+indentation.
 @{bullet}A namespace: @{tt}max_docs@{utt} documents.
 @{bullet}Namespaces: no limit. Every session that uses the store without a
 namespace adds one.

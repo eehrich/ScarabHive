@@ -17,6 +17,29 @@ from typing import Any, Dict
 import yaml
 
 
+def _argument_at(content: str, start: int) -> str:
+    """The call argument that starts at ``start``, up to the comma or closing
+    parenthesis at its own depth -- a lazy regex stopped at the first ")", so a
+    default like ``self.config.get("x", 300)`` came out cut in half."""
+    depth, quote = 0, ""
+    for i in range(start, len(content)):
+        ch = content[i]
+        if quote:
+            if ch == quote and content[i - 1] != "\\":
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                return content[start:i].strip()
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return content[start:i].strip()
+    return content[start:].strip()
+
+
 class ConfigExtractor:
     """Extracts config parameters from Python code via AST analysis."""
 
@@ -117,11 +140,9 @@ class ConfigExtractor:
         for pattern in patterns:
             for match in re.finditer(pattern, content):
                 key = match.group(1)
-                default = match.group(2).strip() if match.lastindex > 1 else None
+                default = _argument_at(content, match.start(2)) if match.lastindex > 1 else None
 
                 if default:
-                    # Clean up default value
-                    default = default.rstrip(')')
                     # Try to evaluate simple literals
                     default = self._parse_default_value(default)
 
@@ -225,23 +246,25 @@ class ConfigExtractor:
             return
 
         try:
-            with open(schema_file, encoding="utf-8") as f:
-                content = f.read()
-                # Remove Jinja2 templates for parsing
-                content = re.sub(r'\{\{.*?\}\}', '""', content)
-                content = re.sub(r'\{%.*?%\}', '', content, flags=re.DOTALL)
-                schema = yaml.safe_load(content)
+            # Rendered by the loader the runtime uses. Deleting the template tags
+            # with a regex broke most schemas: "{{ name }}" sits inside quoted
+            # strings, and both branches of an if/else landed in one document.
+            from agent_system.plugins.schema_loader import load_schema_from_dir
+            schema = load_schema_from_dir(self.plugin_path, {"name": self.plugin_path.name})
 
             if not schema:
                 return
 
             # Check for config section
             config_schema = schema.get('config', {})
+            # Some schemas write it as JSON schema: the entries are its properties.
+            if config_schema.get('type') == 'object' and isinstance(config_schema.get('properties'), dict):
+                config_schema = config_schema['properties']
+            # An entry is either {default: ..., description: ...} or the plain value.
             for key, spec in config_schema.items():
-                if isinstance(spec, dict):
-                    default = spec.get('default')
-                    if key not in self.config_params and default is not None:
-                        self.config_params[key] = default
+                default = spec.get('default') if isinstance(spec, dict) else spec
+                if key not in self.config_params and default is not None:
+                    self.config_params[key] = default
 
         except Exception as e:
             print(f"  Warning: Could not parse schema.yaml: {e}")

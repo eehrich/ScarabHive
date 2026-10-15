@@ -6,7 +6,8 @@ Records what every LLM call costs -- tokens, cache reads and writes, latency, pr
 `/costs` and `/context` and the context-compacting plugins read the same records.
 
 - **Hooks** `track_usage` (every call an agent makes) and `track_non_agent_usage` (calls without an agent: decisions,
-  speech synthesis that reports tokens) -- both on by default, no settings; they change nothing the model sees.
+  speech synthesis that reports tokens, `llm_router_chat`) -- both on by default, no settings of their own; an agent
+  opts out with `hooks.overrides.context_usage_tracker.track_usage.enabled: false`. They change nothing the model sees.
 - **Panel** Context & Cost Usage -- figures, a chart of the newest calls, tables per agent, per model and per call.
 - No tools.
 

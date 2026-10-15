@@ -107,7 +107,7 @@ The script prints no key and no password on the console, only HTTP status codes.
 
 ## 5. Enter the values in ScarabHive
 
-Exactly three values belong in the file `config/secrets.env` of your ScarabHive installation:
+Three values belong in the file `config/secrets.env` of your ScarabHive installation (a fourth when n8n's public address differs, see below):
 
 ```
 N8N_BASE_URL=http://localhost:5678

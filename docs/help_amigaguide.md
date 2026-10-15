@@ -68,9 +68,9 @@ every block whose language it knows (python, yaml, json, toml, bash, sql, js/ts,
 html/xml, diff, markdown, c/cpp, java) -- in guides as in rendered Markdown. A
 block with a button, image or text attribute inside it (even one that is still
 switched on from before, such as an open `@{b}`) stays uncoloured: Prism rewrites the markup,
-the button would be gone. At most 100,000 characters per page are coloured; a block
-that no longer fits stays uncoloured (512 KB of JSON cost 230 ms and 4.5 MB of
-markup on every open). If loading Prism fails, the
+the button would be gone. At most 100,000 characters per page are coloured (`HIGHLIGHT_BUDGET` in `guide.js`); a block
+that no longer fits stays uncoloured: colouring a large file costs time and markup on every
+open. If loading Prism fails, the
 next page asks again. The viewer removes the `tabindex` that Prism attaches to the block
 again: otherwise only every coloured block would be a tab stop. Colours: kit tokens, the same
 palette as in the chat.
@@ -92,16 +92,15 @@ that Python-Markdown needs (like GitHub).
 - File pages (`document()`) only for `.md`/`.markdown`/`.txt`, and only the `README.md`
   at the top of the folder or files under `docs/`. The review measured what every logged-in
   user read without this limit: agent prompts (`agents/prompts/*.md`),
-  gitignored working files, docs of admin-only plugins. A plugin folder also contains
-  configuration (n8n: a tracked `secrets.env`).
+  gitignored working files, docs of admin-only plugins. A plugin folder can also hold
+  configuration.
 - And only what the docs **link** (`linked_document()`): a button of a node,
-  a link of the README, a link of a file page reached that way. The third review found
-  unlinked material in `docs/` that is not for every reader (an operations runbook with
-  host IP and a `root@` command). The links come from the rendered page itself
+  a link of the README, a link of a file page reached that way. A later review found
+  unlinked material in `docs/` that is not for every reader. The links come from the rendered page itself
   (`data-file`): what the viewer shows as a link opens, nothing else -- a path
   in a code block unlocks nothing.
-- A file over 512 KB is named, not rendered: 2.8 MB of Markdown held the
-  renderer's lock for four seconds (debate forum and formatter hook waited along).
+- A file over 512 KB (`MAX_FILE_BYTES` in `amigaguide.py`) is named, not rendered: a large
+  Markdown file holds the renderer's lock for seconds, and the debate forum's pages wait along.
 - An unreadable file (an editor saving at exactly that moment, a lock) costs its
   own guide, not all routes.
 - Remote images are never loaded (the alt text stands in for them) -- the same line as
@@ -168,5 +167,5 @@ height) or the nearest scrolling box -- never anything outside its document.
   whose panel only admins open -- docs count as readable; whoever wants it otherwise attaches
   the guides to the plugin's panel roles.
 - No agent tool for reading the help (user 2026-09-28: an agent tool is not needed).
-- The search by meaning is English only (user 2026-10-06): all-MiniLM-L6-v2 found the right
-  guide for 3 of 8 German questions; two multilingual models measured worse overall.
+- The search by meaning is English only (user 2026-10-06): all-MiniLM-L6-v2 is weak on
+  German questions, and the multilingual models tried did worse overall.

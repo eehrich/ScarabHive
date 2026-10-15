@@ -419,7 +419,7 @@ class UsageTracker:
 
         The marker is CLAIMED atomically before anything is read. A plain
         "check, then import, then mark" spans several transactions, and
-        agent-api and agent-writer-worker are restarted together: reproduced
+        agent-api and a worker process are restarted together: reproduced
         with three simultaneous starts, the history landed twice.
         """
         # is_file, not exists: a storage_path without suffix ("data/usage") IS

@@ -1,6 +1,6 @@
 @database "media_ops"
 @author "Enrico Ehrich"
-@$VER: media_ops.guide 1.0 (30.09.2026)
+@$VER: media_ops.guide 1.1 (15.10.2026)
 @smartwrap
 
 @node main "Media operations"
@@ -186,6 +186,15 @@ opened -- resolving it would make Windows sign in to that host with your
 credentials.
 @{bullet}A path starting with @{tt}~@{utt} is refused: it is not your home
 folder here.
+@{bullet}Models like to put a root they imagine in front of a correct
+path (@{tt}/workspace/data/x.png@{utt}). For @{tt}load@{utt}, an absolute
+path that does not exist on this machine is read past its leading folders
+when the rest names a file inside one of the folders (and that folder is
+not the start folder or above it). @{tt}save@{utt} never does this: its
+refusal names the path to write instead.
+@{bullet}Refusals name a folder below the start folder or in the data
+directory as a relative path names it (@{tt}data/...@{utt}), not as an
+absolute path of this machine.
 @{bullet}A relative path counts from the folder the server started in; a
 @{tt}data/...@{utt} path, and a @{tt}data/...@{utt} entry in the list,
 follow the data directory when it is moved.

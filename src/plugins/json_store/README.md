@@ -2,8 +2,8 @@
 
 JSON working documents for agents. An agent that builds a large JSON result over many steps keeps it on the server
 instead of re-typing it: the plugin checks and repairs what it is sent, merges pieces in code, and every read
-returns valid JSON. Agents share documents through a namespace, each document can only be changed by the session
-that created it, recent changes can be undone, and documents are saved to disk so an aborted run can continue.
+returns valid JSON. Agents share documents through a namespace, a document can by default only be changed by the
+session that created it, recent changes can be undone, and documents are saved to disk so an aborted run can continue.
 
 - **Tool** `<instance>_manage_json` -- one tool with the operations `write`, `read`, `merge`, `merge_doc`,
   `set_value`, `delete_keys`, `delete_doc`, `undo`, `list`, `outline` and `stats`. Optional key models fix the

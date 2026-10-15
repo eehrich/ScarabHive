@@ -591,7 +591,8 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 f"{spec['agents']!r} failed ({e}) — gate off")
             return []
         if isinstance(required, str):
-            required = [required]
+            # An empty text names no agent: it turns the gate off, as none does.
+            required = [required] if required.strip() else []
         if not isinstance(required, (list, tuple)):
             if required:
                 logger.warning(
@@ -604,7 +605,7 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             creates.update(_creates(getattr(msg, "tool_calls", None), str(spec["tool"])))
         failed = _failed_calls(messages, set(creates))
         spawned = {agent_type for call_id, agent_type in creates.items() if call_id not in failed}
-        return [str(a) for a in required if str(a) not in spawned]
+        return [str(a) for a in required if str(a).strip() and str(a) not in spawned]
 
     # ------------------------------------------------------------------
     # Scripted follow-ups

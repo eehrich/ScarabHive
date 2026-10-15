@@ -7,7 +7,7 @@ done by the engine around your kind, so a kind only has to describe its fields a
 its work once.
 
 Code: `kinds/base.py` (registry, `KindSpec`, `ActivityKind`, `ActivityError`),
-`kinds/builtin.py` (the seven built-in kinds -- the best examples),
+`kinds/builtin.py` (the nine built-in kinds -- the best examples),
 `engine/activity.py` (`ActivityRun`, what `run` receives).
 
 ## A complete kind
@@ -56,7 +56,7 @@ Used in a machine:
   tell_user:
     do:
       notify: telegram_send_message
-      text: "Your book {{ ctx.title }} is ready."
+      text: "Your report {{ ctx.title }} is ready."
     transitions:
       - target: done
 ```
@@ -124,7 +124,7 @@ returns the activity's result -- `out` for the machine -- or raises `ActivityErr
 | `act.child(label, raw, extra_scope=None)` | Run a nested activity (a raw `do` mapping) as a child: its own journal key `<key>/<label>`, its own mock path, replay and retries. `extra_scope` binds names for its templates. |
 | `act.run_submachine(alias, params)` | Run an imported machine in a nested frame; returns its final output or raises `submachine_failed`. |
 | `act.recorded_error(label)` | A child's recorded failure (for fail-fast joins during replay). |
-| `act.frozen_scope()` | The read-only scope as an object (`.ctx`, `.params`, `.run`, …). |
+| `act.scope(**bind)` | The read-only scope as a dict (`ctx`, `params`, `run`, companion names, …): detached copies of `ctx` and `params`; `bind` adds names. |
 | `act.frame_vars()` | The frame's effective agent template vars. |
 | `act.request_id()` | The next request id of the run (`<run id>_NNN`), for calls that need one. |
 | `act.namespace` | The machine's companion-module namespace (`namespace.function(name, where)`). |

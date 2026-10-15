@@ -1,6 +1,6 @@
 @database "coder"
 @author "Enrico Ehrich"
-@$VER: coder.guide 1.0 (30.09.2026)
+@$VER: coder.guide 1.1 (15.10.2026)
 @smartwrap
 
 @node main "Coder"
@@ -43,7 +43,9 @@ agent-cli run --agent coder "add a --dry-run flag to tools/sync.py"
 
 All four agents are gated at @{b}admin@{ub}: they have a shell and read
 the whole checkout, @{tt}config/secrets.env@{utt} included, so only an
-admin account (or the local operator of agent-cli) can start them.
+admin account (or the local operator of agent-cli) can start them. The
+gate needs authentication switched on (@{tt}auth.enabled@{utt}); without
+it there are no roles, and anyone who reaches the API can start them.
 
 @{h2}What it reaches
 
@@ -123,7 +125,7 @@ Limit | Value
 Steps per run | coder 300, reviewer 200, explorer and tester 40
 Context window | 200,000 tokens, all four
 Answer cut off at the output cap | sent back with a note, up to twice in a row (coder only)
-Sub-agents | 4 per type not archived (a fifth archives the oldest), 20 per session
+Sub-agents | 4 active per type, 20 active per session; at either limit the oldest active one is archived
 Wait for a sub-agent | 3600 s
 @{body}
 @endnode
@@ -286,7 +288,7 @@ ask_user | @{" ask_user " link ask_user/main}
 context_engineer_list, _read, _store_fact, _compact | @{" context_engineer " link context_engineer/main}
 coder_okf_search, _read_concept, _neighbors, _subgraph, _list, _write_concept, _append_log, _validate, _reindex | deferred; OKF, instance @{tt}coder_okf@{utt}
 sequential_thinking and its two helpers, datetime_operations | deferred
-coding_cli_run_task, _get_run, _cancel_run | deferred; only where Claude Code is installed
+coding_cli_run_task, _get_run, _cancel_run, _quota | deferred; only where Claude Code is installed
 forge_repo, _issue, _pr, _ci | deferred; @{" Forge " link forge/main}, each with an operation; without a usable repository only forge_repo status
 playwright_browser_navigate, _snapshot, _click, _console_messages, _take_screenshot and 18 more | deferred; the external MCP server @{tt}playwright@{utt}, only where it is enabled
 @{body}
@@ -299,8 +301,8 @@ of @{tt}tool_search@{utt}; it loads them before the first call (see
 
 The explorer has @{tt}coder_fs_ro@{utt}'s five read tools and the
 context engineer's; the reviewer adds the skills tools and
-sequential_thinking; the tester has @{tt}coder_shell@{utt} and the read
-tools.
+sequential_thinking; the tester has @{tt}coder_shell@{utt}, the read
+tools and the context engineer's.
 
 @{h2}Semantic search
 

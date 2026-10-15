@@ -273,6 +273,18 @@ async def test_a_429_after_the_clients_own_retries_says_so(streaming):
 
 
 @both
+async def test_a_429_after_a_5xx_retry_was_not_waited_on(streaming):
+    """A 5xx retry before the 429 is no 429 wait: the agent loop's short retry is still due."""
+    async with Upstream(status(500), _rate_limited("")) as upstream:
+        client = make_client(upstream.url, attempts=2)
+        with pytest.raises(LLMRateLimitError) as limited:
+            await asyncio.wait_for(call(client, streaming), 10)
+        hits = upstream.hits
+    assert hits == 2, "fixture: the 5xx was not retried"
+    assert limited.value.retried is False
+
+
+@both
 async def test_a_spent_quota_is_not_retried(streaming):
     body = '{"error": {"message": "You exceeded your current quota", "type": "insufficient_quota"}}'
     async with Upstream(_rate_limited("", body)) as upstream:

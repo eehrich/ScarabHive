@@ -1,6 +1,6 @@
 @database "okf"
 @author "Enrico Ehrich"
-@$VER: okf.guide 1.0 (30.09.2026)
+@$VER: okf.guide 1.0 (15.10.2026)
 @smartwrap
 
 @node main "OKF knowledge bundles"
@@ -109,6 +109,8 @@ Agent | How
 okf_agent | curates and answers from bundles with the @{tt}okf@{utt} tools; asks which bundle when you name none
 sysadmin | its own instance @{tt}sysadmin_okf@{utt}, sandboxed to @{tt}data/okf/infra@{utt}, with the hook
 coder | its own instance @{tt}coder_okf@{utt}, sandboxed to @{tt}data/okf/coder@{utt}, with the hook
+gamedev | its own instance @{tt}gamedev_okf@{utt}, sandboxed to @{tt}data/okf/gamedev@{utt}, with the hook; the coder's hook is off there
+n8n_agent | its own instance @{tt}n8n_okf@{utt}, sandboxed to @{tt}data/okf/n8n@{utt}, with the hook
 @{body}
 
 The shared instance @{tt}okf@{utt} allows all of @{tt}data/okf@{utt} but
@@ -335,8 +337,8 @@ path | required; with or without leading slash
 
 Answer: @{tt}path@{utt}, @{tt}neighbors@{utt} (existing concepts in the
 order the links appear, each once) and @{tt}broken_links@{utt} (targets that
-are neither a concept nor @{tt}index.md@{utt}/@{tt}log.md@{utt}, as often
-as they occur). An unknown path answers "concept not found" with
+are neither a concept nor an existing @{tt}index.md@{utt}/@{tt}log.md@{utt},
+as often as they occur). An unknown path answers "concept not found" with
 @{tt}did_you_mean@{utt} and @{tt}available@{utt}, as the read tool does.
 
 @{h2}okf_subgraph
@@ -385,7 +387,9 @@ body | the markdown body; missing or null: a new concept has none, an existing o
 The given header is merged into the existing one: a key given replaces the
 old value, a nested object is merged key by key, a key set to null is
 removed, every other key stays -- with its comments, order and quoting.
-Lists are replaced, not merged. So retiring a concept needs no body:
+Lists are replaced, not merged. A new concept, or one whose header cannot
+be parsed, gets the given header as it is, top-level keys set to null left out. So
+retiring a concept needs no body:
 
 @{code json}
 {"bundle": "data/okf/infra", "path": "/runbooks/old-backup.md",
@@ -482,11 +486,12 @@ heading | the heading of the index; without @{tt}dir@{utt} only the root's
 @{body}
 
 With @{tt}dir@{utt}: that folder's @{tt}index.md@{utt}, listing the concepts
-directly in it, not deeper; the heading defaults to the folder name with a
-capital. Without: one @{tt}index.md@{utt} in every folder that holds
-concepts at any depth, each listing its own concepts and linking the index
-of every subfolder with the number of concepts below it; the root heading
-defaults to "Contents", the others to the folder name.
+directly in it, not deeper; the heading defaults to the folder name in
+title case (@{tt}my-hosts@{utt} becomes "My-Hosts"). Without: one
+@{tt}index.md@{utt} in the root and in every folder that holds concepts at
+any depth, each listing its own concepts and linking the index of every
+subfolder with the number of concepts below it; the root heading defaults
+to "Contents", the others are the folder name in title case.
 
 @{code markdown}
 # Contents
@@ -517,7 +522,7 @@ frontmatter-parseable | error | the header is no valid YAML, or no mapping
 frontmatter-required | error | the file has no header
 type-required | error | @{tt}type@{utt} is missing or empty
 status-vocabulary | warning | @{tt}status@{utt} is set to something other than draft, stable or deprecated
-link-resolves | warning | a link leads to no concept and no index or log
+link-resolves | warning | a link leads to no concept and to no index or log that exists
 @{body}
 
 Answer: @{tt}concepts@{utt} (the number checked), @{tt}conformant@{utt}
@@ -543,13 +548,14 @@ without calling a tool.
 In the agent's YAML, with the server instance's name in front:
 
 @{code yaml}
-hooks:
-  enabled: true
-  overrides:
-    sysadmin_okf.okf_context_injection:
-      enabled: true
-      hook_bundle: data/okf/infra
-      hook_max_concepts: 5
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      sysadmin_okf.okf_context_injection:
+        enabled: true
+        hook_bundle: data/okf/infra
+        hook_max_concepts: 5
 @{body}
 
 Every setting of the table in @{" Setting it up " link setup} that starts

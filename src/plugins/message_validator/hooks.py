@@ -262,7 +262,7 @@ class InternalMessageValidator:
         
         Note: Tool response content can be:
         - A JSON object (most common)
-        - A JSON string (e.g., paginated JSON content from writer_content)
+        - A JSON string (e.g., paginated JSON content)
         - A plain string (descriptive text)
         
         We only flag truly malformed content, not valid strings.

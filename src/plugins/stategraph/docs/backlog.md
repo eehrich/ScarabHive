@@ -35,7 +35,7 @@ gets `[x]` and the commit.
   check mocks before create_run.
 - [x] **R5 Debug names unchecked.** Breakpoints, `run_to` and mock paths are not checked against the machine;
   a typo in a mock silently lets the real agent run. Fix: check state names (422),
-  report `unused_mocks` at the end of the run.
+  report `mocks_unused` at the end of the run.
 - [x] **R6 Facade: a foreign session ID returns a foreign run.** `facade.py` continue path does not check
   `sees_run`. Fix: check `sees_run` before answering.
 - [x] **R7 Facade: the same request in the same session rejected after a transient error.** Fix: if
@@ -93,7 +93,7 @@ N3 (capped responses) is done along with this.
 - [x] **G4 Failed retry attempts** in `meta.failures`.
 - [x] **G5 Fork with `pause` and `mocks`** (RunManager.fork can already do it; service/tool/panel pass it
   through); `pause_at_start` also on the tool `run_machine`.
-- [x] **G6 `get_run` with `after`/`kinds`/`key`** and truncation of long fields; panel history with timestamp
+- [x] **G6 `get_run` with `after`/`kinds`/`state`** and truncation of long fields; panel history with timestamp
   and filter.
 - [x] **G7 Waiting made visible**: `waiting_since`, `deadline` in the frame view, `inbox` in the tool response.
 - [x] **G8 Panel shows `error.data`/`cause`** on activity errors; request ID copyable.
@@ -166,7 +166,7 @@ Status: built (tests in test_plugin_stategraph_backlog_features.py). F1: the end
 is written to the journal by the join itself (`<kind>:joined`), because an activity row keeps the seq of its start.
 F8: the route `/plugins/<instance>/callback*` lies under the plugin's admin rule -- it becomes public only
 when the user opens it in BOTH layers, `auth.endpoint_security` and `auth.plugin_security` (their
-security decision; example in the README under Security). The token is in the query
+security decision; example in `stategraph.guide`, node "Security"). The token is in the query
 (`/callback?token=...`), because `network.remote_paths` lets only exact paths through -- a token in the path would
 never be reachable from another machine; URLs with the token in the path (issued before the move) remain valid.
 The logs mask the token in both forms (core, `loggable_path`: the path form earlier, the query form with

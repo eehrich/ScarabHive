@@ -2,31 +2,28 @@
 
 Agent workflows as state machines in YAML: states run an agent, a tool, a decision, a Python function, another
 machine or a fan-out; transitions carry Python guards and effects. The engine journals every step, resumes an
-interrupted run without repeating finished work -- and a run that stopped on a resumable failure (a budget used up)
-by running just the activity it stopped on again --, and pauses on breakpoints and watches. The **State Graph** panel
-shows a machine as a graph to edit, run and debug it; the agent `stategraph_author` writes machines for you.
+interrupted run without repeating finished work, and pauses on breakpoints and watches like a debugger. The
+**State Graph** panel shows a machine as a graph to edit, run and debug it; the agent `stategraph_author` writes
+machines for you.
 
 - **Tools** `stategraph_catalog`, `stategraph_list_machines`, `stategraph_get_machine`, `stategraph_validate_machine`,
   `stategraph_save_machine` -- build machines; `stategraph_run_machine`, `stategraph_get_run`, `stategraph_list_runs`,
   `stategraph_control_run`, `stategraph_send_event` -- run and debug them. Slash commands `/stategraph-run`,
   `/stategraph-runs`, `/stategraph-stop`.
+- **Hook** `count_call_spend` (post_llm_response, on by default) -- counts the LLM calls made under a `call` activity
+  into its cost; it changes nothing in any call.
 - **Panel** State Graph (admins) -- machine list, graph editor with inspector, YAML, runs with result, history and
   debugger.
-- **Agents** `stategraph_author` (writes, validates, saves and test-runs machines), `stategraph_runner` (the default
-  runner: hosts runs; its tool allowlist is what a machine may call).
-- **From Python** `service.run_to_end(machine_id, params, run_key=..., live={...})` runs a machine as a step of
-  the caller's own work and waits for its end; `live` objects reach `call` functions as `sg.live`, never the journal;
-  `keep_on_cancel` leaves the run resumable when the caller is cancelled from outside (a graceful shutdown)
-  (guide, "Running a machine from Python").
-- **Hook** `count_call_spend` (post_llm_response): the LLM calls made under a `call` activity count into its cost;
-  every other call reads one context var and nothing else.
+- **Agents** `stategraph_author` (writes, validates, saves and test-runs machines) and `stategraph_runner` (the
+  default runner: hosts runs; its tool allowlist is what a machine may call).
+- **Also** schedules (machines the clock starts), one-time callback URLs that send an event to a run, and
+  `service.run_to_end(...)` to run a machine from Python code.
 
 Nothing to enable: `agents/stategraph.yaml` and `agents/stategraph_author.yaml` ship the instances and are included
-by `config/config.yaml`. A tool a machine should call goes into its runner's allowlist: a plugin that ships machines
-ships a runner of its own that names their folder in `runs_machines_in` (guide, "Runners"); the rest run with
-`stategraph_runner`. An agent that should use the tools allows `+stategraph/*`.
+by `config/config.yaml`. An agent that should use the tools allows `+stategraph/*`. A plugin that ships machines
+ships a runner of its own for their folder (`runs_machines_in`).
 
-The full manual -- the panel, the machine format in short, runs, every tool with its parameters and answers,
-schedules, callback URLs, the server settings and security -- is the plugin's guide, `stategraph.guide`, in the Help
-panel. The complete format: `skills/stategraph-authoring/references/format.md`; new activity kinds:
-`docs/extending.md`; design: `docs/stategraph_design.md` (repository root).
+The full manual -- the panel, machines and runs, every tool with its parameters and answers, runners, schedules,
+callback URLs, the hook, the server settings and security -- is the plugin's guide, `stategraph.guide`, in the Help
+panel. The complete format: `skills/stategraph-authoring/references/format.md` (cheat sheet: `docs/format.md`); new
+activity kinds: `docs/extending.md`.

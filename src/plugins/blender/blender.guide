@@ -111,8 +111,8 @@ Blender: "Object not found: <name>".
 An answer above 60,000 characters is cut, and @{tt}truncated@{utt} is
 true. The answer stays an object: its longest list (normally
 @{tt}objects@{utt}) is halved until it fits, and
-@{tt}objects_omitted@{utt} says how many entries were dropped. A scene of
-a few hundred objects reaches the limit.
+@{tt}objects_omitted@{utt} says how many entries were dropped. A large scene
+can reach the limit.
 @endnode
 
 @node execute "Running bpy: execute"
@@ -273,8 +273,9 @@ execute, screenshot, export | long_timeout | 600 seconds
 @{body}
 
 The limit applies to connecting and to each wait for data, not to the
-whole answer. A timeout answers an error of type @{tt}TimeoutError@{utt};
-Blender keeps working on the command.
+whole answer. A timeout while waiting for the answer is an error of type
+@{tt}TimeoutError@{utt} ("timed out"), and Blender keeps working on the
+command; a timeout while connecting reads as @{tt}BlenderNotReachable@{utt}.
 @endnode
 
 @node agent "The Blender agent"

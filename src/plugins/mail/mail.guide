@@ -93,6 +93,8 @@ password is never repeated in an answer.
 @{bullet}"mail not sent: <error type>: <what happened>" when the server cannot be
 reached, the TLS handshake fails, the connection times out or the server
 answers otherwise.
+@{bullet}"Tool 'send' was cancelled." (with @{tt}cancelled: true@{utt})
+when the run was stopped before the connection was opened.
 
 The chat's status line ends with "Mail to <n> recipient(s): <subject>".
 

@@ -6,10 +6,11 @@ its context or its bias -- `coder_explorer` finds things, `coder_reviewer` revie
 checks. What it learns about a project it keeps in an OKF bundle (`data/okf/coder`) that is folded into later
 sessions.
 
-- **Agents** `coder`, `coder_explorer`, `coder_reviewer`, `coder_tester` -- all admin-only; only `coder` writes files.
+- **Agents** `coder`, `coder_explorer`, `coder_reviewer`, `coder_tester` -- all admin-only; only `coder` has file
+  write tools (the tester's shell can write, for the mutation probe).
 - **Tool instances** in `agents/tools.yaml`: `coder_fs` (read/write), `coder_fs_ro` (the same tree, read-only),
   `coder_shell`, `coder_okf`, `coder_sam`.
-- **Skills** `coding-harness` (the working loop and the report contract) and `adversarial-review`.
+- **Skills** `coding-harness` (the working loop and the report contract), `adversarial-review` and `web-testing`.
 - No tools, hooks or panel of its own: the plugin is configuration only.
 
 Nothing to enable: the agent YAMLs, prompts and skills are found by convention. Try it with

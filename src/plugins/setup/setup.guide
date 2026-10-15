@@ -304,8 +304,8 @@ installation already has an own key.
 
 @{h2}The tools
 
-Two tool descriptions from @{tt}schema.yaml@{utt}, about 1,200 characters
-together. The status tool's description tells the model never to ask for a
+Two tool descriptions from @{tt}schema.yaml@{utt}, about 1,600 characters
+of JSON together. The status tool's description tells the model never to ask for a
 key in the chat: the user enters it in the Setup panel. Neither tool
 writes anything; answers never carry a key's value.
 

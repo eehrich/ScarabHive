@@ -8,6 +8,7 @@ from typing import Any, TYPE_CHECKING
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.cache import PluginCache
+from agent_system.utils.params import bool_param
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -15,6 +16,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CONTENT_CHARS = 20000
+
+
+def _flag(params: dict[str, Any], key: str) -> bool:
+    """A yes/no argument: "false" as text is false, not a true value; anything unusable is no."""
+    try:
+        return bool_param(params, key)
+    except ValueError:
+        return False
 
 
 def _content_cap(value: Any) -> int:
@@ -134,8 +143,8 @@ class TavilySearchServer(SchemaBasedToolServer):
             "time_range": params.get("time_range"),
             "include_domains": sorted(params.get("include_domains") or []),
             "exclude_domains": sorted(params.get("exclude_domains") or []),
-            "include_raw_content": params.get("include_raw_content", False),
-            "include_answer": params.get("include_answer", False),
+            "include_raw_content": _flag(params, "include_raw_content"),
+            "include_answer": _flag(params, "include_answer"),
         }
         return f"search:{json.dumps(cache_data, sort_keys=True, separators=(',', ':'))}"
     
@@ -146,7 +155,7 @@ class TavilySearchServer(SchemaBasedToolServer):
             "urls": sorted(urls),
             "extract_depth": params.get("extract_depth", "basic"),
             "format": params.get("format", "markdown"),
-            "include_images": params.get("include_images", False),
+            "include_images": _flag(params, "include_images"),
         }
         return f"extract:{json.dumps(cache_data, sort_keys=True, separators=(',', ':'))}"
     
@@ -156,10 +165,12 @@ class TavilySearchServer(SchemaBasedToolServer):
         Returns search results with titles, URLs, content snippets, and optionally
         full page content and AI-generated answers.
         """
-        query = params.get("query", "").strip()
+        # null or a non-string query is an empty one, not an AttributeError.
+        raw_query = params.get("query")
+        query = raw_query.strip() if isinstance(raw_query, str) else ""
         status = params["_status"]
         cancellation_token = params.get("_cancellation_token")
-        ignore_cache = params.get("ignore_cache", False)
+        ignore_cache = _flag(params, "ignore_cache")
         
         if not query:
             return {
@@ -173,8 +184,8 @@ class TavilySearchServer(SchemaBasedToolServer):
             "max_results": params.get("max_results", self.default_max_results),
             "search_depth": params.get("search_depth", self.default_search_depth),
             "topic": params.get("topic", "general"),
-            "include_raw_content": params.get("include_raw_content", False),
-            "include_answer": params.get("include_answer", False),
+            "include_raw_content": _flag(params, "include_raw_content"),
+            "include_answer": _flag(params, "include_answer"),
         }
         
         # Optional filters
@@ -273,7 +284,7 @@ class TavilySearchServer(SchemaBasedToolServer):
             urls = [urls]
         status = params["_status"]
         cancellation_token = params.get("_cancellation_token")
-        ignore_cache = params.get("ignore_cache", False)
+        ignore_cache = _flag(params, "ignore_cache")
         
         if not urls:
             return {
@@ -294,7 +305,7 @@ class TavilySearchServer(SchemaBasedToolServer):
         extract_params = {
             "extract_depth": params.get("extract_depth", "basic"),
             "format": params.get("format", "markdown"),
-            "include_images": params.get("include_images", False),
+            "include_images": _flag(params, "include_images"),
         }
         
         # Check cache
