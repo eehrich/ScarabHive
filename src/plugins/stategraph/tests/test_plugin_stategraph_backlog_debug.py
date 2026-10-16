@@ -125,7 +125,8 @@ async def test_the_failed_attempts_of_a_retried_activity_stay_readable(harness):
 
     flaky = activity_rows(harness.store, row["id"])["s0"]["data"]
     assert (flaky["out"], flaky["meta"]["attempts"], flaky["meta"]["failures"]) == (
-        2, 2, [{"attempt": 1, "type": "call_failed", "message": "ValueError: first try"}]), flaky
+        2, 2, [{"attempt": 1, "type": "call_failed", "message": "ValueError: first try",
+                "request_id": f"{row['id']}_001"}]), flaky
 
 
 # ------------------------------------------------------------------ G5: a fork held at its fork point, new mocks
@@ -452,7 +453,8 @@ async def test_the_output_in_full_on_request_and_a_bounded_answer(server):
     journal = [{"seq": i, "data": {"out": "z" * 1999}} for i in range(100)]
     answer = server_module._bounded({"run_id": "r", "frames": frames, "journal": journal})
     assert len(json.dumps(answer)) <= server_module.ANSWER_CHARS, len(json.dumps(answer))
-    assert answer["journal"] == [] and "journal_cut" in answer and "frames_cut" in answer, sorted(answer)
-    assert answer["frames"][0]["ctx"]["$too_large"]["k0"] == 2001
+    # one budget (API-1): the largest ctx values go first, the journal keeps its newest rows in what is left
+    assert answer["journal"] and "journal_cut" in answer and "cut" in answer, sorted(answer)
+    assert {"$too_large": 2001} in answer["frames"][0]["ctx"].values()
     small = server_module._bounded({"run_id": "r", "frames": [], "journal": journal[:3]})
     assert (len(small["journal"]), "journal_cut" in small) == (3, False)

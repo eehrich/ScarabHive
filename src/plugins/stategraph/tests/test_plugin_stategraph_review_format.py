@@ -767,7 +767,7 @@ async def test_inside_a_run_the_request_id_is_the_run_id(harness):
     finally:
         current_request_id.reset(token)
     assert row["status"] == "succeeded", row["error"]
-    assert row["output"] == row["id"]
+    assert row["output"] == f"{row['id']}_001"
 
 
 # ------------------------------------------------------------------ S8: the cancellation token

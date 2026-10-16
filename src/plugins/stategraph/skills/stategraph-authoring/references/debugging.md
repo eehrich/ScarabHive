@@ -12,7 +12,7 @@ stategraph_run_machine(machine_id="scene_review", params={"premise": "a heist"},
                        mock_only=true, mocks={...}, wait="finish")
 ```
 
-- `mock_only: true` refuses every agent, tool and decide activity without a mock
+- `mock_only: true` refuses every agent, tool, decide and acquire activity without a mock
   (error `unmocked`). A mock-only run has no backend at all: even a forgotten mock
   cannot reach an agent or a tool.
 - `call` activities, code fields and templates run for real. Mock a `call` that
@@ -56,8 +56,9 @@ Special forms:
   the next answer, and a resumed run continues the count. Every state a loop enters more
   than once needs this, or the loop sees the same answer every round.
 - `{"$error": {"type": "tool_failed", "message": "doc not found", "data": {...}}}` --
-  the activity fails with that error. Combine: `{"$visits": [{"$error": {...}},
-  "second try works"]}`.
+  the activity fails with that error -- as a live failure would: its `retry` takes it
+  (without the backoff), and each attempt takes the next `$visits` entry. Combine:
+  `{"$visits": [{"$error": {...}}, "second try works"]}`.
 - `{"$timeout": true}` at a wait state with a `timeout` (or a timer state, `after`) -- its
   time is up at once, so the test drives the timeout path without waiting it out; in
   `$visits`, any other value lets that visit wait as usual.
@@ -81,8 +82,10 @@ run with `stategraph_get_run`. A run in status `paused` stopped at a breakpoint
 `success` or `error`). `after=<seq>` pages forward (the first `steps` rows after that
 journal seq), `kinds=["activity"]` and `state="judge"` narrow the rows. Texts longer
 than 2,000 characters (20,000 in `output`; `full_output=true` gives it whole) are cut and
-say how long they were; a very large answer leaves out its oldest rows first (it says so
-in `journal_cut`):
+say how long they were. The answer stays under 200,000 characters: the largest ctx
+values become `{"$too_large": size}` first (`cut` says so), then the journal keeps its
+newest rows (`journal_cut` says how many and the `after` that reads them). The engine's
+own step rows come only with `kinds=["trace"]`:
 
 - `run_status`: `running`, `waiting` (a wait state waits for an event), `paused`
   (debugger), `interrupted` (the process stopped; resumable), `succeeded`, `failed`,
@@ -99,7 +102,10 @@ in `journal_cut`):
   `inputs` (the rendered task, args or input it was given), `out` or `error`, meta with
   `mocked`, `attempts`, `failures` (the attempts a retry ran again), `instance_id`,
   `request_id`), `trace` (enter, exit, transition with the `guards` it evaluated and
-  their results, final), `event`, `edit`, `timer`.
+  their results, final, and `step`: after each step its `changed` ctx keys -- the new
+  value, or `{"$size", "$hash"}` above 2,000 characters, `{"$gone": true}` for a removed
+  key -- so the step that set `ctx.x` is the first `step` row whose `changed` names it),
+  `event`, `edit`, `timer`.
 
 A Python error in a `call` (or a bug in a kind) keeps the last frames of its traceback
 in `error.data.traceback`: file, line and function of the companion module. A
@@ -123,8 +129,8 @@ answer another user's run as missing, unless you are an admin or auth is off.
 | `no_transition` | a state completed and no completion transition's guard held | end the guarded list with `guard: else` |
 | `loop_limit` | a state was entered more than `max_visits` times | a mock returns the same value every round (`$visits`), or the loop's exit guard never holds |
 | `guard_failed` | a guard raised, or read-only code changed `ctx` | read the message; move mutations into an `effect` |
-| `action_failed` | an `effect`, `entry` or `exit` raised (KeyError, TypeError, …) | the message names the field; the transition was rolled back |
-| `template_failed` | a template raised (a missing ctx field, a name not bound there) | render only what exists at that moment |
+| `action_failed` | an `effect`, `entry` or `exit` raised (KeyError, TypeError, …) | the run's error record names the field in `where` (`one.exit`, `one.transitions[1].effect`; get_run, the journal); the transition was rolled back |
+| `template_failed` | a template raised (a missing ctx field, a name not bound there) | the run's error record names the field in `where` (`use.do.args.x`, `m.vars`); render only what exists at that moment |
 | `not_serialisable` | `ctx` got a non-JSON value (a set, an object) | convert: `sorted(...)`, `list(...)`, `str(...)` |
 | `params_invalid` | a missing required, unknown or wrongly typed parameter | fix `params` of the run or the `machine` activity |
 | `schema_invalid` / `parse_failed` | the agent's answer stayed unusable after the feedback rounds | clearer task; more `parse_retries`; a more tolerant parser |
@@ -184,7 +190,12 @@ process stopped). The engine re-runs the machine from the start against the run'
 definition snapshot:
 
 - Every activity with a recorded outcome returns that outcome without running again.
-  Events, debugger edits and fired timers are applied at the same steps.
+  Events, debugger edits and fired timers are applied at the same steps, and a step's
+  guards answer as they did then (one that raised raises again; an initial choice's and a
+  fork's replayed steps too) -- they are not evaluated again. Effects, `entry`,
+  `exit` and templates do run again: a helper the companion module imports (rather than
+  defines) is the process's current code, so a fix to it after a restart can make them
+  differ and the run end `diverged`.
 - An activity that was **in flight** at the stop runs again if it is idempotent (the
   default, except `tool`). A non-idempotent one raises `interrupted` in its state, with
   `error.data` holding its rendered inputs: handle it, e.g. by checking whether the
@@ -195,9 +206,25 @@ definition snapshot:
 - The debugger's state survives the stop: a run that stopped while paused pauses again at
   its first live hook, and a pending `step` or `run_to` still applies.
 - It runs as the run's own user, whoever resumes it.
+- Before the resume, `set` with a value (`expr` is JSON, not an expression: the stopped run
+  has no state to evaluate against) changes an `interrupted` run, or one that failed
+  resumably: `path="ctx.<path>"` is applied where the run stands -- after the activity it
+  was in runs again with its old inputs, or before a wait goes on; of a resumably failed run
+  before the failed activity runs again, so it reads the value -- and `path="params.<name>"` sets a declared param at
+  the same place: the steps before it replay with the value they ran with, the ones after
+  read the new one (the run's `params` keep the start's values; the frame's view shows the
+  new one; before its first step the run's `params` themselves change).
+  Each one is a `lifecycle` row naming who set what. A run compacted by retention is not
+  resumed (its journal is gone).
+- A resume of a run that failed for good (not resumably, not `internal`) is refused: it
+  would replay the same failure -- fork it. `terminate` closes a resumably failed run.
+- Rows the replay writes again keep their first time; every start, resume, fork, sweep and
+  close leaves a `lifecycle` row (who, why, which process). A resume whose companion module
+  or called/imported project code changed since the run started gets a `code_changed` row.
 - If the machine does not repeat the recorded run -- another kind or path at a step,
-  other rendered inputs, another `ctx` after a step -- the run stops with `diverged`,
-  naming the first differing key. That means impure code (a clock, randomness, a set's
+  other rendered inputs, another `ctx` after a step, another guard -- the run stops with
+  `diverged`, naming the first differing key and what differs (the inputs' paths, the
+  `ctx` keys, the active states, the guard). That means impure code (a clock, randomness, a set's
   order, I/O in a guard or template) or a changed definition. A diverged run never
   continues on another path.
 
@@ -205,8 +232,9 @@ A `run_key` makes a request idempotent: `run_machine` with the same key gets the
 run of that key instead of a second one -- attached to while it runs (`attached: false`
 if another process runs it), resumed when interrupted, and once it ended its outcome
 again (`ended: <status>`: the same output, failure or cancel). Only a failure that is
-transient -- `interrupted`, `timeout`, `agent_failed`, `decision_failed`, `internal` or
-`diverged` as the error or an unhandled cause -- starts a new run.
+transient -- `timeout`, `agent_failed`, `decision_failed`, `internal` or `diverged` as the
+error or an unhandled cause -- starts a new run. Not `interrupted`: a new run would repeat
+every finished non-idempotent activity; handle it in the machine, or take a new key.
 
 ---
 
@@ -242,8 +270,9 @@ replays the source run's journal below top-level step N and runs live from there
 
 ## 7. Limits
 
-- Only runs of the process that serves the panel can be paused from it; runs of other
-  processes are visible through their journal.
+- Pause, continue, step and terminate reach a run another process holds (agent-cli,
+  agent-run): it takes them through runs.db within a second. run_to, evaluate and a
+  `set` while paused act only in the process that runs it.
 - Pausing is cooperative: it takes effect at the next hook; an agent call in progress
   is never frozen.
 - A mocked run proves the machine's logic, not the agents: a live run is still the

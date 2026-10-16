@@ -18,7 +18,7 @@ approval · 7 Submachine reuse · 8 Shared error handling · 9 The v6 ritual ·
 
 Write, let a calibrated decision model judge, revise until good enough or out of
 rounds. Two bounds: the guard on `ctx.round` (the planned end) and `max_visits` (the
-safety net). The judge's threshold is yours; `out["value"]` of a `noul` is a
+safety net) -- taken from the same param, so the two never drift apart. The judge's threshold is yours; `out["value"]` of a `noul` is a
 probability.
 
 ```yaml
@@ -35,7 +35,7 @@ context:
 initial: write
 states:
   write:
-    max_visits: 5
+    max_visits: "{{ params.max_rounds + 1 }}"
     entry: ctx.round += 1
     do:
       agent: stategraph_example_agent
@@ -186,7 +186,9 @@ message to an agent that repairs the input, then call the tool again -- bounded 
 guard of the error transition that enters the repair state. Not by `max_visits` alone:
 the repair state is entered by an error transition, and a `loop_limit` raised while an
 error transition runs ends the frame -- no transition catches it (design §3.5).
-`max_visits` stays as the declared bound. A transient failure (a timeout, a busy
+`max_visits` stays as the declared bound. The validator checks the state name in
+`run.visits.get("repair", 0)` (SG002 for a name that is no state), and renaming the state
+in the panel renames it there too. A transient failure (a timeout, a busy
 service) is better handled by `retry` on the tool activity itself.
 
 ```yaml
@@ -609,4 +611,19 @@ activity, whose result is journaled and replayed:
     transitions:
       - target: work
         effect: ctx.settings = out
+```
+
+**Capacity shared across runs** (N servers, one worktree): a semaphore, not lock files and
+polling. The instance config says how many (`semaphores: {producers: 4}`); the slot index
+picks the server, and the frame's end gives it back on every way out (format §5 `acquire`).
+One run per target (per ticket): a capacity-1 semaphore with a `key`,
+`do: {acquire: ticket, key: "{{ params.ticket }}"}` -- the capacity counts per key.
+
+```yaml
+  take:
+    do: {acquire: producers}
+    transitions: [{target: render, effect: ctx.server = out}]
+  render:
+    do: {machine: render_on, params: {server: "{{ ctx.server }}"}}
+    transitions: [{target: done}]
 ```

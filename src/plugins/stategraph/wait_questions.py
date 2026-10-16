@@ -280,10 +280,9 @@ def discarded(store: Any, run_id: str, since: Optional[int]) -> list[str]:
     if since is None:
         return []
     lines = []
-    for row in store.page(run_id, after=since, kinds=["trace"]):
+    # the discards only, filtered in SQL: other frames' trace rows must not push them off the page (DBG-11)
+    for row in store.page(run_id, after=since, kinds=["trace"], statuses=["event_discarded"]):
         data = row.get("data") or {}
-        if row.get("status") != "event_discarded":
-            continue
         guards = "; ".join(f"{guard.get('guard')} -> {guard['error'] if 'error' in guard else guard.get('result')}"
                            for guard in data.get("guards") or [])
         lines.append(f"Not taken: {data.get('event')!r} in {row.get('state')!r} -- no transition took it"

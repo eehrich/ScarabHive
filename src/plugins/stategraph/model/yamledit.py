@@ -19,6 +19,7 @@ that names a removed state, is left to the validator, which says so where the au
 
 from __future__ import annotations
 
+import ast
 import difflib
 import io
 import re
@@ -29,11 +30,13 @@ from typing import Any, Callable, Iterator, Optional
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq, merge_attrib
-from ruamel.yaml.error import ReusedAnchorWarning, YAMLError
+from ruamel.yaml.error import CommentMark, ReusedAnchorWarning, YAMLError
+from ruamel.yaml.tokens import CommentToken
 from ruamel.yaml.scalarstring import FoldedScalarString, LiteralScalarString, ScalarString
 
 from plugins.agent_editor.store import splice
 
+from .code import CodeError, scan_template, state_literals
 from .loader import to_plain, yaml_bounds
 from .spec import NAME_PATTERN, check_state_name
 
@@ -144,7 +147,8 @@ def _keeps_one(found: _State) -> None:
 def _move_state(edit: "_Edit", op: dict[str, Any]) -> str:
     """State ``name`` into the state ``into`` -- a composite, or a simple state without do, which becomes one -- as
     its last state; ``into`` null: to the top level. Transitions keep their targets: names are unique within a
-    machine. The region it leaves gets the first state left there as initial when it was that one's. Only planned
+    machine. When it was its region's initial, the initial follows it into the composite it went into, if that
+    lies in the region, else names the first state left there that is no final (``_successor``). Only planned
     lines write it: a rendering would take the state's comments along wrongly, and reads back all the same."""
     found = edit.state(op.get("name"))
     into = op.get("into")
@@ -167,8 +171,7 @@ def _move_state(edit: "_Edit", op: dict[str, Any]) -> str:
     if edit.tied(found.body, whole=True):
         raise EditError(_shared(what))
     body = found.region[found.name]
-    successor = next(key for key in found.region if key != found.name) if found.owner.get("initial") == found.name \
-        else None
+    successor = _successor(edit, found, target) if found.owner.get("initial") == found.name else None
     lines = edit.relocate(found, target, holder, successor)
     del found.region[found.name]
     if successor is not None:
@@ -183,6 +186,20 @@ def _move_state(edit: "_Edit", op: dict[str, Any]) -> str:
         holder.insert(at, "initial", found.name)
         holder.insert(at + 1, "states", CommentedMap([(found.name, body)]))
     return edit.result(lines=lines, render=False)
+
+
+def _successor(edit: "_Edit", found: _State, target: Optional[_State]) -> Optional[str]:
+    """The region's new initial when its initial state ``found`` moves into ``target``: the state of the region
+    that now holds it (the composite it went into, as group_states does), else the first state left there that is
+    no final -- a final as initial would end the region the moment it is entered. None (the initial keeps naming
+    the moved state, and SG002 asks the author) when only finals are left."""
+    node = target
+    while node is not None and node.region is not found.region:
+        node = edit.state(node.parent) if node.parent is not None else None
+    if node is not None:
+        return node.name
+    return next((key for key, body in found.region.items()
+                 if key != found.name and not (isinstance(body, dict) and body.get("type") == "final")), None)
 
 
 def _rename_state(edit: "_Edit", op: dict[str, Any]) -> str:
@@ -202,7 +219,53 @@ def _rename_state(edit: "_Edit", op: dict[str, Any]) -> str:
         for item in _transitions(state.body):
             if isinstance(item, CommentedMap) and item.get("target") == found.name:
                 item["target"] = _like(item["target"], new)
+    # code that names it (run.visits["x"], run.state == "x"); a machine of `machines:` has states of its own
+    _rename_in_code(edit.doc, found.name, new, skip=("machines",))
     return edit.result()
+
+
+def _rename_in_code(node: Any, old: str, new: str, skip: tuple[str, ...] = ()) -> None:
+    """Rewrite the state name ``old`` where code fields and templates below ``node`` compare with it (``skip``:
+    keys of ``node`` left alone)."""
+    items = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()
+    for key, value in list(items):
+        if key in skip or (isinstance(node, CommentedMap) and not node._unmerged_contains(key)):
+            continue  # merged in (<<): renamed where the mapping it comes from stands
+        if isinstance(value, str):
+            text = _renamed_code(value, old, new)
+            if text != value:
+                node[key] = _like(value, text)
+        elif isinstance(value, (dict, list)):
+            _rename_in_code(value, old, new)
+
+
+def _renamed_code(text: str, old: str, new: str) -> str:
+    """``text`` with every state-name literal ``old`` in its code renamed: the whole text as Python, or each
+    ``{{ }}`` of a template."""
+    if "{{" in text:
+        try:
+            parts = [(start + 2, text[start + 2:end - 2]) for start, end, _ in scan_template(text)]
+        except CodeError:
+            return text
+    else:
+        parts = [(0, text)]
+    spans = [(offset + start, offset + end) for offset, source in parts
+             for start, end, name in state_literals(source) if name == old]
+    for start, end in sorted(spans, reverse=True):
+        token = text[start:end]
+        quote = min(at for at in (token.find("'"), token.find('"')) if at >= 0)  # after a prefix (r, u)
+        text = text[:start] + token[:quote] + token[quote:].replace(old, new, 1) + text[end:]
+    return text
+
+
+def companion_mentions(source: str, name: str) -> list[int]:
+    """Lines of a companion module with the string ``name`` -- what a rename of the state ``name`` leaves as it
+    was (code there may read run.visits under another name): the rename's answer lists them."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    return sorted({node.lineno for node in ast.walk(tree) if isinstance(node, ast.Constant) and node.value == name})
 
 
 def _set_state(edit: "_Edit", op: dict[str, Any]) -> str:
@@ -469,10 +532,52 @@ def _put(edit: "_Edit", what: str, mapping: CommentedMap, key: str, value: Any, 
         _like(old, value) if key in mapping and isinstance(value, str) and "\n" not in value else _node(value))
     if key in mapping:
         mapping[key] = node
+    else:
+        keys = list(mapping)
+        at = 0 if first else min((keys.index(name) for name in before if name in mapping), default=len(keys))
+        mapping.insert(at, key, node)
+    if isinstance(node, (CommentedMap, CommentedSeq)):
+        _lead(mapping, key, node, edit.indent)
+        edit.typed_comments = True
+
+
+def _lead(mapping: CommentedMap, key: str, node: Any, indent: tuple[int, int, int]) -> None:
+    """The comment lines above the first entry of ``node`` (typed or none) where a file read puts them for a nested
+    value: in ``mapping``'s slot of ``key`` -- [2] with the comment on the key's line (the inspector shows it as the
+    text's first line, indented to where it stands), else [3]. A text read on its own keeps them only in the node
+    itself, which ruamel does not write there, and the slot would keep the old value's comments."""
+    first, tokens = (node.ca.comment or [None, None])[0], list((node.ca.comment or [None, None])[1] or [])
+    slot = mapping.ca.items.get(key)
+    if first is None and not tokens and slot is None:
         return
-    keys = list(mapping)
-    at = 0 if first else min((keys.index(name) for name in before if name in mapping), default=len(keys))
-    mapping.insert(at, key, node)
+    if slot is None:
+        slot = mapping.ca.items[key] = [None, None, None, None]
+    while len(slot) < 4:
+        slot.append(None)
+    old = slot[2] if isinstance(slot[2], CommentToken) else None
+    if (first is None and old is not None and tokens and tokens[0].start_mark.line == 0
+            and tokens[0].value.strip() == old.value.split("\n")[0].strip()):
+        first = tokens.pop(0)  # a block value: the key line's comment, shown as the text's first line
+    column = _value_column(mapping, key, indent[0] if isinstance(node, CommentedMap) else indent[2])
+    if first is not None:  # one token: the key line's comment (a flow value's own), then the lines below it
+        text = first.value + "".join(" " * (column or 0) + token.value.lstrip(" ") for token in tokens)
+        slot[2] = CommentToken(text, (old or first).start_mark, None)
+        slot[3] = None
+        node.ca.comment = [slot[2], None]
+        return
+    slot[2] = None  # the typed text has no comment on the key line (or another one: it goes above the first entry)
+    slot[3] = [CommentToken(token.value.lstrip(" "), CommentMark(column), None) if column is not None else token
+               for token in tokens] or None
+
+
+def _value_column(mapping: CommentedMap, key: str, step: int) -> Optional[int]:
+    """The column of a nested value's first line under ``key``: ``step`` deeper than the key (a key of the mapping
+    where ``key`` is new)."""
+    try:
+        column = mapping.lc.key(key)[1] if key in mapping.lc.data else mapping.lc.key(next(iter(mapping.lc.data)))[1]
+    except (KeyError, AttributeError, TypeError, StopIteration):
+        return None
+    return column + step
 
 
 def _batch(edit: "_Edit", op: dict[str, Any]) -> str:
@@ -708,7 +813,7 @@ def _reads_as(text: str, expected: Any) -> bool:
 
 
 def _distance(a: str, b: str) -> int:
-    matcher = difflib.SequenceMatcher(None, a.splitlines(), b.splitlines(), autojunk=False)
+    matcher = difflib.SequenceMatcher(None, a.split("\n"), b.split("\n"), autojunk=False)
     return sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag != "equal")
 
 
@@ -717,11 +822,28 @@ def _indent(line: str) -> int:
 
 
 def _split(text: str) -> tuple[list[str], bool]:
-    lines = text.splitlines(keepends=True)
+    """The lines as ruamel counts them: broken at a newline only (str.splitlines also breaks at U+2028, U+0085)."""
+    lines = _LINES.findall(text)
     open_end = bool(lines) and not lines[-1].endswith("\n")
     if open_end:
         lines[-1] += "\n"
     return lines, open_end
+
+
+def _comment_places(text: str) -> list[tuple[str, str]]:
+    """Every whole-line comment with the key (or list item) of the line below it: where a comment stands."""
+    places, pending = [], []
+    for line in text.split("\n"):
+        body = line.strip()
+        if body.startswith("#"):
+            pending.append(body)
+        elif body:
+            places.extend((comment, f"{_indent(line)}:{body.split(':')[0]}") for comment in pending)
+            pending = []
+    return places + [(comment, "") for comment in pending]
+
+
+_LINES = re.compile(r"[^\n]*\n|[^\n]+\Z")
 
 
 def _plain_lines(text: str) -> list[str]:
@@ -770,6 +892,7 @@ class _Edit:
         self.base = renderings[indent]  # the unedited document as ruamel writes it: splice's common ancestor
         self.lines, self.open_end = _split(text)
         self.reached = _reached(self.doc)
+        self.typed_comments = False  # an edit put typed YAML (with or without comments) in
 
     def tied(self, *nodes: Any, whole: bool = False) -> bool:
         """Whether YAML ties ``nodes`` to another place of the file: a node reached twice (an anchor and its alias)
@@ -978,8 +1101,11 @@ class _Edit:
         write it -- a rendering would expand the alias into a copy or drop the anchor. ``render=False``: only the
         planned lines either, for an edit a rendering would get wrong while it reads back right."""
         expected = to_plain(self.doc)
+        # typed YAML brings its own comments: a candidate must place them as ruamel's rendering does (a splice
+        # keeps the old ones where only the comments changed, or moves them below a changed first key)
+        placed = _comment_places(_dump(self.doc, self.indent)) if self.typed_comments else None
         for candidate in self._candidates(cut, lines, render=render and not tied):
-            if _reads_as(candidate, expected):
+            if _reads_as(candidate, expected) and (placed is None or _comment_places(candidate) == placed):
                 return candidate
         if tied:
             raise EditError(_shared(tied))

@@ -45,6 +45,10 @@ LEFT_OUT = {
     ("MachineAgentSpec", "visibility", "tool"): "one agent: block shows one choice of each",
     ("MachineAgentSpec", "visibility", "both"): "one agent: block shows one choice of each",
     ("MachineSpec", "meta"): "data for another tool (its own key under meta); the engine ignores it, a run shows nothing",
+    ("acquire", "acquire"): "names a semaphore of the instance's config, which another installation lacks",
+    ("release", "release"): "names a semaphore of the instance's config, which another installation lacks",
+    ("acquire", "key"): "belongs to an acquire, which the showcase leaves out",
+    ("release", "key"): "belongs to a release, which the showcase leaves out",
 }
 
 

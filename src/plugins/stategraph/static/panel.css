@@ -26,7 +26,11 @@
 .sg-folder:not([open]) > summary { color: var(--text-muted); }
 .sg-folder-body { display: flex; flex-direction: column; gap: var(--space-1); padding-left: var(--space-2); margin-left: var(--space-2); border-left: 1px solid var(--border-subtle); }
 
-.sg-main { min-height: 0; display: flex; flex-direction: column; }
+.sg-main { position: relative; min-height: 0; display: flex; flex-direction: column; }
+/* a machine being read (a large tree takes seconds): over whatever the pane showed before */
+.sg-opening { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center;
+  gap: var(--space-2); background: var(--surface-0); color: var(--text-secondary); }
+.sg-opening[hidden] { display: none; }
 .sg-placeholder { padding: var(--space-6); }
 .sg-machine { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .sg-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4) var(--space-2); }
@@ -86,7 +90,7 @@
   /* room for the textarea's scrollbars: without it the view stops scrolling short of the text above it */
   padding-right: calc(var(--space-3) + var(--space-6)); padding-bottom: calc(var(--space-2) + var(--space-6));
   font: 400 var(--text-xs)/1.55 var(--font-mono); color: var(--text-primary); white-space: pre; tab-size: 2;
-  background: var(--surface-0);
+  background: var(--field-bg);
 }
 .sg-code > .pk-textarea {
   position: relative; display: block; background: transparent; color: transparent; caret-color: var(--text-primary);
@@ -141,6 +145,8 @@
 .sg-path { width: 8rem; flex: none; }
 .sg-actions { flex-wrap: wrap; gap: var(--space-1); }
 .sg-checks { gap: var(--space-3); flex-wrap: wrap; }
+.sg-point-off .sg-watch-expr { color: var(--text-muted); text-decoration: line-through; }
+.sg-open-run { align-self: center; }
 .sg-plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
 
 /* ---------------------------------------------------------------- the canvas */
@@ -187,6 +193,8 @@
 .sg-node.is-sub > .sg-box { fill: var(--info-subtle); stroke-dasharray: 2 2; }
 .sg-node.is-current > .sg-box, .sg-node.is-current > .sg-shape { stroke: var(--info); stroke-width: 3; }
 .sg-node.is-paused > .sg-box, .sg-node.is-paused > .sg-shape { stroke: var(--warn); stroke-width: 3; fill: var(--warn-subtle); }
+/* a failed run's last state is where it failed, not where it runs */
+.sg-run-failed .sg-node.is-current > .sg-box, .sg-run-failed .sg-node.is-current > .sg-shape { stroke: var(--danger); }
 
 /* pk-badge's look: a subtle fill, the text in its tone (graph.js draws each text right after its rect). The fill is the
    -subtle tint made opaque: the badge sits on the state's edge, and a see-through one showed the edge through its text */
@@ -218,6 +226,8 @@
 .sg-link:hover > .sg-edge { stroke-width: 2.2; }
 .sg-link.is-last > .sg-edge { stroke: var(--info); stroke-width: 2.6; }
 .sg-link.is-selected > .sg-edge { stroke: var(--accent); stroke-width: 2.6; }
+.sg-link:focus { outline: none; }
+.sg-link:focus-visible > .sg-edge { stroke: var(--focus-ring); stroke-width: 2.6; }
 .sg-link.has-error > .sg-edge-label { fill: var(--danger); }
 .sg-edge-label { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); pointer-events: none; }
 .sg-link--error > .sg-edge-label { fill: var(--danger); }
@@ -243,3 +253,5 @@
   .sg-inspector { direction: ltr; border-left: 0; }
   .sg-canvas-wrap { height: 60vh; }
 }
+/* a history row opened whole (UI-16), under the table */
+.sg-history-row { margin-top: var(--space-2); }

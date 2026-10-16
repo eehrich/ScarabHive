@@ -30,12 +30,12 @@ events:                             # named events this machine accepts
   approve: {description: go on}
 context: {draft: null, round: 0}    # ctx: the machine's variables (JSON)
 vars: {tone: "{{ params.tone }}"}   # template vars for every agent it spawns
-limits: {max_steps: 1000, timeout: 2h}   # also concurrency: leaf activities at once
+limits: {max_steps: 1000, timeout: 2h}   # also concurrency (leaf activities at once), max_cost (USD)
 initial: write
 states:
   write:                            # a state with an activity: completes when it ends
     entry: ctx.round += 1           # Python statements
-    max_visits: 5                   # 6th entry raises loop_limit here
+    max_visits: 5                   # 6th entry raises loop_limit here; or "{{ params.rounds }}"
     do:
       agent: stategraph_example_agent
       task: "Write about {{ params.text }}"      # a template
@@ -75,18 +75,21 @@ states:
 | `map: <expression>` | `each`, `as`, `concurrency`, `fail`, `until` | list in item order |
 | `emit: <text>` | -- | the text (a status line for the caller, a message in the run's session) |
 | `callback: <event>` | `expires` (default 168h, at most 720h), `frame` | `{url, event, expires}`: a one-time URL that sends the event |
+| `acquire: <semaphore>` | `key` (template: the capacity counts per key -- one run per ticket) | the slot index; waits (status `waiting`, no running time) while the instance's `semaphores: {name: capacity}` are all held; the frame holds it until `release` or its end, one slot per semaphore and key (an acquire it reaches again gets the same slot) |
+| `release: <semaphore>` | `key` (template: only that key's slot) | the index given back, or `null` |
 
 Common keys: `retry {attempts, backoff, errors}`, `timeout`, `idempotent`, `description`.
 
 Cleanup and external state: `finally: <activity>` on a state or the machine runs once on every
 exit (reads `ending.reason/state/error`); `resources: {name: {open, fork, close}}` gives each
 frame its own external state as `resources.<name>` (`null` until it is opened). `vars` may be
-one template that renders to an object.
+one template that renders to an object. `resume: auto` (machine level, default `manual`): the API
+resumes an interrupted run by itself, unless its caller handed it `live` objects.
 
 | Field kind | Fields | Syntax |
 |---|---|---|
 | code (Python, no braces) | `guard`, `effect`, `entry`, `exit`, `map`, `until`, `error_if` | `ctx.round < params.rounds` |
-| template (literal unless `{{ }}`) | `task`, `args`, `params`, `vars`, `question`, `criteria`, `input`, `continue`, `emit`, `frame`, `output` | `"{{ ctx.draft }}"` keeps the type; mixed text interpolates |
+| template (literal unless `{{ }}`) | `task`, `args`, `params`, `vars`, `llm_params`, `question`, `questions`, `criteria`, `input`, `continue`, `emit`, `frame`, `output`; `agent`/`tool`/`by`/`llm_profile` only as `"{{ params.x }}"` (an enum, and required or a default) | `"{{ ctx.draft }}"` keeps the type; mixed text interpolates |
 
 | Bound | Where |
 |---|---|
@@ -97,7 +100,8 @@ one template that renders to an object.
 | item variable, `index` | inside `map.each` |
 
 Access: `ctx.draft`, `params.text`, `error.type` at the top level; below it item
-access -- `ctx.notes["x"]`, `out["value"]`, `event.data["reason"]`. Only `effect`,
+access -- `ctx.notes["x"]`, `out["value"]`, `event.data["reason"]`, `error.cause["type"]`,
+`run.visits["x"]` (a state name there that is no state is SG002). Only `effect`,
 `entry` and `exit` write `ctx`; `params`, `run`, `resources`, `error`, `event`, `activity`
 and `ending` are read-only (SG004). A blank guard is no guard. Code and templates are pure:
 no I/O, clock, randomness, environment, sets or `hash()`.
@@ -106,7 +110,8 @@ Error types: `agent_failed`, `schema_invalid`, `parse_failed`, `check_failed`, `
 `tool_denied`, `decision_failed`, `call_failed`, `submachine_failed`, `join_failed`, `activity_failed`, `timeout`,
 `interrupted`, `template_failed`, `params_invalid`, `unmocked`, `no_backend`, `config`;
 engine: `loop_limit`, `no_transition`, `guard_failed`, `action_failed`,
-`wait_timeout`, `not_serialisable`. Not catchable: `step_limit`, `timed_out`,
+`wait_timeout`, `not_serialisable`, `budget_exceeded` (`limits.max_cost` reached; `run.cost` is the spend so far).
+`error.where` names the code field that failed (`one.exit`). Not catchable: `step_limit`, `timed_out`,
 `cancelled`, `diverged`.
 
 Mocks (test runs): `{"state": out}`, paths `review/critique` (submachine),

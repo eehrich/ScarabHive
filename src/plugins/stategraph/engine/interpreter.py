@@ -21,14 +21,13 @@ from typing import TYPE_CHECKING, Any, Optional
 from plugins.stategraph.kinds import ActivityError, parse_activity
 from plugins.stategraph.kinds.base import vars_object
 from plugins.stategraph.model.code import NAMESPACE_FIELDS, CodeError, Scope, jsonable, namespace_of, plain
-from plugins.stategraph.model.spec import GUARD_ELSE, TRIGGER_DONE, TRIGGER_ERROR, ParamSpec, TransitionSpec, parse_duration
+from plugins.stategraph.model.spec import (GUARD_ELSE, TRIGGER_DONE, TRIGGER_ERROR, ParamSpec, TransitionSpec, is_expression,
+                                           parse_duration)
 from .activity import ActivityRun, ReplayDivergence, RunAbort
 from .machine import Machine, Node, lca
 
 if TYPE_CHECKING:
     from .runner import RunContext
-
-_TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "object": dict, "array": list}
 
 #: Fields ``activity`` and ``error`` always have in code, so a mocked activity reads the same (§2.6).
 logger = logging.getLogger(__name__)
@@ -57,6 +56,7 @@ class Event:
     activity: Optional[dict[str, Any]] = None
     source: Optional[Node] = None      # composite completion: the composite whose final was entered
     replayed: bool = False
+    exception: Optional[BaseException] = None  # what a call's own code raised (ActivityError.original)
 
     @property
     def repairable(self) -> bool:
@@ -66,7 +66,7 @@ class Event:
     def repair(self, out: Any) -> None:
         """An operator's out for this activity's end, set at its exit or error breakpoint: it completes with it --
         a failure too -- and its completion transitions go on (§6)."""
-        self.name, self.out, self.error = TRIGGER_DONE, out, None
+        self.name, self.out, self.error, self.exception = TRIGGER_DONE, out, None, None
 
 
 @dataclass
@@ -75,53 +75,58 @@ class FrameResult:
     output: Any
     final_state: Optional[str]
     error: Optional[dict[str, Any]] = None
+    exception: Optional[BaseException] = None  # the original exception behind ``error``, in this process only
 
 
 class MachineFailed(Exception):
     """An error no transition handled, an error while handling an error, or a hard limit."""
 
-    def __init__(self, error: dict[str, Any]):
+    def __init__(self, error: dict[str, Any], exception: Optional[BaseException] = None):
         super().__init__(error.get("message", ""))
         self.error = error
+        self.exception = exception
 
 
 class _TransitionFailed(Exception):
-    def __init__(self, type_: str, message: str, state: Optional[str]):
+    def __init__(self, type_: str, message: str, state: Optional[str], *,
+                 location: Optional[dict[str, Any]] = None):
         super().__init__(message)
         self.type = type_
         self.message = message
         self.state = state
+        self.location = location or {}  # CodeError.location: where (entry, exit, which effect), file, line, code
 
 
 def _activity_view(meta: Optional[dict[str, Any]]) -> dict[str, Any]:
     return {**ACTIVITY_DEFAULTS, **{k: v for k, v in (meta or {}).items() if k not in _HIDDEN_META}}
 
 
-def bind_params(declared: dict[str, ParamSpec], given: Optional[dict[str, Any]], machine_id: str) -> dict[str, Any]:
-    """Parameters with defaults applied and types checked; values are deep copies (§3.6)."""
+def bind_params(declared: dict[str, ParamSpec], given: Optional[dict[str, Any]], machine_id: str, *,
+                null_is_value: bool = False) -> dict[str, Any]:
+    """Parameters with defaults applied and types checked; values are deep copies (§3.6).
+    ``null_is_value``: an explicit null stays the value, unchecked -- how a run of journal format 1 was bound, so its
+    replay renders what it recorded (runner.JOURNAL_FORMAT)."""
     given = jsonable(given or {})
     unknown = sorted(set(given) - set(declared))
     if unknown:
         raise ActivityError("params_invalid", f"{machine_id} has no parameter(s) {', '.join(unknown)}")
     bound: dict[str, Any] = {}
     for name, param in declared.items():
-        if name in given:
-            value = given[name]
-        elif param.default is not None:
+        if null_is_value and name in given and given[name] is None:
+            bound[name] = None
+            continue
+        value = given.get(name)  # an explicit null is no value: the default applies, a required param is missing
+        if value is None and param.default is not None:
             value = copy.deepcopy(param.default)
-        elif param.required:
-            raise ActivityError("params_invalid", f"{machine_id} requires parameter {name!r}")
+        if value is None:
+            if param.required:
+                raise ActivityError("params_invalid", f"{machine_id} requires parameter {name!r}")
+            if name in given and param.enum is not None and None not in param.enum:
+                raise ActivityError("params_invalid", f"{machine_id}.{name}: null is not one of {param.enum}")
         else:
-            value = None
-        expected = _TYPES.get(param.type)
-        if value is not None and expected is not None:
-            if isinstance(value, bool) and param.type in ("integer", "number"):
-                raise ActivityError("params_invalid", f"{machine_id}.{name}: expected {param.type}, got a boolean")
-            if not isinstance(value, expected):
-                raise ActivityError("params_invalid",
-                                    f"{machine_id}.{name}: expected {param.type}, got {type(value).__name__}")
-        if param.enum is not None and value is not None and value not in param.enum:
-            raise ActivityError("params_invalid", f"{machine_id}.{name}: {value!r} is not one of {param.enum}")
+            problem = param.misfit(value)
+            if problem:
+                raise ActivityError("params_invalid", f"{machine_id}.{name}: {problem}")
         bound[name] = value
     return bound
 
@@ -142,7 +147,7 @@ class Frame:
         self.prefix = prefix
         self.path = path                  # state path of the activity that started this frame ("" = root)
         self.parent = parent
-        self.params = bind_params(machine.spec.params, params, machine.id)
+        self.params = bind_params(machine.spec.params, params, machine.id, null_is_value=run.null_params_kept)
         self.ctx: dict[str, Any] = copy.deepcopy(machine.spec.context)
         self.vars: dict[str, Any] = {}
         self.config: list[Node] = []
@@ -167,6 +172,7 @@ class Frame:
         self.guards: list[dict[str, Any]] = []  # the guards the last dispatch evaluated, with their results (§6)
         self.waiting_since: Optional[float] = None  # a wait state's wait: since when, and until when (timeout)
         self.wait_deadline: Optional[float] = None
+        self.ctx_keys: Optional[dict[str, str]] = None  # each ctx key's hash after the last step (RunContext.after_step)
 
     # ------------------------------------------------------------ helpers
     @property
@@ -188,7 +194,7 @@ class Frame:
             "run": namespace_of({"id": self.run.id, "origin": self.run.origin, "step": self.step,
                                  "machine": self.machine.id,
                                  "state": leaf.name if leaf else None, "visits": dict(self.visits),
-                                 "frame": self.prefix}, "run"),
+                                 "frame": self.prefix, "cost": round(self.run.cost, 6)}, "run"),
             # a resource not opened (its open failed, or has not run yet) reads as None: a finally can check it
             "resources": namespace_of({**dict.fromkeys(self.machine.spec.resources), **self.resources}, "resources"),
             "out": None, "error": None, "event": None, "activity": None,
@@ -211,12 +217,32 @@ class Frame:
             names.update(t.trigger for t in node.transitions if t.trigger not in (TRIGGER_DONE, TRIGGER_ERROR))
         return names
 
+    def takes_now(self) -> set[str]:
+        """The events this frame takes now: only a wait or timer state takes events -- its own and its composite
+        ancestors' (§3.4); a state running an activity takes none until it waits."""
+        return self.accepts() if self._waiting() else set()
+
     def view(self) -> dict[str, Any]:
         return {"machine": self.machine.id, "prefix": self.prefix, "path": self.path, "step": self.step,
                 "state": self.leaf.name if self.leaf else None, "config": [n.name for n in self.config],
                 "visits": dict(self.visits), "ctx": self.ctx, "params": self.params,
-                "accepts": sorted(self.accepts()) if self._waiting() else [],
+                "accepts": sorted(self.takes_now()),
                 "waiting_since": _stamp(self.waiting_since), "deadline": _stamp(self.wait_deadline)}
+
+    def bound(self, value: Any, where: str) -> Any:
+        """max_visits, a wait's timeout, after, an activity's timeout: the literal, or its ``{{ }}`` expression over
+        params evaluated now -- params are fixed per frame, so a replay gets the same value. Raises CodeError."""
+        if not is_expression(value):
+            return value
+        return self.machine.namespace.render(value, {"params": Scope(self.params, frozen=True, label="params")}, where)
+
+    def duration(self, value: Any, where: str) -> Optional[float]:
+        """``bound`` for a duration: seconds, or None for none. Raises CodeError."""
+        rendered = self.bound(value, where)
+        try:
+            return parse_duration(rendered)
+        except ValueError as exc:
+            raise CodeError(where, str(exc)) from None
 
     def _waiting(self) -> bool:
         leaf = self.leaf
@@ -232,8 +258,13 @@ class Frame:
         return (node.type == "state" and not node.composite and node.kind is None
                 and not any(t.trigger == TRIGGER_DONE for t in node.transitions))
 
-    def _error(self, type_: str, message: str, state: Optional[str], **extra: Any) -> dict[str, Any]:
-        return {"type": type_, "message": message, "state": state, "data": None, "cause": None, **extra}
+    def _error(self, type_: str, message: str, state: Optional[str], *,
+               location: Optional[dict[str, Any]] = None, **extra: Any) -> dict[str, Any]:
+        """``location`` (CodeError.location): ``where`` -- the code field that failed (``one.exit``,
+        ``one.transitions[1].effect``, ``m.vars``) -- and ``file``, ``line``, ``code`` where known; only when code
+        failed: the error of an older journal stays as it was."""
+        return {"type": type_, "message": message, "state": state, "data": None, "cause": None, **(location or {}),
+                **extra}
 
     # ------------------------------------------------------------ run
     async def execute(self) -> FrameResult:
@@ -243,6 +274,8 @@ class Frame:
                 await self._open_resources()
                 self._init_vars()
                 await self._enter_initial()
+                self.run.initial_entered(self)  # its guards, for a replay (PROD-1)
+                self.run.persist()  # the stored view names the initial state while its first activity runs
                 while True:
                     if self.run.forking is self:  # a fork's root: its resources before anything of this step runs
                         await self._at_fork_point()
@@ -264,7 +297,8 @@ class Frame:
             except MachineFailed as failed:
                 self.run.trace(self, "failed", state=self.leaf.name if self.leaf else None, data=failed.error)
                 await self._finalize("failed", failed.error)
-                return FrameResult("failed", None, self.leaf.name if self.leaf else None, failed.error)
+                return FrameResult("failed", None, self.leaf.name if self.leaf else None, failed.error,
+                                   failed.exception)
             except RunAbort as abort:
                 try:
                     await self._finalize("failed", abort.error)
@@ -517,7 +551,11 @@ class Frame:
         kind, spec = parse_activity(raw)
         act = ActivityRun(self, state, key, path, raw=raw, finalizer=True, ending_only=False,  # the ending runs live
                           extra_scope={"ending": {"reason": reason, "state": state, "error": error}})
-        bound = None if spec.timeout is not None else FINALLY_CANCEL_TIMEOUT  # its own timeout bounds it anyway
+        try:  # an expression that gives no timeout leaves the bound (one that fails, fails the activity below)
+            own = self.duration(spec.timeout, f"{path}.do.timeout")
+        except CodeError:
+            own = None
+        bound = None if own is not None else FINALLY_CANCEL_TIMEOUT  # its own timeout bounds it anyway
         # (an agent run gets its stop grace after either, backend.AGENT_STOP_GRACE)
         loop = asyncio.get_running_loop()
         work = asyncio.ensure_future(act.execute(kind, spec))
@@ -573,7 +611,7 @@ class Frame:
                 merged.update(vars_object(self.machine.namespace.render(spec.vars, self.scope(), f"{self.machine.id}.vars"),
                                           f"{self.machine.id}.vars"))
             except CodeError as exc:
-                raise MachineFailed(self._error("template_failed", exc.message, None)) from exc
+                raise MachineFailed(self._error("template_failed", exc.message, None, location=exc.location)) from exc
             except ActivityError as exc:
                 raise MachineFailed(self._error(exc.type, exc.message, None)) from exc
         self.vars = merged
@@ -582,7 +620,8 @@ class Frame:
         try:
             await self._enter_to(self.machine.initial, None)
         except _TransitionFailed as failed:
-            raise MachineFailed(self._error(failed.type, failed.message, failed.state, data=self._guard_data())) from None
+            raise MachineFailed(self._error(failed.type, failed.message, failed.state, data=self._guard_data(),
+                                            location=failed.location)) from None
 
     def _finish(self, leaf: Node) -> FrameResult:
         status = leaf.spec.status or "succeeded"
@@ -598,7 +637,7 @@ class Frame:
         try:
             rendered = self.machine.namespace.render(leaf.spec.output, self.scope(), f"{leaf.name}.output")
         except CodeError as exc:
-            raise MachineFailed(self._error("template_failed", exc.message, leaf.name)) from exc
+            raise MachineFailed(self._error("template_failed", exc.message, leaf.name, location=exc.location)) from exc
         try:
             return jsonable(rendered)
         except (TypeError, ValueError, OverflowError, RecursionError) as exc:  # e.g. a dict with tuple keys
@@ -627,17 +666,24 @@ class Frame:
                 out = await act.execute(leaf.kind, leaf.activity)
             except ActivityError as exc:
                 return Event(TRIGGER_ERROR, error={**exc.as_dict(), "state": leaf.name}, activity=act.meta,
-                             replayed=bool(act.meta.get("replayed")))
+                             replayed=bool(act.meta.get("replayed")), exception=exc.original)
             return Event(TRIGGER_DONE, out=out, activity=act.meta, replayed=bool(act.meta.get("replayed")))
-        if self.is_timer(leaf):  # its time up is its completion (a journaled timer row: a replay does not wait)
-            name, data, replayed, timed_out = await self.run.wait_event(self, leaf, parse_duration(leaf.spec.after))
-            return Event(TRIGGER_DONE, replayed=replayed) if timed_out else Event(name, data=data, replayed=replayed)
-        if self.is_wait_state(leaf):
-            name, data, replayed, timed_out = await self.run.wait_event(
-                self, leaf, parse_duration(leaf.spec.timeout))
+        if self.is_timer(leaf) or self.is_wait_state(leaf):
+            timer = self.is_timer(leaf)
+            raw = leaf.spec.after if timer else leaf.spec.timeout
+            try:
+                seconds = self.duration(raw, f"{leaf.name}.{'after' if timer else 'timeout'}")
+            except CodeError as exc:
+                return Event(TRIGGER_ERROR, error=self._error("template_failed", exc.message, leaf.name,
+                                                              location=exc.location))
+            # its time up: a timer's completion, a wait's wait_timeout (a journaled timer row: a replay does not wait)
+            name, data, replayed, timed_out = await self.run.wait_event(self, leaf, seconds)
+            if timed_out and timer:
+                return Event(TRIGGER_DONE, replayed=replayed)
             if timed_out:
+                within = f"{seconds:g}s" if is_expression(raw) else raw
                 return Event(TRIGGER_ERROR, error=self._error("wait_timeout", f"{leaf.name}: no event within "
-                                                              f"{leaf.spec.timeout}", leaf.name), replayed=replayed)
+                                                              f"{within}", leaf.name), replayed=replayed)
             return Event(name, data=data, replayed=replayed)
         return Event(TRIGGER_DONE)  # a state without do completes right after entry
 
@@ -668,14 +714,14 @@ class Frame:
             try:
                 segments = self._resolve(owner, transition, event)
             except CodeError as exc:
-                self._abort(snapshot, event, "guard_failed", exc.message, owner.name)
+                self._abort(snapshot, event, "guard_failed", exc.message, owner.name, location=exc.location)
                 return
             if segments is None:
                 continue
             try:
                 target = await self._fire(segments, event)
             except _TransitionFailed as failed:
-                self._abort(snapshot, event, failed.type, failed.message, failed.state or leaf.name)
+                self._abort(snapshot, event, failed.type, failed.message, failed.state or leaf.name, location=failed.location)
                 return
             self.run.trace(self, "transition", state=owner.name,
                            data={"from": owner.name, "to": target.name if target else None, "event": event.name,
@@ -688,7 +734,7 @@ class Frame:
                 raise MachineFailed({**error, "cause": event.error})
             return
         if event.name == TRIGGER_ERROR:
-            raise MachineFailed(event.error or self._error("error", "unhandled error", leaf.name))
+            raise MachineFailed(event.error or self._error("error", "unhandled error", leaf.name), event.exception)
         if event.name == TRIGGER_DONE:
             owner = event.source or leaf
             self.pending_error = self._error("no_transition", f"{owner.name} completed and no completion "
@@ -698,12 +744,12 @@ class Frame:
                        data={"event": event.name, **({"guards": self.guards} if self.guards else {})})
 
     def _abort(self, snapshot: tuple[dict[str, Any], list[Node], dict[str, int]], event: Event, type_: str,
-               message: str, state: Optional[str]) -> None:
+               message: str, state: Optional[str], *, location: Optional[dict[str, Any]] = None) -> None:
         """Atomic transitions: restore ctx, configuration and visits, then raise the error in the source leaf."""
         self.ctx, self.config, self.visits = copy.deepcopy(snapshot[0]), list(snapshot[1]), dict(snapshot[2])
         self._pending_finally = []  # the states were not left after all
         self._left = {}
-        error = self._error(type_, message, state, data=self._guard_data())
+        error = self._error(type_, message, state, data=self._guard_data(), location=location)
         if event.name == TRIGGER_ERROR:  # failing while handling an error: nothing is left to handle it
             error["cause"] = event.error
             raise MachineFailed(error)
@@ -713,10 +759,27 @@ class Frame:
         if transition.guard is None or transition.guard.strip() == GUARD_ELSE:
             return True
         seen = {"at": where, "guard": transition.guard}
+        recorded = self.run.recorded_guard(self, len(self.guards))
+        if recorded is not None:
+            # a step the journal holds: its guards answer as they did -- a guard calls live code (an imported
+            # helper) a restart may have changed, and the transition the run took is history (§5.3)
+            if (recorded.get("at"), recorded.get("guard")) != (where, transition.guard):
+                was = (f"was {recorded.get('guard')!r} at {recorded.get('at')}" if recorded
+                       else f"does not exist: it evaluated {len(self.guards)}")
+                raise self.run.diverged(
+                    f"replay of {self.key()}: guard {len(self.guards) + 1} of the recorded step {was}; the machine "
+                    f"now evaluates {transition.guard!r} at {where} (the definition changed)")
+            if "error" in recorded:  # it raised then: it raises again -- the step aborted as journaled
+                raised = {k: recorded[k] for k in ("file", "line", "code") if recorded.get(k) is not None}
+                self.guards.append({**seen, "error": recorded["error"], **raised})
+                raise CodeError(where, recorded["error"], **raised)  # with the location it had: error.line ...
+            self.guards.append({**seen, "result": bool(recorded.get("result"))})
+            return bool(recorded.get("result"))
         try:
             result = self.machine.namespace.guard(transition.guard, self.scope(event=event), where)
         except CodeError as exc:
-            self.guards.append({**seen, "error": exc.message})
+            self.guards.append({**seen, "error": exc.message,
+                                **{k: v for k, v in exc.location.items() if k != "where"}})
             raise
         self.guards.append({**seen, "result": bool(result)})
         return result
@@ -760,12 +823,7 @@ class Frame:
             source = target
         while target.type == "choice":  # dynamic branch: its guards see the effects already run
             choice = target
-            try:
-                picked = next((t for t in choice.transitions if self._guard(t, event, f"{choice.name}.transitions")),
-                              None)
-                more = self._resolve(choice, picked, event) if picked is not None else None
-            except CodeError as exc:
-                raise _TransitionFailed("guard_failed", exc.message, choice.name) from exc
+            more = self._first_branch(choice, event)
             if more is None:
                 raise _TransitionFailed("no_transition", f"no branch of choice {choice.name!r} holds", choice.name)
             for segment_owner, transition in more:
@@ -776,14 +834,24 @@ class Frame:
         await self._enter_to(target, event)
         return target
 
+    def _first_branch(self, pseudo: Node, event: Event) -> Optional[list[tuple[Node, TransitionSpec]]]:
+        """The segments of the first branch of a choice or junction that holds -- through the junctions behind it: a
+        junction that holds no branch disables that branch, and the next one (an ``else``) is tried. Each guard is
+        evaluated once."""
+        try:
+            return next((segments for branch in pseudo.transitions
+                         if (segments := self._resolve(pseudo, branch, event)) is not None), None)
+        except CodeError as exc:
+            raise _TransitionFailed("guard_failed", exc.message, pseudo.name, location=exc.location) from exc
+
     def _effect(self, transition: TransitionSpec, event: Event, owner: Node) -> None:
         if not transition.effect:
             return
         try:
             self.machine.namespace.execute(transition.effect, self.scope(event=event, writable=True),
-                                           f"{owner.name}.transitions.effect")
+                                           f"{owner.name}.transitions[{owner.transitions.index(transition)}].effect")
         except CodeError as exc:
-            raise _TransitionFailed("action_failed", exc.message, owner.name) from exc
+            raise _TransitionFailed("action_failed", exc.message, owner.name, location=exc.location) from exc
         self._check_context(owner)
 
     def _check_context(self, node: Node) -> None:
@@ -803,7 +871,7 @@ class Frame:
                     self.machine.namespace.execute(node.spec.exit, self.scope(event=event, writable=True),
                                                    f"{node.name}.exit")
                 except CodeError as exc:
-                    raise _TransitionFailed("action_failed", exc.message, node.name) from exc
+                    raise _TransitionFailed("action_failed", exc.message, node.name, location=exc.location) from exc
                 self._check_context(node)
             self.config.pop()
             self.run.trace(self, "exit", state=node.name)
@@ -835,19 +903,27 @@ class Frame:
     async def _enter_pseudo(self, pseudo: Node, event: Optional[Event]) -> None:
         """Entered a choice/junction as an initial state: take its first enabled branch."""
         ev = event or Event(TRIGGER_DONE)
-        try:
-            picked = next((t for t in pseudo.transitions if self._guard(t, ev, f"{pseudo.name}.transitions")), None)
-        except CodeError as exc:
-            raise _TransitionFailed("guard_failed", exc.message, pseudo.name) from exc
-        if picked is None:
+        segments = self._first_branch(pseudo, ev)
+        if segments is None:
             raise _TransitionFailed("no_transition", f"no branch of {pseudo.name!r} holds", pseudo.name)
-        target = self.machine.nodes[picked.target]
-        await self._exit_to(lca(pseudo, target), event)  # a branch that leaves the composite leaves it first
-        self._effect(picked, ev, pseudo)
+        source, target = pseudo, pseudo
+        for owner, branch in segments:
+            target = self.machine.nodes[branch.target]
+            await self._exit_to(lca(source, target), event)  # a branch that leaves the composite leaves it first
+            self._effect(branch, ev, owner)
+            source = target
         await self._enter_to(target, event)
 
     def _enter_node(self, node: Node, event: Optional[Event]) -> bool:
         """Activate a state. False stops the descent (loop_limit is raised in the state)."""
+        where = f"{node.name}.max_visits"
+        try:
+            limit = self.bound(node.spec.max_visits, where)
+            # an expression that gives nothing (an optional param left out) is no bound: refused, not unbounded
+            if (limit is not None or is_expression(node.spec.max_visits)) and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+                raise CodeError(where, f"must give a whole number >= 1, gave {limit!r}")
+        except CodeError as exc:
+            raise _TransitionFailed("template_failed", exc.message, node.name, location=exc.location) from exc
         self.config.append(node)
         self._enter_hooked = False
         self.entered_step[node.name] = self.step
@@ -856,7 +932,6 @@ class Frame:
         for descendant in node.descendants():  # max_visits counts per activation of the parent region
             self.visits.pop(descendant.name, None)
         self.run.trace(self, "enter", state=node.name, data={"visit": visits})
-        limit = node.spec.max_visits
         if limit is not None and visits > limit:
             self.pending_error = self._error("loop_limit", f"{node.name} entered {visits} times "
                                              f"(max_visits {limit})", node.name, visits=visits)
@@ -866,7 +941,7 @@ class Frame:
                 self.machine.namespace.execute(node.spec.entry, self.scope(event=event, writable=True),
                                                f"{node.name}.entry")
             except CodeError as exc:
-                raise _TransitionFailed("action_failed", exc.message, node.name) from exc
+                raise _TransitionFailed("action_failed", exc.message, node.name, location=exc.location) from exc
             self._check_context(node)
         return True
 

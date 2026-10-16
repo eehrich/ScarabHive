@@ -5,7 +5,7 @@
 {% block toolbar %}
 <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-pk-sidebar-toggle aria-controls="machinesPane" aria-expanded="true" title="Show or hide the machines">{{ icon('panel-left', size='sm') }}</button>
 <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-pk-sidebar-toggle aria-controls="inspectorPane" aria-expanded="true" title="Show or hide the inspector">{{ icon('panel-right', size='sm') }}</button>
-<pk-refresh interval="10"></pk-refresh>
+<pk-refresh interval="10" auto></pk-refresh>
 {% endblock %}
 {% block content %}
 <div class="sg-layout pk-sidebar-layout" data-viewer="{{ viewer }}">
@@ -15,11 +15,26 @@
       <label class="pk-search pk-grow">{{ icon('search') }}<input id="search" class="pk-input pk-input--sm" type="search" placeholder="Search machines" aria-label="Search machines"></label>
       <button type="button" class="pk-btn pk-btn--sm pk-btn--primary" id="newMachine" title="New machine">{{ icon('plus', size='sm') }} New</button>
     </div>
+    <p id="machinesStale" class="pk-callout pk-callout--warn" hidden></p>
     <div id="machineList" class="sg-list"><span class="pk-skeleton"></span></div>
   </nav>
 
   <section class="sg-main" aria-label="Machine">
-    <div id="placeholder" class="sg-placeholder">{{ empty('workflow', 'No machine open', 'Pick a machine on the left, or create a new one.') }}</div>
+    <div id="placeholder" class="sg-placeholder pk-stack">{{ empty('workflow', 'No machine open', 'Pick a machine on the left, or create a new one.') }}
+      {#- what runs or stopped anywhere, without opening each machine (FEAT-7): a row opens its run with its machine #}
+      <section class="pk-stack" aria-label="Runs of every machine">
+        <h3 class="sg-section-title">Runs of every machine</h3>
+        <div class="pk-filters">
+          <input id="everyRunTags" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="tags: book:95,path:main" aria-label="Only runs with these tags" title="name:value,name:value -- only runs started with all of these tags" autocomplete="off">
+          <select id="everyRunStatus" class="pk-select pk-select--sm" aria-label="Runs of this status">
+            <option value="">every status</option>{% for status in ['running', 'paused', 'waiting', 'interrupted', 'succeeded', 'failed', 'cancelled'] %}<option value="{{ status }}">{{ status }}</option>{% endfor %}
+          </select>
+        </div>
+        <div id="everyRunList" class="sg-runlist"></div>
+        <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="everyOlderRuns" hidden>{{ icon('chevron-down', size='sm') }} Older runs</button>
+      </section>
+    </div>
+    <div id="opening" class="sg-opening" role="status" hidden><span class="pk-spinner" aria-hidden="true"></span> <span id="openingText"></span></div>
     <div id="machineView" class="sg-machine" hidden>
       <header id="machineHead" class="sg-head"></header>
       <div id="debugBar" class="sg-debugbar" hidden></div>
@@ -87,6 +102,10 @@
         </form>
         </details>
         <div class="pk-filters">
+          <select id="runScope" class="pk-select pk-select--sm" aria-label="Runs of which machines">
+            <option value="">this machine</option><option value="every">every machine</option>
+          </select>
+          <input id="runTags" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="tags: book:95,path:main" aria-label="Only runs with these tags" title="name:value,name:value -- only runs started with all of these tags" autocomplete="off">
           <select id="runStatus" class="pk-select pk-select--sm" aria-label="Runs of this status">
             <option value="">every status</option>{% for status in ['running', 'paused', 'waiting', 'interrupted', 'succeeded', 'failed', 'cancelled'] %}<option value="{{ status }}">{{ status }}</option>{% endfor %}
           </select>
@@ -114,6 +133,7 @@
         <div id="dbgWatch"></div>
         <form class="pk-row sg-inline" id="watchForm">
           <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="expr" placeholder="len(ctx.issues)" aria-label="Watch expression" autocomplete="off">
+          <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="condition" placeholder="only if (optional)" aria-label="Pause only if this is true" title="A Python expression: the watch pauses only where it is true" autocomplete="off">
           <button type="submit" class="pk-btn pk-btn--sm">{{ icon('eye', size='sm') }} Watch</button>
         </form>
       </div>

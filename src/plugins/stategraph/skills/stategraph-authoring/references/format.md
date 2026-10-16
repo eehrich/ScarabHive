@@ -38,19 +38,21 @@ no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
 | `id` | name | yes | Machine id, unique across all roots; the file is `<id>.yaml`. |
 | `title`, `description` | string | | Shown in the panel and the catalog. |
 | `notes` | name → text | | Free text for the reader: each note is drawn on the panel's canvas, where its place is kept in the layout. The engine never reads it. |
+| `meta` | key → data | | Data for the tools that start this machine, one key each (a tool reads its own key). The engine never reads it. |
 | `group` | string | | Its folder in the panel's machine list, nested by `/` (`Reviews/nightly`). Empty: the folder of where it comes from ("My machines" for the first writable root, where new machines go, else the plugin that ships it). |
 | `python` | path | | Companion module, relative to this file (`\` reads as `/`; not an absolute path). |
 | `imports` | alias → ref | | Submachines: `./file.yaml` (relative; `\` reads as `/`, not an absolute path) or a machine id. |
-| `machines` | name → machine | | Machines inside this file (keys of a machine without `stategraph`, `id`, `python`, `imports`, `group`, `machines`, `agent`): `do: {machine: <name>}` runs one; they share the companion module and the imports, and run no other machine of the file. |
+| `machines` | name → machine | | Machines inside this file (keys of a machine without `stategraph`, `id`, `python`, `imports`, `group`, `machines`, `agent`, `notes`, `meta`): `do: {machine: <name>}` runs one; they share the companion module and the imports, and run no other machine of the file. |
 | `params` | name → field | | The machine's parameters (run input, or a submachine's `params:`). |
 | `events` | name → `{description, data}` | | The named events this machine accepts (§7). |
 | `context` | name → JSON | | The machine's variables (`ctx`) with their initial values. Plain JSON, not templates. |
 | `vars` | name → template, or one template | | Agent template vars for every agent this machine spawns (§11). |
 | `vars_from` | agent name | | Take that agent's configured `template_vars` as vars (§11). |
-| `limits` | `{max_steps, timeout, concurrency}` | | `max_steps` (default 1000) per frame; `timeout` of the whole run, root machine only (§10); `concurrency`: leaf activities (every kind but the composites) of the whole run at once (branches, items and submachines included; a call's `sg.tool()` within its turn), root machine only. |
+| `limits` | `{max_steps, timeout, concurrency, max_cost}` | | `max_steps` (default 1000) per frame; `timeout` of the whole run, root machine only (§10); `concurrency`: leaf activities (every kind but the composites) of the whole run at once (branches, items and submachines included; a call's `sg.tool()` within its turn), root machine only; `max_cost`: USD the whole run may spend, root machine only (§10). |
 | `resources` | name → `{open, fork, close}` | | External state of each frame of this machine: a store namespace, a forum group (§14). |
 | `agent` | `{name, description, input, task_param, on_wait, params, promote, visibility, category}` | | Offers this machine as an agent without a config entry: every process declares it as it starts (the keys of a `type: stategraph_machine` entry, see its README; `{}` takes the defaults: `<id>_agent`, text for one string param else json, `ask`, `private` -- a SAM offers it only with `visibility: tool` or `both`; `category`: the group the agent picker lists it under, none: Other). A problem of the block is SG111, a warning -- the machine itself runs; a changed block counts from the next start. |
 | `finally` | activity | | Runs once when a frame of this machine ends, however it ends (§14). |
+| `resume` | `manual` \| `auto` | | `auto`: the API resumes an interrupted run of this machine by itself, once its owner's lease is gone -- not a run its caller handed `live` objects (only the caller can hand them again). Default `manual`: only a caller (its run key) or an operator resumes it. The root machine's counts. |
 | `initial` | state name | yes | The first state: a top-level state, a choice or a junction. |
 | `states` | name → state | yes | The top-level region (§3). |
 
@@ -105,7 +107,7 @@ always a plain name.
 | `finally` | simple and composite state | An activity that runs once on every exit of the state, however it is left (§14) |
 | `states` + `initial` | composite | A nested region; `initial` names a direct child |
 | `transitions` | state, choice, junction | Ordered list (§4) |
-| `max_visits` | state | The (n+1)-th entry within one activation of the parent region raises `loop_limit` in this state (§10) |
+| `max_visits` | state | The (n+1)-th entry within one activation of the parent region raises `loop_limit` in this state; a number or a `{{ }}` expression over params (§10) |
 | `timeout` | wait state | A duration; when it expires, `wait_timeout` is raised in the waiting state |
 | `after` | timer state | A duration: a state without `do` completes this long after entry (it needs a completion transition); an event it takes may come first. Not with `timeout` |
 | `status` | final of the root region | `succeeded` (default) or `failed` |
@@ -624,6 +626,54 @@ there (README, Security).
 | `frame` | The frame it goes to (template); default: the one that takes it |
 | `expires` | How long it holds (default `168h`, at most `720h`) |
 
+### acquire, release
+
+A slot of a semaphore that every run of the stategraph instance shares -- N render servers, one coder
+worktree. The instance's config names them: `semaphores: {producers: 4}`; a reload changes a capacity at
+once (each try reads it). `acquire: producers` takes the lowest free slot; `out` is its index (0 up to
+capacity - 1), so the machine can pick the server by it. While every slot is held the run waits: status
+`waiting`, `view.slot_waits` names the semaphore, the wait is no running time (`limits.timeout` does not
+count it) and takes no `limits.concurrency` turn. A pause takes effect in the wait (hook `wait`; `set` is
+refused there -- step to the state's exit first); a `timeout` on the acquire bounds its wait (error
+`timeout`). `release: producers` gives this frame's slot back
+(`out`: its index, or `null`). The frame that acquired holds the slot until then, or until it ends -- done,
+failed, cancelled: a slot never outlives its holder. An activity pair, not a state key: a slot usually
+spans several states (take a server, render, upload), and the frame bound releases it on every way out,
+as `resources` close. A frame holds one slot of a semaphore: an acquire it reaches again while it holds
+one (a retry edge back to the acquire state) gets that same slot at once, and parallel branches of one
+frame share it. To hold a slot per item of a fan-out, acquire it in the item's submachine.
+
+An interrupted holder keeps its slot for the instance's `semaphore_hold_seconds` (default 300): a restart
+resumes it within that time and it goes on. After it the slot is free; when the holder is resumed later it
+waits until the run that took the slot gives it back -- its replayed steps chose by that index -- and a
+`lifecycle` row `slots` names what it holds again. A fork past an acquire waits for that slot the same
+way. A run resumed only to end (a terminate) waits for no slot: its end releases them anyway. A
+mock-only run takes no real slot: it needs a mock for each acquire (the mock is the slot index). A name the instance does not configure is an SG007 warning, and the run fails there with `config`.
+
+`key` (a template, rendered when the acquire runs) splits a semaphore: the capacity counts per key, so
+`semaphores: {ticket: 1}` with `do: {acquire: ticket, key: "{{ params.ticket }}"}` lets one run per ticket
+work and makes a second run of the same ticket wait, while other tickets go on. `view.slot_waits` and the
+`slots` row name the key (`sem_key`); a frame holds one slot per semaphore and key. `release: ticket` gives
+back every key's slot the frame holds, `release: ticket, key: ...` only that key's. A key that renders to
+nothing (null, an empty string, an object) fails the acquire with `template_failed`.
+
+```yaml
+render:
+  do: {acquire: producers}
+  transitions: [{target: work, effect: ctx.server = out}]
+work:
+  do: {call: render_on, args: {server: "{{ ctx.server }}"}}
+  transitions: [{target: give_back}]
+give_back:
+  do: {release: producers}
+  transitions: [{target: publish}]
+```
+
+| Key | Meaning |
+|---|---|
+| `acquire` / `release` | The semaphore: a name in the instance's `semaphores` (a literal) |
+| `key` | Template: the capacity counts per key (one run per ticket); on `release` only that key's slot |
+
 ### emit
 
 Tells how far the run is: a status line its caller sees (a machine agent's caller, the chat; the first
@@ -699,7 +749,7 @@ Runs one activity per item of a list.
 
 | Key | Meaning |
 |---|---|
-| `map` | A Python expression giving the list (a code field: no braces) |
+| `map` | A Python expression giving the list (a code field: no braces). A tuple or a generator counts as one; `None` is no items; anything else -- a string, a dict (write `list(d.items())`), a number -- fails `template_failed`. A dict, set or text the expression itself shows (`{...}`, `'...'`, an f-string) is SG005 |
 | `each` | The activity per item |
 | `as` | Name of the item variable (default `item`) |
 | `concurrency` | Items at once (default 1 = strictly one after another in list order; at most 64) |
@@ -737,8 +787,9 @@ counter in `ctx` (see `patterns.md`).
 
 ### Code fields -- plain Python, no braces
 
-`guard` (expression, or `else`), `effect`, `entry`, `exit` (statements), `map` and
-`error_if` (expressions). Writing `{{ }}` around code is error SG004.
+`guard` (expression, or `else`), `effect`, `entry`, `exit` (statements), `map`,
+`until` and `error_if` (expressions). Writing `{{ }}` around code is error SG004.
+`match` statements work; their capture names are names like any other.
 
 YAML reads `: ` and ` #` inside a plain value as structure and comment. Code that
 contains them -- a dict literal, a string with a colon -- goes into a block scalar:
@@ -751,10 +802,12 @@ contains them -- a dict literal, a string with a colon -- goes into a block scal
 
 ### Template fields
 
-Exactly these: `task`, `args`, `params`, `vars`, `question`, `criteria`, `input`,
-`continue`, `output`, and a kind value of the form `"{{ params.<name> }}"`. Everything
-else is literal: `schema`, `retry`, `timeout`, `as`, `concurrency`, `fail`,
-`description`, `context` values, the kind value otherwise.
+Exactly these: `task`, `args`, `params`, `vars`, `llm_params`, `question`, `questions`,
+`criteria`, `input`, `continue`, `emit`, a callback's `frame`, a final's `output`, and
+the kind value (`agent`, `tool`, `by`, `llm_profile`) of the form
+`"{{ params.<name> }}"`. `max_visits`, a `timeout` and a timer's `after` may be a
+`{{ }}` expression over `params` only (§10). Everything else is literal: `schema`, `retry`,
+`as`, `concurrency`, `fail`, `description`, `context` values, the kind value otherwise.
 
 A template value is literal unless it contains `{{ }}`.
 
@@ -787,11 +840,11 @@ literal text `ctx.draft` -- warning SG107.
 |---|---|---|
 | `ctx` | the frame's context | everywhere |
 | `params` | bound parameters, read-only | everywhere |
-| `run` | `id`, `origin` (the first run of a fork chain; use it to name external things), `step` (frame-local), `state`, `visits` (visit counts by state name, frame-local), `frame` | everywhere |
+| `run` | `id`, `origin` (the first run of a fork chain; use it to name external things), `step` (frame-local), `state`, `visits` (visit counts by state name, frame-local), `frame`, `cost` (USD the run's activities have spent so far, §10) | everywhere |
 | companion names | every public name of the companion module | everywhere |
 | `out` | result of the activity that completed (plain data), or the output of the nested final that completed a composite | completion transitions, `error_if` |
 | `activity` | meta of that activity: `instance_id`, `request_id`, `attempts`, `duration_s`, `mocked`, and per kind `agent`, `feedback_rounds`, `model`, `cost` -- always present, `null` when they do not apply; whether an outcome was replayed is not exposed | completion and error transitions |
-| `error` | `type`, `message`, `state`, `data`, `cause` (and `branch` / `index` from parallel / map) | error transitions |
+| `error` | `type`, `message`, `state`, `data`, `cause` (and `branch` / `index` from parallel / map); `where` when machine code failed -- the field (`one.exit`, `one.transitions[1].effect`, `use.do.args.x`, `m.vars`), with `file`, `line` and `code` (that line's text) in the error dict | error transitions |
 | `event` | `name`, `data` | event transitions |
 | item variable, `index` | the map variables (name set by `as`) | inside `map.each` |
 | `resources` | `resources.<name>`: what each resource's `open` (or `fork`) returned, read-only; `null` while it is not opened (its `open` failed, or has not run yet) | everywhere, in a machine that declares `resources` |
@@ -807,7 +860,9 @@ a completion transition) is SG004. Python builtins are available (`len`, `sorted
 attribute access at the top level (`ctx.draft`, `error.type`) and item access
 (`ctx["draft"]`). Below the top level the values are plain JSON data -- dicts, lists,
 strings, numbers -- so use item access: `ctx.critique["notes"]`,
-`event.data["reason"]`, `error.data["error"]`. `out` is plain data itself:
+`event.data["reason"]`, `error.data["error"]`, `error.cause["type"]`,
+`ending.error["type"]`, `run.visits["repair"]`; an attribute there
+(`error.cause.type`) is SG004. `out` is plain data itself:
 `out["value"]`, `out[0]`, or `out` for a text answer.
 
 **Writing ctx.** Only `effect`, `entry` and `exit` may change `ctx`:
@@ -859,10 +914,15 @@ events:
   is SG001.
 - **Sending.** `stategraph_send_event(run_id, name, data?, frame?)` (or the panel)
   records the event before it returns, so it survives a restart.
-- **Routing.** Without `frame`, the event goes to the frame whose active states
-  accept it (some active state has a transition with that trigger). If several
-  frames accept it, the call is refused: name the frame. If none accepts it yet, it
-  waits in the run's inbox until one does -- it is deferred, not dropped.
+- **Routing.** Without `frame`, the event goes to the frame that takes it now: one
+  waiting in a wait or timer state where that state or a composite around it has a
+  transition with that trigger. If several frames take it, the call is refused: name
+  the frame. If none takes it now -- a state running an activity takes no events, not
+  even with its own event transition -- it waits in the run's inbox (`queued: true`)
+  for the first wait that accepts it: deferred, not dropped. Should the frame it went to
+  end before taking it, it goes back to the inbox. With `frame`, that frame's machine
+  must declare the event (else refused); an event addressed to a frame that ends before
+  taking it is dropped, traced as `event_dropped`.
 - **Delivery.** A frame takes events only in a wait state, in arrival order. Events
   never interrupt a running activity. Every submachine frame waits and receives
   independently -- a submachine waiting for approval inside a `parallel` branch or a
@@ -894,8 +954,8 @@ events:
 
 | Group | Types |
 |---|---|
-| activities | `agent_failed`, `schema_invalid`, `parse_failed`, `tool_failed`, `tool_denied`, `decision_failed`, `call_failed`, `submachine_failed`, `activity_failed` (an unexpected exception in a kind from another plugin), `timeout`, `interrupted`, `template_failed`, `params_invalid`, `unmocked`, `no_backend`, `config` |
-| engine | `loop_limit`, `no_transition`, `guard_failed`, `action_failed`, `wait_timeout`, `not_serialisable` |
+| activities | `agent_failed`, `schema_invalid`, `parse_failed`, `tool_failed`, `tool_denied`, `decision_failed`, `check_failed`, `call_failed`, `submachine_failed`, `join_failed`, `activity_failed` (an unexpected exception in a kind from another plugin), `timeout`, `interrupted`, `template_failed`, `params_invalid`, `unmocked`, `no_backend`, `config` |
+| engine | `loop_limit`, `no_transition`, `guard_failed`, `action_failed`, `wait_timeout`, `not_serialisable`, `budget_exceeded` (§10) |
 
 - **Handling.** An error is dispatched as the `error` event of the state where it was
   raised; selection walks outward (the state, then each enclosing composite). Filter
@@ -959,11 +1019,32 @@ first).
 - `max_visits: n` on a state: the (n+1)-th entry within one activation of the parent
   region makes the state active **without** running its entry action or activity and
   raises `loop_limit` in it. Entering a composite resets the counts of everything
-  inside it. Every loop needs `max_visits` on one of its states or a guard on a
-  counter (SG103).
+  inside it. SG103 warns about every loop without `max_visits` on one of its states:
+  only `max_visits` silences it, a guard on a counter does not. A loop entered by an
+  error transition cannot catch its own `loop_limit` (§8): bound it with a guard on
+  `run.visits` and leave SG103 standing there.
 - `limits.max_steps` (default 1000) bounds the dispatches of each frame of the machine
   that declares it; exceeding it ends the run (`step_limit`).
 - An activity `timeout` applies per attempt.
+- `max_visits`, a wait state's `timeout`, a timer's `after` and an activity's `timeout`
+  may be a `{{ }}` expression over `params` instead of a literal -- `max_visits:
+  "{{ params.max_rounds + 1 }}"`, `timeout: "{{ params.wait_minutes }}m"`. It is
+  evaluated when the state is entered (the activity starts); params are fixed per frame,
+  so a replay gets the same value. It reads `params` only (SG004 otherwise); a value that
+  is no whole number >= 1 (max_visits) or no duration raises `template_failed` in the
+  state -- also a `max_visits` that gives nothing (an optional param left out): it is
+  refused, never unbounded. A param-driven `max_visits` bounds a loop for SG103 too.
+- `limits.max_cost` (USD, root machine only) bounds the run's spend: `run.cost` is what
+  the activity outcomes met so far cost (`meta.cost` -- agent, decide, and the LLM calls
+  of a call), counted again as a resume or fork replays them, so a replay reads the same
+  value at the same point. A submachine's own `max_cost` is ignored (SG108). Once
+  `run.cost` reaches the limit, an agent, decide or call activity fails with `budget_exceeded` instead of starting -- catchable like any error,
+  not retried, journaled. The activity that crossed the limit finishes, but no retry
+  attempt of it starts past the limit (it fails `budget_exceeded`); `finally`
+  activities and `sg.tool()` calls are not stopped. A guard can branch on it before:
+  `guard: run.cost < 0.8 * 5`. Read it in the frame that runs the branches, after
+  their join: inside a parallel branch or a map item it counts the siblings that
+  finished first, and a replay may finish them in another order.
 - A wait state's `timeout` starts when the wait starts; its deadline is stored, so a
   resumed run waits only the rest. An internal transition does not restart it.
 - `limits.timeout` bounds the whole run, counting only time in status `running` (not
@@ -1003,7 +1084,8 @@ activity. Every instance has its own session, so concurrent agent activities nev
 see each other's vars.
 
 Use `params` in machine-level `vars`; for values from `ctx` use the activity's own
-`vars`.
+`vars`. Machine-level `vars` render once, when the frame starts: one that reads `ctx`
+sees only the initial context (warning SG113).
 
 ---
 
@@ -1032,24 +1114,26 @@ any state inside waits.
 
 | Code | Level | Check |
 |---|---|---|
-| SG001 | error | YAML syntax, duplicate keys, a non-string mapping key (an unquoted `{{ … }}`, or a `true`/`yes` key read as a boolean), a format version other than the integer `1`, schema (unknown key, wrong type, a param default that does not fit its type or enum, a param default or enum that is no JSON data such as an unquoted date), an `events.<name>.data` that is not a valid JSON schema, YAML nested more than 100 levels deep or expanding through its aliases to more than 100,000 values or 10,000,000 characters of text (an alias inside the node it names counts as too deep), a machine whose file is not `<id>.yaml` |
-| SG002 | error | Unknown or duplicate state name; unknown target or `initial`; an undeclared event trigger |
+| SG001 | error | A duration (`timeout`, `after`, `backoff`) that is infinite, not a number, or longer than ten years; YAML syntax, duplicate keys, a non-string mapping key (an unquoted `{{ … }}`, or a `true`/`yes` key read as a boolean), a format version other than the integer `1`, schema (unknown key, wrong type, a param default that does not fit its type or enum, a param default or enum that is no JSON data such as an unquoted date), an `events.<name>.data` that is not a valid JSON schema, YAML nested more than 100 levels deep or expanding through its aliases to more than 100,000 values or 10,000,000 characters of text (an alias inside the node it names counts as too deep), a machine whose file is not `<id>.yaml` |
+| SG002 | error | Unknown or duplicate state name; unknown target or `initial`; an undeclared event trigger; a state name code compares with that is no state of the machine (`run.visits["x"]`, `run.visits.get("x", …)`, `"x" in run.visits`, `run.state == "x"`, `run.state in (…)`) |
 | SG003 | error | Structure: a choice without `else`; `else` not last; triggers on choice/junction; a final with other keys; `status` on a nested final; a composite with `do` or without `initial`; an internal completion or error transition; a wait state that accepts no event; a cycle of pseudostates only |
-| SG004 | error | Python does not compile, or is nested too deeply for Python's parser; unknown name; a name not bound at that place; `{{ }}` in a code field; `params.<name>` not declared; `out.value` (write `out["value"]`), `ctx.a.b` (write `ctx.a["b"]`), `ctx.get(...)` (namespaces have no dict methods); assigning or deleting a field of `params`, `run`, `resources`, `error`, `event`, `activity` or `ending`; a companion function that does not exist; `python:`/`imports:` outside the machine roots |
-| SG005 | error | Activity: unknown kind, several kind keys, invalid fields (including decide criteria shapes, per-question keys, a map `as` that shadows a scope name, `by` together with `profile`), a `schema` that is not a valid JSON schema, a computed `agent:`/`tool:`/`by:` other than `{{ params.<name> }}` with an enum |
-| SG006 | error | Submachine: unknown alias, import cycle, an absolute import path, missing required or unknown parameter |
-| SG007 | error | Configuration: an agent (`agent:`, `decide`'s `by:`) that is not configured, not enabled or not an agent, or one that reaches machines (the runner, a machine facade -- use it as a submachine --, an agent that may save, run or control machines, or start such an agent through a SAM), the runner may not call the tool, the tool is a SAM's (use an agent activity), the tool is stategraph's own, an unknown decision profile, a `vars_from` agent that is not configured; two runners claim the machine's folder; a file of the tree lies in a writable folder while the machine runs with another folder's runner (import it from the machine's own folder) |
+| SG004 | error | Python does not compile, or is nested too deeply for Python's parser; unknown name; a name not bound at that place; `{{ }}` in a code field; `params.<name>` not declared; `out.value` (write `out["value"]`), `ctx.a.b` (write `ctx.a["b"]`), `ctx.get(...)` (namespaces have no dict methods); assigning or deleting a field of `params`, `run`, `resources`, `error`, `event`, `activity` or `ending`; `error.cause.type` and the like below any namespace (write `error.cause["type"]`); a companion function that does not exist; a `call` whose `args` the function does not take (no `**kwargs`) or that leaves a required parameter out, a `parse` or `check` function that cannot take the one value -- read from the function's source, a companion's or `module:function`'s, following `from … import`; `python:` outside the machine roots, missing or not UTF-8 |
+| SG005 | error | Activity: unknown kind, several kind keys, invalid fields (including decide criteria shapes, per-question keys, a map `as` that shadows a scope name, `by` together with `profile`), a `schema` that is not a valid JSON schema, a computed `agent:`/`tool:`/`by:`/`llm_profile:` other than `{{ params.<name> }}` with an enum, or with a param that is neither required nor has a default; a `map:` expression that is a dict, a set or a text |
+| SG006 | error | Submachine: unknown alias, import cycle, an absolute import path, an import outside the machine roots, a machine file that is missing or not UTF-8, missing required or unknown parameter |
+| SG007 | error | Configuration: an agent (`agent:`, `decide`'s `by:`) that is not configured, not enabled or not an agent, or one that reaches machines (the runner, a machine facade -- use it as a submachine --, an agent that may save, run or control machines, or start such an agent through a SAM), the runner may not call the tool, the tool is a SAM's (use an agent activity), the tool is stategraph's own, an unknown decision profile, a `vars_from` agent that is not configured; (a warning) a semaphore the instance's `semaphores` does not name; two runners claim the machine's folder; a file of the tree lies in a writable folder while the machine runs with another folder's runner (import it from the machine's own folder) |
 | SG101 | warning | A state is unreachable from `initial` |
 | SG102 | warning | No path leads from a state to a root final |
-| SG103 | warning | A loop without `max_visits` on any of its states |
+| SG103 | warning | A loop without `max_visits` on any of its states (a counter guard does not count, §10) |
 | SG104 | warning | A transition after an unguarded one of the same trigger never fires |
 | SG105 | warning | `ctx.<name>` is read but neither declared in `context` nor assigned |
 | SG106 | warning | Impure code in a code field or template |
 | SG107 | warning | A data field whose whole value looks like a reference, without braces |
-| SG108 | warning | A root machine with `limits.timeout` used as a submachine |
+| SG108 | warning | A root machine with `limits.timeout`, `limits.concurrency` or `limits.max_cost` used as a submachine |
 | SG109 | warning | A state completes (it has `do`, or a final inside it) but has no completion transition: should it complete, the run fails with `no_transition` |
 | SG110 | warning | `retry.errors` names an error type the engine does not raise, or `interrupted` (never retried) |
-| SG111 | warning | `agent:`: the agent it offers cannot run (`task_param`, required params), or another server or a config entry of this machine holds its name -- the machine itself runs |
+| SG111 | warning | `agent:`: the agent it offers cannot run (`task_param`, a required param without default left out, a fixed `params` entry the machine does not declare or whose value does not fit its type or enum), or another server or a config entry of this machine holds its name -- the machine itself runs |
+| SG112 | warning | An event transition on a state that never waits (it has `do`, or completes at once): events are taken only while a wait or timer state is active -- put it on a composite around a wait state |
+| SG113 | warning | Machine-level `vars` read `ctx`: they render once, when the frame starts, so later changes never reach them -- put ctx values into the activity's own `vars` |
 
 Every problem names a path (`states.judge.transitions[1].guard`), the file and, when
 known, the line.
@@ -1058,7 +1142,9 @@ known, the line.
 
 **`sg.tool()` in a call.** An `async` companion function whose first parameter is `sg` may
 call tools: `await sg.tool("v6_story_json_manage_json", {"operation": "read", ...})`. A sync
-function runs in a worker thread: it can only return `sg.tool(...)`, not run it (§5 `call`).
+function runs in a worker thread: it can only return `sg.tool(...)`, not run it (§5 `call`)
+-- comparing or reading what it gives raises, and one it calls without returning fails
+the call.
 
 - Each call is journaled as a child tool activity (`<key>/t.<n>`, path
   `<call path>/<tool>`, e.g. `review/store_read`: mocks answer by that path, `$visits` for

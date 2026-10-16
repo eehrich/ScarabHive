@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import copy
+import json
 import logging
 import os
 import re
@@ -38,13 +39,28 @@ from .machine import Machine, compile_tree, unresolved_calls
 
 logger = logging.getLogger(__name__)
 
-JOURNAL_FORMAT = 1
+#: A run's journal format (its runs row, kept for its forks): 1 bound an explicit null param as the value, 2 as
+#: no value (the default applies). The engine reads both: a run replays with the binding it started with.
+JOURNAL_FORMAT = 2
+READABLE_FORMATS = (1, 2)
+
+
+def null_params_kept(row: dict[str, Any]) -> bool:
+    """Whether the run binds an explicit null param as the value (journal format 1; a row without one predates it)."""
+    return int(row.get("journal_format") or 1) == 1
+
+
 LEASE_SECONDS = 60
 #: The lease says the PROCESS lives, so it is renewed from a thread of its own: a call that holds the event loop
 #: (synchronous work of minutes -- the writer's whole-book passes) must not lose its run to another process.
 HEARTBEAT_SECONDS = 20
 #: How often the owner of live runs takes the control requests of other processes (RunStore.request_control).
 CONTROL_POLL_SECONDS = 1.0
+#: How often a run waiting for a semaphore slot looks again (FEAT-2): its holders may be runs of other processes.
+SLOT_POLL_SECONDS = 1.0
+#: How long an interrupted holder keeps its semaphore slot (the instance's semaphore_hold_seconds overrides it):
+#: a restart resumes it within that time and it goes on with its slot; after it the slot is free for others.
+SEMAPHORE_HOLD_SECONDS = 300.0
 #: The control actions another process may ask the owner for: no arguments to check against the owner's machine.
 REMOTE_CONTROLS = ("pause", "continue", "step", "terminate")
 #: Pauses between the tries of a run's end write: the view may fail to store, the end must not (§5.7).
@@ -57,15 +73,16 @@ _STEP = re.compile(r"s(\d+)")
 _STEPLESS = ("r.", "end.")
 NO_MOCK = object()
 #: Error types of a failed run that the same request again (its ``run_key``) tries anew instead of getting the
-#: failure again -- failures the machine did not cause: what a crash left undone (``interrupted``), an attempt's own
-#: deadline (``timeout``), the two kinds that end at a provider -- an agent's run and a decision model's call: a
-#: transport or provider error reaches the engine only as their failure (an agent reports it as text), so every
-#: failure of theirs counts --, the engine itself (``internal``: e.g. one "database is locked" on a journal write) and
-#: a replay that went another way (``diverged``: only a resume or fork replays). Not the run's own ``timed_out``: a
+#: failure again -- failures the machine did not cause: an attempt's own deadline (``timeout``), the two kinds that
+#: end at a provider -- an agent's run and a decision model's call: a transport or provider error reaches the engine
+#: only as their failure (an agent reports it as text), so every failure of theirs counts --, the engine itself
+#: (``internal``: e.g. one "database is locked" on a journal write) and a replay that went another way (``diverged``: only a resume or fork replays). Not the run's own ``timed_out``: a
 #: new run would spend the same budget. Not ``schema_invalid``, ``parse_failed`` or ``tool_failed``: the answer had
-#: its feedback rounds, and a tool's error answers the same inputs the same way. Every other failure is the
+#: its feedback rounds, and a tool's error answers the same inputs the same way. Not ``interrupted`` either: a
+#: non-idempotent activity a crash cut off is not started twice, and a new run would start every finished one again
+#: -- the machine's error transition reconciles it, or the caller takes a new key. Every other failure is the
 #: machine's answer.
-TRANSIENT_ERRORS = frozenset({"interrupted", "timeout", "agent_failed", "decision_failed", "internal", "diverged"})
+TRANSIENT_ERRORS = frozenset({"timeout", "agent_failed", "decision_failed", "internal", "diverged"})
 
 
 def failed_transiently(error: Any) -> bool:
@@ -158,6 +175,22 @@ def rewound_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def ended_without_outcome(rows: list[dict[str, Any]], *, terminal: bool) -> set[str]:
+    """The keys of ``started`` activity rows that will never get an outcome: an activity a fail-fast join or a quorum
+    cancelled, one below a composite that has its outcome (or resumed interrupted) -- and every one of a run that
+    ended. Their rows stay ``started`` (rewound_rows reads them); a reader shows them as ended without an outcome,
+    not as in flight. Read time only: the journal is not changed."""
+    ended = {r["key"] for r in rows if r["kind"] == "activity" and r.get("status") in ("done", "error")}
+    found = set()
+    for row in rows:
+        key = row["key"]
+        if row["kind"] != "activity" or row.get("status") != "started" or key.startswith(REWOUND):
+            continue
+        if terminal or any(key[:at] in ended for at in range(len(key)) if key[at] == "/"):
+            found.add(key)
+    return found
+
+
 def key_steps(key: str) -> list[tuple[str, int]]:
     """``s3/b.x/m/s5`` -> ``[("", 3), ("s3/b.x/m/", 5)]``: every frame a key passes and its step there."""
     found: list[tuple[str, int]] = []
@@ -227,6 +260,62 @@ def _fork_point_of(rows: list[dict[str, Any]], at_step: Optional[int]
     return at, chain, sources
 
 
+def _key_hashes(ctx: Any) -> dict[str, str]:
+    """Each top-level ctx key's hash (tokenized: a ctx that is a resource value whole has no keys)."""
+    return {name: fingerprint(value)[:12] for name, value in ctx.items()} if isinstance(ctx, dict) else {}
+
+
+#: A changed ctx key's value goes into the step row whole up to this many characters of JSON (DBG-6).
+CHANGED_VALUE_CHARS = 2000
+
+
+def _ctx_changes(before: dict[str, str], after: dict[str, str], ctx: Any) -> dict[str, Any]:
+    """A step row's ``changed``: each top-level ctx key whose hash differs from the frame's previous step (the
+    first step: from the machine's context), with its new value -- ``{"$size", "$hash"}`` when its JSON is longer
+    than CHANGED_VALUE_CHARS, ``{"$gone": true}`` when the step removed it. Edits applied after a step's row
+    show in the next one."""
+    changed: dict[str, Any] = {}
+    for name in sorted(set(before) | set(after)):
+        if before.get(name) == after.get(name):
+            continue
+        if name not in after:
+            changed[name] = {"$gone": True}
+            continue
+        text = json.dumps(ctx[name], ensure_ascii=False, default=str)
+        changed[name] = ctx[name] if len(text) <= CHANGED_VALUE_CHARS else {"$size": len(text), "$hash": after[name]}
+    return changed
+
+
+def _step_difference(details: Optional[dict[str, Any]], now: dict[str, Any]) -> str:
+    """What differs after a step, from the step row's per-key hashes and states (rows from before 2026-10-15 have
+    neither: then only that something does)."""
+    if not details:
+        return "the context or the active states differ from the recorded run"
+    found = []
+    then, keys = details.get("keys") or {}, _key_hashes(now["ctx"])
+    changed = sorted(name for name in set(then) | set(keys) if then.get(name) != keys.get(name))
+    if changed:
+        found.append(", ".join(f"ctx.{name}" + (" (new)" if name not in then else " (gone)" if name not in keys
+                                                 else "") for name in changed[:8])
+                     + (f" and {len(changed) - 8} more" if len(changed) > 8 else ""))
+    if details.get("config") is not None and details["config"] != now["config"]:
+        found.append(f"the active states (recorded {details['config']}, now {now['config']})")
+    return f"{' and '.join(found) or 'the context'} differ from the recorded run"
+
+
+def _deduplicated(guards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A transition row's guards as the dispatch evaluates them now. Before 2026-10-15 a choice evaluated the
+    guard of the branch it picked twice in a row (both true); no dispatch does that any more -- a held guard is
+    followed by its target's, never by itself -- so such a repeat is dropped."""
+    kept: list[dict[str, Any]] = []
+    for guard in guards:
+        if (kept and guard.get("result") is True and kept[-1].get("result") is True
+                and (guard.get("at"), guard.get("guard")) == (kept[-1].get("at"), kept[-1].get("guard"))):
+            continue
+        kept.append(guard)
+    return kept
+
+
 def _utc(seconds_from_now: float = 0.0) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds_from_now)).isoformat(timespec="milliseconds")
 
@@ -251,6 +340,7 @@ class _Pending:
     name: str
     data: Any
     frame: Optional[str]          # target frame prefix; None = any frame that accepts it
+    explicit: bool = False        # the sender named the frame: dropped when it ends, not handed to another
     arrived: float = field(default_factory=time.monotonic)
 
 
@@ -270,6 +360,7 @@ class RunContext:
         #: function that needs them says so
         self.live_objects = dict(live or {})
         self.origin = origin or run_id   # the first run of a fork chain: stable across forks (run.origin)
+        self.null_params_kept = False    # journal format 1: an explicit null param is the value (bind_params)
         self.store = store
         self.machine = machine
         self.backend = backend or NoBackend()
@@ -285,9 +376,14 @@ class RunContext:
         self.cancelled = False           # the run is ending: a terminate, or limits.timeout (§3.10)
         self.timed_out = False           # ... and it was limits.timeout: the run ends failed, not cancelled
         self.cancel_pending = False      # a terminate journaled before a crash: carried out once replay is done
+        self.cancel_reason: Optional[str] = None  # who the terminate came from, when not an operator (its error)
         self.stopping = False            # the process stops: frames end without their finally (the run resumes)
         self.divergence: Optional[str] = None  # the first replay divergence: no finally runs any more (§3.10)
         self.begun = False               # the run's task ran its first line (a cancel before that would lose the run)
+        self.task: Optional[asyncio.Task] = None  # the run's own task (_launch)
+        # the activity timeouts running in the run's own task: a cancel of theirs is the engine's, not one from
+        # outside (halted_from_outside)
+        self.timeouts: list[Any] = []
         self.resource_sources: dict[str, Any] = {}  # a fork: the source run's resource values (§2.8)
         # ... and before them, as the source's own history had them: [{values, until}] -- values held for the
         # top-level steps before until (a chain of forks); the source's values follow the last of them
@@ -307,7 +403,19 @@ class RunContext:
         self.running_seconds = 0.0
         self._running_since: Optional[float] = time.monotonic()
         self._request_seq = 0
+        #: run.cost: what the activity outcomes met so far cost (meta.cost) -- counted as each is journaled or
+        #: replayed, so a replay reads the same value at the same point; limits.max_cost bounds it
+        self.cost = 0.0
+        #: the original exception behind the error that ended the run (a call's own code raised it), in this process
+        #: only: never journaled -- an in-process caller of the run gets it back (FEAT-12)
+        self.exception: Optional[BaseException] = None
         self._edit_seq = 0
+        #: the instance's semaphores (name -> capacity) and hold period, read at each try (a reload changes them)
+        self.semaphores: Callable[[], tuple[dict[str, Any], float]] = lambda: ({}, SEMAPHORE_HOLD_SECONDS)
+        self.slot_waits: dict[str, dict[str, Any]] = {}  # acquire key (or "reclaim") -> the slot it waits for
+        self.journal_rows = 0  # the rows the replay goes through: the lifecycle row of where it went live says so
+        self._slots_back: Optional[asyncio.Event] = None  # set once a resume that went live holds its slots again
+        self._late_claim = False  # a replay claimed a slot after the run went live (claimed): went_live checks it
         # journal state for replay
         self.recorded: dict[str, dict[str, Any]] = {}
         self.ends: dict[str, dict[str, Any]] = {}   # "<frame>end" -> how that frame ended (§3.10)
@@ -321,6 +429,10 @@ class RunContext:
         self.timers: set[str] = set()
         self.edits: dict[str, list[dict[str, Any]]] = {}
         self.step_hashes: dict[str, str] = {}
+        # "<frame>s<N>" -> {"keys": {ctx key: hash}, "config": [states]} of the step row: what a divergence names
+        self.step_details: dict[str, dict[str, Any]] = {}
+        # "<frame>s<N>" -> the guards that step's dispatch evaluated, in order (its transition or discard row)
+        self.step_guards: dict[str, list[dict[str, Any]]] = {}
         self.var_snapshots: dict[str, dict[str, Any]] = {}
         self.deadlines: dict[str, float] = {}
         self.wait_since: dict[str, float] = {}  # since when a wait state waits, per entry (a resume keeps it)
@@ -340,16 +452,37 @@ class RunContext:
         if status == "error" and (data.get("error") or {}).get("type") == "interrupted":
             self.interrupted.add(key)
 
+    def add_cost(self, *rows: dict[str, Any]) -> None:
+        """run.cost: add what these activity rows' data cost (``meta.cost``)."""
+        for data in rows:
+            self.cost += self.cost_of((data or {}).get("meta"))
+
+    def count_recorded(self, key: str) -> None:
+        """run.cost: add what the recorded activity at ``key`` -- and, a composite, every activity below it -- cost,
+        as it counted live (its replay, or a join that ends on its recorded error without replaying it)."""
+        below = f"{key}/"
+        self.add_cost((self.recorded.get(key) or {}).get("data") or {},
+                      *(row["data"] for name, row in self.recorded.items() if name.startswith(below)))
+
+    @staticmethod
+    def cost_of(meta: Optional[dict[str, Any]]) -> float:
+        """What an activity's ``meta`` says it cost (``meta.cost``; 0 without a number)."""
+        cost = (meta or {}).get("cost")
+        return cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else 0.0
+
     def _load_journal(self) -> None:
         for row in self.store.rows(self.id, kinds=("activity", "event", "edit", "timer", "trace")):
             kind, key, data = row["kind"], row["key"], row.get("data") or {}
             mocked = data.get("path") if kind == "activity" and row["status"] in ("done", "error") and (
                 data.get("meta") or {}).get("mocked") else data.get("mock") if kind == "trace" and (
                 row["status"] == "wait") else None
-            if mocked:  # a $visits count goes on from every visit, also from one a resume set aside (REWOUND)
-                self.mock_uses[mocked] = self.mock_uses.get(mocked, 0) + 1
+            if mocked:  # a $visits count goes on from every visit, also from one a resume set aside (REWOUND) --
+                # a mocked activity's retries took one each
+                uses = int((data.get("meta") or {}).get("attempts") or 1) if kind == "activity" else 1
+                self.mock_uses[mocked] = self.mock_uses.get(mocked, 0) + uses
             if key.startswith(REWOUND):  # nothing else of a set-aside row counts: not even a join's joined row
                 continue
+            self.journal_rows += 1
             if kind == "activity":
                 if row["status"] in ("done", "error"):
                     self.note_outcome(key, row["status"], data)
@@ -358,7 +491,9 @@ class RunContext:
                     self.started[key] = {"data": data}
             elif kind == "event":
                 if key.startswith("pending:"):
-                    self.inbox.append(_Pending(key, data.get("name"), data.get("data"), data.get("frame")))
+                    if row["status"] == "pending":  # not one a frame's end dropped
+                        self.inbox.append(_Pending(key, data.get("name"), data.get("data"), data.get("frame"),
+                                                   bool(data.get("explicit"))))
                 else:
                     self.consumed[key] = data
                     self._advance(_head(key))
@@ -370,9 +505,16 @@ class RunContext:
                 self._edit_seq += 1
                 self._advance(_head(data.get("at", "")))
             elif kind == "trace":
-                if row["status"] == "step" and "ctx_hash" in data:
-                    self.step_hashes[key] = data["ctx_hash"]
-                    self._advance(_head(key))
+                if row["status"] == "step":
+                    if "ctx_hash" in data:
+                        self.step_hashes[key] = data["ctx_hash"]
+                        if "keys" in data:
+                            self.step_details[_head(key)] = {"keys": data["keys"], "config": data.get("config")}
+                        self._advance(_head(key))
+                    if data.get("guards"):  # every dispatch's (and the initial entry's s0) -- comes after its
+                        self.step_guards[_head(key)] = data["guards"]  # transition row, and a fork copies it
+                elif row["status"] in ("transition", "event_discarded") and data.get("guards"):  # older journals
+                    self.step_guards[f"{data.get('frame', '')}s{data.get('step')}"] = _deduplicated(data["guards"])
                 elif row["status"] == "vars_from":
                     self.var_snapshots[data.get("agent", "")] = data.get("vars") or {}
                 elif row["status"] == "wait":  # (a wait that asked its mock counted above)
@@ -383,6 +525,7 @@ class RunContext:
                 elif row["status"] == "cancel":
                     self.cancel_pending = True
                     self.timed_out = bool(data.get("timed_out"))
+                    self.cancel_reason = data.get("by")
                 elif row["status"] == "end":
                     self.ends[key] = data
                 elif row["status"] == "joined":
@@ -412,6 +555,15 @@ class RunContext:
         return frame.step == reached and (frame.key() in self.recorded or frame.key(":event") in self.consumed
                                           or frame.key(":timer") in self.timers)
 
+    def recorded_guard(self, frame: Frame, index: int) -> Optional[dict[str, Any]]:
+        """The ``index``-th guard the journaled dispatch of the frame's current step evaluated -- ``{}`` past the
+        ones it evaluated -- or None: the step is not in the journal, or it recorded no guards (a journal from
+        before guards were recorded): those are evaluated. Only a journaled step has recorded guards."""
+        guards = self.step_guards.get(frame.key())
+        if not guards:
+            return None
+        return guards[index] if index < len(guards) else {}
+
     def in_journal(self, frame: Frame) -> bool:
         """Whether the frame's journal goes on at its current step: a replay point, an activity that was in
         flight at the crash (a composite's children replay into their ends), an edit made at the step's enter
@@ -438,9 +590,43 @@ class RunContext:
         if (frame.ending_only or (self.ending and not frame.finalizer)) and not self.in_journal(frame):
             self.stop_here()
 
-    def went_live(self) -> None:
-        """The run passes its journal here."""
+    async def went_live(self, where: str) -> None:
+        """The run passes its journal here (``where``: the key of the activity, wait or step that is live). A resume
+        or fork says so once -- a lifecycle row with the key and the journal rows it replayed, and a log line (DBG-8)
+        --, holds the semaphore slots its replay holds again (FEAT-2: it may wait for one here), and stores the
+        view it went live with: the replay before stored none (RES-3)."""
+        if self.live:
+            # another branch went live first, or a slot was claimed since (claimed): not on before the slots are back
+            while self._late_claim or not (self._slots_back is None or self._slots_back.is_set()):
+                if self._slots_back is not None and not self._slots_back.is_set():
+                    await self._slots_back.wait()
+                else:
+                    self._late_claim = False
+                    self._slots_back = asyncio.Event()
+                    try:
+                        await self.reclaim_slots()
+                    finally:
+                        self._slots_back.set()
+            return
         self.live = True
+        self._slots_back = asyncio.Event()
+        try:
+            await self._go_live(where)
+        finally:
+            self._slots_back.set()
+
+    async def _go_live(self, where: str) -> None:
+        logger.info("stategraph: run %s of %s went live at %s after replaying %d journal row(s)", self.id,
+                    self.machine.id, where, self.journal_rows)
+        if not self.lost:
+            try:
+                self.store.lifecycle(self.id, "live", {"key": where, "rows": self.journal_rows,
+                                                       "process": self.owner})
+            except Exception:  # a row for the record: it never stops the run
+                logger.warning("stategraph: run %s: the row of where it went live not written", self.id,
+                               exc_info=True)
+        await self.reclaim_slots()
+        self.persist()
 
     def stop_here(self) -> NoReturn:
         """A frame of an ending run is where its journal ends: it ends here (§3.10). A terminate journaled before
@@ -464,7 +650,28 @@ class RunContext:
         """Whether an ending frame runs its finally and close activities: not on a halt -- the process stops,
         or it lost the run -- where a resume ends the frame instead; not once a replay diverged, since the run's
         state is not trusted then (§3.10)."""
+        self.halted_from_outside()
         return not self.stopping and not self.lost and self.divergence is None
+
+    def token_cancelled(self) -> bool:
+        """Whether the run's cancellation token -- its own, or its backend's (what _watch_token sees) -- is
+        cancelled: its caller cancelled it, which terminates the run (§5.8)."""
+        return any(getattr(token, "is_cancelled", False) is True
+                   for token in (self.token, getattr(self.backend, "token", None)))
+
+    def halted_from_outside(self) -> bool:
+        """Whether the run's own task is being cancelled by something the engine did not ask for -- the event loop's
+        teardown when the process stopped without ``shutdown`` (a forced exit), say. Not a terminate, a timeout, a
+        stop or a lost lease (each sets its flag first), nor an activity's own timeout in that task: that is a
+        halt, and from here on the run stops as on ``shutdown`` -- interrupted, without its finally activities."""
+        task = self.task
+        if (self.stopping or task is None or self.cancelled or self.lost or self.divergence is not None
+                or self.token_cancelled()):  # a cancelled token: the caller's cancel, a terminate on its way
+            return self.stopping
+        own = sum(1 for owner, deadline in self.timeouts if owner is task and deadline.expired())
+        if task.cancelling() > own:
+            self.stopping = True
+        return self.stopping
 
     def diverged(self, message: str) -> ReplayDivergence:
         """The divergence to raise: from here on no finally runs, in this frame or any other, and the run ends
@@ -505,10 +712,18 @@ class RunContext:
         return dict(values)
 
     async def hook(self, point: str, frame: Frame, node: Any, event: Any = None) -> None:
-        for edit in self.edits.get(f"{frame.prefix}s{frame.step}:{point}", ()):
+        at = f"{frame.prefix}s{frame.step}:"
+        # a set on a stopped run waits at the exit of its in-flight activity (service._frontier): that activity may
+        # end with an error instead. A step has one of the two hooks, so no edit applies twice
+        edits = [*self.edits.get(f"{at}exit", ()), *self.edits.get(f"{at}error", ())] if point == "error" else \
+            self.edits.get(f"{at}{point}", ())
+        for edit in edits:
             if edit.get("repair"):  # an operator's repair of the activity's end (debugger.assign)
                 if event is not None and event.repairable:
                     event.repair(edit["value"])
+            elif edit.get("param"):  # a param set while the run was stopped (LC-R1): from where it was set on --
+                # the steps before it read the value they ran with, so their replay holds
+                frame.params[str(edit["path"]).removeprefix("params.")] = edit["value"]
             else:
                 apply_edit(frame.ctx, edit["path"], edit["value"])
         if self.is_replay_point(frame) or (event is not None and getattr(event, "replayed", False)):
@@ -538,40 +753,67 @@ class RunContext:
 
     async def after_step(self, frame: Frame) -> None:
         key = frame.key(":step")
-        digest = fingerprint(frame.tokenized({"ctx": frame.ctx, "config": [node.name for node in frame.config]}))
+        config = [node.name for node in frame.config]
+        tokened = frame.tokenized({"ctx": frame.ctx, "config": config})
+        digest = fingerprint(tokened)
         recorded = self.step_hashes.get(key)
+        keys = _key_hashes(tokened["ctx"])
+        previous = frame.ctx_keys if frame.ctx_keys is not None else _key_hashes(frame.machine.spec.context)
+        frame.ctx_keys = keys
         if recorded is not None and recorded != digest:
-            raise self.diverged(f"after {key} the context or the active states differ from the recorded run "
+            raise self.diverged(f"after {key} {_step_difference(self.step_details.get(frame.key()), tokened)} "
                                 f"(hash {digest} != {recorded}): a guard, action or template is not "
                                 "deterministic, or the definition changed")
         if recorded is None:
             if frame.ending_only or (self.ending and not frame.finalizer):  # past the journal (before_step let it
                 self.stop_here()                                           # through for an end of its own)
             self.step_hashes[key] = digest
+            # each ctx key's own hash and the active states: what a divergence of a resume or fork names; the
+            # guards the dispatch evaluated -- also one that aborted -- answer a replay of it (_guard)
+            changed = _ctx_changes(previous, keys, tokened["ctx"])
             self.write("trace", key, state=frame.leaf.name if frame.leaf else None, status="step",
-                              data={"ctx_hash": digest, "frame": frame.prefix, "step": frame.step})
+                              data={"ctx_hash": digest, "frame": frame.prefix, "step": frame.step,
+                                    "keys": keys, "config": config,
+                                    **({"changed": changed} if changed else {}),
+                                    **({"guards": frame.guards} if frame.guards else {})})
+            await self.went_live(key)  # a step past the journal (one without an activity or wait goes live here)
         for edit in self.edits.get(f"{frame.prefix}s{frame.step}:watch", ()):
             apply_edit(frame.ctx, edit["path"], edit["value"])
         replaying = self.frontier.get(frame.prefix, -1) >= frame.step
         await self.debugger.after_step(self, frame, silent=replaying or self.ending)
-        self.persist()
+        if self.live:  # a replayed step changes nothing anyone reads: went_live stores the view it arrives at
+            self.persist()
+
+    def initial_entered(self, frame: Frame) -> None:
+        """The guards the frame's initial entry evaluated (a choice as initial target): kept in a step row of
+        step 0 -- no hash, the next step's covers it -- so a replay or a fork's prefix answers them as they were."""
+        if frame.guards and frame.key() not in self.step_guards:
+            self.step_guards[frame.key()] = list(frame.guards)
+            self.write("trace", frame.key(":step"), state=frame.leaf.name if frame.leaf else None, status="step",
+                       data={"frame": frame.prefix, "step": frame.step, "guards": frame.guards})
 
     # ------------------------------------------------------------ events
     def frame_by_prefix(self, prefix: str) -> Optional[Frame]:
         return next((f for f in self.frames if f.prefix == prefix), None)
 
     def send_event(self, name: str, data: Any = None, frame: Optional[str] = None) -> dict[str, Any]:
-        """Route an event (§3.4): to ``frame``, or to the one frame that accepts it; else keep it in the inbox."""
+        """Route an event (§3.4): to ``frame``, or to the one frame that takes it now (it waits in a state that
+        accepts it); else it waits in the run's inbox for the first wait that accepts it (queued)."""
         declared = self._declared_everywhere()
         if name not in declared:
             return {"accepted": False, "reason": f"no machine of this run declares event {name!r} "
                                                  f"(declared: {', '.join(sorted(declared)) or 'none'})"}
         if frame is not None:
-            if self.frame_by_prefix(frame) is None:
+            named = self.frame_by_prefix(frame)
+            if named is None:
                 return {"accepted": False, "reason": f"no active frame {frame!r}"}
+            if name not in named.machine.spec.events:  # it could never take it: kept, it would wait for good --
+                # the sender's to correct, like a refused payload (422, not "try again later")
+                return {"accepted": False, "reason": f"frame {frame!r} runs {named.machine.id}, which does not "
+                                                     f"declare event {name!r}", "data_refused": True}
             target = frame
         else:
-            accepting = [f.prefix for f in self.frames if name in f.accepts()]
+            accepting = [f.prefix for f in self.frames if name in f.takes_now()]
             if len(accepting) > 1:
                 return {"accepted": False, "reason": f"several frames accept {name!r}: {', '.join(accepting)}; "
                                                      "name one with frame"}
@@ -579,9 +821,9 @@ class RunContext:
         problem = self._check_payload(name, data, target)
         if problem:
             return {"accepted": False, "reason": problem, "data_refused": True}  # the sender's to correct
-        pending = _Pending(f"pending:{uuid.uuid4().hex[:12]}", name, jsonable(data), target)
+        pending = _Pending(f"pending:{uuid.uuid4().hex[:12]}", name, jsonable(data), target, frame is not None)
         if not self.lost and not self.store.record(self.id, "event", pending.key, fence=self.owner, status="pending",
-                                                   data={"name": name, "data": pending.data, "frame": target}):
+                                                   data=self._pending_data(pending)):
             self.lose()  # the fence refused it: this copy stops, like after any refused write
         if self.lost:
             return {"accepted": False, "reason": "another process owns this run now; send the event there"}
@@ -641,7 +883,7 @@ class RunContext:
             return "", None, True, True
         if frame.ending_only or (self.ending and not frame.finalizer):  # its frame ended here before the crash
             self.stop_here()
-        self.went_live()
+        await self.went_live(key)
         # one wait per entry: an internal transition restarts neither its deadline nor its "since"
         wait_key = f"{frame.prefix}s{frame.entered_step.get(leaf.name, frame.step)}:wait"
         since = self.wait_since.get(wait_key)
@@ -694,6 +936,91 @@ class RunContext:
             frame.waiting_since = frame.wait_deadline = None
             self.refresh_status()
 
+    # ------------------------------------------------------------ semaphores (FEAT-2)
+    def _slot_cutoff(self) -> tuple[dict[str, Any], str]:
+        """The instance's semaphores now, and the time before which an interrupted holder's hold ran out."""
+        semaphores, hold = self.semaphores()
+        return semaphores, _utc(-float(hold))
+
+    async def take_slot(self, act: Any, name: str, sem_key: str = "") -> int:
+        """The acquire kind: a slot of semaphore ``name`` for the activity's frame -- the lowest free index of its
+        ``sem_key`` (the capacity counts per key: one run per ticket is a capacity-1 semaphore keyed by it). While
+        every slot is held it waits: the run shows ``waiting`` (``slot_waits`` in its view), which is no running
+        time; a pause takes effect here, at hook ``wait`` (it takes no set: nothing of the state has run yet that
+        a replay could apply it to). The capacity is read at every try: a reload changes it."""
+        frame = act.frame
+        waiting = False
+        try:
+            while True:
+                semaphores, cutoff = self._slot_cutoff()
+                capacity = semaphores.get(name)
+                if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity < 1:
+                    raise ActivityError("config", f"{act.path}: semaphore {name!r} is not configured (the "
+                                                  "instance's semaphores setting: name -> capacity)")
+                try:
+                    slot = self.store.acquire_slot(name, capacity, self.id, act.key, frame.prefix, cutoff=cutoff,
+                                                   fence=self.owner, sem_key=sem_key)
+                except PermissionError:  # another process owns the run now
+                    self.lose()
+                    raise asyncio.CancelledError() from None
+                if slot is not None:
+                    return slot
+                if not waiting:
+                    waiting = True
+                    self.slot_waits[act.key] = {"semaphore": name, **({"sem_key": sem_key} if sem_key else {}),
+                                                "frame": frame.prefix, "since": utc_now()}
+                    self.refresh_status()
+                    self.persist()
+                if self.debugger.mode == "pause" and not self.ending:
+                    await self.debugger.pause(self, frame, frame.leaf, "wait", "paused while waiting for a slot of "
+                                              f"{name}{f' [{sem_key}]' if sem_key else ''}", None)
+                    continue
+                await asyncio.sleep(SLOT_POLL_SECONDS)
+        finally:
+            if waiting:
+                self.slot_waits.pop(act.key, None)
+                self.refresh_status()
+
+    def claimed(self, now: bool) -> None:
+        """A replayed acquire claimed its slot (``now``: it held none under that key). Before the run went live,
+        went_live's reclaim_slots checks it; after -- another branch of a parallel went live first, or a composite
+        replayed later re-applies the acquires below it -- the next went_live of any branch does, and every
+        branch waits for it there: nothing runs live before a went_live, so nothing works on that slot unchecked."""
+        self._late_claim = self._late_claim or (now and self.live)
+
+    async def reclaim_slots(self) -> None:
+        """A resumed or forked run holds the semaphore slots of its replayed prefix again before it goes on: the
+        rows of its holds outlive an interruption, and a replayed acquire claims its slot (AcquireKind.replayed).
+        One another run took over after the hold period ran out: it waits until that one gives it back (its
+        replayed prefix chose by that slot index) -- unless the run is ending: its frames' end releases every hold
+        anyway, so it waits for none (a terminate of an interrupted holder must not hang on another run). Journaled:
+        a lifecycle row ``slots``."""
+        began, held, taken = time.monotonic(), None, []
+        try:
+            while True:
+                _, cutoff = self._slot_cutoff()
+                held, taken = self.store.reclaim_slots(self.id, cutoff=cutoff)
+                if not taken or self.ending:
+                    break
+                for hold in taken:
+                    self.slot_waits.setdefault(f"reclaim:{hold['key']}", {
+                        "semaphore": hold["name"], **({"sem_key": hold["sem_key"]} if hold.get("sem_key") else {}),
+                        "slot": hold["slot"], "since": utc_now()})
+                self.refresh_status()
+                self.persist()
+                await asyncio.sleep(SLOT_POLL_SECONDS)
+        finally:
+            if any(key.startswith("reclaim:") for key in self.slot_waits):
+                self.slot_waits = {k: v for k, v in self.slot_waits.items() if not k.startswith("reclaim:")}
+                self.refresh_status()
+        if held:
+            try:
+                self.store.lifecycle(self.id, "slots", {"held": held, "waited_s": round(time.monotonic() - began, 1),
+                                                        "process": self.owner,
+                                                        **({"not_back": taken} if taken else {})})
+            except Exception:
+                logger.warning("stategraph: run %s: the row of its slots not written", self.id, exc_info=True)
+
     # ------------------------------------------------------------ debugger edits, trace, view
     def record_edit(self, frame: Frame, hook: str, path: str, value: Any, *, repair: bool = False) -> None:
         """``repair``: the activity's out, not a ctx path -- marked, so an older journal's ``out`` (then ctx.out)
@@ -703,8 +1030,10 @@ class RunContext:
         self.write("edit", f"{at}:{self._edit_seq}", state=frame.leaf.name if frame.leaf else None,
                    status="applied", data={"at": at, "path": path, "value": value, **({"repair": True} if repair else {})})
 
-    def trace(self, frame: Frame, what: str, *, state: Optional[str] = None, data: Any = None) -> None:
-        key = f"{frame.prefix}s{frame.step}:{what}:{state or ''}"
+    def trace(self, frame: Frame, what: str, *, state: Optional[str] = None, data: Any = None, tag: str = "") -> None:
+        """``tag`` tells apart rows of one kind a step writes for one state more than once (a pause at enter and
+        one at exit): ``<frame>s<N>:<what>:<tag>:<state>``."""
+        key = f"{frame.prefix}s{frame.step}:{what}:{f'{tag}:' if tag else ''}{state or ''}"
         self.write("trace", key, state=state, status=what,
                           data={"machine": frame.machine.id, "frame": frame.prefix, "step": frame.step,
                                 **(data or {})})
@@ -721,8 +1050,43 @@ class RunContext:
     def frame_ended(self, frame: Frame) -> None:
         if frame in self.frames and frame is not self.root:
             self.frames.remove(frame)
+        if not (self.halted_from_outside() or self.lost):  # a halt ends no frame: the resume goes on in it
+            self._release_events(frame)
+            try:  # its semaphore slots, and its frames' (FEAT-2): an interrupted run keeps them for the hold period
+                self.store.release_slots(self.id, frame.prefix, below=True)
+            except Exception:
+                logger.warning("stategraph: run %s: the semaphore slots of frame %r not released", self.id,
+                               frame.prefix, exc_info=True)
         self._inbox_changed.set()
         self.persist()
+
+    @staticmethod
+    def _pending_data(pending: _Pending) -> dict[str, Any]:
+        return {"name": pending.name, "data": pending.data, "frame": pending.frame,
+                **({"explicit": True} if pending.explicit else {})}
+
+    def _release_events(self, frame: Frame) -> None:
+        """The events sent to a frame that ended: one routed there because it took it then goes back to the run
+        (the next wait that accepts it takes it); one its sender addressed to that frame is dropped -- traced
+        ``event_dropped`` (§3.4). A frame's end does not raise: a refused write only leaves the row as it was."""
+        for pending in [p for p in self.inbox if p.frame == frame.prefix]:
+            try:
+                if pending.explicit:
+                    self.inbox.remove(pending)
+                    self.store.record(self.id, "event", pending.key, fence=self.owner, status="dropped",
+                                      data=self._pending_data(pending))
+                    self.store.record(self.id, "trace", f"{frame.prefix}event_dropped:{pending.key}",
+                                      fence=self.owner, state=frame.leaf.name if frame.leaf else None,
+                                      status="event_dropped",
+                                      data={"event": pending.name, "frame": frame.prefix, "machine": frame.machine.id,
+                                            "step": frame.step, "reason": "the frame it was sent to ended"})
+                else:
+                    pending.frame = None
+                    self.store.record(self.id, "event", pending.key, fence=self.owner, status="pending",
+                                      data=self._pending_data(pending))
+            except Exception:
+                logger.warning("stategraph: run %s: event %s of ended frame %s not released", self.id,
+                               pending.name, frame.prefix, exc_info=True)
 
     def set_status(self, status: str, *, write: bool = True) -> None:
         now = time.monotonic()
@@ -743,7 +1107,7 @@ class RunContext:
             status = "paused"
         elif self.busy > 0:
             status = "running"
-        elif self.waiting:
+        elif self.waiting or self.slot_waits:
             status = "waiting"
         else:
             status = "running"
@@ -758,6 +1122,8 @@ class RunContext:
         return {"frames": [frame.view() for frame in self.frames], "live": self.live,
                 "running_seconds": round(self.elapsed_running(), 1),
                 "inbox": [{"name": p.name, "frame": p.frame} for p in self.inbox],
+                # the semaphore slots it waits for (FEAT-2): {semaphore, frame, since} -- slot: one a resume takes back
+                **({"slot_waits": list(self.slot_waits.values())} if self.slot_waits else {}),
                 # mock paths no activity used (yet): at the end, a typo -- the activity it meant ran for real
                 "mocks_unused": sorted(path for path in self.mocks if not self.mock_uses.get(path))}
 
@@ -814,18 +1180,22 @@ class RunContext:
             self.lose()
             raise asyncio.CancelledError()
 
-    def cancel(self, *, timed_out: bool = False) -> None:
+    def cancel(self, *, timed_out: bool = False, reason: Optional[str] = None) -> None:
         """The run's ending begins: a terminate, or ``limits.timeout`` (§3.10). The first one counts; it is
-        journaled, so a crash while the finally activities run still ends the run the same way."""
+        journaled, so a crash while the finally activities run still ends the run the same way. ``reason``: who
+        terminated it, named in its error (``terminated by <reason>``)."""
         if self.cancelled:
             return
+        if reason and self.cancel_reason is None and not self.cancel_pending:
+            self.cancel_reason = reason
         if self.cancel_pending:  # a journaled one is still on its way: it counts, and takes effect now
             self.carry_out_cancel()
             return
         if not self.lost:
             try:
                 if not self.store.record(self.id, "trace", "cancel", fence=self.owner, status="cancel",
-                                         data={"timed_out": timed_out}):
+                                         data={"timed_out": timed_out,
+                                               **({"by": self.cancel_reason} if self.cancel_reason else {})}):
                     self.lose()
             except Exception:
                 logger.warning("stategraph: could not journal the terminate of run %s", self.id, exc_info=True)
@@ -857,8 +1227,17 @@ def _lost(run_id: str) -> ValueError:
     return ValueError(f"another process owns run {run_id} now; control it there")
 
 
+def host_identity() -> str:
+    """The host part of an owner id: the hostname -- and where pids have namespaces (Linux), the pid namespace's,
+    so containers that share a hostname and a runs.db but not their pids never judge each other's (owner_gone)."""
+    try:
+        return f"{socket.gethostname()}/{os.stat('/proc/self/ns/pid').st_ino}"
+    except OSError:  # no pid namespaces here
+        return socket.gethostname()
+
+
 def owner_id() -> str:
-    return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
+    return f"{host_identity()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
 
 
 class RunManager:
@@ -872,8 +1251,14 @@ class RunManager:
         self.owner = owner_id()
         #: where a callback URL points (the callback kind): the stategraph instance's route, under its public URL
         self.callback_base = "/plugins/stategraph/callback"
+        #: the instance's semaphores (name -> capacity) and how long an interrupted holder keeps its slot (FEAT-2);
+        #: the server sets them from its config, and again on a reload -- each try of an acquire reads them
+        self.semaphores: dict[str, Any] = {}
+        self.semaphore_hold = SEMAPHORE_HOLD_SECONDS
         self.live: dict[str, LiveRun] = {}
-        self._defaults: dict[str, dict[str, Any]] = {}  # run id -> its params' defaults when it started (describe)
+        #: run id -> what describe and budget read of its definition (_definition_facts), parsed once for both
+        self._facts: dict[str, dict[str, Any]] = {}
+        self._facts_lock = threading.Lock()  # the loop and the panel's worker threads both fill it
         self._stopping = False
         self._heartbeat: Optional[threading.Thread] = None
         self._heartbeat_stop = threading.Event()  # the running thread's own: a new thread gets a new one
@@ -897,8 +1282,11 @@ class RunManager:
         ``strict_points``: a breakpoint naming no state is refused; else (a fork's inherited points) it is dropped."""
         self._refuse_while_stopping()
         machine = compile_tree(tree)
+        # a fork replays its source's prefix: it binds its params as the source did (JOURNAL_FORMAT)
+        source = self.store.get_run(parent_run) if parent_run else None
+        journal_format = 1 if source is not None and null_params_kept(source) else JOURNAL_FORMAT
         try:
-            bind_params(machine.spec.params, params, machine.id)
+            bind_params(machine.spec.params, params, machine.id, null_is_value=journal_format == 1)
         except ActivityError as exc:
             raise ValueError(exc.message) from exc
         # A fork replays its source's steps (a function gone since is never called there), and a run with
@@ -923,7 +1311,7 @@ class RunManager:
                               mocks={"mocks": mocks or {}, "mock_only": mock_only}, debug=debugger.state(),
                               user_id=user_id, session_id=f"sg_{run_id}", parent_run=parent_run,
                               fork_step=fork_step, run_key=run_key, owner=self.owner, lease_until=_utc(LEASE_SECONDS),
-                              journal_format=JOURNAL_FORMAT, nesting=nesting, runner=runner)
+                              journal_format=journal_format, nesting=nesting, runner=runner)
         if copy_rows:
             self.store.copy_rows(parent_run or "", run_id, copy_rows)
         if fork_resources is not None:  # journaled, so a resume of the fork runs its fork hooks where it did
@@ -935,7 +1323,8 @@ class RunManager:
         self._launch(run_id, machine, params, mocks, mock_only, debugger,
                      backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
                      token_factory(run_id) if token_factory else None, origin=self._origin(parent_run) or run_id,
-                     fork_step=fork_step if parent_run else None, live=live)
+                     fork_step=fork_step if parent_run else None, live=live,
+                     null_params_kept=journal_format == 1)
         return run_id
 
     def _refuse_while_stopping(self) -> None:
@@ -956,7 +1345,7 @@ class RunManager:
 
     async def resume(self, run_id: str, *, backend: Any = None, backend_factory: Optional[Callable[[str], Any]] = None,
                      token_factory: Optional[Callable[[str], Any]] = None, cancel: bool = False,
-                     live: Optional[dict[str, Any]] = None) -> str:
+                     live: Optional[dict[str, Any]] = None, cancel_reason: Optional[str] = None) -> str:
         """Continue a run from its journal. ``cancel``: resume it into its termination -- the journaled prefix
         replays, then it ends as cancelled and its finally and close activities run (§3.10). ``live``: the
         caller's objects for call functions again (``sg.live``) -- they are not in the journal."""
@@ -968,9 +1357,16 @@ class RunManager:
             raise ValueError(f"run {run_id} is active in this process")
         if row["status"] in ("succeeded", "cancelled"):
             raise ValueError(f"run {run_id} is {row['status']}; fork it to run again from a step")
-        if int(row.get("journal_format") or JOURNAL_FORMAT) != JOURNAL_FORMAT:
+        if int(row.get("journal_format") or 1) not in READABLE_FORMATS:
             raise ValueError(f"run {run_id} has journal format {row.get('journal_format')}; this engine reads "
-                             f"{JOURNAL_FORMAT}")
+                             f"{', '.join(map(str, READABLE_FORMATS))}")
+        # off the loop, before the lease (a run's definition never changes): a large machine's snapshot takes a
+        # second, an auto-resume takes several (RT-3) -- and from the lease to the launch nothing awaits, so a
+        # second resume meanwhile finds the run live, and a stop finds it to stop
+        machine = await asyncio.to_thread(lambda: compile_tree(load_snapshot(row["definition"])))
+        self._refuse_while_stopping()
+        if run_id in self.live:
+            raise ValueError(f"run {run_id} is active in this process")
         if not self.store.take_lease(run_id, self.owner, _utc(LEASE_SECONDS), now=_utc()):
             raise ValueError(f"run {run_id} is owned by {row.get('owner')} until {row.get('lease_until')}")
         row = self.store.get_run(run_id) or row  # as of the lease: breakpoints stored meanwhile apply
@@ -979,14 +1375,12 @@ class RunManager:
                 raise ValueError(f"run {run_id} is {row['status']}; fork it to run again from a step")
             if cancel and not self.store.has_row(run_id, "trace", "cancel"):  # an earlier one (a timeout) counts
                 self.store.record(run_id, "trace", "cancel", fence=self.owner, status="cancel",
-                                  data={"timed_out": False})
+                                  data={"timed_out": False, **({"by": cancel_reason} if cancel_reason else {})})
             if live or self.store.has_row(run_id, "trace", LIVE_OBJECTS):  # handed again, or missing now
                 resumes = sum(1 for r in self.store.rows(run_id, kinds=("trace",))
                               if r["key"].startswith(f"{LIVE_OBJECTS}:resumed:"))
                 self.store.record(run_id, "trace", f"{LIVE_OBJECTS}:resumed:{resumes + 1}", fence=self.owner,
                                   status=LIVE_OBJECTS, data={"names": sorted(live or {})})
-            tree = load_snapshot(row["definition"])
-            machine = compile_tree(tree)
             if row["status"] == "failed" and (row.get("error") or {}).get("resumable"):
                 self._rewind(run_id, row["error"])  # the activity it ended on runs again, nothing else (§5.3)
             debugger = Debugger.from_state(row.get("debug"), run_id)  # its points, and the pause or step that held it
@@ -998,7 +1392,8 @@ class RunManager:
                          backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
                          token_factory(run_id) if token_factory else None, origin=self._origin(run_id),
                          running_seconds=float((row.get("view") or {}).get("running_seconds") or 0.0),
-                         fork_step=row.get("fork_step") if row.get("parent_run") else None, live=live)
+                         fork_step=row.get("fork_step") if row.get("parent_run") else None, live=live,
+                         null_params_kept=null_params_kept(row))
         except BaseException:  # nothing runs it here: the lease goes back, so another process may take it at once
             try:
                 self.store.update_run(run_id, fence=self.owner, lease_until=_utc(-1), status=row["status"],
@@ -1016,7 +1411,9 @@ class RunManager:
         when the last rewind is the journal's newest row: a resume that failed after it (its launch) never ran."""
         rows = self.store.rows(run_id)
         rewinds = [r["seq"] for r in rows if r["kind"] == "trace" and r.get("status") == "rewound"]
-        if rewinds and max(rewinds) > max((r["seq"] for r in rows if not r["key"].startswith(REWOUND)), default=0):
+        # the rows resume() itself writes before it rewinds (live objects, a terminate) say nothing ran since
+        ran = [r["seq"] for r in rows if r["key"] != "cancel" and not r["key"].startswith((REWOUND, LIVE_OBJECTS))]
+        if rewinds and max(rewinds) > max(ran, default=0):
             return
         n = 1 + len(rewinds)
         try:
@@ -1092,12 +1489,15 @@ class RunManager:
     def _launch(self, run_id: str, machine: Machine, params: Optional[dict[str, Any]],
                 mocks: Optional[dict[str, Any]], mock_only: bool, debugger: Debugger, backend: Any,
                 token: Any, *, origin: Optional[str] = None, running_seconds: float = 0.0,
-                fork_step: Optional[int] = None, live: Optional[dict[str, Any]] = None) -> None:
+                fork_step: Optional[int] = None, live: Optional[dict[str, Any]] = None,
+                null_params_kept: bool = False) -> None:
         ctx = RunContext(run_id=run_id, store=self.store, machine=machine, backend=backend, mocks=mocks,
                          mock_only=mock_only, debugger=debugger, token=token,
                          owner=self.owner, origin=origin, live=live)
+        ctx.null_params_kept = null_params_kept
         ctx.running_seconds = running_seconds  # limits.timeout counts running time across resumes
         ctx.callback_base = self.callback_base
+        ctx.semaphores = lambda: (self.semaphores, self.semaphore_hold)
         ctx.fork_step = fork_step
         root = Frame(ctx, machine, params)
         ctx.root = root
@@ -1107,6 +1507,7 @@ class RunManager:
         context = contextvars.copy_context()
         context.run(CALL_SPEND.set, None)
         task = asyncio.get_running_loop().create_task(self._execute(ctx, root), context=context)
+        ctx.task = task
         self.live[run_id] = LiveRun(ctx, task, root)
         watched = getattr(ctx.backend, "token", None)
         if watched is not None and hasattr(watched, "wait_for_cancellation"):
@@ -1161,6 +1562,7 @@ class RunManager:
                 # the params bound: a param left out shows the default the run took (the panel sends only choices)
                 await began(machine=spec.id, title=spec.title, params=root.params)
             result = await root.execute()
+            ctx.exception = result.exception
             fields = {"status": result.status, "output": result.output, "final_state": result.final_state,
                       "error": result.error}
             if result.error and result.error.get("type") == "step_limit":
@@ -1168,13 +1570,15 @@ class RunManager:
         except asyncio.CancelledError:
             if ctx.divergence is not None:  # a divergence a join's cleanup took in, and the run ended on
                 fields = {"status": "failed", "error": {"type": "diverged", "message": ctx.divergence}}
-            elif ctx.stopping:  # also mid-terminate or mid-timeout: a resume completes the ending
+            elif ctx.halted_from_outside():  # also mid-terminate or mid-timeout: a resume completes the ending
                 fields = {"status": "interrupted", "error": None}
             elif ctx.timed_out:
                 fields = {"status": "failed", "error": {"type": "timed_out",
                                                         "message": f"run exceeded {timeout:g}s of running time"}}
             else:
-                fields = {"status": "cancelled", "error": {"type": "cancelled", "message": "terminated"}}
+                fields = {"status": "cancelled", "error": {
+                    "type": "cancelled",
+                    "message": f"terminated by {ctx.cancel_reason}" if ctx.cancel_reason else "terminated"}}
         except ReplayDivergence as exc:
             fields = {"status": "failed", "error": {"type": "diverged", "message": str(exc)}}
         except RunAbort as exc:
@@ -1339,6 +1743,17 @@ class RunManager:
             self._controls.cancel()
 
     # ------------------------------------------------------------ control
+    def run_of_request(self, request_id: Optional[str]) -> Optional[LiveRun]:
+        """The live run a request id belongs to: the run's own id, or one of its activities' ``<run>_NNN`` (a
+        call activity's code runs under its own)."""
+        if not request_id:
+            return None
+        live = self.live.get(request_id)
+        if live is None and "_" in request_id:
+            run_id, _, seq = request_id.rpartition("_")
+            live = self.live.get(run_id) if seq.isdigit() else None
+        return live
+
     def _live(self, run_id: str) -> LiveRun:
         live = self.live.get(run_id)
         if live is None:
@@ -1351,7 +1766,8 @@ class RunManager:
         return live
 
     def control(self, run_id: str, action: str, *, state: Optional[str] = None,
-                machine: Optional[str] = None) -> None:
+                machine: Optional[str] = None, reason: Optional[str] = None) -> None:
+        """``reason``: a terminate's, named in the run's error (``terminated by <reason>``)."""
         if action == "terminate" and run_id not in self.live:
             self.terminate_elsewhere(run_id)
             return
@@ -1361,7 +1777,7 @@ class RunManager:
             # being stored (a cancel would cut that write short)
             if live.ctx.cancelled or live.ctx.finished:
                 return
-            live.ctx.cancel()
+            live.ctx.cancel(reason=reason)
             if live.ctx.lost:  # the journaled terminate was refused: another process owns the run now
                 raise _lost(run_id)
             if self.on_cancel is not None:
@@ -1486,7 +1902,8 @@ class RunManager:
         row = self.store.get_run(run_id)
         if row is None:
             raise KeyError(run_id)
-        row["param_defaults"] = self._param_defaults(run_id, row.pop("definition", None))
+        # a copy: the kept one is no caller's to change
+        row["param_defaults"] = copy.deepcopy(self._definition_facts(run_id, row.pop("definition", None))["defaults"])
         # the hand-over between processes, not the run: the answers keep refusals with the data they refused
         row.pop("control", None)
         row.pop("control_answer", None)
@@ -1494,34 +1911,58 @@ class RunManager:
         row["terminal"] = row["status"] in TERMINAL_STATUSES
         return row
 
-    def _param_defaults(self, run_id: str, definition: Any) -> dict[str, Any]:
-        """The defaults its params were given under (the definition of the run that was started with them, not the
-        file now): who starts it again can tell a value that was the default then from one chosen -- the panel's
-        form sent every default, and a default the machine changed since would come back as a choice. A fork
-        takes its source's params as they are, also onto the current file: its origin's definition is the one.
-        Read once per run (a definition never changes); {} when it cannot be read -- kept, unless the store failed:
-        that is asked again next time."""
-        if run_id in self._defaults:
-            return copy.deepcopy(self._defaults[run_id])
-        defaults: dict[str, Any] = {}
+    def budget(self, run_id: str) -> tuple[Optional[float], float]:
+        """The run's limits.max_cost -- of its own definition's root machine, None without one -- and its own
+        run.cost: the running total while it runs here, else the same sum from its journal (RunStore.run_cost: a
+        fork's copied rows count, as its guard counts them; never the runs it started) (FEAT-6). The limit is read once per run: a definition never changes."""
+        live = self.live.get(run_id)
+        if live is not None:
+            return live.ctx.machine.spec.limits.max_cost, round(live.ctx.cost, 6)
+        cost = self.store.run_cost(run_id)
+        if cost is None:  # no journal rows (retention kept only what it spent)
+            cost = (self.store.spend(run_id) or {}).get("cost") or 0.0
+        return self._definition_facts(run_id)["max_cost"], round(float(cost), 6)
+
+    def _definition_facts(self, run_id: str, definition: Any = None) -> dict[str, Any]:
+        """What describe and budget read of a run's definition, from one parse each (RT-2) -- a large one takes a
+        second. ``defaults``: the defaults its params were given under (the definition of the run that was started
+        with them, not the file now): who starts it again can tell a value that was the default then from one
+        chosen -- the panel's form sent every default, and a default the machine changed since would come back as
+        a choice. A fork takes its source's params as they are, also onto the current file: its origin's definition
+        is the one. ``max_cost``: its own root machine's limits.max_cost, None without one. Read once per run (a
+        definition never changes); {} and None when it cannot be read -- kept, unless the store failed: that is
+        asked again next time. The kept dict itself: a caller copies what it hands on."""
+        facts = self._facts.get(run_id)
+        if facts is not None:
+            return facts
         try:
+            if definition is None:
+                definition = (self.store.get_run(run_id) or {}).get("definition")
             origin = self._origin(run_id)
-            if origin != run_id:
-                definition = (self.store.get_run(origin) or {}).get("definition", definition)
+            source = (self.store.get_run(origin) or {}).get("definition", definition) if origin != run_id else definition
         except Exception:  # the store, not the definition: asked again next time
-            logger.debug("run %s: its origin's definition not read", run_id, exc_info=True)
-            return {}
+            logger.debug("run %s: its definition not read", run_id, exc_info=True)
+            return {"defaults": {}, "max_cost": None}
+        own = self._root_spec(run_id, definition)
+        spec = own if source is definition else self._root_spec(run_id, source)
+        facts = {"defaults": {name: param.default for name, param in spec.params.items() if param.default is not None}
+                             if spec is not None else {},
+                 "max_cost": own.limits.max_cost if own is not None else None}
+        with self._facts_lock:  # nobody else drops the entry this one is about to drop
+            if len(self._facts) >= DEFAULTS_KEPT:
+                self._facts.pop(next(iter(self._facts)), None)
+            self._facts[run_id] = facts
+        return facts
+
+    @staticmethod
+    def _root_spec(run_id: str, definition: Any) -> Any:
+        """The root machine's spec of a definition, no companion module run; None when it does not load."""
         try:
             tree = load_snapshot(definition, execute_python=False)
-            spec = tree.files[tree.root].spec if tree.root in tree.files else None
-            if spec is not None:
-                defaults = {name: param.default for name, param in spec.params.items() if param.default is not None}
-        except Exception:  # a definition from before snapshots, or one that does not load: no defaults to tell
-            logger.debug("run %s: the defaults of its definition do not read", run_id, exc_info=True)
-        if len(self._defaults) >= DEFAULTS_KEPT:
-            self._defaults.pop(next(iter(self._defaults)))
-        self._defaults[run_id] = defaults
-        return copy.deepcopy(defaults)
+            return tree.files[tree.root].spec if tree.root in tree.files else None
+        except Exception:  # a definition from before snapshots, or one that does not load: nothing to tell
+            logger.debug("run %s: its definition does not load", run_id, exc_info=True)
+            return None
 
 
 __all__ = ["ACTIVE_STATUSES", "JOURNAL_FORMAT", "TRANSIENT_ERRORS", "LiveRun", "RunContext", "RunManager",

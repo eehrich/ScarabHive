@@ -17,7 +17,8 @@ from http_routes import http_routes
 from plugins.stategraph import web_endpoints
 from plugins.stategraph.service import ServiceError
 from plugins.stategraph.tests.stategraph_testkit import FASTAPI_PY314
-from plugins.stategraph.web_endpoints import Coalesced, StateGraphWebEndpoints
+from plugins.stategraph.server import Coalesced, StateGraphServer
+from plugins.stategraph.web_endpoints import StateGraphWebEndpoints
 
 pytestmark = pytest.mark.filterwarnings(FASTAPI_PY314)
 
@@ -56,7 +57,9 @@ def client(*, auth: bool = False, waits: Any = None) -> tuple[TestClient, Record
     service = RecordingService()
     server = SimpleNamespace(name="stategraph", get_schema_data=lambda: SCHEMA, service=service,
                              wait_questions=waits or WaitBroker(lambda *sent: {"accepted": True}, lambda run: None),
-                             wait_answer_url="/plugins/stategraph/answer")
+                             wait_answer_url="/plugins/stategraph/answer",
+                             _checks=Coalesced(lambda: asyncio.to_thread(service.machine_checks)))
+    server.checked_machines = lambda: StateGraphServer.checked_machines(server)  # the server's own, one for all
     app = FastAPI()
     app.state.config = SimpleNamespace(auth=SimpleNamespace(enabled=auth))
     app.include_router(StateGraphWebEndpoints(server).get_web_router())

@@ -667,4 +667,4 @@ def where():
     return {"thread": threading.current_thread().name.split("_")[0], "request": current_request_id.get()}
 """})
 
-    assert row["output"] == {"thread": "stategraph-call", "request": row["id"]}, row
+    assert row["output"] == {"thread": "stategraph-call", "request": f"{row['id']}_001"}, row

@@ -8,6 +8,7 @@ whether the configuration can run what the machine names.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass, field
@@ -20,15 +21,20 @@ from pydantic import ValidationError
 from plugins.stategraph.kinds import KindLookupError, parse_activity
 from plugins.stategraph.kinds.builtin import param_ref
 from plugins.stategraph.kinds.base import ActivityKind, KindSpec
-from .code import (BINDINGS, SCOPE_NAMES, CodeError, analyse, braced, compile_expression, compile_statements,
-                   scan_template, template_expressions)
+from .code import (BINDINGS, SCOPE_NAMES, CodeError, DecoratedSignature, analyse, braced, call_problems,
+                   compile_expression, compile_statements, jsonable, module_function_signature, scan_template, signature_in,
+                   template_expressions)
 from .loader import LoadedFile, MachineTree, dotted, schema_problems
-from .spec import GUARD_ELSE, KNOWN_ERROR_TYPES, TRIGGER_DONE, TRIGGER_ERROR, MachineSpec, StateSpec, agent_entry
+from .spec import (GUARD_ELSE, KNOWN_ERROR_TYPES, TRIGGER_DONE, TRIGGER_ERROR, MachineSpec, StateSpec, agent_entry,
+                   is_expression)
 
 #: ``kind`` is "agent", "tool", "profile" or "vars_from" (with the name);
 #: returns a problem text or None when the configuration can run it.
 ConfigCheck = Callable[[str, str, dict[str, Any]], Optional[str]]
 
+#: What an expression in max_visits or a timeout (wait, after, an activity's) reads: params only -- the engine
+#: evaluates it when the state is entered or the activity starts.
+_BOUND_SCOPE = frozenset({"params"})
 _BARE_REFERENCE = re.compile(r"^\s*(ctx|params|out|item|index|event|error|run)\s*[.\[]")
 
 
@@ -72,14 +78,25 @@ def agent_params_problems(machine_id: str, declared: dict[str, Any], entry: Any)
     """What in a machine agent's params keeps its runs from starting (``entry``: its config, an object or the mapping
     of an agent: block): a text message fills task_param, which must be a param; the required ones need a value."""
     read = entry.get if isinstance(entry, dict) else lambda key: getattr(entry, key, None)
-    given = set(read("params") or {})
+    fixed = dict(read("params") or {})
+    given = {name for name, value in fixed.items() if value is not None}  # a null is no value (bind_params)
     problems = []
+    for name, value in fixed.items():  # every run gets them: one that does not fit fails every run
+        param = declared.get(name)
+        if param is None:
+            problems.append(f"params: {machine_id} has no param {name!r} (it has: {', '.join(declared) or 'none'})")
+        elif value is not None and param.misfit(jsonable(value)):  # judged as bind_params sees it
+            problems.append(f"params.{name}: {param.misfit(jsonable(value))}")
+        elif (value is None and param.default is None and not param.required and param.enum is not None
+              and None not in param.enum):  # bind_params refuses this null on every run
+            problems.append(f"params.{name}: null is not one of {param.enum}")
     if str(read("input") or "text") == "text":  # json: the message brings the params
         task = str(read("task_param") or "task")
         if task not in declared:
             problems.append(f"task_param {task!r} is no param of {machine_id} (it has: {', '.join(declared) or 'none'})")
         given.add(task)
-        missing = sorted(name for name, param in declared.items() if param.required and name not in given)
+        missing = sorted(name for name, param in declared.items()
+                         if param.required and param.default is None and name not in given)
         if missing:
             problems.append(f"{machine_id} requires {', '.join(missing)}: neither in params nor the task_param")
     return problems
@@ -129,6 +146,7 @@ def _validate_file(fc: _FileContext) -> None:
     if spec.vars:
         _check_vars_shape(fc, spec.vars, ["vars"])
         _check_template(fc, spec.vars, ["vars"], BINDINGS["state"], set())
+        _check_vars_read_no_ctx(fc, spec.vars, ["vars"])
     if spec.vars_from and fc.config_check is not None:
         problem = fc.config_check("vars_from", spec.vars_from, {})
         if problem:
@@ -142,6 +160,9 @@ def _validate_file(fc: _FileContext) -> None:
     if fc.is_submachine and spec.limits.concurrency is not None:
         fc.problem("warning", "SG108", "limits.concurrency of a submachine is ignored; the run's root machine "
                                        "bounds every activity of the run", ["limits", "concurrency"])
+    if fc.is_submachine and spec.limits.max_cost is not None:
+        fc.problem("warning", "SG108", "limits.max_cost of a submachine is ignored; the run's root machine "
+                                       "bounds what the whole run spends", ["limits", "max_cost"])
     for name, state in fc.states.items():
         _check_state(fc, name, state, fc.paths[name])
     _check_graph(fc)
@@ -296,6 +317,13 @@ def _check_state(fc: _FileContext, name: str, state: StateSpec, path: list[Any])
     if is_wait and not _accepts_somewhere(fc, name):
         fc.problem("error", "SG003", f"{name!r} is a wait state (no do, no completion transition) but neither it "
                                      "nor an enclosing state accepts an event: it would wait forever", path)
+    if kind == "state" and not state.states and not is_wait and state.after is None:
+        why = "runs an activity" if state.do is not None else "completes as soon as it is entered"
+        for index, transition in enumerate(state.transitions):
+            if transition.trigger not in (TRIGGER_DONE, TRIGGER_ERROR):
+                fc.problem("warning", "SG112", f"never fires: events are taken only while a wait or timer state is "
+                                               f"active (by it or a composite around it), and {name!r} {why}",
+                           path + ["transitions", index, "trigger"])
     # completion is local (§3.3): the enclosing state's transitions do not take it. A warning, not an error: an
     # activity that only ever fails (its error transitions lead on) is a machine that works
     ends = ("its activity" if state.do is not None else
@@ -309,6 +337,9 @@ def _check_state(fc: _FileContext, name: str, state: StateSpec, path: list[Any])
         source = getattr(state, key)
         if source:
             _check_code(fc, source, path + [key], mode="exec", bound=BINDINGS["state"])
+    for key in ("max_visits", "timeout", "after"):
+        if is_expression(getattr(state, key)):
+            _check_template(fc, getattr(state, key), path + [key], _BOUND_SCOPE, set())
     if state.do is not None:
         _check_activity(fc, state.do, path + ["do"], set())
     if state.finally_ is not None and kind == "state":
@@ -382,6 +413,9 @@ def _check_code(fc: _FileContext, source: str, path: list[Any], *, mode: str, bo
         for name in sorted((use.resources_reads & set(fc.spec.resources)) - fc.open_resources):
             fc.problem("error", "SG004", f"resources.{name} is not open yet here: a resource's open and fork see "
                                          "only the resources declared before it", path)
+    for name in sorted(use.state_refs - set(fc.states)):
+        fc.problem("error", "SG002", f"{name!r} is not a state of this machine: run.visits and run.state hold the "
+                                     "names of its states", path)
     for slip in use.misuse:
         fc.problem("error", "SG004", slip, path)
     for impure in use.impure:
@@ -440,6 +474,24 @@ def _check_vars_shape(fc: _FileContext, value: Any, path: list[Any]) -> None:
                                      "an object", path)
 
 
+def _check_vars_read_no_ctx(fc: _FileContext, value: Any, path: list[Any]) -> None:
+    """Machine-level vars render once, when the frame starts: ctx there is the initial context, whatever the
+    states assign later (SG113)."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _check_vars_read_no_ctx(fc, item, path + [key])
+        return
+    try:
+        sources = list(template_expressions(value))
+        reads = any("ctx" in analyse(source, mode="eval", allowed=()).loads for source in sources)
+    except (CodeError, SyntaxError, ValueError, RecursionError, MemoryError):
+        return  # reported by the template check
+    if reads:
+        fc.problem("warning", "SG113", "machine vars render once, when the machine starts: ctx here is the "
+                                       "initial context, later changes never reach it -- put ctx values into the "
+                                       "activity's own vars", path)
+
+
 def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]) -> None:
     try:
         kind, spec = parse_activity(raw)
@@ -458,6 +510,8 @@ def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]
 
     bound = set(BINDINGS["state"]) | extra
     _check_schema(fc, raw.get("schema"), path + ["schema"], "SG005")
+    if is_expression(raw.get("timeout")):
+        _check_template(fc, raw["timeout"], path + ["timeout"], _BOUND_SCOPE, set())
     for key in ("vars", "llm_params"):
         if key in kind.template_fields and key in raw:
             _check_vars_shape(fc, raw[key], path + [key])
@@ -469,11 +523,15 @@ def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]
             field_bound = bound | {"out"} if key in ("error_if", "until") else bound
             field_extra = extra | set(kind.child_scope_names(spec)) if key == "until" else extra  # item, index
             _check_code(fc, str(raw[key]), path + [key], mode="eval", bound=field_bound, extra=field_extra)
+    if kind.key == "map" and isinstance(raw.get("map"), str):
+        _check_map_source(fc, raw["map"], path + ["map"])
     for key in ("parse", "call", "check"):
         reference = raw.get(key) if key in raw else None
         if isinstance(reference, str) and ":" not in reference and not fc.loaded.namespace.has_function(reference):
             fc.problem("error", "SG004", f"{key}: the companion module defines no function {reference!r}",
                        path + [key])
+        elif isinstance(reference, str):
+            _check_signature(fc, key, reference, raw.get("args"), path)
 
     child_extra = extra | set(kind.child_scope_names(spec))
     for key in kind.nested_one:
@@ -498,6 +556,43 @@ def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]
                                                "the interrupted activity a second time; mark that activity "
                                                "idempotent: true if running it again is safe",
                            path + ["retry", "errors"])
+
+
+#: Expressions whose value is no list: a map over one would run once per character, key or set member.
+_NOT_A_LIST = {ast.Dict: "a dict", ast.DictComp: "a dict", ast.Set: "a set", ast.SetComp: "a set",
+               ast.JoinedStr: "a text"}
+
+
+def _check_map_source(fc: _FileContext, source: str, path: list[Any]) -> None:
+    """``map:`` must give a list: refuse what the expression shows is not one (the run refuses the rest)."""
+    try:
+        node = ast.parse(source.strip(), mode="eval").body
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return  # reported by the code check
+    what = "a text" if isinstance(node, ast.Constant) and isinstance(node.value, str) else _NOT_A_LIST.get(type(node))
+    if what:
+        fc.problem("error", "SG005", f"map: this gives {what}, and map takes a list (of a dict: list(d.items()) or "
+                                     "list(d))", path)
+
+
+def _check_signature(fc: _FileContext, key: str, reference: str, args: Any, path: list[Any]) -> None:
+    """``call``/``parse``/``check`` against the function's parameters, read from its source (FEAT-5): a call whose
+    args the function does not take, or that leaves a required one out, fails when the state runs."""
+    if ":" in reference:
+        signature = module_function_signature(reference)
+    else:
+        owner = fc.tree.files.get(fc.loaded.local_of) if fc.loaded.local_of else fc.loaded
+        source = owner.python_text if owner is not None else None
+        signature = signature_in(source, reference) if source else None
+    if signature is None:
+        return  # not a plain def the source shows: the run decides
+    keys = list(args) if key == "call" and isinstance(args, dict) else []
+    for problem, arg in call_problems(signature, key, keys):
+        # a decorated def's wrapper may take an arg its own parameters do not name (a flow's _additive)
+        unsure = arg is not None and isinstance(signature, DecoratedSignature) and arg not in signature.parameters
+        fc.problem("warning" if unsure else "error", "SG004",
+                   f"{key}: {reference}{signature} -- {problem}" + (" (unless its decorator takes it)" if unsure else ""),
+                   path + ["args", arg] if arg is not None else path + [key])
 
 
 def kind_name(raw: Any) -> str:
@@ -543,8 +638,16 @@ def _check_references(fc: _FileContext, kind: ActivityKind, spec: KindSpec, path
                 fc.problem("error", "SG005", f"{field_name}: {{{{ params.{refs[key]} }}}} needs a parameter "
                                              f"{refs[key]!r} with an enum (so the configuration check can see every "
                                              "value)", path + [field_name])
+            elif not param.required and param.default is None:
+                fc.problem("error", "SG005", f"{field_name}: {{{{ params.{refs[key]} }}}} needs a value in every run: "
+                                             f"make {refs[key]!r} required or give it a default (a run without it "
+                                             f"would name {field_name} 'None')", path + [field_name])
     if fc.config_check is None:
         return
+    if "semaphore" in refs:  # a warning: the instance's setting may follow the machine (a run fails 'config')
+        problem = fc.config_check("semaphore", refs["semaphore"], {})
+        if problem:
+            fc.problem("warning", "SG007", problem, path + [kind.key])
     checks: list[tuple[str, str, dict[str, Any]]] = []
     if "agent" in refs:
         checks.append(("agent", refs["agent"], {}))

@@ -16,7 +16,7 @@ import asyncio
 import inspect
 import json
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -46,45 +46,51 @@ def _field(body: dict[str, Any], key: str, kind: type | tuple[type, ...], *, req
     return value
 
 
-class Coalesced:
-    """A costly read run once for every request that comes while it runs: a request that comes while one runs waits
-    for the next run, which starts when that one has ended and answers every request that came meanwhile. So at
-    most one runs and one waits, however many panels ask -- and no answer was read before its request came."""
+def _tags(text: Optional[str]) -> Optional[dict[str, str]]:
+    """``name:value,name:value`` as tags; a value is matched as text (a number as JSON writes it)."""
+    if not text:
+        return None
+    tags = {}
+    for item in text.split(","):
+        name, sep, value = item.partition(":")
+        if not sep or not name.strip():
+            raise HTTPException(status_code=422, detail=f"tags: name:value,name:value -- not {item!r}")
+        tags[name.strip()] = value.strip()
+    return tags
 
-    def __init__(self, compute: Callable[[], Awaitable[Any]]):
-        self.compute = compute
-        self._running: Optional[asyncio.Task] = None
-        self._next: Optional[asyncio.Task] = None
 
-    async def __call__(self) -> Any:
-        if self._next is not None:  # queued, not started: it reads after this request came
-            task = self._next
-        elif self._running is not None:  # started before this request: it may have read already
-            task = self._next = asyncio.ensure_future(self._after(self._running))
-        else:
-            task = self._running = asyncio.ensure_future(self._run())
-        # a request that goes away (the panel aborted it) does not cancel a run the others wait for
-        return await asyncio.shield(task)
+def _ctx_frames(text: Optional[str]) -> Optional[set[str]]:
+    """``ctx`` of the run read: None (every frame's), ``none``, or a JSON list of frame prefixes."""
+    if text is None:
+        return None
+    if text == "none":
+        return set()
+    try:
+        prefixes = json.loads(text)
+    except ValueError:
+        prefixes = None
+    if not isinstance(prefixes, list) or not all(isinstance(prefix, str) for prefix in prefixes):
+        raise HTTPException(status_code=422, detail='ctx: "none" or a JSON list of frame prefixes, e.g. [""]')
+    return set(prefixes)
 
-    async def _after(self, before: asyncio.Task) -> Any:
-        await asyncio.wait([before])
-        self._running, self._next = self._next, None
-        return await self._run()
 
-    async def _run(self) -> Any:
-        try:
-            return await self.compute()
-        finally:
-            if self._running is asyncio.current_task():
-                self._running = None
+def _seqs(text: Optional[str]) -> set[int]:
+    """``seqs`` of the run read: journal seqs, comma-separated, at most 50."""
+    if not text:
+        return set()
+    try:
+        found = {int(item) for item in text.split(",") if item.strip()}
+    except ValueError:
+        found = None
+    if found is None or len(found) > 50 or any(seq < 1 for seq in found):
+        raise HTTPException(status_code=422, detail="seqs: at most 50 journal seqs, comma-separated (1,5,9)")
+    return found
 
 
 class StateGraphWebEndpoints:
     def __init__(self, server: Any):
         self.server = server
         self.templates = ui_templates(Path(__file__).parent / "templates")
-        # every machine loaded and validated, in a worker thread: seconds that must not hold up the other requests
-        self._machine_checks = Coalesced(lambda: self._call("machine_checks", off_loop=True))
 
     def get_web_router(self) -> APIRouter:
         router = create_schema_router(plugin_name=self.server.name, schema=self.server.get_schema_data(),
@@ -158,17 +164,19 @@ class StateGraphWebEndpoints:
 
     async def api_machine_checks(self, request: Request):
         await self._user(request)
-        return await self._machine_checks()
+        # every machine loaded and validated, in a worker thread: seconds that must not hold up the other requests;
+        # one computation for the panels and the tool list_machines (server.checked_machines, API-2)
+        return await self.server.checked_machines()
 
     async def api_create_machine(self, request: Request):
         await self._user(request)
         body = await self._body(request)
         return await self._call("create_machine", _field(body, "id", str, required=True),
-                                title=_field(body, "title", str))
+                                title=_field(body, "title", str), off_loop=True)
 
     async def api_get_machine(self, request: Request, machine_id: str):
         await self._user(request)
-        return await self._call("get_machine", machine_id)
+        return await self._call("get_machine", machine_id, off_loop=True)  # loads and validates: seconds (API-2)
 
     async def api_save_machine(self, request: Request, machine_id: str):
         await self._user(request)
@@ -178,12 +186,13 @@ class StateGraphWebEndpoints:
             raise HTTPException(status_code=422, detail="files: {relative path: text}")
         return await self._call("save_machine", machine_id, files,
                                 expected_versions=_field(body, "expected_versions", dict),
-                                force=bool(_field(body, "force", bool)))
+                                force=bool(_field(body, "force", bool)), off_loop=True)
 
     async def api_delete_machine(self, request: Request, machine_id: str):
         await self._user(request)
         body = await self._body(request)
-        return await self._call("delete_machine", machine_id, _field(body, "expected_version", str, required=True))
+        return await self._call("delete_machine", machine_id, _field(body, "expected_version", str, required=True),
+                                off_loop=True)  # loads every machine to find its importers
 
     async def api_edit_machine(self, request: Request, machine_id: str):
         await self._user(request)
@@ -201,7 +210,7 @@ class StateGraphWebEndpoints:
         await self._user(request)
         body = await self._body(request)
         return await self._call("validate", files=_field(body, "files", dict), yaml=_field(body, "yaml", str),
-                                machine_id=_field(body, "machine_id", str))
+                                machine_id=_field(body, "machine_id", str), off_loop=True)
 
     async def api_kinds(self, request: Request):
         await self._user(request)
@@ -223,10 +232,19 @@ content="width=device-width, initial-scale=1"><title>Send {event}</title></head>
 margin: 2rem; max-width: 32rem"><h1>Send {event}?</h1><p>This sends the event <b>{event}</b> to a run of the state
 machine <b>{machine}</b>. The link works once.</p><button id="send">Send {event}</button><p id="said"></p><script>
 document.getElementById('send').onclick = async (e) => {{ e.target.disabled = true;
-  const answer = await fetch(location.href, {{ method: 'POST', headers: {{ 'content-type': 'application/json' }}, body: '{{}}' }});
-  document.getElementById('said').textContent = answer.status === 202
-    ? 'Handed to the run, which has not said yet what came of it. The link is used.'
-    : answer.ok ? 'Sent.' : 'Not sent: ' + (await answer.json()).detail; }};
+  const said = document.getElementById('said');
+  try {{
+    const answer = await fetch(location.href, {{ method: 'POST', headers: {{ 'content-type': 'application/json' }}, body: '{{}}' }});
+    if (answer.status === 202) {{ said.textContent = 'Handed to the run, which has not said yet what came of it. The link is used.'; return; }}
+    if (answer.ok) {{ said.textContent = 'Sent.'; return; }}
+    let why = answer.status + ' ' + answer.statusText;  // a proxy's or a crash's page is no JSON
+    try {{ const detail = (await answer.json()).detail; why = typeof detail === 'string' ? detail : JSON.stringify(detail) || why; }} catch (_) {{}}
+    said.textContent = 'Not sent: ' + why;
+  }} catch (_) {{
+    said.textContent = 'Not sent: the server could not be reached. Try again.';
+  }}
+  e.target.disabled = false;  // tried again: a link used meanwhile says so
+}};
 </script></body></html>""", headers={"Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
 
     async def callback_send(self, request: Request, token: str):
@@ -264,10 +282,13 @@ document.getElementById('send').onclick = async (e) => {{ e.target.disabled = tr
 
     async def api_list_runs(self, request: Request, machine_id: Optional[str] = None,
                             limit: int = Query(50, ge=1, le=500), status: Optional[str] = None,
-                            before: Optional[str] = None, nested: bool = False):
+                            before: Optional[str] = None, nested: bool = False, tags: Optional[str] = None):
+        """``tags``: ``name:value,name:value`` -- only runs with all of them (FEAT-7); without machine_id, the runs of
+        every machine."""
         await self._user(request)
         return await self._call("list_runs", machine_id=machine_id, limit=limit, status=status or None,
-                                before=before or None, nested=nested)
+                                before=before or None, nested=nested, off_loop=True,
+                                **({"tags": _tags(tags)} if tags else {}))
 
     async def api_start_run(self, request: Request):
         user = await self._user(request)
@@ -277,17 +298,57 @@ document.getElementById('send').onclick = async (e) => {{ e.target.disabled = tr
             params=_field(body, "params", dict), mocks=_field(body, "mocks", dict),
             mock_only=bool(_field(body, "mock_only", bool)),
             breakpoints=_field(body, "breakpoints", list) or [], watchpoints=_field(body, "watchpoints", list) or [],
-            pause_at_start=bool(_field(body, "pause_at_start", bool)), user_id=user)
+            pause_at_start=bool(_field(body, "pause_at_start", bool)), user_id=user, tags=_field(body, "tags", dict))
 
-    async def api_get_run(self, request: Request, run_id: str, steps: int = Query(50, ge=1, le=500)):
+    async def api_get_run(self, request: Request, run_id: str, steps: int = Query(50, ge=1, le=500),
+                          after: Optional[int] = Query(None, ge=0), row_chars: Optional[int] = Query(None, ge=20),
+                          ctx: Optional[str] = None, seqs: Optional[str] = None):
+        """The run and its journal rows -- for a poll, cheap on request (UI-1): ``after`` only the rows after that
+        seq; ``row_chars`` every text in the rows cut at that many characters; ``ctx``: ``none`` (no frame's ctx)
+        or a JSON list of the frame prefixes whose ctx comes along; ``seqs``: these rows too, read again (``1,5``,
+        at most 50) -- an activity's row ends in place, under the seq it started with, so ``after`` never brings
+        it. Without them, the whole answer as before."""
         user = await self._user(request)
-        return await self._call("get_run", run_id, steps=steps, user_id=user, frames=True)  # the panel's frame picker
+        wanted = _ctx_frames(ctx)
+        again = _seqs(seqs)
+        extra = {"after": after} if after is not None else {}
+        row = await self._call("get_run", run_id, steps=steps, user_id=user, frames=True,  # the panel's frame picker
+                               off_loop=True, **extra)
+        if again:
+            service = self.server.service
+            missing = sorted(again - {entry["seq"] for entry in row.get("journal") or []})
+
+            def read_again() -> list[dict[str, Any]]:
+                # one thread hop for all of them, and one scan of the ended activities (_marked), not one per seq;
+                # a row that is gone (a compacted journal) is left out
+                found = [r for r in (service.run_store.row_at(run_id, seq) for seq in missing) if r is not None]
+                return service._marked(run_id, row.get("status"), found)
+
+            row["journal"] = sorted([*(row.get("journal") or []), *await asyncio.to_thread(read_again)],
+                                    key=lambda entry: entry["seq"])
+        if row_chars is not None:
+            from .server import _capped
+
+            row["journal"] = [{**entry, "data": _capped(entry.get("data"), row_chars)}
+                              for entry in row.get("journal") or []]
+        if wanted is not None and isinstance(row.get("view"), dict):
+            row["view"] = {**row["view"], "frames": [
+                frame if frame.get("prefix", "") in wanted else {**frame, "ctx": None, "ctx_left_out": True}
+                for frame in row["view"].get("frames") or []]}
+        return row
 
     async def api_run_journal(self, request: Request, run_id: str, after: int = Query(0, ge=0),
-                              limit: int = Query(200, ge=1, le=2000), kinds: Optional[str] = None):
+                              limit: int = Query(200, ge=1, le=2000), kinds: Optional[str] = None,
+                              before: Optional[int] = Query(None, ge=1), state: Optional[str] = None,
+                              seq: Optional[int] = Query(None, ge=1)):
+        """A page of the journal: after a seq, or with ``before`` the last rows before one (UI-16); ``state``
+        narrows it; ``seq``: that one row, whole."""
         await self._user(request)
         wanted = [kind for kind in (kinds or "").split(",") if kind] or None
-        return await self._call("journal", run_id, after=after, limit=limit, kinds=wanted)
+        extra = {key: value for key, value in (("before", before), ("state", state or None), ("seq", seq))
+                 if value is not None}
+        # whole rows of a long run (a history page of 200, the result loader's 500): MBs to decode (API-2/UI-1)
+        return await self._call("journal", run_id, after=after, limit=limit, kinds=wanted, off_loop=True, **extra)
 
     async def api_control_run(self, request: Request, run_id: str):
         user = await self._user(request)

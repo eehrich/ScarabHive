@@ -12,7 +12,7 @@ activity-kind registry (``kinds``), because plugins can add kinds.
 from __future__ import annotations
 
 import re
-from typing import Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -37,6 +37,23 @@ TRIGGER_ERROR = "error"
 GUARD_ELSE = "else"
 
 
+#: The longest duration a machine may name (ten years): a deadline past it cannot be stamped as a date.
+MAX_DURATION = 10 * 365 * 24 * 3600.0
+
+
+def is_expression(value: Any) -> bool:
+    """A ``{{ }}`` expression over params in place of a number or a duration (max_visits, a wait's timeout, after,
+    an activity's timeout): the engine evaluates it when the state is entered (or the activity starts)."""
+    return isinstance(value, str) and "{{" in value
+
+
+def check_duration(value: Optional[Duration]) -> Optional[Duration]:
+    """A duration field's validator: a literal must parse; an expression is checked by the validator (SG004)."""
+    if not is_expression(value):
+        parse_duration(value)
+    return value
+
+
 def parse_duration(value: Optional[Duration]) -> Optional[float]:
     """Seconds for a YAML duration; None stays None. Raises ValueError on garbage."""
     if value is None:
@@ -44,13 +61,20 @@ def parse_duration(value: Optional[Duration]) -> Optional[float]:
     if isinstance(value, bool):
         raise ValueError(f"duration must be a number or a string like '30s', not {value!r}")
     if isinstance(value, (int, float)):
-        if value < 0:
+        try:
+            seconds = float(value)
+        except OverflowError:  # an int past any float
+            seconds = float("inf") if value > 0 else float("-inf")
+        if seconds < 0:
             raise ValueError(f"duration must not be negative: {value!r}")
-        return float(value)
-    match = _DURATION.match(str(value))
-    if not match:
-        raise ValueError(f"duration {value!r}: write a number of seconds or '500ms', '30s', '10m', '2h'")
-    return float(match.group(1)) * _UNIT_SECONDS[match.group(2)]
+    else:
+        match = _DURATION.match(str(value))
+        if not match:
+            raise ValueError(f"duration {value!r}: write a number of seconds or '500ms', '30s', '10m', '2h'")
+        seconds = float(match.group(1)) * _UNIT_SECONDS[match.group(2)]
+    if not seconds <= MAX_DURATION:  # also .inf and .nan, which compare false
+        raise ValueError(f"duration {value!r} is longer than ten years (for no limit, leave the key out)")
+    return seconds
 
 
 def check_name(value: str, what: str) -> str:
@@ -89,16 +113,21 @@ class ParamSpec(Strict):
     enum: Optional[list[Any]] = None
     description: str = ""
 
+    def misfit(self, value: Any) -> Optional[str]:
+        """Why a (non-null) value does not fit this parameter's type or enum, or None."""
+        expected = _PARAM_TYPES.get(self.type)
+        wrong_bool = isinstance(value, bool) and self.type in ("integer", "number")
+        if expected is not None and (wrong_bool or not isinstance(value, expected)):
+            return f"{value!r} is not a {self.type}"
+        if self.enum is not None and value not in self.enum:
+            return f"{value!r} is not one of the enum {self.enum}"
+        return None
+
     @model_validator(mode="after")
     def _default_fits(self) -> "ParamSpec":
-        if self.default is None:
-            return self
-        expected = _PARAM_TYPES.get(self.type)
-        wrong_bool = isinstance(self.default, bool) and self.type in ("integer", "number")
-        if expected is not None and (wrong_bool or not isinstance(self.default, expected)):
-            raise ValueError(f"default {self.default!r} is not a {self.type}")
-        if self.enum is not None and self.default not in self.enum:
-            raise ValueError(f"default {self.default!r} is not one of the enum {self.enum}")
+        problem = None if self.default is None else self.misfit(self.default)
+        if problem:
+            raise ValueError(f"default {problem}")
         return self
 
 
@@ -107,11 +136,12 @@ KNOWN_ERROR_TYPES = frozenset({
     "agent_failed", "schema_invalid", "parse_failed", "check_failed", "tool_failed", "tool_denied", "decision_failed",
     "call_failed", "submachine_failed", "join_failed", "activity_failed", "timeout", "interrupted", "template_failed", "params_invalid", "unmocked",
     "no_backend", "config", "loop_limit", "no_transition", "guard_failed", "action_failed", "wait_timeout",
-    "not_serialisable"})
+    "not_serialisable", "budget_exceeded"})
 
 #: Error types a retry never repeats unless ``errors`` lists them (docs/stategraph_design.md §2.5).
 NOT_RETRIED = frozenset({"cancelled", "interrupted", "timeout", "template_failed", "params_invalid",
-                         "not_serialisable", "unmocked", "no_backend", "config", "tool_denied"})
+                         "not_serialisable", "unmocked", "no_backend", "config", "tool_denied",
+                         "budget_exceeded"})
 
 
 class BackoffSpec(Strict):
@@ -192,8 +222,13 @@ class StateSpec(Strict):
     exit: Optional[str] = Field(None, description="Python statements, run on exit")
     do: Optional[dict[str, Any]] = Field(None, description="the do-activity: exactly one kind key")
     transitions: list[TransitionSpec] = Field(default_factory=list)
-    max_visits: Optional[int] = Field(None, ge=1)
-    timeout: Optional[Duration] = Field(None, description="wait state only: raise wait_timeout after this long")
+    max_visits: Union[Annotated[int, Field(ge=1)], Annotated[str, Field(pattern=r"\{\{")], None] = Field(
+        # not Optional[Union[...]]: typing caches that equal to a Union[str, int] made elsewhere, and the schema
+        # order would depend on import order; the constraints reach the schema (an editor refuses 0 or "5")
+        None, description="entries per activation of the enclosing region; one more raises loop_limit -- a number, "
+                          "or a {{ }} expression over params")
+    timeout: Optional[Duration] = Field(None, description="wait state only: raise wait_timeout after this long "
+                                                          "(or a {{ }} expression over params)")
     after: Optional[Duration] = Field(
         None, description="timer state (no do, not composite): completes this long after it was entered -- its "
                           "completion transition goes on; an event it takes may come first")
@@ -208,7 +243,14 @@ class StateSpec(Strict):
     @field_validator("timeout", "after")
     @classmethod
     def _timeout(cls, value: Optional[Duration]) -> Optional[Duration]:
-        parse_duration(value)
+        return check_duration(value)
+
+    @field_validator("max_visits", mode="before")
+    @classmethod
+    def _max_visits(cls, value: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
+        if isinstance(value, bool) or (isinstance(value, int) and value < 1) or (
+                isinstance(value, str) and not is_expression(value)):
+            raise ValueError("max_visits must be a whole number >= 1, or a {{ }} expression over params")
         return value
 
     @field_validator("states")
@@ -253,6 +295,9 @@ class LimitsSpec(Strict):
     concurrency: Optional[int] = Field(
         None, ge=1, description="leaf activities (agent, tool, decide, call) of the whole run at once; the others "
                                 "wait for their turn before they start")
+    max_cost: Optional[float] = Field(
+        None, ge=0, description="USD the whole run may spend (run.cost): once reached, an agent, decide or call "
+                                "activity fails with budget_exceeded instead of starting")
 
     @field_validator("timeout")
     @classmethod
@@ -359,6 +404,9 @@ class MachineSpec(Strict):
     finally_: Optional[dict[str, Any]] = Field(
         None, alias="finally", description="an activity that runs once when the machine frame ends, whatever the "
                                            "cause (final state, failure, cancel); reads ending")
+    resume: Literal["manual", "auto"] = Field(
+        "manual", description="auto: the API resumes an interrupted run of this machine by itself (a run its caller "
+                              "handed live objects excepted); manual: only a caller or an operator does")
     initial: str
     states: dict[str, StateSpec]
 

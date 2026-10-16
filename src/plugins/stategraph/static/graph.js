@@ -85,6 +85,19 @@ export function shorten(text, max) {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
+/** A run id short enough for a list or the bar, cut where the runs of one job differ least: its leading segments go
+ * (a writer job's request id, which every run of a book shares), so its label and hash stay -- "…_009_ch795_3c2cac96";
+ * an id still too long loses its middle. The whole id belongs in the title. */
+export function runLabel(id, max = 24) {
+  let label = String(id ?? '');
+  while (label.length > max) {
+    const cut = label.indexOf('_', 2);
+    if (cut < 0 || label.length - cut + 1 < 8) break;  // no segment left to drop, or only a stub would stay
+    label = `…${label.slice(cut)}`;
+  }
+  return label.length > max ? `${label.slice(0, 6)}…${label.slice(-(max - 7))}` : label;
+}
+
 /** UML transition label: `trigger [guard] / effect`; the completion trigger is left out. */
 export function edgeText(transition) {
   const parts = [];
@@ -1045,6 +1058,67 @@ function spriteIcon(parent, name, x, y, size, cls = 'sg-icon') {
  */
 /** The least zoom, of fit() and of zooming out. */
 const MIN_ZOOM = 0.05;
+/** The least zoom a machine opens at and Find shows a state at: below it state names are a few pixels high. */
+const READABLE_ZOOM = 0.7;
+
+/** What a worker runs: the vendored ELK bundle as ELK's own worker. Its layout engine starts with the first `new ELK()`
+ * and, in a worker scope, answers ELK's messages (it claims onmessage); the FakeWorker that `new ELK()` then misses
+ * is only the page's, so that throw is expected. */
+export const ELK_WORKER = (url) => `importScripts(${JSON.stringify(url)});try{new ELK();}catch(e){}`;
+
+/** ELK whose layouts run in a worker, so a large machine is laid out without freezing the page (2-5 s for 50 states).
+ * `make(failed)` gives the worker-backed ELK and calls `failed` when its worker cannot run (a blocked blob URL, a
+ * failed load): every layout waiting then, and every later one, goes to `fallback()`, ELK on the page. */
+export class WorkerElk {
+  constructor(make, fallback) {
+    this.fallback = fallback;
+    this.pending = new Set();  // {graph, resolve, reject} of the layouts the worker has not answered
+    this.broken = false;
+    this.elk = make(() => this.fail());
+  }
+
+  fail() {
+    if (this.broken) return;
+    this.broken = true;
+    const waiting = [...this.pending];
+    this.pending.clear();
+    for (const call of waiting) this.layout(call.graph).then(call.resolve, call.reject);
+  }
+
+  layout(graph) {
+    if (this.broken) return Promise.resolve().then(() => (this.page ||= this.fallback()).layout(graph));
+    return new Promise((resolve, reject) => {
+      const call = { graph, resolve, reject };
+      this.pending.add(call);
+      this.elk.layout(graph).then((out) => { if (this.pending.delete(call)) resolve(out); },
+        (error) => { if (this.pending.delete(call)) reject(error); });
+    });
+  }
+}
+
+/** ELK for the canvas: in a worker where the page can make one, else on the page; null without ELK (it failed to
+ * load: the canvas lays out a grid). */
+function elkEngine() {
+  if (typeof ELK !== 'function') return null;  // eslint-disable-line no-undef
+  const onPage = () => new ELK();  // eslint-disable-line no-undef
+  if (typeof Worker !== 'function' || typeof Blob !== 'function' || typeof URL?.createObjectURL !== 'function') return onPage();
+  try {
+    // the vendored ELK the page loads as a classic script (panel.html)
+    const url = new URL('./vendor/elkjs/elk.bundled.js', import.meta.url).href;
+    const source = URL.createObjectURL(new Blob([ELK_WORKER(url)], { type: 'text/javascript' }));
+    return new WorkerElk((failed) => new ELK({ workerFactory: () => {  // eslint-disable-line no-undef
+      const worker = new Worker(source);
+      worker.addEventListener('error', (event) => {
+        event.preventDefault();
+        worker.terminate();
+        failed();
+      });
+      return worker;
+    } }), onPage);
+  } catch (error) {
+    return onPage();
+  }
+}
 
 export class Canvas {
   constructor(svg, { onSelect, onConnect, onMove, onOpen, onReparent, onRoute } = {}) {
@@ -1054,14 +1128,16 @@ export class Canvas {
     this.takeLayout({});
     this.auto = { nodes: {}, edges: {} };
     this.view = { x: 0, y: 0, k: 1 };
-    this.fitted = null;  // the view fit() made: while it stands (nobody zoomed or moved), a resize fits anew
+    this.fitted = null;  // the view fit() made: while it stands (nobody zoomed or moved), a resize fits anew ...
+    this.fitAs = {};     // ... the way it was asked
     if (typeof ResizeObserver === 'function') {
-      new ResizeObserver(() => { if (this.view === this.fitted) this.fit(); }).observe(svg);
+      new ResizeObserver(() => { if (this.view === this.fitted) this.fit(this.fitAs); }).observe(svg);
     }
     this.selected = null;
     this.overlay = { problems: { states: {}, transitions: {} }, run: null, breakpoints: new Set() };
-    this.elk = typeof ELK === 'function' ? new ELK() : null;  // eslint-disable-line no-undef
+    this.elk = elkEngine();
     this.layoutRun = 0;
+    this.layoutKey = '';  // what ELK was given for this.auto: the same input is not laid out again
     svg.replaceChildren();
     const defs = el('defs', {}, svg);
     for (const kind of ['plain', 'error', 'active', 'selected']) {
@@ -1087,19 +1163,29 @@ export class Canvas {
     this.graph = graph || { states: [], transitions: [] };
     this.takeLayout(layout);
     const run = ++this.layoutRun;
+    // an answer that changes nothing ELK sees (a max_visits, a description, an undo of one) keeps the layout it has:
+    // a large machine takes ELK seconds
+    const key = this.graph.states.length ? `${!!this.elk} ${autoOf(layout)} ${JSON.stringify(elkInput(this.graph, autoOf(layout)))}` : '';
+    if (key && key === this.layoutKey) {
+      this.draw();
+      return true;
+    }
     let auto = { nodes: {}, edges: {} };
+    let laid = key;
     if (this.graph.states.length && this.elk) {
       try {
         auto = await autoLayout(this.elk, this.graph, autoOf(layout));
       } catch (error) {
         console.error('stategraph: layout failed', error);  // eslint-disable-line no-console
         auto = gridLayout(this.graph);
+        laid = '';  // asked of ELK again next time
       }
     } else if (this.graph.states.length) {
       auto = gridLayout(this.graph);
     }
     if (run !== this.layoutRun) return false;  // a newer graph arrived while this one was laid out
     this.auto = auto;
+    this.layoutKey = laid;
     this.draw();
     return true;
   }
@@ -1311,9 +1397,12 @@ export class Canvas {
 
   drawEdge(transition, drawn) {
     const kind = transition.trigger === 'error' ? 'error' : transition.trigger !== 'done' ? 'event' : 'done';
+    // reachable by the keyboard from its state (T), not by Tab: drawn before the states, every line would come first
+    // in the Tab order. Selected, its line's handles take the arrow keys
     const group = el('g', {
       class: `sg-link sg-link--${kind}${transition.guard === 'else' ? ' sg-link--else' : ''}`,
-      'data-transition': transition.id,
+      'data-transition': transition.id, tabindex: -1, role: 'button',
+      'aria-label': `Transition ${transition.source} → ${transition.target}${transition.trigger !== 'done' ? ` on ${transition.trigger}` : ''}`,
     }, this.edgeLayer);
     const title = el('title', {}, group);
     title.textContent = [`${transition.source} → ${transition.target}`, transition.trigger !== 'done' && `on ${transition.trigger}`,
@@ -1371,6 +1460,12 @@ export class Canvas {
         text(badges, value, { x: right - 4 - width / 2, y: bottom + 3.5, class: 'sg-badge-text', 'text-anchor': 'middle' });
       }
       if (breakpoints.has(name)) el('circle', { cx: Number(badges.dataset.left), cy: top, r: 5, class: 'sg-breakpoint' }, badges);
+      // what the classes and badges show, for a screen reader
+      group.setAttribute('aria-pressed', String(chosen.has(name)));
+      const marks = [run?.paused === name && 'the run is paused here', run?.current === name && run?.paused !== name && 'the run is here',
+        visits && `visited ${visits} times`, subruns && counted(subruns, 'submachine run'), breakpoints.has(name) && 'breakpoint',
+        pinned?.errors && counted(pinned.errors, 'error'), !pinned?.errors && pinned?.warnings && counted(pinned.warnings, 'warning')];
+      group.setAttribute('aria-description', marks.filter(Boolean).join(', '));
     }
     for (const group of this.noteLayer.querySelectorAll('.sg-note')) {
       group.classList.toggle('is-selected', this.selected?.kind === 'note' && this.selected.id === group.dataset.note);
@@ -1379,6 +1474,9 @@ export class Canvas {
       const id = group.dataset.transition;
       const pinned = problems.transitions[id];
       group.classList.toggle('is-selected', chosenEdges.has(id));
+      group.setAttribute('aria-pressed', String(chosenEdges.has(id)));
+      group.setAttribute('aria-description', [run?.lastEdge === id && 'the run took it last',
+        pinned?.errors && counted(pinned.errors, 'error')].filter(Boolean).join(', '));
       group.classList.toggle('is-last', run?.lastEdge === id);
       group.classList.toggle('has-error', Boolean(pinned?.errors));
       const edge = group.querySelector('.sg-edge');
@@ -1402,14 +1500,24 @@ export class Canvas {
     return { x, y, w: Math.max(...boxes.map((b) => b.x + b.w)) - x, h: Math.max(...boxes.map((b) => b.y + b.h)) + 20 - y };
   }
 
-  fit() {
+  /** The whole machine in view. `readable`: a machine that would be shown smaller than READABLE_ZOOM is shown at that
+   * zoom instead, the state `on` in the middle (else its top left corner): how a machine opens. */
+  fit({ readable = false, on = null } = {}) {
     const rect = this.svg.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     const box = this.bounds();
     // down to the zoom's own least: a large machine in a narrow pane is shown whole, not cut at both sides
     const k = clamp(Math.min((rect.width - 48) / box.w, (rect.height - 48) / box.h), MIN_ZOOM, 1.5);
-    this.view = { k, x: (rect.width - box.w * k) / 2 - box.x * k, y: (rect.height - box.h * k) / 2 - box.y * k };
+    const spot = this.nodes?.[stateId(on)];
+    if (readable && k < READABLE_ZOOM) {
+      const r = READABLE_ZOOM;
+      this.view = spot ? { k: r, x: rect.width / 2 - (spot.x + spot.w / 2) * r, y: rect.height / 2 - (spot.y + spot.h / 2) * r }
+        : { k: r, x: 24 - box.x * r, y: 24 - box.y * r };
+    } else {
+      this.view = { k, x: (rect.width - box.w * k) / 2 - box.x * k, y: (rect.height - box.h * k) / 2 - box.y * k };
+    }
     this.fitted = this.view;
+    this.fitAs = { readable, on };
     this.applyView();
   }
 
@@ -1422,11 +1530,18 @@ export class Canvas {
     this.applyView();
   }
 
-  /** Scroll the view so a state is in sight. */
-  reveal(name) {
+  /** Scroll the view so a state is in sight. `zoom` (Find, a problem, a result's state): shown too small to read, it
+   * is shown at zoom 1, in the middle -- in a machine shown whole every state is "in sight". */
+  reveal(name, { zoom = false } = {}) {
     const box = this.nodes?.[stateId(name)];
     if (!box) return;
     const rect = this.svg.getBoundingClientRect();
+    if (zoom && this.view.k < READABLE_ZOOM && rect.width && rect.height) {
+      const k = 1;
+      this.view = { k, x: rect.width / 2 - (box.x + box.w / 2) * k, y: rect.height / 2 - (box.y + box.h / 2) * k };
+      this.applyView();
+      return;
+    }
     const { k } = this.view;
     const sx = box.x * k + this.view.x;
     const sy = box.y * k + this.view.y;
@@ -1646,11 +1761,45 @@ export class Canvas {
         return;
       }
       const node = event.target.closest?.('.sg-node');
-      if (node && (event.key === 'Enter' || event.key === ' ')) {
+      const link = event.target.closest?.('.sg-link');
+      const letter = !event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase();
+      if ((node || link) && (letter === 't' || (letter === 's' && link))) {
+        // T: a state's first transition, then the next one (Shift: the one before); S: back to the transition's state
+        event.preventDefault();
+        const source = node ? node.dataset.state
+          : this.graph.transitions.find((t) => t.id === link.dataset.transition)?.source;
+        const links = [...this.edgeLayer.querySelectorAll('.sg-link')];
+        const own = this.graph.transitions.filter((t) => t.source === source)
+          .map((t) => links.find((l) => l.dataset.transition === t.id)).filter(Boolean);
+        const at = link ? own.indexOf(link) : -1;
+        const next = letter === 's'
+          ? [...this.nodeLayer.querySelectorAll('.sg-node'), ...this.compositeLayer.querySelectorAll('.sg-node')]
+            .find((n) => n.dataset.state === source)
+          : own.length ? own[(at + (event.shiftKey && at >= 0 ? own.length - 1 : 1)) % own.length] : null;
+        next?.focus({ preventScroll: true });
+        return;
+      }
+      const item = node ? { kind: 'state', id: node.dataset.state } : link ? { kind: 'transition', id: link.dataset.transition } : null;
+      if (item && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        const adding = event.shiftKey || event.ctrlKey || event.metaKey;
+        this.select(adding ? toggled(this.selected, item) : item, { quiet: false });
+        return;
+      }
+      // the arrows move a focused state as a drag does: 8 units, 1 with Shift
+      const step = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[event.key];
+      if (node && step && !event.ctrlKey && !event.metaKey && !event.altKey && this.nodes?.[stateId(node.dataset.state)]) {
         event.preventDefault();
         const name = node.dataset.state;
-        const adding = event.shiftKey || event.ctrlKey || event.metaKey;
-        this.select(adding ? toggled(this.selected, { kind: 'state', id: name }) : { kind: 'state', id: name }, { quiet: false });
+        const by = event.shiftKey ? 1 : 8;
+        const from = relativeSpot(applyPositions(this.auto, this.positions).nodes, stateId(name));
+        const spot = { x: from.x + step[0] * by, y: from.y + step[1] * by };
+        this.positions = { ...this.positions, [name]: spot };
+        this.draw();
+        // drawn anew: the keyboard stays on the state it moves
+        [...this.nodeLayer.querySelectorAll('.sg-node'), ...this.compositeLayer.querySelectorAll('.sg-node')]
+          .find((n) => n.dataset.state === name)?.focus({ preventScroll: true });
+        this.handlers.onMove?.({ [name]: spot });
       }
     });
   }

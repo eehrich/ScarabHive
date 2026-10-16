@@ -83,7 +83,7 @@ async def test_a_reader_that_stops_waiting_leaves_the_run_running(server, tmp_pa
     monkeypatch.setattr(StateGraphServer, "_is_admin", staticmethod(lambda user_id: False))
     server.system_config = AgentSystemConfig(auth={"enabled": True})
     slow_machine(tmp_path, 1.5)
-    run_id = (await server.service.start_run("slow", params={}, user_id=None))["run_id"]  # nobody's: every user sees it
+    run_id = (await server.service.start_run("slow", params={}, user_id="ops_bob"))["run_id"]  # bob's: he sees it
 
     class Token:
         is_cancelled = False

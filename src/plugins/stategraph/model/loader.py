@@ -311,8 +311,9 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
         return tree.files[path]
     try:
         text = sources.read(path)
-    except FileNotFoundError:
-        tree.add("error", "SG006", f"machine file not found: {path}", file=path)
+    except FileNotFoundError as exc:
+        # by name in the text: ``file`` holds the path, a reader who may not save sees only its name (API-3)
+        tree.add("error", "SG006", _unread("machine file", _file_name(path), exc), file=path)
         return None
     loaded = LoadedFile(path=path, text=text)
     tree.files[path] = loaded
@@ -361,7 +362,7 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
             tree.add("error", "SG001", message, file=path, path=dotted(loc), line=loaded.line_of(loc))
         return loaded
     spec = loaded.spec
-    if posixpath.basename(path.replace("\\", "/")) != f"{spec.id}.yaml":
+    if _file_name(path) != f"{spec.id}.yaml":
         tree.add("error", "SG001", f"machine {spec.id!r} must live in {spec.id}.yaml (ids resolve imports, runs and "
                                    f"forks by file name), not in {posixpath.basename(path)}", file=path, path="id",
                  line=loaded.line_of(["id"]))
@@ -375,8 +376,8 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
         loaded.python_path = python_path
         try:
             loaded.python_text = sources.read(python_path)
-        except FileNotFoundError:
-            tree.add("error", "SG004", f"companion module not found: {spec.python}", file=path, path="python",
+        except FileNotFoundError as exc:
+            tree.add("error", "SG004", _unread("companion module", spec.python, exc), file=path, path="python",
                      line=loaded.line_of(["python"]))
         else:
             try:
@@ -396,7 +397,7 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
                      line=loaded.line_of(["imports", alias]))
             continue
         if target in stack:
-            chain = " -> ".join(stack[stack.index(target):] + [target])
+            chain = " -> ".join(_file_name(p) for p in stack[stack.index(target):] + [target])
             tree.add("error", "SG006", f"import cycle: {chain}", file=path, path=f"imports.{alias}",
                      line=loaded.line_of(["imports", alias]))
             continue
@@ -404,6 +405,24 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
         _load(target, sources, tree, stack, execute)
     _load_locals(loaded, data, tree)
     return loaded
+
+
+def _file_name(path: str) -> str:
+    return posixpath.basename(path.replace("\\", "/"))
+
+
+def _unread(what: str, name: str, exc: FileNotFoundError) -> str:
+    """Why a file could not be read: missing, or the reason a source gives (outside the machine roots, a
+    directory, not UTF-8)."""
+    context = exc.__context__  # what store.FileSources turned into FileNotFoundError
+    if isinstance(context, UnicodeDecodeError):
+        return (f"{what} {name} is not UTF-8 (byte 0x{context.object[context.start]:02x} at {context.start}): "
+                "save it as UTF-8")
+    if "outside the machine roots" in str(exc):
+        return f"{what} {name} is outside the machine roots"
+    if isinstance(context, OSError) and not isinstance(context, FileNotFoundError):  # a directory, no permission
+        return f"cannot read {what} {name}: {context.strerror or context}"
+    return f"{what} not found: {name}"
 
 
 def _load_locals(loaded: LoadedFile, data: dict[str, Any], tree: MachineTree) -> None:

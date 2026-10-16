@@ -31,7 +31,9 @@ the format, with comments on the ones that are not obvious from their names.
 3. `stategraph_validate_machine(files={...})` until it reports no error. Fix warnings
    or say why they stay.
 4. `stategraph_save_machine(files={...})` (pass `expected_versions` when you changed a
-   machine you read with `stategraph_get_machine`).
+   machine you read with `stategraph_get_machine`). Send the files you change; an
+   unchanged one is left alone. A large file `get_machine` left out (`left_out`) is read
+   with `get_machine(machine_id, file=<path>)`.
 5. `stategraph_run_machine(machine_id, params, mocks, mock_only=true)`: a mock for every
    agent, tool and decide state; `$visits` for states a loop enters again. It must
    reach a final state. A run in status `waiting` lists the events it accepts: send
@@ -130,7 +132,10 @@ third entry raises `loop_limit`, and the error transition leads to `failed`.
   guarded list with `guard: else`. A **wait state** (no `do`, no completion transition)
   takes only declared `events:` and needs an `error` transition for its `timeout`.
 - **Every loop is bounded:** `max_visits` on a state of the loop (the (n+1)-th entry
-  raises `loop_limit` in that state) or a guard on a counter in `ctx`.
+  raises `loop_limit` in that state) or a guard on a counter in `ctx`. Only
+  `max_visits` silences warning SG103.
+- **Events fire only where the run waits:** an event transition on a state with `do`
+  never fires (SG112); catch it on a wait state or a composite around one.
 - **Handle errors where they happen:** `- trigger: error` (optionally
   `guard: error.type == "tool_failed"`), on the state or on an enclosing composite.
   An unhandled error fails the machine.
@@ -186,4 +191,4 @@ with `await sg.tool(name, args)`. Details: `references/format.md` §14.
 | SG005 | activity: unknown kind, several kind keys, bad fields, an invalid JSON `schema`, a computed `agent:`/`tool:`/`by:` | one kind key; the kind's fields only; literal names, or `"{{ params.x }}"` of a param with an `enum` |
 | SG006 | submachine: unknown alias, cycle, missing/unknown parameter | `imports:`, the callee's `params` |
 | SG007 | configuration: agent not configured or one that reaches machines, tool not callable, stategraph's own tool, a SAM's tool | pick from `stategraph_catalog`; agents through agent activities; another machine as a submachine |
-| SG101-SG110 | warnings: unreachable, no path to a final, unbounded loop, dead transition, undeclared ctx field, impure code, forgotten braces, ignored timeout, no completion transition where a state completes, `retry.errors` type unknown or `interrupted` | fix, or explain in the handover |
+| SG101-SG113 | warnings: unreachable, no path to a final, unbounded loop, dead transition, undeclared ctx field, impure code, forgotten braces, ignored root limits in a submachine, no completion transition where a state completes, `retry.errors` type unknown or `interrupted`, `agent:` block the agent cannot run with, event transition on a non-waiting state, machine vars reading ctx | fix, or explain in the handover |

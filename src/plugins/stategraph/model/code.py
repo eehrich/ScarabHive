@@ -19,8 +19,12 @@ import copy
 import dataclasses
 import functools
 import hashlib
+import importlib.util
+import inspect
 import itertools
 import json
+import linecache
+import os
 import posixpath
 import re
 import sys
@@ -55,13 +59,47 @@ _IMPURE_NAMES = {"open", "input", "hash", "set", "frozenset", "id"}
 
 
 class CodeError(Exception):
-    """Machine code failed to compile or raised while running."""
+    """Machine code failed to compile or raised while running.
 
-    def __init__(self, where: str, message: str, *, cause: Optional[BaseException] = None):
+    ``where`` names the code field (``one.exit``, ``use.do.args.x``). For code that raised, ``file`` and ``line``
+    say where it raised -- ``where`` itself and the line within the field, or the companion module's file and line
+    when the error came from a function of it -- and ``code`` is that line's text. ``message`` stays the bare
+    error: the journal hashes it.
+    """
+
+    def __init__(self, where: str, message: str, *, cause: Optional[BaseException] = None,
+                 file: Optional[str] = None, line: Optional[int] = None, code: Optional[str] = None):
         super().__init__(f"{where}: {message}")
         self.where = where
         self.message = message
         self.cause = cause
+        self.file = file
+        self.line = line
+        self.code = code
+
+    @property
+    def location(self) -> dict[str, Any]:
+        """``where``, and ``file``/``line``/``code`` where known: the fields an engine error carries."""
+        found = {"where": self.where, "file": self.file, "line": self.line, "code": self.code}
+        return {key: value for key, value in found.items() if value is not None}
+
+
+def _raised(where: str, source: str, exc: BaseException) -> CodeError:
+    """A CodeError for ``exc`` raised by the code field ``where`` (compiled from ``source``): the innermost frame of
+    the field or of a companion module names the file, the line and its text."""
+    file = line = code = None
+    tb = exc.__traceback__
+    while tb is not None:
+        name = tb.tb_frame.f_code.co_filename
+        if name == where:
+            lines = source.split("\n")
+            file, line = where, tb.tb_lineno
+            code = lines[line - 1].strip() if 0 < line <= len(lines) else None
+        elif name in _MODULE_FILES:
+            file, line = _MODULE_FILES[name], tb.tb_lineno
+            code = linecache.getline(name, line).strip() or None
+        tb = tb.tb_next
+    return CodeError(where, f"{type(exc).__name__}: {exc}", cause=exc, file=file, line=line, code=code)
 
 
 # --------------------------------------------------------------------- compile
@@ -157,6 +195,66 @@ class NameUse:
     params_reads: frozenset[str] = frozenset()
     misuse: tuple[str, ...] = ()
     resources_reads: frozenset[str] = frozenset()
+    state_refs: frozenset[str] = frozenset()
+
+
+def _is_run_field(node: ast.AST, field: str) -> bool:
+    """``run.<field>``."""
+    return (isinstance(node, ast.Attribute) and node.attr == field and isinstance(node.value, ast.Name)
+            and node.value.id == "run")
+
+
+def _texts_of(node: ast.AST) -> Iterator[ast.Constant]:
+    """A string constant, or the string constants of a literal tuple, list or set."""
+    items = node.elts if isinstance(node, (ast.Tuple, ast.List, ast.Set)) else [node]
+    for item in items:
+        if isinstance(item, ast.Constant) and isinstance(item.value, str):
+            yield item
+
+
+def _state_constants(tree: ast.AST) -> Iterator[ast.Constant]:
+    """The string constants code compares with state names: ``run.visits["x"]``, ``run.visits.get("x", 0)``,
+    ``"x" in run.visits``, ``run.state == "x"`` (also ``!=``, ``in ("x", "y")``, and the other way round)."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript) and _is_run_field(node.value, "visits"):
+            yield from _texts_of(node.slice)
+        elif (isinstance(node, ast.Call) and node.args and isinstance(node.func, ast.Attribute)
+              and node.func.attr == "get" and _is_run_field(node.func.value, "visits")):
+            yield from _texts_of(node.args[0])
+        elif isinstance(node, ast.Compare):
+            sides = [node.left, *node.comparators]
+            for op, left, right in zip(node.ops, sides, sides[1:]):
+                if isinstance(op, (ast.In, ast.NotIn)) and _is_run_field(right, "visits"):
+                    yield from _texts_of(left)
+                elif isinstance(op, (ast.Eq, ast.NotEq, ast.In, ast.NotIn)) and _is_run_field(left, "state"):
+                    yield from _texts_of(right)
+                elif isinstance(op, (ast.Eq, ast.NotEq)) and _is_run_field(right, "state"):
+                    yield from _texts_of(left)
+
+
+def state_literals(source: str) -> list[tuple[int, int, str]]:
+    """``(start, end, name)`` of every state name ``source`` compares with (see ``_state_constants``): the span of
+    its string literal in ``source``. Python statements or one expression; what does not parse has none."""
+    text = source.strip()
+    shift = source.index(text) if text else 0
+    tree = None
+    for candidate, offset in ((source, 0), (text, shift)):  # statements as written; an expression without its blanks
+        try:
+            tree = ast.parse(candidate, mode="exec")
+            break
+        except (SyntaxError, ValueError, *_TOO_DEEP):
+            continue
+    if tree is None:
+        return []
+    lines = (source if offset == 0 else text).split("\n")
+    starts = list(itertools.accumulate([0] + [len(line) + 1 for line in lines]))
+
+    def char(lineno: int, col: int) -> int:  # ast columns count UTF-8 bytes
+        line = lines[lineno - 1]
+        return offset + starts[lineno - 1] + len(line.encode("utf-8")[:col].decode("utf-8", "ignore"))
+
+    return sorted((char(node.lineno, node.col_offset), char(node.end_lineno, node.end_col_offset), node.value)
+                  for node in _state_constants(tree) if node.end_lineno is not None)
 
 
 def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
@@ -189,6 +287,8 @@ def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
             stores.add((node.asname or node.name).split(".")[0])
         elif isinstance(node, ast.ExceptHandler) and node.name:
             stores.add(node.name)
+        elif isinstance(node, _CAPTURES):
+            stores.update(_captured(node))
         elif isinstance(node, (ast.Set, ast.SetComp)):
             impure.append("a set (its iteration order changes between processes)")
         elif isinstance(node, ast.Call):
@@ -221,7 +321,18 @@ def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
     unknown = tuple(sorted({name for name in loads if name not in known}))
     free = frozenset(name for name in loads if name not in stores)  # a local `for event in ...` is not the scope's
     return NameUse(free, unknown, frozenset(reads), frozenset(writes), tuple(dict.fromkeys(impure)),
-                   frozenset(params_reads), tuple(dict.fromkeys(misuse)), frozenset(resources_reads))
+                   frozenset(params_reads), tuple(dict.fromkeys(misuse)), frozenset(resources_reads),
+                   frozenset(node.value for node in _state_constants(tree)))
+
+
+#: Patterns of a ``match`` statement that bind names (``case {"kind": k, **rest}``, ``case [first, *others]``).
+_CAPTURES = (ast.MatchAs, ast.MatchStar, ast.MatchMapping)
+
+
+def _captured(node: ast.AST) -> Iterator[str]:
+    name = node.rest if isinstance(node, ast.MatchMapping) else node.name  # type: ignore[attr-defined]
+    if name:
+        yield name
 
 
 _NAMESPACES = ("ctx", "params", "error", "event", "run", "activity", "resources", "ending")
@@ -236,9 +347,9 @@ _DATA_METHODS = frozenset(name for kind in (dict, list, str, int, float) for nam
 NAMESPACE_FIELDS = {
     "activity": ("instance_id", "request_id", "attempts", "duration_s", "mocked", "agent", "feedback_rounds",
                  "model", "cost"),
-    "error": ("type", "message", "state", "data", "cause", "branch", "index", "visits"),
+    "error": ("type", "message", "state", "data", "cause", "branch", "index", "visits", "where"),
     "event": ("name", "data"),
-    "run": ("id", "origin", "step", "machine", "state", "visits", "frame"),
+    "run": ("id", "origin", "step", "machine", "state", "visits", "frame", "cost"),
     "ending": ("reason", "state", "error"),
 }
 
@@ -258,7 +369,7 @@ def _misuse(node: ast.AST, called: set[int]) -> list[str]:
         return [f"{base.id} has no dict methods: use '{node.attr == 'get' and 'x' or node.attr}' in {base.id} and "
                 f"{base.id}['x'] (it is a namespace of fields)"]
     if (isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name)
-            and base.value.id in ("ctx", "params", "resources")
+            and base.value.id in _NAMESPACES  # error.cause, event.data, run.visits, ending.error: plain data too
             and id(node) not in called and node.attr not in _DATA_METHODS):
         return [f"{base.value.id}.{base.attr}.{node.attr}: below the top level values are plain data -- write "
                 f"{base.value.id}.{base.attr}[{node.attr!r}]"]
@@ -332,6 +443,7 @@ def _assigned(target: ast.expr, value: Optional[ast.expr]) -> Iterator[tuple[str
 STAR = "*"
 
 
+@functools.lru_cache(maxsize=256)  # pure AST analysis, frozen answer: every tree that imports a module scans it again
 def module_names(source: str) -> tuple[frozenset[str], frozenset[str]]:
     """Public names and public function names a companion module defines -- without executing it.
 
@@ -380,6 +492,11 @@ def _bind(body: list[ast.stmt], names: set[str], functions: set[str]) -> None:
             if isinstance(child, ast.stmt):
                 _bind([child], names, functions)
             elif isinstance(child, (ast.ExceptHandler, ast.match_case)):
+                if isinstance(child, ast.match_case):  # its pattern's captures: whatever the subject holds
+                    captured = {name for part in ast.walk(child.pattern) if isinstance(part, _CAPTURES)
+                                for name in _captured(part)}
+                    names.update(captured)
+                    functions.update(captured)
                 _bind(child.body, names, functions)
 
 
@@ -399,6 +516,126 @@ def _stored(node: ast.AST) -> Iterator[str]:
         if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
             yield child.id
         todo.extend(inner for inner in ast.iter_child_nodes(child) if not isinstance(inner, _NOT_STORED))
+
+
+@functools.lru_cache(maxsize=256)
+def function_signatures(source: str) -> dict[str, Any]:
+    """The top-level functions of a module, read from its AST -- without executing it: name -> its signature, or
+    ``"package.module:name"`` for a name it imports from another module (``from a.b import f``).
+
+    Only a name whose last top-level binding is a ``def`` or an absolute ``from ... import`` has an entry: what an
+    assignment or a nested block binds may be anything at run time, and the run decides. A decorated ``def``
+    counts with its own parameters, as ``inspect.signature`` sees a ``functools.wraps`` wrapper, as a
+    ``DecoratedSignature``: its wrapper may take more than they name.
+    """
+    try:
+        body = ast.parse(source).body
+    except (SyntaxError, ValueError, *_TOO_DEEP):
+        return {}
+    found: dict[str, Any] = {}
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            found[node.name] = _signature(node.args, DecoratedSignature if node.decorator_list else inspect.Signature)
+            continue
+        bound: set[str] = set()
+        _bind([node], bound, set())
+        for name in bound:
+            found.pop(name, None)
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            found.update((alias.asname or alias.name, f"{node.module}:{alias.name}") for alias in node.names
+                         if alias.name != "*")
+    return found
+
+
+def signature_in(source: str, name: str, *, hops: int = 3) -> Optional[inspect.Signature]:
+    """The signature of the function ``name`` of a module's ``source``, following imports ``hops`` modules on."""
+    found = function_signatures(source).get(name)
+    if isinstance(found, str):
+        return module_function_signature(found, hops=hops - 1) if hops > 0 else None
+    return found
+
+
+class _Default:
+    """A default the AST holds as code: shown as ``...`` in a signature."""
+
+    def __repr__(self) -> str:
+        return "..."
+
+
+_DEFAULT = _Default()
+
+
+class DecoratedSignature(inspect.Signature):
+    """The parameters of a decorated ``def``: a keyword they do not name may still be taken by the wrapper."""
+
+    __slots__ = ()
+
+
+def _signature(args: ast.arguments, cls: type[inspect.Signature] = inspect.Signature) -> inspect.Signature:
+    kind = inspect.Parameter
+    positional = args.posonlyargs + args.args
+    defaults = [False] * (len(positional) - len(args.defaults)) + [True] * len(args.defaults)
+    params = [kind(a.arg, kind.POSITIONAL_ONLY if i < len(args.posonlyargs) else kind.POSITIONAL_OR_KEYWORD,
+                   default=_DEFAULT if defaults[i] else kind.empty) for i, a in enumerate(positional)]
+    if args.vararg:
+        params.append(kind(args.vararg.arg, kind.VAR_POSITIONAL))
+    params.extend(kind(a.arg, kind.KEYWORD_ONLY, default=kind.empty if d is None else _DEFAULT)
+                  for a, d in zip(args.kwonlyargs, args.kw_defaults))
+    if args.kwarg:
+        params.append(kind(args.kwarg.arg, kind.VAR_KEYWORD))
+    return cls(params)
+
+
+def module_function_signature(ref: str, *, hops: int = 3) -> Optional[inspect.Signature]:
+    """The signature of ``package.module:function`` from the module's source, or None when it cannot be told
+    (no such module, no source, not a top-level def). Locating the module imports its parent packages, as
+    any import does; the module itself is only read. A parent package that fails on import (whatever it raises)
+    leaves the signature untold: the validator must not fall over it, the run start reports it."""
+    module_name, _, attr = ref.partition(":")
+    try:
+        spec = importlib.util.find_spec(module_name)
+    except (Exception, SystemExit):  # parent __init__ code runs here
+        return None
+    origin = getattr(spec, "origin", None)
+    if not origin or not origin.endswith(".py"):
+        return None
+    try:
+        source = _read_module(origin, os.stat(origin).st_mtime_ns)
+    except OSError:
+        return None
+    return signature_in(source, attr, hops=hops)
+
+
+@functools.lru_cache(maxsize=256)
+def _read_module(path: str, mtime_ns: int) -> str:  # mtime: a changed file is read again
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def call_problems(signature: inspect.Signature, use: str, keys: Iterable[str] = ()) -> list[tuple[str, Optional[str]]]:
+    """Why a call of a function with ``signature`` fails: ``(message, the arg it is about or None)``, none when it
+    works. ``use``: ``call`` (keyword args ``keys``), ``parse`` (one value), ``check`` (one value); a first
+    parameter named ``sg`` gets the engine's scope."""
+    params = list(signature.parameters.values())
+    sg = params[:1] and params[0].name == "sg" and use in ("call", "check")
+    if use != "call":
+        try:
+            signature.bind(*([object()] if sg else []), None)
+        except TypeError as exc:
+            return [(str(exc), None)]
+        return []
+    kind = inspect.Parameter
+    params = params[1:] if sg else params
+    named = {p.name for p in params if p.kind in (kind.POSITIONAL_OR_KEYWORD, kind.KEYWORD_ONLY)}
+    keys = list(keys)
+    problems: list[tuple[str, Optional[str]]] = []
+    if not any(p.kind is kind.VAR_KEYWORD for p in params):
+        problems.extend((f"it takes no argument {key!r}", key) for key in keys if key not in named)
+    problems.extend((f"argument {p.name!r} is required" if p.kind is not kind.POSITIONAL_ONLY
+                     else f"{p.name!r} is positional-only: args cannot give it", None)
+                    for p in params if p.default is kind.empty and p.name not in keys
+                    and p.kind not in (kind.VAR_POSITIONAL, kind.VAR_KEYWORD))
+    return problems
 
 
 # ------------------------------------------------------------------- namespaces
@@ -547,7 +784,7 @@ class Namespace:
         except CodeError:
             raise
         except Exception as exc:
-            raise CodeError(where, f"{type(exc).__name__}: {exc}", cause=exc) from exc
+            raise _raised(where, source.strip(), exc) from exc
         if readonly and _ctx_hash(scope) != before:
             raise CodeError(where, "ctx mutated in read-only code (guards, templates and conditions must not "
                                    "change ctx; do it in an effect)")
@@ -560,7 +797,7 @@ class Namespace:
         except CodeError:
             raise
         except Exception as exc:
-            raise CodeError(where, f"{type(exc).__name__}: {exc}", cause=exc) from exc
+            raise _raised(where, source, exc) from exc
 
     def guard(self, source: Optional[str], scope: Mapping[str, Any], where: str) -> bool:
         if source is None or source.strip() == GUARD_ELSE:
@@ -620,8 +857,11 @@ def load_module(source: str, filename: str) -> Namespace:
     """
     stem = re.sub(r"\W", "_", posixpath.splitext(posixpath.basename(filename.replace("\\", "/")))[0])
     name = f"stategraph_machine_{next(_MODULE_NUMBERS)}_{stem}"  # no dots: pickle imports the name
+    # the code's file name is this load's own: linecache then gives a traceback this source's lines (the snapshot
+    # that runs, not today's file), and two versions of one machine never show each other's
+    shown = f"{name}/{filename}"
     try:
-        code = compile(source, filename, "exec")
+        code = compile(source, shown, "exec")
     except SyntaxError as exc:
         raise CodeError(filename, f"companion module does not compile: {exc.msg} (line {exc.lineno})",
                         cause=exc) from None
@@ -631,17 +871,29 @@ def load_module(source: str, filename: str) -> Namespace:
     module.__file__ = filename
     module.__builtins__ = builtins  # type: ignore[attr-defined]
     sys.modules[name] = module
+    linecache.cache[shown] = (len(source), None, source.splitlines(True), shown)  # mtime None: never checked
+    _MODULE_FILES[shown] = filename
     try:
         exec(code, module.__dict__)  # noqa: S102 -- machine code is trusted (§8.3)
     except BaseException as exc:
-        sys.modules.pop(name, None)
+        _forget(name, shown)
         if not isinstance(exc, Exception):
             raise
         raise CodeError(filename, f"companion module raised on import: {type(exc).__name__}: {exc}",
                         cause=exc) from exc
     namespace = Namespace(module.__dict__)
-    weakref.finalize(namespace, sys.modules.pop, name, None)
+    weakref.finalize(namespace, _forget, name, shown)
     return namespace
+
+
+#: The code file names of the loaded companion modules -> their file names in the machine's tree.
+_MODULE_FILES: dict[str, str] = {}
+
+
+def _forget(name: str, shown: str) -> None:
+    sys.modules.pop(name, None)
+    linecache.cache.pop(shown, None)
+    _MODULE_FILES.pop(shown, None)
 
 
 def scan_module(source: str, filename: str) -> Namespace:

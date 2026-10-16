@@ -155,7 +155,7 @@ SAM's @{tt}max_nesting_depth@{utt} bounds them.
 Situation | What happens
 the message fits the params | the run starts; the request waits for its end (or, with on_wait ask, for a wait)
 the message does not fit | refused; the error lists what the machine takes
-the same request again (a retry, a crash) | attaches to its live run, resumes it when it was interrupted, or answers its outcome again -- output, failure or cancel. Only a transient failure (interrupted, timeout, agent_failed, decision_failed, internal, diverged) starts a new run
+the same request again (a retry, a crash) | attaches to its live run, resumes it when it was interrupted, or answers its outcome again -- output, failure or cancel. Only a transient failure (timeout, agent_failed, decision_failed, internal, diverged) starts a new run. A run that failed interrupted (an activity a crash cut off) answers that failure again: a new run would repeat its finished work -- the machine's error transition handles such a cut, or a request in a new session starts afresh
 the run is held by another process | waits up to 90 seconds for it, then refuses
 a new message in the same session | never a second run: a succeeded run answers its output again, an interrupted one is resumed, a failed or cancelled one is refused ("a continue does not start a new run"). The session's run is kept in runs.db, so this works in any process
 a cancel before the run started | answers cancelled, starts nothing

@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from pydantic import Field, ValidationError, field_validator
 
-from plugins.stategraph.model.spec import Duration, RetrySpec, Strict, parse_duration
+from plugins.stategraph.model.spec import Duration, RetrySpec, Strict, check_duration
 
 if TYPE_CHECKING:
     from plugins.stategraph.engine.activity import ActivityRun
@@ -47,7 +47,7 @@ class KindSpec(Strict):
 
     retry: Optional[RetrySpec] = Field(None, description="{attempts, backoff, errors}: try again before the failure "
                                                          "becomes the state's error event; default: one attempt")
-    timeout: Optional[Duration] = Field(None, description="deadline of one attempt")
+    timeout: Optional[Duration] = Field(None, description="deadline of one attempt (or a {{ }} expression over params)")
     idempotent: Optional[bool] = Field(
         None, description="may a resumed run start it again if it was in flight at the crash? "
                           "default: true, tool: false")
@@ -56,12 +56,16 @@ class KindSpec(Strict):
     @field_validator("timeout")
     @classmethod
     def _timeout(cls, value: Optional[Duration]) -> Optional[Duration]:
-        parse_duration(value)
-        return value
+        return check_duration(value)
 
 
 class ActivityError(Exception):
-    """An activity failed; becomes the state's ``error`` event (``error.type``, ``error.message``, ...)."""
+    """An activity failed; becomes the state's ``error`` event (``error.type``, ``error.message``, ...).
+
+    ``original``: the exception a call's own code raised, in this process only -- never journaled; an in-process
+    caller of the run gets it back (``RunContext.exception``)."""
+
+    original: Optional[BaseException] = None
 
     def __init__(self, type_: str, message: str, data: Any = None, *, cause: Optional[dict[str, Any]] = None,
                  **extra: Any):
@@ -98,6 +102,11 @@ class ActivityKind(ABC):
     default_idempotent: ClassVar[bool] = True
     #: Whether it reaches outside the process: a mock-only run refuses to run it unmocked.
     external: ClassVar[bool] = False
+    #: Whether it may spend money (LLM calls): once run.cost reaches limits.max_cost it does not start.
+    spends: ClassVar[bool] = False
+    #: Whether it waits for something other runs hold (a semaphore slot): it takes no turn of limits.concurrency and
+    #: does not count as working -- the run shows ``waiting`` meanwhile, and the wait is no running time.
+    waits: ClassVar[bool] = False
     #: Keys holding one nested activity (``each``) or a map of them (``parallel``).
     nested_one: ClassVar[tuple[str, ...]] = ()
     nested_map: ClassVar[tuple[str, ...]] = ()
@@ -142,6 +151,15 @@ class ActivityKind(ABC):
     def references(self, spec: KindSpec) -> dict[str, str]:
         """Literal names the validator checks against the configuration: ``agent``, ``tool``, ``profile``."""
         return {}
+
+    def replayed(self, spec: KindSpec, act: "ActivityRun", out: Any) -> None:
+        """A recorded outcome ``out`` answered instead of ``run`` (a resume or fork replays it): a kind whose effect
+        lies outside the journal and must hold again for the run to go on (acquire: the slot) restores it here."""
+
+    def replayed_below(self, key: str, data: dict[str, Any], act: "ActivityRun") -> None:
+        """Like ``replayed`` for a ``done`` row at ``key`` below the composite ``act`` that never replays on its own
+        (the composite is answered from the journal, or it resumes in a later attempt): restored from the row --
+        ``data`` holds its ``inputs`` and ``out`` -- in ``act``'s frame."""
 
     @abstractmethod
     async def run(self, spec: KindSpec, act: "ActivityRun") -> Any:

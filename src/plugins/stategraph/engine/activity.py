@@ -22,6 +22,7 @@ instead of replaying the failed attempt's outcomes (§5.2).
 from __future__ import annotations
 
 import asyncio
+import collections.abc
 import copy
 import itertools
 import json
@@ -33,9 +34,9 @@ import traceback
 import types
 from typing import TYPE_CHECKING, Any, Optional
 
-from plugins.stategraph.kinds import ActivityError, ActivityKind, KindSpec, parse_activity
+from plugins.stategraph.kinds import REGISTRY, ActivityError, ActivityKind, KindSpec, parse_activity
 from plugins.stategraph.model.code import CodeError, Scope, fingerprint, jsonable, namespace_of, plain
-from plugins.stategraph.model.spec import NOT_RETRIED, parse_duration
+from plugins.stategraph.model.spec import NOT_RETRIED
 
 if TYPE_CHECKING:
     from .interpreter import Frame
@@ -46,6 +47,10 @@ _FAILED_TYPE = {"agent": "agent_failed", "tool": "tool_failed", "decide": "decis
 _IN_ENDING = re.compile(r"(?:^|/)(?:end\.|s\d+\.fin\.)")
 #: How much of a submachine's error its submachine_failed message repeats (the whole error is error.cause).
 _CAUSE_CHARS = 500
+#: The meta a ``started`` row carries over a crash or into the next attempt: what was spent, and under which ids.
+_CARRIED_META = ("cost", "tokens", "cost_is_estimate", "cost_unpriced_calls", "model", "request_id", "request_ids")
+#: The attempt a key below a composite belongs to: ``a<n>/`` for attempt n > 1, no such segment for attempt 1.
+_ATTEMPT = re.compile(r"a(\d+)/")
 
 
 class ReplayDivergence(Exception):
@@ -167,9 +172,11 @@ class ActivityRun:
         cancelled = threading.Event()
         loop = asyncio.get_running_loop()
 
-        async def tool(name: str, args: Optional[dict[str, Any]] = None, *, idempotent: bool = False) -> Any:
-            if asyncio.get_running_loop() is not loop:  # a sync function runs in a worker thread (CallKind)
-                raise RuntimeError(f"{self.path}: sg.tool() runs on the run's event loop: make the function async")
+        threaded: list[_ThreadedTool] = []
+
+        def tool(name: str, args: Optional[dict[str, Any]] = None, *, idempotent: bool = False) -> Any:
+            """Checked when it is called, not when awaited: a sync function (a worker thread, CallKind) gets an
+            awaitable it can only return -- using its value raises instead of reading a coroutine object."""
             if closed:
                 raise RuntimeError(f"{self.path}: sg.tool() called after the call returned")
             if not isinstance(name, str) or not name:
@@ -177,16 +184,40 @@ class ActivityRun:
             if args is not None and not isinstance(args, dict):
                 raise TypeError(f"{self.path}: sg.tool({name!r}) args must be a dict, got {type(args).__name__}")
             raw = {"tool": name, "args": dict(args or {}), "idempotent": bool(idempotent)}
-            return await self.child(f"{prefix}t.{next(counter)}", raw, shown=name, literal=True)
+            label = f"{prefix}t.{next(counter)}"
+
+            async def run() -> Any:
+                if asyncio.get_running_loop() is not loop:
+                    raise RuntimeError(f"{self.path}: sg.tool() runs on the run's event loop: make the function async")
+                if closed:
+                    raise RuntimeError(f"{self.path}: sg.tool() called after the call returned")
+                return await self.child(label, raw, shown=name, literal=True)
+
+            try:
+                on_loop = asyncio.get_running_loop() is loop
+            except RuntimeError:  # no loop in this thread: a sync function's worker
+                on_loop = False
+            if on_loop:
+                return run()
+            threaded.append(_ThreadedTool(run, f"{self.path}: sg.tool({name!r})"))
+            return threaded[-1]
 
         def close() -> None:
             nonlocal closed
             closed = True
             cancelled.set()
 
+        def unreturned(result: Any) -> None:
+            """After a sync function returned ``result``: an sg.tool() it called but did not return never ran."""
+            lost = [call for call in threaded if call is not result]
+            if lost:
+                raise RuntimeError(f"{lost[0].where} in a sync function runs only when the function returns it -- "
+                                   "to use its value or call several tools, make the function async")
+
         api = types.SimpleNamespace(**self.scope(), tool=tool, Error=ActivityError,  # except sg.Error as exc
                                     cancelled=cancelled, live=types.MappingProxyType(self.run.live_objects))
         api._close = close
+        api._unreturned = unreturned
         return api
 
     def render(self, value: Any, where: str) -> Any:
@@ -212,13 +243,20 @@ class ActivityRun:
         return json.dumps(value, ensure_ascii=False, default=str)
 
     def request_id(self) -> str:
-        return self.run.next_request_id()
+        """A new ``<run>_NNN`` for one request of this activity (an agent run, each feedback round and retry its
+        own; a call or a decision); ``meta.request_ids`` lists every one -- the message debugger finds their LLM
+        calls by them."""
+        request_id = self.run.next_request_id()
+        self.meta.setdefault("request_ids", []).append(request_id)
+        return request_id
 
     def child_key(self, label: str) -> str:
         """Journal key of a child in THIS attempt (attempt 1 keeps the plain grammar)."""
         return f"{self.key}/{label}" if self.attempt == 1 else f"{self.key}/a{self.attempt}/{label}"
 
     def recorded_error(self, label: str) -> Optional[ActivityError]:
+        """A child's recorded error. A join that ends on it without replaying the child counts its cost with
+        ``run.count_recorded(act.child_key(label))``, as a replay of the child would."""
         row = self.run.recorded.get(self.child_key(label))
         if row and row["status"] == "error":
             return ActivityError.from_dict((row.get("data") or {}).get("error") or {})
@@ -248,8 +286,10 @@ class ActivityRun:
                 raise ActivityError("submachine_failed", str(cause.get("message") or ""), data=result.output,
                                     cause=result.error, resumable=True)
             why = f"{cause.get('type')}: {cause.get('message')}"
-            raise ActivityError("submachine_failed", f"{alias} ended in {result.final_state} ({result.status}): "
-                                f"{why[:_CAUSE_CHARS]}", data=result.output, cause=result.error)
+            failure = ActivityError("submachine_failed", f"{alias} ended in {result.final_state} ({result.status}): "
+                                    f"{why[:_CAUSE_CHARS]}", data=result.output, cause=result.error)
+            failure.original = result.exception
+            raise failure
         return result.output
 
     # ------------------------------------------------------------ execution
@@ -270,8 +310,9 @@ class ActivityRun:
             self.run.stop_here()  # past its frame's journal: nothing new starts (§3.10)
         try:
             inputs = self.inputs(kind, spec)
+            timeout = self.frame.duration(spec.timeout, f"{self.path}.do.timeout")
         except CodeError as exc:
-            raise ActivityError("template_failed", exc.message) from exc
+            raise ActivityError("template_failed", exc.message, **exc.location) from exc
         except _NotJson as exc:
             raise ActivityError("template_failed", f"{self.path}: the inputs are not JSON data: {exc}") from exc
         input_hash = fingerprint(self.frame.tokenized(inputs))  # resource values as tokens: forks replay
@@ -281,7 +322,15 @@ class ActivityRun:
 
         recorded = self.run.recorded.get(self.key)
         if recorded is not None:
-            return self._replay(recorded, base)
+            try:
+                out = self._replay(recorded, base)
+            except ActivityError:  # what its children hold, held all the same: the frame goes on with it
+                self._replayed_below(None)
+                raise
+            self._replayed_below(None)
+            if not self.meta.get("mocked"):  # what it holds outside the journal, held again (acquire)
+                kind.replayed(spec, self, out)
+            return out
         # In flight when its frame ended (the run's terminate, or the end a fail-fast join gave it): a leaf ends
         # here -- also before it would end interrupted. A composite goes on, so its children replay into their
         # frames' ends first; then it ends without an outcome of its own (§3.10).
@@ -294,11 +343,18 @@ class ActivityRun:
         due = begun_row.get("backoff_until")
         if self.stopped and (leaf or due is not None):
             self.run.stop_here()
-        self.run.went_live()
+        # A crash is not a failed attempt: a resumed activity continues the attempt it was in, so the
+        # children that attempt finished replay under their keys and the retry budget stays the same.
+        first = max(1, int(begun_row.get("attempt") or 1))
+        if started is not None and not leaf and first > 1:  # the attempts before it replay no child: counted here
+            self.run.add_cost(*(row["data"] or {} for _, row in self._replayed_below(first)))
+        await self.run.went_live(self.key)
 
         self.run.started.pop(self.key, None)
         if started is not None:
             self._check(begun_row, base, "started")
+            # what the attempts before the crash spent and their request ids: the outcome's row keeps counting them
+            self.meta.update({k: v for k, v in (begun_row.get("meta") or {}).items() if k in _CARRIED_META})
             if due is None and not self.stopped and not kind.idempotent(spec):
                 if not leaf:  # the frames it had opened end first: their finally and close activities run
                     await self._end_in_flight(kind, spec, started)
@@ -307,39 +363,33 @@ class ActivityRun:
                 self._journal("error", {**base, "error": failure.as_dict(), "meta": self.meta})
                 raise failure
 
-        mock = self.run.mock_for(self.path)
-        if mock is not self.run.NO_MOCK:
-            self.meta.update({"mocked": True, "attempts": 1, "duration_s": 0.0})  # read the same as a live run
-            if isinstance(mock, dict) and "$error" in mock:
-                error = mock["$error"] if isinstance(mock["$error"], dict) else {"message": str(mock["$error"])}
-                failure = ActivityError(str(error.get("type", "mocked")), str(error.get("message", "mocked error")),
-                                        error.get("data"))
-                self._journal("error", {**base, "error": failure.as_dict(), "meta": self.meta})
-                raise failure
-            try:
-                out = _normalised(mock)
-            except _NotJson as exc:
-                failure = ActivityError("not_serialisable", f"{self.path}: the mock is not JSON data: {exc}")
-                self._journal("error", {**base, "error": failure.as_dict(), "meta": self.meta})
-                raise failure from exc
-            self._journal("done", {**base, "out": out, "meta": self.meta})
-            return out
+        budgeted = kind.spends and leaf and not self.finalizer and not self.literal  # limits.max_cost applies
+        over = self._over_budget() if budgeted else None
+        if over is not None:
+            self._journal("error", {**base, "error": over.as_dict(), "meta": self.meta})
+            raise over
 
-        if self.run.mock_only and kind.external:
+        # A mock answers each attempt in place of the kind -- a $error goes through retry as a live failure would
+        # (no backoff), and the next attempt takes the next $visits entry
+
+        mocked = self.path in self.run.mocks
+        if mocked:
+            self.meta["mocked"] = True
+        elif self.run.mock_only and kind.external:
             failure = ActivityError("unmocked", f"{self.path}: mock-only run and no mock for this {kind.key} activity")
             self._journal("error", {**base, "error": failure.as_dict(), "meta": self.meta})
             raise failure
 
         attempts = spec.retry.attempts if spec.retry else 1
-        timeout = parse_duration(spec.timeout)
-        # A crash is not a failed attempt: a resumed activity continues the attempt it was in, so the
-        # children that attempt finished replay under their keys and the retry budget stays the same.
-        first = max(1, int(begun_row.get("attempt") or 1))
         if begun_row.get("failures"):  # the attempts that failed before the crash
             self.meta["failures"] = list(begun_row["failures"])
         begun = time.monotonic()
         failure: Optional[ActivityError] = None
         for attempt in range(first, max(attempts, first) + 1):
+            if budgeted and attempt > first:  # a retry spends again: none starts past limits.max_cost
+                failure = self._over_budget()
+                if failure is not None:
+                    break
             if due is not None:  # the retry's backoff (a resume waits out what is left)
                 await asyncio.sleep(max(0.0, float(due) - time.time()))
             failure = None  # this attempt's outcome, not the previous attempt's
@@ -347,27 +397,30 @@ class ActivityRun:
             self.meta["attempts"] = attempt
             # limits.concurrency: a leaf waits for its turn before it counts as started -- one that waited when the
             # run stopped was not in flight. sg.tool() of a call that holds a turn takes none: it would wait for it
-            gate = self.run.gate if leaf and not self.literal else None
+            gate = self.run.gate if leaf and not self.literal and not mocked and not kind.waits else None
             if gate is not None:
                 await gate.acquire()
-            try:
-                self._journal("started", {**base, "attempt": attempt, "inputs": inputs, **self._failures()})
-            except BaseException:  # the row did not land (a locked database): the turn is given back all the same
-                if gate is not None:
-                    gate.release()
-                raise
-            if leaf:
+            if not mocked:  # a mock's answer is at hand: nothing is in flight that a crash could cut
+                try:
+                    self._journal("started", {**base, "attempt": attempt, "inputs": inputs, **self._carried()})
+                except BaseException:  # the row did not land (a locked database): the turn is given back all the same
+                    if gate is not None:
+                        gate.release()
+                    raise
+            counted = leaf and not mocked and not kind.waits  # a slot wait: the run shows waiting (take_slot)
+            if counted:
                 self.run.busy += 1
                 self.run.refresh_status()
             out: Any = None
             task = asyncio.current_task()
             cancels = task.cancelling() if task is not None else 0
             try:
-                out = _normalised(await self._attempt(kind, spec, timeout))
+                out = _normalised(self._mocked() if mocked else await self._attempt(kind, spec, timeout))
             except (ReplayDivergence, RunAbort):
                 raise
             except asyncio.CancelledError:
                 if self._cancelled_by_run(task, cancels):
+                    self._keep_spent(base, attempt, inputs)
                     raise
                 failure = ActivityError(_FAILED_TYPE.get(kind.key, "activity_failed"),
                                         f"{self.path}: cancelled from inside, not by the run")
@@ -376,15 +429,17 @@ class ActivityRun:
             except _AttemptTimeout:
                 failure = ActivityError("timeout", f"{self.path}: no result within {timeout:g}s")
             except _NotJson as exc:
-                failure = ActivityError("not_serialisable", f"{self.path}: the result is not JSON data: {exc}")
+                failure = ActivityError("not_serialisable",
+                                        f"{self.path}: the {'mock' if mocked else 'result'} is not JSON data: {exc}")
             except CodeError as exc:
-                failure = ActivityError("template_failed", exc.message)
+                failure = ActivityError("template_failed", exc.message, **exc.location)
             except Exception as exc:  # a kind or backend bug -- or a call's own code -- must not kill the run silently
                 logger.warning("stategraph: run %s: %s raised", self.run.id, self.path, exc_info=exc)
                 failure = ActivityError(_FAILED_TYPE.get(kind.key, "activity_failed"), f"{type(exc).__name__}: {exc}",
-                                        data={"traceback": _traceback(exc)})
+                                        data={"traceback": _traceback(exc)}, where=self.path)
+                failure.original = exc  # an in-process caller of the run gets it back (RunContext.exception)
             finally:
-                if leaf:
+                if counted:
                     self.run.busy -= 1
                     self.run.refresh_status()
                 if gate is not None:
@@ -394,27 +449,89 @@ class ActivityRun:
             if self.stopped and (failure is not None or not leaf):  # the run ended while it ran (a composite's
                 self.run.stop_here()    # children replayed into their ends, a leaf
             if failure is None:                                     # failed with it): not its outcome (§3.10)
-                self.meta["duration_s"] = round(time.monotonic() - begun, 3)
+                self.meta["duration_s"] = 0.0 if mocked else round(time.monotonic() - begun, 3)
                 self._journal("done", {**base, "out": out, "meta": self.meta})
                 return out
             if attempt < attempts and spec.retry is not None and self._retryable(spec.retry, failure):
-                # the attempts that failed stay readable: the row keeps only the last outcome
+                # the attempts that failed stay readable: the row keeps only the last outcome -- with the request
+                # and instance each one ran under (the message debugger finds its LLM calls by the request id)
                 self.meta.setdefault("failures", []).append(
-                    {"attempt": attempt, "type": failure.type, "message": failure.message[:_CAUSE_CHARS]})
+                    {"attempt": attempt, "type": failure.type, "message": failure.message[:_CAUSE_CHARS],
+                     **{name: self.meta[name] for name in ("request_id", "instance_id") if self.meta.get(name)}})
+                if mocked:
+                    due = time.time()
+                    continue
                 # journaled with the time the next attempt is due: a resume within the backoff does not take this
                 # attempt for in flight (interrupted, or run once more over the budget) (§5.5)
                 due = time.time() + spec.retry.delay(attempt)
                 self._journal("started", {**base, "attempt": attempt + 1, "inputs": inputs, "backoff_until": due,
-                                          **self._failures()})
+                                          **self._carried()})
                 continue
             break
         assert failure is not None
-        self.meta["duration_s"] = round(time.monotonic() - begun, 3)
+        self.meta["duration_s"] = 0.0 if mocked else round(time.monotonic() - begun, 3)
         self._journal("error", {**base, "error": failure.as_dict(), "meta": self.meta})
         raise failure
 
-    def _failures(self) -> dict[str, Any]:
-        return {"failures": list(self.meta["failures"])} if self.meta.get("failures") else {}
+    def _replayed_below(self, before: Optional[int]) -> list[tuple[str, dict[str, Any]]]:
+        """The recorded rows below this composite that no child replays -- every one (``before`` None: it is
+        answered from the journal), or those of the attempts before ``before`` (it resumes in that attempt) -- in
+        journal order. What they hold outside the journal is held again (``ActivityKind.replayed_below``: an
+        acquire's slot, a release given back), unless it lay in a frame of its own (``m``), which has ended."""
+        below = f"{self.key}/"
+        rows = []
+        for name, row in self.run.recorded.items():
+            if not name.startswith(below):
+                continue
+            rest = name[len(below):]
+            if before is not None:
+                match = _ATTEMPT.match(rest)
+                if (int(match[1]) if match else 1) >= before:
+                    continue
+            rows.append((name, row))
+            data = row.get("data") or {}
+            kind = REGISTRY.get(str(data.get("kind")))
+            if (kind is not None and row["status"] == "done" and not (data.get("meta") or {}).get("mocked")
+                    and "m" not in rest.split("/")):
+                kind.replayed_below(name, data, self)
+        return rows
+
+    def _over_budget(self) -> Optional[ActivityError]:
+        """budget_exceeded once the run's spend -- with what this activity's attempts so far spent, not counted into
+        run.cost before its outcome is journaled -- reached limits.max_cost; None below it or without one."""
+        limit = self.run.machine.spec.limits.max_cost
+        spent = self.run.cost + self.run.cost_of(self.meta)
+        if limit is None or spent < limit:
+            return None
+        return ActivityError("budget_exceeded", f"{self.path}: the run has spent {spent:.4f} USD, "
+                             f"limits.max_cost is {limit:g}")
+
+    def _mocked(self) -> Any:
+        """This attempt's mock: its answer, or its ``$error`` raised (a non-JSON mock fails not_serialisable)."""
+        mock = self.run.mock_for(self.path)
+        if isinstance(mock, dict) and "$error" in mock:
+            error = mock["$error"] if isinstance(mock["$error"], dict) else {"message": str(mock["$error"])}
+            raise ActivityError(str(error.get("type", "mocked")), str(error.get("message", "mocked error")),
+                                error.get("data"))
+        return mock
+
+    def _carried(self) -> dict[str, Any]:
+        """What a ``started`` row carries over a crash: the failed attempts, and what they and this one have spent
+        (``meta``: cost, tokens, request ids) -- the run's spend counts every row's meta, an outcome's row then
+        takes it over."""
+        meta = {k: v for k, v in self.meta.items() if k in _CARRIED_META}
+        return {**({"failures": list(self.meta["failures"])} if self.meta.get("failures") else {}),
+                **({"meta": meta} if meta else {})}
+
+    def _keep_spent(self, base: dict[str, Any], attempt: int, inputs: dict[str, Any]) -> None:
+        """A stop cut this attempt: what it spent so far goes into its ``started`` row -- the run's spend counts it,
+        and a resume that runs it again adds to it. Never raises: the stop goes on."""
+        if not any(k in self.meta for k in ("cost", "tokens", "cost_unpriced_calls")):
+            return
+        try:
+            self._journal("started", {**base, "attempt": attempt, "inputs": inputs, **self._carried()})
+        except (Exception, asyncio.CancelledError):  # a lost run refuses every write: the cut cost goes uncounted
+            logger.debug("stategraph: run %s: the spend of the cut %s not kept", self.run.id, self.path, exc_info=True)
 
     def _cancelled_by_run(self, task: Optional["asyncio.Task[Any]"], cancels: int) -> bool:
         """Whether a CancelledError out of an attempt is the run's (§5.8): this task is being cancelled (a
@@ -422,9 +539,7 @@ class ActivityRun:
         ending or its token was cancelled from outside. Any other -- a future some library cancelled -- is the
         activity's own failure. (A frame the engine stops below a composite raises past the attempt anyway: the
         ``stopped`` check after it; so does a run that lost its lease, whose every write raises.)"""
-        tokens = (self.run.token, getattr(self.run.backend, "token", None))  # the backend's: what _watch_token sees
-        return ((task is not None and task.cancelling() > cancels) or self.run.ending
-                or any(getattr(t, "is_cancelled", False) is True for t in tokens))
+        return (task is not None and task.cancelling() > cancels) or self.run.ending or self.run.token_cancelled()
 
     def _retryable(self, retry: Any, failure: ActivityError) -> bool:
         """Whether a retry may run this activity again (docs/stategraph_design.md §2.5 retry, §5.5).
@@ -483,6 +598,8 @@ class ActivityRun:
         if not timeout:
             return await kind.run(spec, self)
         deadline = asyncio.timeout(timeout)
+        mine = (asyncio.current_task(), deadline)  # its cancel is the engine's (RunContext.halted_from_outside)
+        self.run.timeouts.append(mine)
         try:
             async with deadline:
                 return await kind.run(spec, self)
@@ -490,20 +607,27 @@ class ActivityRun:
             if deadline.expired():
                 raise _AttemptTimeout() from None
             raise
+        finally:
+            self.run.timeouts.remove(mine)
 
     def _check(self, data: dict[str, Any], base: dict[str, Any], what: str) -> None:
         for field in ("kind", "path", "input_hash"):
             if data.get(field) != base[field]:
+                differ = ""
+                if field == "input_hash" and isinstance(data.get("inputs"), dict):  # rows since G1 keep them
+                    found = _differences(self.frame.tokenized(data["inputs"]), self.frame.tokenized(self._inputs))
+                    differ = f"; {'; '.join(found)}" if found else ""
                 raise self.run.diverged(
                     f"journal key {self.key}: the {what} row has {field}={data.get(field)!r}, the machine now "
-                    f"has {field}={base[field]!r} (a guard, action or template is not deterministic, or the "
-                    "definition changed)")
+                    f"has {field}={base[field]!r}{differ} (a guard, action or template is not deterministic, or "
+                    "the definition changed)")
 
     def _replay(self, row: dict[str, Any], base: dict[str, Any]) -> Any:
         data = row.get("data") or {}
         self._check(data, base, "recorded")
         self.meta.update(data.get("meta") or {})
         self.meta["replayed"] = True
+        self.run.count_recorded(self.key)
         if row["status"] == "error":
             raise ActivityError.from_dict(data.get("error") or {})
         return data.get("out")
@@ -514,6 +638,75 @@ class ActivityRun:
         self.run.write("activity", self.key, state=self.state, status=status, data=data)  # fenced by the owner
         if status in ("done", "error"):
             self.run.note_outcome(self.key, status, data)
+            self.run.add_cost(data)
+
+
+class _ThreadedTool(collections.abc.Coroutine):
+    """``sg.tool()`` called by a sync function in its worker thread: it can only run once the function returns it
+    (CallKind and a check await what they get back). Using its value raises -- it is no answer yet; run anywhere
+    but on the run's loop, it raises there."""
+
+    def __init__(self, run: Any, where: str):
+        self._run = run
+        self._coro: Any = None
+        self.where = where
+
+    def _started(self) -> Any:
+        if self._coro is None:
+            self._coro = self._run()
+        return self._coro
+
+    def __await__(self) -> Any:
+        return self._started().__await__()
+
+    def send(self, value: Any) -> Any:
+        return self._started().send(value)
+
+    def throw(self, *args: Any) -> Any:
+        return self._started().throw(*args)
+
+    def close(self) -> None:
+        if self._coro is not None:
+            self._coro.close()
+
+    def __repr__(self) -> str:
+        return f"<{self.where}: not run yet>"
+
+    def _misused(self, *_: Any, **__: Any) -> Any:
+        raise RuntimeError(f"{self.where} in a sync function is no answer yet: it runs only when the function "
+                           "returns it -- to use its value, make the function async")
+
+    __bool__ = __eq__ = __ne__ = __str__ = __iter__ = __len__ = __contains__ = __getitem__ = _misused
+    __hash__ = None  # type: ignore[assignment]
+
+
+def _differences(then: Any, now: Any, path: str = "inputs", limit: int = 3) -> list[str]:
+    """The first ``limit`` paths where two input values differ, each with both values (cut to 80 characters)."""
+    if isinstance(then, dict) and isinstance(now, dict):
+        found: list[str] = []
+        for key in sorted(set(then) | set(now), key=str):
+            if then.get(key, _GONE) != now.get(key, _GONE):
+                found += _differences(then.get(key, _GONE), now.get(key, _GONE), f"{path}.{key}", limit - len(found))
+            if len(found) >= limit:
+                break
+        return found[:limit]
+    if isinstance(then, list) and isinstance(now, list) and len(then) == len(now):
+        found = []
+        for index, (old, new) in enumerate(zip(then, now)):
+            if old != new:
+                found += _differences(old, new, f"{path}[{index}]", limit - len(found))
+            if len(found) >= limit:
+                break
+        return found[:limit]
+
+    def shown(value: Any) -> str:
+        text = "(none)" if value is _GONE else json.dumps(value, ensure_ascii=False, default=str)
+        return text if len(text) <= 80 else f"{text[:77]}..."
+
+    return [f"{path} was {shown(then)}, now {shown(now)}"]
+
+
+_GONE = object()
 
 
 def _traceback(exc: BaseException, frames: int = 8) -> str:

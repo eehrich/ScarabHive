@@ -564,10 +564,17 @@ class ScarabHiveBackend:
                 for name, answer in result.answers.items()}
 
 
+#: The shortest injected value _redact hides wherever it appears.
+REDACT_MIN = 8
+
+
 def _redact(result: Any, tool: str, inject_params: dict[str, dict[str, Any]]) -> Any:
     """Injected values never reach the journal, even when a tool echoes its arguments."""
+    # a value worth hiding: text or a number of some length -- an empty one (an unset ${VAR}) would put
+    # "[redacted]" between every character, a short one (5, "true") would garble every text that holds it (API-11)
     secrets = {str(v) for pattern, extra in inject_params.items() if fnmatch.fnmatchcase(tool, pattern)
-               for v in (extra or {}).values()}
+               for v in (extra or {}).values()
+               if isinstance(v, (str, int, float)) and not isinstance(v, bool) and len(str(v)) >= REDACT_MIN}
     if not secrets:
         return result
 
@@ -684,7 +691,8 @@ def _unprotect(act: "ActivityRun", request_id: str) -> None:
 
 
 def make_config_check(system_config: Any, *, runner: str, own_instance: str,
-                      is_agent: Optional[Callable[[str], Optional[bool]]] = None, default_runner: Optional[str] = None):
+                      is_agent: Optional[Callable[[str], Optional[bool]]] = None, default_runner: Optional[str] = None,
+                      semaphores: Optional[Callable[[], dict[str, Any]]] = None):
     """SG007: can the configuration run what a machine names? Same matchers as the runtime.
 
     ``runner`` is the runner of a machine whose folder no runner claims (runners.py): a tool question that carries
@@ -694,7 +702,7 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
 
     ``is_agent(name)`` answers from the running registry whether a server is an agent (None: it does not
     know); without it the configuration alone is checked, and a tool server named as an agent fails at run
-    time instead.
+    time instead. ``semaphores()``: the instance's semaphores as its runs read them (else its configuration's).
     """
     from agent_system.config.settings import _resolve_server_inheritance, get_tool_server_config
     from agent_system.servers.agent.components.server_resolution import resolve_longest_prefix
@@ -823,6 +831,22 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
             if name not in profiles:
                 return f"decision profile {name!r} is not configured (known: {', '.join(profiles) or 'none'})"
             return None
+        if what == "semaphore":  # the acquire and release kinds: the instance's semaphores setting (FEAT-2)
+            known = semaphores() if semaphores is not None else semaphores_of(server(own_instance))
+            if name not in known:
+                return (f"semaphore {name!r} is not in {own_instance}'s semaphores setting (known: "
+                        f"{', '.join(sorted(known)) or 'none'}): a run fails there with error 'config'")
+            return None
         return None
 
     return check
+
+
+def semaphores_of(config: Any) -> dict[str, int]:
+    """An instance's ``semaphores`` setting -- ``{name: capacity}`` -- with the entries that are a whole number of
+    at least 1; the others are left out (the server names them)."""
+    raw = getattr(config, "semaphores", None)
+    if not isinstance(raw, dict):
+        return {}
+    return {str(name): capacity for name, capacity in raw.items()
+            if isinstance(capacity, int) and not isinstance(capacity, bool) and capacity >= 1}

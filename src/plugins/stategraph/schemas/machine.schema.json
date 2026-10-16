@@ -1,5 +1,121 @@
 {
   "$defs": {
+    "Activity": {
+      "description": "an activity: exactly one kind key",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Activity_acquire"
+        },
+        {
+          "$ref": "#/$defs/Activity_agent"
+        },
+        {
+          "$ref": "#/$defs/Activity_call"
+        },
+        {
+          "$ref": "#/$defs/Activity_callback"
+        },
+        {
+          "$ref": "#/$defs/Activity_decide"
+        },
+        {
+          "$ref": "#/$defs/Activity_emit"
+        },
+        {
+          "$ref": "#/$defs/Activity_machine"
+        },
+        {
+          "$ref": "#/$defs/Activity_map"
+        },
+        {
+          "$ref": "#/$defs/Activity_parallel"
+        },
+        {
+          "$ref": "#/$defs/Activity_release"
+        },
+        {
+          "$ref": "#/$defs/Activity_tool"
+        }
+      ]
+    },
+    "Activity_acquire": {
+      "additionalProperties": false,
+      "properties": {
+        "acquire": {
+          "description": "the semaphore: a name in the instance's semaphores setting (a literal)",
+          "title": "Acquire",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
+          "title": "Description",
+          "type": "string"
+        },
+        "idempotent": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "may a resumed run start it again if it was in flight at the crash? default: true, tool: false",
+          "title": "Idempotent"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "template: the capacity counts per key (one run per ticket)",
+          "title": "Key"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetrySpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "acquire"
+      ],
+      "title": "Acquire slot activity (acquire)",
+      "type": "object"
+    },
     "Activity_agent": {
       "additionalProperties": false,
       "properties": {
@@ -152,7 +268,7 @@
             }
           ],
           "default": null,
-          "description": "deadline of one attempt",
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
           "title": "Timeout"
         },
         "vars": {
@@ -237,7 +353,7 @@
             }
           ],
           "default": null,
-          "description": "deadline of one attempt",
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
           "title": "Timeout"
         }
       },
@@ -320,7 +436,7 @@
             }
           ],
           "default": null,
-          "description": "deadline of one attempt",
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
           "title": "Timeout"
         }
       },
@@ -462,7 +578,7 @@
             }
           ],
           "default": null,
-          "description": "deadline of one attempt",
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
           "title": "Timeout"
         }
       },
@@ -527,7 +643,7 @@
             }
           ],
           "default": null,
-          "description": "deadline of one attempt",
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
           "title": "Timeout"
         }
       },
@@ -598,7 +714,7 @@
             }
           ],
           "default": null,
-          "description": "deadline of one attempt",
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
           "title": "Timeout"
         }
       },
@@ -632,10 +748,9 @@
           "type": "string"
         },
         "each": {
-          "additionalProperties": true,
+          "$ref": "#/$defs/Activity",
           "description": "the activity run per item",
-          "title": "Each",
-          "type": "object"
+          "title": "Each"
         },
         "fail": {
           "default": "fast",
@@ -693,7 +808,7 @@
             }
           ],
           "default": null,
-          "description": "deadline of one attempt",
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
           "title": "Timeout"
         },
         "until": {
@@ -768,8 +883,7 @@
         },
         "parallel": {
           "additionalProperties": {
-            "additionalProperties": true,
-            "type": "object"
+            "$ref": "#/$defs/Activity"
           },
           "description": "branch name -> activity",
           "title": "Parallel",
@@ -803,7 +917,7 @@
             }
           ],
           "default": null,
-          "description": "deadline of one attempt",
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
           "title": "Timeout"
         }
       },
@@ -811,6 +925,84 @@
         "parallel"
       ],
       "title": "Parallel activity (parallel)",
+      "type": "object"
+    },
+    "Activity_release": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
+          "title": "Description",
+          "type": "string"
+        },
+        "idempotent": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "may a resumed run start it again if it was in flight at the crash? default: true, tool: false",
+          "title": "Idempotent"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "template: only this key's slot (default: every one it holds)",
+          "title": "Key"
+        },
+        "release": {
+          "description": "the semaphore whose slot this frame gives back (a literal)",
+          "title": "Release",
+          "type": "string"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetrySpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "release"
+      ],
+      "title": "Release slot activity (release)",
       "type": "object"
     },
     "Activity_tool": {
@@ -882,7 +1074,7 @@
             }
           ],
           "default": null,
-          "description": "deadline of one attempt",
+          "description": "deadline of one attempt (or a {{ }} expression over params)",
           "title": "Timeout"
         },
         "tool": {
@@ -1000,6 +1192,20 @@
           "description": "leaf activities (agent, tool, decide, call) of the whole run at once; the others wait for their turn before they start",
           "title": "Concurrency"
         },
+        "max_cost": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "USD the whole run may spend (run.cost): once reached, an agent, decide or call activity fails with budget_exceeded instead of starting",
+          "title": "Max Cost"
+        },
         "max_steps": {
           "default": 1000,
           "description": "macro steps per machine instance",
@@ -1054,8 +1260,7 @@
         "finally": {
           "anyOf": [
             {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/Activity"
             },
             {
               "type": "null"
@@ -1320,8 +1525,7 @@
         "close": {
           "anyOf": [
             {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/Activity"
             },
             {
               "type": "null"
@@ -1339,8 +1543,7 @@
         "fork": {
           "anyOf": [
             {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/Activity"
             },
             {
               "type": "null"
@@ -1351,10 +1554,9 @@
           "title": "Fork"
         },
         "open": {
-          "additionalProperties": true,
+          "$ref": "#/$defs/Activity",
           "description": "activity run when the frame starts; its out is resources.<name>",
-          "title": "Open",
-          "type": "object"
+          "title": "Open"
         }
       },
       "required": [
@@ -1446,6 +1648,9 @@
           "description": "the do-activity: exactly one kind key",
           "oneOf": [
             {
+              "$ref": "#/$defs/Activity_acquire"
+            },
+            {
               "$ref": "#/$defs/Activity_agent"
             },
             {
@@ -1468,6 +1673,9 @@
             },
             {
               "$ref": "#/$defs/Activity_parallel"
+            },
+            {
+              "$ref": "#/$defs/Activity_release"
             },
             {
               "$ref": "#/$defs/Activity_tool"
@@ -1503,8 +1711,7 @@
         "finally": {
           "anyOf": [
             {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/Activity"
             },
             {
               "type": "null"
@@ -1534,10 +1741,15 @@
               "type": "integer"
             },
             {
+              "pattern": "\\{\\{",
+              "type": "string"
+            },
+            {
               "type": "null"
             }
           ],
           "default": null,
+          "description": "entries per activation of the enclosing region; one more raises loop_limit -- a number, or a {{ }} expression over params",
           "title": "Max Visits"
         },
         "output": {
@@ -1594,7 +1806,7 @@
             }
           ],
           "default": null,
-          "description": "wait state only: raise wait_timeout after this long",
+          "description": "wait state only: raise wait_timeout after this long (or a {{ }} expression over params)",
           "title": "Timeout"
         },
         "transitions": {
@@ -1714,8 +1926,7 @@
     "finally": {
       "anyOf": [
         {
-          "additionalProperties": true,
-          "type": "object"
+          "$ref": "#/$defs/Activity"
         },
         {
           "type": "null"
@@ -1799,6 +2010,16 @@
       "description": "external state per machine frame: open at its start, close at its end",
       "title": "Resources",
       "type": "object"
+    },
+    "resume": {
+      "default": "manual",
+      "description": "auto: the API resumes an interrupted run of this machine by itself (a run its caller handed live objects excepted); manual: only a caller or an operator does",
+      "enum": [
+        "manual",
+        "auto"
+      ],
+      "title": "Resume",
+      "type": "string"
     },
     "stategraph": {
       "const": 1,

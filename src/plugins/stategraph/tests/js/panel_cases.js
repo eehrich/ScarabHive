@@ -547,7 +547,7 @@ const CASES = {
     const bar = $('debugBar').innerHTML;
     const picks = [...bar.matchAll(/data-pick-run="([^"]+)" data-key="[^"]+"\s+aria-pressed="true"/g)].map(([, id]) => id);
     check(bar.includes('data-pick-run="k3j9x0p2qa_m01x9z_sgzz98yy"') && picks.join() === 'r1', `pressed: ${picks}`);
-    check(bar.includes('…_sgzz98yy</span>'), 'a run a machine tool started is not told by its end');
+    check(bar.includes('…_m01x9z_sgzz98yy</span>'), 'a run a machine tool started is not told by its end');
   },
 
   async a_refresh_neither_drops_a_machine_click_nor_draws_the_machine_left() {
@@ -1855,7 +1855,7 @@ const CASES = {
     const traces = RUN.journal.filter((row) => row.kind === 'trace').length;
     check(traces > 0 && traces < RUN.journal.length, 'fixture: the run has trace rows and others');
     await $('runHistory').fire('change', { target: Object.assign(element('select', { id: 'historyKind' }), { value: 'trace' }) });
-    const rows = ($('runHistory').innerHTML.match(/<tr>/g) || []).length - 1;  // less the head row
+    const rows = ($('runHistory').innerHTML.match(/<tr[ >]/g) || []).length - 1;  // less the head row
     check(rows === traces, `${rows} rows shown, ${traces} traces`);
   },
 
@@ -2004,7 +2004,7 @@ const CASES = {
       { seq: 31, kind: 'trace', key: 'live_objects:resumed:1', state: null, status: 'live_objects', data: { names: ['pipeline'] } },
       { seq: 32, kind: 'trace', key: 'live_objects:resumed:2', state: null, status: 'live_objects', data: { names: [] } }] };
     await boot('?machine=review&run=r1');
-    const rows = $('runHistory').innerHTML.split('<tr>');
+    const rows = $('runHistory').innerHTML.split(/<tr[ >]/);
     const row = (key) => rows.find((r) => r.includes(`>${key}<`)) || '';
     check(row('live_objects').includes('counter, pipeline') && !row('live_objects').includes('pk-text--warn'),
       `the names: ${row('live_objects')}`);
@@ -2671,7 +2671,8 @@ const CASES = {
   async a_number_field_is_a_number_input_and_a_typo_is_refused() {
     await boot('?machine=fields');
     await choose('judge');
-    check(/ type="number"\s+value="" id="sf-max_visits"/.test($('side-inspect').innerHTML), 'max_visits is no number input');
+    // max_visits takes a {{ }} expression too (R9): an integer of the kind's schema is the number input
+    check(/ type="number"\s+value="" id="af-parse_retries"/.test($('side-inspect').innerHTML), 'parse_retries is no number input');
     await $('side-inspect').fire('submit', { target: formOf('state-fields', { max_visits: ['number', '', '3,5'] }) });
     await settle();
     check(!lastEdit() && TOASTS.some(([kind, text]) => kind === 'warn' && text.includes('not a number')), `sent: ${JSON.stringify(lastEdit())}`);
@@ -3510,12 +3511,688 @@ const CASES = {
   },
 };
 
+// ------------------------------------------------------------------ the review of 2026-10-15 (panel items)
+// listed apart ('r15:*'): test_plugin_stategraph_r15_panel.py runs them
+
+/** The server with `over(method, path, json)` answering first where it gives an answer (not undefined). */
+function serveOver(over) {
+  const real = globalThis.SERVER;
+  globalThis.SERVER = (method, path, json) => over(method, path.replace('/plugins/stategraph/api', ''), json) ?? real(method, path, json);
+}
+const postedRuns = () => CALLS.filter(([method, path]) => method === 'POST' && path.endsWith('/api/runs')).map(([, , json]) => json);
+const BIG = { ...MACHINE, id: 'big', layout: { version: 1, positions: {} }, problems: [],
+  graph: { ...MACHINE.graph, initial: 's0', transitions: [], notes: [],
+    states: Array.from({ length: 120 }, (_, i) => stateLike(`s${i}`, 'write', { parent: null, line: 10 + i })) } };
+
+const R15_CASES = {
+  async r15_a_double_click_on_move_down_sends_one_edit() {  // UI-4
+    await boot('?machine=review');
+    await choose('write');
+    HOLD = (method, path) => path.endsWith('/edit');
+    const form = element('form', { 'data-transition': 'write#0' });
+    const down = form.appendChild(element('button', { 'data-act': 'move-down' }));
+    const first = $('side-inspect').fire('click', { target: down });
+    await settle();
+    const second = $('side-inspect').fire('click', { target: down });
+    await settle();
+    const edits = CALLS.filter(([, path]) => path.endsWith('/edit'));
+    check(edits.length === 1, `edits sent while one was out: ${edits.length}`);
+    check(TOASTS.some(([kind, text]) => kind === 'warn' && text.includes('An edit is on its way')), JSON.stringify(TOASTS));
+    HOLD = () => false;
+    await release();
+    await Promise.all([first, second]);
+    check(!ASKED.some(([kind, title]) => kind === 'dialog' && title === 'The file changed'), 'a conflict was asked about');
+  },
+
+  async r15_a_run_whose_first_read_fails_is_asked_again_and_the_bar_says_so() {  // UI-6
+    runAnswer = new ApiError(503, 'restarting');
+    await boot('?machine=review&run=r1');
+    const poll = POLLERS.find((p) => p.ms === 1000);
+    check(poll.running, 'the run is not asked again');
+    check(!$('debugBar').hidden && $('debugBar').innerHTML.includes('not refreshed') && $('debugBar').innerHTML.includes('title="r1"'),
+      `the bar: hidden ${$('debugBar').hidden}, ${$('debugBar').innerHTML}`);
+    runAnswer = RUN;
+    await poll.fn();
+    await settle();
+    await release();
+    const bar = $('debugBar').innerHTML;
+    check(!bar.includes('not refreshed') && bar.includes('data-control="continue"'), `the run read at last: ${bar}`);
+  },
+
+  async r15_a_failed_refresh_keeps_the_machine_list_and_says_so() {  // UI-7
+    await boot('?machine=review');
+    serveOver((method, path) => (method === 'GET' && path === '/machines' ? new ApiError(503, 'restarting') : undefined));
+    for (const fn of DOC_LISTENERS.refresh) fn({ detail: { auto: true } });
+    await settle();
+    await release();
+    check($('machineList').innerHTML.includes('data-machine="review"'), `the list went: ${$('machineList').innerHTML}`);
+    check(!$('machinesStale').hidden && $('machinesStale').textContent.includes('Not refreshed'), 'not said');
+  },
+
+  async r15_kinds_that_failed_at_start_are_asked_again() {  // UI-8
+    let down = true;
+    serveOver((method, path) => (path === '/kinds' && down ? new ApiError(503, 'restarting') : undefined));
+    await boot('?machine=review');
+    check(!$('paletteMenu').innerHTML.includes('data-add-kind'), 'kinds without an answer');
+    down = false;
+    for (const fn of DOC_LISTENERS.refresh) fn({ detail: { auto: true } });
+    await settle();
+    await release();
+    check($('paletteMenu').innerHTML.includes('data-add-kind="agent"'), 'the kinds are not asked again');
+  },
+
+  async r15_mock_only_and_pause_at_start_stay_with_their_machine() {  // UI-9
+    await boot('?machine=review');
+    $('mockOnly').checked = true;
+    $('pauseAtStart').checked = true;
+    await $('startForm').fire('submit', {});
+    await settle();
+    await clickMachine('other');
+    await settle();
+    await release();
+    check(!$('mockOnly').checked && !$('pauseAtStart').checked, 'review\'s test options came along to other');
+    await $('startForm').fire('submit', {});
+    await settle();
+    const [ofReview, ofOther] = postedRuns();
+    check(ofReview.mock_only && ofReview.pause_at_start, JSON.stringify(ofReview));
+    check(ofOther.machine_id === 'other' && !ofOther.mock_only && !ofOther.pause_at_start, JSON.stringify(ofOther));
+    await clickMachine('review');
+    await settle();
+    await release();
+    check($('mockOnly').checked && $('pauseAtStart').checked, 'review\'s test options are not back');
+  },
+
+  async r15_writer_run_ids_keep_their_label_and_hash_and_the_list_is_not_sorted_here() {  // UI-3
+    const ids = ['9e0tq7uhrt_009_ch794_7ebb7fb0', '9e0tq7uhrt_009_ch795_3c2cac96'];
+    runsAnswer = () => [...ids.map((id) => ({ ...RUNS[0], id, status: 'running' })), RUNS[0]];
+    await boot('?machine=review&run=r1');
+    const list = $('runList').innerHTML;
+    check(list.includes('…_009_ch794_7ebb7fb0') && list.includes(`title="${ids[1]}"`), list);
+    check(!list.includes('data-pk-sort'), 'the server pages the list: it is not sorted here');
+    const bar = $('debugBar').innerHTML;
+    check(bar.includes('…_009_ch795_3c2cac96</span>') && bar.includes('…_009_ch794_7ebb7fb0</span>'), bar);
+  },
+
+  async r15_fork_with_the_saved_machine_is_a_named_action() {  // UI-12
+    await boot('?machine=review&run=r1');
+    const bar = $('debugBar').innerHTML;
+    check(bar.includes('data-definition="current"') && bar.includes('Fork with saved machine'), bar);
+    const fork = async (definition) => {
+      ANSWERS.prompt.push('s2');
+      ANSWERS.dialog = 'run';
+      await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork', 'data-definition': definition }) });
+      await settle();
+      return CALLS.filter(([, path]) => path.endsWith('/control')).pop()[2];
+    };
+    const saved = await fork('current');
+    check(saved.action === 'fork' && saved.definition === 'current', JSON.stringify(saved));
+    check(ASKED.some(([kind, , text]) => kind === 'dialog' && text.includes('as it is saved now')), JSON.stringify(ASKED));
+    const own = await fork('snapshot');
+    check(own.definition === 'snapshot', JSON.stringify(own));
+  },
+
+  async r15_resume_says_which_machine_it_runs() {  // UI-12
+    runAnswer = { ...RUN, status: 'failed', active: false, terminal: true, debug: { ...RUN.debug, paused: null },
+      error: { type: 'budget', message: 'stopped', resumable: true }, resumable: true };
+    await boot('?machine=review&run=r1');
+    const resume = $('debugBar').innerHTML.match(/<button[^>]*data-control="resume"[^>]*>/)?.[0] || '';
+    check(resume.includes('as the run started it'), `Resume: ${resume}`);
+  },
+
+  async r15_a_large_machine_opens_readable_and_find_zooms_to_the_state() {  // UI-13
+    serveOver((method, path) => (method === 'GET' && path === '/machines'
+      ? [{ id: 'big', title: 'big', writable: true, group: 'x' }, { id: 'review', title: 'review', writable: true, group: 'x' }]
+      : method === 'GET' && path === '/machines/big' ? BIG : undefined));
+    await boot('?machine=big');
+    check(Math.abs(canvasGeometry().k - 0.7) < 1e-9, `opened at zoom ${canvasGeometry().k}`);
+    await $('fit').fire('click', {});
+    check(canvasGeometry().k < 0.5, `Fit shows it whole: ${canvasGeometry().k}`);
+    $('stateSearch').value = 's117';
+    await $('stateSearch').fire('change', {});
+    await settle();
+    const { k, boxOf, client } = canvasGeometry();
+    const box = boxOf('s117');
+    const middle = client(box.x + box.w / 2, box.y + box.h / 2);
+    check(k === 1 && Math.abs(middle.clientX - 450) < 1 && Math.abs(middle.clientY - 300) < 1,
+      `found at zoom ${k}, its middle at ${JSON.stringify(middle)}`);
+  },
+
+  async r15_a_run_id_alone_opens_its_machine_with_the_run() {  // UI-14
+    await boot('?run=r2');
+    check(headName() === 'review', `opened: ${headName()}`);
+    check(CALLS.some(([, path]) => path.includes('/runs/r2?steps=200')), 'the run is not shown');
+    serveOver((method, path) => (path.startsWith('/runs/zz_unknown_run?') ? new ApiError(404, 'no such run') : undefined));
+    $('search').value = 'zz_unknown_run';
+    await $('search').fire('input', {});
+    check($('machineList').innerHTML.includes('data-open-run="zz_unknown_run"'), $('machineList').innerHTML);
+    await $('search').fire('keydown', { key: 'Enter' });
+    await settle();
+    check(TOASTS.some(([, text]) => text === 'No run zz_unknown_run'), JSON.stringify(TOASTS));
+  },
+
+  async r15_a_failed_runs_state_leads_to_the_graph() {  // UI-15
+    runAnswer = { ...RUN, status: 'failed', active: false, terminal: true, debug: { ...RUN.debug, paused: null },
+      error: { type: 'no_transition', message: 'no guard held', state: 'write' } };
+    await boot('?machine=review&run=r1');
+    check($('canvas').classList.contains('sg-run-failed'), 'the failed run is drawn as a live one');
+    check($('runResult').innerHTML.includes('data-goto-state="write"'), $('runResult').innerHTML);
+    await $('runResult').fire('click', { target: element('button', { 'data-goto-state': 'write' }) });
+    await settle();
+    check(TABS.mainTabs === 'graph', `tab ${TABS.mainTabs}`);
+    check(/<h3 class="sg-inspect-name">write<\/h3>/.test($('side-inspect').innerHTML), 'write is not selected');
+  },
+
+  async r15_breakpoint_and_watch_conditions_are_set_and_points_switched_off() {  // UI-17
+    await boot('?machine=review');
+    await choose('write');
+    await toggle('enter', true);
+    check($('bpConditions').innerHTML.includes('data-breakpoint-condition="enter"'), 'no condition field');
+    const field = element('input', { 'data-breakpoint-condition': 'enter' });
+    field.value = 'ctx.round > 3';
+    await $('side-inspect').fire('change', { target: field });
+    await $('side-debug').fire('click', { target: element('button', { 'data-switch-breakpoint': '0' }) });
+    check($('dbgPoints').innerHTML.includes('sg-point-off') && $('dbgPoints').innerHTML.includes('if ctx.round &gt; 3'), $('dbgPoints').innerHTML);
+    await submit($('watchForm'), { expr: 'ctx.round', condition: 'ctx.round > 2' });
+    await $('startForm').fire('submit', {});
+    await settle();
+    const [start] = postedRuns();
+    check(JSON.stringify(start.breakpoints) === '[{"state":"write","at":"enter","machine":"review","condition":"ctx.round > 3","enabled":false}]',
+      JSON.stringify(start.breakpoints));
+    check(JSON.stringify(start.watchpoints) === '[{"expr":"ctx.round","condition":"ctx.round > 2","machine":"review"}]', JSON.stringify(start.watchpoints));
+  },
+
+  async r15_a_breakpoint_switched_on_again_in_the_inspector_keeps_its_condition() {  // review R-2
+    await boot('?machine=review');
+    await choose('write');
+    await toggle('enter', true);
+    const field = element('input', { 'data-breakpoint-condition': 'enter' });
+    field.value = 'ctx.round > 3';
+    await $('side-inspect').fire('change', { target: field });
+    await $('side-debug').fire('click', { target: element('button', { 'data-switch-breakpoint': '0' }) });
+    await toggle('enter', true);
+    await settle();
+    await $('startForm').fire('submit', {});
+    await settle();
+    const [start] = postedRuns();
+    check(JSON.stringify(start.breakpoints) === '[{"state":"write","at":"enter","machine":"review","condition":"ctx.round > 3"}]',
+      JSON.stringify(start.breakpoints));
+  },
+
+  async r15_a_refresh_read_before_an_edit_does_not_put_the_old_machine_back() {  // review R-1
+    await boot('?machine=review');
+    await choose('write');
+    editAnswer = { ...MACHINE, versions: { ...MACHINE.versions, 'review.yaml': 'v2' } };
+    HOLD = (method, path) => method === 'GET' && path.endsWith('/machines/review');
+    for (const fn of DOC_LISTENERS.refresh) fn({ detail: { auto: true } });
+    await settle();
+    check(PENDING.some((c) => c.path.endsWith('/machines/review')), 'the refresh read is not held');
+    const form = element('form', { 'data-transition': 'write#0' });
+    const down = form.appendChild(element('button', { 'data-act': 'move-down' }));
+    await $('side-inspect').fire('click', { target: down });
+    await settle();
+    HOLD = () => false;
+    await release();
+    await settle();
+    await $('side-inspect').fire('click', { target: down });
+    await settle();
+    await release();
+    const sent = CALLS.filter(([, path]) => path.endsWith('/edit')).map(([, , json]) => json.expected_version);
+    check(JSON.stringify(sent) === '["v1","v2"]', `the second edit started from ${JSON.stringify(sent)}`);
+  },
+};
+
+// listed apart ('ui4:*'): test_plugin_stategraph_r15_ui4_panel.py runs them -- the panel side of the review's run
+// data (UI-1, UI-16, DBG-1/3/6, PROD-6, FEAT-1/2/6/7/8, R9)
+const runReads = () => CALLS.filter(([method, path]) => method === 'GET' && path.includes('/api/runs/r1?')).map(([, path]) => path);
+const pollNow = async () => {
+  await POLLERS.find((p) => p.ms === 1000).fn();
+  await settle();
+  await release();
+};
+const seqsOf = (path) => (new URLSearchParams(path.split('?')[1]).get('seqs') || '').split(',');
+const activityRow = (seq, status, extra = {}) => ({ seq, kind: 'activity', key: `s${seq}`, state: 'write', status,
+  data: { kind: 'agent', path: 'write', out: status === 'done' ? 'answer' : undefined, meta: {} }, ...extra });
+
+const UI4_CASES = {
+  async ui4_a_poll_asks_only_what_is_new_reads_open_activities_again_and_keeps_its_rows() {  // UI-1
+    runAnswer = { ...RUN, status: 'running', debug: { ...RUN.debug, paused: null }, journal: [...RUN.journal, activityRow(7, 'started')] };
+    await boot('?machine=review&run=r1');
+    const first = runReads()[0];
+    check(!first.includes('after=') && first.includes('row_chars=') && first.includes('ctx=%5B%5D'), `the first read: ${first}`);
+    runAnswer = { ...runAnswer, journal: [activityRow(8, 'done')] };  // what a read after 7 answers
+    await pollNow();
+    const poll = runReads().at(-1);
+    check(poll.includes('after=7') && seqsOf(poll).includes('7'), `the poll: ${poll}`);
+    const history = $('runHistory').innerHTML;
+    check(history.includes('data-id="1"') && history.includes('data-id="8"'), `the rows kept: ${history}`);
+    runAnswer = { ...runAnswer, journal: [activityRow(7, 'done')] };  // the open activity ended in place
+    await pollNow();
+    check(seqsOf(runReads().at(-1)).includes('7'), `still open, not read again: ${runReads().at(-1)}`);
+    await pollNow();
+    check(!seqsOf(runReads().at(-1)).includes('7'), `an ended activity is read again: ${runReads().at(-1)}`);
+  },
+
+  async ui4_a_queued_event_is_read_again_until_a_frame_takes_it() {  // UI-1: a pending event row changes in place
+    const queued = { seq: 7, kind: 'event', key: 'pending:ab12', state: null, status: 'pending', data: { name: 'go' } };
+    runAnswer = { ...RUN, status: 'running', debug: { ...RUN.debug, paused: null }, journal: [...RUN.journal, queued] };
+    await boot('?machine=review&run=r1');
+    runAnswer = { ...runAnswer, journal: [] };
+    await pollNow();
+    check(seqsOf(runReads().at(-1)).includes('7'), `a queued event is not read again: ${runReads().at(-1)}`);
+    runAnswer = { ...runAnswer, journal: [{ ...queued, key: 'write:event:go', state: 'write', status: 'consumed' }] };
+    await pollNow();
+    check($('runHistory').innerHTML.includes('consumed') && !$('runHistory').innerHTML.includes('pending:ab12'), $('runHistory').innerHTML);
+    await pollNow();
+    check(!seqsOf(runReads().at(-1)).includes('7'), `a consumed event is read again: ${runReads().at(-1)}`);
+  },
+
+  async ui4_a_burst_of_rows_starts_the_older_pages_over() {  // UI-16: no gap between the older pages and the last rows
+    const live = Array.from({ length: 3 }, (_, i) => ({ seq: 301 + i, kind: 'trace', key: `s${i}:enter:write`, state: 'write', status: 'enter', data: { frame: '' } }));
+    runAnswer = { ...RUN, status: 'running', debug: { ...RUN.debug, paused: null }, journal: live };
+    const asked = [];
+    serveOver((method, path) => {
+      const [route, query] = path.split('?');
+      if (route !== '/runs/r1/journal' || !/before=/.test(query)) return undefined;
+      asked.push(query);
+      return [{ seq: 5, kind: 'trace', key: 'old', state: 'read', status: 'enter', data: { frame: '' } }];
+    });
+    await boot('?machine=review&run=r1');
+    await $('runHistory').fire('click', { target: element('button', { 'data-act': 'older-rows' }) });
+    await settle();
+    check($('runHistory').innerHTML.includes('data-id="5"'), 'the older page is not shown');
+    runAnswer = { ...runAnswer, journal: Array.from({ length: 200 }, (_, i) => ({ seq: 400 + i, kind: 'trace', key: `b${i}`, state: 'write', status: 'enter', data: {} })) };
+    await pollNow();
+    check(!$('runHistory').innerHTML.includes('data-id="5"'), 'an older page stands before a gap');
+    await $('runHistory').fire('click', { target: element('button', { 'data-act': 'older-rows' }) });
+    await settle();
+    check(asked.at(-1) === 'before=400&limit=200', `older after a burst: ${asked}`);
+  },
+
+  async ui4_the_state_filter_keeps_its_rows_that_leave_the_last_rows() {  // UI-16
+    runAnswer = { ...RUN, status: 'running', debug: { ...RUN.debug, paused: null } };
+    const asked = [];
+    serveOver((method, path) => (path.startsWith('/runs/r1/journal?before=') ? (asked.push(path.split('?')[1]), []) : undefined));
+    await boot('?machine=review&run=r1');
+    const state = element('select', { id: 'historyState' });
+    state.value = 'write';
+    await $('runHistory').fire('change', { target: state });
+    await settle();
+    const rows = (from) => Array.from({ length: 150 }, (_, i) => ({ seq: from + i, kind: 'trace', key: `k${from + i}`,
+      state: from + i === 10 ? 'write' : 'read', status: 'enter', data: {} }));
+    runAnswer = { ...runAnswer, journal: rows(7) };  // 7..156, 10 of the filter's state
+    await pollNow();
+    runAnswer = { ...runAnswer, journal: rows(157) };  // 157..306: 10 leaves the last rows
+    await pollNow();
+    check($('runHistory').innerHTML.includes('data-id="10"'), `the filter lost a row: ${$('runHistory').innerHTML.slice(0, 600)}`);
+    runAnswer = { ...runAnswer, journal: Array.from({ length: 200 }, (_, i) => ({ seq: 400 + i, kind: 'trace', key: `b${i}`, state: 'read', status: 'enter', data: {} })) };
+    await pollNow();  // a burst: the rows between are read by no one -- the filter's rows are read anew
+    check(asked.at(-1) === 'before=600&limit=200&state=write', `after a burst: ${asked}`);
+  },
+
+  async ui4_a_preview_never_scans_a_long_answer_whole() {  // UI-1
+    const long = `${'word '.repeat(200000)}end`;
+    runAnswer = { ...RUN, journal: [...RUN.journal, { ...activityRow(7, 'done'), data: { kind: 'agent', out: long, meta: {} } }] };
+    const replace = String.prototype.replace;
+    let longest = 0;
+    String.prototype.replace = function (pattern, ...rest) {  // eslint-disable-line no-extend-native
+      if (String(pattern) === String(/\s+/g)) longest = Math.max(longest, this.length);
+      return replace.call(this, pattern, ...rest);
+    };
+    try {
+      await boot('?machine=review&run=r1');
+    } finally {
+      String.prototype.replace = replace;  // eslint-disable-line no-extend-native
+    }
+    check($('runHistory').innerHTML.includes('word word'), 'the row has no preview');
+    check(longest > 0 && longest < 2000, `a preview scanned ${longest} characters`);
+  },
+
+  async ui4_a_folded_frames_ctx_is_read_when_it_is_unfolded() {  // UI-1
+    const frames = RUN.view.frames.map((f) => ({ ...f, ctx: null, ctx_left_out: true }));
+    runAnswer = { ...RUN, view: { ...RUN.view, frames } };
+    await boot('?machine=review&run=r1');
+    check($('dbgFrames').innerHTML.includes('Read when the frame is unfolded'), $('dbgFrames').innerHTML);
+    const before = runReads().length;
+    const fold = element('details', { 'data-frame-fold': '' });
+    fold.open = true;
+    await $('side-debug').fire('toggle', { target: fold });
+    await settle();
+    await release();
+    check(runReads().length === before + 1 && runReads().at(-1).includes(`ctx=${encodeURIComponent('[""]')}`), `${runReads()}`);
+  },
+
+  async ui4_history_pages_back_filters_by_state_and_shows_a_row_whole() {  // UI-16 / DBG-9
+    const late = Array.from({ length: 3 }, (_, i) => ({ seq: 301 + i, kind: 'trace', key: `s${i}:enter:write`, state: 'write', status: 'enter', data: { frame: '' } }));
+    runAnswer = { ...RUN, status: 'succeeded', active: false, debug: { ...RUN.debug, paused: null }, journal: late };
+    const asked = [];
+    serveOver((method, path) => {
+      const [route, query] = path.split('?');
+      if (route !== '/runs/r1/journal' || !/before=|seq=/.test(query)) return undefined;
+      asked.push(query);
+      const q = new URLSearchParams(query);
+      if (q.get('seq')) return [{ seq: Number(q.get('seq')), kind: 'trace', key: 'k', state: 'write', status: 'transition',
+        data: { from: 'write', to: 'review', event: 'done', guards: [{ guard: 'ctx.round > 1', result: true }], whole: 'x'.repeat(900) } }];
+      return [{ seq: 5, kind: 'trace', key: 'old', state: q.get('state') || 'read', status: 'enter', data: { frame: '' } }];
+    });
+    await boot('?machine=review&run=r1');
+    const older = element('button', { 'data-act': 'older-rows' });
+    check($('runHistory').innerHTML.includes('data-act="older-rows"'), 'no Older rows');
+    await $('runHistory').fire('click', { target: older });
+    await settle();
+    check(asked.at(-1) === 'before=301&limit=200', `older: ${asked}`);
+    check($('runHistory').innerHTML.includes('data-id="5"') && $('runHistory').innerHTML.includes('data-id="303"'), 'the older rows are not shown');
+    const state = element('select', { id: 'historyState' });
+    state.value = 'write';
+    await $('runHistory').fire('change', { target: state });
+    await settle();
+    check(asked.at(-1) === 'before=304&limit=200&state=write', `state: ${asked}`);
+    await $('runHistory').fire('rowselect', { detail: { id: '302' } });
+    await settle();
+    const shown = $('runHistory').innerHTML;
+    check(asked.at(-1) === 'seq=302' && shown.includes('Row 302') && shown.includes('x'.repeat(900)) && shown.includes('ctx.round &gt; 1'), shown);
+  },
+
+  async ui4_a_step_shows_what_it_changed_and_an_error_where_it_came_from() {  // DBG-6, DBG-1
+    const step = { seq: 7, kind: 'trace', key: 's7', state: 'write', status: 'step',
+      data: { frame: '', step: 4, changed: { round: 2, issues: { $size: 51200, $hash: 'ab12' }, gone: { $gone: true } } } };
+    const failed = { ...activityRow(8, 'error'), data: { kind: 'agent', path: 'write', meta: {},
+      error: { type: 'template_failed', message: "KeyError: 'nope'", where: 'write.do.args.x' } } };
+    runAnswer = { ...RUN, status: 'failed', active: false, debug: { ...RUN.debug, paused: null }, journal: [...RUN.journal, step, failed],
+      error: { type: 'action_failed', message: "KeyError: 'nope'", state: 'write', where: 'write.exit', file: 'review.py', line: 12, code: 'x = ctx.a["nope"]', branch: 1 } };
+    await boot('?machine=review&run=r1');
+    const history = $('runHistory').innerHTML;
+    check(history.includes('ctx.round = 2') && history.includes('ctx.issues (51200 chars)') && history.includes('ctx.gone removed'), history);
+    check(history.includes('(at write.do.args.x)'), `the activity's error: ${history}`);
+    const result = $('runResult').innerHTML;
+    check(result.includes('at write.exit, review.py:12, branch 1') && result.includes('x = ctx.a[&quot;nope&quot;]'), result);
+  },
+
+  async ui4_an_activity_lists_every_request_and_the_runs_it_started() {  // DBG-3, FEAT-1
+    const done = { ...activityRow(7, 'done'), data: { kind: 'agent', path: 'write', out: 'a', meta: { request_ids: ['r1_001', 'r1_002', 'r1_003'],
+      failures: [{ attempt: 1, type: 'parse', message: 'not json', request_id: 'r1_001' }] } } };
+    journalOf = { ...journalOf, r1: [...RUN.journal, done] };
+    runAnswer = { ...RUN, journal: [...RUN.journal, done], started_by: { run_id: 'p1', request_id: 'p1_004' },
+      children: [{ id: 'c1', machine_id: 'other', status: 'running', created_at: 't', caller_request: 'r1_002' }] };
+    await boot('?machine=review&run=r1');
+    const card = $('runResult').innerHTML;
+    check(card.includes('data-open-run="p1"') && card.includes('data-open-run="c1"') && card.includes('Runs started here (1)'), card);
+    const item = element('details', { 'data-result': '7' });
+    item.open = true;
+    const body = item.appendChild(element('div', { class: 'sg-result-body' }));
+    await $('runResult').fire('toggle', { target: item });
+    for (const id of ['r1_001', 'r1_002', 'r1_003']) check(body.innerHTML.includes(`data-copy="${id}"`), `${id} missing: ${body.innerHTML}`);
+    check(body.innerHTML.includes('Requests (3)') && body.innerHTML.includes('data-open-run="c1"'), body.innerHTML);
+    let opened = null;
+    serveOver((method, path) => (path.startsWith('/runs/c1?') ? (opened ||= path, { ...RUN, id: 'c1', machine_id: 'other' }) : undefined));
+    await $('runResult').fire('click', { target: element('button', { 'data-open-run': 'c1' }) });
+    await settle();
+    check(opened === '/runs/c1?steps=1', `the child is not opened: ${opened}`);
+  },
+
+  async ui4_an_activity_ended_without_outcome_is_not_in_flight_nor_read_again() {  // PROD-6
+    const dead = (seq) => activityRow(seq, 'started', { ended_without_outcome: true });
+    // 7 in the poll's rows, 8 only in the result's read, 9 read alive and found dead by a later poll
+    journalOf = { ...journalOf, r1: [...RUN.journal, dead(7), dead(8), activityRow(9, 'started')] };
+    runAnswer = { ...RUN, status: 'running', debug: { ...RUN.debug, paused: null }, journal: [...RUN.journal, dead(7), activityRow(9, 'started')] };
+    await boot('?machine=review&run=r1');
+    check($('runHistory').innerHTML.includes('agent cancelled (no outcome)'), $('runHistory').innerHTML);
+    journalOf = { ...journalOf, r1: [...RUN.journal, dead(7), dead(8), dead(9)] };
+    runAnswer = { ...runAnswer, status: 'succeeded', active: false, journal: [dead(9)] };
+    await pollNow();
+    for (let i = 0; i < 2; i += 1) {  // shown again: a terminal run re-reads what it holds as running
+      await $('debugBar').fire('click', { target: element('button', { 'data-control': 'pause' }) });
+      await settle();
+    }
+    const single = CALLS.filter(([, path]) => /\/runs\/r1\/journal\?kinds=activity&after=\d+&limit=1$/.test(path)).map(([, path]) => path);
+    check(!single.length, `a dead row is read again: ${single}`);
+  },
+
+  async ui4_a_resumed_run_and_a_burst_of_rows_are_read_whole_again() {  // UI-1
+    runAnswer = { ...RUN, status: 'interrupted', active: false, debug: { ...RUN.debug, paused: null } };
+    await boot('?machine=review&run=r1');
+    controlAnswer = { ...RUN, status: 'running', debug: { ...RUN.debug, paused: null } };  // resumed: rows may have moved
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'resume' }) });
+    await settle();
+    runAnswer = controlAnswer;
+    await pollNow();
+    check(!runReads().at(-1).includes('after='), `after a resume: ${runReads().at(-1)}`);
+    const burst = Array.from({ length: 200 }, (_, i) => ({ seq: 100 + i, kind: 'trace', key: `b${i}`, state: 'write', status: 'enter', data: {} }));
+    runAnswer = { ...runAnswer, journal: burst };  // more new rows than a page: not the newest
+    await pollNow();
+    check(runReads().at(-2).includes('after=6') && !runReads().at(-1).includes('after='), `after a burst: ${runReads().slice(-2)}`);
+  },
+
+  async ui4_runs_of_every_machine_by_status_and_tags_open_with_their_machine() {  // FEAT-7
+    let listed = null;
+    runsAnswer = (query) => {
+      listed = query;
+      return [{ ...RUNS[0], id: 'x1', machine_id: 'other', status: 'interrupted', tags: { book: '95' } }];
+    };
+    await boot('?machine=review');
+    $('runScope').value = 'every';
+    $('runTags').value = 'book:95';
+    await $('runTags').fire('change', {});
+    await settle();
+    await release();
+    check(listed.get('machine_id') === null && listed.get('tags') === 'book:95', `the query: ${listed}`);
+    check($('runList').innerHTML.includes('<td class="pk-mono">other</td>') && $('runList').innerHTML.includes('book:95'), $('runList').innerHTML);
+    let opened = null;
+    serveOver((method, path) => (path.startsWith('/runs/x1?') ? (opened ||= path, { ...RUN, id: 'x1', machine_id: 'other' }) : undefined));
+    await $('runList').fire('rowselect', { detail: { id: 'x1' } });
+    await settle();
+    await release();
+    check(opened === '/runs/x1?steps=1', `opened ${opened}`);
+  },
+
+  async ui4_a_run_that_failed_resumably_can_be_closed() {  // FEAT-8
+    runAnswer = { ...RUN, status: 'failed', active: false, debug: { ...RUN.debug, paused: null },
+      error: { type: 'budget_exceeded', message: 'stop', resumable: true }, resumable: true };
+    await boot('?machine=review&run=r1');
+    const bar = $('debugBar').innerHTML;
+    check(bar.includes('data-control="resume"') && /data-control="terminate"[^>]*>.*Close/.test(bar), bar);
+    controlAnswer = { ...runAnswer, status: 'cancelled', error: { type: 'cancelled', message: 'closed', closed: {} } };
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'terminate' }) });
+    await settle();
+    const sent = CALLS.filter(([, path]) => path.endsWith('/runs/r1/control')).map(([, , json]) => json.action);
+    check(JSON.stringify(sent) === '["terminate"]' && ASKED.some(([, m]) => m.startsWith('Close the run')), `${sent} ${JSON.stringify(ASKED)}`);
+    check(!$('debugBar').innerHTML.includes('data-control="resume"'), 'a closed run still offers Resume');
+  },
+
+  async ui4_a_slot_wait_and_the_cost_against_the_limit_are_shown() {  // FEAT-2, FEAT-6
+    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, yaml: { ...(MACHINE.graph.yaml || {}), limits: 'max_steps: 50\nmax_cost: 2\n' } } };
+    runAnswer = { ...RUN, status: 'waiting', debug: { ...RUN.debug, paused: null }, spend: { cost: 1.9, activities: 3 },
+      view: { ...RUN.view, slot_waits: [{ semaphore: 'producers', sem_key: 'KAN-7', frame: '', since: '2026-10-15 01:00:00' }] } };
+    await boot('?machine=review&run=r1');
+    check($('debugBar').innerHTML.includes('waiting for a slot of <span class="pk-mono">producers [KAN-7]</span>'), $('debugBar').innerHTML);
+    check($('dbgFrames').innerHTML.includes('waits for a slot of semaphore <span class="pk-mono">producers [KAN-7]</span>'), $('dbgFrames').innerHTML);
+    check($('runResult').innerHTML.includes('<span class="pk-text--warn"') && $('runResult').innerHTML.includes('of $2 limit'), $('runResult').innerHTML);
+  },
+
+  async ui4_max_visits_takes_a_number_or_an_expression() {  // R9
+    await boot('?machine=review');
+    await choose('write');
+    const field = /<input[^>]*name="max_visits"[^>]*>/.exec($('side-inspect').innerHTML)?.[0] || '';
+    check(field && field.includes('data-shape="duration"') && !field.includes('type="number"'), `the field: ${field}`);
+  },
+};
+
+// listed apart ('p5:*'): test_plugin_stategraph_r15_p5ui_panel.py runs them
+const P5_CASES = {
+  async p5_without_a_machine_the_runs_of_every_machine_are_listed_and_open_with_their_machine() {  // FEAT-7
+    const asked = [];
+    runsAnswer = (query) => {
+      asked.push(query);
+      return [{ ...RUNS[0], id: 'x1', machine_id: 'other', status: 'interrupted', tags: { book: '95' } }];
+    };
+    await boot('');
+    check(asked.length === 1 && asked[0].get('machine_id') === null && !asked[0].has('status'), `the query: ${asked}`);
+    const list = $('everyRunList').innerHTML;
+    check(list.includes('<th>Machine</th>') && list.includes('<td class="pk-mono">other</td>') && list.includes('book:95'), list);
+    $('everyRunStatus').value = 'interrupted';
+    await $('everyRunStatus').fire('change', {});
+    await settle();
+    await release();
+    check(asked.at(-1).get('status') === 'interrupted' && asked.at(-1).get('machine_id') === null, `the filtered query: ${asked.at(-1)}`);
+    let opened = null;
+    serveOver((method, path) => (path.startsWith('/runs/x1?') ? (opened ||= path, { ...RUN, id: 'x1', machine_id: 'other' }) : undefined));
+    await $('everyRunList').fire('rowselect', { detail: { id: 'x1' } });
+    await settle();
+    await release();
+    check(opened === '/runs/x1?steps=1', `opened ${opened}`);
+    check(CALLS.some(([method, path]) => method === 'GET' && path.endsWith('/machines/other')) && TABS.mainTabs === 'runs',
+      `the machine and its Runs tab: ${JSON.stringify(TABS)}`);
+  },
+
+  async p5_the_every_machine_list_filters_by_tags_pages_back_and_a_tick_neither_aborts_nor_wipes_it() {  // FEAT-7, P5-R1/R2
+    let down = false;
+    runsAnswer = (query) => (down ? new ApiError(503, 'restarting') : query.get('before') ? [{ ...RUNS[0], id: 'old1', machine_id: 'other' }]
+      : Array.from({ length: Number(query.get('limit')) }, (_, i) => ({ ...RUNS[0], id: `n${i}`, machine_id: 'other' })));
+    await boot('');
+    const asked = () => CALLS.filter(([, path]) => path.includes('/runs?'))
+      .map(([, path]) => new URLSearchParams(path.split('?')[1]));
+    $('everyRunTags').value = 'book:95';
+    await $('everyRunTags').fire('change', {});
+    await settle();
+    await release();
+    check(asked().at(-1).get('tags') === 'book:95' && asked().at(-1).get('machine_id') === null, `the tags query: ${asked().at(-1)}`);
+    check(!$('everyOlderRuns').hidden, 'a full page offers no older runs');
+    HOLD = (method, path) => path.includes('/runs?') && path.includes('before=');
+    $('everyOlderRuns').fire('click', {});  // held: not awaited
+    await settle();
+    const out = asked().length;
+    check(asked().at(-1).get('before') === 'n49' && asked().at(-1).get('tags') === 'book:95', `older: ${asked().at(-1)}`);
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: true } }));
+    await settle();
+    check(asked().length === out && !ABORTED.some((path) => path.includes('/runs?')), `a tick while the older page was out: ${ABORTED}`);
+    HOLD = () => false;
+    await release();
+    check($('everyRunList').innerHTML.includes('title="old1"') && $('everyOlderRuns').hidden, $('everyRunList').innerHTML);
+    const listed = $('everyRunList').innerHTML;
+    down = true;
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: true } }));
+    await settle();
+    await release();
+    check(asked().length === out + 1, `the failing tick was not asked: ${asked().length - out}`);
+    check($('everyRunList').innerHTML === listed, `a failed tick wiped the list: ${$('everyRunList').innerHTML}`);
+  },
+
+  async p5_the_result_shows_the_runs_own_cost_against_its_own_limit() {  // FEAT-6
+    // the run's own limit and cost: the open file says no limit, and its children's spend (5) is not the own one
+    runAnswer = { ...RUN, status: 'running', debug: { ...RUN.debug, paused: null }, max_cost: 2, cost: 1.9,
+      spend: { cost: 5, activities: 4 }, children: [{ id: 'c1', machine_id: 'other', status: 'succeeded', created_at: '2026-10-15 01:00:00' }] };
+    await boot('?machine=review&run=r1');
+    const card = $('runResult').innerHTML;
+    check(card.includes('<span class="pk-text--warn"') && card.includes('own $1.9000 of $2 limit'), card);
+    check(card.includes('$5.0000'), `the spend with the children's is gone: ${card}`);
+  },
+};
+
+// listed apart ('final:*'): test_plugin_stategraph_final_panel.py runs them -- the review before the commit
+const FINAL_CASES = {
+  async final_more_open_rows_than_one_read_lists_are_read_whole_and_a_rewound_row_never_again() {  // panel-1
+    // with RUN's queued event (6): 51 open rows
+    const open = Array.from({ length: 50 }, (_, i) => activityRow(10 + i, 'started'));
+    const rewound = activityRow(9, 'started', { key: 'rewound.1/s9' });
+    runAnswer = { ...RUN, status: 'running', debug: { ...RUN.debug, paused: null }, journal: [...RUN.journal, rewound, ...open] };
+    await boot('?machine=review&run=r1');
+    runAnswer = { ...runAnswer, journal: [...RUN.journal, rewound, activityRow(10, 'done'), ...open.slice(1)] };
+    await pollNow();
+    check(!runReads().at(-1).includes('after='), `51 open rows, a poll after the last: ${runReads().at(-1)}`);
+    runAnswer = { ...runAnswer, journal: [] };
+    await pollNow();  // 50 open now: asked again by seq, the ended one and the rewound one not
+    const poll = runReads().at(-1);
+    check(poll.includes('after=59') && seqsOf(poll).length === 50 && !seqsOf(poll).includes('10') && !seqsOf(poll).includes('9'), poll);
+  },
+
+  async final_a_tag_filter_or_every_machine_leaves_new_run_undecided() {  // panel-2
+    runsAnswer = (query) => (query.get('tags') || query.get('machine_id') === 'other' ? [] : [...RUNS]);
+    await boot('?machine=review');
+    check($('startBox').open === false, 'the start form is not folded with runs listed');
+    $('runTags').value = 'book:95';
+    await $('runTags').fire('change', {});
+    await settle();
+    await clickMachine('hooks');
+    await settle();
+    check($('startBox').open === false, 'no runs under a tag filter unfolded New run');
+    $('runTags').value = '';
+    $('runScope').value = 'every';
+    await $('runScope').fire('change', {});
+    await settle();
+    $('startBox').open = true;  // set, not toggled: still undecided for hooks
+    await clickMachine('other');
+    await settle();
+    check($('startBox').open === true, 'the runs of every machine folded New run for a machine without runs');
+  },
+
+  async final_a_held_arrow_key_sends_one_layout_at_a_time_and_the_newest_last() {  // panel-3
+    globalThis.HOLD = (method, path) => method === 'PUT' && path.endsWith('/layout');
+    await boot('?machine=review');
+    const puts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/review/layout')).map(([, , json]) => json.layout.positions.write);
+    for (let i = 0; i < 5; i += 1) {
+      await $('canvas').fire('keydown', { key: 'ArrowRight', target: canvasGeometry().node('write'), preventDefault() {} });
+    }
+    await settle();
+    check(puts().length === 1, `PUTs out at once: ${JSON.stringify(puts())}`);
+    HOLD = () => false;
+    await release();
+    await settle();
+    check(puts().length === 2 && puts()[1].x - puts()[0].x === 32, `sent: ${JSON.stringify(puts())}`);
+  },
+};
+
+// listed apart ('xcheck:*'): test_plugin_stategraph_final_xcheck.py runs them -- the final cross-check
+const XCHECK_CASES = {
+  async xcheck_a_run_that_failed_internally_offers_resume_and_close() {  // F1: the server's run.resumable
+    runAnswer = { ...RUN, status: 'failed', active: false, debug: { ...RUN.debug, paused: null },
+      error: { type: 'internal', message: 'RuntimeError: boom' }, resumable: true };
+    await boot('?machine=review&run=r1');
+    const bar = $('debugBar').innerHTML;
+    check(bar.includes('data-control="resume"') && /data-control="terminate"[^>]*>.*Close/.test(bar), bar);
+    controlAnswer = { ...runAnswer, status: 'cancelled', error: { type: 'cancelled', message: 'closed', closed: {} } };
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'terminate' }) });
+    await settle();
+    const asked = ASKED.find(([, m]) => m.startsWith('Close the run'))?.[1] || '';
+    check(asked && !asked.includes('finally'), `its finally activities never ran: ${JSON.stringify(ASKED)}`);
+  },
+
+  async xcheck_a_failure_the_server_does_not_call_resumable_offers_neither() {  // F1
+    runAnswer = { ...RUN, status: 'failed', active: false, debug: { ...RUN.debug, paused: null },
+      error: { type: 'tool_failed', message: 'down' }, resumable: false };
+    await boot('?machine=review&run=r1');
+    const bar = $('debugBar').innerHTML;
+    check(!bar.includes('data-control="resume"') && !/data-control="terminate"[^>]*>.*Close/.test(bar), bar);
+  },
+
+  async xcheck_a_machine_that_takes_a_while_says_it_is_opening() {  // a large tree reads for seconds
+    await boot('?machine=review');
+    HOLD = (method, path) => path.endsWith('/machines/other');
+    await clickMachine('other');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    check(!$('opening').hidden && $('openingText').textContent === 'Opening other…',
+      `while it reads: hidden=${$('opening').hidden} text=${$('openingText').textContent}`);
+    await release();
+    await settle();
+    check($('opening').hidden && headName() === 'other', `after: hidden=${$('opening').hidden} open=${headName()}`);
+  },
+};
+
+const ALL_CASES = { ...CASES, ...R15_CASES, ...UI4_CASES, ...P5_CASES, ...FINAL_CASES, ...XCHECK_CASES };
 if (CASE === '*') {
   print(`CASES ${Object.keys(CASES).join(' ')}`);
+} else if (CASE === 'r15:*') {
+  print(`CASES ${Object.keys(R15_CASES).join(' ')}`);
+} else if (CASE === 'ui4:*') {
+  print(`CASES ${Object.keys(UI4_CASES).join(' ')}`);
+} else if (CASE === 'p5:*') {
+  print(`CASES ${Object.keys(P5_CASES).join(' ')}`);
+} else if (CASE === 'final:*') {
+  print(`CASES ${Object.keys(FINAL_CASES).join(' ')}`);
+} else if (CASE === 'xcheck:*') {
+  print(`CASES ${Object.keys(XCHECK_CASES).join(' ')}`);
 } else {
   try {
-    check(CASES[CASE], `no case ${CASE}`);
-    await CASES[CASE]();
+    check(ALL_CASES[CASE], `no case ${CASE}`);
+    await ALL_CASES[CASE]();
     print(`PASS ${CASE}`);
   } catch (error) {
     print(`FAIL ${CASE}: ${error.message}`);

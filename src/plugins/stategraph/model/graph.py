@@ -81,7 +81,7 @@ def _walk(doc: Any, states: dict[Any, Any], parent: Optional[str], prefix: list[
             "wait": is_wait_state(state_type, bool(children), body.get("do") is not None, triggers),
             "entry": _text(body.get("entry")),
             "exit": _text(body.get("exit")),
-            "max_visits": body.get("max_visits") if isinstance(body.get("max_visits"), int) else None,
+            "max_visits": body.get("max_visits") if isinstance(body.get("max_visits"), (int, str)) else None,
             "timeout": to_plain(body.get("timeout")) if isinstance(body.get("timeout"), (int, float, str)) else None,
             "after": to_plain(body.get("after")) if isinstance(body.get("after"), (int, float, str)) else None,
             "status": _text(body.get("status")),
@@ -161,7 +161,10 @@ def _texts(values: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
             yaml.dump(value, buffer)
             texts[path] = buffer.getvalue()
         else:  # a scalar: as JSON, which reads back as the same YAML scalar
-            texts[path] = json.dumps(to_plain(value), ensure_ascii=False)
+            try:
+                texts[path] = json.dumps(to_plain(value), ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError):  # a date, .inf: no JSON says it -- edited in the YAML tab
+                locked.append(path)
     return texts, locked
 
 

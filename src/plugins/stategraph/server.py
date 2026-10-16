@@ -16,17 +16,17 @@ import math
 import re
 import shlex
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from agent_system import app_state
 from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from . import kinds as _kinds  # noqa: F401  -- registers the built-in activity kinds
-from .engine.journal import RunStore
+from .engine.journal import RunStore, resumable_failure
 from .engine.runner import RunManager, row_event_due as _event_due
 from .hooks import StateGraphHooks
-from .schedules import Scheduler, parse_schedules
+from .schedules import Scheduler, _drives, parse_schedules, resume_lease
 from .service import ServiceError, StateGraphService
 from .model.spec import NAME_PATTERN
 from .model.validate import agent_params_problems
@@ -37,11 +37,14 @@ from .wait_questions import WaitBroker
 logger = logging.getLogger(__name__)
 
 SWEEP_SECONDS = 60
+#: How often the retention (retention_days) looks for ended runs to compact.
+COMPACT_SECONDS = 3600
 MAX_WAIT = 3600.0  # seconds a tool call may wait for its run
 # a tool answer bounds itself (plugin rules): texts in journal rows, frames and errors, and in a run's output
 ROW_CHARS = 2000
 OUTPUT_CHARS = 20000
-ANSWER_CHARS = 200000  # a whole get_run answer: many short texts add up too
+ANSWER_CHARS = 200000  # a whole tool answer: many short texts add up too
+FILE_CHARS = 30000  # get_machine: a file of the tree larger than this is left out unless asked for by name
 READ_ONLY_TOOLS = frozenset({"catalog", "list_machines", "get_machine", "get_run", "list_runs"})
 #: The parameters control_run takes (schema.yaml); the framework's own start with "_".
 CONTROL_PARAMS = frozenset({"run_id", "action", "steps", "mocks", "state", "machine", "at_step", "definition",
@@ -60,9 +63,47 @@ NEXT = {
 #: A run that ended on a resumable failure (docs/stategraph_design.md §5.3): a resume runs that activity again.
 NEXT_RESUMABLE = ("it stopped on a resumable failure (its error says why, e.g. a budget used up): once that has changed, "
                   "stategraph_control_run(run_id, action='resume') runs that activity again and replays the rest")
+NEXT_INTERNAL = ("it stopped on an engine error (error.type internal): once that is fixed, "
+                 "stategraph_control_run(run_id, action='resume') replays its journal and goes on where it stopped")
+#: A wait for a semaphore slot (the acquire kind): it goes on by itself once another run gives one back.
+NEXT_SLOT = ("it waits for a semaphore slot (view.slot_waits names it) and goes on by itself once a holder gives one "
+             "back: stategraph_get_run(run_id, wait='finish') waits for its end, a pause or a wait")
 #: A wait that takes no event -- a timer state (after): it goes on by itself.
 NEXT_TIMER = ("it waits out a timer (after) and goes on by itself: stategraph_get_run(run_id, wait='finish') waits "
               "for its end, a pause or a wait")
+
+
+class Coalesced:
+    """A costly read run once for every request that comes while it runs: a request that comes while one runs waits
+    for the next run, which starts when that one has ended and answers every request that came meanwhile. So at
+    most one runs and one waits, however many panels ask -- and no answer was read before its request came."""
+
+    def __init__(self, compute: Callable[[], Awaitable[Any]]):
+        self.compute = compute
+        self._running: Optional[asyncio.Task] = None
+        self._next: Optional[asyncio.Task] = None
+
+    async def __call__(self) -> Any:
+        if self._next is not None:  # queued, not started: it reads after this request came
+            task = self._next
+        elif self._running is not None:  # started before this request: it may have read already
+            task = self._next = asyncio.ensure_future(self._after(self._running))
+        else:
+            task = self._running = asyncio.ensure_future(self._run())
+        # a request that goes away (the panel aborted it) does not cancel a run the others wait for
+        return await asyncio.shield(task)
+
+    async def _after(self, before: asyncio.Task) -> Any:
+        await asyncio.wait([before])
+        self._running, self._next = self._next, None
+        return await self._run()
+
+    async def _run(self) -> Any:
+        try:
+            return await self.compute()
+        finally:
+            if self._running is asyncio.current_task():
+                self._running = None
 
 
 class StateGraphServer(SchemaBasedToolServer):
@@ -78,12 +119,23 @@ class StateGraphServer(SchemaBasedToolServer):
         self.inject_params = {str(k): dict(v) for k, v in raw_inject.items() if isinstance(v, dict)}
         self.default_max_wait = float(getattr(server_config, "default_max_wait", None) or 600)
         self.schedules, self.schedule_problems = parse_schedules(getattr(server_config, "schedules", None))
+        # opt-in: the machines whose interrupted runs the scheduler's process resumes by itself (FEAT-3)
+        raw_auto = getattr(server_config, "auto_resume", None) or []
+        self.auto_resume = {str(m) for m in raw_auto} if isinstance(raw_auto, list) else set()
+        if not isinstance(raw_auto, list):
+            self.schedule_problems.append(f"auto_resume must be a list of machine ids, not {type(raw_auto).__name__}")
+        # opt-in: drop the journal of runs that ended more than so many days ago (FEAT-11); none: keep everything
+        retention = getattr(server_config, "retention_days", None)
+        self.retention_days = float(retention) if isinstance(retention, (int, float)) and retention > 0 else None
+        if retention is not None and self.retention_days is None:
+            self.schedule_problems.append(f"retention_days must be a number of days above 0, not {retention!r}")
         self.machines = MachineStore(self.machine_dirs, self.writable_dirs)
         self.run_store = RunStore(self.runs_db)
         self.run_manager = RunManager(self.run_store, on_cancel=self._cancel_requests,
-                                      on_finish=self._release_token)
+                                      on_finish=self._run_finished)
         base = str(getattr(server_config, "public_url", None) or "").rstrip("/")  # e.g. https://hive.example.com
         self.run_manager.callback_base = f"{base}/plugins/{name}/callback"
+        self._set_semaphores(server_config)  # the acquire kind's semaphores (FEAT-2)
         self.service = StateGraphService(self)
         self.hooks_plugin = StateGraphHooks(name)  # the cost of the LLM calls inside call activities
         # a run's wait put to the person who watches the request that waits for it (wait_questions.py)
@@ -95,6 +147,10 @@ class StateGraphServer(SchemaBasedToolServer):
         self._sweeper: Optional[asyncio.Task] = None
         self._scheduler: Optional[asyncio.Task] = None
         self._web: Any = None
+        self._ending: set[asyncio.Task] = set()  # end_children of ended runs (FEAT-1), held until done
+        self._compacted_at = 0.0
+        # checked_machines: one validation of every machine at a time, for the tool and the panel's route (API-2)
+        self._checks = Coalesced(lambda: asyncio.to_thread(self.service.machine_checks))
 
     # ------------------------------------------------------------ plumbing
     def resolve_runner(self, name: Optional[str] = None) -> Any:
@@ -186,6 +242,25 @@ class StateGraphServer(SchemaBasedToolServer):
 
         get_cancellation_manager().unregister_request(run_id)
 
+    def _run_finished(self, run_id: str) -> None:
+        """A run's task here ended: its cancel token goes; the runs it started end too (FEAT-1) -- all that have not
+        ended when it was terminated, the interrupted ones when it succeeded or failed for good (nobody resumes those
+        any more). A run that failed resumably (resumable_failure), or stopped interrupted, keeps them: its resume may
+        go on in them."""
+        self._release_token(run_id)
+        try:
+            row = self.run_store.get_run(run_id) or {}
+            status = row.get("status")
+            ended = status in ("succeeded", "cancelled") or (
+                status == "failed" and not resumable_failure(row.get("error")))
+            if ended and self.run_store.children(run_id, limit=1):
+                task = asyncio.get_running_loop().create_task(
+                    self.service.end_children(run_id, interrupted_only=status != "cancelled"))
+                self._ending.add(task)
+                task.add_done_callback(self._ending.discard)
+        except Exception:
+            logger.warning("stategraph: the children of run %s not looked at", run_id, exc_info=True)
+
     def _note_agent(self, params: dict[str, Any]) -> None:
         agent = params.get("_agent")
         if agent is not None and getattr(agent, "registry", None) is not None:
@@ -216,8 +291,15 @@ class StateGraphServer(SchemaBasedToolServer):
 
     def sees_run(self, user_id: Optional[str], owner: Optional[str]) -> bool:
         """Whether ``user_id`` may see and control a run of ``owner`` (§8.3): an admin every run, anyone else their
-        own and runs of nobody; without auth the app has one user."""
-        return not self._auth_enabled() or owner in (None, user_id) or self._is_admin(user_id)
+        own; a run of nobody (the writer's, a schedule's without a user) an admin -- or a caller without a user, the
+        process's own code (run_to_end, schedules). Without auth the app has one user (API-3)."""
+        return not self._auth_enabled() or owner == user_id or self._is_admin(user_id)
+
+    def _admin_reader(self, params: dict[str, Any]) -> bool:
+        """Whether a read-only tool's caller may see server paths and tracebacks: whoever may save and run machines
+        (an admin, an allowed user; without auth the one user) -- anyone else reads machines and their own runs
+        without them (API-3)."""
+        return self._authorize(params, "save_machine") is None
 
     def _holds_tokens(self, user_id: Optional[str], owner: Optional[str]) -> bool:
         """Whether a reader may see the run's callback URLs whole: its own user, or an admin (without auth, the one
@@ -225,9 +307,14 @@ class StateGraphServer(SchemaBasedToolServer):
         return not self._auth_enabled() or (owner is not None and owner == user_id) or self._is_admin(user_id)
 
     def _callback_tokens(self, run_id: str) -> set[str]:
-        """The tokens of every callback URL the run made: in its callback activities' answers."""
+        """The tokens of every callback URL the run made: in its callback activities' answers, and the ones its
+        fork made anew (the ``callbacks`` lifecycle row, API-4)."""
         tokens: set[str] = set()
-        for url in self.run_store.callback_urls(run_id):
+        urls = list(self.run_store.callback_urls(run_id))
+        for row in self.run_store.rows(run_id, kinds=("lifecycle",)):
+            urls += [str(entry.get("url")) for entry in ((row.get("data") or {}).get("callbacks") or [])
+                     if isinstance(entry, dict)]
+        for url in urls:
             tokens.update(CALLBACK_TOKEN.findall(url))
         return tokens
 
@@ -337,34 +424,56 @@ class StateGraphServer(SchemaBasedToolServer):
             user = params.get("_user_id")
             mine = self._auth_enabled() and not self._is_admin(user)
             rows = self.service.list_runs(params.get("machine_id") or None, int(_number(params, "limit", 20, 1, 200)),
-                                          status=status, user_id=user, all_users=not mine)
-            return {"runs": [{key: row.get(key) for key in ("id", "machine_id", "status", "final_state", "created_at",
-                                                              "finished_at", "run_key", "parent_run")}
-                             | ({"error": _capped((row.get("error") or {}).get("message"), 300)} if row.get("error")
-                                else {}) for row in rows]}
+                                          status=status, user_id=user, all_users=not mine,
+                                          tags=_object(params, "tags"))
+            runs: list[dict[str, Any]] = []
+            room = ANSWER_CHARS - 500  # tags are up to some 5,000 characters a run: the newest runs while they fit
+            for row in rows:
+                run = ({key: row.get(key) for key in ("id", "machine_id", "status", "final_state", "created_at",
+                                                      "finished_at", "run_key", "parent_run")}
+                       | ({"tags": row["tags"]} if row.get("tags") else {})
+                       | ({"error": _capped((row.get("error") or {}).get("message"), 300)} if row.get("error") else {}))
+                room -= _size(run) + 2
+                if room < 0:
+                    break
+                runs.append(run)
+            if len(runs) < len(rows):
+                return {"runs": runs, "runs_cut": f"{len(rows) - len(runs)} older run(s) left out to keep the answer "
+                                                  "small: narrow with machine_id, status or tags, or a smaller limit"}
+            return {"runs": runs}
         return await self._run_tool(params, "list_runs", body, lambda r: f"{len(r['runs'])} run(s)")
+
+    async def checked_machines(self) -> dict[str, dict[str, Any]]:
+        """Each machine's problem counts (service.machine_checks) in a worker thread, one computation for every
+        caller that asks meanwhile, read after its request came (Coalesced) -- the panel's route and the tool share
+        it (API-2)."""
+        return await self._checks()
 
     async def list_machines(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
             # every machine loaded and validated: seconds for a few dozen, which must not hold up the event loop
-            return {"machines": await asyncio.to_thread(self.service.list_machines, checked=True)}
+            machines = await asyncio.to_thread(self.service.list_machines)
+            checks = await self.checked_machines()
+            machines = [{**machine, **checks.get(machine["id"], {})} for machine in machines]
+            return {"machines": machines if self._admin_reader(params) else _for_reader(machines)}
         return await self._run_tool(params, "list_machines", body,
                                     lambda r: f"{len(r['machines'])} machine(s), "
                                               f"{sum(1 for m in r['machines'] if not m.get('valid'))} with errors")
 
     async def get_machine(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            result = self.service.get_machine(_need(params, "machine_id"))
+            result = await asyncio.to_thread(self.service.get_machine, _need(params, "machine_id"))
             result.pop("graph", None)
             result.pop("layout", None)
-            return result
+            result = _one_file(result, params.get("file")) if params.get("file") else _small_files(result)
+            return result if self._admin_reader(params) else _for_reader(result)
         return await self._run_tool(params, "get_machine", body,
                                     lambda r: f"{r['id']}: {len(r['files'])} file(s), {_counts(r['problems'])}")
 
     async def validate_machine(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            result = self.service.validate(files=_object(params, "files"), yaml=params.get("yaml"),
-                                           machine_id=params.get("machine_id"))
+            result = await asyncio.to_thread(self.service.validate, files=_object(params, "files"),
+                                             yaml=params.get("yaml"), machine_id=params.get("machine_id"))
             result.pop("graph", None)
             result["valid"] = not any(p["level"] == "error" for p in result["problems"])
             return result
@@ -376,7 +485,8 @@ class StateGraphServer(SchemaBasedToolServer):
             files = _object(params, "files")
             if not files:
                 raise ServiceError(422, "files is required: {relative path: text}, root machine <id>.yaml")
-            result = self.service.save_machine(params.get("machine_id"), files, _object(params, "expected_versions"))
+            result = await asyncio.to_thread(self.service.save_machine, params.get("machine_id"), files,
+                                             _object(params, "expected_versions"))
             result.pop("graph", None)
             return result
         return await self._run_tool(params, "save_machine", body,
@@ -393,19 +503,22 @@ class StateGraphServer(SchemaBasedToolServer):
                 machine_id = _need(params, "machine_id")
             wait = _choice(params, "wait", ("finish", "background"))
             max_wait = _number(params, "max_wait", self.default_max_wait, 0, MAX_WAIT)
+            full_output = _flag(params, "full_output")
             started = await self.service.start_run(
                 machine_id, params=run_params, mocks=_object(params, "mocks"),
                 mock_only=_flag(params, "mock_only"), pause_at_start=_flag(params, "pause_at_start"),
                 breakpoints=params.get("breakpoints") or (),
                 watchpoints=params.get("watchpoints") or (), user_id=params.get("_user_id"),
-                run_key=params.get("run_key"), caller_session=params.get("_session_id"))
+                run_key=params.get("run_key"), caller_session=params.get("_session_id"), tags=_object(params, "tags"))
             run_id = started["run_id"]
             if wait == "background" or started.get("attached") is False:
                 # background -- or a run another process owns: nothing here to wait on, report its row
                 row = self.run_store.get_run(run_id) or {}
-                return {**started, **_summary(row)} if row else {**started, "state": None, "run_status": "running"}
+                return _bounded({**started, **_summary(row)}) if row else {**started, "state": None,
+                                                                           "run_status": "running"}
             row = await self._wait(run_id, max_wait, params.get("_cancellation_token"))
-            return {**started, **_summary(row, full_output=_flag(params, "full_output"))}
+            return _bounded({**started, **_summary(row, full_output=full_output)},
+                            keep=("output",) if full_output else ())
         return await self._run_tool(params, "run_machine", body,
                                     lambda r: f"run {r['run_id']}: {r.get('run_status')} in {r.get('state') or '-'}")
 
@@ -434,26 +547,36 @@ class StateGraphServer(SchemaBasedToolServer):
             kinds = params.get("kinds")
             wait = _choice(params, "wait", ("now", "finish"))
             max_wait = _number(params, "max_wait", self.default_max_wait, 0, MAX_WAIT)
+            full_output = _flag(params, "full_output")
 
             def read() -> dict[str, Any]:
                 # 0 is refused like control_run's, not read as "not given"
                 steps = params["steps"] if params.get("steps") is not None else 30
+                # the engine's bookkeeping rows (step hashes, counters) only when kinds asks for trace rows (DBG-7)
                 return self.service.get_run(_need(params, "run_id"), steps=steps,
                                             user_id=params.get("_user_id"), after=params.get("after"),
-                                            kinds=[kinds] if isinstance(kinds, str) else kinds, state=params.get("state"))
-            row = read()  # the user's right to see it, and the filters, before any wait
+                                            kinds=[kinds] if isinstance(kinds, str) else kinds, state=params.get("state"),
+                                            bookkeeping=kinds is not None)
+            # off the loop, as the panel reads it: a run that is not live parses its definition (RT-2)
+            row = await asyncio.to_thread(read)  # the user's right to see it, and the filters, before any wait
             if wait == "finish" and (row["status"] == "running" or _timed(row) or _event_due(row)):  # polled elsewhere
                 await self._wait(row["id"], max_wait, params.get("_cancellation_token"), terminate=False)
-                row = read()
+                row = await asyncio.to_thread(read)
             if not self._holds_tokens(params.get("_user_id"), row.get("user_id")):
                 # on the whole values, before any text is cut: a token cut in two would leave its first part
                 row = _hidden(row, self._callback_tokens(row["id"]))
+            if not self._admin_reader(params):  # before the budget measures it: what the reader gets
+                row = _run_for_reader(row)
             view = row.get("view") or {}
-            return _bounded({**_summary(row, full_output=_flag(params, "full_output")), "run_id": row["id"],
-                             "frames": _capped(view.get("frames", []), ROW_CHARS),
-                             **({"inbox": view["inbox"]} if view.get("inbox") else {}),
-                             **({"spend": row["spend"]} if row.get("spend") else {}),  # what its agents cost
-                             "journal": _capped(row.get("journal", []), ROW_CHARS), "debug": row.get("debug")})
+            answer = _bounded({**_summary(row, full_output=full_output), "run_id": row["id"], **_identity(row),
+                               "frames": _capped(view.get("frames", []), ROW_CHARS),
+                               **({"inbox": _capped(view["inbox"], ROW_CHARS)} if view.get("inbox") else {}),
+                               **({"spend": row["spend"]} if row.get("spend") else {}),  # what its agents cost
+                               "journal": _once(_capped(row.get("journal", []), ROW_CHARS),
+                                                _capped(row.get("error"), ROW_CHARS)),
+                               "debug": _debug(row.get("debug"))},
+                              keep=("output",) if full_output else (), forward=params.get("after") is not None)
+            return answer
         return await self._run_tool(params, "get_run", body,
                                     lambda r: f"run {r['run_id']}: {r['run_status']} in {r.get('state') or '-'}")
 
@@ -473,9 +596,10 @@ class StateGraphServer(SchemaBasedToolServer):
                 kwargs["steps"] = params["steps"]
             result = await self.service.control_run(run_id, action, user_id=params.get("_user_id"), **kwargs)
             if "id" in result:  # a run row
-                return {**_summary(result), "run_id": result["id"], "action": action,
-                        **({"journal": _capped(result.get("journal", []), ROW_CHARS)} if "steps" in kwargs else {})}
-            return {"action": action, **result}
+                return _bounded({**_summary(result), "run_id": result["id"], "action": action,
+                                 **({"journal": _capped(result.get("journal", []), ROW_CHARS)} if "steps" in kwargs
+                                    else {})})
+            return _bounded({"action": action, **_capped(result, OUTPUT_CHARS)})
         return await self._run_tool(params, "control_run", body,
                                     lambda r: f"{r['action']}: " + (f"run {r['run_id']} {r.get('run_status', '')}"
                                                                     if "run_id" in r else f"value {str(r.get('value'))[:80]}"))
@@ -523,15 +647,19 @@ class StateGraphServer(SchemaBasedToolServer):
         """Mark runs whose owner's lease expired as interrupted -- in every process, never a live one."""
         self.run_manager._stopping = False  # started again after stop_plugin: runs start again
         try:
-            swept = self.run_manager.sweep_expired()
+            swept = self.service.sweep()  # also the runs of a process of this host that is gone (RES-8)
             if swept:
-                logger.info("stategraph: %d run(s) interrupted by an expired lease: %s", len(swept), swept)
+                logger.info("stategraph: %d run(s) interrupted by an expired lease or a gone process: %s",
+                            len(swept), swept)
         except Exception:
             logger.warning("stategraph: lease sweep failed", exc_info=True)
         self._sweeper = asyncio.ensure_future(self._sweep_loop())
-        for problem in self.schedule_problems:
+        from .service import usable_inject
+
+        usable_inject(self.inject_params, f"instance {self.name}")  # an empty value said at the start (API-11)
+        for problem in [*self.schedule_problems, *filter(None, [self.semaphore_problem])]:
             logger.error("stategraph: %s -- left out", problem)
-        if self.schedules:
+        if self.schedules or self.auto_resume or _drives():  # the API resumes machines with resume: auto too
             self._scheduler = asyncio.ensure_future(Scheduler(self, self.schedules).loop())
 
     async def _sweep_loop(self) -> None:
@@ -539,9 +667,36 @@ class StateGraphServer(SchemaBasedToolServer):
         while True:
             await asyncio.sleep(SWEEP_SECONDS)
             try:
-                self.run_manager.sweep_expired()
+                self.service.sweep()
             except Exception:
                 logger.debug("stategraph: lease sweep failed", exc_info=True)
+            await self.compact()
+
+    async def compact(self, now: Optional[float] = None) -> list[str]:
+        """Retention (``retention_days``, FEAT-11): at most every COMPACT_SECONDS, the journal of the runs that
+        ended before then dropped, a batch at a time off the event loop. Off by default. The run ids compacted."""
+        import time
+
+        from .schedules import _stamp
+
+        now = time.time() if now is None else now
+        if self.retention_days is None or now - self._compacted_at < COMPACT_SECONDS:
+            return []
+        self._compacted_at = now
+        before = _stamp(now - self.retention_days * 86400)
+        done: list[str] = []
+        try:
+            while True:
+                batch = await asyncio.to_thread(self.run_store.compact_ended, before=before)
+                done += batch
+                if len(batch) < 50:
+                    break
+        except Exception:
+            logger.warning("stategraph: retention: compacting ended runs failed", exc_info=True)
+        if done:
+            logger.info("stategraph: retention: the journal of %d run(s) that ended before %s dropped", len(done),
+                        before)
+        return done
 
     def facade_problems(self) -> dict[str, list[str]]:
         """What keeps each machine agent over this instance (``type: stategraph_machine``) from running: its machine
@@ -619,14 +774,47 @@ class StateGraphServer(SchemaBasedToolServer):
         except Exception:
             logger.warning("stategraph: checking the machine agents failed", exc_info=True)
 
+    def _set_semaphores(self, server_config: Any) -> dict[str, Any]:
+        """``semaphores`` ({name: capacity}) and ``semaphore_hold_seconds`` into the run manager, whose acquires
+        read them at every try; the fields that changed. A bad entry is named in semaphore_problem -- this
+        config's, so a reload that fixes it clears it."""
+        from .engine.backend import semaphores_of
+        from .engine.runner import SEMAPHORE_HOLD_SECONDS
+
+        raw = getattr(server_config, "semaphores", None)
+        known = semaphores_of(server_config)
+        self.semaphore_problem = None
+        if raw is not None and (not isinstance(raw, dict) or len(known) != len(raw)):
+            self.semaphore_problem = f"semaphores must map names to whole numbers of at least 1, not {raw!r}"
+        hold = getattr(server_config, "semaphore_hold_seconds", None)
+        hold = (float(hold) if isinstance(hold, (int, float)) and not isinstance(hold, bool) and hold >= 0
+                else SEMAPHORE_HOLD_SECONDS)
+        changed = {}
+        if known != self.run_manager.semaphores:
+            changed["semaphores"] = {"old": self.run_manager.semaphores, "new": known}
+            self.run_manager.semaphores = known
+        if hold != self.run_manager.semaphore_hold:
+            changed["semaphore_hold_seconds"] = {"old": self.run_manager.semaphore_hold, "new": hold}
+            self.run_manager.semaphore_hold = hold
+        return changed
+
+    def reload_config(self, server_config: Any) -> dict:
+        """A config reload (POST /admin/reload-config): the semaphores take effect at the next try of every acquire;
+        everything else needs a restart."""
+        changed = self._set_semaphores(server_config)
+        if self.semaphore_problem:
+            logger.error("stategraph: %s -- left out", self.semaphore_problem)
+        return changed
+
     async def stop_plugin(self) -> None:
-        for task in (self._sweeper, self._scheduler):
+        for task in (self._sweeper, self._scheduler, *self._ending):
             if task is not None:
                 task.cancel()
         await self.run_manager.shutdown()
         if self._scheduler is not None:  # the next process (a restart, a reload) schedules at once
             try:
-                self.run_store.release_scheduler(self.name, self.run_manager.owner)
+                for lease in (self.name, resume_lease(self.name)):
+                    self.run_store.release_scheduler(lease, self.run_manager.owner)
             except Exception:  # a locked database: the lease runs out by itself
                 logger.warning("stategraph: giving up the scheduler lease failed", exc_info=True)
         self.run_store.close()
@@ -730,26 +918,189 @@ def _capped(value: Any, limit: int) -> Any:
     return value
 
 
-def _bounded(answer: dict[str, Any]) -> dict[str, Any]:
-    """A get_run answer of at most ANSWER_CHARS: the oldest journal rows go first, then each frame's ctx is
-    replaced by its keys and their sizes -- each step said in the answer, with how to read what was left out."""
-    size = lambda value: len(json.dumps(value, default=str))  # noqa: E731
-    journal = list(answer.get("journal") or [])
-    dropped = 0
-    while journal and size({**answer, "journal": journal}) > ANSWER_CHARS:
-        journal.pop(0)
-        dropped += 1
-    answer = {**answer, "journal": journal}
-    if dropped:
-        answer["journal_cut"] = (f"{dropped} older row(s) left out to keep the answer small: page with after=<seq>, "
-                                 "or narrow with kinds or state")
-    if size(answer) > ANSWER_CHARS:
-        answer["frames"] = [{**frame, "ctx": {"$too_large": {key: size(value) for key, value in
-                                                               (frame.get("ctx") or {}).items()}}}
-                            for frame in answer.get("frames") or []]
-        answer["frames_cut"] = ("ctx replaced by its keys and their sizes: read single values with "
-                                "control_run(action=evaluate) while the run is paused")
+def _size(value: Any) -> int:
+    return len(json.dumps(value, default=str))
+
+
+def _too_large(value: Any) -> dict[str, int]:
+    return {"$too_large": _size(value)}
+
+
+def _bounded(answer: dict[str, Any], *, keep: tuple[str, ...] = (), forward: bool = False) -> dict[str, Any]:
+    """A tool answer of at most ANSWER_CHARS, budgeted once (API-1/API-8/DBG-2). While the answer without its
+    journal is over its share (half the budget when there are journal rows, else all of it), the frames' largest ctx
+    values become {'$too_large': size} first, then the largest top-level values but ``keep`` (output with
+    full_output) -- each said in ``cut``. The journal fills what is left: the newest rows first (``forward``: the
+    oldest, a page after ``after``), its cut said in ``journal_cut`` with how to read on."""
+    answer = dict(answer)
+    journal = answer.pop("journal", None)
+    share = ANSWER_CHARS // 2 if journal else ANSWER_CHARS
+    total = _size(answer)
+    cut: list[str] = []
+    if total > share and answer.get("frames"):
+        frames = [{**frame, "ctx": dict(frame["ctx"])} if isinstance(frame.get("ctx"), dict) else frame
+                  for frame in answer["frames"]]
+        values = sorted(((_size(value), index, key) for index, frame in enumerate(frames)
+                         if isinstance(frame.get("ctx"), dict) for key, value in frame["ctx"].items()), reverse=True)
+        replaced = 0
+        for size, index, key in values:
+            if total <= share:
+                break
+            frames[index]["ctx"][key] = {"$too_large": size}
+            total -= size - _size({"$too_large": size})
+            replaced += 1
+        if replaced:
+            answer["frames"] = frames
+            cut.append(f"{replaced} ctx value(s) of the frames replaced by {{'$too_large': size}}: read one with "
+                       "control_run(action=evaluate, expr='ctx.<key>') while the run is paused; kinds=['activity'] "
+                       "shows what each activity answered")
+            total = _size(answer)
+    if total > share:  # many short texts (an output, a debug watch, a long inbox): the largest values go whole
+        for size, key in sorted(((_size(value), key) for key, value in answer.items() if key not in keep),
+                                reverse=True):
+            if total <= share or size < 1000:
+                break
+            answer[key] = {"$too_large": size}
+            total -= size - _size(answer[key])
+            cut.append(f"{key} replaced by its size" + (": read it whole with full_output=true" if key == "output"
+                                                       else ""))
+    if cut:
+        answer["cut"] = cut
+    if journal is not None:
+        room = ANSWER_CHARS - _size(answer) - len(', "journal": [], "journal_cut": ""') - 200
+        kept: list[dict[str, Any]] = []
+        for row in (journal if forward else reversed(journal)):
+            size = _size(row) + 2
+            if size > ANSWER_CHARS // 10:  # one row of very many short texts: its data by its size
+                row = {**row, "data": _too_large(row.get("data"))}
+                size = _size(row) + 2
+            if size > room:
+                break
+            kept.append(row)
+            room -= size
+        if not forward:
+            kept.reverse()
+        answer["journal"] = kept
+        dropped = len(journal) - len(kept)
+        if dropped and forward:
+            answer["journal_cut"] = (f"{dropped} later row(s) left out to keep the answer small: go on with "
+                                     f"after={kept[-1]['seq'] if kept else journal[0]['seq'] - 1}")
+        elif dropped:
+            first = journal[0].get("seq")
+            answer["journal_cut"] = (f"{dropped} older row(s) left out to keep the answer small: read them with "
+                                     f"after={first - 1 if isinstance(first, int) else '<seq>'} and a smaller steps, "
+                                     "or narrow with kinds or state")
     return answer
+
+
+def _small(value: Any) -> Any:
+    """A value the debugger shows (a paused activity's out, a watch's value): its texts cut at ROW_CHARS, and the
+    whole by its size when many short texts still make it large (DBG-2)."""
+    capped = _capped(value, ROW_CHARS)
+    return capped if _size(capped) <= 10 * ROW_CHARS else _too_large(value)
+
+
+def _held(paused: Any) -> Any:
+    """Where the debugger holds a run, its out and error as _small shows them -- read whole with
+    control_run(action=evaluate, expr='out')."""
+    if not isinstance(paused, dict):
+        return paused
+    return {key: _small(value) if key in ("out", "error") else value for key, value in paused.items()}
+
+
+def _debug(debug: Any) -> dict[str, Any]:
+    """get_run's debug: no ``paused`` (the answer has it at the top), each watch's value as _small shows it."""
+    debug = {key: value for key, value in (debug or {}).items() if key != "paused"}
+    if isinstance(debug.get("watch"), dict):
+        debug["watch"] = {point: {key: _small(value) if key == "value" else value for key, value in shown.items()}
+                          if isinstance(shown, dict) else shown for point, shown in debug["watch"].items()}
+    return _capped(debug, ROW_CHARS)
+
+
+def _identity(row: dict[str, Any]) -> dict[str, Any]:
+    """Which run it is and where it stands in its life (DBG-7): machine, times, who holds it, who started it and
+    how, what it was forked from, the mocks it runs with -- the fields it has."""
+    found = {key: row.get(key) for key in ("machine_id", "created_at", "updated_at", "finished_at", "owner",
+                                           "lease_until", "run_key", "parent_run", "fork_step", "user_id")
+             if row.get(key) not in (None, "")}
+    options = row.get("mocks") or {}
+    if options.get("mocks") or options.get("mock_only"):
+        found["mocks"] = _capped(options, ROW_CHARS)
+    found.update({key: row[key] for key in ("children", "started_by", "tags") if row.get(key)})
+    return found
+
+
+def _once(rows: list[dict[str, Any]], error: Any) -> list[dict[str, Any]]:
+    """The run's error said once (DBG-7): a trace row (``failed``, ``end``) that repeats it points to ``error``."""
+    if not error:
+        return rows
+    found = []
+    for row in rows:
+        data = row.get("data")
+        if row.get("kind") == "trace" and isinstance(data, dict) and data.get("error") == error:
+            row = {**row, "data": {**data, "error": "(the run's error, above)"}}
+        found.append(row)
+    return found
+
+
+def _for_reader(value: Any) -> Any:
+    """``value`` for a reader who may not save or run machines (API-3): no traceback, and a ``file`` or a machine
+    ``root`` (a folder) as its name only -- no absolute server path."""
+    if isinstance(value, dict):
+        return {key: (Path(item).name if key in ("file", "root") and isinstance(item, str) else _for_reader(item))
+                for key, item in value.items() if key != "traceback"}
+    if isinstance(value, list):
+        return [_for_reader(item) for item in value]
+    return value
+
+
+#: keys every engine error has (ActivityError.as_dict), and a guard's record (Frame.guards)
+_ENGINE_ERROR = frozenset(("type", "message", "data", "cause"))
+_GUARD_RECORD = frozenset(("at", "guard"))
+
+
+def _run_for_reader(value: Any) -> Any:
+    """A run's ``value`` for a reader who may not save or run machines (API-3): in the engine's errors and guard
+    records -- wherever they sit, a machine may keep one in ctx -- no traceback and a ``file`` as its name only. A
+    machine's own data (output, ctx) keeps its keys: a ``file`` there is the machine's, not a server path."""
+    if isinstance(value, list):
+        return [_run_for_reader(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    found = {key: _run_for_reader(item) for key, item in value.items()}
+    if _ENGINE_ERROR <= found.keys() or _GUARD_RECORD <= found.keys():
+        if isinstance(found.get("file"), str):
+            found["file"] = Path(found["file"]).name
+        if isinstance(found.get("data"), dict) and "traceback" in found["data"]:
+            found["data"] = {key: item for key, item in found["data"].items() if key != "traceback"}
+    return found
+
+
+def _one_file(machine: dict[str, Any], rel: Any) -> dict[str, Any]:
+    """get_machine's answer with only the file ``rel`` of its tree, whole (API-9); versions of every file."""
+    files = machine.get("files") or {}
+    if not isinstance(rel, str) or rel not in files:
+        raise ServiceError(404, f"{rel!r} is no file of machine {machine.get('id')}: one of {', '.join(sorted(files))}")
+    return {**machine, "files": {rel: files[rel]}}
+
+
+def _small_files(machine: dict[str, Any]) -> dict[str, Any]:
+    """get_machine's answer within its bound (API-9): the root file always; every other file larger than
+    FILE_CHARS, or past the budget (the largest first), left out with its size -- ``file=<path>`` reads it."""
+    files = dict(machine.get("files") or {})
+    root = machine.get("root_file")
+    total = _size({**machine, "files": files})
+    left: dict[str, int] = {}
+    for rel in sorted((rel for rel in files if rel != root), key=lambda rel: -len(files[rel])):
+        if len(files[rel]) <= FILE_CHARS and total <= ANSWER_CHARS:
+            break
+        total -= _size(files[rel])
+        left[rel] = len(files.pop(rel))
+    if not left:
+        return machine
+    return {**machine, "files": files, "left_out": left,
+            "left_out_hint": "large files left out (characters): get_machine(machine_id, file=<path>) reads one; "
+                             "save_machine takes only the files you change"}
 
 
 def _hidden(value: Any, tokens: set[str]) -> Any:
@@ -789,9 +1140,12 @@ def _summary(row: dict[str, Any], *, full_output: bool = False) -> dict[str, Any
     return {"run_status": row.get("status"), "state": row.get("final_state") or root.get("state"),
             "output": row.get("output") if full_output else _capped(row.get("output"), OUTPUT_CHARS),
             "error": _capped(row.get("error"), ROW_CHARS),
-            "paused": debug.get("paused"),
-            **({"next": NEXT_TIMER if _timed(row) else NEXT[row["status"]]} if row.get("status") in NEXT
-               else {"next": NEXT_RESUMABLE} if row.get("status") == "failed" and (row.get("error") or {}).get("resumable")
+            # what the debugger holds: its out and error cut like a journal row's (DBG-2)
+            "paused": _held(debug.get("paused")),
+            **({"next": NEXT_SLOT if row.get("status") == "waiting" and view.get("slot_waits")
+                else NEXT_TIMER if _timed(row) else NEXT[row["status"]]} if row.get("status") in NEXT
+               else {"next": NEXT_RESUMABLE if (row.get("error") or {}).get("resumable") else NEXT_INTERNAL}
+               if row.get("status") == "failed" and resumable_failure(row.get("error"))
                else {}),
             "accepts": [{"frame": f.get("prefix", ""), "events": f.get("accepts")} for f in frames if f.get("accepts")],
             **({"mocks_unused": view["mocks_unused"]} if view.get("mocks_unused") else {})}

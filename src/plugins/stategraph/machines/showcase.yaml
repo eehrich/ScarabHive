@@ -13,6 +13,7 @@ description: >-
   Plans, drafts, reviews, polishes and saves a short article, with a person's approval in between.
   Uses every element of the format once; read it next to the format reference.
 group: stategraph                          # its folder in the panel's machine list
+resume: auto                               # an interrupted run is resumed by the API itself
 python: showcase.py                        # companion module: its public names are in scope everywhere
 imports:                                   # submachines from other files
   critique_round: ./critique_round.yaml
@@ -80,6 +81,7 @@ limits:
   max_steps: 200                           # dispatches per frame
   timeout: 2h                              # the whole run, time spent running only
   concurrency: 4                           # leaf activities of the whole run at once
+  max_cost: 50                             # USD the whole run may spend; past it: budget_exceeded
 
 resources:                                 # external state per frame (format §14)
   store:

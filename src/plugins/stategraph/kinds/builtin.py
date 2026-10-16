@@ -105,6 +105,7 @@ def llm_params_problem(params: dict[str, Any]) -> Optional[str]:
 @register
 class AgentKind(ActivityKind):
     key = "agent"
+    spends = True
     external = True
     spec_model = AgentSpec
     template_fields = ("agent", "task", "vars", "llm_profile", "llm_params", "continue")
@@ -168,7 +169,7 @@ async def usable_answer(act: "ActivityRun", *, agent: str, instance: Optional[st
     for round_ in range(retries + 1):
         value, problem = (text, None) if parser is None and schema is None else parse_answer(text, parser, schema)
         if problem is None and checker is not None:
-            problem = await checked(act, checker, value)
+            problem = await checked(act, checker, value, round_)
         if problem is None:
             return value
         if round_ == retries or not instance:
@@ -186,14 +187,15 @@ async def usable_answer(act: "ActivityRun", *, agent: str, instance: Optional[st
 _CHECK = "the check did not take it: "
 
 
-async def checked(act: "ActivityRun", checker: Any, value: Any) -> Optional[str]:
+async def checked(act: "ActivityRun", checker: Any, value: Any, round_: int = 0) -> Optional[str]:
     """None when ``checker`` takes the answer, else why not (its ValueError). A first parameter ``sg`` gets the
-    read-only scope and ``sg.tool()``, whose calls are keyed by the answer they check: a resumed run whose agent
-    answers anew calls them anew instead of replaying another answer's (a divergence). A sync function runs in
-    the worker threads of ``call``."""
+    read-only scope and ``sg.tool()``, whose calls are keyed by the feedback round and the answer they check: a
+    resumed run whose agent answers anew calls them anew instead of replaying another answer's (a divergence), and
+    the same answer in a later round calls them again -- what they read may have changed since. A sync function
+    runs in the worker threads of ``call``."""
     from plugins.stategraph.model.code import fingerprint
 
-    sg = act.sg_api(prefix=f"check.{fingerprint(jsonable(value))[:10]}.") \
+    sg = act.sg_api(prefix=f"check.{round_}.{fingerprint(jsonable(value))[:10]}.") \
         if list(inspect.signature(checker).parameters)[:1] == ["sg"] else None
     head = () if sg is None else (sg,)
     try:
@@ -202,6 +204,8 @@ async def checked(act: "ActivityRun", checker: Any, value: Any) -> Optional[str]
         else:
             run = functools.partial(contextvars.copy_context().run, _in_thread, checker, *head, value)
             result = await asyncio.get_running_loop().run_in_executor(_CALL_POOL, run)
+            if sg is not None:
+                sg._unreturned(result)
             if inspect.isawaitable(result):
                 await result
     except ValueError as exc:
@@ -332,6 +336,7 @@ def _check_criteria(kind: str, criteria: Any, name: str) -> None:
 @register
 class DecideKind(ActivityKind):
     key = "decide"
+    spends = True
     external = True
     spec_model = DecideSpec
     template_fields = ("question", "criteria", "input", "questions", "by")
@@ -366,11 +371,36 @@ class DecideKind(ActivityKind):
                          for name, q in (spec.questions or {}).items()}
         else:
             questions = {"decision": _question(act, spec.decide, spec.question, spec.criteria, "question")}
-        if spec.by is not None:
+        if spec.by is not None:  # the agent's run has its request id
             answers = await _decide_by_agent(act, spec, questions, state)
         else:
-            answers = await act.backend.decide(act, questions=questions, input=state, profile=spec.profile)
+            requested = _own_request(act)
+            try:
+                answers = await act.backend.decide(act, questions=questions, input=state, profile=spec.profile)
+            finally:
+                _end_request(act, requested)
         return answers if spec.decide == "questions" else answers["decision"]
+
+
+def _own_request(act: "ActivityRun") -> tuple[str, Any]:
+    """A request id of the activity's own (``<run>_NNN``, in ``meta.request_id``) for what it runs here: the LLM
+    calls it makes report under it (the message debugger finds them by it; the run id stays its prefix). A finally
+    or close activity's request is protected like an agent's: a terminate does not cut it."""
+    from agent_system.tools.status import current_request_id
+    from plugins.stategraph.engine.backend import _protect
+
+    request_id = act.request_id()
+    act.meta["request_id"] = request_id
+    _protect(act, request_id)
+    return request_id, current_request_id.set(request_id)
+
+
+def _end_request(act: "ActivityRun", requested: tuple[str, Any]) -> None:
+    from agent_system.tools.status import current_request_id
+    from plugins.stategraph.engine.backend import _unprotect
+
+    current_request_id.reset(requested[1])
+    _unprotect(act, requested[0])
 
 
 async def _decide_by_agent(act: "ActivityRun", spec: DecideSpec, questions: dict[str, dict[str, Any]],
@@ -457,6 +487,7 @@ class CallSpec(KindSpec):
 @register
 class CallKind(ActivityKind):
     key = "call"
+    spends = True
     spec_model = CallSpec
     template_fields = ("args",)
     title = "Python"
@@ -480,6 +511,7 @@ class CallKind(ActivityKind):
         head = () if sg is None else (sg,)
         # What the LLM calls under it cost (CALL_SPEND): into the activity's meta like an agent's, so the run's
         # spend -- and a resume, which replays the row -- counts it once.
+        requested = _own_request(act)  # its LLM calls under a request id of its own (the message debugger)
         meter = _Spend(None)
         metering = CALL_SPEND.set(meter)
         try:
@@ -488,8 +520,11 @@ class CallKind(ActivityKind):
             else:  # the context vars go along (the run's request id and user), as with asyncio.to_thread
                 run = functools.partial(contextvars.copy_context().run, _in_thread, fn, *head, **args)
                 result = await asyncio.get_running_loop().run_in_executor(_CALL_POOL, run)
+                if sg is not None:
+                    sg._unreturned(result)
             return await result if inspect.isawaitable(result) else result
         finally:
+            _end_request(act, requested)
             CALL_SPEND.reset(metering)
             if meter.tokens["prompt"] or meter.tokens["completion"] or meter.cost or meter.unpriced:
                 meter.into(act.meta)  # a failed or stopped call cost too
@@ -628,6 +663,118 @@ class CallbackKind(ActivityKind):
         return {"url": f"{act.run.callback_base}?token={token}", "event": spec.callback, "expires": stamp}
 
 
+# ------------------------------------------------------------------ semaphores
+# A slot of a semaphore shared by every run of the instance (FEAT-2): acquire takes one -- waiting while all are
+# held -- and the frame that took it holds it until a release or its own end (done, failed, cancelled). An activity
+# pair rather than a state key: a slot usually spans several states (take a render server, render, upload), and
+# the frame bound releases it on every way out, as resources close.
+
+class AcquireSpec(KindSpec):
+    acquire: str = Field(description="the semaphore: a name in the instance's semaphores setting (a literal)")
+    key: Optional[str] = Field(None, description="template: the capacity counts per key (one run per ticket)")
+
+    @field_validator("acquire")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return check_name(value, "semaphore")
+
+
+@register
+class AcquireKind(ActivityKind):
+    key = "acquire"
+    spec_model = AcquireSpec
+    template_fields = ("key",)
+    waits = True
+    external = True  # the slots are shared with every run of the runs.db: a mock-only run mocks it (out = an index)
+    title = "Acquire slot"
+    icon = "lock"
+    summary = ("Take a slot of a semaphore all runs of the instance share (its semaphores setting: name -> "
+               "capacity); while every slot is held the run waits (status waiting, no running time); out = the slot "
+               "index, 0 up to capacity - 1. Held until release, or until the frame that took it ends")
+
+    def label(self, spec: AcquireSpec) -> str:
+        return f"slot of {spec.acquire}"
+
+    def references(self, spec: AcquireSpec) -> dict[str, str]:
+        return {"semaphore": spec.acquire}
+
+    def replayed(self, spec: AcquireSpec, act: "ActivityRun", out: Any) -> None:
+        # the slot the replayed prefix chose by: a fork's -- or a resume's whose hold was released -- claimed as
+        # the oldest holder, so one holding it now keeps it and the run waits for it as it goes live
+        if isinstance(out, int):
+            act.run.claimed(act.run.store.claim_slot(spec.acquire, out, act.run_id, act.key, act.frame.prefix,
+                                                     _semaphore_key(spec, act) or ""))
+
+    def replayed_below(self, key: str, data: dict[str, Any], act: "ActivityRun") -> None:
+        inputs, out = data.get("inputs") or {}, data.get("out")
+        if isinstance(out, int) and inputs.get("acquire"):
+            act.run.claimed(act.run.store.claim_slot(inputs["acquire"], out, act.run_id, key, act.frame.prefix,
+                                                     _recorded_key(inputs) or ""))
+
+    async def run(self, spec: AcquireSpec, act: "ActivityRun") -> Any:
+        return await act.run.take_slot(act, spec.acquire, _semaphore_key(spec, act) or "")
+
+
+def _semaphore_key(spec: AcquireSpec | ReleaseSpec, act: "ActivityRun") -> Optional[str]:
+    """The acquire's or release's key rendered now (params, ctx); None without one. Rendered before the outcome
+    is journaled and part of the input hash, so a replay renders the same key."""
+    if spec.key is None:
+        return None
+    value = act.render(spec.key, "key")
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)) or str(value) == "":
+        raise ActivityError("template_failed", f"{act.path}.key: a semaphore key must be a non-empty string or "
+                                               f"number, not {value!r}")
+    return str(value)
+
+
+def _recorded_key(inputs: dict[str, Any]) -> Optional[str]:
+    """The semaphore key a journaled acquire or release rendered (its ``inputs``), as ``_semaphore_key`` gave it."""
+    value = inputs.get("key")
+    return None if value is None else str(value)
+
+
+class ReleaseSpec(KindSpec):
+    release: str = Field(description="the semaphore whose slot this frame gives back (a literal)")
+    key: Optional[str] = Field(None, description="template: only this key's slot (default: every one it holds)")
+
+    @field_validator("release")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return check_name(value, "semaphore")
+
+
+@register
+class ReleaseKind(ActivityKind):
+    key = "release"
+    spec_model = ReleaseSpec
+    template_fields = ("key",)
+    title = "Release slot"
+    icon = "unlock"
+    summary = ("Give back the slot of a semaphore this frame took (acquire) before the frame ends; out = the slot "
+               "index, or null when the frame held none")
+
+    def label(self, spec: ReleaseSpec) -> str:
+        return f"slot of {spec.release}"
+
+    def references(self, spec: ReleaseSpec) -> dict[str, str]:
+        return {"semaphore": spec.release}
+
+    def replayed(self, spec: ReleaseSpec, act: "ActivityRun", out: Any) -> None:
+        act.run.store.release_slots(act.run_id, act.frame.prefix, spec.release,  # what the replay claimed before
+                                    sem_key=_semaphore_key(spec, act))
+
+    def replayed_below(self, key: str, data: dict[str, Any], act: "ActivityRun") -> None:
+        inputs = data.get("inputs") or {}
+        if inputs.get("release"):
+            act.run.store.release_slots(act.run_id, act.frame.prefix, inputs["release"],
+                                        sem_key=_recorded_key(inputs))
+
+    async def run(self, spec: ReleaseSpec, act: "ActivityRun") -> Any:
+        released = act.run.store.release_slots(act.run_id, act.frame.prefix, spec.release,
+                                               sem_key=_semaphore_key(spec, act))
+        return released[0]["slot"] if released else None
+
+
 # ---------------------------------------------------------------------- machine
 
 class SubmachineSpec(KindSpec):
@@ -760,17 +907,29 @@ class MapKind(ActivityKind):
         return (spec.as_, "index")
 
     def extra_inputs(self, spec: MapSpec, act: "ActivityRun") -> dict[str, Any]:
-        return {"items": act.plain(act.evaluate(spec.map, "map"))}
+        return {"items": _items(spec, act)}
 
     async def run(self, spec: MapSpec, act: "ActivityRun") -> Any:
-        items = act.evaluate(spec.map, "map")
-        items = list(act.plain(items)) if items is not None else []
+        items = _items(spec, act)
 
         def until(index: int, out: Any) -> bool:
             return bool(act.evaluate(spec.until, "until", out=out, **{spec.as_: items[index], "index": index}))
 
         return await join(act, [(f"i.{i}", spec.each, {spec.as_: item, "index": i}) for i, item in enumerate(items)],
                           spec.fail, concurrency=spec.concurrency, until=until if spec.until else None)
+
+
+def _items(spec: MapSpec, act: "ActivityRun") -> list[Any]:
+    """The map's items: a list (a tuple, a generator, a dict's .items() count as one) -- None is no items. A string
+    or a dict would run one child per character or key: that is refused."""
+    items = act.plain(act.evaluate(spec.map, "map"))
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        hint = " (for a dict's entries write .items())" if isinstance(items, dict) else ""
+        raise ActivityError("template_failed", f"{act.path}: map must give a list, got {type(items).__name__}{hint}",
+                            where=f"{act.path}.do.map")
+    return items
 
 
 async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Optional[dict[str, Any]]]],
@@ -795,6 +954,7 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
         for label, _, _ in children:
             error = act.recorded_error(label)
             if error is not None:
+                _count_unreplayed(act, children)
                 _name_child(error, label)
                 await _end_branches(act, [child for child in children if child[0] != label])
                 raise error
@@ -904,6 +1064,7 @@ async def quorum(act: "ActivityRun", children: list[tuple[str, dict[str, Any], O
             lost[label] = error
         if len(won) >= needed or len(lost) > allowed:
             decided = set(won) | set(lost)
+            _count_unreplayed(act, children, replayed=set(won) if len(won) >= needed else set())
             await _end_branches(act, [child for child in children if child[0] not in decided])
             if len(won) < needed:
                 raise _join_failed(act, needed, lost)
@@ -976,6 +1137,17 @@ def _name_child(error: ActivityError, label: str) -> None:
     branch = label.startswith("b.")
     error.extra.pop("index" if branch else "branch", None)
     error.extra["branch" if branch else "index"] = label[2:] if branch else int(label[2:])
+
+
+def _count_unreplayed(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Optional[dict[str, Any]]]],
+                      replayed: frozenset[str] | set[str] = frozenset()) -> None:
+    """A join that ends from the journal does not replay the children that had ended: what they spent counts into
+    run.cost all the same, as it did live (``replayed``: the ones it replays, counted by their replay). A child in
+    flight is not counted here: _end_branches replays its frame, whose activities count as they replay."""
+    for label, _, _ in children:
+        key = act.child_key(label)
+        if label not in replayed and key in act.run.recorded:
+            act.run.count_recorded(key)
 
 
 async def _end_branches(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Optional[dict[str, Any]]]]) -> None:

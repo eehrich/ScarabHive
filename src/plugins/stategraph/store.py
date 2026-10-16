@@ -56,6 +56,21 @@ class FileInTheWay(Exception):
         self.rel = rel
 
 
+class NotUtf8(ValueError):
+    """A machine file or module that is not UTF-8: named with the byte that is not, so its author can save it
+    again as UTF-8 (a 422, not a crash)."""
+
+    def __init__(self, path: Any, exc: UnicodeDecodeError):
+        super().__init__(f"{path} is not UTF-8 (byte 0x{exc.object[exc.start]:02x} at {exc.start}): save it as UTF-8")
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise NotUtf8(path, exc) from None
+
+
 @dataclass
 class MachineFile:
     id: str
@@ -93,7 +108,7 @@ class FileSources:
                 raise LookupError(f"{ref}: outside the machine roots")
             if Path(path).is_file():
                 return path
-            raise LookupError(f"{ref}: no such file next to {base}")
+            raise LookupError(f"{ref}: no such file next to {Path(base).name}")  # a name, not a server path (API-3)
         found = self.store.find(ref)
         if found is None:
             raise LookupError(f"{ref}: no machine with this id in the machine roots")
@@ -159,7 +174,7 @@ class MachineStore:
         found = self.find(machine_id)
         if found is None:
             raise KeyError(machine_id)
-        return found, found.path.read_text(encoding="utf-8")
+        return found, _read(found.path)
 
     def load(self, machine_id: str, *, execute_python: bool = False) -> MachineTree:
         """Load (not validate) a machine from disk; ``execute_python`` runs companion modules (for a run)."""
@@ -205,20 +220,27 @@ class MachineStore:
 
         Every target must lie inside a writable root. An existing file needs its
         expected version (no blind overwrite); a new file must not appear meanwhile.
-        Returns each file's version as a read gives it back (line endings are ``\\n``).
+        Returns each file's version as a read gives it back (line endings are ``\\n``). A file sent back as it
+        stands is left alone -- not written, not checked: get_machine hands out the imports of read-only roots
+        too, and a save of the whole tree must not fail on one the caller did not change (API-5).
         """
         base = self.base_dir(machine_id)
         expected_versions = dict(expected_versions or {})
         targets: dict[str, Path] = {}
+        unchanged: dict[str, str] = {}
         for rel in files:
             target = Path(os.path.normpath(str(base / rel)))
+            current = self._unchanged(target, files[rel])
+            if current is not None:
+                unchanged[rel] = version_of(current)
+                continue
             if not self.is_writable(target) and not self.is_writable(target.parent / "x"):
                 raise PermissionError(f"{rel}: {target} is not in a writable machine root -- a shipped machine is "
                                       "read-only: save a copy under a new id")
             if target.exists():
                 if rel not in expected_versions:
                     raise FileInTheWay(rel)
-                current = version_of(target.read_text(encoding="utf-8"))
+                current = version_of(_read(target))
                 if expected_versions[rel] != current:
                     raise VersionConflict(current)
             elif rel in expected_versions:
@@ -226,7 +248,24 @@ class MachineStore:
             targets[rel] = target
         texts = {rel: _lf(files[rel]) for rel in targets}
         _write_all({rel: (targets[rel], texts[rel]) for rel in targets})
-        return {rel: version_of(text) for rel, text in texts.items()}
+        return {**unchanged, **{rel: version_of(text) for rel, text in texts.items()}}
+
+    def unchanged(self, machine_id: str, files: dict[str, str]) -> set[str]:
+        """The files of ``files`` sent back as they stand inside the machine roots: write_files leaves them alone."""
+        base = self.base_dir(machine_id)
+        return {rel for rel, text in files.items()
+                if self._unchanged(Path(os.path.normpath(str(base / rel))), text) is not None}
+
+    def _unchanged(self, target: Path, text: str) -> Optional[str]:
+        """The text of ``target`` when it is a file inside the machine roots that equals ``text`` (line endings
+        ``\\n``), else None."""
+        if not (target.is_file() and self.inside_roots(target)):
+            return None
+        try:
+            current = _read(target)
+        except NotUtf8:
+            return None
+        return current if current == _lf(text) else None
 
     def delete(self, machine_id: str, *, expected_version: str, companion: Optional[Path] = None) -> list[str]:
         """Remove a machine from a writable root: its file (the version the caller saw, no blind delete), its layout
@@ -237,7 +276,7 @@ class MachineStore:
             raise KeyError(machine_id)
         if not found.writable:
             raise PermissionError(f"{found.path} is not in a writable machine root")
-        current = version_of(found.path.read_text(encoding="utf-8"))
+        current = version_of(_read(found.path))
         if expected_version != current:
             raise VersionConflict(current)
         paths = [Path(p) for p in (found.path, found.path.with_name(found.path.stem + LAYOUT_SUFFIX), companion)

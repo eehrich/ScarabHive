@@ -45,7 +45,8 @@ For agents and developers
 
 Open it from the launcher (@{b}Agents & tools@{ub}, "State Graph"). It is
 for admins only: anyone else is refused. A link can open a machine and a run at once:
-@{tt}/plugins/stategraph/?machine=<id>&run=<run id>@{utt}.
+@{tt}/plugins/stategraph/?machine=<id>&run=<run id>@{utt}; @{tt}?run=<run id>@{utt}
+alone opens the machine the run names.
 
 @{image docs/panel.png "The State Graph panel"}
 
@@ -64,7 +65,10 @@ start of the description, and badges only where there is something to
 say: the number of errors or warnings, and @{i}read-only@{ui} for a machine
 outside the writable folders. Folders you close stay closed on your next visit; a
 search (id, title, description, group) opens every folder it finds
-something in. @{b}New@{ub} asks for an id and creates
+something in; a search no machine matches is offered as a run id
+(@{b}Open run@{ub}, or Enter): a run named in a log opens with its machine. A
+list that cannot be reloaded stays as it was, with a note that it is not
+fresh. @{b}New@{ub} asks for an id and creates
 @{tt}<id>.yaml@{utt} with two states, @{tt}start@{utt} and
 @{tt}done@{utt}.
 
@@ -98,7 +102,11 @@ Junction, Final or Composite (Structure; a composite comes with a first
 state inside it), or a @{b}Note@{ub}. New states go into the selected
 composite. A composite keeps at least one state: its last one
 cannot be removed or moved out -- add or move another in first, or remove
-the composite. @{b}Find@{ub} selects a state by name. The icon buttons
+the composite. @{b}Find@{ub} selects a state by name and brings it into
+view, zoomed in when the view is too small to read. A machine too large to
+read whole opens at a readable zoom on its initial state; @{b}Fit@{ub}
+shows it whole. A layout is worked out once per shape: changing a field
+(max_visits, a description) does not lay the machine out anew. The icon buttons
 @{b}Undo@{ub} and @{b}Redo@{ub} put the machine back as it was before or
 after an edit (the last 20 edits): the unsaved text, or with auto-save the
 file. @{b}Fit@{ub}, the zoom buttons and
@@ -113,10 +121,10 @@ came keeps the older one, left to right, until Auto layout.
 @{table}
 On the graph | Does
 drag a state | moves it; the position is kept in a layout file next to the machine
-drag a state onto a composite | puts it inside, where it was dropped (the composite is marked while it is over it)
+drag a state onto a composite | puts it inside, where it was dropped (the composite is marked while it is over it); a region's initial state takes the initial along into that composite, else the first state left that is no final
 drag a note | moves it; click it to edit its text, double-click to type into it at once
 drag from a state's handle to another state | adds a transition
-double-click a state | renames it; every transition and initial naming it follows
+double-click a state | renames it; every transition, initial and run.visits/run.state name in the machine's code follows (the companion module's are not renamed)
 Ctrl or Shift+click | adds a state or transition to the selection
 Ctrl or Shift+drag on empty canvas | selects the states wholly inside the box
 Delete, Backspace | removes what is selected, after asking
@@ -124,9 +132,14 @@ Ctrl+Z; Ctrl+Shift+Z or Ctrl+Y | undo; redo
 Ctrl+S | save
 wheel; Shift+wheel; Ctrl+wheel | scrolls; scrolls sideways; zooms
 Escape | clears the selection
+Tab; Enter or Space | goes to the next state; selects it or a transition (with Ctrl or Shift: adds it)
+T on a state; T, Shift+T; S | goes to its first transition; to the next, the one before; back to the state
+arrow keys on a state; with Shift | move it 8 units; 1 unit
 @{body}
 
-The keys work while the graph has the focus. A read-only machine can be
+The keys work while the graph has the focus. A screen reader hears a
+state's marks: where the run is or is paused, its visits, a breakpoint,
+its problems. A read-only machine can be
 moved around but not changed; its layout is kept only for the open view.
 
 @{b}YAML@{ub} -- the machine's files as text: the YAML, its Python module,
@@ -204,7 +217,8 @@ machine has as it starts), and under @{b}Test options@{ub} @{b}Mocks@{ub} (JSON:
 state path and the answer its activity gives instead of running, see
 @{" Runs " link runs}), @{b}Mock only@{ub} (anything not mocked fails
 instead of calling an agent or a tool) and @{b}Pause at start@{ub}. The
-mocks you last started the machine with come back; Test options then
+mocks and the two options you last started the machine with come back
+(each machine its own; @{b}Run again@{ub} does not pause at start); Test options then
 opens, and its title says what it holds ("mocks, mock only"), so nothing
 is sent unseen. Breakpoints and watches you set before the run go with
 it. @{b}Start@{ub} shows the new run; a run that cannot start says why in
@@ -212,8 +226,14 @@ the form, unfolded.
 
 @{h2}Watching a run
 
-Pick a run in the list (filter by status; @{b}Older runs@{ub} loads
-more). While it is alive the panel reads it every second; everything else
+Pick a run in the list (filter by status and by tags, @{tt}book:95,path:main@{utt}:
+only runs started with all of them; @{b}every machine@{ub} lists the runs of
+all machines, newest first, and one of another machine opens with its
+machine -- with no machine open the panel shows that list itself, with the
+same status and tag filters; @{b}Older runs@{ub} loads more). While it is alive the panel reads
+it every second -- only the rows that are new, the activities still running
+again, each text of a row cut (a click on a row reads it whole), and the
+@{tt}ctx@{utt} of the unfolded frames only; everything else
 reloads every 10 seconds (the menu next to the reload button changes it),
 the run list every 3 seconds while another of its runs is alive.
 
@@ -223,21 +243,28 @@ beside the one shown, each with its status; a click shows another. It
 shows only the controls the run takes now: @{b}Continue@{ub},
 @{b}Step@{ub} (to the next hook) and @{b}Pause@{ub} as icon buttons,
 @{b}Run to@{ub} a state, @{b}Terminate@{ub} (its finally activities still
-run), @{b}Resume@{ub} for an interrupted run or one that ended on a resumable failure, and always
+run), @{b}Resume@{ub} for an interrupted run or one that ended on a resumable failure (it goes on
+with the machine as the run started it, not with a fix saved since),
+@{b}Close@{ub} for such a failure that is not to go on (it ends cancelled,
+no resume runs it again), and always
 @{b}Fork...@{ub}: a new run that replays this one up to a top-level step
 and goes on live from there. A dialog asks for the step -- or, with a
 state of the run's machine selected on the graph, for its pass: @{tt}2@{utt}
 forks where the run entered that state the second time at the top level,
 @{tt}s7@{utt} still at top-level step 7; a state it never entered there
-leaves only the step -- then whether the fork holds there (to look at or set @{tt}ctx@{utt} first) or runs on; with
-Shift it forks the machine as it is now, not as it was when the run
-started. A run waiting for an event has a button per
-event it takes. "in another process" marks a run another process runs --
+leaves only the step -- then whether the fork holds there (to look at or set @{tt}ctx@{utt} first) or runs on.
+Fork... runs on with the machine as the run had it; @{b}Fork with saved
+machine...@{ub} asks the same and runs on with the machine as it is saved
+now: the way to try a fix from just before the failure. Run ids show their
+end -- the label and hash that tell the runs of one job apart
+(@{tt}…_009_ch795_3c2cac96@{utt}); the whole id is in their tooltip. A run waiting for an event has a button per
+event it takes; one waiting for a semaphore slot says which ("waiting for a
+slot of producers"). "in another process" marks a run another process runs --
 agent-cli, agent-run: you see its journal; its events, Pause, Continue,
 Step and Terminate reach it within a second, Run to and breakpoints only
 in its own process.
 @{bullet}The @{b}graph@{ub} marks the states the run is in, and the states
-with breakpoints.
+with breakpoints; a failed run's last state is marked in red.
 @{bullet}@{b}Submachines@{ub}: with a run selected, a state that started
 submachine runs in it carries a badge ("2 runs"). Click it: the
 inspector's last section, folded, lists its @{b}Submachine runs@{ub}
@@ -254,30 +281,48 @@ jump at a time. Breakpoints and Run to set there are the submachine's. Its runs 
 it ran in ("in scene_review"): one picked shows the frame picked, else a
 live one, else the last. A fork shows the frames it ran itself; those
 before its fork point are in the run it was forked from.
-@{bullet}The @{b}Result@{ub} card: output or error, what the run cost so
-far -- its agents with their sub-agents, and the LLM calls its
-@{tt}call@{utt} functions made (tokens in ↑ and out ↓; ~ marks an amount
-estimated from the price table) -- with more than one state @{b}Cost by
+@{bullet}The @{b}Result@{ub} card: output or error (the state an error
+names, and an opened activity's state, are buttons that show it on the
+graph; an error of machine code says where: @{tt}one.exit@{utt}, the file
+and line, the line's code, the branch or item), the run that started this
+one and the runs it started (each opens with its machine; an opened
+activity lists those it started), what the run cost so
+far -- its agents with their sub-agents, the LLM calls its
+@{tt}call@{utt} functions made and the runs it started (tokens in ↑ and out ↓; ~ marks an amount
+estimated from the price table) and, when the run has a
+@{tt}limits.max_cost@{utt}, its own cost against it -- the runs it started
+are not bounded by it and count only in the spend beside -- with more than one state @{b}Cost by
 state@{ub} (a state that runs a submachine holds what its machine's
 states cost: the cost of a phase), the final state of each
 frame, and every finished activity folded with its cost -- open one for
 its full answer, its input, failed attempts, its cost with its tokens,
 the agent's session (@{b}Open@{ub} shows the conversation in the chat) and
-the request id (the message debugger finds the LLM calls by it). A fork
+the request id (the message debugger finds the LLM calls by it; agent,
+call and decide activities each run under their own, every feedback round
+and attempt too -- @{tt}meta.request_ids@{utt} lists them, a failed
+attempt names its own). A fork
 counts only what it ran itself: an activity it replays says which run
 spent it. @{b}Run again@{ub} starts a new run with the same
 params and mocks, less those that had their default when the run
 started: the machine's default now applies; @{b}Session@{ub} opens the run's own session in the chat -- what it was asked, each agent call with that agent's run under it, how it ended (not for
 a mock-only run, which has none, nor for another user's run).
 @{bullet}The @{b}History@{ub} card: the last 200 journal rows, filtered by
-kind.
+kind or state (a state's own last rows are read for it); @{b}Older rows@{ub}
+reads the 200 before; a click on a row shows it whole -- a transition's
+guards, an event's data, an edit's value. A step row names the
+@{tt}ctx@{utt} keys it changed (@{tt}ctx.round = 2@{utt}; a long value by
+its size); an activity cancelled with its frame shows as "cancelled (no
+outcome)", not as running.
 @{bullet}The @{b}Debug@{ub} tab of the inspector: the run's params,
 output and error; right under them, while a run is selected, its
 @{b}Frames@{ub}, one folded line each with machine, state, step and
 whether it waits (@{b}Show@{ub} shows it on its machine's graph) --
-unfold one for what it waits for, its visits and its @{tt}ctx@{utt}; it
-stays unfolded while the run goes on. Then watches (a watch pauses the
-run when its value changes); breakpoints; @{b}Evaluate@{ub} and
+unfold one for what it waits for, its visits and its @{tt}ctx@{utt} (read
+when it is unfolded); it stays unfolded while the run goes on. Then watches (a watch pauses the
+run when its value changes; its second field, optional, a Python condition
+under which it pauses); breakpoints (a breakpoint checked in the inspector
+gets a field "only if": a Python condition, empty for always); each watch
+and breakpoint listed can be switched off and on, kept; @{b}Evaluate@{ub} and
 @{b}Set@{ub}, shown while the run is paused (Set writes into
 @{tt}ctx@{utt} -- or, at an exit or error breakpoint, sets the
 activity's answer); @{b}Send event@{ub} with data while the run has not
@@ -296,8 +341,10 @@ now, @{b}Cancel@{ub} keeps your text so you can copy it first.
 errors does not run.
 @{bullet}A new file whose name is taken by a file the machine does not
 use: @{b}Use the existing file@{ub} or cancel.
-@{bullet}A run that cannot be read for a moment: the bar says "not
-refreshed" and the panel keeps trying.
+@{bullet}A run that cannot be read for a moment, even the first time: the
+bar says "not refreshed" and the panel keeps trying.
+@{bullet}Activity kinds that could not be read when the panel opened are
+asked again with the next refresh or machine.
 @endnode
 
 @node machines "Machines"
@@ -375,8 +422,13 @@ events is a @{b}wait state@{ub}; its @{tt}timeout@{utt} raises the error
 @{tt}failed@{utt} as a failure -- and gives its @{tt}output@{utt}.
 @{bullet}@{b}Choice@{ub} and @{b}junction@{ub} states branch by guards,
 @{b}composite@{ub} states hold states of their own, @{tt}max_visits@{utt}
-bounds a loop (one entry more raises @{tt}loop_limit@{utt}),
-@{tt}finally@{utt} runs an activity on every way out.
+bounds a loop (one entry more raises @{tt}loop_limit@{utt}; it, a
+@{tt}timeout@{utt} and @{tt}after@{utt} may be an expression over params,
+@{tt}"{{ params.rounds }}"@{utt}), @{tt}finally@{utt} runs an activity on
+every way out.
+@{bullet}@{tt}limits.max_cost@{utt} caps what a run spends in USD:
+@{tt}run.cost@{utt} is the spend so far; once it is reached, the next
+agent, decide or call activity fails with @{tt}budget_exceeded@{utt}.
 @{bullet}@{tt}python: <id>.py@{utt} names a @{b}companion module@{ub}: its
 public functions are in scope in guards, effects and templates, and can be
 @{tt}call@{utt} activities.
@@ -432,7 +484,19 @@ parallel | runs several activities at once | an object with one answer per branc
 map | runs one activity per item of a list | the answers in item order
 emit | tells the caller and the run's session how far the run is | the text
 callback | makes a URL that sends one event to this run, once (see @{" Callback URLs " link callbacks}) | url, event, expires
+acquire | takes a slot of a semaphore all runs share (the semaphores setting); waits while all are held | the slot index
+release | gives this frame's slot back (the frame's end does too) | the index, or null
 @{body}
+
+@{tt}acquire@{utt} waits with status @{tt}waiting@{utt} (no running
+time, no @{tt}limits.timeout@{utt}; a pause takes effect there). An
+interrupted holder keeps its slot for @{tt}semaphore_hold_seconds@{utt};
+resumed later, it waits for that slot back (not when it is terminated).
+A frame holds one slot per semaphore: reaching the acquire again gives
+it the same slot. @{tt}key@{utt} (a template) splits the capacity per
+key: @{tt}do: {acquire: ticket, key: "{{ params.ticket }}"}@{utt} with
+@{tt}semaphores: {ticket: 1}@{utt} lets one run per ticket work;
+@{tt}release@{utt} with a key gives back only that key's slot.
 
 Every activity also takes @{tt}retry@{utt}, @{tt}timeout@{utt} (per
 attempt) and @{tt}idempotent@{utt}. The complete format -- every field,
@@ -489,16 +553,38 @@ in the debugger. That is what the panel's history and result show -- and
 what makes a run survive its process. A process that stops marks its
 runs @{tt}interrupted@{utt}; one that crashes leaves them
 @{tt}running@{utt} until its lease on them has run out (a minute), then
-the next process that looks marks them. The lease says the process lives:
+the next process that looks marks them -- at once when that process ran
+on this host (and in its pid namespace: a container with its own counts
+as another host) and is gone (its pid no longer runs, or belongs to a process
+started after it last renewed): its lease is dropped and a resume can take
+the run right away. The lease says the process lives:
 a thread of its own renews it every 20 seconds, so a @{tt}call@{utt}
-function that holds the event loop for minutes keeps its run. A schedule resumes its slot's
-run, and a callback URL resumes its run before it sends the event.
-Nothing else resumes by itself: resume the run (panel,
-@{tt}control_run@{utt}), or start it again with its run key. A resumed run replays its journal: an
+function that holds the event loop for minutes keeps its run. A schedule resumes its slots'
+runs (an earlier slot's too), and a callback URL resumes its run before it sends the event.
+Nothing else resumes by itself unless asked: a machine with
+@{tt}resume: auto@{utt}, or listed in the server setting
+@{tt}auto_resume@{utt}, is resumed by the API (one API process at a time, under a
+resume lease of its own: a worker or agent-cli that starts schedule slots
+never holds it) once its owner's lease is gone -- not a run that holds a
+caller's @{tt}live@{utt} objects, which only its caller can hand again;
+a resume that fails is tried again after a pause that doubles up to an
+hour. Otherwise resume the run (panel, @{tt}control_run@{utt}), or start
+it again with its run key. Before a resume, @{tt}set@{utt} can change an
+interrupted or resumably failed run's @{tt}ctx@{utt} or @{tt}params@{utt} (see
+@{tt}stategraph_control_run@{utt}). A resumed run replays its journal: an
 activity that finished is not run again, its answer is read. One that was
 in flight is started again only if it is idempotent (the default; a
 @{tt}tool@{utt} activity is not, unless it says so) -- otherwise it fails
-with @{tt}interrupted@{utt}.
+with @{tt}interrupted@{utt}. Rows the replay writes again keep the time
+they were first written. A resume whose machine's companion module, or
+code its machines call or import, changed since the run started gets a
+@{tt}code_changed@{utt} row saying what (the run goes on as before).
+
+A start, resume, fork, close, sweep or @{tt}set@{utt} leaves a row of
+kind @{tt}lifecycle@{utt} -- who, why, which process -- and a log line.
+Where a resume or fork passed its journal is a row @{tt}live@{utt} (the
+key, how many journal rows it replayed); the stored view is written
+there, not once per replayed step.
 
 @{h2}Resumable failures
 
@@ -520,7 +606,16 @@ sibling had finished replay from the journal. A refusal that ended
 nothing (a branch a quorum outvoted, a finally's) is not run again. A run
 stopped in a frame with resources (also a cancelled sibling's) is not
 resumed: its end closed them -- fork it instead. Nothing resumes it by
-itself: neither a schedule nor its run key.
+itself: neither a schedule nor its run key. Terminate closes it for good:
+it ends @{tt}cancelled@{utt}, its error naming who closed it and the
+failure it had stopped on. A run that failed on the engine's own error
+(@{tt}error.type: internal@{utt}) is resumable as well -- a fixed engine
+may get past it: its resume sets nothing aside, it replays the journal and
+goes on where it stopped (@{tt}set@{utt} applies where it stopped, as
+for an interrupted run). Terminate closes it as above; its finally
+activities never ran. A run's answer says either in @{tt}resumable@{utt}
+(failed runs). A run that failed otherwise is not resumed: a resume
+would replay the same failure (@{tt}http_409@{utt}) -- fork it.
 
 @{h2}Mocks
 
@@ -535,7 +630,9 @@ mock is keyed by the state path (@{tt}review@{utt}, or
 @{body}
 
 @{tt}$visits@{utt} answers each use of the path in turn, and the last one
-for every use after that; @{tt}$error@{utt} fails the activity. On a wait
+for every use after that; @{tt}$error@{utt} fails the activity -- its
+@{tt}retry@{utt} takes it as a live failure (no backoff), each attempt the
+next @{tt}$visits@{utt} entry. On a wait
 state with a @{tt}timeout@{utt}, or a timer state (@{tt}after@{utt}),
 @{tt}{"$timeout": true}@{utt} makes its time up at once: a test drives the
 timeout path without waiting it out.
@@ -548,7 +645,9 @@ local Python. A run lists the mocks it never used in
 
 @{bullet}@{b}Terminate@{ub} cancels what runs and then runs the
 @{tt}finally@{utt} activities; the run ends @{tt}cancelled@{utt}. An
-interrupted run can be terminated too: it is resumed into its end.
+interrupted run can be terminated too: it is resumed into its end. A
+run started by a @{tt}call@{utt} activity of a run that is terminated
+(@{tt}start_run@{utt}, @{tt}run_to_end@{utt}) is terminated with it.
 @{bullet}@{b}Fork@{ub} makes a new run that replays the source's journal up
 to a top-level step and goes on live -- with the source's definition, or
 the machine as it is now. Stores, databases and agent conversations keep
@@ -568,8 +667,14 @@ by an agent's tool call sits below that agent's session.
 
 With auth on, a run belongs to the user who started it: others get it
 answered as missing, admins see every run, and a run of nobody (a schedule
-without a user) is visible to all. A resumed or terminated run runs as its
-own user, whoever triggered it.
+without a user, the writer's runs) is an admin's -- and the process's own
+code's, which calls the service without a user (@{tt}run_to_end@{utt}, the
+schedules). The same holds for a @{tt}run_key@{utt}: one that names a run
+the caller may not see is refused (409). A reader who may not save and run
+machines gets the engine's errors without traceback and without absolute
+server path (their @{tt}file@{utt} as its name only); the machine's own
+output and ctx stay as they are. A resumed
+or terminated run runs as its own user, whoever triggered it.
 @endnode
 
 @node tools_machines "Tools: building machines"
@@ -611,9 +716,13 @@ warnings.
 
 @{h2}stategraph_get_machine
 
-@{tt}machine_id@{utt} (required). Answer: @{tt}files@{utt} (relative path
-to text: the YAML, its Python module, the machines it imports), @{tt}versions@{utt} (relative path to version -- pass them back
-when you save), @{tt}problems@{utt}, @{tt}writable@{utt},
+@{tt}machine_id@{utt} (required); @{tt}file@{utt}: only that file of the
+tree, whole. Answer: @{tt}files@{utt} (relative path to text: the YAML, its
+Python module, the machines it imports -- from another root as a
+@{tt}../@{utt} path); a file over 30,000 characters, or past the answer's
+200,000, is left out and listed in @{tt}left_out@{utt} with its size: read
+it with @{tt}file@{utt}. @{tt}versions@{utt} (relative path to version, of
+every file -- pass them back when you save), @{tt}problems@{utt}, @{tt}writable@{utt},
 @{tt}agents@{utt} (the machine agents that run it), @{tt}offer@{utt}
 (its @{tt}agent:@{utt} block's name, and whether it is declared) and
 @{tt}runner@{utt} (the runner its runs get; @{tt}runner_problem@{utt} when
@@ -640,8 +749,8 @@ new machine goes into the folder new machines are saved to.
 
 @{table}
 Parameter | Meaning
-files | required; relative path to text
-machine_id | as for validate
+files | required; relative path to text: the files of the tree you change (one sent back unchanged is left alone, even from a read-only folder)
+machine_id | as for validate; a machine id (a word, no folder)
 expected_versions | relative path to the version get_machine gave, for every existing file you change
 @{body}
 
@@ -652,8 +761,10 @@ when you change a file of the machine without its version
 expected_versions"), or when a file of the save would hide another
 machine: a @{tt}<x>.yaml@{utt} written into a machine folder searched
 before the one machine x lies in (@{tt}http_409@{utt}, "would hide
-machine"); refused for a machine outside the writable folder
-(@{tt}http_403@{utt}: save a copy under a new id). Answer:
+machine"); refused for a changed file outside the writable folder
+(@{tt}http_403@{utt}: save a copy under a new id), and for a file the
+machine's tree does not hold -- neither imported nor its module
+(@{tt}http_422@{utt}: save each machine under its own id). Answer:
 @{tt}machine_id@{utt}, the new @{tt}versions@{utt}, @{tt}problems@{utt}
 (warnings). No tool deletes a machine; the panel does.
 
@@ -679,11 +790,12 @@ machine_id | the machine to run
 request | instead of machine_id: "<id> {json params}" or "<id> key=value ..."; a value reads as the param's declared type (n=3, flag=true), quotes group words
 params | the run's input; with request, they win over the request's
 mocks | state path to answer; see Runs
-mock_only | true: no agent, tool or decision without a mock
+mock_only | true: no agent, tool, decision or acquire without a mock
 breakpoints | "state", "state\@exit", or {state, at, condition, machine}
 watchpoints | Python expressions, or {expr, condition, machine}
 pause_at_start | true: hold the run at its first hook
 run_key | the same request again (below)
+tags | a flat object of text or number values ({book: 95}) that list_runs filters on
 wait | finish (default): return when the run ends, pauses or waits for an event; background: return at once
 max_wait | 0 to 3600 seconds; default the server's default_max_wait (600)
 full_output | true: the output in full; else texts over 20,000 characters are cut
@@ -704,9 +816,12 @@ process runs is attached to (@{tt}attached: true@{utt}); one another
 process runs is reported (@{tt}attached: false@{utt}, nothing started);
 an interrupted one is resumed (@{tt}resumed: true@{utt}); an ended one
 answers again with @{tt}ended@{utt}: its status, output or error. Only a
-run that failed transiently (@{tt}interrupted@{utt}, @{tt}timeout@{utt},
+run that failed transiently (@{tt}timeout@{utt},
 @{tt}agent_failed@{utt}, @{tt}decision_failed@{utt}, @{tt}internal@{utt},
-@{tt}diverged@{utt}) starts a new run. The same key with another machine,
+@{tt}diverged@{utt}) starts a new run. Not one that failed
+@{tt}interrupted@{utt} (a non-idempotent activity a crash cut off): a new
+run would repeat every finished one -- the machine's error transition
+reconciles it, or the caller takes a new key. The same key with another machine,
 params, mocks or mock_only is refused, as is a key of another user's run.
 
 @{h2}stategraph_get_run
@@ -732,10 +847,21 @@ or call activity reported a cost: @{tt}cost@{utt}, @{tt}tokens@{utt} (prompt,
 completion, cached), @{tt}activities@{utt}, @{tt}cost_is_estimate@{utt},
 @{tt}cost_unpriced_calls@{utt} and, with more than one state,
 @{tt}by_state@{utt} (each state path, a submachine state with what its
-states cost) -- a fork's without what it replays. Texts in frames, journal and error are cut at
-2,000 characters. An answer over 200,000 characters drops the oldest
-journal rows first (@{tt}journal_cut@{utt} says how many), then shows each
-frame's ctx as its keys and their sizes (@{tt}frames_cut@{utt}). A reader
+states cost) -- a fork's without what it replays -- and who the run is:
+@{tt}machine_id@{utt}, its times, @{tt}owner@{utt} and @{tt}lease_until@{utt},
+@{tt}run_key@{utt}, @{tt}parent_run@{utt} and @{tt}fork_step@{utt},
+@{tt}user_id@{utt}, @{tt}mocks@{utt}, @{tt}tags@{utt}. The engine's own trace
+rows (step hashes, request counters, joins) come only when @{tt}kinds@{utt}
+asks for trace rows; a trace row that repeats the run's error points to
+@{tt}error@{utt}. Texts in frames, journal, error and a paused out are cut at
+2,000 characters. The answers of get_run, run_machine and control_run stay
+under 200,000 characters (but an output asked for with
+@{tt}full_output@{utt}): the frames' largest ctx values become
+@{tt}{"$too_large": size}@{utt} first, then the largest other values
+(@{tt}cut@{utt} says which; read the output with @{tt}full_output@{utt}),
+and the journal fills what is left, newest rows first
+(@{tt}journal_cut@{utt} says how many and the @{tt}after@{utt} that reads
+them). A reader
 that is cancelled while it waits leaves the run alone. A reader who is
 neither the run's user nor an admin gets every callback URL's token as
 @{tt}<hidden>@{utt} (see @{" Callback URLs " link callbacks}).
@@ -748,12 +874,15 @@ The newest runs the caller may see, newest first.
 Parameter | Meaning
 machine_id | only runs of this machine
 status | only runs in this status
+tags | only runs with all of these tags ({book: 95}; a number matches its text too)
 limit | 1 to 200, default 20
 @{body}
 
 @{tt}runs@{utt}: id, machine_id, status, final_state, created_at,
-finished_at, run_key, parent_run (a fork's source) and a failed run's
-error message (300 characters).
+finished_at, run_key, parent_run (a fork's source), tags and a failed run's
+error message (300 characters). Runs that would take the answer over
+200,000 characters are left out, the oldest first: @{tt}runs_cut@{utt} says
+how many.
 
 @{h2}Slash commands
 
@@ -794,7 +923,7 @@ fork | at_step, definition, pause, mocks | a new run from a top-level step
 set_breakpoints | breakpoints | replaces the run's breakpoints
 set_watchpoints | watchpoints | replaces the run's watchpoints
 evaluate | expr | a read-only Python expression in the paused scope
-set | path, expr | while paused: ctx.<path> = expr; or out at an exit or error breakpoint
+set | path, expr | while paused: ctx.<path> = expr; or out at an exit or error breakpoint; on an interrupted or resumably failed run: ctx.<path> or params.<name> = a value (JSON), applied where its resume goes live (the steps before keep what they read)
 @{body}
 
 @{table}
@@ -819,7 +948,9 @@ refused (@{tt}http_409@{utt}), as is a second request while one is open;
 run_to and breakpoints act in the owning process only.
 The answer is the run as run_machine gives it plus @{tt}action@{utt} --
 for evaluate and set @{tt}value@{utt}, for fork the new
-@{tt}run_id@{utt} and @{tt}forked_from@{utt}. The debugger's state (a
+@{tt}run_id@{utt}, @{tt}forked_from@{utt} and the fork's new callback URLs
+(@{tt}callbacks@{utt}, see @{" Callback URLs " link callbacks}); a fork
+keeps its source's tags. The debugger's state (a
 pause, a step, run_to) survives an interruption and a resume.
 
 @{h2}stategraph_send_event
@@ -833,9 +964,12 @@ frame | the frame to send it to, when several accept it
 
 @{tt}accepted: true@{utt} with the @{tt}frame@{utt} that takes it. A frame
 that waits has taken it when the answer comes, so a @{tt}get_run@{utt}
-right after shows what the event started; a frame busy with an activity
-takes it when it next waits. An event no frame accepts yet is kept in the
-run's inbox (@{tt}queued: true@{utt}) until one does. Refused (@{tt}http_409@{utt}): an undeclared event, data
+right after shows what the event started. Only a waiting frame takes an
+event: one no frame takes now -- every frame busy with an activity -- is
+kept in the run's inbox (@{tt}queued: true@{utt}) for the first wait that
+accepts it. An event sent with @{tt}frame@{utt} is dropped (trace
+@{tt}event_dropped@{utt}) when that frame ends without taking it. Refused (@{tt}http_409@{utt}): an undeclared event, a
+@{tt}frame@{utt} whose machine does not declare it, data
 that does not fit ("data does not match its declared schema"), several
 frames that accept it without @{tt}frame@{utt}, a run that has ended or
 that no process runs (resume it first). A run another process holds --
@@ -881,7 +1015,7 @@ stategraph:
       offset: 3h        # ... plus offset: 03:00 UTC
       late: 1h          # a slot first seen later than this after its start is left out
       params: {task: "Tidy the nightly build"}
-      user: admin       # whose run it is; default nobody's (every user sees it)
+      user: admin       # whose run it is; default nobody's (only admins see it)
 @{body}
 
 @{table}
@@ -897,7 +1031,9 @@ user | none | the run's user
 
 A slot runs once: its run key is @{tt}schedule:<name>:<slot>@{utt}. After
 a transient failure it runs again 5 minutes after the last attempt ended,
-three attempts in all; a slot whose run was interrupted is resumed. One
+three attempts in all; a slot whose run was interrupted is resumed --
+also once the slot is over, by the API; an earlier slot's run whose
+machine is gone is ended. One
 process starts the slots of an instance -- the one that holds the
 scheduler lease in @{tt}runs.db@{utt}; another takes over when that
 process stops. A wrong entry is logged as an error and left out.
@@ -940,9 +1076,14 @@ The token is the key. The table that holds the callbacks keeps only its
 hash, but the URL itself is the activity's answer: it is in the run's
 journal in plain text, and in whatever the machine keeps it in
 (@{tt}ctx@{utt}, the output). @{tt}get_run@{utt} shows it only to an
-admin and to the run's own user; anyone else who may see the run -- a run
-of nobody, such as a schedule's without @{tt}user@{utt} -- gets
-@{tt}<hidden>@{utt} in place of the token. The route
+admin and to the run's own user; anyone else who may see the run -- the
+process's own code reading a run of nobody, such as a schedule's without
+@{tt}user@{utt} -- gets @{tt}<hidden>@{utt} in place of the token. A fork
+replays its source's callback answer, URL and all: when the source has
+ended, its unused URL goes to the fork; while the source goes on, the URL
+stays the source's and the fork gets a new one for the same event and
+expiry -- in the fork's answer (@{tt}callbacks@{utt}: event, url) and its
+@{tt}callbacks@{utt} lifecycle row, not in its ctx. The route
 is admin-only like the rest of the plugin until an operator opens it --
 see @{" Security " link security}.
 @endnode
@@ -968,9 +1109,13 @@ if row["status"] != "succeeded": ...         # not done: failed, cancelled, inte
 
 @{tt}run_to_end(machine_id, params, *, user_id, ...)@{utt} takes what
 @{tt}start_run@{utt} takes (@{tt}run_key@{utt}, @{tt}run_id@{utt},
-@{tt}live@{utt}, @{tt}caller_session@{utt}, mocks), starts the run and
-returns its row (@{tt}status@{utt}, @{tt}output@{utt}, @{tt}error@{utt},
-@{tt}final_state@{utt}) once its task in this process is over. That is a
+@{tt}live@{utt}, @{tt}caller_session@{utt}, @{tt}tags@{utt}, mocks), starts
+the run and returns its row (@{tt}status@{utt}, @{tt}output@{utt},
+@{tt}error@{utt}, @{tt}final_state@{utt}) once its task in this process is
+over. With @{tt}raise_error=True@{utt} a failed run raises instead: the
+exception its failing call's own code raised in this process (except your
+own error type), else @{tt}RunFailed@{utt} (service.py) with the run's
+@{tt}error@{utt}. That is a
 terminal status, or @{tt}interrupted@{utt} (this process stopped), or
 another owner's row (another process took the run over): read anything
 but @{tt}succeeded@{utt} as not done. A wait state holds it until its
@@ -1018,6 +1163,26 @@ function -- by it, by the code it calls, by a tool it runs -- count into
 its activity (the hook @{tt}count_call_spend@{utt}, see
 @{" The cost hook " link hook}), so the run's @{tt}spend@{utt} and the
 panel's cost by state hold them: a phase of a pipeline shows what it cost.
+A run such code starts (@{tt}start_run@{utt}, @{tt}run_to_end@{utt})
+keeps its own spend and names its caller (@{tt}started_by@{utt}); the
+caller's @{tt}get_run@{utt} lists it under @{tt}children@{utt}, and its
+spend counts the children's under the calling state. A pause or
+continue of the caller reaches its live children in the same process;
+the caller's continue releases only the children its pause halted (a
+child's own pause or breakpoint stays its own). A run resumed by its
+run_key names the run that resumed it as its caller from then on.
+When the caller is terminated,
+its children that have not ended are terminated too; when it succeeds
+or fails for good, its interrupted children are (nobody resumes them
+any more) -- their error says @{tt}terminated by its caller run ...@{utt}.
+A run the code hands off rather than runs as a step of its own -- an
+independent workflow, say -- is started with
+@{tt}start_run(..., detached=True)@{utt}: nobody's child, so the
+caller's spend, pause and end leave it alone.
+@{tt}get_run@{utt} also answers @{tt}max_cost@{utt} (the run's own
+@{tt}limits.max_cost@{utt}, or null) and @{tt}cost@{utt} (its own
+@{tt}run.cost@{utt}, without its children; a fork's copied steps
+count, as its guard counts them) beside the spend.
 @endnode
 
 @node hook "The cost hook"
@@ -1128,6 +1293,13 @@ only in its own process.
 @{bullet}A resume from the panel, or by another process, has no
 @{tt}live@{utt} objects: a function that needs one fails there (see
 @{" Running a machine from Python " link python}).
+@{bullet}A resume replays a step's guards from the journal, but runs its
+effects and templates again: a helper the companion module imports is
+the process's current code, and a change to it can end the resumed run
+@{tt}diverged@{utt}.
+@{bullet}An attempt a stop cut off keeps what it had spent in its row, and
+the run's spend counts it; a hard kill (no stop) loses that attempt's
+cost.
 @{bullet}A synchronous @{tt}call@{utt} function runs in a worker thread:
 terminate and timeouts end the activity at once, and Python cannot stop
 the thread -- a long function checks @{tt}sg.cancelled@{utt} (a
@@ -1252,6 +1424,10 @@ inject_params | {} | secrets for every tool activity, see above; one plugin's go
 default_max_wait | 600 | seconds run_machine and get_run wait with wait finish
 public_url | "" | the app's URL as the outside reaches it: the base of callback URLs
 schedules | [] | see @{" Schedules " link schedules}
+auto_resume | [] | machine ids whose interrupted runs the API resumes by itself (like resume: auto)
+semaphores | {} | name -> capacity: the slots the acquire kind takes, shared by every run of the instance; a reload changes them
+semaphore_hold_seconds | 300 | how long an interrupted run keeps its semaphore slots
+retention_days | none | drop the journal of runs that ended more than so many days ago (keeps their row, lifecycle rows and spend; never an interrupted or resumably failed run; a compacted run is neither resumed nor forked); none keeps everything
 @{body}
 
 Needs @{tt}ruamel.yaml@{utt}, @{tt}networkx@{utt} and

@@ -9,7 +9,7 @@ import {
 } from '/static/kit/panel-kit.js';
 import {
   autoOf, Canvas, counted, fragmentLock, groupedSpots, isRoute, keepingChoices, LINE_STYLES, lineKeys, NOTE, noteKey, outermost, posixPath,
-  problemIndex, putTyped, renamedLines, runOverlay, sameSelection, selectionOf, shorten, stateFragment, typedIn,
+  problemIndex, putTyped, renamedLines, runLabel, runOverlay, sameSelection, selectionOf, shorten, stateFragment, typedIn,
   foldTrace,
 } from './graph.js';
 
@@ -45,6 +45,8 @@ const S = {
   yamlFile: null,
   runs: [],
   historyKind: '',      // the history shows the rows of this kind only ('': every row)
+  // the History's own reads (UI-16): older pages, the State filter's rows, the row opened whole
+  history: { older: [], more: true, state: '', stateRows: null, row: null },
   runId: null,
   run: null,            // get_run of the selected run
   evaluation: null,     // {expr, value} | {expr, error}
@@ -56,7 +58,7 @@ const S = {
   stateFramesFor: null,    // ... for this state
   resultOpen: new Set(),  // indexes of the result's activities the author opened
   nextBreakpoints: [],  // [{state, at, machine}] for the next run of this machine
-  nextWatch: [],        // [expr] for the next run, watched in this machine's frames
+  nextWatch: [],        // [{expr, condition?, enabled?}] for the next run, watched in this machine's frames
   catalog: null,        // /catalog: agents, tools and decision profiles the fields offer
   catalogFor: undefined,  // the machine whose runner's tools the catalog holds (null: a new machine's)
   runStatus: '',        // the runs list shows runs of this status only ('': every run)
@@ -95,7 +97,9 @@ const otherMachine = (point) => (point.machine && point.machine !== S.machine?.i
 const preview = (value, max = 90) => {
   if (value === undefined || value === null) return '';
   const text = typeof value === 'string' ? value : JSON.stringify(value);
-  return shorten(text.replace(/\s+/g, ' '), max);
+  // cut before the whitespace is collapsed: a long answer is never scanned whole for a 90-character line (UI-1)
+  const head = text.length > max * 4 ? `${text.slice(0, max * 4)}…` : text;
+  return shorten(head.replace(/\s+/g, ' '), max);
 };
 
 function remember(key, value) {
@@ -216,7 +220,7 @@ function drawStateFrames() {
   const shown = shownFrame()?.prefix;
   // last in the inspector and folded (a map runs one per item); open stays open through the polls
   update(box, frames.length ? html`<details class="pk-details" data-state-frames ${S.stateFramesOpen ? 'open' : ''}>
-    <summary data-key="state-frames">Submachine runs (${frames.length}) <span class="pk-badge pk-badge--info">run ${shorten(S.run.id, 12)}</span></summary>
+    <summary data-key="state-frames">Submachine runs (${frames.length}) <span class="pk-badge pk-badge--info">run ${runLabel(S.run.id)}</span></summary>
     <ul class="sg-plain-list">${frames.map((f) => {
       seen[f.machine] = (seen[f.machine] || 0) + 1;
       return html`<li class="sg-watch"><span class="pk-mono">${f.machine}${count[f.machine] > 1 ? ` #${seen[f.machine]}` : ''}</span>
@@ -277,6 +281,7 @@ document.addEventListener('click', (event) => {
 });
 
 function redrawOverlay() {
+  $('canvas').classList.toggle('sg-run-failed', S.run?.status === 'failed');  // its last state is where it failed
   const frame = shownFrame();
   const run = frame ? runOverlay(S.run, frame.prefix, tracedFrame(frame.prefix)) : null;
   if (run) {  // the states that started submachine runs: a badge says how many (the inspector lists them)
@@ -291,6 +296,9 @@ function redrawOverlay() {
 }
 
 let fitPending = true;
+/** How a machine opens: whole, or -- too large to read whole -- readable, on its initial state (Fit shows it whole). */
+const openView = () => canvas.fit({ readable: true, on: S.machine?.graph?.initial });
+
 async function drawGraph({ fit = false } = {}) {
   const drawn = await canvas.setGraph(S.machine.graph, S.machine.layout);
   if (!drawn) return;
@@ -299,7 +307,7 @@ async function drawGraph({ fit = false } = {}) {
   redrawOverlay();
   if (fit || fitPending) {
     fitPending = !$('canvas').getBoundingClientRect().width;  // hidden now: fit once the graph tab shows
-    canvas.fit();
+    openView();
   }
   const parses = !S.machine.problems.some((p) => p.level === 'error' && !p.path);
   render($('sgStates'), S.machine.graph.states.map((s) => html`<option value="${s.name}">${s.label || ''}</option>`));
@@ -325,11 +333,27 @@ async function saveLayout(changes) {
     drawSaveControls();
     return;
   }
-  try {
-    await api(`${API}/machines/${enc(S.machine.id)}/layout`, { method: 'PUT', json: { layout }, quiet: true });
-  } catch (error) {
-    if (!isAborted(error)) toast(`Layout not saved: ${errorText(error)}`, { kind: 'warn' });
-  }
+  await sendLayout(S.machine.id, layout);
+}
+
+/** Layouts saved and not yet sent, by machine: one PUT is out at a time and the newest layout waits for it, so a held
+ * arrow key neither sends a PUT per key repeat nor lets an older layout land after a newer one. */
+const layoutsWaiting = new Map();
+let layoutSending = null;
+function sendLayout(id, layout) {
+  layoutsWaiting.set(id, layout);
+  layoutSending ||= (async () => {
+    for (const [machine, next] of layoutsWaiting) {  // a layout saved while one is out joins the loop
+      layoutsWaiting.delete(machine);
+      try {
+        await api(`${API}/machines/${enc(machine)}/layout`, { method: 'PUT', json: { layout: next }, quiet: true });
+      } catch (error) {
+        if (!isAborted(error)) toast(`Layout not saved: ${errorText(error)}`, { kind: 'warn' });
+      }
+    }
+    layoutSending = null;
+  })();
+  return layoutSending;
 }
 
 /** A stored line style as the canvas draws it: one no longer offered is right-angled, like anything but 'straight';
@@ -429,9 +453,12 @@ async function loadMachines({ checks = true } = {}) {
     machines = await api(`${API}/machines`, { latest: 'machines', quiet: true });
   } catch (error) {
     if (isAborted(error)) return;
-    update($('machineList'), emptyState('circle-alert', 'Machines could not be loaded', errorText(error)));
+    // a list shown stays, and says it is not fresh; only a first load that fails has nothing to keep
+    if (S.machines.length) notice($('machinesStale'), `Not refreshed (${errorText(error)}): shown is the last list.`, { kind: 'warn' });
+    else update($('machineList'), emptyState('circle-alert', 'Machines could not be loaded', errorText(error)));
     return;
   }
+  notice($('machinesStale'), '');
   // what the list shows on arrival: a check that came while the list was on its way is kept
   const before = new Map(S.machines.map((m) => [m.id, m]));
   S.machines = machines;
@@ -509,14 +536,49 @@ function folderView(folder, searching) {
   </details>`;
 }
 
+/** The machines the search finds: in id, title, description or group. */
+function searched() {
+  const needle = $('search').value.trim().toLowerCase();
+  return S.machines.filter((m) => !needle || `${m.id} ${m.title} ${m.description} ${m.group || ''}`.toLowerCase().includes(needle));
+}
+
+/** A search no machine matches that may be a run id (a log names one: letters, digits, `_.:-`, no blank), else ''. */
+function searchedRun() {
+  const typed = $('search').value.trim();
+  return S.machines.length && !searched().length && /^[\w.:-]{6,}$/.test(typed) ? typed : '';
+}
+
 function drawMachineList() {
   drawMachineChoices();
-  const needle = $('search').value.trim().toLowerCase();
-  const shown = S.machines.filter((m) => !needle || `${m.id} ${m.title} ${m.description} ${m.group || ''}`.toLowerCase().includes(needle));
+  const needle = $('search').value.trim();
+  const shown = searched();
   const tree = folderTree(shown);
+  const run = searchedRun();
   update($('machineList'), shown.length
     ? [...subfolders(tree).map((folder) => folderView(folder, Boolean(needle))), ...tree.machines.map(machineItem)]
-    : emptyState('workflow', S.machines.length ? 'No machine matches' : 'No machines yet', S.machines.length ? '' : 'Create one with New.'));
+    : html`${emptyState('workflow', S.machines.length ? 'No machine matches' : 'No machines yet', S.machines.length ? '' : 'Create one with New.')}
+      ${run ? html`<button type="button" class="pk-btn pk-btn--sm sg-open-run" data-open-run="${run}"
+        title="A run by its id: its machine opens with the run shown (Enter in the search does the same)">${icon('play', { size: 'sm' })} Open run ${runLabel(run)}</button>` : ''}`);
+}
+
+/** A run by its id -- a log or comm.txt names it, not its machine: the run says its machine, which opens with it. */
+async function openRun(id) {
+  let run;
+  try {
+    run = await api(`${API}/runs/${enc(id)}?steps=1`, { quiet: true });
+  } catch (error) {
+    if (!isAborted(error)) toast(error.status === 404 ? `No run ${id}` : `Run ${id} not read: ${errorText(error)}`, { kind: 'warn' });
+    return;
+  }
+  if (!S.machines.some((m) => m.id === run.machine_id)) {
+    toast(`${id} is a run of ${run.machine_id}, which has no graph of its own here`, { kind: 'warn' });
+    return;
+  }
+  if (S.machine?.id !== run.machine_id) await openMachine(run.machine_id);
+  if (S.machine?.id !== run.machine_id) return;  // the author kept the machine with unsaved changes
+  selectTab($('mainTabs'), 'runs');
+  onTab('runs');
+  selectRun(id);
 }
 
 // details fire toggle on themselves only: caught on the way down. A search's open folders are not the author's choice.
@@ -530,6 +592,21 @@ $('machineList').addEventListener('toggle', (event) => {
 
 /** Open (or reload) a machine. Unsaved YAML is discarded only after the author agreed, or when the caller has
  * dealt with it already (discard: a reload after a conflict or a save). */
+/** Says the machine ``id`` is being read, once that takes a moment (a large tree takes seconds); the function it
+ * gives back ends that. A later open takes the notice over. */
+function opening(id) {
+  const token = (S.opening = {});
+  const timer = setTimeout(() => {
+    if (S.opening !== token) return;
+    $('openingText').textContent = `Opening ${id}…`;
+    $('opening').hidden = false;
+  }, 150);
+  return () => {
+    clearTimeout(timer);
+    if (S.opening === token) $('opening').hidden = true;
+  };
+}
+
 async function openMachine(id, { keepRun = false, discard = false } = {}) {
   const where = savable() ? 'The machine has unsaved changes' : 'The inspector has changes that are not applied';
   if (unsaved() && !discard && !await confirm(id === S.machine?.id
@@ -539,10 +616,13 @@ async function openMachine(id, { keepRun = false, discard = false } = {}) {
   }
   abandon('machine-refresh');  // a refresh in flight would answer for the machine this one replaces
   let machine;
+  const opened = opening(id);
   try {
     machine = await api(`${API}/machines/${enc(id)}`, { latest: 'machine' });
   } catch (error) {
     return;  // toasted
+  } finally {
+    opened();
   }
   const switched = machine.id !== S.machine?.id;
   S.drafts = {};
@@ -561,8 +641,13 @@ async function openMachine(id, { keepRun = false, discard = false } = {}) {
     // stored per machine, so one kept without its machine (an older panel) belongs to this one
     S.nextBreakpoints = (Array.isArray(stored) ? stored : []).filter((p) => p?.state)
       .map((p) => ({ ...p, machine: p.machine || machine.id }));
-    S.nextWatch = recall(`watch:${machine.id}`, []);
+    const watches = recall(`watch:${machine.id}`, []);  // an older panel kept bare expressions
+    S.nextWatch = (Array.isArray(watches) ? watches : []).map((w) => (typeof w === 'string' ? { expr: w } : w)).filter((w) => w?.expr);
     $('mocks').value = recall(`mocks:${machine.id}`, '');
+    // the test options are the machine's, as its mocks: another machine's Mock only would fail its first activity
+    const options = recall(`test-options:${machine.id}`, {});
+    $('mockOnly').checked = Boolean(options?.mock_only);
+    $('pauseAtStart').checked = Boolean(options?.pause_at_start);
     notice($('startError'), '');  // the last machine's refusal
     drawTestOptions({ open: true });
     fitPending = true;
@@ -605,6 +690,7 @@ function showMachine(machine) {
   $('placeholder').hidden = true;
   $('machineView').hidden = false;
   if (S.catalogFor !== machine.id) loadCatalog(machine.id);  // not awaited: the fields offer its lists once they come
+  if (!S.kinds.length) loadKinds();  // failed before (a restart): asked again, drawn once they come
   drawHead();
   drawPalette();
   drawGraph();
@@ -698,6 +784,11 @@ async function edit(op, { from = null, places = null, keys = null } = {}) {
   const m = S.machine;
   const auto = S.autosave;  // the answer is read the way the request was made: toggleAutosave waits for it
   if (readOnly()) return null;
+  // one at a time: a second edit (a double click on Move down) would be computed from the graph the first one changes
+  if (S.editing) {
+    toast('An edit is on its way: make the next one once it is done.', { kind: 'warn' });
+    return null;
+  }
   // the root text the edit starts from, and what an undo writes back (auto-save) or puts back as the draft
   let before = auto ? m.files[m.root_file] : rootText();
   // without auto-save, text typed in the YAML tab the graph does not show yet: the edit works from the text drawn,
@@ -847,11 +938,7 @@ async function travel(back) {
   if (step.spots || step.styles) {  // the edit changed the layout as well: that part goes back with its text, the rest stays
     const layout = { ...m.layout, version: 1, auto: autoOf(m.layout), positions: patched(positions(), step.spots),
       lines: patched(lineStyles(), step.styles) };
-    try {
-      await api(`${API}/machines/${enc(m.id)}/layout`, { method: 'PUT', json: { layout }, quiet: true });
-    } catch (error) {
-      if (!isAborted(error)) toast(`Layout not put back: ${errorText(error)}`, { kind: 'warn' });
-    }
+    await sendLayout(m.id, layout);  // after a move's layout still out, never before it
   }
   S.drafts = {};
   await openMachine(m.id, { keepRun: true, discard: true });
@@ -1213,10 +1300,15 @@ async function removeTransition(id) {
 
 // ------------------------------------------------------------------ selection and inspector
 
-async function choose(selection) {
+/** Select on the canvas and show in the inspector. `zoom` (Find, a problem, a result's state): the state, or a
+ * transition's source, is brought into a readable view (Canvas.reveal). */
+async function choose(selection, { zoom = false } = {}) {
   const same = sameSelection(selection, S.selection);
+  const shown = selection?.kind === 'state' ? selection.id
+    : zoom && selection?.kind === 'transition' ? transitionOf(selection.id)?.source : null;
   if (same && S.inspectorDrafts.size) {  // chosen again (a click, Enter, a problem link): keep what was typed
     canvas.select(selection);
+    if (shown) canvas.reveal(shown, { zoom });
     return;
   }
   if (!same && S.inspectorDrafts.size && !await confirm('The inspector has changes that are not applied. Discard them?',
@@ -1226,7 +1318,8 @@ async function choose(selection) {
   }
   S.selection = selection;
   canvas.select(selection);
-  if (selection?.kind === 'state') canvas.reveal(selection.id);
+  if (shown && zoom) fitPending = false;  // the graph tab opened for this state: a fit afterwards would leave it
+  if (shown) canvas.reveal(shown, { zoom });
   if (selection) selectTab($('sideTabs'), 'inspect');
   drawInspector();
 }
@@ -1241,6 +1334,21 @@ function problemList(problems) {
 function breakpointsFor(name) {
   return new Set(shownBreakpoints().filter((p) => p.state === name && p.enabled !== false && ofThisMachine(p))
     .map((p) => p.at || 'enter'));
+}
+
+/** The breakpoint of this machine on hook `at` of state `name`, as shown (the live run's, else the next run's). */
+const pointAt = (name, at) => shownBreakpoints().find((p) => p.state === name && (p.at || 'enter') === at && ofThisMachine(p));
+
+/** A condition field per breakpoint set on the state: it stops only where the Python expression is true. */
+function conditionFields(name) {
+  return [...breakpointsFor(name)].map((at) => html`<label class="pk-field sg-condition"><span class="pk-label">${human(at)} only if</span>
+    <input class="pk-input pk-input--sm pk-input--mono" data-breakpoint-condition="${at}" value="${pointAt(name, at)?.condition || ''}"
+      placeholder="Python expression, e.g. ctx.round > 3 (empty: always)" autocomplete="off"></label>`);
+}
+
+/** The condition fields as the breakpoints now stand -- not drawn anew while unchanged (update): typing stays. */
+function drawConditions() {
+  if (S.selection?.kind === 'state' && $('bpConditions')) update($('bpConditions'), conditionFields(S.selection.id));
 }
 
 /** The hooks that can stop in a state (the interpreter's, §6), and a line on why the others cannot. */
@@ -1337,6 +1445,9 @@ const SHORTCUTS = html`<details class="pk-details"><summary>Shortcuts</summary>
     <dt>Drag</dt><dd>Move a state or a note; a selected state moves every selected one</dd>
     <dt>Drag the handle</dt><dd>Connect the state to another one</dd>
     <dt>Double-click</dt><dd>Rename a state, open a note</dd>
+    <dt>Tab, Enter</dt><dd>Go to the next state; select it (a transition too)</dd>
+    <dt>T, S</dt><dd>On a state: go to its transitions, T again to the next one (Shift+T: back); S: back to the state</dd>
+    <dt>Arrow keys</dt><dd>Move the focused state (Shift: by one unit)</dd>
     <dt>Delete</dt><dd>Remove what is selected</dd>
     <dt>Wheel</dt><dd>Scroll; with Ctrl, zoom</dd>
     <dt>Ctrl+Z, Ctrl+Y</dt><dd>Undo, redo (Ctrl+Shift+Z too)</dd>
@@ -1450,10 +1561,10 @@ ${note.text}</textarea>
       ${problemList(pinned?.problems)}
     </div>
     <div class="sg-section">
-      <h4 class="sg-section-title">Breakpoints ${live ? html`<span class="pk-badge pk-badge--info">run ${shorten(live.id, 12)}</span>` : html`<span class="pk-muted">(next run)</span>`}</h4>
+      <h4 class="sg-section-title">Breakpoints ${live ? html`<span class="pk-badge pk-badge--info">run ${runLabel(live.id)}</span>` : html`<span class="pk-muted">(next run)</span>`}</h4>
       ${hooks.length ? html`<div class="pk-row sg-checks">
         ${hooks.map((at) => html`<label class="pk-check"><input type="checkbox" data-breakpoint="${at}" ${points.has(at) ? 'checked' : ''}> ${human(at)}</label>`)}
-      </div>` : ''}
+      </div><div id="bpConditions" class="pk-stack">${conditionFields(state.name)}</div>` : ''}
       ${why ? html`<p class="pk-help">${why}</p>` : ''}
     </div>
     ${state.type === 'state' && !state.composite ? html`<div class="sg-section">
@@ -1578,7 +1689,8 @@ function machineOverview() {
 const STATE_FIELD_SCHEMA = {
   type: { enum: ['state', 'choice', 'junction', 'final'], description: 'state: may run an activity; choice / junction: decided within a transition; final: ends its region' },
   description: { type: 'string', description: 'free text for whoever reads the machine: shown with the state, never run' },
-  max_visits: { type: 'integer', description: 'entries of this state per frame; one more raises loop_limit' },
+  max_visits: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'string', pattern: '\\{\\{' }],
+    description: 'entries of this state per frame; one more raises loop_limit -- a number or a {{ }} expression over params' },
   timeout: { anyOf: [{ type: 'number' }, { type: 'string' }], description: 'wait state: raise wait_timeout after this long (30s, 5m)' },
   after: { anyOf: [{ type: 'number' }, { type: 'string' }], description: 'timer state: complete this long after entry (10m); an event it takes may come first' },
   entry: { type: 'string', 'x-code': true, description: 'Python statements, run on entry' },
@@ -1601,7 +1713,7 @@ const MACHINE_FIELD_SCHEMA = {
   machines: { type: 'object', description: 'machines inside this file, name: {params, context, initial, states, ...}; machine: <name> runs one; they share the companion module and imports' },
   resources: { type: 'object', description: 'name: {open, fork, close} activities' },
   agent: { type: 'object', description: 'offer this machine as an agent, no config entry: {name, description, input, task_param, on_wait, params, promote, visibility (default private)}; every process declares it as it starts' },
-  limits: { type: 'object', description: 'max_steps, timeout, concurrency' },
+  limits: { type: 'object', description: 'max_steps, timeout, concurrency, max_cost' },
   finally: { type: 'object', description: 'an activity that runs once when the machine ends' },
 };
 const COMMON_FIELDS = ['timeout', 'retry', 'idempotent', 'description'];  // every kind has them: listed last
@@ -1911,6 +2023,13 @@ $('side-inspect').addEventListener('change', async (event) => {
     markApplies();
     return;
   }
+  const condition = event.target.closest('[data-breakpoint-condition]');
+  if (condition && S.selection?.kind === 'state') {
+    const [name, at] = [S.selection.id, condition.dataset.breakpointCondition];
+    const text = condition.value.trim();
+    await setBreakpoints(shownBreakpoints().map((p) => (p === pointAt(name, at) ? { ...p, condition: text || null } : p)));
+    return;
+  }
   const box = event.target.closest('[data-breakpoint]');
   if (!box || S.selection?.kind !== 'state') return;
   await toggleBreakpoint(S.selection.id, box.dataset.breakpoint, box.checked);
@@ -1932,17 +2051,27 @@ $('side-inspect').addEventListener('scroll', (event) => followScroll(event.targe
 
 /** A breakpoint of the open machine: it stops in that machine's frames only, not in a submachine's same-named state. */
 async function toggleBreakpoint(name, at, on) {
-  const kept = shownBreakpoints().filter((p) => !(p.state === name && (p.at || 'enter') === at && ofThisMachine(p)));
-  const next = on ? [...kept, { state: name, at, machine: S.machine.id }] : kept;
+  const here = (p) => p.state === name && (p.at || 'enter') === at && ofThisMachine(p);
+  const kept = shownBreakpoints().filter((p) => !here(p));
+  // a point switched off is switched on again as it was: its condition stays with it
+  const old = shownBreakpoints().find(here);
+  await setBreakpoints(on ? [...kept, old ? { ...old, enabled: true } : { state: name, at, machine: S.machine.id }] : kept);
+}
+
+/** The breakpoints shown, changed: the live run's through its control, else the next run's, kept for the machine. */
+async function setBreakpoints(next) {
   if (liveRun()) {
     await control('set_breakpoints', { breakpoints: next });
-  } else {
-    S.nextBreakpoints = next.map(({ state, at: hook, machine, condition }) => ({
-      state, at: hook || 'enter', ...(machine ? { machine } : {}), ...(condition ? { condition } : {}) }));
-    remember(`breakpoints:${S.machine.id}`, S.nextBreakpoints);
-    drawStartForm();
-    redrawOverlay();
+    return;
   }
+  S.nextBreakpoints = next.map(({ state, at: hook, machine, condition, enabled }) => ({
+    state, at: hook || 'enter', ...(machine ? { machine } : {}), ...(condition ? { condition } : {}),
+    ...(enabled === false ? { enabled: false } : {}) }));
+  remember(`breakpoints:${S.machine.id}`, S.nextBreakpoints);
+  drawStartForm();
+  drawDebugPane();
+  drawConditions();
+  redrawOverlay();
 }
 
 // ------------------------------------------------------------------ coloured YAML boxes
@@ -2089,7 +2218,7 @@ function goToProblem(problem) {
   if (state || transition) {
     selectTab($('mainTabs'), 'graph');
     onTab('graph');
-    choose(transition ? { kind: 'transition', id: transition } : { kind: 'state', id: state });
+    choose(transition ? { kind: 'transition', id: transition } : { kind: 'state', id: state }, { zoom: true });
     return;
   }
   const file = posixPath(problem.file);
@@ -2268,7 +2397,7 @@ function drawStartForm() {
   }
   const points = S.nextBreakpoints.map((p) => `${p.state}@${p.at || 'enter'}`);
   $('nextPoints').textContent = [points.length ? `breakpoints: ${points.join(', ')}` : '',
-    S.nextWatch.length ? `watching: ${S.nextWatch.join(', ')}` : ''].filter(Boolean).join(' · ');
+    S.nextWatch.length ? `watching: ${S.nextWatch.map((w) => w.expr).join(', ')}` : ''].filter(Boolean).join(' · ');
 }
 
 function readParams() {
@@ -2331,6 +2460,7 @@ async function startRun(params, mocks, mockOnly) {
   if (hasDrafts() && !await confirm('The machine has unsaved changes: the run starts from the saved file. Start anyway?',
     { confirmLabel: 'Start' })) return;
   remember(`mocks:${S.machine.id}`, $('mocks').value);
+  remember(`test-options:${S.machine.id}`, { mock_only: mockOnly, pause_at_start: $('pauseAtStart').checked });
   keepParams(S.machine, params);
   // a point on a state the file no longer has (removed, renamed in the YAML tab) would be refused by the server
   const stale = keepNextPoints((p) => (hooksOf(stateOf(p.state) || { type: 'choice' }).hooks.includes(p.at || 'enter') ? p : null));
@@ -2343,7 +2473,7 @@ async function startRun(params, mocks, mockOnly) {
       method: 'POST',
       json: {
         machine_id: S.machine.id, params, mocks, mock_only: mockOnly, pause_at_start: $('pauseAtStart').checked,
-        breakpoints: S.nextBreakpoints, watchpoints: S.nextWatch.map((expr) => ({ expr, machine: S.machine.id })),
+        breakpoints: S.nextBreakpoints, watchpoints: S.nextWatch.map((w) => ({ ...w, machine: S.machine.id })),
       },
       quiet: true,
     });
@@ -2381,6 +2511,7 @@ async function rerun(run) {
   const mocks = run.mocks?.mocks && Object.keys(run.mocks.mocks).length ? run.mocks.mocks : null;
   $('mocks').value = mocks ? JSON.stringify(mocks) : '';
   $('mockOnly').checked = Boolean(run.mocks?.mock_only);
+  $('pauseAtStart').checked = false;  // the run is started again as it ran: a run keeps no pause at its start
   drawTestOptions({ open: true });
   // what was its param's default when the run started is no choice (a panel sent every default): the machine's
   // default now applies, a changed one too
@@ -2399,12 +2530,16 @@ let startFor = null;  // the machine whose first run list opened or folded the s
 async function loadRuns({ older = false, tick = false } = {}) {
   if (!S.machine) {
     runsPoller.stop();
+    loadEveryRun({ tick });  // none open: the runs of every machine the placeholder shows
     return;
   }
   if (tick && runsRequests) return;  // a tick never aborts a load the author started
   const last = S.runs[S.runs.length - 1];
   const limit = older ? RUN_PAGE : Math.min(500, Math.max(RUN_PAGE, S.runs.length));
-  const query = `machine_id=${enc(S.machine.id)}&nested=true&limit=${limit}${S.runStatus ? `&status=${enc(S.runStatus)}` : ''}`
+  const tags = $('runTags').value.trim();
+  // every machine (FEAT-7): the same list without machine_id -- what runs or stopped anywhere, newest first
+  const query = `${everyMachine() ? '' : `machine_id=${enc(S.machine.id)}&nested=true&`}limit=${limit}`
+    + `${S.runStatus ? `&status=${enc(S.runStatus)}` : ''}${tags ? `&tags=${enc(tags)}` : ''}`
     + (older && last ? `&before=${enc(last.id)}` : '');
   let page;
   runsRequests += 1;
@@ -2418,9 +2553,9 @@ async function loadRuns({ older = false, tick = false } = {}) {
   }
   S.runs = older ? [...S.runs, ...page] : page;
   S.runsMore = page.length === limit;
-  // decided once per machine, on its whole list (a status filter is the viewer's, not "no runs"), and never over
-  // a start error the form shows
-  if (startFor !== S.machine.id && !S.runStatus) {
+  // decided once per machine, on its whole list (a status or tag filter, or every machine's runs, is the viewer's,
+  // not "no runs"), and never over a start error the form shows
+  if (startFor !== S.machine.id && !S.runStatus && !tags && !everyMachine()) {
     startFor = S.machine.id;
     $('startBox').open = !S.runs.length || !$('startError').hidden;
   }
@@ -2432,6 +2567,8 @@ async function loadRuns({ older = false, tick = false } = {}) {
 }
 
 const isLive = (r) => !TERMINAL.has(r.status) && r.status !== 'interrupted';
+/** The run list shows the runs of every machine (the scope filter), not the open machine's. */
+const everyMachine = () => $('runScope').value === 'every';
 
 /** The list is asked again while a run is shown and another one is live: the bar offers it, with its status. */
 function followRuns() {
@@ -2447,22 +2584,81 @@ $('runStatus').addEventListener('change', () => {
   S.runs = [];  // another list: its first page
   loadRuns();
 });
-
-function drawRunList() {
-  update($('runList'), S.runs.length ? html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="runs" data-pk-select>
-    <thead><tr><th>Run</th><th>Status</th><th>State</th><th aria-sort="descending">Started</th><th>Ended</th><th>By</th></tr></thead>
-    <tbody>${S.runs.map((r) => html`<tr data-id="${r.id}" tabindex="0" aria-selected="${String(r.id === S.runId)}">
-      <td class="pk-mono">${shorten(r.id, 14)}${r.parent_run ? html` <span class="pk-muted" title="${`forked from ${r.parent_run} at step ${r.fork_step}`}">fork</span>` : ''}${r.machine_id !== S.machine?.id ? html` <span class="pk-muted" title="${`a run of ${r.machine_id} this machine ran in as a submachine`}">in ${r.machine_id}</span>` : ''}</td>
-      <td data-sort-value="${r.status}">${statusBadge(r.status)}</td>
-      <td class="pk-mono">${r.final_state || ''}</td>
-      <td data-sort-value="${r.created_at || ''}">${localTime(r.created_at, { seconds: true })}</td>
-      <td data-sort-value="${r.finished_at || ''}">${r.finished_at ? localTime(r.finished_at, { seconds: true }) : ''}</td>
-      <td>${r.user_id || ''}</td></tr>`)}</tbody></table></div>`
-    : S.runStatus ? emptyState('play', `No ${S.runStatus} run`, 'Another status shows others.')
-      : emptyState('play', 'No runs yet', 'Start one above.'));
+for (const id of ['runScope', 'runTags']) {
+  $(id).addEventListener('change', () => {
+    S.runs = [];
+    loadRuns();
+  });
 }
 
-$('runList').addEventListener('rowselect', (event) => selectRun(event.detail.id));
+/** A run's tags as the list shows them: name:value, comma-separated. */
+const tagText = (tags) => Object.entries(tags || {}).map(([name, value]) => `${name}:${value}`).join(', ');
+
+/** The machine's runs, newest first as the server pages them: not sorted here (a sort would order one page only). */
+function drawRunList() {
+  update($('runList'), runTable(S.runs, { every: everyMachine(), status: S.runStatus, none: 'Start one above.' }));
+}
+
+/** A run list as a table; `every`: runs of any machine, with a Machine column. */
+function runTable(runs, { every, status, none }) {
+  return runs.length ? html`<div class="pk-table-wrap"><table class="pk-table" data-pk-select>
+    <thead><tr><th>Run</th>${every ? html`<th>Machine</th>` : ''}<th>Status</th><th>State</th><th aria-sort="descending">Started</th><th>Ended</th><th>By</th></tr></thead>
+    <tbody>${runs.map((r) => html`<tr data-id="${r.id}" tabindex="0" aria-selected="${String(r.id === S.runId)}">
+      <td class="pk-mono"><span title="${r.id}">${runLabel(r.id)}</span>${r.parent_run ? html` <span class="pk-muted" title="${`forked from ${r.parent_run} at step ${r.fork_step}`}">fork</span>` : ''}${!every && r.machine_id !== S.machine?.id ? html` <span class="pk-muted" title="${`a run of ${r.machine_id} this machine ran in as a submachine`}">in ${r.machine_id}</span>` : ''}${tagText(r.tags) ? html` <span class="pk-muted" title="tags">${tagText(r.tags)}</span>` : ''}</td>
+      ${every ? html`<td class="pk-mono">${r.machine_id}</td>` : ''}
+      <td>${statusBadge(r.status)}</td>
+      <td class="pk-mono">${r.final_state || ''}</td>
+      <td>${localTime(r.created_at, { seconds: true })}</td>
+      <td>${r.finished_at ? localTime(r.finished_at, { seconds: true }) : ''}</td>
+      <td>${r.user_id || ''}</td></tr>`)}</tbody></table></div>`
+    : status ? emptyState('play', `No ${status} run`, 'Another status shows others.')
+      : emptyState('play', 'No runs yet', none);
+}
+
+// a run of another machine (the every-machine list) opens with its machine
+$('runList').addEventListener('rowselect', (event) => {
+  const run = S.runs.find((r) => r.id === event.detail.id);
+  if (everyMachine() && run && run.machine_id !== S.machine?.id) openRun(run.id);
+  else selectRun(event.detail.id);
+});
+
+/** Runs of every machine while none is open (FEAT-7): what runs or stopped anywhere, newest first, by status and
+ * tags; `older`: the page after the last one shown; `tick`: the timer's, which never aborts a load that is out and
+ * never replaces the list with an error. */
+let everyRuns = [];
+let everyRequests = 0;  // GETs of the every-machine list that are out
+async function loadEveryRun({ older = false, tick = false } = {}) {
+  if (S.machine || (tick && everyRequests)) return;
+  const last = everyRuns[everyRuns.length - 1];
+  const limit = older ? RUN_PAGE : Math.min(500, Math.max(RUN_PAGE, everyRuns.length));
+  const status = $('everyRunStatus').value;
+  const tags = $('everyRunTags').value.trim();
+  const query = `limit=${limit}${status ? `&status=${enc(status)}` : ''}${tags ? `&tags=${enc(tags)}` : ''}`
+    + (older && last ? `&before=${enc(last.id)}` : '');
+  let page;
+  everyRequests += 1;
+  try {
+    page = await api(`${API}/runs?${query}`, { latest: 'every-runs', quiet: true });
+  } catch (error) {
+    if (!isAborted(error) && !tick) update($('everyRunList'), emptyState('circle-alert', 'Runs could not be loaded', errorText(error)));
+    return;
+  } finally {
+    everyRequests -= 1;
+  }
+  if (S.machine) return;  // a machine opened meanwhile
+  everyRuns = older ? [...everyRuns, ...page] : page;
+  $('everyOlderRuns').hidden = page.length !== limit;
+  update($('everyRunList'), runTable(everyRuns, { every: true, status, none: 'Open a machine to start one.' }));
+}
+
+for (const id of ['everyRunStatus', 'everyRunTags']) {
+  $(id).addEventListener('change', () => {
+    everyRuns = [];
+    loadEveryRun();
+  });
+}
+$('everyOlderRuns').addEventListener('click', () => withBusy($('everyOlderRuns'), () => loadEveryRun({ older: true })));
+$('everyRunList').addEventListener('rowselect', (event) => openRun(event.detail.id));
 
 const poller = autoRefresh(() => loadRun({ tick: true }), 1000);
 let runRequests = 0;  // GETs of the selected run that are out
@@ -2470,6 +2666,47 @@ const runsPoller = autoRefresh(() => loadRuns({ tick: true }), 3000);
 let runsRequests = 0;  // GETs of the run list that are out
 /** Journal rows a run answer carries: the poll's and every control's alike, so the history does not jump. */
 const HISTORY_STEPS = 200;
+/** Each text in the rows a poll reads is cut at this many characters: a click on a row reads it whole (UI-1). */
+const ROW_CHARS = 400;
+/** The rows a poll reads again: those that still change in place, under the seq they were written with, so `after`
+ * never brings the change -- a started activity not known to have ended (its end), and a queued event (a frame
+ * consumes it, or its frame's end drops it). A row a resume moved aside (rewound.<n>/) never changes again. */
+const openSeqs = (rows) => rows.filter((row) => !String(row.key || '').startsWith('rewound.')
+  && ((row.kind === 'activity' && row.status === 'started' && !row.ended_without_outcome)
+  || (row.kind === 'event' && row.status === 'pending'))).map((row) => row.seq);
+/** The most seqs one read may list (the server's cap): with more open rows a poll reads the last rows whole. */
+const SEQS_MAX = 50;
+
+/** The selected run's last HISTORY_STEPS journal rows, kept across polls: a poll asks only what is new (UI-1). */
+let journalKept = null;  // {runId, rows (by seq, ascending)}
+
+/** The run read of a poll: the rows after the last one kept and the open activities' rows again, every text cut,
+ * and only the unfolded frames' ctx. Without rows kept (a run picked, read anew): its last rows. */
+function runQuery(id) {
+  let kept = journalKept?.runId === id && !journalKept.reread && journalKept.rows.length ? journalKept.rows : null;
+  let open = kept ? openSeqs(kept) : [];
+  if (open.length > SEQS_MAX) [kept, open] = [null, []];  // more open rows than one read lists: none left stale
+  return `steps=${HISTORY_STEPS}&row_chars=${ROW_CHARS}&ctx=${enc(JSON.stringify([...S.framesOpen]))}`
+    + (kept ? `&after=${kept[kept.length - 1].seq}` : '') + (open.length ? `&seqs=${open.join(',')}` : '');
+}
+
+/** The rows kept and those an answer brings, by seq (a row read again replaces its older copy), the newest
+ * HISTORY_STEPS of them. */
+function keepJournal(id, rows) {
+  const merged = new Map((journalKept?.runId === id ? journalKept.rows : []).map((row) => [row.seq, row]));
+  for (const row of rows || []) merged.set(row.seq, row);
+  const all = [...merged.values()].sort((a, b) => a.seq - b.seq);
+  const dropped = all.slice(0, -HISTORY_STEPS);
+  // rows read for the History: what leaves the last rows joins the older pages, and the State filter's rows (those of
+  // its state), so no gap opens between them and the last rows
+  if (dropped.length && id === S.runId) {
+    const { older, state, stateRows } = S.history;
+    if (older.length) S.history.older = bySeq(older, dropped);
+    if (state) S.history.stateRows = bySeq(stateRows || [], dropped.filter((row) => row.state === state));
+  }
+  journalKept = { runId: id, rows: all.slice(-HISTORY_STEPS) };
+  return journalKept.rows;
+}
 
 function selectRun(id) {
   S.runId = id || null;
@@ -2481,6 +2718,8 @@ function selectRun(id) {
   S.pollError = null;
   S.result = null;
   S.resultOpen = new Set();
+  journalKept = null;
+  S.history = { older: [], more: true, state: '', stateRows: null, row: null };
   poller.stop();
   followRuns();
   if (S.machine) setQuery(S.runId ? { machine: S.machine.id, run: S.runId } : { machine: S.machine.id });
@@ -2501,9 +2740,12 @@ async function loadRun({ tick = false } = {}) {
   const id = S.runId;
   if (!id || (tick && runRequests)) return;
   let run;
+  let incremental;
   runRequests += 1;
   try {
-    run = await api(`${API}/runs/${enc(id)}?steps=${HISTORY_STEPS}`, { latest: 'run', quiet: true });
+    const query = runQuery(id);
+    incremental = query.includes('&after=');
+    run = await api(`${API}/runs/${enc(id)}?${query}`, { latest: 'run', quiet: true });
   } catch (error) {
     if (isAborted(error) || id !== S.runId) return;
     if (error.status === 404) {
@@ -2515,6 +2757,7 @@ async function loadRun({ tick = false } = {}) {
     // bar says the run is not refreshed until a poll gets through
     if (!S.pollError) toast(`Run not refreshed: ${errorText(error)}`, { kind: 'warn' });
     S.pollError = errorText(error);
+    poller.start();  // a first read that failed has no poll yet: it asks until one gets through
     drawDebugBar();
     return;
   } finally {
@@ -2522,6 +2765,17 @@ async function loadRun({ tick = false } = {}) {
   }
   if (id !== S.runId) return;
   S.pollError = null;
+  // more new rows than a page: the rows after the last kept do not reach the newest -- its last rows, read anew
+  const lastKept = journalKept?.runId === id ? journalKept.rows.at(-1)?.seq ?? 0 : 0;
+  if (incremental && (run.journal || []).filter((row) => row.seq > lastKept).length >= HISTORY_STEPS) {
+    journalKept = null;
+    // the rows between the kept and the newest are read by no one: the History's older pages and the State
+    // filter's rows would end before that gap -- they start over (a page read still out lands on the old object)
+    S.history = { ...S.history, older: [], stateRows: null, more: true };
+    await loadRun();
+    if (S.history.state && id === S.runId) readStateRows();
+    return;
+  }
   showRun(run);
 }
 
@@ -2534,6 +2788,12 @@ function showRun(run) {
   if (S.run?.id === run.id && S.run.status === 'failed' && S.run.error?.resumable && run.status !== 'failed') {
     resultEpoch += 1;
     if (S.result?.runId === run.id) S.result = null;
+  }
+  run.journal = keepJournal(run.id, run.journal);
+  // a resume (of a failure or an interruption) may move rows aside under their seq: the next read takes the last
+  // rows whole again, not only what came after
+  if (S.run?.id === run.id && (S.run.status === 'interrupted' || S.run.status === 'failed') && run.status !== S.run.status) {
+    journalKept.reread = true;
   }
   S.run = run;
   if (!TERMINAL.has(run.status) && run.status !== 'interrupted') poller.start();
@@ -2565,6 +2825,7 @@ function drawRun() {
     // the breakpoint boxes follow the run; the rest of the inspector stays as the author left it
     const points = breakpointsFor(S.selection.id);
     for (const box of $('side-inspect').querySelectorAll('[data-breakpoint]')) box.checked = points.has(box.dataset.breakpoint);
+    drawConditions();
   }
 }
 
@@ -2573,6 +2834,14 @@ function drawRun() {
 function drawDebugBar() {
   const bar = $('debugBar');
   const run = S.run;
+  if (!run && S.runId && S.pollError) {  // never read: its id, that it is not, and the way to stop asking
+    bar.hidden = false;
+    delete bar.dataset.status;
+    update(bar, html`<strong class="pk-mono" title="${S.runId}">${runLabel(S.runId)}</strong>
+      <span class="pk-text--warn" title="${S.pollError}">${icon('circle-alert', { size: 'sm' })} not refreshed</span><span class="pk-grow"></span>
+      <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`);
+    return;
+  }
   if (!run) {
     bar.hidden = true;
     return;
@@ -2591,9 +2860,13 @@ function drawDebugBar() {
     runTo: live && ['running', 'paused'].includes(run.status),
     // an interrupted run is live nowhere: terminating it runs its finally here and ends it (service: terminate)
     terminate: (live && !TERMINAL.has(run.status)) || elsewhere || run.status === 'interrupted',
-    // an interrupted run, or one that ended on a resumable failure (a budget stop): its resume runs that activity again
-    restart: run.status === 'interrupted' || (run.status === 'failed' && !!run.error?.resumable),
+    // an interrupted run, or one that ended on a resumable failure (a budget stop, or the engine's own error -- the
+    // server's run.resumable): its resume runs that activity again, or replays on from where it stopped
+    restart: run.status === 'interrupted' || (run.status === 'failed' && !!run.resumable),
+    // one that failed resumably and is not to go on: a terminate closes it, after that no resume (FEAT-8)
+    close: run.status === 'failed' && !!run.resumable,
   };
+  const slots = [...new Set((run.view?.slot_waits || []).map(semaphoreName))];
   const answers = run.status === 'waiting' ? acceptedEvents(run) : [];
   const choices = runChoices(run);
   const back = S.frameTrail.at(-1);
@@ -2603,14 +2876,15 @@ function drawDebugBar() {
     ${choices.length > 1 ? html`<span class="sg-runpick" role="group" aria-label="Live runs: the one to show">${choices.map((r) => html`<button
       type="button" class="pk-btn pk-btn--sm" data-pick-run="${r.id}" data-key="pick:${r.id}"
       aria-pressed="${String(r.id === run.id)}" title="${r.id}${r.machine_id && r.machine_id !== S.machine?.id ? ` (a run of ${r.machine_id})` : ''}"><span
-      class="pk-mono">${runTail(r.id)}</span>
+      class="pk-mono">${runLabel(r.id)}</span>
       ${statusBadge(r.id === run.id ? run.status : r.status)}</button>`)}</span>`
-    : html`<strong class="pk-mono" title="${run.id}">${shorten(run.id, 16)}</strong> ${statusBadge(run.status)}`}
+    : html`<strong class="pk-mono" title="${run.id}">${runLabel(run.id)}</strong> ${statusBadge(run.status)}`}
     ${answers.length ? html`<span class="sg-answers" role="group" aria-label="Answer the wait">${answers.map(({ name, frames }) => html`<button type="button"
       class="pk-btn pk-btn--sm pk-btn--primary" data-send-event="${name}" title="${eventHelp(name) || `Send ${name}`}${frames.length > 1 ? ` (${frames.length} frames wait for it: pick one)` : ''}">${icon('send-horizontal', { size: 'sm' })} ${name}</button>`)}</span>` : ''}
     ${run.machine_id !== S.machine?.id ? frameChoice(run) : ''}
     ${paused ? html`<span title="${paused.reason}">paused at <span class="pk-mono">${paused.state ?? '—'}</span> (${paused.hook}${paused.frame ? `, frame ${paused.frame}` : ''})</span>` : ''}
     ${!paused && run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span></span>` : ''}
+    ${slots.length ? html`<span title="Every slot is held by other runs: it takes one as soon as one is free">waiting for a slot of <span class="pk-mono">${slots.join(', ')}</span></span>` : ''}
     ${elsewhere ? html`<span class="pk-muted" title="Shown from its journal; its events, pause, continue, step and terminate reach it within a second; run to, breakpoints and edits only in its own process">in another process</span>` : ''}
     ${S.pollError ? html`<span class="pk-text--warn" title="${S.pollError}">${icon('circle-alert', { size: 'sm' })} not refreshed</span>` : ''}
     <span class="pk-grow"></span>
@@ -2620,18 +2894,19 @@ function drawDebugBar() {
     ${can.runTo ? html`<select class="pk-select pk-select--sm" id="runToState" aria-label="State to run to">${states.map((name) => html`<option value="${name}">${name}</option>`)}</select>
     <button type="button" class="pk-btn pk-btn--sm" data-control="run_to" title="Run until the chosen state is entered">${icon('crosshair', { size: 'sm' })} Run to</button>` : ''}
     ${can.terminate ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-control="terminate">${icon('square', { size: 'sm' })} Terminate</button>` : ''}
-    ${can.restart ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" data-control="resume" title="${run.status === 'failed' ? 'Resume the run where it stopped: the activity it stopped on runs again, everything finished is replayed, not repeated' : 'Resume the interrupted run: finished activities are replayed, not repeated'}">${icon('play', { size: 'sm' })} Resume</button>` : ''}
-    <button type="button" class="pk-btn pk-btn--sm" data-control="fork" title="A new run from a top-level step of this one, or from a pass through the state selected on the graph (Shift: with the machine's current definition)">${icon('git-branch', { size: 'sm' })} Fork…</button>
+    ${can.restart ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" data-control="resume" title="${`${run.status === 'failed' ? 'Resume the run where it stopped: the activity it stopped on runs again, everything finished is replayed, not repeated' : 'Resume the interrupted run: finished activities are replayed, not repeated'} -- with the machine as the run started it, not as saved now (Fork with saved machine runs a fix)`}">${icon('play', { size: 'sm' })} Resume</button>` : ''}
+    ${can.close ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-control="terminate" title="Close the run for good: it is not to go on, so no resume runs it (it ends as cancelled)">${icon('square', { size: 'sm' })} Close</button>` : ''}
+    <button type="button" class="pk-btn pk-btn--sm" data-control="fork" data-definition="snapshot" title="A new run from a top-level step of this one, or from a pass through the state selected on the graph, with the machine as this run had it">${icon('git-branch', { size: 'sm' })} Fork…</button>
+    <button type="button" class="pk-btn pk-btn--sm" data-control="fork" data-definition="current" title="A new run from a step of this one with the machine as it is saved now -- a fix made since the run started runs from there">${icon('git-branch', { size: 'sm' })} Fork with saved machine…</button>
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`));
 }
-
-/** A run id by its end: the runs a machine tool starts share their caller's prefix (`<request id>_sg<6>`). */
-const runTail = (id) => (id.length > 10 ? `…${id.slice(-9)}` : id);
 
 /** The runs the bar offers: the one shown and every live one listed, in the order they started (the list is newest
  * first). */
 function runChoices(run) {
-  const listed = [...S.runs].reverse().filter((r) => r.id === run.id || isLive(r));
+  // the every-machine list: only this machine's live runs, the others have a graph of their own
+  const listed = [...S.runs].reverse().filter((r) => r.id === run.id
+    || (isLive(r) && (!everyMachine() || r.machine_id === S.machine?.id)));
   return listed.some((r) => r.id === run.id) ? listed : [run, ...listed];
 }
 
@@ -2738,14 +3013,18 @@ $('debugBar').addEventListener('click', async (event) => {
   if (!button || button.disabled) return;
   const action = button.dataset.control;
   if (action === 'close') return selectRun(null);
-  if (action === 'terminate' && !await confirm(S.run?.status === 'interrupted'
-    ? 'Terminate the interrupted run? It is not resumed: its finally activities run, and it ends as cancelled.'
-    : 'Terminate the run? A running agent call is cancelled.', { danger: true, confirmLabel: 'Terminate' })) return;
+  const closing = S.run?.status === 'failed';  // failed resumably: the terminate closes it (FEAT-8)
+  if (action === 'terminate' && !await confirm(closing
+    ? `Close the run for good? It stopped on a resumable failure; closed, it ends as cancelled and cannot be resumed.${
+      S.run?.error?.resumable ? ' Its finally activities ran at the failure.' : ''}`
+    : S.run?.status === 'interrupted'
+      ? 'Terminate the interrupted run? It is not resumed: its finally activities run, and it ends as cancelled.'
+      : 'Terminate the run? A running agent call is cancelled.', { danger: true, confirmLabel: closing ? 'Close' : 'Terminate' })) return;
   const extra = {};
   if (action === 'run_to') Object.assign(extra, { state: $('runToState').value, machine: S.machine?.id });
   if (action === 'fork') {
     const id = S.runId;
-    const fork = await askFork(event.shiftKey ? 'current' : 'snapshot', button);
+    const fork = await askFork(button.dataset.definition === 'current' ? 'current' : 'snapshot', button);
     if (!fork) return;
     if (id !== S.runId) {  // another run was picked while asking: the step is this one's, not that one's
       toast(`Not forked: ${id} is no longer the run shown`, { kind: 'error' });
@@ -2760,9 +3039,12 @@ $('debugBar').addEventListener('click', async (event) => {
 async function askFork(definition, button) {
   const at = await askForkStep(button);
   if (at === null) return null;
+  const machine = definition === 'current'
+    ? `It runs on with the machine as it is saved now${hasDrafts() ? ' (not with the unsaved changes)' : ''}.`
+    : 'It runs on with the machine as this run had it, not as saved now.';
   const how = await dialog({
     title: 'Fork the run',
-    message: `Hold the fork at ${at.label}, to look at or set ctx before it goes on, or let it run on?`,
+    message: `Hold the fork at ${at.label}, to look at or set ctx before it goes on, or let it run on? ${machine}`,
     actions: [{ label: 'Cancel', value: null }, { label: 'Hold it', value: 'hold' }, { label: 'Run on', value: 'run', primary: true }],
   });
   if (!how) return null;
@@ -2871,6 +3153,10 @@ function defaulted(run) {
     !Object.hasOwn(run.params || {}, name) && value !== null && value !== undefined));
 }
 
+/** A point's on/off in the debug lists: an engine point can be kept and switched off (enabled: false). */
+const pointSwitch = (kind, i, p) => html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-switch-${kind}="${i}"
+  aria-pressed="${String(p.enabled !== false)}" title="${p.enabled === false ? 'Off: it does not stop the run. Click to switch it on' : 'On. Click to switch it off and keep it'}">${p.enabled === false ? 'off' : 'on'}</button>`;
+
 function drawDebugPane() {
   const run = S.run;
   const live = liveRun();
@@ -2895,22 +3181,24 @@ function drawDebugPane() {
 
   // watch and breakpoints: the live run's, else the lists the next run starts with -- the same the inspector shows
   // and edits (shownBreakpoints); a run that ended keeps its lists in its journal, not here
-  const watching = live ? (debug.watchpoints || []) : S.nextWatch.map((expr) => ({ expr }));
+  const watching = live ? (debug.watchpoints || []) : S.nextWatch;
   const values = live ? (debug.watch || {}) : {};
-  $('dbgWatchScope').textContent = live ? `(run ${shorten(live.id, 12)})` : '(next run)';
+  $('dbgWatchScope').textContent = live ? `(run ${runLabel(live.id)})` : '(next run)';
   update($('dbgWatch'), watching.length ? html`<ul class="sg-plain-list">${watching.map((p, i) => {
     const seen = values[p.id];
-    return html`<li class="sg-watch"><span class="sg-watch-expr">${otherMachine(p)}${p.expr}</span>
+    return html`<li class="sg-watch${p.enabled === false ? ' sg-point-off' : ''}"><span class="sg-watch-expr">${otherMachine(p)}${p.expr}</span>
+      ${p.condition ? html`<span class="pk-mono">if ${p.condition}</span>` : ''}
       <span class="pk-grow">${seen ? ('error' in seen ? html`<span class="pk-text--danger">${seen.error}</span>`
         : html`<span class="pk-mono">${preview(seen.value, 120)}</span>`) : ''}${seen ? html` <span class="pk-muted">(${seen.frame}, step ${seen.step})</span>` : ''}</span>
+      ${pointSwitch('watch', i, p)}
       <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-drop-watch="${i}" aria-label="Stop watching">${icon('x', { size: 'sm' })}</button></li>`;
   })}</ul>` : html`<p class="pk-help">A watch pauses the run when its value changes.</p>`);
 
   const points = shownBreakpoints();
-  $('dbgPointsScope').textContent = live ? `(run ${shorten(live.id, 12)})` : '(next run)';
-  update($('dbgPoints'), points.length ? html`<ul class="sg-plain-list">${points.map((p, i) => html`<li class="sg-watch">
+  $('dbgPointsScope').textContent = live ? `(run ${runLabel(live.id)})` : '(next run)';
+  update($('dbgPoints'), points.length ? html`<ul class="sg-plain-list">${points.map((p, i) => html`<li class="sg-watch${p.enabled === false ? ' sg-point-off' : ''}">
       <span class="sg-watch-expr">${otherMachine(p)}${p.state}@${p.at || 'enter'}</span>${p.condition ? html`<span class="pk-mono">if ${p.condition}</span>` : ''}
-      <span class="pk-grow"></span><button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-drop-breakpoint="${i}" aria-label="Remove breakpoint">${icon('x', { size: 'sm' })}</button></li>`)}</ul>`
+      <span class="pk-grow"></span>${pointSwitch('breakpoint', i, p)}<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-drop-breakpoint="${i}" aria-label="Remove breakpoint">${icon('x', { size: 'sm' })}</button></li>`)}</ul>`
     : html`<p class="pk-help">None. Set them on a state in the inspector.</p>`);
 
   // what only a paused run takes, or only a run at all, shows only then: no pane of disabled forms before a run
@@ -2942,20 +3230,32 @@ function drawDebugPane() {
       data-frame-fold="${f.prefix || ''}" ${S.framesOpen.has(f.prefix || '') ? 'open' : ''}>
       <summary class="sg-frame-head" data-key="${`fold:${f.prefix || ''}`}">${badge(f.prefix ? 'submachine' : 'top', f.prefix ? 'info' : '')}<span class="pk-mono">${f.machine}</span>
         ${f.path ? html`<span class="pk-muted">under ${f.path}</span>` : ''}<span class="pk-grow"></span>
-        ${f.waiting_since ? badge('waits', 'warn') : ''}<span class="pk-mono">${f.state ?? '—'}</span><span class="pk-muted">step ${f.step}</span>
+        ${f.waiting_since || slotWait(run, f.prefix || '') ? badge('waits', 'warn') : ''}<span class="pk-mono">${f.state ?? '—'}</span><span class="pk-muted">step ${f.step}</span>
         ${showFrameButton(f.machine, f.prefix || '', shown)}</summary>
       ${f.waiting_since ? html`<div class="pk-help">waits for ${(f.accepts || []).join(', ') || 'an event'} since ${localTime(f.waiting_since, { seconds: true })}${f.deadline ? `, until ${localTime(f.deadline, { seconds: true })}` : ''}</div>` : ''}
       ${f.visits && Object.keys(f.visits).length ? html`<div class="pk-help">visits: ${Object.entries(f.visits).map(([n, v]) => `${n} ×${v}`).join(', ')}</div>` : ''}
-      <div class="pk-label">ctx</div>${jsonView(f.ctx ?? {})}
+      ${slotWait(run, f.prefix || '') ? html`<div class="pk-help">waits for a slot of semaphore <span class="pk-mono">${semaphoreName(slotWait(run, f.prefix || ''))}</span> since ${localTime(slotWait(run, f.prefix || '').since, { seconds: true })}</div>` : ''}
+      <div class="pk-label">ctx</div>${f.ctx_left_out ? html`<p class="pk-help">Read when the frame is unfolded.</p>` : jsonView(f.ctx ?? {})}
     </details>`) : html`<p class="pk-help">No live frames: the run has not started or has ended.</p>`);
 }
 
 $('side-debug').addEventListener('toggle', (event) => {
   const prefix = event.target.dataset?.frameFold;
   if (prefix === undefined) return;
-  if (event.target.open) S.framesOpen.add(prefix);
-  else S.framesOpen.delete(prefix);
+  if (!event.target.open) {
+    S.framesOpen.delete(prefix);
+    return;
+  }
+  const opened = !S.framesOpen.has(prefix);
+  S.framesOpen.add(prefix);
+  // a poll reads only the unfolded frames' ctx (UI-1): one just unfolded is read now
+  if (opened && (S.run?.view?.frames || []).some((f) => (f.prefix || '') === prefix && f.ctx_left_out)) loadRun();
 }, true);
+
+/** The semaphore slot a frame of the run waits for (FEAT-2), or null. */
+/** A semaphore wait's name, with its key when it has one (e.g. coder [KAN-7]). */
+const semaphoreName = (w) => (w.sem_key ? `${w.semaphore} [${w.sem_key}]` : w.semaphore);
+const slotWait = (run, prefix) => (run?.view?.slot_waits || []).find((w) => (w.frame || '') === prefix) || null;
 
 $('side-inspect').addEventListener('click', (event) => {
   if (!event.target.closest?.('[data-act="copy-agent-entry"]') || !S.machine) return;
@@ -2977,6 +3277,21 @@ $('side-debug').addEventListener('click', async (event) => {
       return;
     }
     return control('set_breakpoints', { breakpoints: (S.run.debug?.breakpoints || []).filter((_, i) => i !== index) });
+  }
+  if (target.dataset.switchBreakpoint !== undefined) {
+    const index = Number(target.dataset.switchBreakpoint);
+    return setBreakpoints(shownBreakpoints().map((p, i) => (i === index ? { ...p, enabled: p.enabled === false } : p)));
+  }
+  if (target.dataset.switchWatch !== undefined) {
+    const index = Number(target.dataset.switchWatch);
+    const flip = (w, i) => (i === index ? { ...w, enabled: w.enabled === false } : w);
+    if (!liveRun()) {
+      S.nextWatch = S.nextWatch.map(flip);
+      remember(`watch:${S.machine?.id}`, S.nextWatch);
+      drawDebugPane();
+      return;
+    }
+    return control('set_watchpoints', { watchpoints: (S.run.debug?.watchpoints || []).map(flip) });
   }
   if (target.dataset.dropWatch !== undefined) {
     const index = Number(target.dataset.dropWatch);
@@ -3001,16 +3316,19 @@ function onSubmit(form, fn) {
 onSubmit($('watchForm'), async (fields) => {
   const expr = fields.expr.value.trim();
   if (!expr) return;
+  const condition = fields.condition.value.trim();  // it pauses only where this is true
+  const watch = { expr, ...(condition && { condition }) };
+  const clear = () => { fields.expr.value = ''; fields.condition.value = ''; };
   if (!liveRun()) {
-    S.nextWatch = [...S.nextWatch, expr];
+    S.nextWatch = [...S.nextWatch, watch];
     remember(`watch:${S.machine?.id}`, S.nextWatch);
-    fields.expr.value = '';
+    clear();
     drawStartForm();
     drawDebugPane();
     return;
   }
-  const watchpoints = [...(S.run.debug?.watchpoints || []), { expr, machine: S.machine?.id }];
-  if (await control('set_watchpoints', { watchpoints })) fields.expr.value = '';
+  const watchpoints = [...(S.run.debug?.watchpoints || []), { ...watch, machine: S.machine?.id }];
+  if (await control('set_watchpoints', { watchpoints })) clear();
 });
 
 onSubmit($('evalForm'), async (fields) => {
@@ -3087,6 +3405,21 @@ function costByState(states) {
       <td class="pk-num">${s.activities}</td></tr>`)}</tbody></table></div>`;
 }
 
+/** Where a code field's error came from, for a line (DBG-1): " (at one.exit, review.py:12)"; '' without one. */
+function errorWhere(error) {
+  const e = error || {};
+  const at = [e.where, e.file ? `${e.file}${e.line ? `:${e.line}` : ''}` : '',
+    e.branch !== undefined && e.branch !== null ? `branch ${e.branch}` : '',
+    e.index !== undefined && e.index !== null ? `item ${e.index}` : ''].filter(Boolean);
+  return at.length ? ` (at ${at.join(', ')})` : '';
+}
+
+/** What a step changed in ctx (DBG-6): "ctx.round = 2, ctx.issues (51200 chars)"; '' when nothing. */
+function ctxChanges(changed) {
+  return Object.entries(changed || {}).map(([name, value]) => `ctx.${name}${value?.$gone ? ' removed'
+    : value && typeof value === 'object' && '$size' in value ? ` (${value.$size} chars)` : ` = ${value === null ? 'null' : preview(value, 40)}`}`).join(', ');
+}
+
 function historyRow(row) {
   const data = row.data || {};
   let what = row.status || '';
@@ -3095,7 +3428,11 @@ function historyRow(row) {
   if (row.kind === 'activity') {
     what = `${data.kind || 'activity'} ${row.status}`;
     kind = row.status === 'error' ? 'danger' : row.status === 'done' ? 'ok' : 'info';
-    detail = row.status === 'error' ? `${data.error?.type || 'error'}: ${data.error?.message || ''}` : preview(data.out);
+    detail = row.status === 'error' ? `${data.error?.type || 'error'}: ${data.error?.message || ''}${errorWhere(data.error)}` : preview(data.out);
+    if (row.ended_without_outcome) {  // cancelled with its frame, or its run ended: never in flight again (PROD-6)
+      what = `${data.kind || 'activity'} cancelled (no outcome)`;
+      kind = '';
+    }
     if (data.meta?.mocked) what += ' (mocked)';
   } else if (row.kind === 'trace') {
     if (row.status === 'transition') {
@@ -3103,7 +3440,8 @@ function historyRow(row) {
         + (data.guards ? ` [${data.guards.map((g) => `${g.guard} = ${'error' in g ? 'error' : g.result}`).join('; ')}]` : '');
     }
     else if (row.status === 'paused') detail = data.reason || '';
-    else if (row.status === 'failed') detail = `${data.type || ''} ${data.message || ''}`;
+    else if (row.status === 'failed') detail = `${data.type || ''} ${data.message || ''}${errorWhere(data)}`;
+    else if (row.status === 'step') detail = ctxChanges(data.changed);
     else if (row.status === 'final') detail = data.status || '';
     kind = row.status === 'failed' ? 'danger' : row.status === 'paused' ? 'warn' : '';
     if (row.status === 'live_objects') {  // a Python caller's objects (sg.live): their names, never the objects
@@ -3120,7 +3458,7 @@ function historyRow(row) {
     detail = `${data.path} = ${preview(data.value, 60)}`;
   }
   const duration = data.meta?.duration_s;
-  return html`<tr>
+  return html`<tr data-id="${row.seq}" tabindex="0" aria-selected="${String(S.history?.row?.seq === row.seq)}" title="Show the whole row">
     <td class="pk-num" data-sort-value="${row.seq}">${row.seq}</td>
     <td data-sort-value="${row.ts || ''}">${localTime(row.ts, { seconds: true })}</td>
     <td class="pk-mono">${row.key}</td>
@@ -3132,24 +3470,115 @@ function historyRow(row) {
   </tr>`;
 }
 
+/** Rows by seq, ascending; a later copy of a seq wins. */
+const bySeq = (...lists) => [...new Map(lists.flat().map((row) => [row.seq, row])).values()].sort((a, b) => a.seq - b.seq);
+
+/** The rows the History shows (UI-16): the poll's last rows with the older pages read before them -- or, with a
+ * State filter, that state's rows read for it and those of the poll's. */
+function historyRows() {
+  const live = S.run?.journal || [];
+  const { state, stateRows, older } = S.history;
+  return state ? bySeq(stateRows || [], live.filter((row) => row.state === state)) : bySeq(older, live);
+}
+
 function drawHistory() {
-  const all = S.run?.journal || [];
+  const all = S.run ? historyRows() : [];
   const rows = S.historyKind ? all.filter((row) => row.kind === S.historyKind) : all;
+  const { state, more, row: open } = S.history || {};
+  const states = (S.machine?.graph?.states || []).map((s) => s.name);
+  if (state && !states.includes(state)) states.push(state);
   keepingChoices($('runHistory'), () => update($('runHistory'), S.run ? html`<div class="pk-card" data-run="${S.run.id}">
-    <div class="pk-card-head"><h3 class="pk-card-title">History</h3><span class="pk-muted">the last ${all.length} journal rows</span>
+    <div class="pk-card-head"><h3 class="pk-card-title">History</h3><span class="pk-muted">${all.length} journal rows${state ? ` of ${state}` : ''}</span>
       <span class="pk-grow"></span>
+      <select class="pk-select pk-select--sm" id="historyState" aria-label="Rows of this state">
+        <option value="">every state</option>${states.map((name) => html`<option value="${name}" ${name === state ? 'selected' : ''}>${name}</option>`)}</select>
       <select class="pk-select pk-select--sm" id="historyKind" aria-label="Rows to show">
         <option value="">every row</option>${Object.keys(WHAT).map((kind) => html`<option value="${kind}" ${kind === S.historyKind ? 'selected' : ''}>${kind}</option>`)}</select></div>
-    ${rows.length ? html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="history">
+    ${rows.length ? html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="history" data-pk-select>
       <thead><tr><th class="pk-num" aria-sort="descending">#</th><th>Time</th><th>Key</th><th>Row</th><th>What</th><th>State</th><th class="pk-num">Took</th><th>Detail</th></tr></thead>
-      <tbody>${rows.map(historyRow)}</tbody></table></div>` : html`<p class="pk-help">${all.length ? 'No row of that kind among them.' : 'Nothing journaled yet.'}</p>`}
+      <tbody>${rows.map(historyRow)}</tbody></table></div>` : html`<p class="pk-help">${all.length ? 'No row of that kind among them.' : state ? 'No row of that state.' : 'Nothing journaled yet.'}</p>`}
+    ${more && all.length && all[0].seq > 1 ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="older-rows"
+      title="The ${HISTORY_STEPS} rows before the first one shown">${icon('chevron-down', { size: 'sm' })} Older rows</button>` : ''}
+    ${open ? html`<div class="pk-card sg-history-row"><div class="pk-card-head"><h4 class="pk-card-title">Row ${open.seq}</h4>
+        <span class="pk-mono">${open.kind} ${open.status || ''}</span><span class="pk-mono pk-muted">${open.key}</span><span class="pk-grow"></span>
+        <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="close-row" aria-label="Close the row">${icon('x', { size: 'sm' })}</button></div>
+      ${open.data?.guards ? html`<details class="pk-details" open><summary>Guards evaluated</summary><ul class="sg-plain-list">
+        ${open.data.guards.map((g) => html`<li><span class="pk-mono">${g.guard}</span> → ${'error' in g ? html`<span class="pk-text--danger">${g.error}</span>` : String(g.result)}</li>`)}</ul></details>` : ''}
+      ${jsonView(open.data ?? {})}</div>` : ''}
   </div>` : ''));
 }
 
+/** A page of the journal for the History: the rows before `before` (of the State filter's state). */
+async function historyPage(before) {
+  const { state } = S.history;
+  return api(`${API}/runs/${enc(S.runId)}/journal?before=${before}&limit=${HISTORY_STEPS}${state ? `&state=${enc(state)}` : ''}`,
+    { latest: 'history', quiet: true });
+}
+
+async function readHistory(load) {
+  const id = S.runId;
+  const history = S.history;
+  try {
+    await load();
+  } catch (error) {
+    if (!isAborted(error) && id === S.runId) toast(`History not read: ${errorText(error)}`, { kind: 'warn' });
+    return;
+  }
+  if (id === S.runId && history === S.history) drawHistory();
+}
+
 $('runHistory').addEventListener('change', (event) => {
-  if (event.target.id !== 'historyKind') return;
-  S.historyKind = event.target.value;
+  if (event.target.id === 'historyKind') {
+    S.historyKind = event.target.value;
+    drawHistory();
+    return;
+  }
+  if (event.target.id !== 'historyState' || !S.run) return;
+  // another state: its last rows, read for it -- the poll's own rows are only the run's last ones
+  S.history = { ...S.history, state: event.target.value, stateRows: null, more: true, older: [] };
   drawHistory();
+  if (S.history.state) readStateRows();
+});
+
+/** The State filter's rows: its state's last rows up to the poll's newest, read for it; rows a poll drops meanwhile
+ * (keepJournal) stay with them. */
+function readStateRows() {
+  const history = S.history;
+  const before = (S.run?.journal?.at(-1)?.seq ?? 0) + 1;
+  return readHistory(async () => {
+    const got = await historyPage(before);
+    history.stateRows = bySeq(got, history.stateRows || []);
+    history.more = got.length === HISTORY_STEPS;
+  });
+}
+
+$('runHistory').addEventListener('click', (event) => {
+  const act = event.target.closest('[data-act]')?.dataset.act;
+  if (act === 'close-row') {
+    S.history.row = null;
+    drawHistory();
+  } else if (act === 'older-rows' && S.run) {
+    const history = S.history;
+    const first = historyRows()[0]?.seq;
+    if (!first) return;
+    withBusy(event.target.closest('button'), () => readHistory(async () => {
+      const got = await historyPage(first);
+      if (history.state) history.stateRows = bySeq(got, history.stateRows || []);
+      else history.older = bySeq(got, history.older);
+      history.more = got.length === HISTORY_STEPS;
+    }));
+  }
+});
+
+// a row clicked: read whole (a poll's rows are cut), with its guards, event data or edit value (UI-16)
+$('runHistory').addEventListener('rowselect', (event) => {
+  const seq = Number(event.detail.id);
+  if (!S.run || !seq) return;
+  const history = S.history;
+  readHistory(async () => {
+    const [row] = await api(`${API}/runs/${enc(S.runId)}/journal?seq=${seq}`, { latest: 'history-row', quiet: true });
+    history.row = row || null;
+  });
 });
 
 // ------------------------------------------------------------------ runs: result
@@ -3188,8 +3617,10 @@ async function loadResult({ ended = [], more = true } = {}) {
     if (resultRow(row)) {
       rows.set(row.seq, row);
       running.delete(row.seq);
-    } else if (row.kind === 'activity') {
+    } else if (row.kind === 'activity' && !row.ended_without_outcome) {
       running.add(row.seq);
+    } else if (row.kind === 'activity') {  // cancelled with its frame: it never ends, so it is not read again (PROD-6)
+      running.delete(row.seq);
     }
   };
   resultLoad = id;
@@ -3244,6 +3675,7 @@ function followResult(run) {
     return;
   }
   const journal = run.journal || [];
+  for (const row of journal) if (row.ended_without_outcome) result.running.delete(row.seq);  // never ends (PROD-6)
   const ended = TERMINAL.has(run.status) ? [...result.running]
     : journal.filter((row) => resultRow(row) && result.running.has(row.seq)).map((row) => row.seq);
   const newest = Math.max(0, ...journal.filter(resultRow).map((row) => row.seq));
@@ -3265,13 +3697,17 @@ function drawResult() {
   update($('runResult'), html`<div class="pk-card sg-result" data-run="${run.id}">
     <div class="pk-card-head"><h3 class="pk-card-title">Result</h3>${statusBadge(run.status)}
       ${run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span>${reason && reason !== run.status ? html` (${reason})` : ''}</span>` : ''}
-      ${run.spend ? html`<span class="pk-muted" title="What the run cost so far -- its agents with their sub-agents, and the LLM calls its call functions made: tokens in ↑ and out ↓">${spendText(run.spend)}</span>` : ''}
+      ${run.spend ? html`<span class="pk-muted" title="What the run cost so far -- its agents with their sub-agents, the LLM calls its call functions made and the runs it started: tokens in ↑ and out ↓">${spendText(run.spend)}</span>` : ''}
+      ${budgetView(run)}
       <span class="pk-grow"></span>
       ${run.machine_id === S.machine?.id ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="rerun"
         title="A new run with this run's params and mocks (they go into the start form too); a param that had its default then takes the machine's default now">${icon('rotate-cw', { size: 'sm' })} Run again</button>` : ''}
       ${run.mocks?.mock_only || !ownSessions(run) ? '' : html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${run.session_id || `sg_${run.id}`}"
         title="The run's session in the chat: what it was asked, each agent call with that agent's run under it, how it ended">${icon('message-square', { size: 'sm' })} Session</button>`}</div>
-    ${run.error ? errorView(run.error) : ''}
+    ${run.error ? errorView(run.error, { onGraph: run.machine_id === S.machine?.id }) : ''}
+    ${run.started_by ? html`<p class="pk-row">Started by run ${runButton(run.started_by.run_id)}
+      ${run.started_by.request_id ? html`<span class="pk-muted">from its call <span class="pk-mono">${run.started_by.request_id}</span></span>` : ''}</p>` : ''}
+    ${run.children?.length ? html`<details class="pk-details" open><summary>Runs started here (${run.children.length})</summary>${childRuns(run.children)}</details>` : ''}
     ${run.output !== undefined && run.output !== null
     ? html`<details class="pk-details" open><summary>Output</summary>${resultValue(run.output)}</details>`
     : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No output.' : 'The output comes when the run ends.'}</p>`}
@@ -3285,6 +3721,38 @@ function drawResult() {
     ${activities.length ? html`<div class="sg-results">${activities.map(resultActivity)}</div>`
     : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No activity finished.' : 'None finished yet.'}</p>`}
   </div>`);
+}
+
+/** A run as a button that opens it with its machine (FEAT-1). */
+const runButton = (id) => html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-mono" data-open-run="${id}"
+  title="${`Open ${id} with its machine`}">${runLabel(id)}</button>`;
+
+/** The runs a run's call activities started (FEAT-1): each with its machine and status, a button to open it. */
+const childRuns = (children) => html`<ul class="sg-plain-list">${children.map((c) => html`<li class="sg-watch">
+  ${runButton(c.id)}<span class="pk-mono">${c.machine_id}</span>${statusBadge(c.status)}
+  <span class="pk-muted">${localTime(c.created_at, { seconds: true })}</span></li>`)}</ul>`;
+
+const isNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+
+/** The run's limits.max_cost (FEAT-6), or null: the run answer's own, which its definition bounds it with; a server
+ * that does not say it yet -- the open machine's file, when the run is that machine's. */
+function maxCost(run) {
+  if (isNumber(run.max_cost)) return run.max_cost;
+  if ('max_cost' in run || run.machine_id !== S.machine?.id) return null;
+  const found = /(?:^|[\s{,])max_cost\s*:\s*([0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?)/.exec(S.machine.graph?.yaml?.limits || '');
+  return found ? Number(found[1]) : null;
+}
+
+/** The run's own spend against its limits.max_cost -- the runs it started are not bounded by it and stay in the
+ * spend shown beside: warn from 80 %, danger once reached. Without the run's own cost (an older server), its spend. */
+function budgetView(run) {
+  const limit = maxCost(run);
+  if (limit === null) return '';
+  const own = isNumber(run.cost);
+  const spent = own ? run.cost : run.spend?.cost || 0;
+  const tone = spent >= limit ? 'danger' : spent >= 0.8 * limit ? 'warn' : '';
+  const text = `${own ? `own $${spent.toFixed(4)} ` : ''}of $${limit} limit`;
+  return html`<span class="${tone ? `pk-text--${tone}` : 'pk-muted'}" title="limits.max_cost: once the run's own activities reach it, no agent, decide or call activity starts${run.children?.length ? ' (the runs it started count in the spend beside, not toward the limit)' : ''}">${text}</span>`;
 }
 
 /** One finished activity, folded: what it was and how it went; its answer is drawn when it is opened. */
@@ -3308,13 +3776,15 @@ function resultActivity(row) {
 
 /** An error as the journal keeps it: type and message, what caused it, and its data (a traceback, the guards that
  * were evaluated, a tool's result, an answer that did not parse). */
-function errorView(error) {
+function errorView(error, { onGraph = false } = {}) {
   const e = error || {};
   const causes = [];
   for (let cause = e.cause; cause && causes.length < 5; cause = cause.cause) causes.push(`${cause.type || 'error'}: ${cause.message || ''}`);
   const data = e.data;
   return html`<div class="pk-callout pk-callout--danger"><strong>${e.type || 'error'}</strong> ${e.message || ''}
-      ${e.state ? html`<div class="sg-problem-where">in ${e.state}</div>` : ''}
+      ${e.state ? html`<div class="sg-problem-where">in ${onGraph ? stateLink(e.state) : e.state}</div>` : ''}
+      ${errorWhere(e) ? html`<div class="sg-problem-where">${errorWhere(e).trim().slice(1, -1)}</div>` : ''}
+      ${e.code ? html`<pre class="sg-result-text">${e.code}</pre>` : ''}
       ${causes.map((text) => html`<div class="sg-problem-where">caused by ${text}</div>`)}</div>
     ${data?.traceback ? html`<pre class="sg-result-text">${data.traceback}</pre>` : ''}
     ${data?.guards ? html`<details class="pk-details" open><summary>Guards evaluated</summary><ul class="sg-plain-list">
@@ -3328,21 +3798,36 @@ function resultValue(value) {
   return typeof value === 'string' ? html`<pre class="sg-result-text">${value}</pre>` : jsonView(value);
 }
 
+/** A state of the open machine as a button that shows it on the graph (data-goto-state); a name it lacks as text. */
+const stateLink = (name) => (stateOf(name) ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-mono" data-goto-state="${name}"
+  title="Show it on the graph">${icon('crosshair', { size: 'sm' })} ${name}</button>` : name);
+
+/** An activity of the run's own machine at its top level: one a submachine ran (its key's frame, `s3/m/s1`) names a
+ * state of that machine, which the open graph does not show. */
+const ownActivity = (row) => S.run?.machine_id === S.machine?.id && !String(row.key || '').includes('/m/');
+
 /** The body of an opened activity: its answer or its error, and where it ran (the agent's session). */
 function resultBody(row) {
   const data = row.data || {};
   const meta = data.meta || {};
-  return html`${row.status === 'error' ? errorView(data.error) : resultValue(data.out)}
+  const own = ownActivity(row);
+  // every LLM request of it -- each agent round and attempt, a call's or a decision's own (DBG-3)
+  const ids = meta.request_ids?.length ? meta.request_ids : meta.request_id ? [meta.request_id] : [];
+  const started = (S.run?.children || []).filter((c) => c.caller_request && ids.includes(c.caller_request));
+  return html`${row.status === 'error' ? errorView(data.error, { onGraph: own }) : resultValue(data.out)}
     ${data.inputs ? html`<details class="pk-details"><summary>Input</summary>${jsonView(data.inputs)}</details>` : ''}
     ${meta.failures?.length ? html`<details class="pk-details"><summary>Failed attempts (${meta.failures.length})</summary>
-      <ul class="sg-plain-list">${meta.failures.map((f) => html`<li><span class="pk-mono">#${f.attempt}</span> ${f.type}: ${f.message}</li>`)}</ul></details>` : ''}
+      <ul class="sg-plain-list">${meta.failures.map((f) => html`<li><span class="pk-mono">#${f.attempt}</span> ${f.type}: ${f.message}
+        ${f.request_id ? html`<span class="pk-mono pk-muted">${f.request_id}</span>` : ''}</li>`)}</ul></details>` : ''}
     <dl class="pk-kv">
+      ${own && stateOf(row.state) ? html`<dt>State</dt><dd>${stateLink(row.state)}</dd>` : ''}
       ${meta.instance_id ? html`<dt>Session</dt><dd><span class="pk-mono">${meta.instance_id}</span>
         ${ownSessions(S.run) ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${meta.instance_id}" title="Open the agent's conversation in the chat">${icon('message-square', { size: 'sm' })} Open</button>`
     : html`<span class="pk-muted">${S.run?.user_id || 'anonymous'}'s</span>`}</dd>` : ''}
-      ${meta.request_id ? html`<dt>Request</dt><dd><span class="pk-mono">${meta.request_id}</span>
-        <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-copy="${meta.request_id}"
-          title="Copy the request id: the message debugger finds its LLM calls by it" aria-label="Copy the request id">${icon('copy', { size: 'sm' })}</button></dd>` : ''}
+      ${ids.length ? html`<dt>${ids.length > 1 ? `Requests (${ids.length})` : 'Request'}</dt><dd>${ids.map((id) => html`<div><span class="pk-mono">${id}</span>
+        <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-copy="${id}"
+          title="Copy the request id: the message debugger finds its LLM calls by it" aria-label="Copy the request id">${icon('copy', { size: 'sm' })}</button></div>`)}</dd>` : ''}
+      ${started.length ? html`<dt>Runs started</dt><dd>${childRuns(started)}</dd>` : ''}
       ${meta.model ? html`<dt>Model</dt><dd class="pk-mono">${meta.model}</dd>` : ''}
       ${spendText(meta) ? html`<dt>Cost</dt><dd>${spendText(meta)}${meta.tokens?.cached ? html` <span class="pk-muted">(${tokenCount(meta.tokens.cached)} cached)</span>` : ''}${meta.copied_from ? html` <span class="pk-muted">-- spent by <span class="pk-mono">${meta.copied_from}</span>, which this fork replays</span>` : ''}</dd>` : ''}
       ${meta.attempts > 1 ? html`<dt>Attempts</dt><dd>${meta.attempts}</dd>` : ''}
@@ -3368,7 +3853,24 @@ $('runResult').addEventListener('toggle', (event) => {
   }
 }, true);
 
+/** A state named in the result, shown on the graph: the Graph tab, the state selected and in readable view. */
+function goToState(name) {
+  selectTab($('mainTabs'), 'graph');
+  onTab('graph');
+  choose({ kind: 'state', id: name }, { zoom: true });
+}
+
 $('runResult').addEventListener('click', (event) => {
+  const goto = event.target.closest('[data-goto-state]');
+  if (goto) {
+    goToState(goto.dataset.gotoState);
+    return;
+  }
+  const other = event.target.closest('[data-open-run]');
+  if (other) {  // the run that started this one, or one it started (FEAT-1)
+    withBusy(other, () => openRun(other.dataset.openRun));
+    return;
+  }
   const again = event.target.closest('[data-act="rerun"]');
   if (again && S.run) {
     withBusy(again, () => rerun(S.run));
@@ -3394,7 +3896,7 @@ function onTab(tab) {
     requestAnimationFrame(() => {
       if (fitPending) {
         fitPending = false;
-        canvas.fit();
+        openView();
       }
     });
   }
@@ -3405,10 +3907,21 @@ $('mainTabs').addEventListener('tabchange', (event) => onTab(event.detail.tab));
 $('sideTabs').addEventListener('tabchange', (event) => { if (event.detail.tab === 'debug') drawDebugPane(); });
 
 $('machineList').addEventListener('click', (event) => {
+  const run = event.target.closest('[data-open-run]');
+  if (run) {
+    withBusy(run, () => openRun(run.dataset.openRun));
+    return;
+  }
   const item = event.target.closest('[data-machine]');
   if (item) openMachine(item.dataset.machine);
 });
 $('search').addEventListener('input', drawMachineList);
+$('search').addEventListener('keydown', (event) => {
+  const run = event.key === 'Enter' && searchedRun();
+  if (!run) return;
+  event.preventDefault();
+  return openRun(run);
+});
 
 /** A machine id the author types: a name no listed machine has. */
 function askMachineId(message, { title, value = '' }) {
@@ -3512,7 +4025,7 @@ async function deleteMachine(m) {
   S.machine = null;
   S.selection = null;
   // what this panel kept for the machine would come back with a new one of the same id
-  for (const key of ['breakpoints', 'watch', 'mocks', 'params', 'start-params']) forget(`${key}:${m.id}`);
+  for (const key of ['breakpoints', 'watch', 'mocks', 'test-options', 'params', 'start-params']) forget(`${key}:${m.id}`);
   $('paramFields').dataset.signature = '';  // the form, too: one of the same id and params would keep its values
   S.undo = S.redo = [];  // a new machine of that id would take them for its own
   drawUndo();
@@ -3523,6 +4036,7 @@ async function deleteMachine(m) {
   setTitle('State Graph');
   setQuery({});
   await loadMachines();
+  loadEveryRun();
 }
 
 function addFrom(event) {
@@ -3542,7 +4056,7 @@ function findState() {
   const states = S.machine.graph.states.map((s) => s.name);
   const hits = states.includes(needle) ? [needle] : states.filter((name) => name.includes(needle));
   if (hits.length === 1) {
-    choose({ kind: 'state', id: hits[0] });
+    choose({ kind: 'state', id: hits[0] }, { zoom: true });
     return;
   }
   toast(hits.length ? `${hits.length} states match: ${hits.slice(0, 8).join(', ')}` : `No state matches "${needle}"`, { kind: 'info' });
@@ -3589,29 +4103,45 @@ $('canvas').addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('refresh', async (event) => {
+  if (!S.kinds.length) loadKinds();
   await loadMachines({ checks: !event.detail?.auto });  // the timer's: not every machine checked on each tick
   if (S.machine && !unsaved()) {
+    const asked = S.machine;
     try {
       // a name of its own: under openMachine's, this reload of the open machine would abort a click on another one
       const machine = await api(`${API}/machines/${enc(S.machine.id)}`, { latest: 'machine-refresh', quiet: true });
-      const same = machine.id === S.machine?.id && !unsaved();  // no other machine opened, no text typed meanwhile
+      // nothing drawn, typed or out meanwhile: an edit answered (or still out) while this was read is newer than it
+      const same = S.machine === asked && !S.editing && !unsaved();
       if (same && JSON.stringify(machine.versions) !== JSON.stringify(S.machine.versions)) showMachine(machine);
     } catch (error) {
       if (!isAborted(error) && !event.detail?.auto) toast(`Machine not refreshed: ${errorText(error)}`, { kind: 'warn' });
     }
   }
-  await loadRuns();
-  if (S.runId) await loadRun();
+  // the timer's tick never aborts a load that is out (an older page, a run picked): it skips while one is
+  await loadRuns({ tick: Boolean(event.detail?.auto) });
+  if (S.runId) await loadRun({ tick: Boolean(event.detail?.auto) });
 });
 
 // ------------------------------------------------------------------ start
 
-async function start() {
+/** The activity kinds the Add menu and the activity form offer. Failed (a restart), the menu offers the states without
+ * one, and a refresh or the next machine opened asks again. */
+async function loadKinds() {
+  let kinds;
   try {
-    S.kinds = await api(`${API}/kinds`, { quiet: true });
+    kinds = await api(`${API}/kinds`, { latest: 'kinds', quiet: true });
   } catch (error) {
-    S.kinds = [];  // the palette then offers the pseudostates only
+    return false;
   }
+  S.kinds = kinds;
+  if (!S.machine) return true;
+  drawPalette();
+  if (!S.inspectorDrafts.size) drawInspector();  // the activity's fields come with its kind; typed text is not dropped
+  return true;
+}
+
+async function start() {
+  await loadKinds();
   // the catalog comes with the machine shown: its runner names the tools. The list's checks after that machine: they
   // load every machine, the viewer waits for the one
   await loadMachines({ checks: false });
@@ -3621,7 +4151,10 @@ async function start() {
     S.runId = query.get('run') || null;
     await openMachine(wanted, { keepRun: true });
     if (S.runId) selectRun(S.runId);
+  } else if (!wanted && query.get('run')) {
+    await openRun(query.get('run'));  // ?run= alone: the run names its machine
   }
+  if (!S.machine) loadEveryRun();
   loadMachineChecks();
   navigate();
 }

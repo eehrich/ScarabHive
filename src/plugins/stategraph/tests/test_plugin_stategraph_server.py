@@ -515,7 +515,7 @@ async def test_a_runs_row_names_the_defaults_its_params_had_when_it_started(serv
     assert server.run_manager.describe("plain")["param_defaults"] == {}
     assert server.run_manager.describe("broken")["param_defaults"] == {}
     assert server.run_manager.describe("rootless")["param_defaults"] == {}
-    assert {"broken", "rootless"} <= set(server.run_manager._defaults), "a definition that does not load: read once"
+    assert {"broken", "rootless"} <= set(server.run_manager._facts), "a definition that does not load: read once"
 
 
 async def test_a_fork_names_the_defaults_its_origin_was_started_under(server, monkeypatch):
@@ -542,8 +542,10 @@ async def test_a_fork_names_the_defaults_its_origin_was_started_under(server, mo
     monkeypatch.setattr(runner_module, "load_snapshot", lambda *a, **k: reads.append(1) or real(*a, **k))
 
     assert server.run_manager.describe("fork2")["param_defaults"] == {"engine": "agent"}
+    first = len(reads)  # the origin's definition for the defaults, its own for budget's limit
     assert server.run_manager.describe("fork2")["param_defaults"] == {"engine": "agent"}
-    assert len(reads) == 1, "read again"
+    assert server.run_manager.budget("fork2")[0] is None
+    assert first == 2 and len(reads) == first, f"read again: {len(reads)}"
     assert builtins.SG_COMPANION_RAN is False, "the companion module ran"
 
 
@@ -559,12 +561,12 @@ async def test_the_kept_param_defaults_stay_bounded_and_a_store_error_is_not_kep
     monkeypatch.setattr(runner_module, "DEFAULTS_KEPT", 2)
     manager = server.run_manager
     assert [manager.describe(r)["param_defaults"] for r in ("a", "b", "c")] == [{"engine": "agent"}] * 3
-    assert sorted(manager._defaults) == ["b", "c"], manager._defaults
+    assert sorted(manager._facts) == ["b", "c"], manager._facts
 
     real = manager._origin
     monkeypatch.setattr(manager, "_origin", lambda run_id: (_ for _ in ()).throw(sqlite3.OperationalError("locked")))
-    manager._defaults.clear()
-    assert manager.describe("a")["param_defaults"] == {} and "a" not in manager._defaults, "a store error kept"
+    manager._facts.clear()
+    assert manager.describe("a")["param_defaults"] == {} and "a" not in manager._facts, "a store error kept"
     monkeypatch.setattr(manager, "_origin", real)
     assert manager.describe("a")["param_defaults"] == {"engine": "agent"}
 
@@ -812,7 +814,8 @@ async def test_get_run_says_what_the_runs_agents_cost(server):
 async def test_saving_a_machines_own_file_without_its_version_says_to_pass_it(server):
     """A save of an existing machine without expected_versions: the answer names the fix, not "not one of its files"
     -- which stays the answer for a stray file of that name (the panel's module dialog reads it)."""
-    result, _ = await run_tool(server, "stategraph_save_machine", {"files": {"hello.yaml": HELLO}})
+    # a changed text: one sent back unchanged is left alone (API-5)
+    result, _ = await run_tool(server, "stategraph_save_machine", {"files": {"hello.yaml": HELLO + "# changed\n"}})
 
     assert result["status"] == "error" and result["error_type"] == "http_409", result
     assert "expected_versions" in result["error"] and "not one of its files" not in result["error"], result
@@ -820,7 +823,8 @@ async def test_saving_a_machines_own_file_without_its_version_says_to_pass_it(se
     (server.machines.find("hello").path.parent / "stray.py").write_text("x = 1\n", encoding="utf-8")
     version = server.service.get_machine("hello")["versions"]["hello.yaml"]
     stray, _ = await run_tool(server, "stategraph_save_machine",
-                              {"files": {"hello.yaml": HELLO, "stray.py": "y = 2\n"},
+                              {"files": {"hello.yaml": HELLO.replace("python: hello.py", "python: stray.py"),
+                                         "stray.py": HELLO_PY},
                                "expected_versions": {"hello.yaml": version}})
     assert stray["status"] == "error" and stray["error"].startswith("stray.py exists already"), stray
 
@@ -913,7 +917,8 @@ states:
 
 
 async def test_get_run_hides_callback_tokens_from_a_reader_who_is_not_the_runs_user_or_an_admin(server, monkeypatch):
-    """A run of nobody is visible to every user; its callback URL would let one who may not send_event fire it."""
+    """A run of nobody is an admin's to see -- and the process's own code's (a caller without a user), which must
+    not get its callback URL: it would fire the event past send_event's gate (API-3)."""
     import json
 
     (server.machines.find("hello").path.parent / "ask.yaml").write_text(CALLBACK, encoding="utf-8")
@@ -928,9 +933,9 @@ async def test_get_run_hides_callback_tokens_from_a_reader_who_is_not_the_runs_u
     seen_by_admin, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"], "_user_id": "root"})
     seen_by_nobody, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"]})
 
-    assert seen_by_user["status"] == "success", seen_by_user
-    assert token not in json.dumps(seen_by_user) and "<hidden>" in json.dumps(seen_by_user["frames"])
-    assert token not in json.dumps(seen_by_nobody), "a caller without a user is not the user of a run of nobody"
+    assert seen_by_user["error_type"] == "http_404", "a run of nobody is no user's"
+    assert token not in json.dumps(seen_by_nobody) and "<hidden>" in json.dumps(seen_by_nobody["frames"]), \
+        "a caller without a user is not the user of a run of nobody"
     assert token in json.dumps(seen_by_admin["frames"]) and token in json.dumps(seen_by_admin["journal"])
 
 
@@ -971,7 +976,8 @@ async def test_a_token_across_the_cut_and_one_in_a_key_are_hidden_whole(server, 
     token = server._callback_tokens(started["run_id"]).pop()
     _enable_auth(server, monkeypatch, {"alice": "USER"})
 
-    seen, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"], "_user_id": "alice"})
+    # a caller without a user sees a run of nobody, but holds no token of it
+    seen, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"]})
 
     text = json.dumps(seen)
     assert token[:8] not in text and token[-8:] not in text, "a part of the token is visible"

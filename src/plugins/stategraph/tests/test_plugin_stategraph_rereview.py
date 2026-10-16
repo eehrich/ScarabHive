@@ -368,7 +368,7 @@ class _RenewedAfterRead:
 
     def execute(self, sql, params=()):
         cursor = self.conn.execute(sql, params)
-        if self.pending and sql.startswith("SELECT id FROM runs"):
+        if self.pending and sql.startswith("SELECT id") and " FROM runs " in sql:
             self.pending = False
             rows = cursor.fetchall()
             self.renew()

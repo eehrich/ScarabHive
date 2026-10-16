@@ -264,12 +264,13 @@ def test_move_state_out_of_a_composite_gives_its_region_the_first_state_left_as_
     out = apply_op(text, {"op": "move_state", "name": "read", "into": None})
 
     moved = data(out)
-    assert moved["states"]["review"]["initial"] == "verdict" and "    initial: verdict   # first\n" in out
+    # only finals are left in the region: never one of them -- `initial` stays and SG002 asks the author
+    assert moved["states"]["review"]["initial"] == "read" and "    initial: read   # first\n" in out
     assert list(moved["states"])[-1] == "read" and moved["states"]["read"]["transitions"] == [{"target": "verdict"}]
     assert all(comment in out for comment in COMMENTS) and loads_cleanly(out)
     three = ("stategraph: 1\nid: m\ninitial: c\nstates:\n  c:\n    initial: b\n    states:\n      a:\n        type: final\n"
              "      b:\n        type: final\n      d:\n        type: final\n  e:\n    type: final\n")
-    assert data(apply_op(three, {"op": "move_state", "name": "b", "into": None}))["states"]["c"]["initial"] == "a"
+    assert data(apply_op(three, {"op": "move_state", "name": "b", "into": None}))["states"]["c"]["initial"] == "b"
 
 
 def test_move_state_parts_the_state_by_a_blank_line_where_its_new_region_does():

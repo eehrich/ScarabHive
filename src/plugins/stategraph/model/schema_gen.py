@@ -38,9 +38,36 @@ def machine_schema() -> dict[str, Any]:
     if state is not None:
         state.setdefault("properties", {})["do"] = {"description": "the do-activity: exactly one kind key",
                                                     "oneOf": activities}
+    # every other place that holds an activity is typed like do (the models keep them plain dicts: kinds are a
+    # registry plugins add to)
+    defs["Activity"] = {"description": "an activity: exactly one kind key", "oneOf": activities}
+    for owner, name in (("MachineSpec", "finally"), ("LocalMachineSpec", "finally"), ("StateSpec", "finally"),
+                        ("ResourceSpec", "open"), ("ResourceSpec", "fork"), ("ResourceSpec", "close")):
+        properties = schema["properties"] if owner == "MachineSpec" else defs[owner]["properties"]
+        _as_activity(properties[name])
+    for key, kind in REGISTRY.items():
+        properties = defs[f"Activity_{key}"]["properties"]
+        for name in kind.nested_one:
+            _as_activity(properties[name])
+        for name in kind.nested_map:
+            properties[name]["additionalProperties"] = dict(_ACTIVITY)
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     schema["title"] = "stategraph machine (format 1)"
     return schema
+
+
+_ACTIVITY = {"$ref": "#/$defs/Activity"}
+_PLAIN_OBJECT = {"additionalProperties": True, "type": "object"}
+
+
+def _as_activity(prop: dict[str, Any]) -> None:
+    """A property pydantic types as a plain object (``dict[str, Any]``, optional or not) as an activity."""
+    if "anyOf" in prop:
+        prop["anyOf"] = [dict(_ACTIVITY) if member == _PLAIN_OBJECT else member for member in prop["anyOf"]]
+    else:
+        for key in _PLAIN_OBJECT:
+            prop.pop(key, None)
+        prop.update(_ACTIVITY)
 
 
 def render() -> str:

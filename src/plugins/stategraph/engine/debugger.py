@@ -301,7 +301,8 @@ class Debugger:
             self.paused_event = event
             self._resume.clear()
             run.refresh_status()
-            run.trace(frame, "paused", state=node.name if node else None, data={"reason": reason, "hook": point})
+            run.trace(frame, "paused", state=node.name if node else None, data={"reason": reason, "hook": point},
+                      tag=point)  # an enter and an exit pause of one step keep a row each
             try:
                 await self._resume.wait()
             finally:
@@ -360,6 +361,9 @@ class Debugger:
         """``ctx.<path> = <expr>`` in the paused frame -- or ``out = <expr>`` at an activity's exit or error hook:
         the activity then completes with that out (a failure too); journaled so replay applies it again."""
         frame = self._paused()
+        if self.paused and self.paused.get("hook") == "wait":  # mid-activity: no hook a replay could apply it at
+            raise ValueError("the run is paused while it waits for a semaphore slot: set takes effect at a hook -- "
+                             "step to the state's exit, or pause at a breakpoint")
         value = jsonable(frame.machine.namespace.evaluate(expr, frame.scope(event=self.paused_event), "set"))
         if path.strip() == "out":
             hook = self.paused["hook"] if self.paused else None

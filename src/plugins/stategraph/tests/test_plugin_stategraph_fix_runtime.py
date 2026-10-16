@@ -638,7 +638,7 @@ async def test_a_control_answer_carries_the_journal_rows_asked_for(tmp_path):
     try:
         run_id = (await server.service.start_run("many", mock_only=True))["run_id"]
         await settle(server.run_manager, run_id)
-        rows = len(server.run_store.rows(run_id, kinds=("activity", "trace", "event", "edit", "timer")))
+        rows = len(server.run_store.rows(run_id, kinds=("activity", "trace", "event", "edit", "timer", "lifecycle")))
         assert rows > 60, "fixture: more rows than the default answer holds"
 
         asked = await server.service.control_run(run_id, "set_breakpoints", breakpoints=[], steps=200)
