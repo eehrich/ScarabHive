@@ -12,3 +12,64 @@ tools:
           to: {type: array, items: {type: string}, description: "Some of the configured recipients; leave out for all"}
         required: [subject, body]
         additionalProperties: false
+{% if imap_configured %}
+  - type: function
+    function:
+      name: "{{ name }}_inbox"
+      description: |
+        List mails of the mailbox, newest first: id, from, subject, date, snippet, attachment count, opened, new.
+      parameters:
+        type: object
+        properties:
+          unread_only: {type: boolean, description: "Only mails you have not opened with read (default true)"}
+          new_only: {type: boolean, description: "Only new mails: arrived, not yet listed or opened"}
+          limit: {type: integer, description: "1-100, default 20"}
+        additionalProperties: false
+  - type: function
+    function:
+      name: "{{ name }}_read"
+      description: |
+        Open one mail: headers, text, attachment list. Marks it opened for you, not read for the user.
+      parameters:
+        type: object
+        properties:
+          id: {type: integer, description: "The mail's id from the inbox"}
+        required: [id]
+        additionalProperties: false
+  - type: function
+    function:
+      name: "{{ name }}_attachment"
+      description: |
+        Download one attachment of a mail to a file. Returns its path.
+      parameters:
+        type: object
+        properties:
+          id: {type: integer, description: "The mail's id"}
+          index: {type: integer, description: "The attachment's index from read"}
+          filename: {type: string, description: "Or its file name"}
+        required: [id]
+        additionalProperties: false
+  - type: function
+    function:
+      name: "{{ name }}_reply"
+      description: |
+        Answer the sender of a mail with plain text. Only senders the configuration allows.
+      parameters:
+        type: object
+        properties:
+          id: {type: integer, description: "The mail's id"}
+          body: {type: string, description: "Plain text"}
+        required: [id, body]
+        additionalProperties: false
+  - type: function
+    function:
+      name: "{{ name }}_watch"
+      description: |
+        on: wake this session when new mail arrives; off; status.
+      parameters:
+        type: object
+        properties:
+          action: {type: string, enum: ["on", "off", "status"]}
+        required: [action]
+        additionalProperties: false
+{% endif %}

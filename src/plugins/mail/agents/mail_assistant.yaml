@@ -1,0 +1,29 @@
+# mail_assistant: watches the user's mailbox through the mail plugin (IMAP) and
+# reports new mail to the user with mail_send. Off, like the mail entry in
+# config/plugins.yaml: switch both on where your settings live (config/local.yaml),
+# with imap_host set (mail.guide, "The assistant"). Start a chat with it and ask
+# it to watch the mailbox: that chat's session is the one woken on new mail.
+plugins:
+  servers:
+
+    mail_assistant:
+      type: basic_agent
+      enabled: false
+      description: "Watches your mailbox: reports new mail to you, answers allowed senders, downloads attachments when needed"
+      agent_config:
+        llm_profile: [structured, structured_fallback]
+        llm_profile_advanced: []
+        max_steps: 30
+        system_template: "./prompts/mail_assistant.md"
+        tools:
+          # The mail instance only: nothing a mail asks for can reach a file, a shell or the web.
+          allowed:
+            - "mail/*"
+      metadata:
+        author: "Enrico Ehrich"
+        version: "0.1.0"
+        tags: ["mail", "imap", "assistant"]
+        category: "Assistant"
+        visibility: "ui"
+        # The mailbox is the operator's: nobody else reads it through this agent.
+        min_role: admin

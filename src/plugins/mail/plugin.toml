@@ -1,11 +1,11 @@
-# mail -- a plain-text mail over SMTP, only to the recipients the server entry names.
+# mail -- a plain-text mail over SMTP, only to the recipients the server entry names; with IMAP, the mailbox read.
 [plugin]
 name = "mail"
-version = "0.1.0"
-description = "Send a plain-text mail over SMTP to the recipients the configuration names."
+version = "0.2.0"
+description = "Send a plain-text mail over SMTP to the configured recipients; with IMAP read the mailbox, download attachments, answer allowed senders and wake a chat on new mail."
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["tool-server"]
 category = "utilities"
-tags = ["mail", "smtp", "notification"]
+tags = ["mail", "smtp", "imap", "notification"]
 requires = { agent_system = ">=0.6.0" }
