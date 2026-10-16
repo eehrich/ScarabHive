@@ -254,6 +254,21 @@ rendered (the enclosing one too, when only the `tbody` is new).
   `data-id`/`data-index` keep working, code that reads the order in the DOM
   does not.
 
+**Resizable columns** come with every `.pk-table` that has a one-row `<thead>`
+and two columns or more — sortable or not, no markup of your own. Dragging a
+head's right edge sets that column's width, a double click on the edge fits it
+to its widest cell (a row whose cells are not one per column, a detail row
+with `colspan`, does not count). Once one is set the table lays out fixed: a
+set column keeps its width, the last column (no grip) and any not set share
+the rest. A cell of text that does not fit ends in "…" and shows the whole text
+on hover (a `title` of the page's own stays); a cell holding blocks (`div`,
+`p`, `pre`, lists, `details`, a form) wraps instead. The widths follow the
+header text (two heads with the same text count apart) and hold through every
+`render()`; a table named by `data-pk-cols` (or its `data-pk-sort`) keeps them
+per panel path across reloads, in localStorage under `pk.cols:<pathname>`
+(same plain-name rule as sorting). Text you want to wrap goes into a block
+(`<div>`), not straight into the `<td>`. Opt out with `data-pk-noresize`.
+
 ## 4. Look
 
 - **Components** instead of your own: `pk-btn` (`--primary`, `--danger`,

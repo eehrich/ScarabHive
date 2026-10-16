@@ -1294,6 +1294,100 @@
     return kept && untouched;
   });
 
+  await check('a column takes the width its edge is dragged to, cuts its text with a whole one on hover, keeps the width through a re-render and fits its content on a double click', async () => {
+    localStorage.removeItem(`pk.cols:${location.pathname}`);
+    const box = document.createElement('div');
+    box.style.width = '600px';
+    document.body.appendChild(box);
+    const long = 'a note far too long for the column it is shown in, by any measure';
+    // as panels draw it: in its box, with a detail row across the table under the first row
+    const draw = () => pk.render(box, pk.trusted(`<div class="pk-table-wrap">${sortableTable('t-cols',
+      '<th>Name</th><th>Note</th><th class="pk-num">Size</th>',
+      `<tr><td>alpha</td><td>${long}</td>${size(1)}</tr><tr><td colspan="3">${long} ${long}</td></tr>`
+      + `<tr><td>beta</td><td><div id="cols-prose">${long}</div></td>${size(2)}</tr>`).toString()}</div>`));
+    draw();
+    const table = () => box.querySelector('table');
+    const sized = () => table().classList.contains('pk-table--sized');
+    const grips = [...box.querySelectorAll('th')].map((th) => Boolean(th.querySelector(':scope > .pk-col-grip')));
+    const gripsButLast = grips.join() === 'true,true,false' && !sized();
+    const note = () => head(box, 'Note');
+    const press = (x, to = x) => {
+      const grip = note().querySelector('.pk-col-grip');
+      grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, button: 0, pointerId: 7 }));
+      if (to !== x) window.dispatchEvent(new PointerEvent('pointermove', { clientX: to, pointerId: 7 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: to, pointerId: 7 }));
+      grip.click();  // the click that ends a press sorts nothing
+    };
+    const x = () => note().querySelector('.pk-col-grip').getBoundingClientRect().right - 2;
+    press(x());  // a click on the edge without moving sets nothing, not even on the next draw
+    draw();
+    const clickSetsNothing = !sized() && !localStorage.getItem(`pk.cols:${location.pathname}`);
+    const before = note().getBoundingClientRect().width;
+    press(x(), x() - 120);
+    const narrowed = Math.abs(note().getBoundingClientRect().width - (before - 120)) <= 1 && sized()
+      && !note().hasAttribute('aria-sort');
+    const cell = () => [...box.querySelectorAll('tbody td')].find((td) => td.textContent === long);
+    cell().dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    const cut = cell().scrollWidth > cell().clientWidth && cell().title === long;
+    const prose = document.getElementById('cols-prose');
+    const wraps = prose.scrollWidth <= prose.clientWidth && prose.getBoundingClientRect().height > 30;
+    const width = note().style.width;
+    draw();
+    const held = note().style.width === width && sized();
+    const kept = JSON.parse(localStorage.getItem(`pk.cols:${location.pathname}`) || '{}')['t-cols'] ?? {};
+    // the last column takes the rest: a width of it kept would hold the table that wide in a narrower frame
+    const stored = kept.Note === parseFloat(width) && !('Size' in kept);
+    const fit = () => note().querySelector('.pk-col-grip').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    fit();
+    // as wide as the long note, not as the detail row across the table (twice that text)
+    const text = document.createRange();
+    text.selectNodeContents(cell());
+    const fits = cell().scrollWidth <= cell().clientWidth && parseFloat(note().style.width) > parseFloat(width)
+      && note().getBoundingClientRect().width < text.getBoundingClientRect().width * 1.5;
+    const fitted = note().style.width;
+    press(x(), x() + 200);
+    fit();  // and back down from wider
+    const narrowsToo = note().style.width === fitted;
+    // the first column fits its names, not the detail row whose one cell stands in its place
+    head(box, 'Name').querySelector('.pk-col-grip').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    const detailIgnored = parseFloat(head(box, 'Name').style.width) < 150;
+    // a column narrowed and widened back leaves a table that fits its room as wide as the room, not wider
+    pk.render(box, pk.trusted('<div class="pk-table-wrap"><table class="pk-table"><thead><tr><th>One</th><th>Two</th><th>Three</th></tr></thead><tbody><tr><td>a</td><td>b</td><td>c</td></tr></tbody></table></div>'));
+    const one = box.querySelector('th');
+    const drag = (dx) => {
+      const g = one.querySelector('.pk-col-grip');
+      const gx = g.getBoundingClientRect().right - 2;
+      g.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: gx, button: 0, pointerId: 9 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: gx + dx, pointerId: 9 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: gx + dx, pointerId: 9 }));
+    };
+    drag(-60);
+    drag(60);
+    const noRatchet = box.querySelector('table').getBoundingClientRect().width <= box.clientWidth + 1;
+    pk.render(box, pk.trusted('<table class="pk-table"><thead><tr><th>id</th><th>id</th><th>x</th></tr></thead><tbody><tr><td>1</td><td>2</td><td>3</td></tr></tbody></table>'));
+    const [first, second] = box.querySelectorAll('th');
+    const secondBefore = second.getBoundingClientRect().width;
+    const grip = first.querySelector('.pk-col-grip');
+    const gx = grip.getBoundingClientRect().right - 2;
+    grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: gx, button: 0, pointerId: 8 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: gx + 80, pointerId: 8 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: gx + 80, pointerId: 8 }));
+    const twins = Math.abs(second.getBoundingClientRect().width - secondBefore) <= 1;
+    // a column of blocks fits what they need unwrapped, not the narrow width it is measured at
+    pk.render(box, pk.trusted(`<table class="pk-table"><thead><tr><th>Memory</th><th>x</th></tr></thead><tbody><tr><td><div id="cols-block">${long}</div></td><td>1</td></tr></tbody></table>`));
+    const blockHead = box.querySelector('th');
+    blockHead.querySelector('.pk-col-grip').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    const block = document.getElementById('cols-block');
+    const blocksFit = block.getBoundingClientRect().height < 30 && parseFloat(blockHead.style.width) > 300;
+    pk.render(box, pk.trusted('<table class="pk-table" data-pk-noresize><thead><tr><th>A</th><th>B</th></tr></thead><tbody></tbody></table>'));
+    const optedOut = !box.querySelector('.pk-col-grip');
+    box.remove();
+    localStorage.removeItem(`pk.cols:${location.pathname}`);
+    const all = { gripsButLast, clickSetsNothing, narrowed, cut, wraps, held, stored, fits, narrowsToo, detailIgnored, twins, blocksFit, noRatchet, optedOut };
+    if (Object.values(all).some((v) => !v)) throw new Error(JSON.stringify(all));
+    return true;
+  });
+
   // <pk-session>: which session a panel shows, and the way back to the chat's.
 
   await check('following the chat the session control names it, and with no choice to make it keeps out of the way', () => {

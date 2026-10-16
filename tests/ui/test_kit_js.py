@@ -93,6 +93,7 @@ EXPECTED = [
     "a head holding a control of its own is left as it is",
     "the order a viewer picks outlives a reload of the panel, and only a plain name of the last few is kept",
     "the keyboard stays on the column head it sorted with when the table is drawn anew",
+    "a column takes the width its edge is dragged to, cuts its text with a whole one on hover, keeps the width through a re-render and fits its content on a double click",
     "following the chat the session control names it, and with no choice to make it keeps out of the way",
     "the scope picked says what a panel asks about, and the scope already shown asks nothing",
     "a link pins a panel to a session: the control names it, and the way back keeps the rest of the link",

@@ -49,6 +49,7 @@ export function render(element, content) {
   const key = element.contains(focused) ? focused.closest('[data-key]')?.dataset.key : undefined;
   element.innerHTML = fragment(content);
   sortTables(element);
+  sizeTables(element);
   keyRows(element);
   if (key !== undefined) [...element.querySelectorAll('[data-key]')].find((one) => one.dataset.key === key)?.focus();
 }
@@ -1377,6 +1378,7 @@ function sortTables(root) {
 }
 
 document.addEventListener('click', (event) => {
+  if (event.target.closest?.('.pk-col-grip')) return;  // the end of a column drag, no sort
   // the whole head cell, not only its text: the button is what the keyboard reaches
   const th = event.target.closest?.('th');
   const table = th?.querySelector(':scope > .pk-sort') && th.closest('table[data-pk-sort]');
@@ -1386,6 +1388,194 @@ document.addEventListener('click', (event) => {
   const dir = current?.key === key ? -current.dir : th.classList.contains('pk-num') ? -1 : 1;
   rememberSort(table.dataset.pkSort, { key, dir });
   sortTable(table);
+});
+
+// ---------------------------------------------------------------- resizable columns
+
+/*
+ * Every .pk-table with a one-row <thead> and two columns or more (and no data-pk-noresize): dragging a head cell's
+ * right edge sets that column's width, a double click on the edge fits it to its widest cell. Once one is set the
+ * table lays out fixed: a set column keeps its width, the last column (no grip) and any not set share the rest, a
+ * cell of text that does not fit ends in "…" and shows whole on hover, a cell holding blocks (prose, code) wraps.
+ * The widths follow the head's text and hold through every render(); a table named by data-pk-cols or
+ * data-pk-sort keeps them for this panel page across reloads, as a sort pick.
+ */
+const colWidths = new Map();  // table name, or its heads' texts when unnamed -> { column key: px }
+const lastFloors = new Map();  // table name -> the last column's width when a drag began, this page only
+const colsKey = () => `pk.cols:${location.pathname}`;
+const MIN_COL = 48;
+const LAST_COL_FLOOR = 96;  // what the column that takes the rest keeps when nothing says more
+
+const headCells = (table) => (table.tHead?.rows.length === 1 ? [...table.tHead.rows[0].cells] : []);
+const colsName = (table, heads) => table.dataset.pkCols || table.dataset.pkSort || heads.map(headKey).join('\u0000');
+
+/** A key per column: its head's text, and for a text a head before it has too, which one of them it is. */
+function colKeys(heads) {
+  const seen = new Map();
+  return heads.map((th) => {
+    const text = headKey(th);
+    const n = seen.get(text) ?? 0;
+    seen.set(text, n + 1);
+    return n ? `${text}#${n + 1}` : text;
+  });
+}
+
+function storedCols() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(colsKey()));
+    return stored && typeof stored === 'object' ? stored : {};
+  } catch { /* no storage or no JSON: no widths set */ }
+  return {};
+}
+
+function widthsOf(name) {
+  if (!colWidths.has(name)) {
+    const stored = PLAIN_NAME.test(name) ? storedCols()[name] : null;
+    const valid = stored && typeof stored === 'object'
+      ? Object.entries(stored).filter(([, px]) => Number.isFinite(px) && px >= MIN_COL) : [];
+    colWidths.set(name, Object.fromEntries(valid));
+  }
+  return colWidths.get(name);
+}
+
+function rememberCols(name, widths) {
+  colWidths.set(name, widths);
+  if (!PLAIN_NAME.test(name)) return;
+  try {
+    const all = storedCols();
+    delete all[name];
+    if (Object.keys(widths).length) all[name] = widths;
+    const kept = Object.keys(all).slice(-KEPT_SORTS).map((one) => [one, all[one]]);
+    localStorage.setItem(colsKey(), JSON.stringify(Object.fromEntries(kept)));
+  } catch { /* no storage: the widths last this page only */ }
+}
+
+/**
+ * The set widths onto the heads; none set gives the table back its own layout. The last column takes the rest: its
+ * head gets no width, and the table is at least as wide as the set ones and its floor -- on this page the width it
+ * had when a drag began (so a table wider than its box does not jump), anywhere else LAST_COL_FLOOR: a width taken
+ * in a wide browser tab would hold a docked frame wide.
+ */
+function applyCols(table, heads, widths) {
+  const keys = colKeys(heads);
+  const last = heads.length - 1;
+  let sum = lastFloors.get(colsName(table, heads)) ?? LAST_COL_FLOOR;
+  let sized = false;
+  heads.slice(0, last).forEach((th, i) => {
+    const px = widths[keys[i]];
+    th.style.width = px ? `${px}px` : '';
+    sized ||= Boolean(px);
+    sum += px || MIN_COL;
+  });
+  heads[last].style.width = '';
+  table.classList.toggle('pk-table--sized', sized);
+  table.style.width = sized ? `max(100%, ${sum}px)` : '';
+}
+
+function sizeTable(table) {
+  const heads = headCells(table);
+  if (heads.length < 2 || table.hasAttribute('data-pk-noresize')) return;
+  heads.slice(0, -1).forEach((th) => {
+    if (th.querySelector(':scope > .pk-col-grip')) return;
+    const grip = document.createElement('span');
+    grip.className = 'pk-col-grip';
+    grip.setAttribute('aria-hidden', 'true');
+    th.append(grip);
+  });
+  applyCols(table, heads, widthsOf(colsName(table, heads)));
+}
+
+function sizeTables(root) {
+  [...root.querySelectorAll('table.pk-table'), root.closest?.('table.pk-table')].filter(Boolean).forEach(sizeTable);
+}
+
+/** Every column at the width it has now: the start of a drag, so only the dragged one moves. */
+function frozenWidths(table, heads) {
+  const name = colsName(table, heads);
+  const widths = { ...widthsOf(name) };
+  const keys = colKeys(heads);
+  heads.slice(0, -1).forEach((th, i) => { widths[keys[i]] ??= Math.round(th.getBoundingClientRect().width); });
+  // only a table already wider than its room keeps its last column's width as the floor: one that fits would be
+  // held wider with every drag (the last column takes what the others give up), and in a box made narrower later
+  const room = (table.closest('.pk-table-wrap') ?? table).parentElement?.clientWidth ?? 0;
+  if (table.getBoundingClientRect().width > room + 1) lastFloors.set(name, Math.round(heads.at(-1).getBoundingClientRect().width));
+  else lastFloors.delete(name);
+  return widths;
+}
+
+/** What a column's content needs: measured with the column at its narrowest, so a fit can narrow it too. */
+function fittedWidth(table, heads, widths, column) {
+  const key = colKeys(heads)[column];
+  applyCols(table, heads, { ...widths, [key]: MIN_COL });
+  table.classList.add('pk-table--measuring');  // a cell of blocks unwrapped too: its scrollWidth is then its need
+  const th = heads[column];
+  const sort = th.querySelector(':scope > .pk-sort');
+  // the head's button is held to its cell (its text ends in "…"), so it says itself what its text needs
+  const need = [th.scrollWidth + (sort ? sort.scrollWidth - sort.clientWidth : 0)];
+  for (const body of table.tBodies) {
+    for (const row of body.rows) {
+      // a row whose cells are not one per column (a detail row across the table) says nothing of this one
+      if (row.cells.length !== heads.length) continue;
+      const cell = row.cells[column];
+      // a block overflowing the cell leaves the cell's end padding out of its scrollWidth
+      need.push(cell.scrollWidth + (cell.firstElementChild ? parseFloat(getComputedStyle(cell).paddingRight) : 0));
+    }
+  }
+  table.classList.remove('pk-table--measuring');
+  return Math.max(MIN_COL, ...need) + 1;
+}
+
+document.addEventListener('pointerdown', (event) => {
+  const grip = event.target.closest?.('.pk-col-grip');
+  if (!grip || event.button !== 0) return;
+  event.preventDefault();
+  const th = grip.parentElement;
+  const table = th.closest('table');
+  const heads = headCells(table);
+  const name = colsName(table, heads);
+  const widths = frozenWidths(table, heads);
+  const key = colKeys(heads)[heads.indexOf(th)];
+  const startX = event.clientX;
+  const startWidth = widths[key];
+  let moved = false;
+  // captured, the pointer stays the grip's outside the frame too; the window's events carry the drag either way
+  try { grip.setPointerCapture(event.pointerId); } catch { /* no live pointer of that id */ }
+  grip.classList.add('is-dragging');
+  const move = (e) => {
+    moved ||= e.clientX !== startX;
+    if (!moved) return;
+    widths[key] = Math.max(MIN_COL, Math.round(startWidth + e.clientX - startX));
+    applyCols(table, heads, widths);
+  };
+  const end = () => {
+    grip.classList.remove('is-dragging');
+    ['pointermove', 'pointerup', 'pointercancel'].forEach((type) => removeEventListener(type, type === 'pointermove' ? move : end));
+    if (moved) rememberCols(name, widths);  // a click on the edge, or the first of a double click, sets nothing
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', end);
+  addEventListener('pointercancel', end);
+});
+
+document.addEventListener('dblclick', (event) => {
+  const grip = event.target.closest?.('.pk-col-grip');
+  if (!grip) return;
+  const th = grip.parentElement;
+  const table = th.closest('table');
+  const heads = headCells(table);
+  const widths = frozenWidths(table, heads);
+  widths[colKeys(heads)[heads.indexOf(th)]] = fittedWidth(table, heads, widths, heads.indexOf(th));
+  applyCols(table, heads, widths);
+  rememberCols(colsName(table, heads), widths);
+});
+
+// a cut-off cell shows its whole text on hover; a title of the page's own stays
+document.addEventListener('pointerover', (event) => {
+  const cell = event.target.closest?.('.pk-table--sized :is(td, th)');
+  if (!cell || (cell.title && !cell.hasAttribute('data-pk-cut'))) return;
+  const cut = cell.scrollWidth > cell.clientWidth;
+  cell.toggleAttribute('data-pk-cut', cut);
+  if (cut) cell.title = cell.textContent.trim(); else cell.removeAttribute('title');
 });
 
 // ---------------------------------------------------------------- start
@@ -1439,6 +1629,7 @@ function start() {
   });
   initSidebars();
   sortTables(document);
+  sizeTables(document);
   keyRows(document);
   document.querySelectorAll('.pk-page-body').forEach((body) => bodySize.observe(body));
   if (framed) post('pk:ready');

@@ -40,8 +40,8 @@ body.app {
   display: flex; align-items: center; gap: var(--space-2);
   margin: 0 auto; width: min(460px, 36vw); height: var(--control-h-md); padding: 0 var(--space-2) 0 var(--space-3);
   font: 400 var(--text-sm)/1 var(--font-ui); color: var(--text-muted); text-align: left;
-  background: var(--surface-0); border: 1px solid var(--border-default); border-radius: var(--radius-md);
-  cursor: pointer;
+  background: var(--field-bg); border: 1px solid var(--border-default); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm); cursor: pointer;
 }
 .app-search:hover { border-color: var(--border-strong); color: var(--text-secondary); }
 .app-header-actions { display: flex; align-items: center; gap: var(--space-1); }

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Panel tables have resizable columns: every `.pk-table` with one head row
+  and two columns or more gets a grip on each column's right edge but the
+  last, which takes the rest (drag to set the width, double-click to fit the
+  content). Once a width is set, a cell of text that does not fit ends in
+  "…" and shows its whole text on hover, a cell holding blocks (prose, code)
+  wraps; the widths hold through redraws and, for a table named by
+  `data-pk-cols` or `data-pk-sort`, across reloads. `data-pk-noresize` opts a
+  table out.
+- The UI kit's look is refreshed: inputs are white fields on the light theme,
+  bordered buttons, cards, number tiles and table boxes lift with a soft
+  shadow, dialogs and menus with a layered one, radii are a step rounder
+  (8/12 px), callouts are rounded notes and a button gives a little on press.
+
 - `tool_preload` rules may use two placeholders taken from the user's
   message without a group of their own: `{message}` (its text) and
   `{keywords}` (the code identifiers it names -- backticked spans,

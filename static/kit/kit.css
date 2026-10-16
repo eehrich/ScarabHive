@@ -81,8 +81,13 @@
 
   --brand: light-dark(#a8841c, #c9a227);
 
+  --field-bg: light-dark(#ffffff, #0e1116);   /* inputs: white on light, sunk on dark */
+
   --shadow-color: light-dark(rgb(15 23 42 / 0.16), rgb(0 0 0 / 0.5));
-  --shadow-overlay: 0 14px 36px var(--shadow-color);   /* light-dark() takes colours, not shadows */
+  --shadow-soft:  light-dark(rgb(15 23 42 / 0.06), rgb(0 0 0 / 0.28));
+  /* light-dark() takes colours, not shadows */
+  --shadow-sm: 0 1px 2px var(--shadow-soft);
+  --shadow-overlay: 0 2px 6px var(--shadow-soft), 0 16px 40px var(--shadow-color);
 
   --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, Consolas, "SF Mono", Menlo, monospace;
@@ -101,8 +106,8 @@
   --space-8: 32px;
 
   --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 
   --control-h-sm: 28px;
   --control-h-md: 32px;
@@ -195,13 +200,15 @@
   color: var(--btn-fg); background: var(--btn-bg);
   border: 1px solid var(--btn-border); border-radius: var(--radius-md);
   cursor: pointer; white-space: nowrap; user-select: none;
-  transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
+  box-shadow: var(--btn-shadow, var(--shadow-sm));
+  transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-fast);
 }
 .pk-btn:hover:not(:disabled) { background: var(--btn-bg-hover); }
+.pk-btn:active:not(:disabled) { transform: translateY(1px); }
 .pk-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .pk-btn--primary { --btn-bg: var(--accent); --btn-fg: var(--text-on-accent); --btn-border: transparent; --btn-bg-hover: var(--accent-hover); }
 .pk-btn--danger { --btn-bg: var(--danger); --btn-fg: var(--text-on-accent); --btn-border: transparent; --btn-bg-hover: var(--danger-hover); }
-.pk-btn--ghost { --btn-bg: transparent; --btn-border: transparent; --btn-fg: var(--text-secondary); --btn-bg-hover: var(--surface-3); }
+.pk-btn--ghost { --btn-shadow: none; --btn-bg: transparent; --btn-border: transparent; --btn-fg: var(--text-secondary); --btn-bg-hover: var(--surface-3); }
 .pk-btn--ghost:hover:not(:disabled) { color: var(--text-primary); }
 .pk-btn--sm { height: var(--control-h-sm); padding: 0 var(--space-2); font-size: var(--text-xs); }
 .pk-btn--lg { height: var(--control-h-lg); padding: 0 var(--space-4); font-size: var(--text-md); }
@@ -210,7 +217,7 @@
 /* pressed, or the current item of a list (a machine, an agent): marked, and still marked under the pointer */
 .pk-btn[aria-pressed="true"], .pk-btn[aria-current="true"] {
   --btn-bg: var(--accent-subtle); --btn-fg: var(--accent-text); --btn-border: transparent;
-  --btn-bg-hover: var(--accent-subtle);
+  --btn-bg-hover: var(--accent-subtle); --btn-shadow: none;
 }
 
 /* ------------------------------------------------------------------ inputs */
@@ -218,7 +225,8 @@
 .pk-input, .pk-select, .pk-textarea {
   width: 100%; height: var(--control-h-md); padding: 0 var(--space-3);
   font: 400 var(--text-sm)/1.4 var(--font-ui); color: var(--text-primary);
-  background: var(--surface-0); border: 1px solid var(--border-default); border-radius: var(--radius-md);
+  background-color: var(--field-bg); border: 1px solid var(--border-default); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
   transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
 }
 .pk-textarea { height: auto; min-height: 72px; padding: var(--space-2) var(--space-3); resize: vertical; }
@@ -398,12 +406,12 @@ kbd.pk-kbd {
 
 .pk-card {
   background: var(--surface-2); border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg); padding: var(--space-4);
+  border-radius: var(--radius-lg); padding: var(--space-4); box-shadow: var(--shadow-sm);
 }
 .pk-card-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); }
 .pk-card-title { font-size: var(--text-sm); font-weight: 600; margin: 0; }
 .pk-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-3); }
-.pk-stat { padding: var(--space-3); background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
+.pk-stat { padding: var(--space-3); background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); box-shadow: var(--shadow-sm); }
 .pk-stat-label { font-size: var(--text-xs); color: var(--text-muted); }
 .pk-stat-value { font-size: var(--text-xl); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 
@@ -411,7 +419,7 @@ kbd.pk-kbd {
 
 /* As wide as the table needs (its cells still wrap first), never a scroll box of its own: the panel body
  * scrolls, and a sticky head sticks to it. clip only rounds the corners. */
-.pk-table-wrap { width: fit-content; min-width: 100%; overflow: clip; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
+.pk-table-wrap { width: fit-content; min-width: 100%; overflow: clip; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
 .pk-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .pk-table th {
   /* sticky holds at the scroller's content edge: pulled up by its padding, the head meets the top without a gap */
@@ -431,6 +439,18 @@ kbd.pk-kbd {
 /* the head of a data-pk-sort table: the kit wraps its text in this button */
 .pk-table .pk-sort { font: inherit; color: inherit; text-align: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 .pk-table .pk-sort:hover { color: var(--text-primary); }
+/* resizable columns (panel-kit.js): a grip on each head's right edge but the last; once a width is set the table
+ * lays out fixed, a cell of text that does not fit ends in "…" (whole on hover), a cell holding blocks wraps */
+.pk-col-grip { position: absolute; top: 0; right: 0; bottom: 0; width: 7px; cursor: col-resize; touch-action: none; }
+.pk-col-grip::after { content: ""; position: absolute; top: 25%; bottom: 25%; right: 0; width: 1px; background: var(--border-default); }
+.pk-col-grip:hover::after, .pk-col-grip.is-dragging::after { top: 0; bottom: 0; width: 2px; background: var(--accent); }
+.pk-table--sized { table-layout: fixed; }
+.pk-table--sized :is(th, td) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pk-table--sized td:has(> :is(div, p, pre, ul, ol, dl, details, table, form)) { white-space: normal; overflow-wrap: anywhere; }
+.pk-table--measuring td:is(td) { white-space: nowrap; }  /* while a fit measures: what a cell needs unwrapped */
+/* the head's button gives way first, the sort arrow after it (th::after) stays in the cell */
+.pk-table--sized .pk-sort { max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.pk-table--sized th:is([aria-sort="ascending"], [aria-sort="descending"]) .pk-sort { max-width: calc(100% - 1.25em); }
 
 /* ---------------------------------------------------------- layout helpers */
 
@@ -569,7 +589,7 @@ pk-refresh:has(.pk-refresh-auto[aria-pressed="true"]) .pk-refresh-pick { --btn-b
 /* a message in place: an error, a warning, a note, a success (see notice() in panel-kit.js) */
 .pk-callout {
   margin: 0; padding: var(--space-2) var(--space-3); border-left: 3px solid var(--border-strong);
-  border-radius: var(--radius-sm); background: var(--surface-1); font-size: var(--text-sm); color: var(--text-primary);
+  border-radius: var(--radius-md); background: var(--surface-1); font-size: var(--text-sm); color: var(--text-primary);
 }
 .pk-callout--danger { border-left-color: var(--danger); background: var(--danger-subtle); }
 .pk-callout--warn { border-left-color: var(--warn); background: var(--warn-subtle); }

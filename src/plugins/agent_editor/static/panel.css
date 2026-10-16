@@ -132,7 +132,7 @@ fieldset.ae-skills { display: grid; grid-template-columns: repeat(auto-fit, minm
   /* room for the textarea's scrollbars: without it the view stops scrolling short of the text above it */
   padding-right: calc(var(--space-3) + var(--space-6)); padding-bottom: calc(var(--space-2) + var(--space-6));
   font: 400 var(--text-sm)/1.4 var(--font-mono); color: var(--text-primary); white-space: pre; tab-size: 8;
-  background: var(--surface-0);
+  background: var(--field-bg);
 }
 .ae-code > .pk-textarea {
   position: relative; display: block; background: transparent; color: transparent; caret-color: var(--text-primary);
