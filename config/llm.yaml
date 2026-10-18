@@ -633,6 +633,17 @@ llm_system:
       request_timeout: 300
       max_retries: 3
 
+    # ElevenLabs (plugin llm_elevenlabs). voice = a voice id of the account;
+    # none set here, so a run names one (--tts-voice <id>) or clones ours
+    # (--tts-clone sebastian). eleven_v4 reads IPA entries of a book's
+    # pronunciation dictionary ("/kvɔʁk/").
+    elevenlabs-v4:
+      provider: elevenlabs
+      model: eleven_v4
+      api_key: "${SCARAB_ELEVENLABS_API_KEY}"
+      request_timeout: 300
+      max_retries: 3
+
   # =============================================================================
   # TTS PROFILES
   # =============================================================================
@@ -648,6 +659,10 @@ llm_system:
     or-qwen-tts:
       model_ref: openrouter-qwen-tts
       description: "Qwen Audio 3.0 TTS Flash via OpenRouter speech API"
+
+    elevenlabs:
+      model_ref: elevenlabs-v4
+      description: "ElevenLabs eleven_v4 (paid per character) - voice id or Instant Voice Clone"
 
   # =============================================================================
   # DECISION MODELS (local) - a questionnaire, not a conversation

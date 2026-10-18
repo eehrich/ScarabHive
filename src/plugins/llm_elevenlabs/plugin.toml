@@ -1,0 +1,13 @@
+# llm_elevenlabs -- ElevenLabs text to speech for the LLM registry
+# (provides_tts), with Instant Voice Clones. Plain httpx, no SDK.
+[plugin]
+name = "llm_elevenlabs"
+version = "1.0.0"
+description = "ElevenLabs text to speech (eleven_v4), voice ids and Instant Voice Clones"
+author = "AgentSystem"
+type = ["llm-provider"]
+provides = []
+provides_tts = ["elevenlabs"]
+
+requires = { agent_system = ">=0.6.0" }
+dependencies = []

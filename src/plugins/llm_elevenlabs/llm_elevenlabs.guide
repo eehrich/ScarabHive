@@ -1,0 +1,77 @@
+@database "llm_elevenlabs"
+@author "Enrico Ehrich"
+@$VER: llm_elevenlabs.guide 1.0 (16.10.2026)
+@smartwrap
+
+@node main "ElevenLabs text to speech"
+@{h1}ElevenLabs text to speech
+
+This plugin gives the TTS seam one more provider, @{tt}elevenlabs@{utt}:
+ElevenLabs' text to speech over plain httpx, no SDK. It has no tools, no
+hooks and no panel. You use it by naming it in a TTS model entry of
+@{tt}config/llm.yaml@{utt} and pointing a TTS profile at that entry.
+
+@{code}
+  @{"  Model entry keys  " link keys}
+  @{"  Voices and clones  " link voices}
+  @{"  Pronunciation  " link ipa}
+  @{"  Hooks, cost and errors  " link errors}
+@{body}
+@endnode
+
+@node keys "Model entry keys"
+@{h1}Model entry keys
+
+@{table}
+Key | Meaning
+provider | elevenlabs
+model | the model id, e.g. eleven_v4 (the default) or eleven_multilingual_v2
+api_key | the account's key; empty falls back to ELEVENLABS_API_KEY
+base_url | defaults to https://api.elevenlabs.io
+voice | a voice id of the account, used when a call names none
+request_timeout | seconds per request (300)
+max_retries | retries on 429/5xx and transport errors (3)
+@{body}
+
+The audio comes back as 16-bit mono PCM at 24 kHz, a format every plan has.
+@endnode
+
+@node voices "Voices and clones"
+@{h1}Voices and clones
+
+A voice is an id of the account (Voices, ID). A caller passes it as the
+voice's name, or the entry's @{tt}voice@{utt} applies.
+
+A voice with a reference sample is cloned: the sample goes to
+@{tt}POST /v1/voices/add@{utt} once, and the voice id it gets is kept in
+@{tt}data/cache/elevenlabs_clones.json@{utt}, keyed by the sample's
+SHA-256. Every later call with the same sample, in any process, speaks with
+that id -- a book does not create a voice per scene, each would take a slot
+of the account. If the account answers 404 for a cached id (the voice was
+deleted), the entry is dropped and the sample cloned again, once. A preset
+id that does not exist is an error, never a clone.
+@endnode
+
+@node ipa "Pronunciation"
+@{h1}Pronunciation
+
+@{tt}eleven_v4@{utt} reads IPA in slashes inside a line, also in German
+text: "Er traf /ʃɪˈvɔn/." The client says so with
+@{tt}supports_inline_ipa@{utt} (true for model ids starting with
+@{tt}eleven_v4@{utt}). writer_audio reads it and replaces the names of a
+book's pronunciation dictionary whose spoken form is IPA; respelled entries
+are not sent.
+@endnode
+
+@node errors "Hooks, cost and errors"
+@{h1}Hooks, cost and errors
+
+Each request fires the TTS hooks (provider @{tt}elevenlabs@{utt}), so the
+message debugger sees it; the payload carries the text, model, voice label
+and character count. No usage is reported: ElevenLabs bills characters and
+its answer says nothing about them.
+
+A 4xx answer is raised with the body's first 500 characters; 429 and 5xx are
+retried with a growing pause. A call without any voice fails before a
+request is sent.
+@endnode
