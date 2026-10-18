@@ -778,3 +778,18 @@ async def test_the_catalog_lists_the_agents_a_machine_may_run(tmp_path, bound):
         expected["lazy_built"] = ""  # from its declaration; lazy_one's build failed: not listed
     assert every == expected, "not the runner, a facade, an agent that controls machines or a tool server"
     assert narrowed == ["v6_critic"]
+
+
+@pytest.mark.parametrize("block", ['agent: {category: "Video"}\n', ""])
+async def test_a_machine_s_agent_group_files_its_run_session_with_its_own(harness, tmp_path, block):
+    """The run's session runs as the runner, which names no group: the machine's ``agent:`` block does, and the
+    session list's folders file the run by it (metadata.category) -- a Video machine's runs land under Video."""
+    host = AgentHost(tmp_path / "sessions", FakeAgent("writer"))
+    run_id, row = await run(harness, host, machine("""\
+        a:
+          transitions: [{target: done}]
+        done: {type: final}
+        """, head=block))
+    assert row["status"] == "succeeded", row
+    stored = await host.sessions.load_session("ann", f"sg_{run_id}")
+    assert stored["metadata"].get("category") == ("Video" if block else None)

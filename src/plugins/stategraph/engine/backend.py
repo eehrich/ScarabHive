@@ -393,11 +393,13 @@ class ScarabHiveBackend:
         service = getattr(self.runner, "_session_service", None)
         return service if getattr(service, "session_manager", None) is not None else None
 
-    async def run_began(self, *, machine: str, title: str, params: dict[str, Any]) -> None:
+    async def run_began(self, *, machine: str, title: str, params: dict[str, Any],
+                        category: Optional[str] = None) -> None:
         """The run's own session, ``sg_<run id>``: its agents' instance sessions are its sub-sessions, so the
         session list shows the run with them -- under the caller's session when an agent started it (a machine
         facade, a tool call), at the top of its user's list otherwise. A resume finds it there already. The view
-        of a run: a run never fails over it."""
+        of a run: a run never fails over it. ``category`` is the machine's agent group (its ``agent:`` block): the
+        session's agent is the runner, which names none, so the list's folders file the run by this."""
         service = self._run_sessions()
         if service is None:
             return
@@ -417,6 +419,8 @@ class ScarabHiveBackend:
             # pick -- the runner is private -- read-only (static/js/shell/sessions.js), so nobody types a message
             # that would run the runner on the session the run's tool activities use
             created["depth"] = int((self.nesting or {}).get("depth") or 0) + 1
+            if category:
+                created.setdefault("metadata", {})["category"] = category
             shown = json.dumps(params, ensure_ascii=False, indent=2) if params else "(none)"
             created["messages"].append(_run_message("user", f"Run of the state machine `{machine}`, params:\n\n"
                                                             f"```json\n{shown}\n```"))

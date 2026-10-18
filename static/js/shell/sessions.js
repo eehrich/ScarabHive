@@ -4,7 +4,7 @@
 // loadSession / loadSessions / newConversation / leaveRunningRequest / isBeingDeleted /
 // setCurrentSession / messageWritten / onSessionUpdated / getCurrentSessionId, and
 // the window events session:loaded and session:new (detail.chosen: the viewer chose it).
-import { api, html, render, icon, confirm, prompt, toast } from '/static/kit/panel-kit.js';
+import { api, html, render, icon, confirm, prompt, toast, placeMenu } from '/static/kit/panel-kit.js';
 
 function relative(dateString) {
   const minutes = Math.floor((Date.now() - new Date(dateString)) / 60000);
@@ -16,14 +16,47 @@ function relative(dateString) {
   return days < 7 ? `${days}d` : new Date(dateString).toLocaleDateString();
 }
 
+/**
+ * The day group of a session: Today, Yesterday and This week -- the recent ones, shown open --, then one per
+ * month, folded until opened. ``key`` names the group for the remembered folds.
+ */
 function dayGroup(dateString) {
   const date = new Date(dateString);
   const today = new Date();
   const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  if (date >= start) return 'Today';
-  if (date >= new Date(start - 86400000)) return 'Yesterday';
-  if (date >= new Date(start - 6 * 86400000)) return 'This week';
-  return 'Earlier';
+  if (date >= start) return { key: 'today', label: 'Today', recent: true };
+  if (date >= new Date(start - 86400000)) return { key: 'yesterday', label: 'Yesterday', recent: true };
+  if (date >= new Date(start - 6 * 86400000)) return { key: 'week', label: 'This week', recent: true };
+  if (Number.isNaN(date.getTime())) return { key: 'undated', label: 'Undated', recent: false };
+  // in the page's language, as Today and Yesterday are (the kit's localTime does the same)
+  const month = date.toLocaleDateString(document.documentElement.lang || undefined, date.getFullYear() === today.getFullYear()
+    ? { month: 'long' } : { month: 'long', year: 'numeric' });
+  return { key: `m${date.getFullYear()}-${date.getMonth() + 1}`, label: month, recent: false };
+}
+
+/** The icons a folder may wear: the kit sprite's folder set (src/scripts/build_icon_sprite.py). */
+export const FOLDER_ICONS = [
+  'folder', 'book-open', 'clapperboard', 'film', 'music', 'image', 'camera', 'code', 'terminal', 'bug',
+  'flask-conical', 'brain', 'lightbulb', 'rocket', 'star', 'heart', 'bookmark', 'flag', 'tag', 'sparkles',
+  'briefcase', 'palette', 'pen-tool', 'graduation-cap', 'gamepad-2', 'globe', 'map', 'house', 'coffee', 'leaf',
+  'zap', 'trophy', 'target', 'box', 'archive', 'calendar', 'workflow', 'database', 'users', 'messages-square',
+];
+
+/** Which folders and day groups the viewer opened or closed, in this browser. */
+const FOLDS_KEY = 'scarabhive.sessions.folds.v1';
+
+function storedFolds() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(FOLDS_KEY));
+    return stored && typeof stored === 'object' ? stored : {};
+  } catch { /* no storage or no JSON: the defaults */ }
+  return {};
+}
+
+/** A new folder's id: its name as a slug, and enough of the clock that a second of the same name differs. */
+function folderId(name) {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'folder';
+  return `${slug}-${Date.now().toString(36)}`;
 }
 
 /**
@@ -41,8 +74,8 @@ const ACTIVITY_POLL_MAX_IDS = 200;
 
 /** What the pane needs of a session -- not its messages, which a loaded session carries. */
 function summary(session) {
-  const { session_id, title, agent_name, updated_at, has_children } = session;
-  return { session_id, title, agent_name, updated_at, has_children };
+  const { session_id, title, agent_name, updated_at, has_children, folder, category } = session;
+  return { session_id, title, agent_name, updated_at, has_children, folder, category };
 }
 
 export class SessionManager {
@@ -83,9 +116,15 @@ export class SessionManager {
     this.activityPolls = 0;
     /** new chats' sessions the chat let go of before the list had them (awaitListing) */
     this.unlisted = new Set();
+    /** the viewer's folders, in their order (GET /api/sessions/folders) */
+    this.folders = [];
+    /** fold key -> open; a key not in it takes its default (folders closed, recent days open) */
+    this.folds = storedFolds();
     render(this.pane, html`
       <div class="sessions-head">
         <h2 class="pk-grow">Sessions</h2>
+        <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="new-folder"
+                title="New folder" aria-label="New folder">${icon('folder-plus', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="refresh"
                 title="Reload the session list" aria-label="Reload the session list">${icon('refresh-cw', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="collapse-all"
@@ -97,6 +136,8 @@ export class SessionManager {
     this.list = this.pane.querySelector('.sessions-list');
     this.pane.querySelector('[data-act="new"]').addEventListener('click', () => this.newConversation());
     this.pane.querySelector('[data-act="collapse-all"]').addEventListener('click', () => this.collapseAll());
+    this.pane.querySelector('[data-act="new-folder"]').addEventListener('click', () => this.editFolder(null));
+    this.wireDrops();
     // By hand only: the list is reloaded after the chat's own runs, not for what another
     // process did meanwhile -- and a timer would reload it for nobody most of the time.
     this.pane.querySelector('[data-act="refresh"]').addEventListener('click', () => this.loadSessions());
@@ -115,7 +156,12 @@ export class SessionManager {
 
   async loadSessions() {
     const load = ++this.listLoads;
-    const data = await api('/api/sessions/hierarchy', { quiet: true }).catch(() => null);
+    // the folders with the list: a folder made in another tab files its sessions here too
+    const [data, folders] = await Promise.all([
+      api('/api/sessions/hierarchy', { quiet: true }).catch(() => null),
+      api('/api/sessions/folders', { quiet: true }).catch(() => null),
+    ]);
+    if (load === this.listLoads && folders) this.folders = folders.folders || [];
     // open branches come along: runs add sub-sessions, renames and deletes change them
     const open = [...this.expanded.keys()];
     const branches = data ? await Promise.all(open.map((id) => this.children(id, { quiet: true }))) : [];
@@ -144,7 +190,7 @@ export class SessionManager {
     const children = this.expanded.get(id);
     return html`
       <div class="session-item" data-id="${id}" aria-current="${String(id === this.currentSessionId)}">
-        <div class="session-row" style="--depth: ${depth}">
+        <div class="session-row" style="--depth: ${depth}" draggable="${String(depth === 0)}">
           ${session.has_children
             ? html`<button type="button" class="session-expand" data-act="expand" aria-expanded="${String(Boolean(children))}" title="Sub-sessions">${icon('chevron-right', { size: 'sm' })}</button>`
             : html`<span class="session-expand-spacer"></span>`}
@@ -154,6 +200,7 @@ export class SessionManager {
           <span class="session-running-said pk-sr-only"></span>
           <span class="session-meta">${relative(session.updated_at)}</span>
           <span class="session-actions">
+            ${depth === 0 && html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="move" title="Move to a folder" aria-haspopup="menu">${icon('folder-input', { size: 'sm' })}</button>`}
             <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="info" title="Open in a panel">${icon('info', { size: 'sm' })}</button>
             <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="rename" title="Rename">${icon('pencil', { size: 'sm' })}</button>
             <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="delete" title="Delete">${icon('trash-2', { size: 'sm' })}</button>
@@ -166,26 +213,101 @@ export class SessionManager {
   render() {
     // re-rendering (after every run) must not throw the keyboard focus out of the list
     const focused = this.list.contains(document.activeElement) ? document.activeElement : null;
-    const refocus = focused && { id: focused.closest('[data-id]')?.dataset.id, act: focused.dataset.act };
+    const refocus = focused && { id: focused.closest('[data-id]')?.dataset.id, act: focused.dataset.act,
+                                 fold: focused.dataset.fold };
     const shown = this.sessions.filter((s) => !this.filter
       || `${s.title} ${s.agent_name}`.toLowerCase().includes(this.filter));
-    if (!shown.length) {
+    // with no session yet the folders a viewer made still show: there is somewhere for the first one to go
+    if (!shown.length && (this.filter || !this.folders.length)) {
       render(this.list, html`<div class="pk-empty">${icon('messages-square')}
         <div>${this.filter ? 'No matching sessions' : 'No sessions yet -- the first message starts one.'}</div></div>`);
       return;
     }
-    const groups = new Map();
-    shown.forEach((s) => {
-      const group = dayGroup(s.updated_at);
-      if (!groups.has(group)) groups.set(group, []);
-      groups.get(group).push(s);
-    });
-    render(this.list, [...groups].map(([group, sessions]) => html`
-      <div class="sessions-group">${group}</div>${sessions.map((s) => this.row(s, 0))}`));
-    if (refocus?.id) {
+    const inFolder = new Map(this.folders.map((folder) => [folder.id, []]));
+    const unfiled = [];
+    shown.forEach((s) => (inFolder.get(this.folderOf(s)) || unfiled).push(s));
+    // filtering, a folder without a match goes and every group opens: what matches is what the viewer is after
+    const folders = this.folders.filter((folder) => !this.filter || inFolder.get(folder.id).length);
+    render(this.list, html`
+      ${folders.map((folder) => this.folderBlock(folder, inFolder.get(folder.id)))}
+      <div class="sessions-unfiled" data-drop-folder="">
+        ${folders.length && unfiled.length ? html`<div class="sessions-divider" role="presentation"></div>` : ''}
+        ${this.dayBlocks(unfiled, 'd')}
+      </div>`);
+    if (refocus?.fold) {
+      this.list.querySelector(`[data-fold="${CSS.escape(refocus.fold)}"]`)?.focus();
+    } else if (refocus?.id) {
       this.list.querySelector(`[data-id="${CSS.escape(refocus.id)}"] [data-act="${refocus.act}"]`)?.focus();
     }
     this.markActive();
+  }
+
+  /**
+   * The folder a session sits in, or null for none: the one the viewer put it in; else the one claiming its
+   * group (its agent's, or its starter's stamp); "" -- put out of the folders -- and a folder deleted since: none
+   * and the group's one.
+   */
+  folderOf(session) {
+    if (session.folder === '') return null;
+    if (session.folder && this.folders.some((folder) => folder.id === session.folder)) return session.folder;
+    return this.folders.find((folder) => session.category && folder.groups.includes(session.category))?.id ?? null;
+  }
+
+  isOpen(key, byDefault) {
+    if (this.filter) return true;
+    return typeof this.folds[key] === 'boolean' ? this.folds[key] : byDefault;
+  }
+
+  toggleFold(key, byDefault) {
+    if (this.filter) return;  // filtering opens every group: a click would store a fold nobody saw happen
+    this.folds[key] = !this.isOpen(key, byDefault);
+    try { localStorage.setItem(FOLDS_KEY, JSON.stringify(this.folds)); } catch { /* the fold lasts this page */ }
+    this.render();
+  }
+
+  folderBlock(folder, sessions) {
+    const key = `f:${folder.id}`;
+    const open = this.isOpen(key, false);
+    return html`
+      <div class="sessions-folder" data-folder="${folder.id}" data-drop-folder="${folder.id}">
+        <div class="sessions-folder-row">
+          <button type="button" class="sessions-folder-toggle" data-act="fold" data-fold="${key}" data-default="false"
+                  aria-expanded="${String(open)}" aria-disabled="${String(Boolean(this.filter))}">
+            ${icon('chevron-right', { size: 'sm' })}${icon(folder.icon || 'folder', { size: 'sm' })}
+            <span class="pk-truncate">${folder.name}</span><span class="sessions-running-said pk-sr-only"></span>
+          </button>
+          <span class="sessions-folder-running" title="An agent is working in a session of this folder" aria-hidden="true"></span>
+          <span class="sessions-count">${sessions.length}</span>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm sessions-folder-edit" data-act="edit-folder"
+                  title="Edit the folder" aria-label="Edit the folder ${folder.name}">${icon('pencil', { size: 'sm' })}</button>
+        </div>
+        ${open ? html`<div class="sessions-folder-body">${sessions.length
+          ? this.dayBlocks(sessions, key)
+          : html`<div class="sessions-folder-empty">Drag a session here, or move it with its folder button</div>`}</div>` : ''}
+      </div>`;
+  }
+
+  /** Sessions by day group; each group folds, the recent ones open until the viewer closes them. */
+  dayBlocks(sessions, prefix) {
+    const groups = new Map();
+    sessions.forEach((s) => {
+      const group = dayGroup(s.updated_at);
+      if (!groups.has(group.key)) groups.set(group.key, { ...group, sessions: [] });
+      groups.get(group.key).sessions.push(s);
+    });
+    return [...groups.values()].map((group) => {
+      const key = `${prefix}:${group.key}`;
+      const open = this.isOpen(key, group.recent);
+      return html`
+        <div class="sessions-day">
+          <button type="button" class="sessions-group" data-act="fold" data-fold="${key}" data-default="${String(group.recent)}"
+                  aria-expanded="${String(open)}" aria-disabled="${String(Boolean(this.filter))}">${icon('chevron-right', { size: 'sm' })}<span class="pk-grow">${group.label}</span>
+            <span class="sessions-day-running" title="An agent is working in a session of this group" aria-hidden="true"></span>
+            <span class="sessions-running-said pk-sr-only"></span>
+            ${open ? '' : html`<span class="sessions-count">${group.sessions.length}</span>`}</button>
+          ${open ? group.sessions.map((s) => this.row(s, 0)) : ''}
+        </div>`;
+    });
   }
 
   /**
@@ -238,6 +360,23 @@ export class SessionManager {
       if (said) said.textContent = !running ? '' : agent ? `${agent} is working in this session` : 'An agent is working in this session';
       const dot = row && row.querySelector(':scope > .session-running');
       if (dot) dot.title = agent ? `${agent} is working in this session` : 'An agent is working in this session';
+    });
+    // a folder shows a run inside it while it is closed too -- a book being written under Writer, say
+    const running = this.sessions.filter((s) => this.active.has(s.session_id));
+    const working = new Set(running.map((s) => this.folderOf(s)));
+    const said = (head, on) => {
+      const text = head.querySelector('.sessions-running-said');
+      if (text) text.textContent = on ? ', an agent is working in a session here' : '';
+    };
+    this.list.querySelectorAll('.sessions-folder').forEach((folder) => {
+      folder.classList.toggle('is-running', working.has(folder.dataset.folder));
+      said(folder.querySelector('.sessions-folder-toggle'), working.has(folder.dataset.folder));
+    });
+    // and a day group, closed or open: a run in an old session sits in a month that starts closed
+    const days = new Set(running.map((s) => `${this.folderOf(s) ? `f:${this.folderOf(s)}` : 'd'}:${dayGroup(s.updated_at).key}`));
+    this.list.querySelectorAll('.sessions-day > .sessions-group').forEach((head) => {
+      head.parentElement.classList.toggle('is-running', days.has(head.dataset.fold));
+      said(head, days.has(head.dataset.fold));
     });
   }
 
@@ -321,16 +460,216 @@ export class SessionManager {
   }
 
   async onListClick(event) {
-    const item = event.target.closest('.session-item');
     const button = event.target.closest('[data-act]');
+    if (button?.dataset.act === 'fold') return this.toggleFold(button.dataset.fold, button.dataset.default === 'true');
+    if (button?.dataset.act === 'edit-folder') return this.editFolder(button.closest('[data-folder]').dataset.folder);
+    const item = event.target.closest('.session-item');
     if (!item || !button) return;
     const id = item.dataset.id;
     const act = button.dataset.act;
     if (act === 'expand') await this.toggleChildren(id);
+    else if (act === 'move') this.moveMenu(button, id);
     else if (act === 'info') this.openContext(button, 'session', { session_id: id });
     else if (act === 'rename') await this.rename(id);
     else if (act === 'delete') await this.remove(id);
     else if (act === 'open') await this.loadSession(id);
+  }
+
+  // ------------------------------------------------------------ folders
+
+  /**
+   * Put a session into a folder (id) or out of all of them (null). Sent as the server keeps it: the folder its
+   * group files it in is no choice of its own (null), so a change of the folders' groups moves it along; out of
+   * the folders while a folder claims its group is "" -- the one way to keep it out.
+   */
+  async moveTo(id, folder) {
+    const session = this.byId.get(id) || this.sessions.find((s) => s.session_id === id);
+    if (!session) return;
+    const byGroup = this.folderOf({ ...session, folder: null });
+    const choice = folder === byGroup ? null : folder ?? '';
+    if (this.folderOf({ ...session, folder: choice }) === this.folderOf(session)) return;
+    try {
+      await api(`/api/sessions/${encodeURIComponent(id)}/folder`, { method: 'PUT', json: { folder: choice } });
+    } catch {
+      return;  // api() has shown the failure; the session stays where it was
+    }
+    for (const one of [session, this.sessions.find((s) => s.session_id === id)]) if (one) one.folder = choice;
+    // shown where it went: its folder and its day there open
+    const prefix = folder ? `f:${folder}` : 'd';
+    if (folder) this.folds[prefix] = true;
+    this.folds[`${prefix}:${dayGroup(session.updated_at).key}`] = true;
+    try { localStorage.setItem(FOLDS_KEY, JSON.stringify(this.folds)); } catch { /* this page only */ }
+    this.render();
+    // read again: a reload asked before the move and answered after it would put the session back (the newest wins)
+    await this.loadSessions();
+  }
+
+  /** The folders to move a session to, under its folder button: where it is now marked. */
+  moveMenu(anchor, id) {
+    this.menu?.remove();
+    const session = this.sessions.find((s) => s.session_id === id);
+    const here = session ? this.folderOf(session) : null;
+    const menu = document.createElement('div');
+    menu.className = 'pk-menu sessions-move-menu';
+    menu.popover = 'auto';
+    menu.setAttribute('role', 'menu');
+    render(menu, html`
+      <div class="pk-menu-label">Move to</div>
+      ${this.folders.map((folder) => html`
+        <button type="button" class="pk-menu-item" role="menuitemradio" data-folder="${folder.id}"
+                aria-checked="${String(here === folder.id)}">${icon(folder.icon || 'folder')} ${folder.name}</button>`)}
+      ${this.folders.length ? html`<hr class="pk-menu-separator">` : ''}
+      <button type="button" class="pk-menu-item" role="menuitemradio" data-folder="" aria-checked="${String(here === null)}">
+        ${icon('messages-square')} No folder</button>
+      <button type="button" class="pk-menu-item" role="menuitem" data-new-folder>${icon('folder-plus')} New folder…</button>`);
+    menu.addEventListener('click', async (event) => {
+      const item = event.target.closest('.pk-menu-item');
+      if (!item) return;
+      menu.hidePopover();
+      if (item.hasAttribute('data-new-folder')) {
+        const made = await this.editFolder(null);
+        if (made) await this.moveTo(id, made);
+      } else {
+        await this.moveTo(id, item.dataset.folder || null);
+      }
+    });
+    menu.addEventListener('toggle', (event) => { if (event.newState === 'closed') menu.remove(); });
+    document.body.appendChild(menu);
+    this.menu = menu;
+    menu.showPopover();
+    placeMenu(menu, anchor.getBoundingClientRect());
+    menu.querySelector('[aria-checked="true"]')?.focus();
+  }
+
+  /** A root session dragged onto a folder, or onto the list outside the folders, moves there. */
+  wireDrops() {
+    const target = (event) => event.target.closest?.('[data-drop-folder]');
+    this.list.addEventListener('dragstart', (event) => {
+      const row = event.target.closest?.('.session-row[draggable="true"]');
+      if (!row) return;
+      event.dataTransfer.setData('application/x-scarabhive-session', row.closest('.session-item').dataset.id);
+      event.dataTransfer.effectAllowed = 'move';
+      this.list.classList.add('is-dragging');
+    });
+    this.list.addEventListener('dragend', () => {
+      this.list.classList.remove('is-dragging');
+      this.list.querySelectorAll('.is-drop').forEach((one) => one.classList.remove('is-drop'));
+    });
+    this.list.addEventListener('dragover', (event) => {
+      const into = target(event);
+      if (!into || !event.dataTransfer.types.includes('application/x-scarabhive-session')) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      this.list.querySelectorAll('.is-drop').forEach((one) => one !== into && one.classList.remove('is-drop'));
+      into.classList.add('is-drop');
+    });
+    this.list.addEventListener('dragleave', (event) => {
+      const from = target(event);
+      if (from && !from.contains(event.relatedTarget)) from.classList.remove('is-drop');
+    });
+    this.list.addEventListener('drop', (event) => {
+      const into = target(event);
+      const id = event.dataTransfer.getData('application/x-scarabhive-session');
+      if (!into || !id) return;
+      event.preventDefault();
+      into.classList.remove('is-drop');
+      this.moveTo(id, into.dataset.dropFolder || null);
+    });
+  }
+
+  /** Write the viewer's folders; false when the server refused (api() said why). */
+  async saveFolders(folders) {
+    try {
+      const saved = await api('/api/sessions/folders', { method: 'PUT', json: { folders } });
+      this.folders = saved.folders || [];
+    } catch {
+      return false;
+    }
+    this.render();
+    await this.loadSessions();  // a reload asked before the save would put the old folders back (the newest wins)
+    return true;
+  }
+
+  /**
+   * Make a folder (id null) or change one: its name, its icon and the agent groups it files by -- a group taken
+   * from another folder leaves that one. Resolves to the folder's id once saved, else null.
+   */
+  async editFolder(id) {
+    const folder = this.folders.find((one) => one.id === id);
+    const known = new Set(this.folders.flatMap((one) => one.groups));
+    this.sessions.forEach((s) => s.category && known.add(s.category));
+    const groups = [...known].sort((a, b) => a.localeCompare(b));
+    const owner = (group) => this.folders.find((one) => one.id !== id && one.groups.includes(group));
+    const dialog = document.createElement('dialog');
+    dialog.className = 'pk-dialog sessions-folder-dialog';
+    render(dialog, html`
+      <form method="dialog">
+        <div class="pk-dialog-head"><h2 class="pk-dialog-title">${folder ? 'Edit folder' : 'New folder'}</h2></div>
+        <div class="pk-dialog-body pk-stack">
+        <label class="pk-field"><span class="pk-label">Name</span>
+          <input class="pk-input" name="name" required maxlength="60" value="${folder?.name || ''}" autocomplete="off"></label>
+        <fieldset class="pk-field sessions-icon-grid" aria-label="Icon"><legend class="pk-label">Icon</legend>
+          ${FOLDER_ICONS.map((name) => html`
+            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon" data-icon="${name}" title="${name}"
+                    aria-label="${name}" aria-pressed="${String((folder?.icon || 'folder') === name)}">${icon(name)}</button>`)}
+        </fieldset>
+        ${groups.length ? html`
+          <fieldset class="pk-field"><legend class="pk-label">Files sessions of these agent groups by itself</legend>
+            ${groups.map((group) => html`
+              <label class="pk-check"><input type="checkbox" name="group" value="${group}"
+                ${folder?.groups.includes(group) ? 'checked' : ''}> ${group}
+                ${owner(group) ? html`<span class="pk-muted">(now in ${owner(group).name})</span>` : ''}</label>`)}
+          </fieldset>` : ''}
+        </div>
+        <div class="pk-dialog-actions">
+          ${folder ? html`<button type="button" class="pk-btn pk-btn--danger" data-delete>${icon('trash-2', { size: 'sm' })} Delete</button>` : ''}
+          <span class="pk-grow"></span>
+          <button type="button" class="pk-btn" data-cancel>Cancel</button>
+          <button type="submit" class="pk-btn pk-btn--primary">${folder ? 'Save' : 'Create'}</button>
+        </div>
+      </form>`);
+    document.body.appendChild(dialog);
+    const grid = dialog.querySelector('.sessions-icon-grid');
+    grid.addEventListener('click', (event) => {
+      const pick = event.target.closest('[data-icon]');
+      if (!pick) return;
+      grid.querySelectorAll('[data-icon]').forEach((one) => one.setAttribute('aria-pressed', String(one === pick)));
+    });
+    const done = new Promise((resolve) => {
+      dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
+      dialog.querySelector('[data-delete]')?.addEventListener('click', async () => {
+        const ok = await confirm(`"${folder.name}" goes; its sessions stay, back in the list or in the folder of their group.`,
+          { title: 'Delete folder', confirmLabel: 'Delete', danger: true });
+        if (ok && await this.saveFolders(this.folders.filter((one) => one.id !== id))) dialog.close();
+      });
+      dialog.querySelector('form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const form = new FormData(event.target);
+        const chosen = form.getAll('group');
+        const made = {
+          id: folder?.id || folderId(String(form.get('name'))),
+          name: String(form.get('name')).trim(),
+          icon: grid.querySelector('[aria-pressed="true"]')?.dataset.icon || 'folder',
+          groups: chosen,
+        };
+        if (!made.name) return;
+        const others = this.folders.map((one) => (one.id === made.id ? made
+          : { ...one, groups: one.groups.filter((group) => !chosen.includes(group)) }));
+        if (!folder) others.push(made);
+        if (await this.saveFolders(others)) {
+          dialog.returnValue = made.id;
+          dialog.close();
+        }
+      });
+      dialog.addEventListener('close', () => {
+        dialog.remove();
+        resolve(dialog.returnValue && dialog.returnValue !== 'cancel' ? dialog.returnValue : null);
+      });
+    });
+    dialog.returnValue = '';
+    dialog.showModal();
+    dialog.querySelector('input[name="name"]').focus();
+    return done;
   }
 
   /** A node's sub-sessions, or null when they could not be loaded. */

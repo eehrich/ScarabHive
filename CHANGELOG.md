@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Session folders in the sidebar. Folders sit above the sessions in none,
+  and inside a folder as below it sessions group by day: Today, Yesterday
+  and This week open, each month before folded, the folds kept per browser.
+  The core knows no folder: a plugin declares the one its sessions belong in
+  (`[session_folder]` in its plugin.toml: name, icon, the agent groups --
+  `metadata.category` -- it files by itself; docs/plugin_authoring.md). The
+  writer pipeline declares Writer (Writer, Writer sub-agents), scarab_videos
+  Video; a stategraph machine's run session carries its `agent:` block's
+  category, so the video machines' runs land there although their agent is
+  the runner. A user makes folders of their own, changes or deletes a
+  declared one (kept per user in `data/sessions/<user>/.folders.json`; one
+  left as declared follows its plugin). A session moves by drag and drop or
+  its folder button, without changing its day; its own choice is
+  `metadata.folder` (`""` keeps it out of its group's folder). Icons come
+  from the kit's sprite (26 new Lucide icons). New routes:
+  `GET/PUT /api/sessions/folders`, `PUT /api/sessions/{id}/folder`.
+- Metadata a session's index row carries (tags, folder, category) reaches
+  the session list at once; before, a tag set through `PATCH
+  /api/sessions/{id}` showed only after the session's next save.
+- The header's right side is grouped by purpose: the work area first (open
+  a panel, the panel area -- mirroring the sessions toggle on the left),
+  then the app (help, the account last). The theme moved from its own
+  header button into the account menu, as a row of its three choices with
+  the one in use marked; the palette still offers it.
 - Panel tables have resizable columns: every `.pk-table` with one head row
   and two columns or more gets a grip on each column's right edge but the
   last, which takes the rest (drag to set the width, double-click to fit the

@@ -1460,6 +1460,29 @@ def stub_app() -> FastAPI:
             raise HTTPException(status_code=502, detail="The server is restarting")
         return {"sessions": listed, "root_count": len(listed)}
 
+    # The viewer's session folders (api/session_folders.py): none until a check makes some, so the list of every
+    # other check stays as it was; a move writes the session's folder as the server's index would carry it.
+    folders: list = []
+
+    @app.get("/api/sessions/folders")
+    async def get_folders():
+        return {"folders": folders}
+
+    @app.put("/api/sessions/folders")
+    async def put_folders(request: Request):
+        folders[:] = (await request.json())["folders"]
+        hits["folders:put"] = hits.get("folders:put", 0) + 1
+        return {"folders": folders}
+
+    @app.put("/api/sessions/{session_id}/folder")
+    async def put_folder(request: Request, session_id: str):
+        choice = (await request.json())["folder"]
+        for session in sessions:
+            if session["session_id"] == session_id:
+                session["folder"] = choice
+        hits[f"folder:{session_id}"] = choice
+        return {"status": "updated", "session_id": session_id, "folder": choice}
+
     @app.get("/api/sessions")
     async def sessions_flat(request: Request):
         """The plain list of every session. With ``stub_cmd_list=held`` it is held open
@@ -1751,8 +1774,10 @@ EXPECTED = [
     'switching away never stops the run, whatever its stream is doing; a delete after a cancel asks nothing',
     'deleting the session of a run whose connection was lost cancels that run first',
     'a restored message names image and audio parts stored without their data',
-    'the theme button cycles the theme and every panel follows',
-    'an open settings panel shows the theme chosen in the header',
+    'a session files itself into the folder claiming its group; folders and past months start closed, and what the viewer opens stays open',
+    'a session moves into a folder by its menu and by dragging, and out again; the dialog renames, decorates and deletes a folder',
+    'a theme picked in the account menu reaches every panel, the menu stays open with it marked, and the header keeps the work area before the app with the account last',
+    'an open settings panel shows the theme chosen in the account menu',
     'the palette finds a panel and opens it',
     'Ctrl+K in the open palette starts its search afresh',
     'the palette does not open over an open question',

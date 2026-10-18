@@ -280,6 +280,10 @@ class SessionIndex:
             "message_count": metadata.get("message_count", 0),
             "last_agent_response": metadata.get("last_agent_response", ""),
             "tags": metadata.get("tags", []),
+            # the session list's folders (api/session_folders.py): the one the viewer put it in ("" for none of
+            # them), and the group its starter named for it (a machine run's category) where its agent names none
+            "folder": metadata.get("folder"),
+            "category": metadata.get("category"),
             "parent_session": session_data.get("parent_session"),
             "depth": session_data.get("depth", 1),
         }

@@ -31,6 +31,9 @@ from .session_paths import sanitize_user_id, session_files_anywhere, validate_se
 
 logger = logging.getLogger(__name__)
 
+#: The metadata fields SessionIndex.row carries: an update of one of them is written to the index too.
+_INDEXED_METADATA = frozenset({"message_count", "last_agent_response", "tags", "folder", "category"})
+
 
 class SessionNotFoundError(Exception):
     """Raised when a session cannot be found."""
@@ -718,7 +721,9 @@ class SessionManager:
         self, 
         user_id: str, 
         session_id: str, 
-        metadata_updates: Dict[str, Any]
+        metadata_updates: Dict[str, Any],
+        *,
+        touch: bool = True,
     ) -> None:
         """Atomically update only the metadata field of a session.
         
@@ -731,7 +736,8 @@ class SessionManager:
             user_id: User identifier
             session_id: Session identifier
             metadata_updates: Dict of metadata fields to update (merged with existing)
-        
+            touch: False keeps ``updated_at`` -- a session put into a folder is not one worked in
+
         Raises:
             SessionNotFoundError: If session doesn't exist
             SessionPermissionError: If user doesn't own the session
@@ -740,7 +746,7 @@ class SessionManager:
         async with session_lock:
             path = self._get_session_path(user_id, session_id)
             session_data = await self._read_to_change(path, user_id, session_id)
-            
+
             # Merge metadata updates (deep merge for nested dicts like sub_agents)
             if "metadata" not in session_data:
                 session_data["metadata"] = {}
@@ -752,15 +758,20 @@ class SessionManager:
                 else:
                     session_data["metadata"][key] = value
             
-            # Update timestamp
-            session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-            
+            if touch:
+                session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
             # Save back
             await self._write_session_file(path, session_data)
-            
+
             # Update cache
             self._cache.wrote(session_id, session_data)
-            
+            # A field the index row carries (tags, folder) reaches the list now, not at the session's next save;
+            # the many updates of fields it does not carry (sub_agents, activity) leave the index alone.
+            if not _INDEXED_METADATA.isdisjoint(metadata_updates):
+                async with self._lock:
+                    await self._index.update_entry(user_id, session_id, SessionIndex.row(session_data))
+
             logger.debug("Updated metadata for session %s: keys=%s", session_id, list(metadata_updates.keys()))
 
     async def set_session_place(self, user_id: str, session_id: str, *, depth: Optional[int] = None,

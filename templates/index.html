@@ -21,11 +21,13 @@
       {{ icon('search') }}<span class="pk-grow">Search or run a command</span><kbd class="pk-kbd">Ctrl K</kbd>
     </button>
     <div class="app-header-actions">
+      <!-- the work area: a panel to open, the panel area beside the chat (mirrors the sessions toggle on the left) -->
+      <button id="launcherButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" popovertarget="launcher" title="Open a panel">{{ icon('layout-grid') }}</button>
+      <button id="dockToggle" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" aria-controls="dock" aria-expanded="false" title="Show or hide the panel area (Ctrl+Alt+B)" disabled>{{ icon('panel-right') }}</button>
+      <span class="app-header-divider" aria-hidden="true"></span>
+      <!-- the app: its manual, the account last -->
       <button id="helpButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Help: the ScarabHive manual">{{ icon('circle-help') }}</button>
-      <button id="launcherButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" popovertarget="launcher" title="Panels">{{ icon('layout-grid') }}</button>
-      <button id="themeButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Theme">{{ icon('monitor') }}</button>
       <button id="userButton" type="button" class="app-avatar" popovertarget="userMenu" title="Account"><span id="userInitials"></span></button>
-      <button id="dockToggle" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" aria-controls="dock" aria-expanded="false" title="Panels (Ctrl+Alt+B)" disabled>{{ icon('panel-right') }}</button>
     </div>
   </header>
 
@@ -87,6 +89,12 @@
 
   <div id="userMenu" class="pk-menu" popover>
     <div class="pk-menu-label" id="userMenuName"></div>
+    <div class="app-theme-choice" role="group" aria-label="Theme">
+      <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" data-theme-choice="light" aria-pressed="false">{{ icon('sun', size='sm') }} Light</button>
+      <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" data-theme-choice="dark" aria-pressed="false">{{ icon('moon', size='sm') }} Dark</button>
+      <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" data-theme-choice="system" aria-pressed="false">{{ icon('monitor', size='sm') }} System</button>
+    </div>
+    <hr class="pk-menu-separator">
     <button type="button" class="pk-menu-item" data-open-panel="settings">{{ icon('settings') }} Settings</button>
     <button type="button" class="pk-menu-item" data-open-panel="system">{{ icon('activity') }} System</button>
     <hr class="pk-menu-separator">

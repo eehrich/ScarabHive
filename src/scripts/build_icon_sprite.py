@@ -45,6 +45,10 @@ ICONS = sorted({
     "git-branch", "image", "music", "mic", "wrench", "puzzle", "folder", "history",
     "chart-column", "lightbulb", "graduation-cap", "gamepad-2", "clapperboard",
     "notebook-pen", "hard-drive", "plug", "globe",
+    # session folders: their own actions, and the icons a viewer picks for a folder (FOLDER_ICONS in sessions.js)
+    "folder-plus", "folder-input", "star", "heart", "rocket", "code", "flask-conical",
+    "briefcase", "palette", "pen-tool", "archive", "bookmark", "flag", "tag", "sparkles", "house",
+    "camera", "map", "coffee", "leaf", "zap", "trophy", "target", "box", "calendar", "film",
 })
 
 _BODY = re.compile(r"<svg[^>]*>(.*)</svg>", re.DOTALL)

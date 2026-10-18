@@ -489,6 +489,29 @@ if `requirements/all.txt` or `requirements/optional.txt` is stale. Deps used by 
 framework stay in `requirements/core.txt`; a dep used by exactly one plugin
 belongs in that plugin's `plugin.toml`.
 
+### A folder for the plugin's sessions (`[session_folder]`)
+
+The session list in the shell groups sessions into folders. The core knows
+no folder: a plugin whose agents start sessions of their own -- books, video
+runs -- declares the one they belong in, next to `[plugin]`:
+
+```toml
+[session_folder]
+name = "Video"              # shown in the list
+icon = "clapperboard"       # a symbol of static/kit/icons.svg (the folder set: FOLDER_ICONS in static/js/shell/sessions.js)
+groups = ["Video"]          # agent groups (metadata.category) it files by itself
+```
+
+A session whose agent is in one of `groups` -- or whose starter stamped that
+group on it, as a stategraph machine's run session carries its `agent:`
+block's `category` -- lands in the folder without anybody moving it. The
+folder's id is the plugin's directory name. Every user sees it until they
+delete it; one they change keeps their version (`data/sessions/<user>/.folders.json`,
+`agent_system/api/session_folders.py`). A group is filed by one folder only:
+a user's own or changed folder takes it before a declaration, and of two
+declarations the first plugin in directory order. A broken table costs that
+plugin its folder, with a warning in the log, nothing else.
+
 ## Defining Schema (`schema.yaml`)
 
 The `schema.yaml` file defines your plugin's tools using OpenAI function format. This is how the agent knows what tools are available and how to call them.

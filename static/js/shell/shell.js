@@ -50,10 +50,16 @@ function showUser() {
 
 let workspace;
 
+/** The account menu marks the theme in use. */
+function markTheme(theme) {
+  document.querySelectorAll('[data-theme-choice]').forEach((button) => {
+    button.setAttribute('aria-pressed', String(button.dataset.themeChoice === theme));
+  });
+}
+
 function applyTheme(theme) {
   setTheme(theme);
-  $('themeButton').innerHTML = String(icon(THEME_ICONS[theme]));
-  $('themeButton').title = `Theme: ${theme}`;
+  markTheme(theme);
   workspace.broadcast('pk:theme', { theme });
 }
 
@@ -253,7 +259,7 @@ async function start() {
     narrow,
     onShow: closeSheet,
   });
-  $('themeButton').innerHTML = String(icon(THEME_ICONS[currentTheme()]));
+  markTheme(currentTheme());
 
   const sessions = new SessionManager({
     onChange: onSessionChange,
@@ -278,14 +284,13 @@ async function start() {
   $('sessionsToggle').addEventListener('click', () => setSessionsOpen(!sessionsOpen()));
   $('paletteButton').addEventListener('click', () => palette.open());
   $('helpButton').addEventListener('click', () => workspace.openManual());  // a plugin's guide: its panel's own button
-  $('themeButton').addEventListener('click', () => {
-    const next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
-    applyTheme(next);
-  });
   $('headerSessionId').addEventListener('click', () => {
     if (activeSession) contextMenu($('headerSessionId'), 'session', { session_id: activeSession.id });
   });
   $('userMenu').addEventListener('click', (event) => {
+    // a theme picked shows at once; the menu stays open, its choice marked
+    const choice = event.target.closest('[data-theme-choice]');
+    if (choice) return applyTheme(choice.dataset.themeChoice);
     const button = event.target.closest('[data-open-panel]');
     if (!button) return;
     $('userMenu').hidePopover();

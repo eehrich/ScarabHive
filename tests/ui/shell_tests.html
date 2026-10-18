@@ -4185,14 +4185,117 @@
     return image;
   });
 
-  await check('the theme button cycles the theme and every panel follows', async () => {
-    $('#themeButton').click();
+  // ---- session folders: the stub keeps the folders and each session's folder as the server's index does
+  const FOLDS = 'scarabhive.sessions.folds.v1';
+  const folderRow = (id) => $(`.sessions-folder[data-folder="${id}"]`);
+  const inFolder = (folder, sid) => Boolean($(`.sessions-folder[data-folder="${folder}"] .session-item[data-id="${sid}"]`));
+  const unfiled = (sid) => Boolean($(`.sessions-unfiled .session-item[data-id="${sid}"]`));
+  const putFolders = (list) => fetch('/api/sessions/folders', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folders: list }) });
+  const storedFolder = async (sid) => (await (await stub('/__stub/hits')).json())[`folder:${sid}`];
+  const dragInto = (sid, target) => {
+    const moved = new (win().DataTransfer)();
+    const event = (type) => new (win().DragEvent)(type, { bubbles: true, cancelable: true, dataTransfer: moved });
+    $(`.session-item[data-id="${sid}"] > .session-row`).dispatchEvent(event('dragstart'));
+    target.dispatchEvent(event('dragover'));
+    target.dispatchEvent(event('drop'));
+  };
+
+  await check('a session files itself into the folder claiming its group; folders and past months start closed, and what the viewer opens stays open', async () => {
+    win().localStorage.removeItem(FOLDS);
+    await stub('/__stub/sessions', { session_id: 's-video', title: 'Long video', agent_name: 'stategraph_runner',
+                                     category: 'Video', updated_at: '2025-03-02T10:00:00Z', has_children: false });
+    await putFolders([{ id: 'video', name: 'Video', icon: 'clapperboard', groups: ['Video'] }]);
+    await win().sessionManager.loadSessions();
+    await until('the folder', () => folderRow('video'));
+    need(folderRow('video').querySelector('.sessions-count').textContent.trim() === '1', 'the folder does not count its session');
+    need(!$('.session-item[data-id="s-video"]'), 'a folder starts closed');
+    folderRow('video').querySelector('[data-act="fold"]').click();
+    const month = folderRow('video').querySelector('.sessions-group');
+    need(month?.getAttribute('aria-expanded') === 'false' && !$('.session-item[data-id="s-video"]'), 'a past month starts closed');
+    month.click();
+    need(inFolder('video', 's-video'), 'opened, the month does not show its session');
+    need(unfiled('s-1') && !inFolder('video', 's-1'), 'a session of no claimed group left the list');
+    need($('.sessions-unfiled .sessions-group')?.getAttribute('aria-expanded') === 'true', 'today starts open');
+    const folds = JSON.parse(win().localStorage.getItem(FOLDS));
+    need(folds['f:video'] === true, 'the opened folder is not kept');
+    await win().sessionManager.loadSessions();
+    need(inFolder('video', 's-video'), 'a reload closed what the viewer opened');
+    // filtering opens everything; a click on a head then stores no fold the viewer never saw
+    const filter = $('.sessions-filter input');
+    filter.value = 'Refactor';
+    filter.dispatchEvent(new Event('input'));
+    need($('.sessions-unfiled [data-fold="d:today"]').getAttribute('aria-disabled') === 'true', 'a head says it folds while filtering');
+    $('.sessions-unfiled [data-fold="d:today"]').click();
+    filter.value = '';
+    filter.dispatchEvent(new Event('input'));
+    need(JSON.parse(win().localStorage.getItem(FOLDS))['d:today'] === undefined, 'a click while filtering stored a fold');
+    // a run in a closed month shows on the month's head: past months start closed
+    folderRow('video').querySelector('.sessions-group').click();  // March closed again
+    await stub('/__stub/active-runs', { 's-video': 'r-video-run' });
+    await win().sessionManager.refreshActivity();
+    // shown, and said: the dot is decoration, the head's own text tells a screen reader
+    const marked = folderRow('video').querySelector('.sessions-day')?.classList.contains('is-running')
+      && folderRow('video').classList.contains('is-running')
+      && folderRow('video').querySelector('.sessions-day .sessions-running-said').textContent.includes('working')
+      && folderRow('video').querySelector('.sessions-folder-toggle .sessions-running-said').textContent.includes('working');
+    await stub('/__stub/active-runs', {});
+    await win().sessionManager.refreshActivity();
+    folderRow('video').querySelector('.sessions-group').click();  // open again for the next check
+    return need(marked, 'a run in a closed month shows nowhere');
+  });
+
+  await check('a session moves into a folder by its menu and by dragging, and out again; the dialog renames, decorates and deletes a folder', async () => {
+    sessionButton('s-1', 'move').click();
+    const menu = await until('the move menu', () => $('.sessions-move-menu:popover-open'));
+    menu.querySelector('[data-folder="video"]').click();
+    await until('s-1 in Video', () => inFolder('video', 's-1'));
+    need(await storedFolder('s-1') === 'video', 'the move did not reach the server');
+    dragInto('s-1', $('.sessions-unfiled'));
+    await until('s-1 back in the list', () => unfiled('s-1'));
+    need(await storedFolder('s-1') === null, 'out of a folder no group put it in: back to "by group" (null)');
+    dragInto('s-video', $('.sessions-unfiled'));
+    // into its month of the list, which opens to show it there (past months start closed)
+    await until('the video out of its group\'s folder', () => !inFolder('video', 's-video') && unfiled('s-video'));
+    need(await storedFolder('s-video') === '', 'out of the folder its group files it in: "" keeps it out');
+    dragInto('s-video', folderRow('video'));
+    await until('the video back in', () => inFolder('video', 's-video'));
+    need(await storedFolder('s-video') === null, 'back where its group files it: no choice of its own');
+    folderRow('video').querySelector('[data-act="edit-folder"]').click();
+    const dialog = await until('the folder dialog', () => $('dialog.sessions-folder-dialog[open]'));
+    need(dialog.querySelector('input[name="group"][value="Video"]').checked, 'the claimed group is not ticked');
+    dialog.querySelector('input[name="name"]').value = 'Videos';
+    dialog.querySelector('[data-icon="star"]').click();
+    dialog.querySelector('button[type="submit"]').click();
+    await until('the renamed folder', () => folderRow('video')?.textContent.includes('Videos'));
+    const [, worn] = folderRow('video').querySelectorAll('.sessions-folder-toggle svg use');  // after the chevron
+    need(worn?.getAttribute('href').endsWith('#star'), 'the icon picked is not the folder\'s');
+    folderRow('video').querySelector('[data-act="edit-folder"]').click();
+    (await until('the dialog again', () => $('dialog.sessions-folder-dialog[open] [data-delete]'))).click();
+    (await until('the delete question', () => $('dialog.pk-dialog[open]:not(.sessions-folder-dialog) .pk-btn--danger'))).click();
+    await until('the folder gone', () => !folderRow('video') && !$('dialog.sessions-folder-dialog'));
+    const gone = unfiled('s-video');
+    await stub('/__stub/sessions', { session_id: 's-video', hidden_for: 1e9 });  // out of the later checks' list
+    await win().sessionManager.loadSessions();
+    return need(gone, 'a deleted folder took its session along');
+  });
+
+  await check('a theme picked in the account menu reaches every panel, the menu stays open with it marked, and the header keeps the work area before the app with the account last', async () => {
+    const order = [...$('.app-header-actions').children].map((one) => one.id || one.className).join(' ');
+    $('#userButton').click();
+    await until('the account menu', () => $('#userMenu').matches(':popover-open'));
+    $('#userMenu [data-theme-choice="light"]').click();
     await until('pk:theme at the probe', () => received('pk:theme').at(-1)?.theme === 'light');
-    return doc().documentElement.dataset.theme === 'light' && doc().cookie.includes('ui_theme=light')
+    const marked = $$('#userMenu [data-theme-choice]').map((b) => `${b.dataset.themeChoice}=${b.getAttribute('aria-pressed')}`).join(' ');
+    const stays = $('#userMenu').matches(':popover-open');
+    $('#userMenu').hidePopover();
+    return order === 'launcherButton dockToggle app-header-divider helpButton userButton'
+      && marked === 'light=true dark=false system=false' && stays
+      && doc().documentElement.dataset.theme === 'light' && doc().cookie.includes('ui_theme=light')
       && probeFrame().contentDocument.documentElement.dataset.theme === 'light';
   });
 
-  await check('an open settings panel shows the theme chosen in the header', async () => {
+  await check('an open settings panel shows the theme chosen in the account menu', async () => {
     const panel = panelFrame('/ui/panels/settings').contentDocument;
     await until('the light radio', () => panel.querySelector('input[name="theme"][value="light"]').checked);
     // without accounts there is nowhere to keep the chat settings, so none are offered

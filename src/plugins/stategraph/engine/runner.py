@@ -1560,7 +1560,8 @@ class RunManager:
             if began is not None:
                 spec = ctx.machine.spec
                 # the params bound: a param left out shows the default the run took (the panel sends only choices)
-                await began(machine=spec.id, title=spec.title, params=root.params)
+                await began(machine=spec.id, title=spec.title, params=root.params,
+                            category=spec.agent.category if spec.agent else None)
             result = await root.execute()
             ctx.exception = result.exception
             fields = {"status": result.status, "output": result.output, "final_state": result.final_state,

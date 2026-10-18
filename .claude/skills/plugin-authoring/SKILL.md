@@ -67,6 +67,9 @@ PLUGIN_FACTORY = MyServer   # called as (name, system_config, server_config)
 ```
 
 - **Plugin type = folder name**, not `name` from plugin.toml.
+- Agents that start sessions of their own (books, video runs)? A `[session_folder]` table in plugin.toml
+  (`name`, `icon` of the kit sprite, `groups` = agent categories) gives them a folder in the shell's session
+  list -- the core has none of its own (docs/plugin_authoring.md).
 - No entrypoint file or no factory → folder skipped **at DEBUG only**. Import
   error → WARNING, the type is missing, every server entry using it logs
   "Unknown server type".

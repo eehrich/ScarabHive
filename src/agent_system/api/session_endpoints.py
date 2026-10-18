@@ -11,6 +11,7 @@ import contextlib
 import logging
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from agent_system import app_state
@@ -18,6 +19,7 @@ from agent_system.auth.session_access import viewer
 from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
 from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_tool_registry
+from agent_system.api.session_folders import SessionFolders, declared_folders, read_folders, write_folders
 from agent_system.api.session_writes import resolve_agent_for_request
 from agent_system.cli_utils.session_listing import (
     in_chat_selector,
@@ -349,11 +351,29 @@ def _session_node(s: Dict[str, Any]) -> Dict[str, Any]:
         "children": [],
         # A sub-session's runs by the request id each opened with (SessionIndex.row).
         "runs": s.get("runs", []),
+        # The list's folders (api/session_folders.py): the one the viewer chose ("" none, absent: by group), and
+        # the group the session files by -- its starter's stamp, else its agent's (list_sessions_hierarchy).
+        "folder": s.get("folder"),
+        "category": s.get("category"),
     }
+
+
+def _agent_groups(config: Any, names: set) -> Dict[str, Optional[str]]:
+    """Each agent's group (``metadata.category``) from the merged config; an agent gone from it has none."""
+    from agent_system.config.settings import get_tool_server_config
+    groups: Dict[str, Optional[str]] = {}
+    for name in names:
+        try:
+            cfg = get_tool_server_config(name, config)
+        except Exception:
+            cfg = None
+        groups[name] = cfg.metadata.category if cfg is not None and cfg.metadata else None
+    return groups
 
 
 @session_router.get("/hierarchy", response_model=Dict[str, Any])
 async def list_sessions_hierarchy(
+    request: Request,
     current_user: Optional[User] = Depends(get_optional_user),
     session_manager=Depends(get_session_manager),
 ):
@@ -368,13 +388,82 @@ async def list_sessions_hierarchy(
     user_id = viewer(current_user)
     try:
         roots = await session_manager.list_root_sessions(user_id)
+        nodes = [_session_node(s) for s in roots]
+        # once per agent, not per session: a config lookup merges the agent's whole inheritance chain
+        unstamped = {node["agent_name"] for node in nodes if not node["category"] and node["agent_name"]}
+        config = getattr(request.app.state, "config", None)
+        if unstamped and config is not None:
+            groups = await run_in_threadpool(_agent_groups, config, unstamped)
+            for node in nodes:
+                node["category"] = node["category"] or groups.get(node["agent_name"])
         return {
-            "sessions": [_session_node(s) for s in roots],
+            "sessions": nodes,
             "root_count": len(roots),
         }
     except Exception as e:
         logger.exception("Failed to list sessions hierarchy: %s", e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+def _declared(request: Request):
+    """The folders the plugins declare ([session_folder] in their plugin.toml), under the configured roots."""
+    config = getattr(request.app.state, "config", None)
+    return declared_folders(config.plugins.plugin_dirs if config is not None and config.plugins else [])
+
+
+@session_router.get("/folders", response_model=SessionFolders)
+async def get_session_folders(
+    request: Request,
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """The viewer's session folders: the ones the plugins declare that they kept, then their own."""
+    return read_folders(session_manager.storage_path, viewer(current_user), _declared(request))
+
+
+@session_router.put("/folders", response_model=SessionFolders)
+async def put_session_folders(
+    request: Request,
+    folders: SessionFolders,
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """Make these the viewer's session folders: names, icons and claimed groups; a declared folder left out is
+    deleted for them. A session in a folder removed falls back to its group's folder, if any claims it."""
+    try:
+        return write_folders(session_manager.storage_path, viewer(current_user), folders, _declared(request))
+    except ValueError as exc:  # more folders of their own than a user may have
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+class SessionFolderChoice(BaseModel):
+    #: a folder's id; "" out of every folder; null back to the folder its group files it in
+    folder: Optional[str] = None
+
+
+@session_router.put("/{session_id}/folder", response_model=Dict[str, Any])
+async def put_session_folder(
+    request: Request,
+    session_id: str,
+    choice: SessionFolderChoice,
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """Put a session into a folder -- without touching ``updated_at``: moved is not worked in, and the list
+    sorts by it."""
+    from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
+
+    user_id = viewer(current_user)
+    shown = read_folders(session_manager.storage_path, user_id, _declared(request)).folders
+    if choice.folder and choice.folder not in {f.id for f in shown}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"No folder {choice.folder!r}")
+    try:
+        await session_manager.update_session_metadata(user_id, session_id, {"folder": choice.folder}, touch=False)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
+    except SessionPermissionError:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    return {"status": "updated", "session_id": session_id, "folder": choice.folder}
 
 
 def _add_sessions_running_elsewhere(wanted: List[str], user_id: str, agent,
