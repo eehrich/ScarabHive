@@ -110,7 +110,21 @@
 .sg-file { width: auto; max-width: 22rem; }
 .sg-runlist .pk-table-wrap { max-height: min(45vh, 420px); overflow: auto; }  /* the result card below stays in reach */
 .sg-answers { display: inline-flex; gap: var(--space-1); flex-wrap: wrap; }
-.sg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-2) var(--space-3); }
+/* the start form: a row per param, its name on the left, its field and the first sentence of its help on the right */
+.sg-params { display: grid; grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr); gap: var(--space-3) var(--space-4); align-items: start; max-width: 60rem; }
+.sg-param { display: contents; }
+.sg-param-name { display: flex; flex-direction: column; max-width: 14rem; padding-top: var(--space-1); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.sg-param-name > .pk-muted { font-size: var(--text-xs); }
+.sg-param-input { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); min-width: 0; }
+.sg-param-input > .pk-textarea { width: 100%; field-sizing: content; min-height: var(--control-h-md); max-height: 16rem; }
+.sg-param-input > .pk-input, .sg-param-input > .pk-select { width: 16rem; max-width: 100%; }
+.sg-param-help > summary { display: inline; list-style: none; cursor: pointer; }
+.sg-param-help > summary::-webkit-details-marker { display: none; }
+.sg-param-help:not([open]) > summary::after { content: " more"; color: var(--accent); }
+@media (max-width: 560px) {
+  .sg-params { grid-template-columns: minmax(0, 1fr); gap: var(--space-1); }
+  .sg-param-name { flex-direction: row; gap: var(--space-2); max-width: none; padding-top: var(--space-2); }
+}
 .sg-problems { display: flex; flex-direction: column; gap: var(--space-1); }
 .sg-problem { display: flex; align-items: flex-start; gap: var(--space-2); width: 100%; height: auto; padding: var(--space-1) var(--space-2); text-align: left; white-space: normal; font-size: var(--text-xs); line-height: 1.45; --btn-fg: var(--text-primary); }
 .sg-problem > .pk-badge { flex: none; }

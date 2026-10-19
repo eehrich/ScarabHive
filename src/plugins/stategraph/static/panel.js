@@ -2360,28 +2360,44 @@ function keepParams(machine, params) {
   remember(`start-params:${machine.id}`, { values: params, defaults: now });
 }
 
-/** A param's field, showing `given` (what the machine was last started with, keptParams) or else its default. */
+/** A param's row: its name on the left, its field on the right, showing `given` (what the machine was last started
+ * with, keptParams) or else its default. */
 function paramField(name, p, given) {
   const id = `param-${name}`;
-  const label = html`<span class="pk-label">${name}${p.required ? ' *' : ''} <span class="pk-muted">${p.type || 'any'}</span></span>`;
-  const help = p.description ? html`<span class="pk-help">${p.description}</span>` : '';
+  const label = html`<label class="sg-param-name" for="${id}"><span class="pk-mono">${name}${p.required
+    ? html`<span class="pk-text--danger" title="required"> *</span>` : ''}</span><span class="pk-muted">${p.type || 'any'}</span></label>`;
+  return html`<div class="sg-param">${label}<div class="sg-param-input">${paramInput(id, name, p, given)}${paramHelp(p.description, `${id}-help`)}</div></div>`;
+}
+
+function paramInput(id, name, p, given) {
   const shown = given !== undefined ? given : p.default;
   const value = shown ?? '';
+  const help = p.description ? `${id}-help` : '';
   if (Array.isArray(p.enum)) {
-    return html`<label class="pk-field">${label}<select class="pk-select pk-select--sm" id="${id}" data-param="${name}" data-type="enum">
+    return html`<select class="pk-select pk-select--sm" id="${id}" aria-describedby="${help}" data-param="${name}" data-type="enum">
       ${p.required ? '' : html`<option value="">(default)</option>`}
-      ${p.enum.map((option, i) => html`<option value="${i}" ${JSON.stringify(option) === JSON.stringify(shown) ? 'selected' : ''}>${preview(option, 60)}</option>`)}</select>${help}</label>`;
+      ${p.enum.map((option, i) => html`<option value="${i}" ${JSON.stringify(option) === JSON.stringify(shown) ? 'selected' : ''}>${preview(option, 60)}</option>`)}</select>`;
   }
   if (p.type === 'boolean') {
-    return html`<label class="pk-check"><input type="checkbox" id="${id}" data-param="${name}" data-type="boolean" ${shown ? 'checked' : ''}> ${name} ${help}</label>`;
+    return html`<label class="pk-check"><input type="checkbox" id="${id}" aria-describedby="${help}" data-param="${name}" data-type="boolean" ${shown ? 'checked' : ''}> on</label>`;
   }
   if (p.type === 'integer' || p.type === 'number') {
-    return html`<label class="pk-field">${label}<input class="pk-input pk-input--sm" type="number" id="${id}" data-param="${name}" data-type="${p.type}" value="${value}" step="${p.type === 'integer' ? '1' : 'any'}">${help}</label>`;
+    return html`<input class="pk-input pk-input--sm" type="number" id="${id}" aria-describedby="${help}" data-param="${name}" data-type="${p.type}" value="${value}" step="${p.type === 'integer' ? '1' : 'any'}">`;
   }
   if (p.type === 'string') {
-    return html`<label class="pk-field">${label}<textarea class="pk-textarea" rows="2" id="${id}" data-param="${name}" data-type="string">${value}</textarea>${help}</label>`;
+    return html`<textarea class="pk-textarea" rows="2" id="${id}" aria-describedby="${help}" data-param="${name}" data-type="string">${value}</textarea>`;
   }
-  return html`<label class="pk-field">${label}<textarea class="pk-textarea pk-input--mono" rows="2" id="${id}" data-param="${name}" data-type="json" placeholder="JSON">${shown === undefined || shown === null ? '' : JSON.stringify(shown)}</textarea>${help}</label>`;
+  return html`<textarea class="pk-textarea pk-input--mono" rows="2" id="${id}" aria-describedby="${help}" data-param="${name}" data-type="json" placeholder="JSON">${shown === undefined || shown === null ? '' : JSON.stringify(shown)}</textarea>`;
+}
+
+/** A param's description: its first sentence shown, the rest unfolded on a click -- a description of a page made the
+ * form a wall of columns (scarab_long's mode). An abbreviation's point (z. B., e.g.), an ordinal's (am 3. Oktober)
+ * and an ellipsis (data/...) end no sentence. */
+function paramHelp(text, id) {
+  if (!text) return '';
+  const [, lead, rest] = /^([\s\S]{20,}?(?<![\s(]\p{L}{1,2}|\.|\d|\p{L}\.\p{L})[.!?])\s+(\S[\s\S]*)$/u.exec(text) || [];
+  return rest ? html`<details class="sg-param-help pk-help" id="${id}"><summary>${lead}</summary>${rest}</details>`
+    : html`<span class="pk-help" id="${id}">${text}</span>`;
 }
 
 function drawStartForm() {
@@ -2562,7 +2578,7 @@ async function loadRuns({ older = false, tick = false } = {}) {
   $('runCount').textContent = S.runs.length ? `${S.runs.length}${S.runsMore ? '+' : ''}` : '';
   $('olderRuns').hidden = !S.runsMore;
   drawRunList();
-  if (S.run) drawDebugBar();
+  drawDebugBar();
   followRuns();
 }
 
@@ -2570,9 +2586,9 @@ const isLive = (r) => !TERMINAL.has(r.status) && r.status !== 'interrupted';
 /** The run list shows the runs of every machine (the scope filter), not the open machine's. */
 const everyMachine = () => $('runScope').value === 'every';
 
-/** The list is asked again while a run is shown and another one is live: the bar offers it, with its status. */
+/** The list is asked again while a run is live that is not the one shown: the bar offers it, with its status. */
 function followRuns() {
-  if (S.runId && S.runs.some((r) => r.id !== S.runId && isLive(r))) runsPoller.start();
+  if (liveListed().some((r) => r.id !== S.runId)) runsPoller.start();
   else runsPoller.stop();
 }
 
@@ -2729,6 +2745,7 @@ function selectRun(id) {
     drawRun();
     return;
   }
+  drawDebugBar();  // the run left takes its controls along: a command now would reach the run picked
   loadRun();
 }
 
@@ -2810,7 +2827,7 @@ function keepListed(run) {
   if (listed && (listed.status !== run.status || listed.final_state !== run.final_state)) {
     Object.assign(listed, { status: run.status, final_state: run.final_state, finished_at: run.finished_at });
     drawRunList();
-    if (S.run) drawDebugBar();  // the runs it offers
+    drawDebugBar();  // the runs it offers
     followRuns();
   }
 }
@@ -2842,8 +2859,22 @@ function drawDebugBar() {
       <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`);
     return;
   }
+  if (!run && S.runId) {  // picked, its first read still out: its id and the way to stop, no controls of the run left
+    bar.hidden = false;
+    delete bar.dataset.status;
+    update(bar, html`<strong class="pk-mono" title="${S.runId}">${runLabel(S.runId)}</strong><span class="pk-spinner" aria-hidden="true"></span><span class="pk-grow"></span>
+      <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`);
+    return;
+  }
   if (!run) {
-    bar.hidden = true;
+    // none shown: the machine's live runs, offered as soon as it is open -- not only once one was picked in the list
+    const live = liveListed();
+    bar.hidden = !live.length;
+    delete bar.dataset.status;
+    if (live.length) {
+      update(bar, html`<span class="pk-muted">Live</span><span class="sg-runpick" role="group" aria-label="Live runs: the one to show">${
+        live.map((r) => runPick(r, false, r.status))}</span>`);
+    }
     return;
   }
   bar.hidden = false;
@@ -2873,11 +2904,8 @@ function drawDebugBar() {
   keepingChoices(bar, () => update(bar, html`
     ${back ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-frame-back
       title="${`Back to ${back.machine} (${back.prefix || 'top'})`}">${icon('arrow-left', { size: 'sm' })} Back</button>` : ''}
-    ${choices.length > 1 ? html`<span class="sg-runpick" role="group" aria-label="Live runs: the one to show">${choices.map((r) => html`<button
-      type="button" class="pk-btn pk-btn--sm" data-pick-run="${r.id}" data-key="pick:${r.id}"
-      aria-pressed="${String(r.id === run.id)}" title="${r.id}${r.machine_id && r.machine_id !== S.machine?.id ? ` (a run of ${r.machine_id})` : ''}"><span
-      class="pk-mono">${runLabel(r.id)}</span>
-      ${statusBadge(r.id === run.id ? run.status : r.status)}</button>`)}</span>`
+    ${choices.length > 1 ? html`<span class="sg-runpick" role="group" aria-label="Live runs: the one to show">${choices.map((r) => runPick(r,
+      r.id === run.id, r.id === run.id ? run.status : r.status))}</span>`
     : html`<strong class="pk-mono" title="${run.id}">${runLabel(run.id)}</strong> ${statusBadge(run.status)}`}
     ${answers.length ? html`<span class="sg-answers" role="group" aria-label="Answer the wait">${answers.map(({ name, frames }) => html`<button type="button"
       class="pk-btn pk-btn--sm pk-btn--primary" data-send-event="${name}" title="${eventHelp(name) || `Send ${name}`}${frames.length > 1 ? ` (${frames.length} frames wait for it: pick one)` : ''}">${icon('send-horizontal', { size: 'sm' })} ${name}</button>`)}</span>` : ''}
@@ -2908,6 +2936,19 @@ function runChoices(run) {
   const listed = [...S.runs].reverse().filter((r) => r.id === run.id
     || (isLive(r) && (!everyMachine() || r.machine_id === S.machine?.id)));
   return listed.some((r) => r.id === run.id) ? listed : [run, ...listed];
+}
+
+/** The listed live runs of the open machine, in the order they started. */
+function liveListed() {
+  return [...S.runs].reverse().filter((r) => isLive(r) && (!everyMachine() || r.machine_id === S.machine?.id));
+}
+
+/** A run the bar offers, pressed while shown. */
+function runPick(r, pressed, status) {
+  return html`<button type="button" class="pk-btn pk-btn--sm" data-pick-run="${r.id}" data-key="pick:${r.id}"
+      aria-pressed="${String(pressed)}" title="${r.id}${r.machine_id && r.machine_id !== S.machine?.id ? ` (a run of ${r.machine_id})` : ''}"><span
+      class="pk-mono">${runLabel(r.id)}</span>
+      ${statusBadge(status)}</button>`;
 }
 
 /** The run's own machine is not the open one: the way down from it to the open one, each frame on it a button that

@@ -538,7 +538,62 @@ const CASES = {
     check($('runList').innerHTML === listed && !TOASTS.length && lists.running, `a failed tick: ${TOASTS}`);
     await $('debugBar').fire('click', { target: element('button', { 'data-control': 'close' }) });
     await settle();
-    check(!lists.running, 'the list is still asked with no run shown');
+    check(picks() === 'r3' && lists.running, `none shown: the live run is not offered or not followed: ${picks()}, ${lists.running}`);
+  },
+
+  async a_machine_opened_offers_its_live_runs_in_the_bar_at_once() {
+    // the bar showed the live runs only once one was picked in the Runs tab: opened on the graph, nothing said a run went on
+    runsAnswer = () => [{ ...RUNS[0], id: 'r3', status: 'running' }, { ...RUNS[0], id: 'r2', status: 'succeeded', final_state: 'done' }];
+    await boot('?machine=review');
+    const bar = $('debugBar');
+    check(!bar.hidden && /data-pick-run="r3" data-key="[^"]+"\s+aria-pressed="false"/.test(bar.innerHTML)
+      && !bar.innerHTML.includes('data-pick-run="r2"') && !bar.innerHTML.includes('data-control'), `bar: ${bar.hidden} ${bar.innerHTML}`);
+    await bar.fire('click', { target: element('button', { 'data-pick-run': 'r3' }) });
+    await settle();
+    await release();
+    check(CALLS.some(([, path]) => path.includes('/runs/r3?')), 'the run picked is not asked for');
+  },
+
+  async a_run_picked_keeps_its_bar_while_its_first_read_is_out() {
+    // a list tick during the read hid the bar (none shown, none offered); a run left kept its Terminate, which then
+    // reached the run picked
+    runsAnswer = () => [{ ...RUNS[0], id: 'r3', status: 'running' }, { ...RUNS[0], id: 'r4', status: 'running' }];
+    await boot('?machine=review');
+    HOLD = (method, path) => path.includes('/runs/r4?');
+    await $('debugBar').fire('click', { target: element('button', { 'data-pick-run': 'r4' }) });
+    await settle();
+    const lists = POLLERS.find((p) => p.ms === 3000);
+    lists.fn();
+    await settle();
+    const bar = $('debugBar');
+    check(!bar.hidden && bar.innerHTML.includes('title="r4"') && bar.innerHTML.includes('data-control="close"')
+      && !bar.innerHTML.includes('terminate'), `while r4 is read: ${bar.hidden} ${bar.innerHTML}`);
+    HOLD = () => false;
+    await release();
+  },
+
+  async a_pick_drops_the_controls_of_the_run_left_at_once() {
+    // from a run shown, no tick: its controls go at the pick, not with the next read -- a Terminate clicked
+    // meanwhile would reach the run picked
+    runsAnswer = () => [{ ...RUNS[0], id: 'r3', status: 'running' }, { ...RUNS[0], status: 'running' }];
+    await boot('?machine=review&run=r1');
+    check($('debugBar').innerHTML.includes('data-control="terminate"'), `r1 has no terminate: ${$('debugBar').innerHTML}`);
+    HOLD = (method, path) => path.includes('/runs/r3?');
+    await $('debugBar').fire('click', { target: element('button', { 'data-pick-run': 'r3' }) });
+    await settle();
+    check(!$('debugBar').innerHTML.includes('terminate'), `r1's controls while r3 is read: ${$('debugBar').innerHTML}`);
+    HOLD = () => false;
+    await release();
+  },
+
+  async the_every_machine_list_is_not_followed_for_another_machine_s_live_run() {
+    runsAnswer = () => [{ ...RUNS[0], id: 'x1', machine_id: 'other', status: 'running' }];
+    await boot('?machine=review');
+    $('runScope').value = 'every';
+    await $('runScope').fire('change', {});
+    await settle();
+    const lists = POLLERS.find((p) => p.ms === 3000);
+    check($('debugBar').hidden && !lists?.running, `another machine's run: bar ${$('debugBar').hidden}, followed ${lists?.running}`);
   },
 
   async a_run_shown_the_list_does_not_hold_is_offered_beside_the_live_ones_by_their_ends() {
@@ -1490,6 +1545,22 @@ const CASES = {
       && JSON.stringify(started[0].mocks) === '{"write":"a draft"}' && started[0].mock_only === true, `started ${JSON.stringify(started)}`);
     check(JSON.parse(localStorage.getItem('stategraph:start-params:review')).values.premise === 'x', 'params not kept');
     check($('paramFields').innerHTML.includes('data-type="string">x</textarea>'), `form: ${$('paramFields').innerHTML}`);
+  },
+
+  async a_param_s_help_shows_its_first_sentence_and_unfolds_the_rest() {
+    // scarab_long's mode: a description of a page made the start form a wall of columns
+    const mode = { type: 'string', description: 'recent: aktuelle Forschung (z. B. eine neue Arbeit) ist der Kern. evergreen: jedes Thema. klassiker: ein Klassiker.' };
+    const area = { type: 'string', description: 'Ordner der Videos; data/... liegt im Datenverzeichnis' };
+    const since = { type: 'string', description: 'Der Lauf beginnt am 3. Oktober, e.g. for a review. Danach nicht.' };
+    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, params: { ...MACHINE.graph.params, mode, area, since } } };
+    await boot('?machine=review');
+    const form = $('paramFields').innerHTML;
+    check(form.includes('<summary>recent: aktuelle Forschung (z. B. eine neue Arbeit) ist der Kern.</summary>evergreen: jedes Thema. klassiker: ein Klassiker.</details>'),
+      `the long help: ${form}`);
+    check(form.includes('<span class="pk-help" id="param-area-help">Ordner der Videos; data/... liegt im Datenverzeichnis</span>'), `an ellipsis ends the lead: ${form}`);
+    check(form.includes('for="param-mode"') && form.includes('id="param-mode" aria-describedby="param-mode-help"')
+      && form.includes('<details class="sg-param-help pk-help" id="param-mode-help">'), `the name or the help is not its field's: ${form}`);
+    check(form.includes('<summary>Der Lauf beginnt am 3. Oktober, e.g. for a review.</summary>Danach nicht.'), `an ordinal or e.g. ends the lead: ${form}`);
   },
 
   async a_kept_default_follows_the_machine_s_default_and_a_choice_stays() {
