@@ -5,6 +5,8 @@ using the SQLite-backed storage system.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 import time
 from pathlib import Path
@@ -778,8 +780,8 @@ class TestMessageDebuggerWebEndpoints:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        for i in range(40):
-            db.insert_llm_request(time.time() * 1000 + i, "request", payload={"messages": ["x" * 5000]})
+        for i in range(40):  # random: stored compressed, repeated text would take no pages
+            db.insert_llm_request(time.time() * 1000 + i, "request", payload={"messages": [os.urandom(4000).hex()]})
         db.clear_all()
         assert db.free_pages() > 0, "fixture: the clear freed no pages"
 
@@ -787,7 +789,7 @@ class TestMessageDebuggerWebEndpoints:
         app.include_router(web_factory.get_web_router())
         result = TestClient(app).post("/plugins/message_debugger/prune?vacuum=true").json()
 
-        assert result["stripped"] == result["turns_deleted"] == result["requests_deleted"] == 0
+        assert result["payloads_deleted"] == result["turns_deleted"] == result["requests_deleted"] == 0
         assert result["vacuumed"] is True
         assert db.free_pages() == 0
 

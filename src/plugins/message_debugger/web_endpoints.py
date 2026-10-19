@@ -201,9 +201,9 @@ class MessageDebuggerWebFactory:
     ):
         """Prune old entries down to the size cap and (by default) VACUUM.
 
-        Cost-preserving: like the auto retention this STRIPS the oldest payloads
-        (keeping the tiny cost columns) and drops the oldest turn snapshots — it
-        does NOT throw away cost history. force=True drives it down to the LOW
+        Cost-preserving: like the auto retention this deletes the oldest payloads
+        and turn snapshots and keeps the cost rows -- it does NOT throw away cost
+        history. force=True drives it down to the LOW
         watermark even when between watermarks, then VACUUM shrinks the file on
         disk whenever it has free pages (the auto path never VACUUMs). VACUUM needs free temp space roughly
         the size of the remaining data, so it can fail on a full disk; that is
@@ -232,7 +232,7 @@ class MessageDebuggerWebFactory:
         with self.db._retention_lock:
             size_before = _disk_bytes()
             result = self.db.enforce_retention(force=True, budget=120.0)
-            did_work = result["stripped"] or result["turns_deleted"] or result["requests_deleted"]
+            did_work = any(result.values())
 
             result["vacuumed"] = False
             # also when retention had nothing to do: pages freed before -- a clear, the automatic retention --

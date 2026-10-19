@@ -13,6 +13,7 @@ import queue
 import sqlite3
 import threading
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -42,12 +43,86 @@ class Account:
     since_ms: float
 
 
+BUSY_TIMEOUT_S = 10
+#: How long a process starting with a file another one is moving over (_migrate) waits for it.
+MIGRATION_WAIT_S = 900
+
+#: The cost row of an LLM call: everything but its payload and response (llm_payloads).
+LLM_REQUEST_COLUMN_NAMES = (
+    "id", "timestamp_ms", "direction", "agent_name", "request_id", "session_id", "provider", "model", "url",
+    "is_streaming", "error", "duration_ms", "usage_json", "finish_reason", "created_at", "served_by", "user_id",
+)
+_LLM_REQUEST_COLUMNS = """
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp_ms REAL NOT NULL,
+    direction TEXT NOT NULL,
+    agent_name TEXT NOT NULL DEFAULT '',
+    request_id TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    url TEXT DEFAULT '',
+    is_streaming INTEGER DEFAULT 0,
+    error TEXT,
+    duration_ms REAL,
+    usage_json TEXT,
+    finish_reason TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    served_by TEXT,
+    user_id TEXT
+"""
+# A user's reads go through these indexes only (_where), and each holds every column they filter and count by:
+# reading user_id or error from a row of a large table would walk it -- the statistics a panel asks for every few
+# seconds included. Rows from before the column do not hold it, so building the index is quick, once.
+TURNS_USER_INDEX = ("CREATE INDEX IF NOT EXISTS idx_turns_user ON turns(user_id, timestamp_ms, agent_name, "
+                    "session_id, request_id, snapshot_type) WHERE user_id IS NOT NULL")
+LLM_REQUEST_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_llm_requests_agent ON llm_requests(agent_name)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_requests_session ON llm_requests(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_requests_timestamp ON llm_requests(timestamp_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_requests_direction ON llm_requests(direction)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_requests_provider ON llm_requests(provider)",
+    # covering indexes for the statistics (no full table scans)
+    "CREATE INDEX IF NOT EXISTS idx_llm_requests_direction_duration ON llm_requests(direction, duration_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_requests_error ON llm_requests(error) WHERE error IS NOT NULL AND error != ''",
+    # writer-costs walks the request tree of a root_request_id by equality and prefix; without it, minutes per story
+    "CREATE INDEX IF NOT EXISTS idx_llm_requests_request_id ON llm_requests(request_id)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_requests_user ON llm_requests(user_id, timestamp_ms, agent_name, "
+    "session_id, request_id, direction, provider, error) WHERE user_id IS NOT NULL",
+)
+
+
+def _pack(value: Any) -> Optional[bytes]:
+    """The large JSON of a row -- a payload, a response, a turn's messages -- as stored: zlib-compressed UTF-8, a
+    third of the size (measured on the server's captures: 3.0-3.3x)."""
+    return zlib.compress(json.dumps(value, default=str).encode("utf-8")) if value else None
+
+
+def stored_text(value: Any) -> Optional[str]:
+    """The JSON text of a stored payload, response or turn's messages: rows written since the compression are
+    zlib BLOBs, rows from before plain text."""
+    return zlib.decompress(value).decode("utf-8") if isinstance(value, bytes) else value
+
+
+def register_reader_functions(conn: sqlite3.Connection) -> None:
+    """For a reader of the file outside this plugin: ``debugger_text(<column>)`` is the text of a compressed column
+    -- ``llm_payloads.payload_z``/``response_z`` (id = llm_requests.id), ``turns.messages_z`` -- to match with LIKE
+    or load as JSON. A LIKE on the column itself finds nothing (it is zlib)::
+
+        SELECT r.request_id, debugger_text(p.payload_z) FROM llm_requests r JOIN llm_payloads p ON p.id = r.id
+    """
+    conn.create_function("debugger_text", 1, stored_text, deterministic=True)
+
+
 class MessageDebuggerDB:
     """SQLite-backed storage for message debugger data.
 
     Tables:
     - turns: Agent-level message snapshots (pre_llm / post_llm)
-    - llm_requests: LLM-client-level raw API request/response logs
+    - llm_requests: LLM-client-level raw API request/response logs, the cost
+      row of each call -- kept when its payload goes
+    - llm_payloads: a request's payload and response (id = llm_requests.id),
+      zlib-compressed (stored_text reads them)
 
     Each row carries the user whose call it was (``user_id``; NULL: nobody's --
     a call no run named a user for, and every row from before the column).
@@ -93,7 +168,7 @@ class MessageDebuggerDB:
         # timeout (the old "prune all the way to LOW in one write" tripped it).
         self._pruning = False
         self._retention_budget_s = 1.0
-        self._retention_batch = 500  # rows stripped/deleted per pass
+        self._retention_batch = 500  # rows deleted per pass
 
         # ---- Async write pipeline -------------------------------------------
         # Capture must NEVER block the agent. A write is heavy: json.dumps of the
@@ -116,6 +191,8 @@ class MessageDebuggerDB:
 
         # Initialize schema (on this thread's connection) before the writer runs.
         self._init_schema()
+        if self._needs_migration:
+            self._write_q.put_nowait(self._migrate)  # the writer's first job, ahead of every capture
 
         self._writer_thread = threading.Thread(
             target=self._writer_loop, name="msgdbg-writer", daemon=True
@@ -130,18 +207,37 @@ class MessageDebuggerDB:
             self._local.conn = sqlite3.connect(
                 str(self.db_path),
                 check_same_thread=False,
-                timeout=10.0
+                timeout=BUSY_TIMEOUT_S
             )
             self._local.conn.row_factory = sqlite3.Row
             if self._wal_mode:
                 self._local.conn.execute("PRAGMA journal_mode=WAL")
+                # A WAL a checkpoint could not catch up with kept the size it grew to (2.1 GB on the server); this
+                # cuts it back once a checkpoint gets through.
+                self._local.conn.execute("PRAGMA journal_size_limit = 67108864")
             self._local.conn.execute("PRAGMA foreign_keys=ON")
         return self._local.conn
     
     def _init_schema(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist. A file from before llm_payloads is moved over by _migrate, on the
+        writer: it takes a minute or two on a multi-GB file, and the plugin's start must not wait for it.
+
+        Waits for the write lock as long as a migration may take: another process starting with the same file
+        may be moving it over right now, and a start that gave up after the usual timeout would cost this
+        process its debugger."""
         conn = self._get_conn()
-        conn.executescript("""
+        conn.execute(f"PRAGMA busy_timeout = {MIGRATION_WAIT_S * 1000}")
+        conn.executescript(f"""
+            CREATE TABLE IF NOT EXISTS llm_requests ({_LLM_REQUEST_COLUMNS});
+            -- A request's payload and response, apart from its cost row: retention deletes them whole, and the
+            -- pages they held go free. NULLed in place in llm_requests, as they were, each row kept its page --
+            -- the file held 1.3 GB of empty page space no retention could reach, and every pruned row added to it.
+            -- "_z": zlib (stored_text, register_reader_functions)
+            CREATE TABLE IF NOT EXISTS llm_payloads (
+                id INTEGER PRIMARY KEY,  -- llm_requests.id
+                payload_z BLOB,
+                response_z BLOB
+            );
             CREATE TABLE IF NOT EXISTS turns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp_ms REAL NOT NULL,
@@ -153,31 +249,9 @@ class MessageDebuggerDB:
                 message_count INTEGER DEFAULT 0,
                 total_tokens INTEGER DEFAULT 0,
                 context_window INTEGER,
-                messages_json TEXT,
+                messages_z BLOB,
                 llm_response_json TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                user_id TEXT
-            );
-            
-            CREATE TABLE IF NOT EXISTS llm_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp_ms REAL NOT NULL,
-                direction TEXT NOT NULL,
-                agent_name TEXT NOT NULL DEFAULT '',
-                request_id TEXT NOT NULL DEFAULT '',
-                session_id TEXT NOT NULL DEFAULT '',
-                provider TEXT NOT NULL DEFAULT '',
-                model TEXT NOT NULL DEFAULT '',
-                url TEXT DEFAULT '',
-                is_streaming INTEGER DEFAULT 0,
-                payload_json TEXT,
-                response_json TEXT,
-                error TEXT,
-                duration_ms REAL,
-                usage_json TEXT,
-                finish_reason TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                served_by TEXT,
                 user_id TEXT
             );
 
@@ -186,64 +260,108 @@ class MessageDebuggerDB:
             CREATE INDEX IF NOT EXISTS idx_turns_request_id ON turns(request_id);
             CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp_ms);
             CREATE INDEX IF NOT EXISTS idx_turns_type ON turns(snapshot_type);
-            
-            CREATE INDEX IF NOT EXISTS idx_llm_requests_agent ON llm_requests(agent_name);
-            CREATE INDEX IF NOT EXISTS idx_llm_requests_session ON llm_requests(session_id);
-            CREATE INDEX IF NOT EXISTS idx_llm_requests_timestamp ON llm_requests(timestamp_ms);
-            CREATE INDEX IF NOT EXISTS idx_llm_requests_direction ON llm_requests(direction);
-            CREATE INDEX IF NOT EXISTS idx_llm_requests_provider ON llm_requests(provider);
-            
-            -- Covering indexes for stats queries (avoid full table scans)
-            CREATE INDEX IF NOT EXISTS idx_llm_requests_direction_duration
-                ON llm_requests(direction, duration_ms);
-            CREATE INDEX IF NOT EXISTS idx_llm_requests_error
-                ON llm_requests(error) WHERE error IS NOT NULL AND error != '';
-
-            -- Partial index over rows that still carry a payload, so retention
-            -- can find the OLDEST un-stripped row in O(log n) instead of scanning
-            -- past every already-stripped old row (stripped rows drop out of this
-            -- index automatically when their BLOBs are NULLed).
-            CREATE INDEX IF NOT EXISTS idx_llm_requests_stripable
-                ON llm_requests(timestamp_ms)
-                WHERE payload_json IS NOT NULL OR response_json IS NOT NULL;
-
-            -- request_id index — drives writer-costs queries that walk the
-            -- request tree of a root_request_id via equality + prefix LIKE
-            -- (`request_id LIKE 'root_%'`). Without this index a single
-            -- writer-costs call full-scans every 'response' row in the DB,
-            -- which on a multi-GB store takes minutes per story.
-            CREATE INDEX IF NOT EXISTS idx_llm_requests_request_id
-                ON llm_requests(request_id);
         """)
         # Databases from before served_by existed. ADD COLUMN only touches the
         # schema, not the rows: instant even on a multi-GB file.
         self._add_column(conn, "llm_requests", "served_by")
-        # A user's reads go through this index only (_where), and it holds every
-        # column they filter and count by: user_id and error sit behind the
-        # payloads, and reading either from a row walks them all -- the
-        # statistics a panel asks for every few seconds included. Rows from
-        # before the column do not hold it, so building the index reads no
-        # payload: once, some seconds on a multi-GB file.
-        covering = {
-            "turns": "user_id, timestamp_ms, agent_name, session_id, request_id, snapshot_type",
-            "llm_requests": "user_id, timestamp_ms, agent_name, session_id, request_id, direction, provider, error",
-        }
-        for table, columns in covering.items():
-            self._add_column(conn, table, "user_id")
+        self._add_column(conn, "turns", "user_id")
+        self._add_column(conn, "llm_requests", "user_id")
+        # compressed now: a new name, so that a query of the old one fails instead of finding only the old rows
+        # (a LIKE over zlib finds nothing). Only the schema changes: instant.
+        self._rename_column(conn, "turns", "messages_json", "messages_z")
+        self._needs_migration = "payload_json" in self._columns(conn, "llm_requests")
+        for statement in (TURNS_USER_INDEX, *LLM_REQUEST_INDEXES):
             try:
-                conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_user ON {table}({columns}) "
-                             "WHERE user_id IS NOT NULL")
+                conn.execute(statement)
             except sqlite3.OperationalError as e:  # another process builds it right now
-                logger.warning("message_debugger: index on %s.user_id not built (%s) -- the next start builds it",
-                               table, e)
+                logger.warning("message_debugger: index not built (%s) -- the next start builds it: %s",
+                               e, statement.split(" ON ")[0])
         conn.commit()
-    
+        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_S * 1000}")
+
+    def _migrate(self) -> None:
+        """Move a file from before llm_payloads over, once: its payloads into llm_payloads, llm_requests rebuilt
+        without them (the empty space the old rows held in their pages goes with the old table).
+
+        On the writer, before any capture: the captures meanwhile wait in the queue. Another process starting
+        with the same file waits for the write lock, then finds it done. The moved payloads stay uncompressed
+        (stored_text reads both); the pages the old table held go on the freelist, where new rows reuse them --
+        the prune in the panel gives them back to the disk.
+
+        One-way: code from before cannot write to the file afterwards, nor start on it. All processes on the
+        file restart together. A move that fails (a full disk) changes nothing; until a start succeeds, the
+        retention strips the payloads still in llm_requests in place, as it did -- it must not take their cost
+        rows for them.
+        """
+        conn = self._get_conn()
+        conn.execute(f"PRAGMA busy_timeout = {MIGRATION_WAIT_S * 1000}")
+        started = time.monotonic()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if "payload_json" not in self._columns(conn, "llm_requests"):
+                conn.rollback()  # another process was first
+                self._needs_migration = False
+                return
+            moved = conn.execute(
+                "INSERT INTO llm_payloads (id, payload_z, response_z) SELECT id, payload_json, response_json "
+                "FROM llm_requests WHERE payload_json IS NOT NULL OR response_json IS NOT NULL").rowcount
+            sequence = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'llm_requests'").fetchone()
+            columns = ", ".join(LLM_REQUEST_COLUMN_NAMES)
+            conn.execute(f"CREATE TABLE llm_requests_new ({_LLM_REQUEST_COLUMNS})")
+            kept = conn.execute(f"INSERT INTO llm_requests_new ({columns}) SELECT {columns} FROM llm_requests").rowcount
+            conn.execute("DROP TABLE llm_requests")
+            conn.execute("ALTER TABLE llm_requests_new RENAME TO llm_requests")
+            if sequence:  # ids never come back: one a cost row had before it was deleted is no newer row's
+                conn.execute("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'llm_requests'", sequence)
+            for statement in LLM_REQUEST_INDEXES:
+                conn.execute(statement)
+            conn.commit()
+        except Exception as e:  # the writer goes on; the next start tries again
+            conn.rollback()
+            logger.error("message_debugger: moving the file over to llm_payloads failed (%s) -- until a start "
+                         "succeeds, the retention strips the old payloads in place", e)
+            return
+        finally:
+            conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_S * 1000}")
+        self._needs_migration = False
+        logger.warning(
+            "message_debugger: moved %d payloads out of llm_requests (%d cost rows kept) in %.0f s; "
+            "%.0f MB of the file are free now -- the panel's prune gives them back to the disk",
+            moved, kept, time.monotonic() - started, self.free_pages() * self._page_size(conn) / 1024**2)
+
+    def _still_old(self, conn: sqlite3.Connection) -> bool:
+        """Whether the file is still not moved over. Another process may have done it since this one's own
+        move failed or gave up waiting: its old payloads are gone from llm_requests then, and asking for them
+        would fail every retention of this process until it restarts."""
+        if self._needs_migration and "payload_json" not in self._columns(conn, "llm_requests"):
+            self._needs_migration = False
+        return self._needs_migration
+
+    @staticmethod
+    def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    @staticmethod
+    def _page_size(conn: sqlite3.Connection) -> int:
+        return conn.execute("PRAGMA page_size").fetchone()[0]
+
+    @staticmethod
+    def _rename_column(conn: sqlite3.Connection, table: str, old: str, new: str) -> None:
+        """RENAME COLUMN on a file from before; another process may do it in between, as with _add_column."""
+        if old not in MessageDebuggerDB._columns(conn, table):
+            return
+        try:
+            conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
+        except sqlite3.OperationalError as e:
+            if new not in MessageDebuggerDB._columns(conn, table):
+                raise
+
     @staticmethod
     def _add_column(conn: sqlite3.Connection, table: str, column: str) -> None:
         """ADD COLUMN on a file from before it (only the schema changes: instant on a multi-GB file).
         Another process starting at the same moment may add it between the look and the ALTER --
         its "duplicate column" is no failure, and must not cost this process its debugger."""
-        if column in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}:
+        if column in MessageDebuggerDB._columns(conn, table):
             return
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
@@ -278,7 +396,7 @@ class MessageDebuggerDB:
             """INSERT INTO turns 
                (timestamp_ms, snapshot_type, agent_name, request_id, session_id,
                 step, message_count, total_tokens, context_window,
-                messages_json, llm_response_json, user_id)
+                messages_z, llm_response_json, user_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp_ms,
@@ -290,7 +408,8 @@ class MessageDebuggerDB:
                 message_count,
                 total_tokens,
                 context_window,
-                json.dumps(messages, default=str) if messages else None,
+                _pack(messages),
+                # kept as text: the list reads its usage with json_extract
                 json.dumps(llm_response, default=str) if llm_response else None,
                 user_id,
             )
@@ -436,9 +555,9 @@ class MessageDebuggerDB:
             """INSERT INTO llm_requests
                (timestamp_ms, direction, agent_name, request_id, session_id,
                 provider, model, url, is_streaming,
-                payload_json, response_json, error, duration_ms,
+                error, duration_ms,
                 usage_json, finish_reason, served_by, user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp_ms,
                 direction,
@@ -449,8 +568,6 @@ class MessageDebuggerDB:
                 model,
                 url,
                 1 if is_streaming else 0,
-                json.dumps(payload, default=str) if payload else None,
-                json.dumps(response_data, default=str) if response_data else None,
                 error,
                 duration_ms,
                 json.dumps(usage, default=str) if usage else None,
@@ -459,6 +576,9 @@ class MessageDebuggerDB:
                 user_id,
             )
         )
+        if payload or response_data:
+            conn.execute("INSERT INTO llm_payloads (id, payload_z, response_z) VALUES (?, ?, ?)",
+                         (cursor.lastrowid, _pack(payload), _pack(response_data)))
         conn.commit()
         self.maybe_enforce_retention()
         return cursor.lastrowid  # type: ignore[return-value]
@@ -605,8 +725,28 @@ class MessageDebuggerDB:
         return [self._row_to_dict(row) for row in rows]
 
     def get_llm_request(self, req_id: int, *, owner: Any) -> Optional[Dict[str, Any]]:
-        """Get a specific LLM request by ID; None when it is not ``owner``'s either."""
-        return self._get_row("llm_requests", req_id, owner)
+        """Get a specific LLM request by ID, its payload and response with it (None: the retention deleted them,
+        or there were none); None when it is not ``owner``'s either."""
+        clauses, params = self._owner_clause(owner)
+        mine = "".join(f" AND r.{clause}" for clause in clauses)
+        columns = ", ".join(f"r.{column}" for column in LLM_REQUEST_COLUMN_NAMES)
+
+        def read(inline: bool):
+            payload, response = (("COALESCE(p.payload_z, r.payload_json)", "COALESCE(p.response_z, r.response_json)")
+                                 if inline else ("p.payload_z", "p.response_z"))
+            return self._get_conn().execute(
+                f"SELECT {columns}, {payload} AS payload_json, {response} AS response_json FROM llm_requests r "
+                f"LEFT JOIN llm_payloads p ON p.id = r.id WHERE r.id = ?{mine}", (req_id, *params)).fetchone()
+
+        inline = self._needs_migration  # not moved over (yet): the old payloads are in their rows
+        try:
+            row = read(inline)
+        except sqlite3.OperationalError:
+            if not inline:
+                raise
+            row = read(False)  # moved over by another process meanwhile
+            self._still_old(self._get_conn())
+        return self._row_to_dict(row) if row else None
 
     def count_llm_requests(
         self,
@@ -710,6 +850,7 @@ class MessageDebuggerDB:
         turns = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
         requests = conn.execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
         conn.execute("DELETE FROM turns")
+        conn.execute("DELETE FROM llm_payloads")
         conn.execute("DELETE FROM llm_requests")
         conn.commit()
         return {"turns_deleted": turns, "requests_deleted": requests}
@@ -746,23 +887,42 @@ class MessageDebuggerDB:
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
         return max(0, (page_count - freelist) * page_size)
 
+    #: What retention deletes before any cost row: (result key, the oldest row's time, a batch's delete). A
+    #: payload without its cost row counts as the oldest of all.
+    _CONTENT = (
+        ("payloads_deleted",
+         "SELECT COALESCE(r.timestamp_ms, 0) FROM llm_payloads p LEFT JOIN llm_requests r ON r.id = p.id "
+         "ORDER BY p.id LIMIT 1",
+         "DELETE FROM llm_payloads WHERE id IN (SELECT id FROM llm_payloads ORDER BY id LIMIT ?)"),
+        ("turns_deleted",
+         "SELECT timestamp_ms FROM turns ORDER BY timestamp_ms LIMIT 1",
+         "DELETE FROM turns WHERE id IN (SELECT id FROM turns ORDER BY timestamp_ms LIMIT ?)"),
+    )
+    #: A file not moved over: its payloads still in their cost rows, stripped there as before (_migrate).
+    _INLINE = (
+        "payloads_deleted",
+        "SELECT timestamp_ms FROM llm_requests WHERE payload_json IS NOT NULL OR response_json IS NOT NULL "
+        "ORDER BY timestamp_ms LIMIT 1",
+        "UPDATE llm_requests SET payload_json = NULL, response_json = NULL WHERE id IN (SELECT id FROM llm_requests "
+        "WHERE payload_json IS NOT NULL OR response_json IS NOT NULL ORDER BY timestamp_ms LIMIT ?)",
+    )
+
     def enforce_retention(self, force: bool = False, budget: float = None) -> Dict[str, int]:
         """Keep the DB within its size cap WITHOUT discarding cost history.
 
-        The payload/response BLOBs are ~all the bytes; the cost columns
-        (provider/model/usage/request_id/timestamps) are tiny. So when over the
-        HIGH watermark we first STRIP the oldest llm_request payloads (NULL the
-        BLOBs, keep the cost row) and drop the oldest turns (debug snapshots, not
-        cost-relevant). Only as a last resort — when every old payload is already
-        stripped and turns are gone but we are still over budget — do we delete
-        the oldest cost rows.
+        The payloads, responses and turn snapshots are ~all the bytes; a cost row
+        (provider/model/usage/request_id/timestamps) is a few hundred. So over the
+        HIGH watermark the oldest content goes, whole rows -- payloads
+        (llm_payloads) and turns, whichever reaches further back, so both keep the
+        same days -- and the cost rows stay. Only when no content is left and the
+        file is still over budget do the oldest cost rows go.
 
         Time-budgeted: a single call does at most ~1s of work so it never delays
         a capture write past the 5s hook timeout. Hysteresis: once armed (over
-        HIGH) it keeps pruning across calls until LOW, then rests. No VACUUM —
+        HIGH) it keeps pruning across calls until LOW, then rests. No VACUUM --
         freed pages are reused, the file plateaus.
         """
-        keys = {"stripped": 0, "turns_deleted": 0, "requests_deleted": 0}
+        keys = {"payloads_deleted": 0, "turns_deleted": 0, "requests_deleted": 0}
         if self._max_size_bytes <= 0:
             return keys
         conn = self._get_conn()
@@ -777,39 +937,25 @@ class MessageDebuggerDB:
         BATCH = self._retention_batch
         target = max(1, int(self._low_bytes * 0.98))
         deadline = time.monotonic() + (budget if budget else self._retention_budget_s)
-        stripped = turns_deleted = requests_deleted = 0
+        done = dict(keys)
 
+        sources = list(self._CONTENT)
+        if self._still_old(conn):  # not moved over: its old payloads are content too, and the oldest
+            sources.append(self._INLINE)
         while used > target and time.monotonic() < deadline:
-            # 1) Strip the oldest payloads — frees the bulk of the bytes while
-            #    KEEPING the cost row (usage/model/provider/request_id/...).
-            n = conn.execute(
-                "UPDATE llm_requests SET payload_json = NULL, response_json = NULL "
-                "WHERE id IN (SELECT id FROM llm_requests "
-                "             WHERE payload_json IS NOT NULL OR response_json IS NOT NULL "
-                "             ORDER BY timestamp_ms ASC LIMIT ?)",
-                (BATCH,),
-            ).rowcount
-            # 2) Drop the oldest turns (agent message snapshots; not used for costing).
-            n2 = conn.execute(
-                "DELETE FROM turns WHERE id IN "
-                "(SELECT id FROM turns ORDER BY timestamp_ms ASC LIMIT ?)",
-                (BATCH,),
-            ).rowcount
-            progress = n + n2
-            if progress == 0:
-                # Nothing cheap left (all old payloads stripped, no turns): the
-                # DB is cost-only rows. Last resort — delete oldest cost rows.
-                n3 = conn.execute(
-                    "DELETE FROM llm_requests WHERE id IN "
-                    "(SELECT id FROM llm_requests ORDER BY timestamp_ms ASC LIMIT ?)",
-                    (BATCH,),
-                ).rowcount
-                requests_deleted += n3
-                if n3 == 0:
-                    break  # truly empty
-            stripped += n
-            turns_deleted += n2
+            # the source whose oldest row is the oldest: payloads and turns keep the same days
+            heads = [(row[0], key, sql) for key, head, sql in sources
+                     if (row := conn.execute(head).fetchone()) is not None]
+            if heads:
+                _, key, sql = min(heads, key=lambda head: head[0])
+            else:  # nothing but cost rows left -- the last resort
+                key, sql = "requests_deleted", ("DELETE FROM llm_requests WHERE id IN "
+                                                "(SELECT id FROM llm_requests ORDER BY timestamp_ms LIMIT ?)")
+            deleted = conn.execute(sql, (BATCH,)).rowcount
             conn.commit()
+            done[key] += deleted
+            if not deleted:
+                break  # truly empty
             # Nudge a checkpoint so the freelist (and thus _used_bytes) reflects
             # the freed pages in WAL mode. PASSIVE never blocks on readers; the
             # old TRUNCATE variant waited for every reader (e.g. the web UI) to
@@ -824,14 +970,14 @@ class MessageDebuggerDB:
         if used <= target:
             self._pruning = False  # reached LOW -> rest until HIGH again
 
-        if stripped or turns_deleted or requests_deleted:
+        if any(done.values()):
             logger.info(
-                "message_debugger retention: stripped %d payloads, dropped %d turns, "
-                "deleted %d old cost rows (used now %.0f MB, cap %.0f MB)",
-                stripped, turns_deleted, requests_deleted,
+                "message_debugger retention: deleted %d payloads, %d turns, %d old cost rows "
+                "(used now %.0f MB, cap %.0f MB)",
+                done["payloads_deleted"], done["turns_deleted"], done["requests_deleted"],
                 used / 1024**2, self._high_bytes / 1024**2,
             )
-        return {"stripped": stripped, "turns_deleted": turns_deleted, "requests_deleted": requests_deleted}
+        return done
 
     def maybe_enforce_retention(self) -> None:
         """Cheap per-write hook: every N writes, size-check and prune if needed.
@@ -862,8 +1008,15 @@ class MessageDebuggerDB:
     def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         """Convert a sqlite3.Row to a dict, parsing JSON columns."""
         d = dict(row)
+        if 'messages_z' in d:
+            d['messages_json'] = d.pop('messages_z')
         for key in ('messages_json', 'llm_response_json', 'payload_json', 'response_json', 'usage_json'):
             if key in d and d[key]:
+                try:
+                    d[key] = stored_text(d[key])
+                except (zlib.error, UnicodeDecodeError) as e:
+                    d[key] = f"[unreadable: {e}]"
+                    continue
                 try:
                     d[key] = json.loads(d[key])
                 except (json.JSONDecodeError, TypeError):

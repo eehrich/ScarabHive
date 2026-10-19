@@ -132,4 +132,5 @@ Deferring pays off for tools that a typical run does **not** need and that bring
 a lot of schema with them. One should not defer what almost every run needs
 (reading files, shell): otherwise it costs a call and a cache miss on every run.
 The sizes per tool come from a query on `data/message_debugger/debugger.db`
-(`llm_requests.payload_json` → `tools`).
+(`llm_payloads.payload` → `tools`, read with `debugger_text()`, see
+`plugins/message_debugger/database.py` `register_reader_functions`).

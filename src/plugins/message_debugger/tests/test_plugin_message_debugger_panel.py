@@ -159,6 +159,7 @@ EXPECTED = [
     'with the refresh paused, an entry captured since shows only once the viewer refreshes -- not on a tab switch or a filter change, and a list asked for while a refresh is on its way does not undo it',
     'the retry of a request shows its attempt and reason, and its entry opens with its error',
     'a response names the backend that served it, in the list and in the drawer',
+    'an entry without a payload says why, not just nothing',
     'clearing asks first and, confirmed, empties the lists',
     'pruning asks first and, confirmed, tells what it did, a compacted file included, and shows the lists as they are now',
     "an admin has the user filter, the maintenance menu and the file's size; a user has none of them and sees their own captures only",

@@ -300,6 +300,15 @@
     return inList && inDrawer;
   });
 
+  await check('an entry without a payload says why, not just nothing', async () => {
+    const served = rows('requests').find((row) => row.querySelector('.md-served-by'));  // captured without one
+    served.click();
+    await until('its drawer', () => titled(`Response #${served.dataset.id} ·`));
+    const said = $('#detailBody').textContent.includes('No payload: deleted by the size cap, or never captured.');
+    $('#detail [data-close]').click();
+    return said;
+  });
+
   /** Choose an action from the panel's menu; resolves with the question it asks. */
   const ask = async (action) => {
     $('#actionsButton').click();
@@ -341,7 +350,7 @@
     asked.querySelector('[data-index="1"]').click();
     // the clear has freed the pages: the report stays until it is read
     const report = await until('the report', () => question()?.textContent.includes('Database pruned') && question());
-    const told = report.textContent.includes('Stripped 0 payloads, dropped 0 turns') && report.textContent.includes('The file was compacted');
+    const told = report.textContent.includes('Deleted 0 payloads, 0 turns') && report.textContent.includes('The file was compacted');
     report.querySelector('[data-index="0"]').click();
     await until('the turns counted as they are now', () => $('#turnsCount').textContent === '1');
     return titledQuestion && notYet && pruned === 1 && told && !$('#actionsButton').disabled;

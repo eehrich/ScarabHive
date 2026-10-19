@@ -2,28 +2,37 @@
 Size-bounded, cost-preserving auto-retention for the message_debugger DB.
 
 The user keeps the debugger DB for COST calculation, so retention must not throw
-away the (tiny) cost columns (provider/model/usage/request_id/timestamps). The
-payload/response BLOBs are ~all the bytes, so retention STRIPS the oldest
-payloads (keeping the cost row) and drops the oldest turn snapshots; it only
-deletes cost rows as a last resort. Work is time-budgeted so it never delays a
-capture write past the 5s hook timeout.
+away the (tiny) cost rows (provider/model/usage/request_id/timestamps). The
+payloads, responses and turn snapshots are ~all the bytes, so retention deletes
+the oldest of them -- whole rows, payloads (llm_payloads) and turns by age -- and
+deletes cost rows only as a last resort. Work is time-budgeted so it never delays
+a capture write past the 5s hook timeout.
+
+The data is random: it is stored compressed, and repeated text would shrink to
+nothing.
 """
 
+import base64
 import os
 import time
 
 import pytest
 
-from plugins.message_debugger.database import MessageDebuggerDB
-
-_BIG = {"messages": [{"role": "user", "content": "x" * 5000}], "model": "gpt-5"}
-_BIG_MESSAGES = [{"role": "user", "content": "x" * 5000} for _ in range(4)]
+from plugins.message_debugger.database import EVERYONE, MessageDebuggerDB
 
 
-def _insert_requests(db, n, start=0):
+def _noise(n=3000):
+    return base64.b64encode(os.urandom(n)).decode()
+
+
+_BIG = {"messages": [{"role": "user", "content": _noise()}], "model": "gpt-5"}
+_BIG_MESSAGES = [{"role": "user", "content": _noise(1500)} for _ in range(4)]
+
+
+def _insert_requests(db, n, start=0, step=1.0):
     for i in range(n):
         db.insert_llm_request(
-            timestamp_ms=float(start + i), direction="response", agent_name="a",
+            timestamp_ms=float(start + i * step), direction="response", agent_name="a",
             request_id=f"req_{start + i}", session_id="s",
             provider="openai", model="gpt-5",
             payload=_BIG, response_data=_BIG,
@@ -32,27 +41,31 @@ def _insert_requests(db, n, start=0):
         )
 
 
-def _insert_turns(db, n, start=0):
+def _insert_turns(db, n, start=0, step=1.0):
     for i in range(n):
-        db.insert_turn(timestamp_ms=float(start + i), snapshot_type="pre_llm",
+        db.insert_turn(timestamp_ms=float(start + i * step), snapshot_type="pre_llm",
                        agent_name="a", session_id="s", messages=_BIG_MESSAGES)
 
 
-def _count_requests(db):
-    return db._get_conn().execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
+def _count(db, table):
+    return db._get_conn().execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
 
 def _req(db, request_id):
-    return db._get_conn().execute(
-        "SELECT payload_json, response_json, usage_json, model, provider "
-        "FROM llm_requests WHERE request_id = ?", (request_id,),
-    ).fetchone()
+    (row_id,) = db._get_conn().execute("SELECT id FROM llm_requests WHERE request_id = ?", (request_id,)).fetchone()
+    return db.get_llm_request(row_id, owner=EVERYONE)
 
 
 def _turns_ts_range(db):
     return db._get_conn().execute(
         "SELECT MIN(timestamp_ms), MAX(timestamp_ms) FROM turns"
     ).fetchone()
+
+
+def _oldest_payload_ts(db):
+    row = db._get_conn().execute("SELECT MIN(r.timestamp_ms) FROM llm_payloads p "
+                                 "JOIN llm_requests r ON r.id = p.id").fetchone()
+    return row[0]
 
 
 @pytest.fixture
@@ -67,28 +80,37 @@ def db(tmp_path):
 
 
 class TestCostPreserving:
-    def test_strips_old_payloads_but_keeps_cost_rows(self, db):
-        _insert_requests(db, 120)  # ~1.2 MB of payloads, over the 1 MB cap
+    def test_deletes_old_payloads_but_keeps_cost_rows(self, db):
+        _insert_requests(db, 150)  # ~1.2 MB of payloads, over the 1 MB cap
         conn = db._get_conn()
-        assert db._used_bytes(conn) > db._high_bytes
+        assert db._used_bytes(conn) > db._high_bytes, "fixture: not over the cap"
 
         res = db.enforce_retention()
 
-        assert res["stripped"] > 0
-        assert _count_requests(db) == 120, "cost rows must NOT be deleted"
+        assert res["payloads_deleted"] > 0
+        assert _count(db, "llm_requests") == 150, "cost rows must NOT be deleted"
         old = _req(db, "req_0")
         assert old["payload_json"] is None and old["response_json"] is None
         assert old["usage_json"] is not None and old["model"] == "gpt-5", "cost cols kept"
-        new = _req(db, "req_119")
-        assert new["payload_json"] is not None, "newest payload kept for debugging"
+        assert _req(db, "req_149")["payload_json"] == _BIG, "newest payload kept for debugging"
         assert db._used_bytes(conn) <= db._low_bytes
 
+    def test_a_deleted_payload_gives_its_space_back(self, db):
+        """The fault this layout fixes: payloads NULLed in place in their cost rows left each row its page --
+        on the server 1.3 GB of empty page space under the cap, growing with every pruned row, until the cap
+        held two days of captures. Deleted from llm_payloads, their pages go free: the cost rows of far more
+        content than the cap holds all stay, and the file gets under its low watermark."""
+        _insert_requests(db, 300)  # ~2.4 MB: NULLed in place, its 300 cost rows alone would keep ~1.2 MB
+        res = db.enforce_retention()
+
+        assert db._used_bytes(db._get_conn()) <= db._low_bytes
+        assert res["requests_deleted"] == 0 and _count(db, "llm_requests") == 300, \
+            "a cost row went: the pruned payloads did not give their space back"
+
     def test_last_resort_deletes_oldest_cost_rows_when_nothing_else(self, db):
-        # All payloads already stripped (cost-only rows) but still over cap:
-        # the only way to honour the cap is to delete the oldest cost rows.
+        # No content left but still over the cap: the only way to honour it is
+        # to delete the oldest cost rows.
         _insert_requests(db, 200)
-        db._get_conn().execute("UPDATE llm_requests SET payload_json=NULL, response_json=NULL")
-        db._get_conn().commit()
         db._get_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
         # force a tiny cap so the cost-only rows still exceed it
         db._max_size_bytes = 32 * 1024
@@ -96,12 +118,15 @@ class TestCostPreserving:
         db._low_bytes = int(db._max_size_bytes * 0.75)
 
         res = db.enforce_retention(force=True)
+        assert res["payloads_deleted"] == 200 and _count(db, "llm_payloads") == 0
         assert res["requests_deleted"] > 0
-        assert _count_requests(db) < 200  # oldest cost rows removed as last resort
+        assert _count(db, "llm_requests") < 200
+        oldest = db._get_conn().execute("SELECT MIN(timestamp_ms) FROM llm_requests").fetchone()[0]
+        assert oldest is None or oldest >= res["requests_deleted"], "not the oldest cost rows went"
 
     def test_noop_below_high(self, db):
         _insert_requests(db, 5)
-        assert db.enforce_retention() == {"stripped": 0, "turns_deleted": 0, "requests_deleted": 0}
+        assert db.enforce_retention() == {"payloads_deleted": 0, "turns_deleted": 0, "requests_deleted": 0}
 
 
 class TestTurns:
@@ -111,6 +136,18 @@ class TestTurns:
         lo, hi = _turns_ts_range(db)
         assert hi == 299.0, "newest turn kept"
         assert lo and lo > 0.0, "oldest turns pruned"
+
+    def test_payloads_and_turns_keep_the_same_days(self, db):
+        """Whichever reaches further back goes first: a window of payloads ending where the turns' starts
+        would show a run's requests without its turns, or the other way round."""
+        _insert_requests(db, 100, start=0, step=2.0)
+        _insert_turns(db, 100, start=1, step=2.0)
+        res = db.enforce_retention()
+
+        assert res["payloads_deleted"] and res["turns_deleted"], f"fixture: not both pruned: {res}"
+        payload_from, (turn_from, _) = _oldest_payload_ts(db), _turns_ts_range(db)
+        # one batch apart at most: 20 rows, 2 ms each
+        assert abs(payload_from - turn_from) <= 2 * db._retention_batch * 2.0, (payload_from, turn_from)
 
 
 class TestBudget:
@@ -137,37 +174,38 @@ class TestBudget:
         db._retention_batch = 5
         _insert_requests(db, 300)
         stats = db.enforce_retention(budget=0.05)
-        assert stats["stripped"] == db._retention_batch, f"not exactly one slice: {stats}"
+        assert stats["payloads_deleted"] == db._retention_batch, f"not exactly one slice: {stats}"
         assert db._pruning is True, "not finished -> still armed, continues next call"
 
 
 class TestManualPrune:
     def test_force_prune_then_vacuum_shrinks_and_keeps_cost(self, db):
-        _insert_requests(db, 120)
+        _insert_requests(db, 150)
+        db._get_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")  # the rows into the file, which then holds them all
         before = os.path.getsize(db.db_path)
         db.enforce_retention(force=True)
         db.vacuum()
         after = os.path.getsize(db.db_path)
         assert after < before * 0.7, f"file did not shrink: {before} -> {after}"
-        assert _count_requests(db) == 120, "cost rows preserved through manual prune"
+        assert _count(db, "llm_requests") == 150, "cost rows preserved through manual prune"
 
     @pytest.mark.asyncio
-    async def test_prune_endpoint_strips_reports_and_keeps_cost(self, db, monkeypatch):
+    async def test_prune_endpoint_deletes_reports_and_keeps_cost(self, db, monkeypatch):
         import plugins.message_debugger.web_endpoints as endpoints
         from plugins.message_debugger.web_endpoints import MessageDebuggerWebFactory
 
         # an admin asks; that only one may is test_plugin_message_debugger_access.py
         monkeypatch.setattr(endpoints, "require_everything", lambda *args: None)
 
-        _insert_requests(db, 120)
+        _insert_requests(db, 150)
         factory = MessageDebuggerWebFactory(db=db)
         res = await factory.prune(None, vacuum=True)
 
-        assert res["stripped"] > 0
+        assert res["payloads_deleted"] > 0
         assert res["vacuumed"] is True
         assert res["freed_mb"] > 0
         assert "size_after_mb" in res
-        assert _count_requests(db) == 120
+        assert _count(db, "llm_requests") == 150
 
     @pytest.mark.asyncio
     async def test_prune_and_clear_run_on_the_writer_thread(self, db, monkeypatch):
@@ -189,10 +227,11 @@ class TestManualPrune:
                 return real()
             monkeypatch.setattr(db, name, spy)
 
-        _insert_requests(db, 120)
+        _insert_requests(db, 150)
         factory = MessageDebuggerWebFactory(db=db)
         assert (await factory.prune(None, vacuum=True))["vacuumed"] is True
-        assert (await factory.clear_all(None))["requests_deleted"] == 120
+        assert (await factory.clear_all(None))["requests_deleted"] == 150
+        assert _count(db, "llm_payloads") == 0, "a clear left the payloads"
         assert ran_on == {"vacuum": "msgdbg-writer", "clear_all": "msgdbg-writer"}
 
     def test_a_failure_on_the_writer_reaches_the_caller(self, db):
@@ -225,10 +264,8 @@ class TestDisabled:
         d = MessageDebuggerDB(tmp_path / "nocap.db", wal_mode=True, max_size_mb=0)
         try:
             d._retention_check_interval = 5
-            _insert_requests(d, 120)
-            assert d._get_conn().execute(
-                "SELECT COUNT(*) FROM llm_requests"
-            ).fetchone()[0] == 120
+            _insert_requests(d, 150)
+            assert _count(d, "llm_requests") == _count(d, "llm_payloads") == 150
         finally:
             d.close()
 
@@ -247,4 +284,4 @@ class TestAutoRetentionBounds:
             db.enforce_retention()
         used = db._used_bytes(db._get_conn())
         assert used < db._max_size_bytes * 2, f"data not bounded: {used}"
-        assert _count_requests(db) > 0  # cost rows retained
+        assert _count(db, "llm_requests") == 600, "a cost row went while content was left"

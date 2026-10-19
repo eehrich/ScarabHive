@@ -380,7 +380,9 @@ function drawRequest(entry) {
     ${entry.error ? section('Error', entry.error, html`<pre class="pk-code md-error-text">${entry.error}</pre>`) : ''}
     ${entry.usage_json ? section('Usage', entry.usage_json, jsonView(entry.usage_json)) : ''}
     ${entry.payload_json ? section('Request payload', entry.payload_json, jsonView(entry.payload_json)) : ''}
-    ${entry.response_json ? section('Response data', entry.response_json, jsonView(entry.response_json)) : ''}`);
+    ${entry.response_json ? section('Response data', entry.response_json, jsonView(entry.response_json)) : ''}
+    ${!entry.payload_json && !entry.response_json
+      && html`<p class="pk-muted">No payload: deleted by the size cap, or never captured. The costs stay.</p>`}`);
 }
 
 function markSelected() {
@@ -443,7 +445,7 @@ async function copy(value) {
 
 async function prune() {
   const asked = await confirm(
-    'Strip the oldest raw payloads and drop the oldest turn snapshots until the database is well below its size cap, '
+    'Delete the oldest raw payloads and turn snapshots until the database is well below its size cap, '
     + 'then compact the file. Cost data is kept. On a large database this takes minutes.',
     { title: 'Prune the database', confirmLabel: 'Prune' });
   if (!asked) return;
@@ -460,7 +462,7 @@ async function prune() {
   }
   loadStats();
   startOver(Object.keys(lists), { fresh: true });
-  const done = [`Stripped ${number(result.stripped)} payloads`, `dropped ${number(result.turns_deleted)} turns`];
+  const done = [`Deleted ${number(result.payloads_deleted)} payloads`, `${number(result.turns_deleted)} turns`];
   if (result.requests_deleted) done.push(`deleted ${number(result.requests_deleted)} old cost rows`);
   const file = result.vacuum_error ? `Compacting the file failed: ${result.vacuum_error}`
     : result.vacuumed ? `The file was compacted: ${number(result.freed_mb)} MB freed, ${number(result.size_after_mb)} MB now.`

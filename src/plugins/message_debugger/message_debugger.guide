@@ -214,11 +214,23 @@ The database keeps its data below @{tt}max_db_size_mb@{utt} (5120 MB).
 Every 200 writes it measures the data; above about 90 % it works down to
 about 75 %, in slices of about a second:
 
-@{bullet}the oldest raw payloads and responses are emptied -- the row with
+@{bullet}the oldest raw payloads and responses and the oldest turns are
+deleted, by age, so both keep the same days -- the request row with
 provider, model, usage, request id and times stays, so cost reports keep
-working;
-@{bullet}the oldest turns are deleted;
+working (a request whose payload went opens without it);
 @{bullet}only when nothing else is left, the oldest request rows go.
+
+Payloads, responses and the messages of a turn are stored compressed (about
+a third of their size). A payload lives in its own table, apart from its
+request row: deleted, it frees its space completely. (Until October 2026 it
+was emptied inside the request row, which kept its space -- on a busy server
+a third of the cap, growing with every pruned row, until the cap held two
+days. The first start with the new layout moves an old file over, on the
+writer, in a minute or two; captures wait in the queue meanwhile. That
+move is one-way: code from before can neither write to the file nor
+start on it afterwards, so every process on it restarts together. If the
+move fails, nothing changes, the retention strips the old payloads where
+they are until a start succeeds, and writer-costs waits.)
 
 The file stops growing at its largest size and reuses the freed space; it
 does not shrink. @{b}Prune and reclaim disk space@{ub} in the panel runs
@@ -299,4 +311,13 @@ The settings are read when the server starts. The database is one SQLite
 file with its @{tt}-wal@{utt} and @{tt}-shm@{utt} files beside it. Other
 tools, cost reports among them, read it directly: clearing it deletes
 their history too.
+
+A request's cost row is in @{tt}llm_requests@{utt}; its payload and response
+are in @{tt}llm_payloads@{utt} (@{tt}payload_z@{utt}, @{tt}response_z@{utt},
+same id), a turn's messages in @{tt}turns.messages_z@{utt} -- all three
+compressed: a LIKE on them finds nothing. A reader registers the function
+that reads them, @{tt}register_reader_functions(conn)@{utt} from
+@{tt}plugins.message_debugger.database@{utt}, and matches on
+@{tt}debugger_text(p.payload_z)@{utt}, joined by
+@{tt}JOIN llm_payloads p ON p.id = r.id@{utt}.
 @endnode

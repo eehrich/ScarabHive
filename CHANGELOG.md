@@ -150,6 +150,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The message debugger's size cap held two days of captures and kept
+  every request row back to June: retention emptied a payload inside its
+  request row, and the row kept its page -- on the server 590k rows in
+  389k pages, 1.3 GB empty inside them, counted against the 5 GB cap and
+  growing with every pruned row. Payloads now live in their own table
+  `llm_payloads` (id = `llm_requests.id`), deleted whole by age together
+  with the turns, so their space comes free; payloads, responses and a
+  turn's messages are stored zlib-compressed (about a third), in columns
+  named for it (`payload_z`, `response_z`, `turns.messages_z`: a query of
+  an old name fails instead of finding only old rows). The first start
+  moves an old file over on the writer (a minute or two, captures wait in
+  the queue); the panel's prune then gives the freed space back to the
+  disk. The move is one-way: code from before can neither write to the
+  file nor start on it, so every process on it restarts together. A move
+  that fails changes nothing: the retention strips the old payloads in
+  place until a start succeeds, and takes no cost row while content is
+  left; the cost capture waits for the move, and writer-costs, where it
+  needs a payload, says so and stops. The WAL is
+  cut back after a checkpoint (`journal_size_limit`; it had stayed at
+  2.1 GB). `llm_requests` keeps every cost column; a reader of payloads
+  joins `llm_payloads` and reads them with `debugger_text()`
+  (`register_reader_functions`) -- writer-costs' resolvers do. A request
+  opened without its payload says why.
 - A state machine run's lease is renewed from a thread of its own: a `call`
   function holding the event loop for more than ~40 seconds let it run
   out, so a sweep marked the working run interrupted and another process
