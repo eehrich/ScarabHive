@@ -7,14 +7,14 @@ TTSResult carries -- no mp3 decode dependency.
 A voice is an id of the account (``TTSVoice.name`` or the model entry's
 ``voice``). A clone (``TTSVoice.reference_audio``) is an Instant Voice Clone:
 the sample is uploaded once (``POST /v1/voices/add``) and the voice id it gets
-is kept in a cache file keyed by the sample's digest, so a book of a hundred
-scenes creates one voice, not a hundred -- each one would take a slot of the
+is kept in a cache file keyed by account and sample, so a narration of a hundred
+segments creates one voice, not a hundred -- each one would take a slot of the
 account. A cached id the account no longer has (deleted by hand) is dropped
 and the clone made again, once.
 
 ``eleven_v4`` reads IPA in slashes inside a German line (``/kvɔʁk/``) -- the
-same sound every time, where respelled letters came out worse (ScarabAnimator,
-measured by ear 2026-10-03). ``supports_inline_ipa`` tells a caller it may
+same sound every time, where respelled letters came out worse (by ear,
+2026-10-03). ``supports_inline_ipa`` tells a caller it may
 send such entries of a pronunciation dictionary.
 """
 
@@ -75,8 +75,8 @@ class ElevenLabsTTSClient(TTSClient):
 
     supports_voice_cloning = True
     #: No field for a director's note: v4 takes its direction inline, as audio
-    #: tags in the text. language/seed are not sent either -- the writer's
-    #: gemini_tts.system_prompt would otherwise reach a model that cannot read it.
+    #: tags in the text. language/seed are not sent either -- a caller's
+    #: narrator prompt would otherwise reach a model that cannot read it.
     supports_style_prompt = False
 
     def __init__(
@@ -156,7 +156,7 @@ class ElevenLabsTTSClient(TTSClient):
         url = f"{self.base_url}/v1/voices/add"
         file_name, content_type = _upload_name(voice.reference_audio)
         data = {"name": f"{voice.name} ({key.split(':')[1][:8]})",
-                "description": "writer_audio clone, made by the elevenlabs TTS client",
+                "description": "clone made by the elevenlabs TTS client",
                 "remove_background_noise": "false"}
         async with httpx.AsyncClient(timeout=self.request_timeout, verify=httpx_verify()) as client:
             response = await client.post(

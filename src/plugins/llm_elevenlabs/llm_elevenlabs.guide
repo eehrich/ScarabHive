@@ -58,9 +58,9 @@ id that does not exist is an error, never a clone.
 @{tt}eleven_v4@{utt} reads IPA in slashes inside a line, also in German
 text: "Er traf /ʃɪˈvɔn/." The client says so with
 @{tt}supports_inline_ipa@{utt} (true for model ids starting with
-@{tt}eleven_v4@{utt}). writer_audio reads it and replaces the names of a
-book's pronunciation dictionary whose spoken form is IPA; respelled entries
-are not sent.
+@{tt}eleven_v4@{utt}). A caller with a pronunciation dictionary can read it
+and send only the entries whose spoken form is IPA; respelled entries tend to
+come out worse.
 @endnode
 
 @node errors "Hooks, cost and errors"

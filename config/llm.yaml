@@ -634,13 +634,11 @@ llm_system:
       max_retries: 3
 
     # ElevenLabs (plugin llm_elevenlabs). voice = a voice id of the account;
-    # none set here, so a run names one (--tts-voice <id>) or clones ours
-    # (--tts-clone sebastian). eleven_v4 reads IPA entries of a book's
-    # pronunciation dictionary ("/kvɔʁk/").
+    # none set here, so a caller names one or passes a reference sample to
+    # clone. eleven_v4 reads IPA in slashes ("/kvɔʁk/"). Key: ELEVENLABS_API_KEY.
     elevenlabs-v4:
       provider: elevenlabs
       model: eleven_v4
-      api_key: "${SCARAB_ELEVENLABS_API_KEY}"
       request_timeout: 300
       max_retries: 3
 

@@ -6,7 +6,7 @@ ElevenLabs as a TTS provider of the LLM registry. An LLM provider plugin: no too
   account; a reference sample becomes an Instant Voice Clone, uploaded once and remembered by the sample's digest
   (`data/cache/elevenlabs_clones.json`).
 - `eleven_v4` reads IPA in slashes inside a line (`/kvɔʁk/`); the client says so (`supports_inline_ipa`), and
-  writer_audio then sends a book's IPA pronunciation entries along.
+  a caller with a pronunciation dictionary can send the entries whose spoken form is IPA.
 
 Nothing to enable: name the provider in a TTS model entry of `config/llm.yaml` and point a profile at it. The key is
 the entry's `api_key`, else `ELEVENLABS_API_KEY`.
