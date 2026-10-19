@@ -245,14 +245,16 @@ llm_system:
 
     # Newest DeepSeek Flash (alias). Used by the `think` profile and the
     # writer thinking profile.
-    # Pinned to the two cheapest fp8 providers (docs/llm_catalog.md).
+    # Pinned to the two cheapest fp8 providers with the full 1M window
+    # (docs/llm_catalog.md). Full endpoint slugs: a bare "deepinfra" also
+    # matches its priority tier, at 1.5x the price.
     openrouter-deepseek-latest-flash:
       extends: openrouter-deepseek
       model: ~deepseek/deepseek-flash-latest
       provider_routing:
         order:
-        - deepinfra
-        - streamlake
+        - deepinfra/fp8
+        - morph/fp8
         quantizations:
         - fp8
         allow_fallbacks: false

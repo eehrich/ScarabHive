@@ -491,9 +491,9 @@ deepseek/deepseek-v4-flash:
 # Values = DeepInfra fp8, the first provider in our provider_routing (not the
 # alias list price).
 "~deepseek/deepseek-flash-latest":
-  input: 0.14
-  output: 0.42
-  cached_input: 0.0042
+  input: 0.098
+  output: 0.294
+  cached_input: 0.003
 
 # DeepSeek V4 Pro 0813 via OpenRouter (no latest alias). Average over all
 # endpoints; order pins deepseek/alibaba (0.66-0.73 in, 1.98-2.18 out).
