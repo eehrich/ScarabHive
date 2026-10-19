@@ -1,6 +1,7 @@
 """Tests for the ElevenLabs TTS client: wire shape, clone once, a lost clone made again."""
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -34,15 +35,19 @@ class _Server:
         self.calls: list[tuple[str, dict]] = []
         self.known = set(known)
         self.made = 0
+        self.upload_seconds = 0.0
+        self.speak_seconds = 0.0
 
     async def post(self, client, url, **kwargs):
         self.calls.append((url, kwargs))
         if url.endswith("/v1/voices/add"):
+            await asyncio.sleep(self.upload_seconds)     # room for a second run to look meanwhile
             self.made += 1
             voice_id = f"clone{self.made}"
             self.known.add(voice_id)
             return _response(body={"voice_id": voice_id})
         voice_id = url.split("/v1/text-to-speech/")[1].split("?")[0]
+        await asyncio.sleep(self.speak_seconds)
         return _response() if voice_id in self.known else _response(404, b'{"detail":"voice_not_found"}')
 
     def patch(self):
@@ -142,3 +147,30 @@ async def test_another_account_gets_its_own_clone(tmp_path):
         await _client(tmp_path).synthesize("Drei.", voice=voice)
     assert server.made == 2
     assert sorted(json.loads((tmp_path / "clones.json").read_text()).values()) == ["clone1", "clone2"]
+
+
+@pytest.mark.asyncio
+async def test_two_runs_cloning_the_same_new_voice_make_one_clone(tmp_path):
+    server = _Server()
+    server.upload_seconds = 0.2
+    voice = TTSVoice(name="clone:alex", reference_audio=SAMPLE)
+    with server.patch():
+        results = await asyncio.gather(_client(tmp_path).synthesize("Eins.", voice=voice),
+                                       _client(tmp_path).synthesize("Zwei.", voice=voice))
+    assert server.made == 1
+    assert [r.metadata["voice_id"] for r in results] == ["clone1", "clone1"]
+
+
+@pytest.mark.asyncio
+async def test_two_runs_finding_the_clone_gone_make_one_new_clone(tmp_path):
+    server = _Server()
+    voice = TTSVoice(name="clone:alex", reference_audio=SAMPLE)
+    with server.patch():
+        await _client(tmp_path).synthesize("Eins.", voice=voice)
+        server.known.discard("clone1")                               # deleted by hand
+        server.speak_seconds = 0.2                                   # both runs meet the 404
+        results = await asyncio.gather(_client(tmp_path).synthesize("Zwei.", voice=voice),
+                                       _client(tmp_path).synthesize("Drei.", voice=voice))
+    assert server.made == 2
+    assert [r.metadata["voice_id"] for r in results] == ["clone2", "clone2"]
+    assert list(json.loads((tmp_path / "clones.json").read_text()).values()) == ["clone2"]

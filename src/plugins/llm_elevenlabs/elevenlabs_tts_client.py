@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 import httpx
+from filelock import AsyncFileLock
 
 from agent_system.llm.tls import httpx_verify
 from agent_system.llm.tts import (
@@ -123,7 +124,7 @@ class ElevenLabsTTSClient(TTSClient):
 
     def _store(self, key: str, voice_id: Optional[str]) -> None:
         """Write through a temp file: a run reading it mid-write must not see
-        `{}` and clone again (one account slot per clone)."""
+        `{}` and clone again (one account slot per clone). Only under the clone lock."""
         cache = self._cached()
         if voice_id:
             cache[key] = voice_id
@@ -147,12 +148,28 @@ class ElevenLabsTTSClient(TTSClient):
         account = hashlib.sha256(self.api_key.encode()).hexdigest()[:12]
         return f"{account}:{hashlib.sha256(voice.reference_audio).hexdigest()}"
 
-    async def _clone_id(self, voice: TTSVoice) -> str:
-        """The account's voice id for this sample; uploads it the first time."""
+    async def _clone_id(self, voice: TTSVoice, gone: Optional[str] = None) -> str:
+        """The account's voice id for this sample; uploads it the first time.
+
+        Look-up, upload and store run under one lock across processes: two
+        runs narrating with the same new voice would otherwise both find no
+        entry and each take an account slot. ``gone`` is an id the account
+        no longer has -- dropped only if it is still the cached one, so a run
+        that got there second takes the clone the first one just made.
+        """
         key = self._cache_key(voice)
-        known = self._cached().get(key)
-        if known:
-            return known
+        cache_path = self._cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        async with AsyncFileLock(str(cache_path) + ".lock"):
+            known = self._cached().get(key)
+            if known and known == gone:
+                self._store(key, None)
+                known = None
+            if known:
+                return known
+            return await self._upload_clone(voice, key)
+
+    async def _upload_clone(self, voice: TTSVoice, key: str) -> str:
         url = f"{self.base_url}/v1/voices/add"
         file_name, content_type = _upload_name(voice.reference_audio)
         data = {"name": f"{voice.name} ({key.split(':')[1][:8]})",
@@ -184,8 +201,9 @@ class ElevenLabsTTSClient(TTSClient):
     ) -> TTSResult:
         self.check_voice(voice)
         cloned = voice is not None and voice.reference_audio is not None
+        lost: Optional[str] = None
         for fresh_clone in (False, True):
-            voice_id = await self._clone_id(voice) if cloned else (
+            voice_id = await self._clone_id(voice, lost) if cloned else (
                 (voice.name if voice else None) or self.default_voice)
             try:
                 return await self._speak(text, voice_id, voice.name if cloned else voice_id)
@@ -197,7 +215,7 @@ class ElevenLabsTTSClient(TTSClient):
                 if not (cloned and gone and not fresh_clone):
                     raise
                 logger.warning("ElevenLabs: cached clone %s is gone -- cloning again", voice_id)
-                self._store(self._cache_key(voice), None)
+                lost = voice_id
         raise AssertionError("unreachable")
 
     async def _speak(self, text: str, voice_id: str, label: str) -> TTSResult:
