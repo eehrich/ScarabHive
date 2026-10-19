@@ -4,7 +4,9 @@ Driven through the real routes on a real SessionManager on disk, with the real
 configuration: a session's group comes from its agent's merged config, the
 folders from the plugins' own plugin.toml under the configured roots, and a
 field that reached only the session file but not the index would show in no
-list.
+list. The roots are this test's own (two plugins declaring a folder each), and
+its agents public ones: the public export has no private plugin, and what the
+private plugins declare is tested with them.
 """
 from __future__ import annotations
 
@@ -21,19 +23,30 @@ from agent_system.auth.dependencies import get_optional_user
 from agent_system.config.settings import get_tool_server_config, load_settings
 from agent_system.services.session_manager import SessionManager
 
-WRITER_AGENT = "v6_story_coordinator"  # an agent of the group "Writer sub-agents"
-CHAT_AGENT = "coder"                   # one of "Development", which no plugin's folder claims
-WRITER_FOLDER = "writer_pipeline_v4"   # the plugin declaring the writer's folder
-VIDEO_FOLDER = "scarab_videos"         # the plugin declaring the video folder
+FILED_AGENT = "workflow_agent"       # an agent of the group "Automation", which FILED_FOLDER claims
+FILED_GROUP = "Automation"
+CHAT_AGENT = "sysadmin_agent"         # one of "Operations", which no plugin's folder claims
+CHAT_GROUP = "Operations"
+FILED_FOLDER = "auto_plugin"         # the plugin declaring the folder of FILED_GROUP
+VIDEO_FOLDER = "video_plugin"         # the plugin declaring the video folder
+MANIFESTS = {
+    FILED_FOLDER: f'[session_folder]\nname = "Auto"\nicon = "zap"\ngroups = ["{FILED_GROUP}"]\n',
+    VIDEO_FOLDER: '[session_folder]\nname = "Video"\nicon = "clapperboard"\ngroups = ["Video"]\n',
+    "no_folder": '[plugin]\nname = "no_folder"\n',
+}
 
 
 @pytest.fixture
 def setup(tmp_path):
-    config = load_settings()
-    assert get_tool_server_config(WRITER_AGENT, config).metadata.category == "Writer sub-agents", \
-        "fixture: the writer agent's group moved -- pick another"
-    assert get_tool_server_config(CHAT_AGENT, config).metadata.category == "Development", \
+    config = load_settings().model_copy(deep=True)  # the settings are cached: their roots stay as they are
+    assert get_tool_server_config(FILED_AGENT, config).metadata.category == FILED_GROUP, \
+        "fixture: the agent's group moved -- pick another"
+    assert get_tool_server_config(CHAT_AGENT, config).metadata.category == CHAT_GROUP, \
         "fixture: the chat agent's group moved -- pick another"
+    for name, body in MANIFESTS.items():
+        (tmp_path / "plugins" / name).mkdir(parents=True)
+        (tmp_path / "plugins" / name / "plugin.toml").write_text(body, encoding="utf-8")
+    config.plugins.plugin_dirs = [str(tmp_path / "plugins")]
     manager = SessionManager(storage_path=tmp_path / "sessions")
     app = FastAPI()
     app.include_router(session_router)
@@ -53,14 +66,14 @@ def _shown(client):
 
 async def test_a_session_files_by_its_agent_s_group_or_the_one_its_starter_stamped(setup):
     client, manager, _ = setup
-    writer = await manager.create_session("anonymous", title="w", agent_name=WRITER_AGENT)
+    writer = await manager.create_session("anonymous", title="w", agent_name=FILED_AGENT)
     chat = await manager.create_session("anonymous", title="c", agent_name=CHAT_AGENT)
     # stamped by its starter, of an agent whose own group is another -- and looked up, the writer session has it
-    run = await manager.create_session("anonymous", title="r", agent_name=WRITER_AGENT)
+    run = await manager.create_session("anonymous", title="r", agent_name=FILED_AGENT)
     await manager.update_session_metadata("anonymous", run["session_id"], {"category": "Video"})
     listed = _listed(client)
-    assert listed[writer["session_id"]]["category"] == "Writer sub-agents"
-    assert listed[chat["session_id"]]["category"] == "Development"
+    assert listed[writer["session_id"]]["category"] == FILED_GROUP
+    assert listed[chat["session_id"]]["category"] == CHAT_GROUP
     assert listed[run["session_id"]]["category"] == "Video", "the starter's stamp wins over the agent's group"
     assert all(s["folder"] is None for s in listed.values()), "nobody chose a folder yet"
 
@@ -68,12 +81,12 @@ async def test_a_session_files_by_its_agent_s_group_or_the_one_its_starter_stamp
 def test_the_folders_are_the_ones_the_plugins_declare_none_of_the_core(setup):
     client, _, _ = setup
     shown = _shown(client)
-    assert "Writer sub-agents" in shown[WRITER_FOLDER]["groups"], "writer_pipeline_v4's plugin.toml declares it"
-    assert shown[VIDEO_FOLDER]["groups"] == ["Video"], "scarab_videos' plugin.toml declares it"
-    assert not any("Development" in folder["groups"] for folder in shown.values()), \
-        "a chat with an assistant stays out of the folders"
-    assert set(shown) == {folder.id for folder in declared_folders(load_settings().plugins.plugin_dirs)}, \
-        "no folder but the declared ones before the user makes one"
+    assert shown[FILED_FOLDER]["groups"] == [FILED_GROUP] and shown[FILED_FOLDER]["icon"] == "zap", \
+        "its plugin.toml declares it"
+    assert shown[VIDEO_FOLDER]["groups"] == ["Video"], "its plugin.toml declares it"
+    assert not any(CHAT_GROUP in folder["groups"] for folder in shown.values()), \
+        "a group no plugin claims stays out of the folders"
+    assert set(shown) == {FILED_FOLDER, VIDEO_FOLDER}, "no folder but the declared ones before the user makes one"
 
 
 async def test_moving_a_session_shows_in_the_list_at_once_and_keeps_its_place_in_time(setup):
@@ -103,14 +116,14 @@ async def test_tags_set_on_a_session_reach_the_list_without_another_save(setup):
 def test_a_user_keeps_their_own_changes_and_deletions_and_gets_what_they_left_from_the_plugin(setup):
     client, _, root = setup
     shown = _shown(client)
-    video, writer = shown[VIDEO_FOLDER], shown[WRITER_FOLDER]
+    video, writer = shown[VIDEO_FOLDER], shown[FILED_FOLDER]
     mine = {"id": "proj", "name": " Project ", "icon": "rocket", "groups": []}
     renamed = {**writer, "name": "Books", "icon": "star"}
     answer = client.put("/api/sessions/folders", json={"folders": [renamed, mine]})  # the video folder left out
     assert answer.status_code == 200
     shown = _shown(client)
     assert VIDEO_FOLDER not in shown, "a declared folder the user deleted stays deleted"
-    assert shown[WRITER_FOLDER]["name"] == "Books" and shown["proj"]["name"] == "Project"
+    assert shown[FILED_FOLDER]["name"] == "Books" and shown["proj"]["name"] == "Project"
     stored = json.loads((root / "anonymous" / ".folders.json").read_text(encoding="utf-8"))
     assert stored["removed"] == [VIDEO_FOLDER], "a dot file: the index rebuild reads no session from it"
     # a declared folder left as it is is not copied: a plugin that changes its declaration reaches the user
