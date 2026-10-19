@@ -38,19 +38,19 @@ plugins:
           - sub-agent
 
     debate_panel_participant_gpt:
+      metadata:
+        category: "Collaboration"
       type: debate_panel_participant_flash
       enabled: true
       agent_config:
         llm_profile: [or-gpt-mini]
         llm_profile_advanced: []
-      metadata:
-        category: "Collaboration"
 
     debate_panel_participant_chat:
+      metadata:
+        category: "Collaboration"
       type: debate_panel_participant_flash
       enabled: true
       agent_config:
         llm_profile: [or-deepseek-flash, chat]
         llm_profile_advanced: []
-      metadata:
-        category: "Collaboration"
