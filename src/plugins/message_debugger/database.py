@@ -352,7 +352,7 @@ class MessageDebuggerDB:
             return
         try:
             conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
-        except sqlite3.OperationalError as e:
+        except sqlite3.OperationalError:
             if new not in MessageDebuggerDB._columns(conn, table):
                 raise
 

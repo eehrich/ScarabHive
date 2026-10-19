@@ -8,7 +8,6 @@ boundary behind the engine is FakeBackend. A "crash" is a real ``RunManager.shut
 from __future__ import annotations
 
 import asyncio
-import os
 
 import pytest
 

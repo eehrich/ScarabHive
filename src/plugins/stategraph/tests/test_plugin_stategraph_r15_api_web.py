@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from agent_system.config.models import AgentSystemConfig
 from plugins.stategraph.engine.backend import _redact

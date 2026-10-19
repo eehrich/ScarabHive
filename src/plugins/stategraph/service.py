@@ -21,7 +21,7 @@ from .engine.backend import NoBackend, ScarabHiveBackend, make_config_check
 from .engine.debugger import Breakpoint, UnknownState, Watchpoint, parse_points
 from .engine.journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore, resumable_failure, utc_now
 from .engine.machine import CompileError
-from .engine.runner import (LEASE_SECONDS, LIVE_OBJECTS, REMOTE_CONTROLS, RunManager, ended_without_outcome,
+from .engine.runner import (LEASE_SECONDS, REMOTE_CONTROLS, RunManager, ended_without_outcome,
                             NotRewindable, failed_transiently, key_steps, rewound_rows)
 from .kinds import describe_kinds
 from .model.loader import MachineTree, load_snapshot
