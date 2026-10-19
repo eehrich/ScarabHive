@@ -184,6 +184,11 @@ source .venv/Scripts/activate
 - **No test-only production code**: Keep tests separate from implementation
 - **Design decisions**: You are the architect—make decisions, escalate only if ambiguous/infeasible/against architecture
 - **Commit messages**: Clear, concise, reference issue/ticket if applicable. Do not commit without approval.
+- **Public files name nothing private**: the core, `src/plugins/`, `tests/`, `docs/`, CHANGELOG and READMEs are
+  published with their history -- a line a commit adds stays public after a later commit removes it. There: no
+  plugin of a further root, no private agent or workflow by name ("a plugin", "a caller"), no ticket, book, run or
+  session id, no host, local path or person, no cost of an installation. A test builds its own stand-ins; a note
+  that needs those names belongs on the private side.
 
 ## Testing Strategy
 

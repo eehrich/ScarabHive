@@ -151,6 +151,9 @@ cfg = getattr(server_config, "config", None) or {}              # nested config:
 - **Prompts are read from disk on every render** — an edit takes effect
   immediately, including in runs already in flight.
 - **No provider tables** (`if provider == "google"`, alias dicts) in LLM plugins.
+- **A plugin in `src/plugins/` is published, with its history.** Its code, comments, tests, guide and README
+  name no plugin of a further root, no private agent, workflow, ticket, run or session, no host, local path or
+  cost of an installation -- "a caller", "a plugin" instead. A line once committed stays public.
 
 ## Validate before testing
 
