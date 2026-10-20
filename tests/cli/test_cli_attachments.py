@@ -158,7 +158,7 @@ def booted(tmp_path, monkeypatch):
         return Agent()
 
     async def fake_request(agent, request, session_id, llm_override=None,
-                           llm_profile_info=None):
+                           llm_profile_info=None, request_id=None):
         _sent.append(request)
         return {"summary": "done", "calls": []}
 
@@ -618,7 +618,7 @@ class TestAFinishedRunAlwaysPrintsItsResult:
 
     def test_agent_run(self, booted, monkeypatch, capsys):
         async def fake_request(agent, request, session_id, llm_override=None,
-                               llm_profile_info=None):
+                               llm_profile_info=None, request_id=None):
             _sent.append(request)
             # No summary: agent-run then prints the whole result as JSON.
             return {"summary": "", "calls": [{"result": self.SET_RESULT}]}

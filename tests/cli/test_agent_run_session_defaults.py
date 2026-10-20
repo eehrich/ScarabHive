@@ -79,7 +79,7 @@ def run_env(tmp_path, monkeypatch):
         return _DummyAgent(agent_name, cfg.plugins.servers[agent_name].agent_config)
 
     async def fake_request(agent, request, session_id, llm_override=None,
-                           llm_profile_info=None):
+                           llm_profile_info=None, request_id=None):
         seen["profile_info"] = llm_profile_info
         return {"summary": "done", "calls": []}
 
@@ -297,7 +297,7 @@ class TestSessionPresence:
         woken = []
         monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth: woken.append(session_id) or (0, 0.0))
 
-        async def run(agent, request, session_id, llm_override=None, llm_profile_info=None):
+        async def run(agent, request, session_id, llm_override=None, llm_profile_info=None, request_id=None):
             # holds and lets go of the session as the agent loop does, never told of the stop
             assert presence.hold(session_id, "cli_user", "agent", run="r-run")
             assert presence.notify(session_id, "cli_user")[0] == "delivered_next_step", "fixture: not held"

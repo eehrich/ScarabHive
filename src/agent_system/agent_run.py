@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import re
 import sys
 from typing import TYPE_CHECKING
 
@@ -113,7 +114,8 @@ async def create_agent(config, registry, agent_name: str, session_service=None):
     return await create_and_register_agent(config, registry, agent_name, session_service=session_service)
 
 
-async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_id: str, llm_override=None, llm_profile_info: str | None = None) -> dict:
+async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_id: str, llm_override=None,
+                            llm_profile_info: str | None = None, request_id: str | None = None) -> dict:
     """Execute a request with the agent and return the result.
 
     Args:
@@ -122,10 +124,11 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
         session_id: Session ID for conversation history
         llm_override: Optional LLM client to override agent's default
         llm_profile_info: Optional profile info string for status display
+        request_id: The run's request id (default: a new short id)
     """
     from .utils.id import short_id
 
-    request_id = short_id()
+    request_id = request_id or short_id()
     try:
         # Log request info (handle both string and ChatMessage)
         request_preview = request if isinstance(request, str) else f"<multimodal message with {len(request.content)} parts>"
@@ -155,10 +158,19 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
         release_request_user_tree(request_id)
 
 
+def _request_id(value: str) -> str:
+    """A caller's request id: no '_' -- the run's sub-requests are named "<id>_<n>", and a root id that
+    held one would be taken for a sub-request of another."""
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", value):
+        raise argparse.ArgumentTypeError("letters, digits and '-' only, at most 64")
+    return value
+
+
 async def main_async(request: str, agent_name: str | None = None, llm_profile: str | None = None, show_status: bool = True,
                      session_id: str | None = None, session_user: str = "cli_user",
                      list_sessions: str | None = None, session_title: str | None = None,
-                     attachments: list[str] | None = None, force: bool = False) -> None:
+                     attachments: list[str] | None = None, force: bool = False,
+                     request_id: str | None = None) -> None:
     """Async main function to run agent request with session support.
 
     Args:
@@ -173,6 +185,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         session_title: Title for new session (optional)
         attachments: Files to attach; the kind of each is detected, not declared
         force: Run the session even though another process holds it
+        request_id: The run's request id (optional; default a new short id)
     """
     presence = None
     stopped = False   # Ctrl-C: its user stopped the run (core/session_presence/)
@@ -337,7 +350,8 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         # Execute the request
         logger.info("Executing request...")
         try:
-            result = await run_agent_request(agent, task_input, actual_session_id, llm_override, llm_profile_info)
+            result = await run_agent_request(agent, task_input, actual_session_id, llm_override, llm_profile_info,
+                                             request_id=request_id)
             # Check if agent was cancelled and print message
             if result.get("cancelled", False):
                 say_cancelled()
@@ -569,6 +583,15 @@ Examples:
     )
 
     parser.add_argument(
+        "--request-id",
+        dest="request_id",
+        type=_request_id,
+        default=None,
+        help="Request id for this run (letters, digits, '-'; default: a new one) -- "
+             "lets a caller find the run's LLM calls again"
+    )
+
+    parser.add_argument(
         "--images", "--audio", "--text", "--files",
         dest="attachments",
         nargs="+",
@@ -619,7 +642,8 @@ Examples:
             list_sessions=getattr(args, "list_sessions", None),
             session_title=getattr(args, "session_title", None),
             attachments=getattr(args, "attachments", None),
-            force=getattr(args, "force", False)
+            force=getattr(args, "force", False),
+            request_id=getattr(args, "request_id", None),
         ))
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
