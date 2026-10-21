@@ -88,6 +88,7 @@
       <label class="pk-radio"><input type="radio" name="r"> Radio</label>
       <label class="pk-switch"><input type="checkbox" role="switch" checked> Switch</label>
     </div>
+    <div id="kitIconPicker"></div>
     <div class="pk-form-actions"><button type="button" class="pk-btn">Cancel</button><button type="button" class="pk-btn pk-btn--primary">Save</button></div>
   </form>
 </section>
@@ -383,7 +384,10 @@ keeps its line breaks.</div>
 {% block scripts %}
 <script type="module" src="/static/kit/guide.js"></script>
 <script type="module">
-  import { alert, confirm, prompt, toast, jsonView, yamlCode, render, setTheme } from '/static/kit/panel-kit.js';
+  import { alert, confirm, prompt, toast, jsonView, yamlCode, render, setTheme, iconPicker } from '/static/kit/panel-kit.js';
+
+  // iconPicker: radios, the form's value is the pick
+  render(document.getElementById('kitIconPicker'), iconPicker('icon', ['folder', 'scale', 'landmark', 'receipt', 'handshake', 'megaphone', 'calculator', 'building-2', 'piggy-bank', 'euro', 'presentation', 'rocket'], 'scale'));
 
   // setTheme: remembered in the cookie, and in the shell every panel follows
   document.querySelectorAll('[data-theme-choice]').forEach((button) => {

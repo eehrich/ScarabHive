@@ -210,6 +210,17 @@ export function icon(name, { size = '', label = '' } = {}) {
   return new SafeHtml(`<svg class="pk-icon${cls}"${aria}><use href="/static/kit/icons.svg#${escapeHtml(name)}"/></svg>`);
 }
 
+/**
+ * One icon to pick from ``icons`` (.pk-icon-grid): radios named ``name``, so the form's value is the pick
+ * (``form.elements[name].value``) and arrow keys move it. ``selected`` not among them picks the first.
+ */
+export function iconPicker(name, icons, selected, { label = 'Icon' } = {}) {
+  const current = icons.includes(selected) ? selected : icons[0];
+  return html`<fieldset class="pk-icon-grid"><legend class="pk-label">${label}</legend>${icons.map((one) => html`
+    <label data-icon="${one}" title="${one}"><input type="radio" name="${name}" value="${one}" ${one === current ? 'checked' : ''}>${icon(one, { label: one })}</label>`)}
+  </fieldset>`;
+}
+
 // The status set of runs, stages and jobs (.pk-status): name -> icon. The template twin is the status() macro in
 // templates/kit/macros.html; tests/ui/test_kit.py holds the two equal.
 const STATUS_ICONS = {

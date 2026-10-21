@@ -245,6 +245,18 @@
 .pk-search > .pk-icon { position: absolute; left: var(--space-3); color: var(--text-muted); pointer-events: none; }
 .pk-search > .pk-input { padding-left: calc(var(--space-3) + 16px + var(--space-2)); }
 
+/* One icon picked from a grid (iconPicker() in panel-kit.js): radios, so the form carries the pick and arrow keys move it */
+.pk-icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: var(--space-1); min-width: 0; margin: 0; padding: 0; border: 0; }
+.pk-icon-grid > legend { margin-bottom: var(--space-1); padding: 0; }
+.pk-icon-grid > label {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; height: var(--control-h-md);
+  border-radius: var(--radius-md); color: var(--text-secondary); cursor: pointer;
+}
+.pk-icon-grid > label:hover { background: var(--surface-3); color: var(--text-primary); }
+.pk-icon-grid > label:has(input:checked) { background: var(--accent-subtle); color: var(--accent-text); }
+.pk-icon-grid > label:has(input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.pk-icon-grid input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+
 .pk-check, .pk-radio, .pk-switch { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); cursor: pointer; }
 .pk-check input, .pk-radio input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 

@@ -102,6 +102,7 @@ EXPECTED = [
     "markdown formats text, keeps raw HTML as text, refuses script links and remote images, opens links outside the panel",
     "a markdown textarea gets a toolbar: bold wraps and unwraps the word, lists skip blank lines, a line break ends the selection, the preview shows it formatted, the caption stays the textarea's",
     "a resizable dialog comes back at the size it was dragged to",
+    "an icon picker is a set of radios: the form carries the pick, an unknown one picks the first, labels name the icon",
 ]
 
 

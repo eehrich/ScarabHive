@@ -4,7 +4,7 @@
 // loadSession / loadSessions / newConversation / leaveRunningRequest / isBeingDeleted /
 // setCurrentSession / messageWritten / onSessionUpdated / getCurrentSessionId, and
 // the window events session:loaded and session:new (detail.chosen: the viewer chose it).
-import { api, html, render, icon, confirm, prompt, toast, placeMenu } from '/static/kit/panel-kit.js';
+import { api, html, render, icon, iconPicker, confirm, prompt, toast, placeMenu } from '/static/kit/panel-kit.js';
 
 function relative(dateString) {
   const minutes = Math.floor((Date.now() - new Date(dateString)) / 60000);
@@ -608,11 +608,7 @@ export class SessionManager {
         <div class="pk-dialog-body pk-stack">
         <label class="pk-field"><span class="pk-label">Name</span>
           <input class="pk-input" name="name" required maxlength="60" value="${folder?.name || ''}" autocomplete="off"></label>
-        <fieldset class="pk-field sessions-icon-grid" aria-label="Icon"><legend class="pk-label">Icon</legend>
-          ${FOLDER_ICONS.map((name) => html`
-            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon" data-icon="${name}" title="${name}"
-                    aria-label="${name}" aria-pressed="${String((folder?.icon || 'folder') === name)}">${icon(name)}</button>`)}
-        </fieldset>
+        ${iconPicker('icon', FOLDER_ICONS, folder?.icon || 'folder')}
         ${groups.length ? html`
           <fieldset class="pk-field"><legend class="pk-label">Files sessions of these agent groups by itself</legend>
             ${groups.map((group) => html`
@@ -629,12 +625,6 @@ export class SessionManager {
         </div>
       </form>`);
     document.body.appendChild(dialog);
-    const grid = dialog.querySelector('.sessions-icon-grid');
-    grid.addEventListener('click', (event) => {
-      const pick = event.target.closest('[data-icon]');
-      if (!pick) return;
-      grid.querySelectorAll('[data-icon]').forEach((one) => one.setAttribute('aria-pressed', String(one === pick)));
-    });
     const done = new Promise((resolve) => {
       dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
       dialog.querySelector('[data-delete]')?.addEventListener('click', async () => {
@@ -649,7 +639,7 @@ export class SessionManager {
         const made = {
           id: folder?.id || folderId(String(form.get('name'))),
           name: String(form.get('name')).trim(),
-          icon: grid.querySelector('[aria-pressed="true"]')?.dataset.icon || 'folder',
+          icon: String(form.get('icon') || 'folder'),
           groups: chosen,
         };
         if (!made.name) return;

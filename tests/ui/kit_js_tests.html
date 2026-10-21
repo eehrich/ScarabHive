@@ -1617,6 +1617,24 @@
     }
   });
 
+  await check('an icon picker is a set of radios: the form carries the pick, an unknown one picks the first, labels name the icon', async () => {
+    const form = document.createElement('form');
+    document.body.append(form);
+    try {
+      pk.render(form, pk.iconPicker('icon', ['folder', 'scale', 'euro'], 'scale', { label: 'Symbol' }));
+      const picked = form.elements.icon.value === 'scale';
+      form.querySelector('[data-icon="euro"]').click();  // a click on the cell, not on the radio itself
+      const clicked = new FormData(form).get('icon') === 'euro';
+      pk.render(form, pk.iconPicker('icon', ['folder', 'scale'], 'gone'));
+      const fallback = form.elements.icon.value === 'folder';
+      const named = form.querySelector('[data-icon="scale"] svg').getAttribute('aria-label') === 'scale'
+        && form.querySelector('legend').textContent === 'Icon';
+      return picked && clicked && fallback && named;
+    } finally {
+      form.remove();
+    }
+  });
+
   await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
 </script>
 </body>

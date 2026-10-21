@@ -137,9 +137,7 @@ body.app {
 
 /* the folder dialog's icon choice: the folder set as a grid, the chosen one pressed */
 .sessions-folder-dialog { width: min(480px, calc(100vw - 32px)); }
-.sessions-icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: var(--space-1); margin: 0; padding: 0; border: 0; }
-.sessions-icon-grid > legend { margin-bottom: var(--space-1); padding: 0; }
-.sessions-folder-dialog fieldset:not(.sessions-icon-grid) { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.sessions-folder-dialog fieldset:not(.pk-icon-grid) { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: var(--space-1); }
 .session-item { border-radius: var(--radius-md); }
 .session-row {
   display: flex; align-items: center; gap: var(--space-1);

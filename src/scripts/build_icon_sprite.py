@@ -51,6 +51,9 @@ ICONS = sorted({
     "folder-plus", "folder-input", "star", "heart", "rocket", "code", "flask-conical",
     "briefcase", "palette", "pen-tool", "archive", "bookmark", "flag", "tag", "sparkles", "house",
     "camera", "map", "coffee", "leaf", "zap", "trophy", "target", "box", "calendar", "film",
+    # business: what a company's groups of work are about (law, money, customers, the office)
+    "scale", "landmark", "receipt", "handshake", "megaphone", "calculator", "building-2", "piggy-bank", "euro",
+    "presentation",
 })
 
 _BODY = re.compile(r"<svg[^>]*>(.*)</svg>", re.DOTALL)
