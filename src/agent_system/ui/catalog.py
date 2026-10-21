@@ -38,6 +38,7 @@ from agent_system.auth.enforcement import ROLE_HIERARCHY
 CATEGORIES: tuple[tuple[str, str], ...] = (
     ("session", "Session"),
     ("writer", "Writer"),
+    ("business", "Business"),
     ("context", "Context & memory"),
     ("agents", "Agents & tools"),
     ("debug", "Debugging"),
