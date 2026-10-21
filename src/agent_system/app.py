@@ -700,6 +700,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             trusted_hosts=config.auth.trusted_hosts,
             audit_enabled=config.auth.endpoint_security.audit_enabled,
         )
+        # The sign-in cookie acts only from this origin's own pages (auth/cross_site.py); inside CORS, so a refusal
+        # carries CORS headers like any other answer.
+        from .auth.cross_site import install as install_cross_site_guard
+        install_cross_site_guard(app, config.auth)
 
         # Configure CORS if enabled. Registered AFTER the security middleware
         # on purpose: add_middleware prepends, so the last registration is the

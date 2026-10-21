@@ -150,6 +150,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A page of another origin on the same site -- another port on this host,
+  a sibling subdomain -- could act as the signed-in user: SameSite=Lax hands
+  such a page the auth cookie for every request, a form POST or a fetch
+  included, so it could undo, delete or post (without reading the answer).
+  A state-changing request the cookie authenticates now has to come from
+  this origin's own pages, as the browser's `Sec-Fetch-Site` says -- sent
+  to HTTPS and localhost addresses; otherwise `Origin` has to match `Host`
+  or `X-Forwarded-Host` -- or it is answered 403. A plain-HTTP proxy that
+  rewrites `Host` has to set `X-Forwarded-Host`. Requests with a Bearer value, without the cookie, or without either
+  header (API clients) pass as before, and so do the origins of a
+  credentialed CORS allowlist (`auth.cors_origins` with
+  `auth.cors_credentials`). `src/agent_system/auth/cross_site.py`.
 - The message debugger's size cap held two days of captures and kept
   every request row back to June: retention emptied a payload inside its
   request row, and the row kept its page -- on the server 590k rows in
