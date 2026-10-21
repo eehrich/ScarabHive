@@ -671,7 +671,7 @@
   }));
 
   await check('pluginBase finds the plugin above its static folder', () =>
-    pk.pluginBase('http://host/plugins/writer_admin/static/queue.js') === '/plugins/writer_admin'
+    pk.pluginBase('http://host/plugins/job_admin/static/queue.js') === '/plugins/job_admin'
     && pk.pluginBase('http://host/plugins/a%20b/static/x.js?v=2') === '/plugins/a%20b');
 
   await check('update draws only a changed answer', () => {
@@ -1632,6 +1632,234 @@
       return picked && clicked && fallback && named;
     } finally {
       form.remove();
+    }
+  });
+
+  const editTable = (rows) => pk.html`<table class="pk-table" data-pk-edit data-pk-select><thead><tr><th>Label</th><th class="pk-num">Amount</th></tr></thead>
+    <tbody>${rows.map(([id, label, amount]) => pk.html`<tr data-id="${id}">
+      <td data-edit="label" data-value="${label}">${label}</td>
+      <td class="pk-num" data-edit="amount" data-type="number" data-min="0" data-value="${amount}">${amount} €</td></tr>`)}</tbody></table>`;
+  const key = (target, name, extra = {}) => target.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true, ...extra }));
+
+  await check('an editable cell opens on a click, Enter hands a number on as a number, Escape drops what was typed', async () => {
+    const box = document.createElement('div');
+    document.body.append(box);
+    try {
+      pk.render(box, editTable([['r1', 'Miete', '1200']]));
+      const edits = [];
+      box.querySelector('table').addEventListener('celledit', (event) => edits.push(event.detail));
+      let chosen = 0;
+      box.querySelector('table').addEventListener('rowselect', () => { chosen += 1; });
+      const cell = () => box.querySelector('td[data-edit="amount"]');
+      cell().click();
+      const input = cell().querySelector('input');
+      const opened = document.activeElement === input && input.type === 'number' && input.value === '1200'
+        && input.getAttribute('aria-label') === 'Amount' && chosen === 0;  // the cell's click, not the row's
+      input.value = '1500';
+      key(input, 'Enter');
+      const taken = edits.length === 1 && edits[0].id === 'r1' && edits[0].field === 'amount' && edits[0].value === 1500
+        && edits[0].previous === 1200 && cell().textContent === '1500' && document.activeElement === cell();
+      key(cell(), 'F2');
+      cell().querySelector('input').value = '9';
+      key(cell().querySelector('input'), 'Escape');
+      const dropped = edits.length === 1 && cell().textContent === '1500' && !cell().querySelector('input');
+      // typing opens the cell empty and lets the key go on into it (a synthetic key types nothing: the input stays empty)
+      const passed = key(cell(), '7');
+      const typed = passed && document.activeElement === cell().querySelector('input') && cell().querySelector('input').value === '';
+      key(cell().querySelector('input'), 'Escape');
+      if (!(opened && taken && dropped && typed)) throw new Error(JSON.stringify({ opened, taken, dropped, typed, edits: edits.map((e) => [e.value, e.previous]), text: cell().textContent, active: document.activeElement?.tagName }));
+      return true;
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('Tab takes the cell and opens the next one, the arrows move between cells, a rejected save puts the old value back', async () => {
+    const box = document.createElement('div');
+    document.body.append(box);
+    try {
+      pk.render(box, editTable([['r1', 'Miete', '1200'], ['r2', 'Strom', '80']]));
+      box.querySelector('table').addEventListener('celledit', (event) => event.detail.wait(Promise.reject(new Error('409'))));
+      const first = box.querySelector('tr[data-id="r1"] td[data-edit="label"]');
+      first.click();
+      first.querySelector('input').value = 'Büro';
+      key(first.querySelector('input'), 'Tab');
+      const next = box.querySelector('tr[data-id="r1"] td[data-edit="amount"]');
+      const moved = document.activeElement === next.querySelector('input');
+      key(next.querySelector('input'), 'Escape');
+      await new Promise((r) => setTimeout(r, 0));  // the rejection settles
+      const restored = first.textContent.trim() === 'Miete' && first.dataset.value === 'Miete';
+      key(next, 'ArrowDown');
+      const down = document.activeElement === box.querySelector('tr[data-id="r2"] td[data-edit="amount"]');
+      key(document.activeElement, 'ArrowLeft');
+      const left = document.activeElement === box.querySelector('tr[data-id="r2"] td[data-edit="label"]');
+      return moved && restored && down && left;
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('a cell below its minimum stays open on Enter; while a cell is open update() waits and draws when it closes', async () => {
+    const box = document.createElement('div');
+    document.body.append(box);
+    try {
+      pk.update(box, editTable([['r1', 'Miete', '1200']]));
+      const cell = box.querySelector('td[data-edit="amount"]');
+      cell.click();
+      const input = cell.querySelector('input');
+      input.value = '-5';
+      key(input, 'Enter');
+      const kept = cell.querySelector('input') === input;
+      input.value = '1300';
+      const held = pk.update(box, editTable([['r1', 'Neu', '1200']])) === false && box.querySelector('td[data-edit="label"]').textContent === 'Miete';
+      key(input, 'Escape');
+      const drawn = box.querySelector('td[data-edit="label"]').textContent === 'Neu';
+      return kept && held && drawn;
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('a select cell offers its options and shows the label of the one picked', async () => {
+    const box = document.createElement('div');
+    document.body.append(box);
+    try {
+      pk.render(box, pk.html`<table class="pk-table" data-pk-edit><tbody><tr data-id="r1">
+        <td data-edit="kind" data-type="select" data-options='[["fixed","Festbetrag"],["qty","Menge × Preis"]]' data-value="fixed">Festbetrag</td>
+      </tr></tbody></table>`);
+      let edit = null;
+      box.querySelector('table').addEventListener('celledit', (event) => { edit = event.detail; });
+      const cell = box.querySelector('td');
+      cell.click();
+      const select = cell.querySelector('select');
+      const offered = [...select.options].map((o) => o.textContent).join('|') === 'Festbetrag|Menge × Preis' && select.value === 'fixed';
+      select.value = 'qty';
+      key(select, 'Enter');
+      return offered && edit?.value === 'qty' && edit.previous === 'fixed' && cell.textContent === 'Menge × Preis';
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('a held-back draw comes before the value taken, and a draw that went stale meanwhile is dropped', async () => {
+    const box = document.createElement('div');
+    document.body.append(box);
+    try {
+      const edits = [];
+      box.addEventListener('celledit', (event) => edits.push(event.detail));
+      pk.update(box, editTable([['r1', 'Miete', '1200']]));
+      const amount = () => box.querySelector('td[data-edit="amount"]');
+      amount().click();
+      amount().querySelector('input').value = '1300';
+      pk.update(box, editTable([['r1', 'Neu', '1200']]));  // held back: made before this edit
+      key(amount().querySelector('input'), 'Enter');
+      const fresh = box.querySelector('td[data-edit="label"]').textContent === 'Neu' && amount().textContent === '1300'
+        && amount().dataset.value === '1300' && edits.length === 1 && edits[0].value === 1300;
+      pk.update(box, editTable([['r1', 'A', '1']]));
+      amount().click();
+      pk.update(box, editTable([['r1', 'B', '1']]));  // held back
+      pk.update(box, editTable([['r1', 'A', '1']]));  // the same as shown again: B is stale
+      key(amount().querySelector('input'), 'Escape');
+      const stale = box.querySelector('td[data-edit="label"]').textContent === 'A';
+      return fresh && stale;
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('a required cell refuses empty, an unchanged odd value is not handed on, a hidden cell is skipped by Tab', async () => {
+    const box = document.createElement('div');
+    document.body.append(box);
+    try {
+      const edits = [];
+      pk.render(box, pk.html`<table class="pk-table" data-pk-edit="t"><tbody><tr data-id="r1">
+        <td data-edit="a" data-type="number" data-required data-value="5">5</td>
+        <td data-edit="hidden" style="display: none" data-value="x">x</td>
+        <td data-edit="d" data-type="date" data-value="not a date">not a date</td></tr></tbody></table>`);
+      box.addEventListener('celledit', (event) => edits.push(event.detail));
+      const [a, , d] = box.querySelectorAll('td');
+      a.click();
+      a.querySelector('input').value = '';
+      key(a.querySelector('input'), 'Enter');
+      const refused = !!a.querySelector('input');
+      a.querySelector('input').value = '5';
+      key(a.querySelector('input'), 'Tab');
+      const skipped = document.activeElement === d.querySelector('input');
+      key(d.querySelector('input'), 'Enter');  // opened as '' (not a date), left as it was: no change
+      return refused && skipped && edits.length === 0 && d.textContent === 'not a date';
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('a save rejected while its cell is open again leaves the open input alone; two tables keep their keys apart', async () => {
+    const box = document.createElement('div');
+    document.body.append(box);
+    try {
+      let reject;
+      pk.render(box, pk.html`${editTable([['r1', 'Miete', '1200']])}<table class="pk-table" data-pk-edit="other"><tbody>
+        <tr data-id="r1"><td data-edit="label" data-value="Zweite">Zweite</td></tr></tbody></table>`);
+      const [first, second] = box.querySelectorAll('table');
+      first.addEventListener('celledit', (event) => event.detail.wait(new Promise((_, no) => { reject = no; })));
+      const cell = first.querySelector('td[data-edit="label"]');
+      cell.click();
+      cell.querySelector('input').value = 'Büro';
+      key(cell.querySelector('input'), 'Enter');
+      cell.click();  // open again while the save runs
+      reject(new Error('400'));
+      await new Promise((r) => setTimeout(r, 0));
+      const kept = !!cell.querySelector('input');
+      key(cell.querySelector('input'), 'Escape');
+      const other = second.querySelector('td');
+      other.click();
+      key(other.querySelector('input'), 'Escape');
+      return kept && document.activeElement === other;
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('a cell left by a mouse press draws after the click, so the click lands on what was under the pointer', async () => {
+    const box = document.createElement('div');
+    document.body.append(box);
+    try {
+      const edits = [];
+      box.addEventListener('celledit', (event) => {  // a save that has not answered yet
+        edits.push(event.detail.value);
+        event.detail.wait(new Promise(() => {}));
+      });
+      pk.update(box, editTable([['r1', 'Miete', '1200']]));
+      const cell = box.querySelector('td[data-edit="amount"]');
+      cell.click();
+      cell.querySelector('input').value = '1300';
+      pk.update(box, editTable([['r1', 'Neu', '1200']]));  // held back while the cell is open
+      const label = box.querySelector('td[data-edit="label"]');
+      await new Promise((r) => setTimeout(r, 0));  // the opening click's own release is through
+      document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      cell.querySelector('input').blur();  // the press takes the focus away: the cell closes
+      // handed on at once (a dialog the click opens sees its save), but not yet drawn: the click still finds it
+      const untouched = label.isConnected && edits.join() === '1300';
+      window.dispatchEvent(new PointerEvent('pointerup'));  // released anywhere: the window hears it
+      await new Promise((r) => setTimeout(r, 0));
+      const drawn = !label.isConnected && box.querySelector('td[data-edit="label"]').textContent === 'Neu'
+        && box.querySelector('td[data-edit="amount"]').textContent === '1300' && edits.join() === '1300';
+      // a press whose release never came (outside the window) counts no more after a second: no draw waits for it
+      document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      const realNow = performance.now.bind(performance);
+      performance.now = () => realNow() + 5000;
+      try {
+        const again = box.querySelector('td[data-edit="amount"]');
+        again.click();
+        pk.update(box, editTable([['r1', 'Veraltet', '1300']]));  // held back while it is open
+        again.querySelector('input').value = '1400';
+        again.querySelector('input').blur();
+      } finally {
+        performance.now = realNow;
+      }
+      const stale = edits.join() === '1300,1400' && box.querySelector('td[data-edit="label"]').textContent === 'Veraltet';
+      return untouched && drawn && stale;
+    } finally {
+      box.remove();
     }
   });
 

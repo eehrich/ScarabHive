@@ -103,6 +103,14 @@ EXPECTED = [
     "a markdown textarea gets a toolbar: bold wraps and unwraps the word, lists skip blank lines, a line break ends the selection, the preview shows it formatted, the caption stays the textarea's",
     "a resizable dialog comes back at the size it was dragged to",
     "an icon picker is a set of radios: the form carries the pick, an unknown one picks the first, labels name the icon",
+    "an editable cell opens on a click, Enter hands a number on as a number, Escape drops what was typed",
+    "Tab takes the cell and opens the next one, the arrows move between cells, a rejected save puts the old value back",
+    "a cell below its minimum stays open on Enter; while a cell is open update() waits and draws when it closes",
+    "a select cell offers its options and shows the label of the one picked",
+    "a held-back draw comes before the value taken, and a draw that went stale meanwhile is dropped",
+    "a required cell refuses empty, an unchanged odd value is not handed on, a hidden cell is skipped by Tab",
+    "a save rejected while its cell is open again leaves the open input alone; two tables keep their keys apart",
+    "a cell left by a mouse press draws after the click, so the click lands on what was under the pointer",
 ]
 
 

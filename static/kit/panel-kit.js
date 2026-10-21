@@ -51,6 +51,7 @@ export function render(element, content) {
   sortTables(element);
   sizeTables(element);
   keyRows(element);
+  keyCells(element);
   if (key !== undefined) [...element.querySelectorAll('[data-key]')].find((one) => one.dataset.key === key)?.focus();
 }
 
@@ -928,6 +929,7 @@ export function abandon(name) {
 }
 
 const drawnMarkup = new WeakMap();
+const deferredDraws = new WeakMap();  // element -> what update() held back while a cell inside was open
 
 /**
  * render(), but only when the markup changed: an unchanged answer keeps scroll, focus, selection and open
@@ -935,7 +937,12 @@ const drawnMarkup = new WeakMap();
  */
 export function update(element, content) {
   const markup = fragment(content);
-  if (drawnMarkup.get(element) === markup) return false;
+  if (drawnMarkup.get(element) === markup) { deferredDraws.delete(element); return false; }  // a held draw is stale now
+  if (element.contains(document.activeElement?.closest('.pk-cell-input'))) {  // a cell is being edited in it:
+    deferredDraws.set(element, content);  // drawn when the cell closes, not under the typing hand
+    return false;
+  }
+  deferredDraws.delete(element);
   drawnMarkup.set(element, markup);
   render(element, trusted(markup));
   return true;
@@ -1111,7 +1118,7 @@ export function selectRow(table, id) {
 }
 
 // what answers a click itself: a click on one does not choose its row, a head holding one is not made a sort button
-const CONTROLS = 'a[href], button, input, select, textarea, label, summary';
+const CONTROLS = 'a[href], button, input, select, textarea, label, summary, table[data-pk-edit] td[data-edit]';
 
 function chooseRow(event) {
   const target = event.target instanceof Element ? event.target : null;
@@ -1128,6 +1135,212 @@ function chooseRow(event) {
 
 document.addEventListener('click', chooseRow);
 document.addEventListener('keydown', chooseRow);
+
+/*
+ * <table class="pk-table" data-pk-edit="<name>">: a body cell with data-edit="<field>" in a row with data-id is
+ * edited in place. A click, Enter, F2 or typing opens an input holding the cell's data-value. Enter or leaving the
+ * cell takes the value, Escape drops it, Tab takes it and opens the next editable cell (Shift+Tab the one before);
+ * the arrow keys move between the cells; cells hidden by the layout are skipped. data-type: text (default), number
+ * (data-min, data-max, data-step), date, month, select (data-options='[["value", "label"], ...]'); data-required
+ * refuses an empty value. A changed value fires `celledit` on the table with {id, field, value, previous,
+ * wait(promise)} -- numbers as numbers, an emptied number as null. The cell shows the new value at once, and while
+ * the promise handed to wait() runs it shows it through any draw; one that rejects puts the old value back. While a
+ * cell is open, update() leaves the element around it alone and draws when the cell closes (closed by a mouse
+ * press: after the click). The name keeps the keys of two tables with the same row ids apart.
+ */
+const EDIT_CELL = 'table[data-pk-edit] > tbody > tr[data-id] > td[data-edit]';
+const shownBefore = new WeakMap();  // cell -> its markup before it opened
+/** Cell key -> {raw, label} of a value handed on whose save has not answered yet: a draw shows it, not the old one. */
+const taken = new Map();
+const openedWith = new WeakMap();  // cell -> the input's value right after opening: what "changed" is measured against
+
+function keyCells(root) {
+  root.querySelectorAll(EDIT_CELL).forEach((cell) => {
+    cell.tabIndex = 0;
+    cell.dataset.key ??= `cell:${cell.closest('table').dataset.pkEdit}:${cell.parentElement.dataset.id}:${cell.dataset.edit}`;
+  });
+  taken.forEach((value, key) => showTaken(key, value));  // a draw made before a save answered shows its value still
+}
+
+const typedValue = (cell, raw) => (cell.dataset.type === 'number' ? (raw === '' ? null : Number(raw)) : raw);
+const shownCell = (cell) => (cell.checkVisibility ? cell.checkVisibility() : cell.offsetParent !== null);
+
+/** Open ``cell``; blank: start empty (typing replaces, the key itself goes on into the input). */
+function openCell(cell, blank = false) {
+  if (cell.querySelector('.pk-cell-input')) return;
+  const type = cell.dataset.type || 'text';
+  const input = document.createElement(type === 'select' ? 'select' : 'input');
+  input.className = `${type === 'select' ? 'pk-select' : 'pk-input'} pk-cell-input`;
+  if (type === 'select') {
+    for (const [value, label] of JSON.parse(cell.dataset.options || '[]')) input.add(new Option(label ?? value, value));
+  } else {
+    input.type = type;
+    for (const name of ['min', 'max', 'step']) if (cell.dataset[name] !== undefined) input[name] = cell.dataset[name];
+  }
+  input.required = cell.dataset.required !== undefined;
+  const head = cell.closest('table').tHead?.rows[0]?.cells[cell.cellIndex]?.textContent.trim();
+  input.setAttribute('aria-label', head || cell.dataset.edit);
+  input.value = cell.dataset.value ?? '';
+  openedWith.set(cell, input.value);  // a value the input refuses (a date out of form) opens as '': no change yet
+  shownBefore.set(cell, cell.innerHTML);
+  cell.classList.add('pk-cell--editing');
+  cell.replaceChildren(input);
+  input.focus();
+  if (blank && type !== 'select') input.value = '';
+  else input.select?.();
+}
+
+/** Draw what update() held back while a cell inside was open: every element around ``cell`` that waits. */
+function releaseDraws(cell) {
+  for (let element = cell; element; element = element.parentElement) {
+    if (!deferredDraws.has(element)) continue;
+    const content = deferredDraws.get(element);
+    deferredDraws.delete(element);
+    drawnMarkup.delete(element);
+    update(element, content);  // render -> keyCells puts back the values whose save still runs
+  }
+}
+
+/** Find a cell by its data-key: a released draw may have replaced it. */
+const cellByKey = (key) => (key ? [...document.querySelectorAll(EDIT_CELL)].find((one) => one.dataset.key === key) : null);
+
+function showTaken(key, { raw, label }) {
+  const cell = cellByKey(key);
+  if (!cell || cell.querySelector('.pk-cell-input') || cell.dataset.value === raw) return;
+  cell.dataset.value = raw;
+  cell.textContent = label;
+  cell.setAttribute('aria-busy', 'true');
+}
+
+/** Close an open cell; take: hand a changed value on. False when the value is invalid and the cell stays open. */
+function closeCell(cell, take) {
+  const input = cell.querySelector(':scope > .pk-cell-input');
+  if (!input) return true;
+  if (take && !input.checkValidity()) {
+    input.reportValidity();
+    return false;
+  }
+  const raw = input.value;
+  const label = input.tagName === 'SELECT' ? input.selectedOptions[0]?.textContent ?? raw : raw;
+  const previous = cell.dataset.value ?? '';
+  const key = cell.dataset.key;
+  input.dataset.closed = '';  // removing the focused input fires focusout: that must not close the cell again
+  cell.classList.remove('pk-cell--editing');
+  cell.innerHTML = shownBefore.get(cell);
+  // the draw held back is older than this edit: drawn first, the value goes on top. Left by a mouse press, it
+  // waits for the click that press makes -- a draw now would replace what the pointer is on, the click would land
+  // nowhere. The value is handed on at once either way: a dialog the click opens must see its save under way.
+  if (pressing()) afterPointer.push(() => releaseDraws(cell));
+  else releaseDraws(cell);
+  if (take && raw !== openedWith.get(cell)) handOn(cell.isConnected ? cell : cellByKey(key), key, raw, label, previous);
+  return true;
+}
+
+// A press counts until its release or click -- and at most a second: a release outside the window never arrives.
+let pressedAt = null;
+const afterPointer = [];
+const pressing = () => pressedAt !== null && performance.now() - pressedAt < 1000;
+addEventListener('pointerdown', () => { pressedAt = performance.now(); }, true);
+for (const type of ['pointerup', 'pointercancel', 'click']) {
+  addEventListener(type, () => setTimeout(() => {  // a task later: after the click this release makes
+    pressedAt = null;
+    afterPointer.splice(0).forEach((run) => run());
+  }), true);
+}
+
+/** Show the taken value in ``cell`` and hand it on (celledit); a rejected save puts the old value back. */
+function handOn(cell, key, raw, label, previous) {
+  if (!cell) return;  // its row went with the draw (deleted meanwhile): nothing to hand on
+  const shown = cell.innerHTML;
+  const was = cell.dataset.value ?? '';
+  cell.dataset.value = raw;
+  cell.textContent = label;
+  let pending = null;
+  const row = cell.parentElement;
+  row.closest('table').dispatchEvent(new CustomEvent('celledit', {
+    bubbles: true,
+    detail: {
+      id: row.dataset.id, field: cell.dataset.edit, value: typedValue(cell, raw), previous: typedValue(cell, previous),
+      wait(promise) { pending = promise; },
+    },
+  }));
+  if (!pending) return;
+  taken.set(key, { raw, label });
+  cell.setAttribute('aria-busy', 'true');
+  const settle = (saved) => {
+    if (taken.get(key)?.raw === raw) taken.delete(key);
+    const now = cellByKey(key);  // the cell as drawn now: a draw may have replaced it meanwhile
+    if (!now) return;
+    now.removeAttribute('aria-busy');
+    // put the old value back -- unless the cell is open again or shows another value by now
+    if (!saved && now.dataset.value === raw && !now.querySelector('.pk-cell-input')) {
+      now.dataset.value = was;
+      now.innerHTML = shown;
+    }
+  };
+  Promise.resolve(pending).then(() => settle(true), () => settle(false));
+}
+
+/** The shown editable cell beside ``cell``: dx steps along the cells in reading order, dy rows up or down. */
+function neighbourCell(cell, dx, dy) {
+  const table = cell.closest('table');
+  if (dy) {
+    const rows = [...table.tBodies[0].rows];
+    for (let at = rows.indexOf(cell.parentElement) + dy; at >= 0 && at < rows.length; at += dy) {
+      const found = rows[at].querySelector(`:scope > td[data-edit="${CSS.escape(cell.dataset.edit)}"]`);
+      if (found && shownCell(found)) return found;
+    }
+    return null;
+  }
+  const cells = [...table.querySelectorAll(EDIT_CELL)].filter((one) => one === cell || shownCell(one));
+  return cells[cells.indexOf(cell) + dx] ?? null;
+}
+
+document.addEventListener('click', (event) => {
+  const cell = event.target.closest?.(EDIT_CELL);
+  if (cell && !event.target.closest('.pk-cell-input')) openCell(cell);
+});
+
+document.addEventListener('focusout', (event) => {
+  if (!event.target.matches?.('.pk-cell-input:not([data-closed])')) return;
+  const cell = event.target.parentElement;
+  if (cell && !cell.contains(event.relatedTarget)) closeCell(cell, event.target.checkValidity());  // invalid: dropped
+});
+
+document.addEventListener('keydown', (event) => {
+  const input = event.target.closest?.('.pk-cell-input');
+  if (input) {
+    const cell = input.parentElement;
+    const key = cell.dataset.key;
+    if (event.key === 'Escape') {
+      event.preventDefault();  // the cell's Escape, not the dialog's around it
+      closeCell(cell, false);
+      cellByKey(key)?.focus();
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (closeCell(cell, true)) cellByKey(key)?.focus();
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      const next = neighbourCell(cell, event.shiftKey ? -1 : 1, 0)?.dataset.key;
+      if (!closeCell(cell, true)) return;
+      const target = cellByKey(next);
+      if (target) openCell(target); else cellByKey(key)?.focus();
+    }
+    return;
+  }
+  const cell = event.target.matches?.(EDIT_CELL) ? event.target : null;
+  if (!cell || event.ctrlKey || event.metaKey || event.altKey) return;
+  const moves = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+  if (moves[event.key]) {
+    event.preventDefault();
+    neighbourCell(cell, ...moves[event.key])?.focus();
+  } else if (event.key === 'Enter' || event.key === 'F2') {
+    event.preventDefault();
+    openCell(cell);
+  } else if (event.key.length === 1 && event.key !== ' ') {
+    openCell(cell, true);  // typing replaces, as in a spreadsheet: the key goes on into the input focused now
+  }
+});
 
 // ------------------------------------------------------------------ tabs
 
@@ -1502,7 +1715,7 @@ function storedSort(name) {
     ? { key: stored.key, dir: stored.dir } : null;
 }
 
-// A name a panel builds from what the viewer typed (writer_admin's SQL panel names its table after the query) is
+// A name a panel builds from what the viewer typed (a panel showing an SQL query names its table after the query) is
 // no table they will see again, and it would carry that text into the browser's store: only a plain name is kept,
 // and only the last few of them.
 const KEPT_SORTS = 12;
