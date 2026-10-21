@@ -56,6 +56,28 @@ def hers(sessions, user_id: str, session_id: str) -> bool:
     return sessions.belongs_to(user_id, session_id)
 
 
+#: Session reads under way for the "Open in" menu, by (user, session): every instance asks at the same moment.
+_READING: dict[tuple[str, str], asyncio.Future] = {}
+
+
+def _read_done(key: tuple[str, str], reading: asyncio.Future) -> None:
+    _READING.pop(key, None)
+    if not reading.cancelled():
+        reading.exception()  # taken: every instance may have stopped waiting
+
+
+async def read_once(sessions, user_id: str, session_id: str) -> dict[str, Any]:
+    """``load_session``, shared by the instances asking at once. Each would miss the cache together and then parse
+    the whole file in turn under the session's lock: a large session past the menu's limit, and every instance
+    offered again. Shielded: one asker giving up does not cancel the read for the others."""
+    key = (user_id, session_id)
+    reading = _READING.get(key)
+    if reading is None:
+        reading = _READING[key] = asyncio.ensure_future(sessions.load_session(user_id, session_id))
+        reading.add_done_callback(lambda done: _read_done(key, done))
+    return await asyncio.shield(reading)
+
+
 def own_sub_sessions(sessions, user_id: str, instance_ids) -> set[str]:
     """The ids among ``instance_ids`` that are the viewer's own sessions -- the ones whose figures and runs the panel
     looks up. A session's entries are its user's to write (PATCH /sessions): one naming another user's sub-agent had
@@ -165,13 +187,28 @@ class SubAgentManagerWebFactory:
         instance answers for (``_spawned_by``). Every instance's panel shows them all, so offering each would offer
         the same list once per instance. The entries are read, not the sub-sessions: the panel lists an entry whose
         sub-session was deleted behind it. Another user's session (an admin's view) is offered: finding its owner is
-        a scan."""
+        a scan. An entry no loaded instance spawned (a machine's run names none) falls to every instance, so the
+        first of them by name answers for it alone."""
         sessions = get_session_service().session_manager
         if not hers(sessions, user_id, session_id):
             return True
-        parent = await sessions.load_session(user_id, session_id)
-        return any(self._spawned_by(metadata) is self.server
-                   for metadata in ((parent.get("metadata") or {}).get("sub_agents") or {}).values())
+        parent = await read_once(sessions, user_id, session_id)
+        mine = [metadata for metadata in ((parent.get("metadata") or {}).get("sub_agents") or {}).values()
+                if self._spawned_by(metadata) is self.server]
+        return any(metadata.get("creator_plugin") == self.server.name for metadata in mine) or (
+            bool(mine) and self._first_instance())
+
+    def _first_instance(self) -> bool:
+        """Whether this is the first manager instance loaded here, by name: the one offered for unclaimed entries."""
+        from agent_system.plugins.tool_adapter import plugin_tool_registry
+        from plugins.sub_agent_manager.server import SubAgentManagerServer
+
+        names = []
+        for name, adapter in plugin_tool_registry.plugin_servers.items():
+            plugin = getattr(adapter, "plugin_server", None)
+            if isinstance(getattr(plugin, "server", plugin), SubAgentManagerServer):
+                names.append(name)
+        return not names or min(names) == self.server.name
 
     @staticmethod
     def _require_hers(user_id: str, *session_ids: str) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import logging
 from typing import Any
@@ -105,6 +106,32 @@ async def catalog(request: Request):
 
 #: How long one plugin may take to say whether it holds data for a session: past it, its panel is offered.
 SESSION_PANEL_TIMEOUT = 0.5
+#: Sync answers under way in a worker thread, by (instance, session, user): the same question asked meanwhile
+#: shares the thread.
+_ASKING: dict[tuple[str, str, str], asyncio.Task] = {}
+#: Questions still running past the limit, by instance: waiting gives up, the thread does not. While one runs,
+#: the instance's panel is offered without another thread, so a hung store holds one worker, not one per click.
+_OVERDUE: dict[str, set[tuple[str, str, str]]] = {}
+
+
+async def _answer_in_thread(ask: Any, session_id: str, user_id: str) -> Any:
+    """A sync ``has_session_data`` in a worker thread, with the caller's context (as ``asyncio.to_thread``); an
+    awaitable it hands back (an async callable that is no coroutine function) is awaited here, once for all."""
+    context = contextvars.copy_context()
+    answer = await asyncio.get_running_loop().run_in_executor(None, context.run, ask, session_id, user_id)
+    return await answer if inspect.isawaitable(answer) else answer
+
+
+def _released(key: tuple[str, str, str], done: asyncio.Task) -> None:
+    """The question is through (a failure after the wait gave up is taken here, or asyncio would log it as never
+    retrieved)."""
+    _ASKING.pop(key, None)
+    overdue = _OVERDUE.get(key[0], set())
+    overdue.discard(key)
+    if not overdue:
+        _OVERDUE.pop(key[0], None)
+    if not done.cancelled():
+        done.exception()
 
 
 async def _holds(instance: str, plugin: Any, session_id: str, user_id: str) -> bool:
@@ -117,7 +144,19 @@ async def _holds(instance: str, plugin: Any, session_id: str, user_id: str) -> b
         if inspect.iscoroutinefunction(ask):
             answer = await asyncio.wait_for(ask(session_id, user_id), SESSION_PANEL_TIMEOUT)
         else:
-            answer = await asyncio.wait_for(asyncio.to_thread(ask, session_id, user_id), SESSION_PANEL_TIMEOUT)
+            if instance in _OVERDUE:
+                return True
+            key = (instance, session_id, user_id)
+            running = _ASKING.get(key)
+            if running is None:
+                running = _ASKING[key] = asyncio.ensure_future(_answer_in_thread(ask, session_id, user_id))
+                running.add_done_callback(lambda done: _released(key, done))
+            try:
+                answer = await asyncio.wait_for(asyncio.shield(running), SESSION_PANEL_TIMEOUT)
+            except TimeoutError:
+                if not running.done():
+                    _OVERDUE.setdefault(instance, set()).add(key)
+                raise
     except Exception as exc:  # TimeoutError included
         logger.warning("Panel %s: has_session_data(%s) failed (%s) -- offered", instance, session_id,
                        type(exc).__name__ if isinstance(exc, TimeoutError) else exc)
@@ -128,7 +167,7 @@ async def _holds(instance: str, plugin: Any, session_id: str, user_id: str) -> b
 @router.get("/api/ui/session-panels")
 async def session_panels(request: Request, session_id: str):
     """The plugin panels with a session entry that hold data for *session_id*: the chat's "Open in" menu offers
-    those (and the core ones). 404 for a session the viewer may not see, as for one that does not exist."""
+    those (and the core ones). 404 for a session the viewer may not see (``may_see_session``)."""
     from agent_system.auth.session_access import may_see_session, viewer
     from agent_system.plugins.web_adapter import plugin_web_registry
 
@@ -136,12 +175,25 @@ async def session_panels(request: Request, session_id: str):
     if not await may_see_session(request, user, session_id):
         raise HTTPException(status_code=404, detail=f"No session {session_id!r}")
     role = "admin" if user is None else user.role.value
-    instances = [panel.id for panel in plugin_panels(request.app.state.config.auth)
-                 if "session" in panel.contexts and panel.visible_to(role)]  # what the viewer's catalogue holds
+    panels = [panel for panel in plugin_panels(request.app.state.config.auth) if "session" in panel.contexts]
+    visible = [panel for panel in panels if panel.visible_to(role)]  # what the viewer's catalogue holds
     plugins = plugin_web_registry.web_plugins
-    held = await asyncio.gather(*(_holds(i, plugins.get(i), session_id, viewer(user)) for i in instances))
-    return {"session_id": session_id, "panels": [i for i, yes in zip(instances, held) if yes],
-            "hidden": [i for i, yes in zip(instances, held) if not yes]}
+    # Instances of a plugin that declares ``session_data_shared`` show one list under one title, answered for by one
+    # of them (the sub-agent manager's: the instance that spawned). When that one is beyond the viewer's role, a
+    # visible sibling stands in for it.
+    def shared(panel: Panel) -> bool:
+        return getattr(plugins.get(panel.id), "session_data_shared", False) is True
+
+    titles = {panel.title for panel in visible if shared(panel)}
+    asked = visible + [panel for panel in panels if not panel.visible_to(role) and panel.title in titles and shared(panel)]
+    answers = await asyncio.gather(*(_holds(p.id, plugins.get(p.id), session_id, viewer(user)) for p in asked))
+    held = {panel.id: yes for panel, yes in zip(asked, answers)}
+    claimed = {panel.title for panel in asked if held[panel.id] and not panel.visible_to(role)}
+    claimed -= {panel.title for panel in visible if held[panel.id]}
+    stand_ins = {min(panel.id for panel in visible if panel.title == title and shared(panel)) for title in claimed}
+    offered = [panel.id for panel in visible if held[panel.id] or panel.id in stand_ins]
+    return {"session_id": session_id, "panels": offered,
+            "hidden": [panel.id for panel in visible if panel.id not in offered]}
 
 
 @router.get("/ui/kit", response_class=HTMLResponse)

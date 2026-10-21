@@ -749,6 +749,32 @@
     }
   });
 
+  await check('the composer button closes its own menu, and is off while no session is open', async () => {
+    const button = $('#sessionPanelsButton');
+    $('#contextMenu')?.remove();
+    button.click();
+    await until('the menu', () => $('#contextMenu')?.matches(':popover-open'));
+    button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));  // a second press, by pointer
+    await sleep(800);  // past an answer that would reopen it
+    const closed = !$('#contextMenu')?.matches(':popover-open');
+    button.click();
+    await until('the menu again', () => $('#contextMenu')?.matches(':popover-open'));
+    button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));  // a press let go elsewhere: no click
+    $('#contextMenu').hidePopover();  // what the light dismiss of that press does
+    button.click();  // then Enter on the button (a click of detail 0)
+    await sleep(500);
+    const byKey = Boolean($('#contextMenu')?.matches(':popover-open'));
+    $('#contextMenu')?.hidePopover();
+    $('#sessionsPane [data-act="new"]').click();
+    await until('a new session', () => $('#chatWelcome'));
+    const offWithout = button.disabled;
+    sessionButton('s-1', 'open').click();
+    await until('the session again', () => !button.disabled);
+    return need(closed, 'a second press opened the menu again') && need(byKey, 'a press gone astray swallowed the next key')
+      && need(offWithout, 'the button stays on without a session');
+  });
+
   await check('an open branch of the session tree stays open and current when the list refreshes', async () => {
     sessionButton('s-1', 'expand').click();
     await until('the sub-session', () => $('.session-item[data-id="s-1-sub"]'));

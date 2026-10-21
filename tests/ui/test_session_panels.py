@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -17,9 +18,9 @@ from agent_system.ui import routes
 from agent_system.ui.routes import router
 
 
-def panel(instance: str, session: bool = True) -> dict:
+def panel(instance: str, session: bool = True, title: str = "") -> dict:
     contexts = {"session": f"/plugins/{instance}/?session_id={{session_id}}"} if session else {}
-    return {"panel": {"endpoint": f"/plugins/{instance}/", "title": instance.title(), "icon": "bug",
+    return {"panel": {"endpoint": f"/plugins/{instance}/", "title": title or instance.title(), "icon": "bug",
                       "category": "debug", "contexts": contexts}, "endpoints": []}
 
 
@@ -62,10 +63,10 @@ def app(monkeypatch):
         enabled=False, plugin_security=PluginSecurityConfig(), endpoint_security=EndpointSecurityConfig(rules=[])),
         plugins=None)
 
-    def register(instance, plugin, session=True):
+    def register(instance, plugin, session=True, title=""):
         monkeypatch.setitem(web_adapter.plugin_web_registry.web_plugins, instance, plugin)
         monkeypatch.setitem(tool_adapter.plugin_tool_registry.plugin_servers, instance,
-                            SimpleNamespace(plugin_schema={"web_ui": panel(instance, session)}))
+                            SimpleNamespace(plugin_schema={"web_ui": panel(instance, session, title)}))
     app.register = register
     return app
 
@@ -159,3 +160,142 @@ def test_a_signed_in_viewer_is_asked_for_by_name_and_sees_only_the_panels_of_the
     assert "mine" in answer["panels"], answer
     assert "admins_only" not in answer["panels"] + answer["hidden"], "a panel the viewer's catalogue lacks is not named"
     assert mine.asked == [("s1", "ada")] and admins.asked == [], "asked as the viewer, the hidden one not at all"
+
+
+class Hangs:
+    """A store that hangs until let go: the wait gives up, the worker thread does not."""
+    def __init__(self):
+        self.calls, self.go = 0, threading.Event()
+
+    def has_session_data(self, session_id, user_id):
+        self.calls += 1
+        self.go.wait(5)
+        return False
+
+
+def test_a_hung_answer_holds_one_worker_and_frees_it_once_through():
+    hangs = Hangs()
+
+    async def ask_while_it_hangs_and_after():
+        first = await routes._holds("hangs", hangs, "s1", "u")
+        second = await routes._holds("hangs", hangs, "s2", "u")  # another question: the store is the one hung
+        calls_while_hung = hangs.calls
+        hangs.go.set()
+        for _ in range(100):  # the thread finishes, then its callback runs on the loop
+            if "hangs" not in routes._OVERDUE:
+                break
+            await asyncio.sleep(0.02)
+        third = await routes._holds("hangs", hangs, "s1", "u")
+        return first, second, calls_while_hung, third
+
+    first, second, calls_while_hung, third = asyncio.run(ask_while_it_hangs_and_after())
+
+    assert (first, second) == (True, True), "a panel that cannot say in time is offered"
+    assert calls_while_hung == 1, "asked again while its thread still ran: a second worker taken"
+    assert third is False and hangs.calls == 2, "the instance stayed locked after its thread was through"
+
+
+def test_an_async_callable_that_is_no_coroutine_function_is_awaited():
+    class AsyncCall:
+        async def __call__(self, session_id, user_id):
+            return False
+
+    assert asyncio.run(routes._holds("async_call", SimpleNamespace(has_session_data=AsyncCall()), "s1", "u")) is False
+
+
+def test_when_the_instance_that_answers_is_beyond_the_role_its_visible_siblings_stand_in(app, monkeypatch):
+    """Instances of one plugin may show one list, answered for by one of them (the one that spawned): restricted to
+    admins, that one is not the viewer's -- the sibling the viewer sees is offered, not hidden with it."""
+    class Shares(Holds):
+        session_data_shared = True
+
+    app.register("manager_a", Shares({"s1", "s2"}), title="Managers")
+    app.register("manager_b", Shares(set()), title="Managers")
+    app.register("manager_c", Shares({"s2"}), title="Managers")
+    app.register("another_plugin", Holds(set()), title="Managers")  # same title, its own data: never a stand-in
+    app.register("todo_a", Holds({"s1"}), title="Todos")  # its own data: the sibling has none to stand in with
+    app.register("todo_b", Holds(set()), title="Todos")
+    real = routes.plugin_panels
+    monkeypatch.setattr(routes, "plugin_panels", lambda auth: [
+        replace(p, roles=["admin"]) if p.id in ("manager_a", "todo_a") else p for p in real(auth)])
+
+    async def ada(request):
+        return SimpleNamespace(username="ada", role=SimpleNamespace(value="user"))
+
+    async def admit(request, user, session_id):
+        return True
+    monkeypatch.setattr(routes, "viewer_user", ada)
+    monkeypatch.setattr(session_access, "may_see_session", admit)
+
+    answer = TestClient(app).get("/api/ui/session-panels", params={"session_id": "s1"}).json()
+
+    assert answer["panels"] == ["manager_b"], f"one stand-in, not one per sibling: {answer}"
+    assert sorted(answer["hidden"]) == ["another_plugin", "manager_c", "todo_b"], answer
+    answer = TestClient(app).get("/api/ui/session-panels", params={"session_id": "s2"}).json()
+    assert answer["panels"] == ["manager_c"], f"a visible one answers itself: no stand-in beside it: {answer}"
+
+
+def test_answers_asked_at_once_are_each_answered_and_the_same_question_shares_its_thread():
+    """Two viewers' menus at the same moment: a quick store answers both -- neither is taken for a hung one."""
+    class Quick:
+        def __init__(self):
+            self.asked = []
+
+        def has_session_data(self, session_id, user_id):
+            self.asked.append((session_id, user_id))
+            time.sleep(0.05)
+            return session_id == "s1"
+
+    quick = Quick()
+
+    async def ask_at_once():
+        return await asyncio.gather(routes._holds("quick", quick, "s1", "ada"),
+                                    routes._holds("quick", quick, "s2", "bob"),
+                                    routes._holds("quick", quick, "s2", "bob"))
+
+    assert asyncio.run(ask_at_once()) == [True, False, False]
+    assert sorted(quick.asked) == [("s1", "ada"), ("s2", "bob")], "the same question asked twice, or one not asked"
+
+
+def test_an_awaitable_answer_shared_by_the_same_question_asked_twice_is_awaited_once():
+    class AsyncCall:
+        async def __call__(self, session_id, user_id):
+            await asyncio.sleep(0.05)
+            return False
+
+    plugin = SimpleNamespace(has_session_data=AsyncCall())
+
+    async def ask_twice():
+        return await asyncio.gather(routes._holds("twice", plugin, "s1", "u"), routes._holds("twice", plugin, "s1", "u"))
+
+    assert asyncio.run(ask_twice()) == [False, False]
+
+
+def test_another_question_through_does_not_free_an_instance_still_hung():
+    """One question hangs in the store, another of the same instance ends later: the hung one still holds its
+    worker, so a third question gets no thread of its own."""
+    class Partly:
+        def __init__(self):
+            self.asked, self.go = [], threading.Event()
+
+        def has_session_data(self, session_id, user_id):
+            self.asked.append(session_id)
+            if session_id == "s1":
+                self.go.wait(5)
+            else:
+                time.sleep(routes.SESSION_PANEL_TIMEOUT * 1.4)  # through only after the wait gave up on it
+            return False
+
+    partly = Partly()
+
+    async def ask():
+        await asyncio.gather(routes._holds("partly", partly, "s1", "u"), routes._holds("partly", partly, "s2", "u"))
+        await asyncio.sleep(routes.SESSION_PANEL_TIMEOUT)  # s2's thread is through meanwhile
+        third = await routes._holds("partly", partly, "s3", "u")
+        asked = sorted(partly.asked)
+        partly.go.set()
+        return third, asked
+
+    third, asked = asyncio.run(ask())
+
+    assert third is True and asked == ["s1", "s2"], f"a thread for s3 beside the hung one: {asked}"

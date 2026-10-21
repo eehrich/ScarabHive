@@ -798,7 +798,12 @@ not parse is left out of the catalogue with an error log.
   give its web object `has_session_data(session_id, user_id) -> bool` (sync or async,
   cheap: a file stat, an indexed `LIMIT 1`): a session's "Open in" menu then offers the
   panel only where it has something to show (`GET /api/ui/session-panels`). Without the
-  method, or when it fails or takes over 0.5 s, the panel is offered in every session
+  method, or when it fails or takes over 0.5 s, the panel is offered in every session.
+  A sync method runs in a worker thread (keep it thread-safe); an async one runs on the
+  event loop and must not block it -- the limit cannot interrupt blocking code. When every
+  instance's panel shows the same list and one instance answers for it, set
+  `session_data_shared = True` on the web object: an instance the viewer may open then stands
+  in for one beyond the viewer's role.
 
 Who sees the panel is not declared here: the catalogue lists it for the roles both
 layers of route security in `config/security.yaml` (included by `config/config.yaml`) let open its `endpoint` -- the

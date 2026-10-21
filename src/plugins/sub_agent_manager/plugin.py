@@ -32,6 +32,10 @@ class SubAgentManagerHybridPlugin:
     - Provides web router via SubAgentManagerWebFactory
     """
 
+    #: Every instance's panel lists the same sub-agents (has_session_data): an instance the viewer may open stands in
+    #: for the one that answers when that one is beyond the viewer's role.
+    session_data_shared = True
+
     def __init__(
         self,
         name: str,

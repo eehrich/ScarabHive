@@ -196,6 +196,7 @@ async function contextMenu(anchor, context, values) {
   if (!all.length) return;
   const menu = document.createElement('div');
   menu.id = 'contextMenu';
+  menu.dataset.anchor = anchor.id;
   menu.className = 'pk-menu';
   menu.popover = 'auto';
   const draw = (whole) => {
@@ -315,7 +316,18 @@ async function start() {
   $('paletteButton').addEventListener('click', () => palette.open());
   $('helpButton').addEventListener('click', () => workspace.openManual());  // a plugin's guide: its panel's own button
   for (const id of ['headerSessionId', 'sessionPanelsButton']) {
-    $(id).addEventListener('click', () => {
+    let closing = false;  // the press began on the open menu's own anchor: a toggle, it only closes it
+    $(id).addEventListener('pointerdown', () => {
+      const menu = $('contextMenu');
+      closing = Boolean(menu?.matches(':popover-open') && menu.dataset.anchor === id);
+    });
+    $(id).addEventListener('click', (event) => {
+      const toggle = closing;
+      closing = false;
+      if (toggle && event.detail) {  // a pointer's click: one by key (detail 0) opens, whatever press went astray
+        $('contextMenu')?.hidePopover();
+        return;
+      }
       if (activeSession) contextMenu($(id), 'session', { session_id: activeSession.id });
     });
   }

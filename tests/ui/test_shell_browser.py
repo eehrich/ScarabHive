@@ -1877,6 +1877,7 @@ EXPECTED = [
     'the open-in menu leaves out the panels holding nothing for the session, and offers them all on request',
     'the composer opens the same menu, and a failed question shows every panel',
     'a slow answer for an earlier click does not replace the menu of the later one',
+    'the composer button closes its own menu, and is off while no session is open',
 ]
 
 

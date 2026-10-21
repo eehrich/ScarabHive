@@ -309,7 +309,8 @@ sessions;
 @{bullet}links in the chat: a session's panel button (in the session list
 and next to the attach button), its title, the request id under an answer
 -- they open the panels that can show that session or that request. For
-a session the menu lists only the panels holding something for it;
+a session the menu leaves out the plugin panels that say they hold
+nothing for it;
 @{b}All session panels@{ub} at its end shows the others;
 @{bullet}the user menu: @{b}Settings@{ub} and @{b}System@{ub};
 @{bullet}a direct link: @{tt}/?panel=<panel path>@{utt}.
@@ -1610,7 +1611,9 @@ panel that otherwise follows the chat, so show the pinned session visibly
 (@{tt}<pk-session>@{utt} in the toolbar). With @{tt}session@{utt} give the
 plugin object @{tt}has_session_data(session_id, user_id)@{utt} too (cheap,
 sync or async): the session menu then offers the panel only where it holds
-data; without it the panel stands in every session's menu.
+data; without it the panel stands in every session's menu. A sync method
+runs in a worker thread, an async one on the event loop, where it must not
+block.
 @{bullet}@{tt}web_ui@{utt} knows exactly @{tt}panel@{utt} and
 @{tt}endpoints@{utt}; anything else is an error.
 @{bullet}@{b}Who sees the panel is not in this block@{ub}: the catalog
