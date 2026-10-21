@@ -283,7 +283,20 @@ It reads like a getter.</div></div></li>
     <button class="pk-btn" data-demo="danger">Confirm (danger)</button>
     <button class="pk-btn" data-demo="prompt">Prompt</button>
     <button class="pk-btn" data-demo="toast">Toasts</button>
+    <button class="pk-btn" data-demo="resizable">Resizable dialog</button>
   </div>
+  <div class="pk-drop pk-card" id="kitDrop"><p class="pk-muted">.pk-drop: drag a file over this card</p></div>
+  <dialog class="pk-dialog pk-dialog--resizable" id="kitResizable" aria-labelledby="kitResizableTitle">
+    <form method="dialog">
+      <div class="pk-dialog-head"><h2 class="pk-dialog-title" id="kitResizableTitle">Edit task (markdown editor)</h2></div>
+      <div class="pk-dialog-body pk-form">
+        <label class="pk-field"><span class="pk-label">Title</span><input class="pk-input" value="Draft the business plan"></label>
+        <label class="pk-field pk-field--grow"><span class="pk-label">Description (.pk-field--grow)</span>
+          <textarea class="pk-textarea" data-pk-markdown>Drag the corner of the dialog: this field takes the room, the buttons stay at the bottom, and the size is kept for the next time.</textarea></label>
+      </div>
+      <div class="pk-dialog-actions"><button class="pk-btn pk-btn--primary">Close</button></div>
+    </form>
+  </dialog>
 </section>
 
 <section class="kit-section">
@@ -384,7 +397,12 @@ keeps its line breaks.</div>
     prompt: async () => toast(`Name: ${await prompt('New name for the session', { title: 'Rename session', value: 'Buch 945 Review' })}`),
     toast: () => { toast('Saved'); toast('3 jobs finished', { kind: 'ok' }); toast('Worker is slow', { kind: 'warn' }); toast('Request failed: 502', { kind: 'error' }); },
   };
+  demos.resizable = () => document.getElementById('kitResizable').showModal();
   document.querySelectorAll('[data-demo]').forEach((b) => b.addEventListener('click', demos[b.dataset.demo]));
+  const drop = document.getElementById('kitDrop');
+  drop.addEventListener('dragover', (event) => { event.preventDefault(); drop.classList.add('pk-drop--over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('pk-drop--over'));
+  drop.addEventListener('drop', (event) => { event.preventDefault(); drop.classList.remove('pk-drop--over'); });
 
   render(document.getElementById('kit-json-small'), jsonView({ title: 'The Night', chapters: 8, series: null }));
   render(document.getElementById('kit-json'), jsonView({ request_id: '8f2c1a', agent: 'writer_review', usage: { prompt_tokens: 4120, completion_tokens: 380 }, tools: ['writer_content_chapter', 'writer_issues_list'], cached: null }));

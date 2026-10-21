@@ -99,6 +99,9 @@ EXPECTED = [
     "a link pins a panel to a session: the control names it, and the way back keeps the rest of the link",
     "the session control still reports the chat switching after it was moved in the page",
     "a page the shell opened set to all sessions starts on all of them, a shell docking it hears so, and a scope picked there drops that start from the address",
+    "markdown formats text, keeps raw HTML as text, refuses script links and remote images, opens links outside the panel",
+    "a markdown textarea gets a toolbar: bold wraps and unwraps the word, lists skip blank lines, a line break ends the selection, the preview shows it formatted, the caption stays the textarea's",
+    "a resizable dialog comes back at the size it was dragged to",
 ]
 
 

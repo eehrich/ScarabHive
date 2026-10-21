@@ -473,6 +473,9 @@ const WORDS = {
     copied: 'Copied', copyFailed: 'Could not copy', previous: 'Previous', next: 'Next',
     jsonEmpty: 'empty', jsonNoItems: 'no items', jsonNoFields: 'no fields',
     pageOf: (page, pages) => `Page ${page} of ${pages}`,
+    md: { bold: 'Bold (Ctrl+B)', italic: 'Italic (Ctrl+I)', heading: 'Heading', bullets: 'List',
+      numbers: 'Numbered list', quote: 'Quote', code: 'Code', link: 'Link', preview: 'Preview', edit: 'Edit',
+      linkAddress: 'Address of the link', toolbar: 'Formatting', empty: 'Nothing written yet' },
     sessionScope: 'Scope', chatSession: 'Chat session', chatSessionTitle: 'The session open in the chat',
     allSessions: 'All sessions', sessionNamed: (id) => `Session ${id}`,
     pinnedTitle: (id) => `A link sent this panel to session ${id}: it does not follow the chat`,
@@ -488,6 +491,9 @@ const WORDS = {
     copied: 'Kopiert', copyFailed: 'Kopieren fehlgeschlagen', previous: 'Zurück', next: 'Weiter',
     jsonEmpty: 'leer', jsonNoItems: 'keine Einträge', jsonNoFields: 'keine Felder',
     pageOf: (page, pages) => `Seite ${page} von ${pages}`,
+    md: { bold: 'Fett (Strg+B)', italic: 'Kursiv (Strg+I)', heading: 'Überschrift', bullets: 'Liste',
+      numbers: 'Nummerierte Liste', quote: 'Zitat', code: 'Code', link: 'Link', preview: 'Vorschau',
+      edit: 'Bearbeiten', linkAddress: 'Adresse des Links', toolbar: 'Formatierung', empty: 'Noch nichts geschrieben' },
     sessionScope: 'Welche Session', chatSession: 'Chat-Session', chatSessionTitle: 'Die Session, die im Chat offen ist',
     allSessions: 'Alle Sessions', sessionNamed: (id) => `Session ${id}`,
     pinnedTitle: (id) => `Ein Link hat dieses Panel auf Session ${id} gesetzt: es folgt dem Chat nicht`,
@@ -1233,6 +1239,195 @@ const keepSidebarWidth = new MutationObserver((changes) => changes.forEach(({ ta
   } catch { /* the width lasts this page only */ }
 }));
 
+// ---------------------------------------------------------------- markdown
+
+let markdownIt = null;
+
+async function markdownRenderer() {
+  if (!markdownIt) {
+    await import('/static/vendor/markdown-it/markdown-it.min.js');  // UMD: sets globalThis.markdownit
+    // html: false keeps raw HTML in the text as text; markdown-it itself refuses javascript:/vbscript:/data: links.
+    markdownIt = globalThis.markdownit({ html: false, linkify: true, breaks: true });
+    markdownIt.disable('image');  // ![..](https://..) would load a remote picture (a tracking pixel) for every viewer
+    const open = markdownIt.renderer.rules.link_open
+      || ((tokens, i, options, env, self) => self.renderToken(tokens, i, options));
+    markdownIt.renderer.rules.link_open = (tokens, i, ...rest) => {
+      tokens[i].attrSet('target', '_blank');  // never inside the panel's frame
+      tokens[i].attrSet('rel', 'noopener noreferrer');
+      return open(tokens, i, ...rest);
+    };
+  }
+  return markdownIt;
+}
+
+/** Markdown as markup for render()/html``: safe to insert, raw HTML in the text stays text. Async: loads markdown-it once. */
+export async function markdown(text) {
+  return trusted((await markdownRenderer()).render(String(text ?? '')));
+}
+
+/** Put text in place of the selection, through the browser's own editing so Ctrl+Z undoes it. */
+function insertText(area, text, selectFrom, selectTo) {
+  area.focus();
+  if (!document.execCommand('insertText', false, text)) {
+    area.setRangeText(text, area.selectionStart, area.selectionEnd, 'end');
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  if (selectFrom != null) area.setSelectionRange(selectFrom, selectTo);
+}
+
+function wrapSelection(area, mark) {
+  const { value } = area;
+  let { selectionStart: from, selectionEnd: to } = area;
+  while (from < to && /\s/.test(value[from])) from += 1;  // a double-click on Windows takes the space after a word
+  while (to > from && /\s/.test(value[to - 1])) to -= 1;
+  const inner = value.slice(from, to);
+  // a second click unwraps: the marks either around the selection (as the first click left it) or inside it
+  if (value.slice(from - mark.length, from) === mark && value.slice(to, to + mark.length) === mark) {
+    area.setSelectionRange(from - mark.length, to + mark.length);
+    insertText(area, inner, from - mark.length, to - mark.length);
+  } else if (inner.length >= 2 * mark.length && inner.startsWith(mark) && inner.endsWith(mark)) {
+    area.setSelectionRange(from, to);
+    insertText(area, inner.slice(mark.length, -mark.length), from, to - 2 * mark.length);
+  } else {
+    area.setSelectionRange(from, to);
+    insertText(area, mark + inner + mark, from + mark.length, to + mark.length);
+  }
+}
+
+function prefixLines(area, mark) {
+  const { value, selectionStart: from } = area;
+  // a selection that ends at the start of a line (a triple-click takes the line break) ends on the line before
+  const to = area.selectionEnd > from && value[area.selectionEnd - 1] === '\n' ? area.selectionEnd - 1 : area.selectionEnd;
+  const start = from === 0 ? 0 : value.lastIndexOf('\n', from - 1) + 1;
+  let end = value.indexOf('\n', to);
+  if (end < 0) end = value.length;
+  const lines = value.slice(start, end).split('\n');
+  const marked = mark === '1. ' ? /^\d+\. / : new RegExp(`^${mark.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+  const filled = (line) => line.trim() !== '';  // blank lines stay blank and do not count
+  const all = lines.filter(filled).every((line) => marked.test(line));
+  let number = 0;
+  const out = lines.map((line) => {
+    if (!filled(line)) return line;
+    if (all) return line.replace(marked, '');
+    number += 1;
+    return `${mark === '1. ' ? `${number}. ` : mark}${line.replace(marked, '')}`;
+  }).join('\n');
+  area.setSelectionRange(start, end);
+  insertText(area, out, start, start + out.length);
+}
+
+async function insertLink(area) {
+  const { selectionStart: from, selectionEnd: to } = area;
+  const address = await prompt(word('md').linkAddress, { title: word('md').link, value: 'https://' });
+  if (!address) return;
+  area.setSelectionRange(from, to);
+  const text = area.value.slice(from, to) || address;
+  insertText(area, `[${text}](${address})`, from + 1, from + 1 + text.length);
+}
+
+const MARKDOWN_TOOLS = [
+  ['bold', 'bold', (area) => wrapSelection(area, '**')],
+  ['italic', 'italic', (area) => wrapSelection(area, '_')],
+  ['heading', 'heading-2', (area) => prefixLines(area, '## ')],
+  ['bullets', 'list', (area) => prefixLines(area, '- ')],
+  ['numbers', 'list-ordered', (area) => prefixLines(area, '1. ')],
+  ['quote', 'text-quote', (area) => prefixLines(area, '> ')],
+  ['code', 'code', (area) => wrapSelection(area, '`')],
+  ['link', 'link', insertLink],
+];
+const editorsReady = new WeakSet();
+let editorCount = 0;
+
+/**
+ * Turns every textarea[data-pk-markdown] under root into a small markdown editor: a toolbar (bold, italic, heading,
+ * lists, quote, code, link; Ctrl+B / Ctrl+I) and a preview. The text stays markdown in the textarea -- forms,
+ * dirty tracking and saving see the textarea as before. Runs at start; a textarea rendered later needs the call.
+ */
+export function initMarkdownEditors(root = document) {
+  root.querySelectorAll('textarea[data-pk-markdown]').forEach((area) => {
+    if (editorsReady.has(area)) return;
+    editorsReady.add(area);
+    const words = word('md');
+    // The toolbar sits inside the field's <label>: without a for= the label would name the first button
+    // (and a click on the caption would press Bold), not the textarea.
+    const label = area.closest('label');
+    if (label && !label.htmlFor) {
+      if (!area.id) { editorCount += 1; area.id = `pk-md-${editorCount}`; }
+      label.htmlFor = area.id;
+    }
+    const bar = document.createElement('div');
+    bar.className = 'pk-md-toolbar';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', words.toolbar);
+    const preview = document.createElement('div');
+    preview.className = 'pk-prose pk-md-preview';
+    preview.hidden = true;
+    render(bar, html`${MARKDOWN_TOOLS.map(([key, glyph]) => html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm"
+        data-md="${key}" title="${words[key]}" aria-label="${words[key]}">${icon(glyph, { size: 'sm' })}</button>`)}
+      <span class="pk-grow"></span>
+      <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" data-md="preview" aria-pressed="false">${icon('eye', { size: 'sm' })} ${words.preview}</button>`);
+    area.before(bar);
+    area.after(preview);
+    const toggle = bar.querySelector('[data-md="preview"]');
+    let switching = false;
+    const showPreview = async (on) => {
+      if (switching) return;
+      switching = true;
+      try {
+        if (on) render(preview, area.value.trim() ? await markdown(area.value) : html`<p class="pk-muted">${words.empty}</p>`);
+      } catch (error) {
+        toast(`${words.preview}: ${describe(error)}`, { kind: 'error' });
+        return;
+      } finally {
+        switching = false;
+      }
+      preview.hidden = !on;
+      area.hidden = on;
+      bar.querySelectorAll('[data-md]:not([data-md="preview"])').forEach((button) => { button.disabled = on; });
+      toggle.setAttribute('aria-pressed', String(on));
+      render(toggle, html`${icon(on ? 'pencil' : 'eye', { size: 'sm' })} ${on ? words.edit : words.preview}`);
+    };
+    bar.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-md]');
+      if (!button) return;
+      event.preventDefault();  // inside a <label>: no activation of the textarea on top
+      if (button.dataset.md === 'preview') { showPreview(area.hidden === false); return; }
+      MARKDOWN_TOOLS.find(([key]) => key === button.dataset.md)[2](area);
+    });
+    area.addEventListener('keydown', (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === 'b' || key === 'i') { event.preventDefault(); wrapSelection(area, key === 'b' ? '**' : '_'); }
+    });
+    // A dialog that closes forgets the preview: the next opening shows the (new) text to edit.
+    area.closest('dialog')?.addEventListener('close', () => showPreview(false));
+  });
+}
+
+const dialogKey = (dialog) => `pk.dialog:${location.pathname}#${dialog.id}`;
+const dialogsReady = new WeakSet();
+
+/**
+ * Gives every .pk-dialog--resizable with an id under root the size the viewer last dragged it to, and keeps the
+ * next one when it closes. Runs at start; a dialog rendered later needs the call.
+ */
+export function initResizableDialogs(root = document) {
+  root.querySelectorAll('.pk-dialog--resizable[id]').forEach((dialog) => {
+    if (dialogsReady.has(dialog)) return;
+    dialogsReady.add(dialog);
+    try {
+      const size = JSON.parse(localStorage.getItem(dialogKey(dialog)) || 'null');
+      if (size) Object.assign(dialog.style, { width: size.width || '', height: size.height || '' });
+    } catch { /* nothing stored, or storage unavailable */ }
+    dialog.addEventListener('close', () => {
+      if (!dialog.style.width && !dialog.style.height) return;  // never resized: the CSS size stays the default
+      try {
+        localStorage.setItem(dialogKey(dialog), JSON.stringify({ width: dialog.style.width, height: dialog.style.height }));
+      } catch { /* the size lasts this page only */ }
+    });
+  });
+}
+
 /**
  * Gives every .pk-sidebar under root the width the viewer last dragged it to, and keeps the next one. A button with
  * data-pk-sidebar-toggle and aria-controls naming a .pk-sidebar folds that pane away and back, as the chat's
@@ -1628,6 +1823,8 @@ function start() {
     if (here) keepInSight(row, here);
   });
   initSidebars();
+  initResizableDialogs();
+  initMarkdownEditors();
   sortTables(document);
   sizeTables(document);
   keyRows(document);

@@ -1533,6 +1533,90 @@
     }
   });
 
+  await check('markdown formats text, keeps raw HTML as text, refuses script links and remote images, opens links outside the panel', async () => {
+    const out = String(await pk.markdown('**b** _i_ <img src=x onerror=alert(1)> [web](https://example.org) [bad](javascript:alert(1)) ![pixel](https://example.org/p.png)'));
+    return out.includes('<strong>b</strong>') && out.includes('<em>i</em>') && !out.includes('<img') && out.includes('&lt;img')
+      && out.includes('href="https://example.org" target="_blank" rel="noopener noreferrer"') && !out.includes('href="javascript');
+  });
+
+  await check('a markdown textarea gets a toolbar: bold wraps and unwraps the word, lists skip blank lines, a line break ends the selection, the preview shows it formatted, the caption stays the textarea\'s', async () => {
+    const field = document.createElement('label');
+    field.className = 'pk-field';
+    field.innerHTML = '<span class="pk-label">Text</span><textarea class="pk-textarea" data-pk-markdown></textarea>';
+    document.body.append(field);
+    try {
+      pk.initMarkdownEditors(field);
+      const area = field.querySelector('textarea');
+      const tool = (name) => field.querySelector(`[data-md="${name}"]`);
+      area.value = 'hello\nworld';
+      area.setSelectionRange(0, 5);
+      tool('bold').click();
+      const wrapped = area.value === '**hello**\nworld';
+      tool('bold').click();
+      const unwrapped = area.value === 'hello\nworld';
+      area.setSelectionRange(0, area.value.length);
+      tool('bullets').click();
+      const listed = area.value === '- hello\n- world';
+      tool('preview').click();
+      for (let i = 0; i < 100 && field.querySelector('.pk-md-preview').hidden; i += 1) await new Promise((r) => setTimeout(r, 20));
+      const preview = field.querySelector('.pk-md-preview');
+      const previewed = area.hidden && preview.querySelectorAll('li').length === 2 && tool('bold').disabled;
+      tool('preview').click();
+      for (let i = 0; i < 100 && !preview.hidden; i += 1) await new Promise((r) => setTimeout(r, 20));
+      // the caption names the textarea: a click on it presses no button
+      area.value = 'plain';
+      field.querySelector('.pk-label').click();
+      const caption = area.value === 'plain' && field.htmlFor === area.id;
+      // a double-click on Windows takes the space after the word: the marks go around the word only
+      area.value = 'word next';
+      area.setSelectionRange(0, 5);
+      tool('bold').click();
+      const trimmed = area.value === '**word** next';
+      // blank lines stay blank and do not keep a list from being taken off again
+      area.value = '- a\n\n- b';
+      area.setSelectionRange(0, area.value.length);
+      tool('bullets').click();
+      const blank = area.value === 'a\n\nb';
+      tool('numbers').click();
+      const numbered = area.value === '1. a\n\n2. b';
+      // a triple-clicked line brings its line break: the next line stays as it is
+      area.value = 'one\ntwo';
+      area.setSelectionRange(0, 4);
+      tool('quote').click();
+      const tripled = area.value === '> one\ntwo';
+      return wrapped && unwrapped && listed && previewed && caption && trimmed && blank && numbered && tripled
+        && field.querySelectorAll('.pk-md-toolbar').length === 1;
+    } finally {
+      field.remove();
+    }
+  });
+
+  await check('a resizable dialog comes back at the size it was dragged to', async () => {
+    const make = () => {
+      const dialog = document.createElement('dialog');
+      dialog.className = 'pk-dialog pk-dialog--resizable';
+      dialog.id = 'kitResizeProbe';
+      document.body.append(dialog);
+      pk.initResizableDialogs(document.body);
+      return dialog;
+    };
+    try { localStorage.removeItem(`pk.dialog:${location.pathname}#kitResizeProbe`); } catch { /* none stored */ }
+    const first = make();
+    first.showModal();
+    first.style.width = '512px';
+    first.style.height = '400px';
+    const closed = new Promise((resolve) => first.addEventListener('close', resolve, { once: true }));
+    first.close();
+    await closed;  // the close event comes as a task of its own
+    first.remove();
+    const second = make();
+    try {
+      return second.style.width === '512px' && second.style.height === '400px';
+    } finally {
+      second.remove();
+    }
+  });
+
   await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
 </script>
 </body>

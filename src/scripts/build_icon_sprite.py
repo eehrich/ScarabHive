@@ -33,6 +33,8 @@ ICONS = sorted({
     "pause", "step-forward", "circle-dot", "crosshair",
     # editing (stategraph's graph bar, agent_editor's locked tools)
     "undo-2", "redo-2", "zoom-in", "zoom-out", "rotate-cw", "lock",
+    # markdown editor toolbar (panel-kit.js initMarkdownEditors)
+    "bold", "italic", "heading-2", "list", "list-ordered", "text-quote",
     # states
     "info", "triangle-alert", "circle-alert", "circle-check", "circle-x",
     "loader-circle", "clock", "circle-help", "ban",

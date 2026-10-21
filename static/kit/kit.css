@@ -318,6 +318,19 @@ a.pk-tab { text-decoration: none; }
   box-shadow: var(--shadow-overlay);
 }
 .pk-dialog--wide { width: min(720px, calc(100vw - 32px)); }
+/* Resizable at its corner (the kit keeps the size per panel): the form fills it, a .pk-field--grow takes the room
+   left, the buttons stay in view at the bottom. */
+.pk-dialog--resizable {
+  width: min(840px, calc(100vw - 32px)); height: min(680px, calc(100vh - 64px));
+  min-width: min(360px, calc(100vw - 32px)); min-height: min(320px, calc(100vh - 64px)); max-width: calc(100vw - 32px);
+  resize: both; overflow: hidden;
+}
+.pk-dialog--resizable[open] { display: flex; flex-direction: column; }
+.pk-dialog--resizable > form { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.pk-dialog--resizable .pk-dialog-body { flex: 1; min-height: 0; }
+.pk-dialog--resizable .pk-form { max-width: none; }
+.pk-field--grow { flex: 1 1 auto; min-height: 140px; }
+.pk-field--grow > .pk-textarea { flex: 1; resize: none; }
 .pk-dialog::backdrop { background: var(--overlay); }
 .pk-dialog[open] { animation: pk-pop var(--duration-base) ease-out; }
 @keyframes pk-pop { from { opacity: 0; transform: translateY(4px) scale(0.99); } }
@@ -486,6 +499,9 @@ kbd.pk-kbd {
 }
 @keyframes pk-shimmer { to { background-position: -200% 0; } }
 
+/* A drop target for files: .pk-drop--over while something is dragged over it. */
+.pk-drop { border-radius: var(--radius-lg); outline: 2px dashed transparent; outline-offset: var(--space-1); }
+.pk-drop--over { outline-color: var(--accent); background: var(--accent-subtle); }
 .pk-progress { width: 100%; height: 6px; appearance: none; border: 0; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
 .pk-progress::-webkit-progress-bar { background: var(--surface-3); }
 .pk-progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
@@ -585,6 +601,17 @@ pk-refresh:has(.pk-refresh-auto[aria-pressed="true"]) .pk-refresh-pick { --btn-b
 .pk-prose { max-width: 72ch; font-size: var(--text-md); line-height: 1.65; overflow-wrap: anywhere; }
 .pk-prose p { margin: 0 0 var(--space-3); }
 .pk-prose--breaks { white-space: pre-wrap; }
+.pk-prose ul, .pk-prose ol { margin: 0 0 var(--space-3); padding-left: var(--space-5); }
+.pk-prose h1, .pk-prose h2, .pk-prose h3 { margin: var(--space-4) 0 var(--space-2); font-size: var(--text-lg); line-height: 1.3; }
+.pk-prose h1 { font-size: var(--text-xl); }
+.pk-prose > :first-child { margin-top: 0; }
+.pk-prose blockquote { margin: 0 0 var(--space-3); padding-left: var(--space-3); border-left: 3px solid var(--border-strong); color: var(--text-secondary); }
+.pk-prose code { font-family: var(--font-mono); font-size: 0.92em; padding: 0 0.25em; border-radius: var(--radius-sm); background: var(--surface-3); }
+/* The markdown editor (panel-kit.js initMarkdownEditors): toolbar above the textarea, preview in its place. */
+.pk-md-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+.pk-md-preview { max-width: none; min-height: 72px; overflow: auto; padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-1); }
+.pk-field--grow > .pk-md-preview { flex: 1; }
 
 /* a message in place: an error, a warning, a note, a success (see notice() in panel-kit.js) */
 .pk-callout {
