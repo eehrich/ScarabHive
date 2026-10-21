@@ -160,6 +160,19 @@ class SubAgentManagerWebFactory:
         server = getattr(plugin, "server", plugin)  # the hybrid plugin holds the tool server
         return server if isinstance(server, SubAgentManagerServer) else self.server
 
+    async def has_session_data(self, session_id: str, user_id: str) -> bool:
+        """Whether this instance's panel is the one to offer for ``session_id``: the session has a sub-agent this
+        instance answers for (``_spawned_by``). Every instance's panel shows them all, so offering each would offer
+        the same list once per instance. The entries are read, not the sub-sessions: the panel lists an entry whose
+        sub-session was deleted behind it. Another user's session (an admin's view) is offered: finding its owner is
+        a scan."""
+        sessions = get_session_service().session_manager
+        if not hers(sessions, user_id, session_id):
+            return True
+        parent = await sessions.load_session(user_id, session_id)
+        return any(self._spawned_by(metadata) is self.server
+                   for metadata in ((parent.get("metadata") or {}).get("sub_agents") or {}).values())
+
     @staticmethod
     def _require_hers(user_id: str, *session_ids: str) -> None:
         """Not found, unless every one is the viewer's session: the tool's lookups behind these ask by the id alone."""

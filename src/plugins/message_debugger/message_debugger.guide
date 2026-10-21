@@ -34,9 +34,10 @@ For agents and developers
 
 Open it from the launcher (@{b}Debugging@{ub}, "Message Debugger"). From
 the chat it opens on one thing: click an answer's request id, or the
-session id in the header, and pick it under "Open in". Opened that way,
-both lists start filtered to that request or session. The panel does not
-follow the chat; the filters say what it shows.
+session id in the header, and pick it under "Open in" -- which offers it
+for a session only once a turn or LLM request of it was captured. Opened
+that way, both lists start filtered to that request or session. The panel
+does not follow the chat; the filters say what it shows.
 
 @{image docs/panel.png "The Message Debugger panel"}
 

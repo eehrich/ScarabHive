@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
+from agent_system import app_state
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.factory import resolve_llm_config_for_agent
 from agent_system.llm.pricing import normalize_usage, resolve_call_cost
@@ -318,6 +319,19 @@ class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
     def get_static_assets(self) -> Path:
         """The panel's script and stylesheet, served under /plugins/<name>/static/."""
         return Path(__file__).parent / "static"
+
+    def has_session_data(self, session_id: str, user_id: str) -> bool:
+        """Whether the panel opened on ``session_id`` shows calls: one of its own, or -- for a session that makes
+        none itself, a machine's run -- sub-sessions, whose calls the panel counts with it (a stat, not whether
+        they made any). Another user's session (an admin's view) is offered: finding its owner is a scan."""
+        if self.tracker.db.has_session(session_id):
+            return True
+        sessions = getattr(app_state.session_service, "session_manager", None)
+        if sessions is None:
+            return True  # cannot say: offered
+        if not sessions.belongs_to(user_id, session_id):
+            return True
+        return sessions._has_children(user_id, session_id)
 
 
 # Plugin factory

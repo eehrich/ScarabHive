@@ -88,6 +88,10 @@ class SubAgentManagerHybridPlugin:
         """The panel's script and stylesheet, served under /plugins/<name>/static/."""
         return Path(__file__).parent / "static"
 
+    async def has_session_data(self, session_id: str, user_id: str) -> bool:
+        """Whether this instance's panel is offered for ``session_id`` (SubAgentManagerWebFactory.has_session_data)."""
+        return await self.web_factory.has_session_data(session_id, user_id)
+
 
 def PLUGIN_FACTORY(name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig") -> SubAgentManagerHybridPlugin:
     """Factory function for creating SubAgentManagerHybridPlugin instances.

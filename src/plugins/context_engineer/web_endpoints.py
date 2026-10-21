@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 import time
 from contextlib import closing
@@ -28,18 +29,28 @@ READ_ATTEMPTS = 20
 READ_PAUSE_SECONDS = 0.01
 
 
-def _table_totals(database: Path, table: str, session_id: str | None = None) -> dict[str, int]:
-    """Rows and tokens of a session's store, opened read-only: every row, or those tagged with the session."""
+def _select(database: Path, table: str, columns: str, session_id: str | None = None) -> tuple | None:
+    """The first row of ``SELECT columns`` over a session's store, opened read-only: over every row, or those tagged
+    with the session. None while the file or its table is not there yet."""
     if not database.exists():
-        return {"count": 0, "tokens": 0}
+        return None
     # pathname2url, not as_uri: a UNC path must become file:////server/share, which SQLite accepts
     with closing(sqlite3.connect(f"file:{pathname2url(str(database.absolute()))}?mode=ro", uri=True)) as connection:
         if not connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
-            return {"count": 0, "tokens": 0}  # a store being created: its file is there before its table
-        count, tokens = connection.execute(
-            f"SELECT COUNT(*), COALESCE(SUM(token_count), 0) FROM {table}" + (" WHERE session_id = ?" if session_id else ""),
-            (session_id,) if session_id else ()).fetchone()
+            return None  # a store being created: its file is there before its table
+        return connection.execute(f"SELECT {columns} FROM {table}" + (" WHERE session_id = ?" if session_id else ""),
+                                  (session_id,) if session_id else ()).fetchone()
+
+
+def _table_totals(database: Path, table: str, session_id: str | None = None) -> dict[str, int]:
+    """Rows and tokens of a session's store: every row, or those tagged with the session."""
+    count, tokens = _select(database, table, "COUNT(*), COALESCE(SUM(token_count), 0)", session_id) or (0, 0)
     return {"count": count, "tokens": tokens}
+
+
+def _any_row(database: Path, table: str, session_id: str | None = None) -> bool:
+    """Whether ``_table_totals`` would count a row: the query stops at the first one it finds."""
+    return _select(database, table, "1", session_id) is not None
 
 
 def _read_saved(path: Path) -> str:
@@ -129,3 +140,19 @@ class ContextEngineerWebFactory:
             return await asyncio.to_thread(read)
         except (sqlite3.Error, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             raise HTTPException(status_code=503, detail=f"The stores of session {session_id} cannot be read: {error}") from error
+
+    def has_session_data(self, session_id: str) -> bool:
+        """Whether the panel opened on ``session_id`` shows anything: a compaction of it, or a row or fact in one of
+        the stores ``get_session`` counts. The hook creates those stores for every session it sees, so a directory
+        alone is nothing."""
+        if any(event.get("session_id") == session_id for event in list(self.stats_history)):
+            return True
+        if not re.fullmatch(SESSION_PATTERN, session_id):
+            return False
+        directory = self.server._hooks_impl._storage_base / session_id
+        if not directory.is_dir():
+            return False
+        memory = directory / "core_memory.json"
+        return (_any_row(directory / "tool_results.db", "tool_results")
+                or _any_row(directory / "archive.db", "archived_messages", session_id)
+                or (memory.exists() and bool(json.loads(_read_saved(memory)).get("facts"))))

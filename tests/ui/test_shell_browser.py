@@ -170,6 +170,9 @@ def plugin_panels() -> list[Panel]:
         Panel("todo", "Todos", "/plugins/todo/", "list-todo", "agents", "Task lists"),
         Panel("context_usage_tracker", "Context & Cost Usage", "/plugins/context_usage_tracker/", "chart-column",
               "context", "Token usage"),
+        # a session entry, and nothing for any session (the stub's /api/ui/session-panels): left out of its menu
+        Panel("quiet", "Quiet", "/tests/ui/missing_panel_q.html", "bug", "debug", "Holds nothing for a session",
+              contexts={"session": "/tests/ui/missing_panel_q.html?session_id={session_id}"}),
     ]
 
 
@@ -533,6 +536,16 @@ def stub_app() -> FastAPI:
             await asyncio.sleep(1)
         core = core_panels(audit_enabled=False, profiling_enabled=False, memory_profiling_enabled=False)
         return build_catalog("admin", core, plugin_panels())
+
+    @app.get("/api/ui/session-panels")  # before the real router: the stub wins
+    async def session_panels(request: Request, session_id: str):
+        if request.cookies.get("stub_session_panels") == "broken":
+            raise HTTPException(status_code=500, detail="session panels failed")
+        if request.cookies.get("stub_session_panels") == "slow":  # s-1 answers late, every other one at once
+            if session_id != "s-1":
+                return {"session_id": session_id, "panels": ["probe", "quiet"], "hidden": []}
+            await asyncio.sleep(0.6)
+        return {"session_id": session_id, "panels": ["probe"], "hidden": ["quiet"]}
 
     @app.get("/admin/active-sessions")
     async def active_sessions(request: Request):
@@ -1861,6 +1874,9 @@ EXPECTED = [
     'a server failure at start is shown, not a dead page',
     'the login page returns only to this site',
     'without authentication the login page lets the owner straight in',
+    'the open-in menu leaves out the panels holding nothing for the session, and offers them all on request',
+    'the composer opens the same menu, and a failed question shows every panel',
+    'a slow answer for an earlier click does not replace the menu of the later one',
 ]
 
 

@@ -91,6 +91,11 @@ class ContextSummarizerHybridPlugin:
         """The panel's script and stylesheet, served under /plugins/<name>/static/."""
         return Path(__file__).parent / "static"
 
+    async def has_session_data(self, session_id: str, user_id: str) -> bool:
+        """Whether the panel opened on ``session_id`` lists an event of it: the history this process keeps in memory
+        (empty after a restart). Async, so it reads the list on the loop the hook appends to it on."""
+        return any(event.get("session_id") == session_id for event in self.server.summarization_history)
+
 
 def PLUGIN_FACTORY(name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig") -> ContextSummarizerHybridPlugin:
     """Factory function for creating ContextSummarizerHybridPlugin instances.

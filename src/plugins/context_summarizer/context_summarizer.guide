@@ -35,7 +35,7 @@ For agents and developers
 @{h1}The Context Summarizer panel
 
 Open it from the launcher (@{b}Context & memory@{ub}, "Context
-Summarizer"), or from a session's info button, which opens it on that
+Summarizer"), or from a session's panel button, which opens it on that
 session.
 
 @{image docs/panel.png "The Context Summarizer panel"}
@@ -43,12 +43,13 @@ session.
 @{h2}Which runs it shows
 
 The panel follows the chat: it shows the runs of the session open there
-and switches with it. Opened from a session's info button it stays on
+and switches with it. Opened from a session's panel button it stays on
 that session -- the toolbar says so, and @{b}Follow the chat@{ub} lets go
 of it. @{b}All sessions@{ub} shows the runs of every session, with a
 column naming the session; that view is an admin's, anyone else gets
 "The history could not be loaded" and the reason. With no session open
-the panel says so and asks for nothing.
+the panel says so and asks for nothing. A session's panel button offers
+the panel once a run of that session is in the history.
 
 The list reloads every 5 seconds; the menu next to the reload button sets
 another interval or turns it off.

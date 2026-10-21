@@ -39,7 +39,7 @@ For agents and developers
 @{h1}The Context Engineer panel
 
 Open it from the launcher (@{b}Context & memory@{ub}, "Context
-Engineer"), or from a session's info button, which opens it on that
+Engineer"), or from a session's panel button, which opens it on that
 session.
 
 @{image docs/panel.png "The Context Engineer panel"}
@@ -47,13 +47,15 @@ session.
 @{h2}Which data it shows
 
 The panel follows the chat: it shows the session open there and switches
-with it. Opened from a session's info button it stays on that session --
+with it. Opened from a session's panel button it stays on that session --
 the toolbar says so, and @{b}Follow the chat@{ub} lets go of it. @{b}All
 sessions@{ub} shows the compactions of every session, with a column
 naming the session, and no stores; that view is an admin's, anyone else
 gets "The context engineering could not be loaded" and the reason. With
 no session open the panel says so and asks for nothing. Another user's
-session looks like one where nothing happened.
+session looks like one where nothing happened. A session's panel button
+offers the panel only once it holds something: a compaction, a stored
+tool result, an archived message or a core memory fact.
 
 The panel reloads every 10 seconds; the menu next to the reload button
 sets another interval or turns it off.

@@ -328,6 +328,20 @@ class MemoryServer(SchemaBasedHookToolServer):
         """Get path to JSON metadata file for session"""
         return self.storage_path / f"{session_id}.json"
 
+    def has_memories(self, session_id: str) -> bool:
+        """Whether ``session_id`` holds a memory, as ``_load_collection`` would answer: from the cache where it has the
+        session, else from its file -- per session, not per user. The file read is not cached: asking is not using."""
+        collection = self._collections_cache.get(session_id)
+        if collection is not None:
+            return bool(collection.memories)
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id):  # the id names a file
+            return False
+        path = self._get_metadata_path(session_id)
+        if not path.exists():
+            return False
+        with open(path, "r", encoding="utf-8") as f:
+            return bool(json.load(f).get("memories"))
+
     def _load_collection_sync(self, session_id: str) -> MemoryCollection:
         """Load memory collection from JSON - sync version for thread pool."""
         metadata_path = self._get_metadata_path(session_id)

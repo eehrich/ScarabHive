@@ -764,6 +764,13 @@ class MessageDebuggerDB:
                                     direction=direction, provider=provider, max_id=max_id)
         return self._get_conn().execute(f"SELECT COUNT(*) FROM llm_requests{where}", params).fetchone()[0]
     
+    def has_session(self, session_id: str) -> bool:
+        """Whether anything was captured for ``session_id`` -- a turn or an LLM request, whoever owns it. Two indexed
+        lookups (idx_turns_session, idx_llm_requests_session) that stop at the first row."""
+        conn = self._get_conn()
+        return any(conn.execute(f"SELECT 1 FROM {table} WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()
+                   for table in ("llm_requests", "turns"))
+
     def newest_id(self, table: str, *, owner: Any) -> int:
         """The id the newest of ``owner``'s rows in ``turns`` or ``llm_requests`` has, 0 for none: a list's point
         in time."""

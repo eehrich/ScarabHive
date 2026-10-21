@@ -35,7 +35,9 @@ For agents and developers
 @{h1}The Context & Cost Usage panel
 
 Open it from the launcher (@{b}Context & memory@{ub}, "Context & Cost Usage"), or
-from a session's info button, which opens it on that session.
+from a session's panel button, which opens it on that session. That menu
+offers it once the session made a call, or has sessions below it whose
+calls it counts.
 
 @{image docs/panel.png "The Context & Cost Usage panel"}
 
@@ -43,7 +45,7 @@ from a session's info button, which opens it on that session.
 
 Two buttons in the toolbar choose the scope. @{b}Chat session@{ub} shows
 the session open in the chat and switches with it; opened from a
-session's info button it stays on that session instead -- the button then
+session's panel button it stays on that session instead -- the button then
 names it, and @{b}Follow the chat@{ub} lets go of it. With no session open
 it says so rather than counting every session. @{b}All sessions@{ub}
 counts every call; only an admin may look at that (see below).

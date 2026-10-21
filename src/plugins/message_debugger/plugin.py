@@ -89,5 +89,9 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
         """The panel's script and stylesheet, served under /plugins/<name>/static/."""
         return Path(__file__).parent / "static"
 
+    def has_session_data(self, session_id: str, user_id: str) -> bool:
+        """Whether the panel opened on ``session_id`` lists anything: a captured turn or LLM request of it."""
+        return self._db.has_session(session_id)
+
 
 PLUGIN_FACTORY = MessageDebuggerHybridPlugin

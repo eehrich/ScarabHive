@@ -1,7 +1,10 @@
 """Routes of the UI itself: the panel catalogue, the core panels, the kit page, the help library."""
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -23,11 +26,10 @@ templates = ui_templates()
 CORE_PANELS = ("session", "system", "settings", "help", "memory_profile", "performance")
 
 
-async def viewer_role(request: Request) -> str:
-    """The role panels are filtered for. Without auth there is one user, the owner."""
-    config = request.app.state.config
-    if not config.auth.enabled:
-        return "admin"
+async def viewer_user(request: Request) -> Any:
+    """The signed-in user (401 for nobody); None while auth is off -- one user, the owner."""
+    if not request.app.state.config.auth.enabled:
+        return None
     from agent_system.auth.database import get_db
     from agent_system.auth.dependencies import get_optional_user
 
@@ -36,7 +38,13 @@ async def viewer_role(request: Request) -> str:
     # A deactivated account keeps its token until it expires; it is nobody here.
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return user.role.value
+    return user
+
+
+async def viewer_role(request: Request) -> str:
+    """The role panels are filtered for. Without auth there is one user, the owner."""
+    user = await viewer_user(request)
+    return "admin" if user is None else user.role.value
 
 
 def plugin_panels(auth_config) -> list[Panel]:
@@ -93,6 +101,47 @@ async def catalog(request: Request):
     for panel in plugins:
         panel.help = guides.get(panel.id, "")
     return build_catalog(role, core, plugins)
+
+
+#: How long one plugin may take to say whether it holds data for a session: past it, its panel is offered.
+SESSION_PANEL_TIMEOUT = 0.5
+
+
+async def _holds(instance: str, plugin: Any, session_id: str, user_id: str) -> bool:
+    """A plugin's ``has_session_data(session_id, user_id)`` (sync or async). Without the method, or when it fails or
+    takes too long, the panel is offered: one entry too many beats one hidden."""
+    ask = getattr(plugin, "has_session_data", None)
+    if not callable(ask):
+        return True
+    try:
+        if inspect.iscoroutinefunction(ask):
+            answer = await asyncio.wait_for(ask(session_id, user_id), SESSION_PANEL_TIMEOUT)
+        else:
+            answer = await asyncio.wait_for(asyncio.to_thread(ask, session_id, user_id), SESSION_PANEL_TIMEOUT)
+    except Exception as exc:  # TimeoutError included
+        logger.warning("Panel %s: has_session_data(%s) failed (%s) -- offered", instance, session_id,
+                       type(exc).__name__ if isinstance(exc, TimeoutError) else exc)
+        return True
+    return bool(answer)
+
+
+@router.get("/api/ui/session-panels")
+async def session_panels(request: Request, session_id: str):
+    """The plugin panels with a session entry that hold data for *session_id*: the chat's "Open in" menu offers
+    those (and the core ones). 404 for a session the viewer may not see, as for one that does not exist."""
+    from agent_system.auth.session_access import may_see_session, viewer
+    from agent_system.plugins.web_adapter import plugin_web_registry
+
+    user = await viewer_user(request)
+    if not await may_see_session(request, user, session_id):
+        raise HTTPException(status_code=404, detail=f"No session {session_id!r}")
+    role = "admin" if user is None else user.role.value
+    instances = [panel.id for panel in plugin_panels(request.app.state.config.auth)
+                 if "session" in panel.contexts and panel.visible_to(role)]  # what the viewer's catalogue holds
+    plugins = plugin_web_registry.web_plugins
+    held = await asyncio.gather(*(_holds(i, plugins.get(i), session_id, viewer(user)) for i in instances))
+    return {"session_id": session_id, "panels": [i for i, yes in zip(instances, held) if yes],
+            "hidden": [i for i, yes in zip(instances, held) if not yes]}
 
 
 @router.get("/ui/kit", response_class=HTMLResponse)

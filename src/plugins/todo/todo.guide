@@ -31,17 +31,18 @@ For agents and developers
 @{h1}The Todos panel
 
 Open it from the launcher (@{b}Agents & tools@{ub}, "Todos"), or from a
-session's info button, which opens it on that session.
+session's panel button, which opens it on that session.
 
 @{image docs/panel.png "The Todos panel"}
 
 @{h2}Which list it shows
 
 The panel follows the chat: it shows the tasks of the session open there
-and switches when you switch sessions. Opened from a session's info button
+and switches when you switch sessions. Opened from a session's panel button
 it is pinned to that session instead -- the toolbar says so ("Session
 ...") and @{b}Follow the chat@{ub} lets go of it. With no session open it
-says so and shows nothing. The list reloads every 5 seconds; the menu next
+says so and shows nothing. A session's panel button offers the panel once
+the session holds a task. The list reloads every 5 seconds; the menu next
 to the reload button sets another interval or turns it off.
 
 @{h2}What you see

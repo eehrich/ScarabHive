@@ -40,9 +40,11 @@ For agents and developers
 @{h1}The Sub-Agents panel
 
 Open it from the launcher (@{b}Agents & tools@{ub}, "Sub-Agents"), or from
-a session's info button, which opens it on that session. Every SAM
+a session's panel button, which opens it on that session. Every SAM
 instance has a panel of its own, and each shows the same thing: the
-sub-agents of the session, whichever instance started them.
+sub-agents of the session, whichever instance started them. So a
+session's panel button offers the panel of each instance that started one
+of its sub-agents, and none for a session without sub-agents.
 
 @{h2}Which session it shows
 

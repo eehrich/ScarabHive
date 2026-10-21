@@ -336,6 +336,19 @@ class TodoServer(SchemaBasedHookToolServer):
         logger.debug(f"Created new session {session_id}")
         return collection
 
+    def has_tasks(self, session_id: str) -> bool:
+        """Whether ``session_id`` holds a task, as ``_load_session`` would answer: from the cache where it has the
+        session, else from its file. The file read is not cached: asking is not using."""
+        with self._cache_lock:
+            collection = self._sessions.get(session_id)
+        if collection is not None:
+            return bool(collection.tasks)
+        path = self._get_storage_path(session_id)  # refuses an id that is no file name
+        if not path.exists():
+            return False
+        with open(path, "r", encoding="utf-8") as f:
+            return bool(json.load(f).get("tasks"))
+
     def _save_session(self, session_id: str) -> None:
         """
         Persist task collection to JSON file.

@@ -71,6 +71,7 @@ function onSessionChange(session) {
   activeSession = session;
   $('headerSessionId').textContent = session ? session.title : 'New session';
   $('headerSessionId').disabled = !session;
+  $('sessionPanelsButton').disabled = !session;
   document.title = session ? `${session.title} · ScarabHive` : 'ScarabHive';
   workspace.broadcast('pk:session', { session });
 }
@@ -172,17 +173,46 @@ async function loadCatalog() {
 
 // ------------------------------------------------ panels from the chat itself
 
-function contextMenu(anchor, context, values) {
-  const panels = catalog.panels.filter((p) => p.contexts && p.contexts[context]);
+/** The panels of a session that hold nothing for it (GET /api/ui/session-panels): the menu leaves them out. A
+ * failed question leaves none out -- the whole list, as before there was one. */
+async function emptyFor(sessionId) {
+  try {
+    const answer = await api(`/api/ui/session-panels?session_id=${encodeURIComponent(sessionId)}`, { quiet: true });
+    return new Set(answer.hidden || []);
+  } catch {
+    return new Set();
+  }
+}
+
+let menuTurn = 0;
+
+async function contextMenu(anchor, context, values) {
+  const turn = ++menuTurn;
+  const box = anchor.getBoundingClientRect();  // before the wait: a redrawn session list drops the anchor
+  const all = catalog.panels.filter((p) => p.contexts && p.contexts[context]);
+  const hidden = context === 'session' && all.length ? await emptyFor(values.session_id) : new Set();
+  if (turn !== menuTurn) return;  // a later click opened its own menu meanwhile
   document.getElementById('contextMenu')?.remove();
-  if (!panels.length) return;
+  if (!all.length) return;
   const menu = document.createElement('div');
   menu.id = 'contextMenu';
   menu.className = 'pk-menu';
   menu.popover = 'auto';
-  render(menu, html`<div class="pk-menu-label">Open in</div>${panels.map((p) => html`
-    <button type="button" class="pk-menu-item" data-panel="${p.id}">${icon(p.icon)} ${p.title}</button>`)}`);
+  const draw = (whole) => {
+    const panels = whole ? all : all.filter((p) => !hidden.has(p.id));
+    const left = all.length - panels.length;
+    render(menu, html`<div class="pk-menu-label">Open in</div>${panels.map((p) => html`
+      <button type="button" class="pk-menu-item" data-panel="${p.id}">${icon(p.icon)} ${p.title}</button>`)}
+      ${left ? html`<button type="button" class="pk-menu-item" data-all-panels
+        title="Panels that hold nothing for this session">${icon('chevron-down')} All session panels (${all.length})</button>` : ''}`);
+  };
+  draw(false);
   menu.addEventListener('click', (event) => {
+    if (event.target.closest('[data-all-panels]')) {
+      draw(true);
+      menu.querySelector('[data-panel]')?.focus();
+      return;
+    }
     const item = event.target.closest('[data-panel]');
     if (!item) return;
     const panel = catalog.panels.find((p) => p.id === item.dataset.panel);
@@ -193,9 +223,9 @@ function contextMenu(anchor, context, values) {
     workspace.open(panel.id, { path });
   });
   document.body.appendChild(menu);
-  placeMenu(menu, anchor.getBoundingClientRect());
+  placeMenu(menu, box);
   menu.showPopover();
-  menu.querySelector('[data-panel]').focus();
+  menu.querySelector('[data-panel], [data-all-panels]').focus();  // every panel left out: the way to them
 }
 
 // ---------------------------------------------------------------- palette
@@ -284,9 +314,11 @@ async function start() {
   $('sessionsToggle').addEventListener('click', () => setSessionsOpen(!sessionsOpen()));
   $('paletteButton').addEventListener('click', () => palette.open());
   $('helpButton').addEventListener('click', () => workspace.openManual());  // a plugin's guide: its panel's own button
-  $('headerSessionId').addEventListener('click', () => {
-    if (activeSession) contextMenu($('headerSessionId'), 'session', { session_id: activeSession.id });
-  });
+  for (const id of ['headerSessionId', 'sessionPanelsButton']) {
+    $(id).addEventListener('click', () => {
+      if (activeSession) contextMenu($(id), 'session', { session_id: activeSession.id });
+    });
+  }
   $('userMenu').addEventListener('click', (event) => {
     // a theme picked shows at once; the menu stays open, its choice marked
     const choice = event.target.closest('[data-theme-choice]');

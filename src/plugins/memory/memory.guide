@@ -32,16 +32,17 @@ For agents and developers
 @{h1}The Memory panel
 
 Open it from the launcher (@{b}Context & memory@{ub}, "Memory"), or from a session's
-info button, which opens it on that session.
+panel button, which opens it on that session.
 
 @{image docs/panel.png "The Memory panel"}
 
 @{h2}Which memories it shows
 
 The panel follows the chat: it shows the memories of the session open
-there and switches with it. Opened from a session's info button it stays
+there and switches with it. Opened from a session's panel button it stays
 on that session -- the toolbar says so, and @{b}Follow the chat@{ub} lets go
-of it. With no session open it says so.
+of it. With no session open it says so. A session's panel button offers
+the panel once the session holds a memory.
 
 @{h2}What you see
 

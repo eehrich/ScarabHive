@@ -115,6 +115,10 @@ class TodoManagementHybridPlugin:
         """The panel's script and stylesheet, served under /plugins/<name>/static/."""
         return Path(__file__).parent / "static"
 
+    def has_session_data(self, session_id: str, user_id: str) -> bool:
+        """Whether the panel opened on ``session_id`` lists a task (TodoServer.has_tasks)."""
+        return self.server.has_tasks(session_id)
+
 
 def PLUGIN_FACTORY(
     name: str,

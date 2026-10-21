@@ -201,7 +201,7 @@ export class SessionManager {
           <span class="session-meta">${relative(session.updated_at)}</span>
           <span class="session-actions">
             ${depth === 0 && html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="move" title="Move to a folder" aria-haspopup="menu">${icon('folder-input', { size: 'sm' })}</button>`}
-            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="info" title="Open in a panel">${icon('info', { size: 'sm' })}</button>
+            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="info" title="Open in a panel">${icon('panel-right', { size: 'sm' })}</button>
             <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="rename" title="Rename">${icon('pencil', { size: 'sm' })}</button>
             <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="delete" title="Delete">${icon('trash-2', { size: 'sm' })}</button>
           </span>

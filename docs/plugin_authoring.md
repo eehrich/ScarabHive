@@ -794,7 +794,11 @@ not parse is left out of the catalogue with an error log.
 - `window`: `{width, height}` of the detached window
 - `contexts`: entry points from the chat, `session` and `request`. The URL must start
   with `endpoint`; the shell fills in `{session_id}` / `{request_id}`. Declare a context
-  only if the panel reads that parameter
+  only if the panel reads that parameter. A plugin with a `session` context should also
+  give its web object `has_session_data(session_id, user_id) -> bool` (sync or async,
+  cheap: a file stat, an indexed `LIMIT 1`): a session's "Open in" menu then offers the
+  panel only where it has something to show (`GET /api/ui/session-panels`). Without the
+  method, or when it fails or takes over 0.5 s, the panel is offered in every session
 
 Who sees the panel is not declared here: the catalogue lists it for the roles both
 layers of route security in `config/security.yaml` (included by `config/config.yaml`) let open its `endpoint` -- the

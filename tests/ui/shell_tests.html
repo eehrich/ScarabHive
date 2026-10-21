@@ -694,6 +694,61 @@
     }
   });
 
+  await check('the open-in menu leaves out the panels holding nothing for the session, and offers them all on request', async () => {
+    $('#contextMenu')?.remove();  // the last check's menu, hidden: not the one this click draws
+    sessionButton('s-1', 'info').click();
+    const menu = await until('the context menu', () => $('#contextMenu [data-panel="probe"]') && $('#contextMenu'));
+    const shown = () => [...menu.querySelectorAll('[data-panel]')].map((b) => b.dataset.panel);
+    const filtered = shown();
+    const all = menu.querySelector('[data-all-panels]');
+    need(!filtered.includes('quiet') && all && all.textContent.includes('All session panels (3)'), `filtered: ${filtered} ${all?.textContent}`);
+    all.click();
+    await until('every panel', () => shown().includes('quiet'));
+    const taken = !menu.querySelector('[data-all-panels]');
+    menu.hidePopover();
+    return need(taken, 'the way to all of them is offered again once taken');
+  });
+
+  await check('the composer opens the same menu, and a failed question shows every panel', async () => {
+    const button = $('#sessionPanelsButton');
+    need(!button.disabled, 'the composer button is off with a session open');
+    $('#contextMenu')?.remove();  // the last check's menu, hidden: not the one this click draws
+    button.click();
+    const menu = await until('the menu from the composer', () => $('#contextMenu [data-panel="probe"]') && $('#contextMenu'));
+    need(!menu.querySelector('[data-panel="quiet"]'), 'the composer menu is not the filtered one');
+    menu.hidePopover();
+    document.cookie = 'stub_session_panels=broken; path=/';
+    try {
+      $('#contextMenu')?.remove();
+      button.click();
+      await until('the whole list', () => $('#contextMenu [data-panel="quiet"]'));
+      const again = $('#contextMenu');
+      const whole = !again.querySelector('[data-all-panels]');
+      again.hidePopover();
+      return need(whole, 'the way to all of them, though nothing was left out');
+    } finally {
+      document.cookie = 'stub_session_panels=; path=/; max-age=0';
+    }
+  });
+
+  await check('a slow answer for an earlier click does not replace the menu of the later one', async () => {
+    $('#contextMenu')?.remove();
+    document.cookie = 'stub_session_panels=slow; path=/';
+    try {
+      sessionButton('s-1', 'info').click();  // answered late, and filtered
+      await sleep(100);
+      sessionButton('s-run', 'info').click();  // answered at once: nothing left out
+      await until('the later menu', () => $('#contextMenu [data-panel="quiet"]'));
+      await sleep(1000);  // past the slow answer
+      const menu = $('#contextMenu');
+      const kept = menu && menu.querySelector('[data-panel="quiet"]');
+      menu?.hidePopover();
+      return need(kept, "the earlier click's late menu took the place of the later one");
+    } finally {
+      document.cookie = 'stub_session_panels=; path=/; max-age=0';
+    }
+  });
+
   await check('an open branch of the session tree stays open and current when the list refreshes', async () => {
     sessionButton('s-1', 'expand').click();
     await until('the sub-session', () => $('.session-item[data-id="s-1-sub"]'));

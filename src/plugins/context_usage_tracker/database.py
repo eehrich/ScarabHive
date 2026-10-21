@@ -544,6 +544,12 @@ class UsageDatabase:
             return None
         return _row_to_snapshot(row) if row else None
 
+    def has_session(self, session_id: str) -> bool:
+        """Whether a call of ``session_id`` was recorded -- any, a call without a conversation included, as the
+        panel's history lists those too. One indexed lookup (idx_usage_session)."""
+        return self._get_conn().execute("SELECT 1 FROM usage_snapshots WHERE session_id = ? LIMIT 1",
+                                        (session_id,)).fetchone() is not None
+
     def count(self) -> int:
         try:
             conn = self._get_conn()
