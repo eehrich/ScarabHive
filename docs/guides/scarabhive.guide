@@ -891,7 +891,7 @@ Key | Shipped | Meaning
 @{tt}refresh_token_expire_days@{utt} | @{tt}3650@{utt} | lifetime of a refresh token
 @{tt}database_path@{utt} | @{tt}data/users.db@{utt} | the user database
 @{tt}registration.default_role@{utt} | @{tt}user@{utt} | the role of a registered account (@{tt}guest@{utt} or @{tt}user@{utt})
-@{tt}mail.host@{utt}, @{tt}mail.port@{utt}, @{tt}mail.security@{utt} | unset, by security, @{tt}starttls@{utt} | the mail server the reset link goes out through (@{tt}starttls@{utt}, @{tt}ssl@{utt} or @{tt}none@{utt}; the port follows: 587, 465, 25)
+@{tt}mail.host@{utt}, @{tt}mail.port@{utt}, @{tt}mail.security@{utt} | unset, by security, @{tt}starttls@{utt} | the mail server the reset link goes out through. Unset, the port follows @{tt}security@{utt}: 587 for @{tt}starttls@{utt}, 465 for @{tt}ssl@{utt}, 25 for @{tt}none@{utt}. Set it where a provider blocks one, and keep @{tt}security@{utt} to the port: @{tt}ssl@{utt} speaks TLS from the first byte (465), @{tt}starttls@{utt} starts plain and switches (587, often 2525)
 @{tt}mail.timeout@{utt} | @{tt}20@{utt} | seconds a step of the conversation with the mail server may take
 @{tt}mail.username@{utt}, @{tt}mail.password@{utt}, @{tt}mail.sender@{utt} | unset | its login (the password as @{tt}${SMTP_PASSWORD}@{utt} from @{tt}secrets.env@{utt}) and the From address
 @{tt}password_reset.public_url@{utt}, @{tt}password_reset.link_minutes@{utt} | unset, @{tt}30@{utt} | where users reach the server, and how long a reset link holds

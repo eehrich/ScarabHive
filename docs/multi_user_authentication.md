@@ -170,7 +170,9 @@ auth:
   # Offered once mail has a host and a sender and password_reset a public_url.
   mail:
     host: "smtp.example.com"
-    # port: unset is 587 with starttls, 465 with ssl, 25 with none
+    # port: unset is 587 with starttls, 465 with ssl, 25 with none. Set it where a
+    # provider blocks one (often 2525 with starttls, or 465 with ssl): security must
+    # fit the port -- ssl is TLS from the first byte, starttls switches after a plain start
     security: "starttls"     # "starttls", "ssl" or "none"
     username: "hive@example.com"
     password: "${SMTP_PASSWORD}"   # set in config/secrets.env
