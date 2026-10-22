@@ -9,6 +9,7 @@ writes a key: it would pass through the chat.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import sqlite3
 from pathlib import Path
@@ -18,14 +19,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from agent_system.api.admin_endpoints import ConfigReloadFailed, ConfigReloadUnavailable, reload_app_config
 from agent_system.api.debug_endpoints import require_admin_viewer
-from agent_system.config.local_layer import WRITING, ensure_signing_key, write_secret
+from agent_system.config.local_layer import SIGNING_KEY_VARIABLE, WRITING, ensure_signing_key, write_secret
 from agent_system.config.settings import LOCAL_SECRETS, environment_takes, set_by_the_environment, take_secret
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.ui.resources import ui_templates
 
 from .probe import default_chat_profile, probe_chat, runs_as_a_batch
-from .status import SHIPPED_SIGNING_KEYS, api_keys, auth_status, keys_status, user_database
+from .status import SHIPPED_SIGNING_KEYS, api_keys, auth_status, config_writable, keys_status, user_database
 
 logger = logging.getLogger(__name__)
 templates = ui_templates(Path(__file__).parent / "templates")
@@ -40,8 +41,9 @@ def installation_state(config: Any, signing_key: Optional[str] = None) -> dict[s
     applies is read from the config file.
     """
     agent, profile = default_chat_profile(config)
-    return {"keys": keys_status(getattr(config, "source_path", None)), "chat": {"agent": agent, "profile": profile},
-            "auth": auth_status(config, signing_key)}
+    source = getattr(config, "source_path", None)
+    return {"keys": keys_status(source), "chat": {"agent": agent, "profile": profile},
+            "auth": auth_status(config, signing_key), "config_writable": config_writable(source)}
 
 
 def running_signing_key() -> Optional[str]:
@@ -207,8 +209,13 @@ class SetupServer(SchemaBasedToolServer):
         cfg_path = self._config_path()
         try:
             message = await asyncio.to_thread(ensure_signing_key, cfg_path, SHIPPED_SIGNING_KEYS)
-        except (ValueError, OSError) as error:
+        except ValueError as error:
             raise HTTPException(status_code=409, detail=f"No signing key written: {error}") from None
+        except OSError as error:
+            raise not_written("No signing key written", error,
+                              f"Set {SIGNING_KEY_VARIABLE} to a random value {ELSEWHERE}, name it in config/local.yaml "
+                              f"(auth: secret_key: \"${{{SIGNING_KEY_VARIABLE}}}\"), then restart the API.",
+                              cfg_path) from None
         logger.info("setup signing key: %s", message)
         return {"message": message,
                 "state": await asyncio.to_thread(installation_state, self.system_config, running_signing_key())}
@@ -239,4 +246,21 @@ def write_key(cfg_path: Path, name: str, value: str) -> None:
     except ValueError as error:
         raise HTTPException(status_code=400, detail=f"{name} not written: {error}") from None
     except OSError as error:
-        raise HTTPException(status_code=500, detail=f"{name} not written: {error}") from None
+        raise not_written(f"{name} not written", error, f"Set {name} {ELSEWHERE}, then restart the API.",
+                          cfg_path) from None
+
+
+#: Where a key goes when the panel cannot write it: a real variable wins over the file anyway.
+ELSEWHERE = "in the environment the API starts with, or in config/local.env where that folder is writable"
+
+
+def not_written(what: str, error: OSError, instead: str, cfg_path: Path) -> HTTPException:
+    """A write into config/ that failed. A folder this process may not write -- mounted read-only, or another user's,
+    as a container has it -- is the installation, not a fault: 409, with what to do instead. Anything else is a 500:
+    a PermissionError in a folder it may write is a file another process holds open (Windows), not a read-only
+    installation. The answer names no path and no errno; the log has them."""
+    logger.warning("setup: %s: %s", what, error)
+    if (isinstance(error, PermissionError) or error.errno == errno.EROFS) and config_writable(str(cfg_path)) is False:
+        return HTTPException(status_code=409, detail=f"{what}: the configuration folder is read-only in this "
+                                                     f"installation (a container?). {instead}")
+    return HTTPException(status_code=500, detail=f"{what}: the file could not be written; the API log says why.")

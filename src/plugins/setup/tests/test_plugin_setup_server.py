@@ -239,7 +239,7 @@ class TestThePanelContract:
         """static/panel.js reads these; a renamed field left the panel on its skeletons, the stubbed browser test green."""
         state = installation_state(config)
 
-        assert set(state) == {"keys", "chat", "auth"}
+        assert set(state) == {"keys", "chat", "auth", "config_writable"}
         assert state["keys"] and set(state["keys"][0]) == {"name", "state", "named_in", "from_environment"}
         assert set(state["chat"]) == {"agent", "profile"}
         assert set(state["auth"]) == {"admin", "default_admin_password", "shared_signing_key",
@@ -537,6 +537,92 @@ class TestTheKeyEndpoints:
         answer = TestClient(app).post("/plugins/setup/signing-key", json={})
 
         assert answer.status_code == 409 and "itself" in answer.json()["detail"], answer.text
+
+
+class TestAReadOnlyConfigFolder:
+    """A container mounts config/ read-only or owns it as another user: the panel cannot write there by design
+    (INSTALLATION.md, docker-compose.yml). That is the installation, not a fault: 409 with what to do instead,
+    no path and no errno in the answer -- the save answered a raw 500 naming the temp file."""
+
+    TEMP = "/app/config/tmp_fxz98ha.tmp"
+
+    @staticmethod
+    def refuse_writes(monkeypatch):
+        from agent_system.config import local_layer
+
+        def refuse(path, text, *args, **kwargs):  # what atomic_write_text meets: its temp file beside the target
+            raise PermissionError(13, "Permission denied", TestAReadOnlyConfigFolder.TEMP)
+        monkeypatch.setattr(local_layer, "atomic_write_text", refuse)
+
+    @staticmethod
+    def read_only(monkeypatch, folder):
+        import os
+        real = os.access
+        monkeypatch.setattr(os, "access", lambda path, mode, *args, **kwargs:
+                            False if Path(path) == folder and mode == os.W_OK else real(path, mode))
+
+    @pytest.fixture
+    def denied(self, machine, monkeypatch):
+        """The folder as the container has it: the API may not write it, and a write there is refused."""
+        self.refuse_writes(monkeypatch)
+        self.read_only(monkeypatch, machine[1].parent)
+
+    def assert_says_where_instead(self, answer, variable):
+        detail = answer.json()["detail"]
+        assert answer.status_code == 409, answer.text
+        assert "read-only" in detail and "environment" in detail and "local.env" in detail and variable in detail, detail
+        assert self.TEMP not in detail and "tmp_" not in detail and "Errno" not in detail, detail
+
+    def test_a_key_answers_409_with_where_it_goes_instead(self, machine, denied):
+        app, master = machine
+
+        answer = TestClient(app).post("/plugins/setup/key", json={"name": "SETUP_TEST_KEY", "value": "sk-x"})
+
+        self.assert_says_where_instead(answer, "SETUP_TEST_KEY")
+        assert "SETUP_TEST_KEY" not in __import__("os").environ, "taken by the process though not written"
+
+    def test_the_signing_key_answers_409_with_where_it_goes_instead(self, machine, denied):
+        app, master = machine
+
+        answer = TestClient(app).post("/plugins/setup/signing-key", json={})
+
+        self.assert_says_where_instead(answer, "AUTH_SECRET_KEY")
+
+    def test_a_refusal_in_a_writable_folder_is_no_read_only_installation(self, machine, monkeypatch):
+        """Windows refuses a replace while another process holds the file open: a PermissionError where the folder
+        is writable. Telling the admin the installation is read-only would send them to the wrong fix."""
+        self.refuse_writes(monkeypatch)
+        app, master = machine
+
+        answer = TestClient(app, raise_server_exceptions=False).post(
+            "/plugins/setup/key", json={"name": "SETUP_TEST_KEY", "value": "sk-x"})
+
+        assert answer.status_code == 500 and "read-only" not in answer.json()["detail"], answer.text
+        assert self.TEMP not in answer.text, answer.text
+
+    def test_another_write_failure_stays_a_500_without_a_path(self, machine, monkeypatch):
+        import errno
+        from agent_system.config import local_layer
+
+        def full(path, text, *args, **kwargs):
+            raise OSError(errno.ENOSPC, "No space left on device", self.TEMP)
+        monkeypatch.setattr(local_layer, "atomic_write_text", full)
+        app, master = machine
+
+        answer = TestClient(app, raise_server_exceptions=False).post(
+            "/plugins/setup/key", json={"name": "SETUP_TEST_KEY", "value": "sk-x"})
+
+        assert answer.status_code == 500 and "log" in answer.json()["detail"], answer.text
+        assert self.TEMP not in answer.text and "Errno" not in answer.text, answer.text
+
+    def test_the_state_says_whether_the_folder_is_writable(self, machine, monkeypatch):
+        """The panel offers no save where none can succeed: it reads this before anyone types a key."""
+        app, master = machine
+        client = TestClient(app)
+        assert client.get("/plugins/setup/state").json()["config_writable"] is True, "fixture: tmp_path is writable"
+        self.read_only(monkeypatch, master.parent)
+
+        assert client.get("/plugins/setup/state").json()["config_writable"] is False
 
 
 class TestTheRealConfiguration:

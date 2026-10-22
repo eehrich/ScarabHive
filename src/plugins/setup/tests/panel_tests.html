@@ -290,6 +290,24 @@
     return redrawn && survived;
   });
 
+  await check('a read-only configuration folder offers no save and no own signing key, and says where a key goes instead', async () => {
+    await stub({ keys: KEYS, config_writable: false,
+      auth: { shared_signing_key: true, signing_key_needs_restart: false, configured_signing_key_known: true } });
+    await open();
+    await until('the read-only notice', () => !$('#readOnly').hidden);
+    const told = text('#readOnly').includes('read-only') && text('#readOnly').includes('local.env')
+      && text('#readOnly').includes('environment');
+    const noSave = all('#keys form').length === 0 && text('#keys').includes('read-only');
+    const noButton = !$('#ownKey') && text('#access').includes('AUTH_SECRET_KEY')
+      && text('#access').includes('${AUTH_SECRET_KEY}');
+    await stub({ config_writable: true });
+    refresh();
+    await until('the forms back', () => all('#keys form').length > 0);
+    const back = $('#readOnly').hidden && Boolean($('#ownKey'));
+    await stub({ auth: { shared_signing_key: false, configured_signing_key_known: false } });
+    return told && noSave && noButton && back;
+  });
+
   await fetch('/__results', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
 </script>

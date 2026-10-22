@@ -123,6 +123,9 @@ def panel_app(users_folder: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         for name, value in data.get("auth", {}).items():
             assert name in real["auth"], f"the server's auth has no field {name!r}"
             stub["state"]["auth"][name] = value
+        if "config_writable" in data:
+            assert "config_writable" in real, "the server's state has no config_writable"
+            stub["state"]["config_writable"] = data["config_writable"]
         for name in ("me", "me_fails", "me_delays", "probe", "probe_delay", "probe_fails", "state_fails", "state_delays",
                      "key_refuse", "reload_error"):
             if name in data:
@@ -162,6 +165,7 @@ EXPECTED = [
     'a key is sent and its field cleared, a refused one keeps what was typed, one the environment sets has no field',
     'an own signing key is offered only while a known one is configured, asked for first, then made',
     'what is typed in one row survives a save in another, and a failed reload says to restart',
+    'a read-only configuration folder offers no save and no own signing key, and says where a key goes instead',
 ]
 
 

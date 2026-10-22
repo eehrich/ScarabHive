@@ -280,9 +280,14 @@ POST /signing-key | an own signing key in the local layer | {"message", "state"}
 @{table}
 Status | When
 400 | the body is no JSON object with two strings; the name is no API key the configuration names; the value is empty, spans lines, holds a character that is not printable, starts or ends with a quote, or is longer than the environment can hold
-409 | the name is set in the environment the API was started with; the configuration came from no file
-500 | config/local.env could not be written
+409 | the name is set in the environment the API was started with; the configuration came from no file; the configuration folder is read-only for the API (a container that mounts it so, or owns it as another user) -- the answer says to set the key in the environment or in config/local.env where the folder is writable, then restart
+500 | config/local.env could not be written for another reason; the API log says why (the answer names no path)
 @{body}
+
+@{tt}GET /state@{utt} also carries @{tt}config_writable@{utt}: false where
+the API may not write the configuration folder, null where the
+configuration came from no file. The panel then offers no Save and no
+signing-key button, and says where a key goes instead.
 
 The file and the process's environment are written together, one save at
 a time. Then the configuration reloads (the auth section stays as the API
@@ -295,8 +300,9 @@ value.
 Answers 409 "No signing key written: ..." where the auth section does not
 load, @{tt}AUTH_SECRET_KEY@{utt} is set in the environment, or
 @{tt}config/local.yaml@{utt} sets @{tt}auth.secret_key@{utt} to something
-else. @{tt}message@{utt} says what was done, including that the
-installation already has an own key.
+else; in a read-only configuration folder it says how to set
+@{tt}AUTH_SECRET_KEY@{utt} by hand. @{tt}message@{utt} says what was done,
+including that the installation already has an own key.
 @endnode
 
 @node model "What the model sees"

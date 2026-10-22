@@ -119,6 +119,12 @@ def api_keys(config_path: Optional[str] = None) -> dict[str, list[str]]:
             if not all(section.split(".")[0] == "auth" for section in sections)}
 
 
+def config_writable(config_path: Optional[str]) -> Optional[bool]:
+    """Whether the panel can write config/local.env and config/local.yaml beside *config_path*: a container that
+    mounts the folder read-only, or owns it as another user, cannot. None where the config came from no file."""
+    return None if config_path is None else os.access(Path(config_path).parent, os.W_OK)
+
+
 def user_database(auth: Any) -> Any:
     """The user database *auth* names, or None where there is none yet.
 

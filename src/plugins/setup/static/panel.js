@@ -17,7 +17,14 @@ const keyForms = () => [...$('keys').querySelectorAll('form[data-name]')];
 
 // update() draws only what changed; when a row changed -- a key saved in another row -- the whole table is drawn
 // anew, so what is typed in the other rows is put back (the kit gives the focus back by data-key).
-function renderKeys(keys) {
+function renderKeys(keys, writable) {
+  // false only: null is a config from no file, where the server answers for itself
+  const readOnly = writable === false;
+  notice($('readOnly'), readOnly
+    ? 'The configuration folder is read-only in this installation (a container?): a key cannot be saved here. '
+      + 'Set it in the environment the API starts with, or in config/local.env where that folder is writable, '
+      + 'then restart the API.'
+    : '', { kind: 'info' });
   if (!keys.length) {
     update($('keys'), emptyState('key-round', 'The configuration names no key'));
     return;
@@ -34,7 +41,7 @@ function renderKeys(keys) {
         <td title="${key.named_in.join('\n')}">${key.named_in.slice(0, 3).join(', ')}${more}</td>
         <td>${key.from_environment
           ? html`<span class="pk-help">set by the environment the API started with</span>`
-          : html`<form class="pk-row" data-name="${key.name}" autocomplete="off">
+          : readOnly ? html`<span class="pk-help">read-only here, see above</span>` : html`<form class="pk-row" data-name="${key.name}" autocomplete="off">
             <input class="pk-input" type="password" name="value" required aria-label="${key.name}"
               data-key="value:${key.name}" placeholder="${key.state === 'set' ? 'replace' : 'paste the key'}"
               autocomplete="off">
@@ -65,7 +72,7 @@ function nextKey(auth) {
     : html` — ${badge('warn', 'Restart')} the config file names another key; it applies after a restart`;
 }
 
-function renderAccess(auth, me) {
+function renderAccess(auth, me, writable) {
   // Only the default admin can change the default admin's password: PATCH /auth/me changes the viewer's own.
   const own = auth.default_admin_password === true && me?.username === auth.admin;
   update($('access'), html`<dl class="pk-kv">
@@ -76,9 +83,11 @@ function renderAccess(auth, me) {
       'a known one (printed in the repository, the model’s default, or empty): replace it',
       'this installation’s own', 'cannot be told here')}${nextKey(auth)}</dd>
   </dl>
-  ${auth.configured_signing_key_known === true
-    ? html`<div><button type="button" class="pk-btn pk-btn--sm" id="ownKey">Make an own signing key</button></div>`
-    : ''}
+  ${auth.configured_signing_key_known !== true ? '' : writable === false
+    ? html`<p class="pk-help">The configuration folder is read-only here: set AUTH_SECRET_KEY to a random value in the
+        environment the API starts with, or in config/local.env where that folder is writable, name it in
+        config/local.yaml (<code>auth: secret_key: "\${AUTH_SECRET_KEY}"</code>), then restart the API.</p>`
+    : html`<div><button type="button" class="pk-btn pk-btn--sm" id="ownKey">Make an own signing key</button></div>`}
   ${own ? html`<form id="password" class="pk-form pk-stack" autocomplete="off">
     <div class="pk-row">
       <label class="pk-field pk-grow"><span class="pk-label">Current password</span>
@@ -193,8 +202,8 @@ async function load() {
   notice($('problem'), '');
   lastState = state;
   renderChat(state.chat, lastProbe, testing);
-  renderAccess(state.auth, me);
-  renderKeys(state.keys);
+  renderAccess(state.auth, me, state.config_writable);
+  renderKeys(state.keys, state.config_writable);
 }
 
 $('probe').addEventListener('click', async () => {
