@@ -670,6 +670,57 @@
     document.body.appendChild(frame);
   }));
 
+  // The panel in a frame of a phone's width, then of a desktop's: media queries follow the frame's width.
+  const cardsAt = (width) => new Promise((resolve, reject) => {
+    const frame = document.createElement('iframe');
+    frame.style.cssText = `width: ${width}px; height: 700px; border: 0`;
+    frame.addEventListener('load', async () => {
+      try {
+        for (let i = 0; i < 200 && !frame.contentWindow.drawn; i += 1) await nextFrame();
+        const page = frame.contentDocument;
+        const table = page.querySelector('#wide table');
+        const body = page.querySelector('.pk-page-body');
+        const cells = [...table.tBodies[0].rows[0].cells];
+        const style = (el) => frame.contentWindow.getComputedStyle(el);
+        const seen = (el) => el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+        const note = cells[4];
+        resolve({
+          cards: table.classList.contains('pk-table--cards'),
+          labels: cells.map((cell) => cell.dataset.pkLabel ?? null),
+          // not one cell per column: no labels, or the note would sit under "Name"
+          detail: [...table.querySelector('tr.detail').cells].map((cell) => cell.dataset.pkLabel ?? null).join() === ',',
+          head: style(table.tHead).display,
+          // the head stays usable above the cards: its sort buttons and its select-all box
+          headUsable: seen(table.tHead.querySelector('.pk-sort')) && seen(table.tHead.querySelector('input')),
+          // every value fits its card, a cell the panel keeps on one line included -- nothing cut off at the edge
+          fits: [...table.tBodies[0].rows].flatMap((row) => [...row.cells])
+            .every((cell) => style(cell).display === 'none' || cell.scrollWidth <= cell.clientWidth + 1),
+          // an empty cell to edit stays, and its long column name makes it taller instead of running into the next
+          note: style(note).display !== 'none' && note.getBoundingClientRect().height >= 30,
+          sideways: body.scrollWidth > body.clientWidth + 1,
+          kept: page.querySelector('#kept table').classList.contains('pk-table--cards'),
+          keptHead: frame.contentWindow.getComputedStyle(page.querySelector('#kept thead')).display,
+        });
+      } catch (error) {
+        reject(error);
+      } finally {
+        frame.remove();
+      }
+    });
+    frame.src = '/tests/ui/kit_cards_probe.html';
+    document.body.appendChild(frame);
+  });
+
+  await check('on a phone a table lays out as cards, each value under its column, and nothing scrolls sideways', async () => {
+    const phone = await cardsAt(390);
+    const desktop = await cardsAt(1000);
+    const labelled = JSON.stringify(phone.labels) === JSON.stringify(
+      [null, 'Name', 'Value', 'Count', 'A column name long enough to wrap over several lines in a card']);
+    return phone.cards && labelled && phone.detail && phone.headUsable && phone.fits && phone.note && !phone.sideways
+      // a table that says so stays a table, and a desktop keeps its tables
+      && !phone.kept && phone.keptHead !== 'none' && desktop.head === 'table-header-group';
+  });
+
   await check('pluginBase finds the plugin above its static folder', () =>
     pk.pluginBase('http://host/plugins/job_admin/static/queue.js') === '/plugins/job_admin'
     && pk.pluginBase('http://host/plugins/a%20b/static/x.js?v=2') === '/plugins/a%20b');

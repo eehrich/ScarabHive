@@ -274,6 +274,31 @@ per panel path across reloads, in localStorage under `pk.cols:<pathname>`
 (same plain-name rule as sorting). Text you want to wrap goes into a block
 (`<div>`), not straight into the `<td>`. Opt out with `data-pk-noresize`.
 
+**Phone and tablet** come with the same tables, no markup of your own:
+
+- **640 px and narrower** (a phone, and a panel docked narrow beside the
+  chat): a `.pk-table` with a one-row `<thead>` of two columns or more lays
+  out as **cards**, one per row, each value beside its column's name. The kit
+  copies the head's text into each cell's `data-pk-label` on every
+  `render()` and marks the table `pk-table--cards`; a head without text (a
+  checkbox, the actions) labels nothing, a row that is not one cell per
+  column (a detail row with `colspan`) spans its card. The head stays above
+  the cards as a row that wraps, so sorting and a select-all box keep
+  working; column widths wait for a wider frame. A value the panel keeps on
+  one line wraps there anyway, and an empty cell to edit (`data-edit`) stays
+  in its card. A column the panel hides on narrow screens with a class of
+  its own needs `.pk-table--cards td.<class> { display: none; }` too.
+  `data-pk-nocards` keeps a table a table (a grid of numbers that only reads
+  across).
+- **A touch screen wider than that** (`pointer: coarse`): the table box
+  scrolls sideways itself, so the head, filters and tabs stay in view. With a
+  mouse the panel body scrolls, as above — a box's scrollbar would sit at the
+  table's end, out of reach.
+- Checked at 390 and 820 px: no page may scroll sideways as a whole. A
+  `.pk-search` keeps a floor width even with `pk-grow`, so a row of searches
+  wraps instead of shrinking them to their icons; the page head puts its
+  toolbar on a line of its own on a phone.
+
 ## 4. Look
 
 - **Components** instead of your own: `pk-btn` (`--primary`, `--danger`,

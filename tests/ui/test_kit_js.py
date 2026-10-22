@@ -25,6 +25,7 @@ def results():
 EXPECTED = [
     "scrollerOf finds the box that scrolls an element up and down, else the page",
     "keepInSight brings an item into sight in a list that scrolls up and down, and in the page itself",
+    "on a phone a table lays out as cards, each value under its column, and nothing scrolls sideways",
     "html escapes interpolated markup",
     "html keeps nested html and joins arrays",
     "status draws a state as icon, tone and word, an unknown one as pending, and escapes what it shows",

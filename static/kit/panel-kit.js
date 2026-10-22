@@ -1905,7 +1905,34 @@ function sizeTable(table) {
 }
 
 function sizeTables(root) {
-  [...root.querySelectorAll('table.pk-table'), root.closest?.('table.pk-table')].filter(Boolean).forEach(sizeTable);
+  [...root.querySelectorAll('table.pk-table'), root.closest?.('table.pk-table')].filter(Boolean).forEach((table) => {
+    sizeTable(table);
+    labelCells(table);
+  });
+}
+
+/*
+ * On a phone (kit.css, 640px and narrower) a .pk-table with a one-row <thead> of two columns or more lays out as
+ * cards, one per row, each cell under its head's text: the kit copies that text into each cell's data-pk-label and
+ * marks the table pk-table--cards. A row that is not one cell per column (a detail row with colspan) gets no labels
+ * and spans its card; a head without text (a checkbox column, actions) labels nothing. data-pk-nocards keeps a
+ * table a table.
+ */
+function labelCells(table) {
+  const heads = headCells(table);
+  const cards = heads.length >= 2 && !table.hasAttribute('data-pk-nocards');
+  table.classList.toggle('pk-table--cards', cards);
+  if (!cards) return;
+  const labels = heads.map((th) => th.textContent.replace(/\s+/g, ' ').trim());
+  for (const body of table.tBodies) {
+    for (const row of body.rows) {
+      if (row.cells.length !== heads.length) continue;
+      [...row.cells].forEach((cell, i) => {
+        if (labels[i]) cell.dataset.pkLabel = labels[i];
+        else delete cell.dataset.pkLabel;
+      });
+    }
+  }
 }
 
 /** Every column at the width it has now: the start of a drag, so only the dragged one moves. */
@@ -2024,7 +2051,8 @@ export function initShellLink(root = document) {
     link.className = 'pk-btn pk-btn--ghost pk-btn--sm';
     link.dataset.pkShellLink = '';
     link.title = word('openInShellTitle');
-    render(link, html`${icon('panel-right', { size: 'sm' })} ${word('openInShell')}`);
+    link.setAttribute('aria-label', word('openInShell'));  // a phone shows the icon only (kit.css)
+    render(link, html`${icon('panel-right', { size: 'sm' })} <span class="pk-shell-link-text">${word('openInShell')}</span>`);
     const aim = () => {
       const page = new URL(location.href);
       if (scope === 'all') page.searchParams.set('session_scope', 'all');

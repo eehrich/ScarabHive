@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signing key -- the one `config/config.yaml` ships -- now stops the start,
   and the log names the script; before, `docker compose up` without the
   manual steps signed every login with it.
+- Panels on phones and tablets: at 640 px and narrower (a phone, or a panel
+  docked narrow beside the chat) every `.pk-table` with a head lays out as
+  cards, one per row with each value beside its column's name, the head
+  above them as a row of sort buttons; the page head puts its toolbar on a
+  line of its own. On a touch screen wider than that a wide table scrolls in
+  its own box. Before, 15 panels scrolled their whole page sideways on a
+  phone, head and filters included. `data-pk-nocards` keeps a table a table.
 - Forgot password: the login page mails a link to the account's address
   (`POST /auth/password-reset-request`, `POST /auth/password-reset`, until
   now placeholders that sent nothing). The link holds

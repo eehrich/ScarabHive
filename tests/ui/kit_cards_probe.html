@@ -1,0 +1,30 @@
+<!doctype html>
+<html class="pk-root" lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/static/kit/kit.css"></head>
+<body>
+<!-- A panel page as panel_base.html lays it out, with a table far wider than a phone, drawn through render(). -->
+<div class="pk-panel">
+  <header class="pk-page-header">
+    <h1 class="pk-page-title">Cards</h1>
+    <div class="pk-toolbar"><button type="button" class="pk-btn">Tool</button></div>
+  </header>
+  <main class="pk-page-body"><div id="wide"></div><div id="kept"></div></main>
+</div>
+<script type="module">
+  import { render, html } from '/static/kit/panel-kit.js';
+  const long = 'a-value-that-will-not-break-anywhere-'.repeat(4);
+  const rows = [['one', long, '1,234'], ['two', 'short', '5']];
+  // a value kept on one line by the panel's own style, a column name that wraps, a cell to edit that is empty
+  render(document.getElementById('wide'), html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="wide">
+    <thead><tr><th><input type="checkbox" aria-label="all"></th><th>Name</th><th>Value</th><th class="pk-num">Count</th>
+      <th>A column name long enough to wrap over several lines in a card</th></tr></thead>
+    <tbody>${rows.map(([name, value, count]) => html`<tr><td><input type="checkbox" aria-label="pick"></td>
+      <td>${name}</td><td style="white-space: nowrap">${value}</td><td class="pk-num">${count}</td>
+      <td data-edit="note" data-value=""></td></tr>`)}
+      <tr class="detail"><td colspan="4">a detail row under the last</td><td>its note</td></tr></tbody></table></div>`);
+  render(document.getElementById('kept'), html`<div class="pk-table-wrap"><table class="pk-table" data-pk-nocards>
+    <thead><tr><th>Key</th><th>Value</th></tr></thead><tbody><tr><td>a</td><td>b</td></tr></tbody></table></div>`);
+  window.drawn = true;
+</script>
+</body>
+</html>

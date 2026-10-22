@@ -175,6 +175,13 @@
 .pk-page-body { --pk-scroll-pad-top: var(--space-4); scroll-padding-top: calc(var(--space-2) * 3 + var(--text-xs) * 1.5 + 1px); flex: 1; min-height: 0; overflow: auto; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
 /* A scrolling column squeezes children that clip (a code block, a table box) instead of scrolling past them. */
 :where(.pk-page-body) > * { flex-shrink: 0; }
+/* A phone: the toolbar goes onto a line of its own under the title rather than squeezed beside it, one control per
+ * line; the link into the shell keeps its icon (its name stays the accessible one). */
+@media (max-width: 640px) {
+  .pk-page-header { flex-wrap: wrap; row-gap: var(--space-1); padding: var(--space-2) var(--space-3); }
+  .pk-page-body { --pk-scroll-pad-top: var(--space-3); padding: var(--space-3); gap: var(--space-3); }
+  .pk-shell-link-text { display: none; }
+}
 
 /* ------------------------------------------------------------------- icons */
 
@@ -241,7 +248,9 @@
 .pk-input--sm, .pk-select--sm { height: var(--control-h-sm); font-size: var(--text-xs); }
 .pk-input--mono { font-family: var(--font-mono); }
 
-.pk-search { position: relative; display: flex; align-items: center; }
+/* a floor even with pk-grow (which lets a box shrink to nothing): in a narrow row the next search goes onto a line of
+ * its own instead of three of them squeezed to their icons */
+.pk-search, .pk-search.pk-grow { position: relative; display: flex; align-items: center; min-width: min(10rem, 100%); }
 .pk-search > .pk-icon { position: absolute; left: var(--space-3); color: var(--text-muted); pointer-events: none; }
 .pk-search > .pk-input { padding-left: calc(var(--space-3) + 16px + var(--space-2)); }
 
@@ -484,6 +493,44 @@ kbd.pk-kbd {
 /* the head's button gives way first, the sort arrow after it (th::after) stays in the cell */
 .pk-table--sized .pk-sort { max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 .pk-table--sized th:is([aria-sort="ascending"], [aria-sort="descending"]) .pk-sort { max-width: calc(100% - 1.25em); }
+
+/* A touch screen wider than a phone: the table box scrolls sideways itself. The body scrolls for a mouse (above) --
+ * a box's scrollbar sits at the table's end, out of reach -- but a finger swipes the table where it is, and the
+ * page's head, filters and tabs stay in view. The table head then no longer sticks. */
+@media (pointer: coarse) and (min-width: 641px) {
+  .pk-table-wrap { width: auto; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+}
+/* 640px and narrower -- a phone, and a panel docked narrow beside the chat: a table of a one-row head lays out as
+ * cards, one per row, each value beside its column's name (panel-kit.js labelCells sets data-pk-label and
+ * pk-table--cards; data-pk-nocards keeps a table a table). Nothing runs past the edge, so nothing scrolls sideways.
+ * The head stays above the cards as a row that wraps: its sort buttons and a select-all box keep working; column
+ * widths wait for a wider frame. A row that is not one cell per column spans its card. */
+@media (max-width: 640px) {
+  .pk-table-wrap:has(> .pk-table--cards) { width: auto; }
+  :is(.pk-table--cards, .pk-table--cards > :is(thead, tbody), .pk-table--cards > :is(thead, tbody) > tr) {
+    display: block; width: auto !important;
+  }
+  .pk-table--cards > thead > tr { display: flex; flex-wrap: wrap; gap: 0 var(--space-1); border-bottom: 1px solid var(--border-subtle); }
+  .pk-table--cards > thead > tr > th { position: static; display: block; width: auto !important; border: 0; padding: var(--space-1) var(--space-2); }
+  .pk-table--cards .pk-col-grip { display: none; }
+  .pk-table--cards > tbody > tr { padding: var(--space-2) 0; border-bottom: 1px solid var(--border-subtle); }
+  .pk-table--cards > tbody > tr:last-child { border-bottom: 0; }
+  /* !important: over a panel's own nowrap -- one line in a card is cut off at the card's edge, with no sign of it */
+  .pk-table--cards > tbody > tr > td {
+    display: flow-root; width: auto !important; border: 0; padding: var(--space-1) var(--space-3);
+    white-space: normal !important; overflow: visible; overflow-wrap: anywhere; text-align: left;
+  }
+  /* the name floats in the cell's left padding, so a long one that wraps makes the cell taller, never overlaps */
+  .pk-table--cards > tbody > tr > td[data-pk-label] { padding-left: calc(8rem + var(--space-3) + var(--space-2)); }
+  .pk-table--cards > tbody > tr > td[data-pk-label]::before {
+    content: attr(data-pk-label); float: left; width: 8rem; margin-left: calc(-8rem - var(--space-2));
+    color: var(--text-muted); font-size: var(--text-xs); line-height: 1.6; overflow-wrap: anywhere;
+  }
+  /* an empty value says nothing -- unless it is a cell to edit, which has to stay where a tap can open it */
+  .pk-table--cards > tbody > tr > td:empty:not([data-edit]) { display: none; }
+  .pk-table--cards > tbody > tr > td.pk-num { text-align: left; }
+  .pk-table--cards .pk-pipeline--mini { display: flex; flex-wrap: wrap; row-gap: var(--space-1); }
+}
 
 /* ---------------------------------------------------------- layout helpers */
 
