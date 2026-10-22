@@ -101,6 +101,7 @@ ENV VIRTUAL_ENV=/opt/venv \
     PYTHONUTF8=1 \
     HOST=0.0.0.0 \
     PORT=8000 \
+    SCARABHIVE_CONTAINER=1 \
     U2NET_HOME=/home/scarab/.cache/u2net
 
 COPY --from=builder /opt/venv /opt/venv

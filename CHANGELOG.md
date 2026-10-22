@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Docker in one command: `sh scripts/docker-setup.sh` (Windows:
+  `scripts\docker-setup.ps1`) makes the installation's own signing key in
+  `config/local.env`, names it in `config/local.yaml`, asks for an OpenRouter
+  key, builds and starts the container and prints the admin's first login.
+  Run again, it changes nothing that is there. In the container a published
+  signing key -- the one `config/config.yaml` ships -- now stops the start,
+  and the log names the script; before, `docker compose up` without the
+  manual steps signed every login with it.
 - Forgot password: the login page mails a link to the account's address
   (`POST /auth/password-reset-request`, `POST /auth/password-reset`, until
   now placeholders that sent nothing). The link holds

@@ -1,15 +1,12 @@
 # ScarabHive API server.
 #
-#   # this machine's own signing key and keys, never in the repository:
-#   echo "AUTH_SECRET_KEY=$(openssl rand -hex 32)" >> config/local.env
-#   echo "OPENROUTER_API_KEY=<your key>" >> config/local.env
-#   printf 'auth:\n  secret_key: "${AUTH_SECRET_KEY}"\n' >> config/local.yaml
-#   docker compose up -d --build
-#   docker compose logs -f scarabhive
+#   sh scripts/docker-setup.sh       # Windows: scripts\docker-setup.ps1
 #
-# The web UI is then at http://127.0.0.1:8000. The first start creates the
-# admin with a generated password and shows it in that output (it stays in the
-# container's log: change it after the first login, user menu, Settings). The port is
+# It makes this machine's own signing key (config/local.env, named in
+# config/local.yaml, never in the repository), asks for an OpenRouter key,
+# runs `docker compose up -d --build` and prints the admin's first login (it
+# stays in the container's log: change it after the first login, user menu,
+# Settings). The web UI is then at http://127.0.0.1:8000. The port is
 # published on the loopback interface only: put a reverse proxy with TLS in
 # front of it before you expose it, and set auth.cors_origins first.
 # INSTALLATION.md, section Docker, has the steps.

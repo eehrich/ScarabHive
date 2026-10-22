@@ -134,32 +134,23 @@ every name. The API reads the file only when it starts, so restart it after edit
 
 ## Docker
 
-Docker replaces the install script. Before the first start:
-
-1. Make the signing key by hand. Create `config/local.env` with the line
-   `AUTH_SECRET_KEY=` followed by the output of `openssl rand -hex 32` (without openssl:
-   `python -c "import secrets; print(secrets.token_hex(32))"`).
-2. Create `config/local.yaml` with:
-
-   ```yaml
-   auth:
-     secret_key: "${AUTH_SECRET_KEY}"
-   ```
-
-3. Add your `OPENROUTER_API_KEY=...` line to `config/local.env`.
-
-Then start the container:
+Docker replaces the install script. One command sets it up and starts it:
 
 ```bash
-docker compose up -d --build
-docker compose logs -f scarabhive
+sh scripts/docker-setup.sh                                          # Linux, macOS
+powershell -ExecutionPolicy Bypass -File scripts\docker-setup.ps1   # Windows (Docker Desktop)
 ```
 
-The first start creates `admin` with a generated password and shows it in that output, not in
-`logs/api.log`. It stays in the container's log, so change it after the first login (user menu,
-*Settings*).
-Log in and open the Setup panel as in section 3. The web UI is at `http://127.0.0.1:8000`,
-published on the loopback interface only.
+It gives the installation its own signing key (`config/local.env`, named in
+`config/local.yaml`), asks for your OpenRouter key (Enter skips it), builds and starts the
+container, and prints the admin's login. That password is made at the first start: change it
+after logging in (user menu, *Settings*). Running the script again changes nothing that is
+already there. The web UI is at `http://127.0.0.1:8000`, published on the loopback interface
+only. If port 8000 is taken (Portainer uses it, for example), set another one first:
+`SCARABHIVE_PORT=8040 sh scripts/docker-setup.sh`.
+
+Without the script, the container refuses to start with the signing key `config/config.yaml`
+ships, and its log names the script.
 
 - **The panel cannot save keys here:** `config/` is mounted read-only. Keys go into
   `config/local.env` on the host, followed by `docker compose restart`.

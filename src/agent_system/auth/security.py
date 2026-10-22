@@ -219,7 +219,12 @@ def check_secret_key(secret_key: str, *, reject_public: bool = False) -> None:
     ``reject_public``. An unset ``${AUTH_SECRET_KEY}`` in the config expands to "" -- that
     must stop the start, not sign every token with an empty key."""
     key = secret_key or ""
-    how = "set a random one, e.g. python -c 'import secrets; print(secrets.token_hex(32))'"
+    # The Dockerfile sets SCARABHIVE_CONTAINER: a container is a server, and config/ is read-only in it -- the key
+    # comes from the setup script on the host, and a published one is refused, not only reported.
+    container = os.environ.get("SCARABHIVE_CONTAINER") == "1"
+    reject_public = reject_public or container
+    how = ("run sh scripts/docker-setup.sh on the host (it makes one), then docker compose up -d" if container
+           else "set a random one, e.g. python -c 'import secrets; print(secrets.token_hex(32))'")
     if not key.strip():
         raise WeakSecretKeyError(f"auth.secret_key is empty (an unset ${{AUTH_SECRET_KEY}} expands to ''): {how}")
     if len(key) < MIN_SECRET_KEY_LENGTH:
@@ -227,11 +232,10 @@ def check_secret_key(secret_key: str, *, reject_public: bool = False) -> None:
             f"auth.secret_key has {len(key)} characters, at least {MIN_SECRET_KEY_LENGTH} are needed: {how}")
     if hashlib.sha256(key.encode()).hexdigest() in _PUBLIC_SECRET_KEY_SHA256:
         message = ("auth.secret_key is a published default -- anyone who has read this repository can "
-                   f"sign an admin token for this server: {how}. auth.reject_default_secret_key: true "
-                   "makes this a startup error.")
+                   f"sign an admin token for this server: {how}.")
         if reject_public:
             raise WeakSecretKeyError(message)
-        logger.error(message)
+        logger.error("%s auth.reject_default_secret_key: true makes this a startup error.", message)
 
 
 def set_jwt_config(secret_key: str, algorithm: str = "HS256", expire_minutes: int = 30, refresh_expire_days: int = 30,

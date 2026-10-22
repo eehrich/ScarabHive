@@ -130,3 +130,33 @@ def test_a_published_key_is_reported_in_the_api_log(monkeypatch, tmp_path):
         encoding="utf-8")
     app_mod.build_app(str(config))
     assert "published default" in (tmp_path / "logs" / "api-probe.log").read_text(encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def outside_a_container(monkeypatch):
+    """The Dockerfile sets SCARABHIVE_CONTAINER; these tests judge the key as a checkout does unless they say so."""
+    monkeypatch.delenv("SCARABHIVE_CONTAINER", raising=False)
+
+
+@pytest.mark.parametrize("key", [AuthConfig().secret_key, _shipped_key()], ids=["model default", "shipped config"])
+def test_a_container_refuses_a_published_key_and_names_the_setup_script(key, monkeypatch):
+    """docker compose up without the setup steps signed every login with the key config.yaml ships: in a container
+    -- a server, its config/ read-only -- that stops the start, and the error names the one command that fixes it."""
+    monkeypatch.setenv("SCARABHIVE_CONTAINER", "1")
+
+    with pytest.raises(WeakSecretKeyError, match="docker-setup.sh"):
+        check_secret_key(key)
+
+
+def test_a_container_names_the_setup_script_for_an_empty_key_too(monkeypatch):
+    monkeypatch.setenv("SCARABHIVE_CONTAINER", "1")
+
+    with pytest.raises(WeakSecretKeyError, match="docker-setup.sh"):
+        check_secret_key("")
+
+
+def test_a_container_starts_with_an_own_key(monkeypatch, caplog):
+    monkeypatch.setenv("SCARABHIVE_CONTAINER", "1")
+    with caplog.at_level(logging.WARNING, logger="agent_system.auth.security"):
+        check_secret_key(secrets.token_hex(32))
+    assert not caplog.text
