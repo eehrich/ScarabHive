@@ -174,3 +174,11 @@ async def test_two_runs_finding_the_clone_gone_make_one_new_clone(tmp_path):
     assert server.made == 2
     assert [r.metadata["voice_id"] for r in results] == ["clone2", "clone2"]
     assert list(json.loads((tmp_path / "clones.json").read_text()).values()) == ["clone2"]
+
+
+def test_the_clone_cache_does_not_follow_the_working_directory(tmp_path, monkeypatch):
+    from plugins.llm_elevenlabs.elevenlabs_tts_client import _clone_cache_file
+    here = _clone_cache_file()
+    monkeypatch.chdir(tmp_path)                      # a script started elsewhere
+    assert _clone_cache_file() == here
+    assert here.is_absolute()

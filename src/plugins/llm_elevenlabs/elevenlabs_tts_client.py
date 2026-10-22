@@ -67,8 +67,10 @@ def _upload_name(data: bytes) -> tuple[str, str]:
 
 
 def _clone_cache_file() -> Path:
-    from agent_system.paths import data_path
-    return data_path("cache", "elevenlabs_clones.json")
+    """Anchored on the project: a run started in another directory must find
+    the same clones, or it makes its own and takes another account slot."""
+    from agent_system.paths import PROJECT_ROOT, data_path
+    return PROJECT_ROOT / data_path("cache", "elevenlabs_clones.json")
 
 
 class ElevenLabsTTSClient(TTSClient):
