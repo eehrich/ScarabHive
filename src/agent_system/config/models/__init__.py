@@ -58,6 +58,8 @@ from .auth import (
     EndpointSecurityConfig,
     EndpointSecurityRule,
     LLMSecurityConfig,
+    MailConfig,
+    PasswordResetConfig,
     PluginSecurityConfig,
     RegistrationConfig,
 )
@@ -119,6 +121,8 @@ __all__ = [
     "EndpointSecurityConfig",
     "EndpointSecurityRule",
     "LLMSecurityConfig",
+    "MailConfig",
+    "PasswordResetConfig",
     "PluginSecurityConfig",
     "RegistrationConfig",
     # system

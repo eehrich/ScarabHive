@@ -119,8 +119,12 @@ async def index(request: Request, ctx: AppContext = Depends(app_context)):
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    """Login page for multi-user authentication"""
-    response = templates.TemplateResponse(request, "login.html")
+    """Login page for multi-user authentication -- with "Forgot password?" where a reset mail can go out"""
+    from agent_system.auth.password_reset import reset_problem
+
+    auth = getattr(getattr(request.app.state, "config", None), "auth", None)
+    offered = auth is not None and not reset_problem(auth)
+    response = templates.TemplateResponse(request, "login.html", {"password_reset": offered})
 
     # Disable caching for login page
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"

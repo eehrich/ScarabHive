@@ -147,6 +147,31 @@ class RegistrationConfig(BaseModel):
     default_role: Literal["guest", "user"] = "user"
 
 
+class MailConfig(BaseModel):
+    """The mail server ScarabHive itself sends through: the password reset link. No host, no mail."""
+    model_config = ConfigDict(extra="forbid")
+
+    host: str = ""
+    port: Optional[int] = None  # unset: 587 with starttls, 465 with ssl, 25 with none
+    security: Literal["starttls", "ssl", "none"] = "starttls"
+    username: str = ""
+    password: str = ""  # "${SMTP_PASSWORD}", set in config/secrets.env
+    sender: str = ""  # the From address, e.g. "ScarabHive <hive@example.com>"
+    timeout: float = 20.0
+
+
+class PasswordResetConfig(BaseModel):
+    """Forgot password (POST /auth/password-reset-request): a link to the account's own address, good once.
+
+    Offered once auth.mail has a host and a sender and public_url is set."""
+    model_config = ConfigDict(extra="forbid")
+
+    # Where users reach this server, e.g. "https://hive.example.com". The link is built on it, never on the
+    # request's Host header: anyone may ask for another's reset, and a forged Host would send the link elsewhere.
+    public_url: str = ""
+    link_minutes: int = Field(default=30, ge=5, le=24 * 60)
+
+
 class AuthConfig(BaseModel):
     """Authentication and authorization configuration.
     
@@ -208,3 +233,7 @@ class AuthConfig(BaseModel):
     
     # NEW: Plugin endpoint security
     plugin_security: PluginSecurityConfig = Field(default_factory=PluginSecurityConfig)
+
+    # The mail server and the reset link for "Forgot password"
+    mail: MailConfig = Field(default_factory=MailConfig)
+    password_reset: PasswordResetConfig = Field(default_factory=PasswordResetConfig)

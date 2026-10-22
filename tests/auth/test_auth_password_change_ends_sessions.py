@@ -100,7 +100,7 @@ def test_a_change_of_name_or_email_keeps_the_logins(client, db):
     key = db.generate_user_api_key(db.get_user_by_username("alice").id)
 
     response = client.patch("/auth/me", headers={"Authorization": f"Bearer {token}"},
-                            json={"full_name": "Alice", "email": "alice2@example.com"})
+                            json={"full_name": "Alice", "email": "alice2@example.com", "current_password": OLD})
 
     assert response.status_code == 200, response.text
     assert _me(client, token) == 200

@@ -166,6 +166,20 @@ auth:
     require_approval: false  # true: new accounts start inactive until an admin activates them
     default_role: "user"     # "guest" or "user"; never "admin"
 
+  # "Forgot password?" on the sign-in page: a link by mail to the account's address.
+  # Offered once mail has a host and a sender and password_reset a public_url.
+  mail:
+    host: "smtp.example.com"
+    # port: unset is 587 with starttls, 465 with ssl, 25 with none
+    security: "starttls"     # "starttls", "ssl" or "none"
+    username: "hive@example.com"
+    password: "${SMTP_PASSWORD}"   # set in config/secrets.env
+    sender: "ScarabHive <hive@example.com>"
+    timeout: 20              # seconds a step of the conversation may take
+  password_reset:
+    public_url: "https://hive.example.com"  # where users reach the server: the link is built on it
+    link_minutes: 30                        # how long a link holds (5 to 1440)
+
   # ============================================================
   # Anonymous Access Configuration (NEW in v0.5.1)
   # ============================================================
@@ -355,6 +369,13 @@ Content-Type: application/json
 }
 ```
 
+A new email requires `current_password` too (missing: 400, wrong: 403): it is
+where a password reset link goes, so a login alone that could set it -- a stolen
+cookie, an unlocked browser -- would own the account, and the change is written
+only while that password still holds (a reset in between: 409). The same address
+sent along needs none; the Settings panel sends the address only when it changed,
+and asks for the password then.
+
 A new password requires `current_password` (missing: 400, wrong: 403) and
 **ends every earlier login of the account**: a token carries the password
 generation under which it was issued (`gen`, table `token_generations`), and a
@@ -458,6 +479,52 @@ Authorization: Bearer <token>
   "message": "API key revoked successfully"
 }
 ```
+
+#### POST /auth/password-reset-request
+Mail a link to set a new password to the account with this address. Reachable
+without login; needs `auth.mail` and `auth.password_reset.public_url` (otherwise
+503, naming what is missing).
+
+**Request Body:**
+```json
+{"email": "john@example.com"}
+```
+
+**Response** (the same whether an account has the address or not):
+```json
+{
+  "message": "If an account has this address, a link to set a new password is on its way",
+  "detail": "The link holds for 30 minutes and works once"
+}
+```
+
+The answer goes out before the address is even looked up (the lookup, the token
+and the mail run afterwards), so neither its words nor its time tell whether the
+address has an account. An inactive account gets no mail, and an account at most
+one every two minutes and five a day. The link is
+`<public_url>/login#reset=<token>`: built on the configured address and never on
+the request's `Host` header (anyone may ask for another's reset), the token in
+the fragment, which a browser never sends -- no server or proxy log holds it. The
+token is signed with a key derived from `secret_key` for this purpose alone (it
+signs nobody in, and a login token sets no password) and carries a fingerprint
+of the account: a link sent before the address changed, or one meeting another
+account under the same id in a database made anew, sets nothing.
+
+#### POST /auth/password-reset
+Set the password a reset link was mailed for; the sign-in page sends it when
+opened with `#reset=<token>`. Without the mail setup it answers 503, as above.
+
+**Request Body:**
+```json
+{"token": "<from the link>", "new_password": "newpassword123"}
+```
+
+**Response:** `{"message": "Your new password is set; sign in with it"}`
+
+Like any password change it **ends every login of the account** and revokes its
+API key. The token names the password generation it was issued under, so the
+change spends the link: a second use, an expired link, an inactive account, or a
+password changed any other way since all answer 400.
 
 ### Admin Endpoints
 
@@ -925,7 +992,6 @@ Additional ideas:
 - Two-factor authentication (2FA)
 - User groups and granular permissions
 - Audit logging for user actions
-- Password reset via email
 - User session management (view/revoke active sessions)
 - IP whitelisting per user
 - User quotas and usage tracking

@@ -9,10 +9,11 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Optional
 import functools
+import hmac
 import logging
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status, Response
 from pydantic import BaseModel
 
 from agent_system.auth.models import (
@@ -32,7 +33,8 @@ from agent_system.auth.models import (
     public_user,
 )
 from agent_system.auth.database import get_db, PasswordChangedMeanwhile, UserDatabase
-from agent_system.config.models import RegistrationConfig
+from agent_system.auth import password_reset
+from agent_system.config.models import AuthConfig, RegistrationConfig
 # Module import on purpose: the expiry values are rebound by
 # set_jwt_config() at startup. A from-import copies the value at import
 # time, so tokens were issued with the module DEFAULTS (7d/30d) instead of
@@ -371,10 +373,12 @@ async def update_current_user(
     Update the current user's email, full name or password.
 
     Role and is_active are not accepted here (422) -- that is the admin
-    endpoints' job. Changing the password requires ``current_password``, and
-    ends every login made before, the account's API key included; the browser
-    that changed it gets a new cookie and stays in (a client holding its token
-    logs in again).
+    endpoints' job. Changing the password or the email requires
+    ``current_password``: the email is where a password reset link goes, so a
+    login that sets it -- a stolen cookie, an unlocked browser -- would own the
+    account. A new password ends every login made before, the account's API
+    key included; the browser that changed it gets a new cookie and stays in (a
+    client holding its token logs in again).
 
     Raises:
         HTTPException: 403 on a wrong current password, 400 if it is missing,
@@ -391,11 +395,12 @@ async def update_current_user(
                 detail="User not found"
             )
 
-        if user_update.password is not None:
+        new_email = user_update.email is not None and user_update.email != user_in_db.email
+        if user_update.password is not None or new_email:
             if not user_update.current_password:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="current_password is required to change the password"
+                    detail=f"current_password is required to change the {'password' if user_update.password is not None else 'email'}"
                 )
             if not verify_password(user_update.current_password, user_in_db.hashed_password):
                 raise HTTPException(
@@ -404,11 +409,13 @@ async def update_current_user(
                 )
 
         try:
+            # a new email is checked against the password like a new password: written only while that password
+            # still holds, so a reset meanwhile shuts out the old one's change
             updated_user = db.update_user(current_user.id, UserUpdate(
                 email=user_update.email,
                 full_name=user_update.full_name,
                 password=user_update.password,
-            ), expected_generation=generation if user_update.password is not None else None)
+            ), expected_generation=generation if user_update.password is not None or new_email else None)
         except PasswordChangedMeanwhile:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -512,58 +519,64 @@ async def revoke_api_key(
         )
 
 
+def _auth_config(request: Request) -> AuthConfig:
+    """auth of the running app; the defaults when it carries no config."""
+    auth = getattr(getattr(request.app.state, "config", None), "auth", None)
+    return auth if isinstance(auth, AuthConfig) else AuthConfig()
+
+
+def _reset_offered(auth: AuthConfig) -> None:
+    problem = password_reset.reset_problem(auth)
+    if problem:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=f"Password reset by mail is not set up on this server ({problem}); ask an admin")
+
+
 @router.post("/password-reset-request", response_model=MessageResponse)
 async def request_password_reset(
     reset_request: PasswordResetRequest,
+    background: BackgroundTasks,
+    auth: AuthConfig = Depends(_auth_config),
     db: UserDatabase = Depends(get_db),
 ) -> MessageResponse:
-    """
-    Request a password reset (placeholder - requires email service).
+    """Mail a link to set a new password to the account with this address (auth.password_reset).
 
-    Note: This is a placeholder. In production, this would send an email
-    with a reset token.
-
-    Args:
-        reset_request: Password reset request data
-        db: Database instance
-
-    Returns:
-        Success message
-    """
-    # Check if user exists (but don't reveal if email is registered)
-    user = db.get_user_by_email(reset_request.email)
-
-    if user:
-        logger.info(f"Password reset requested for: {user.username}")
-        # TODO: Send email with reset token
-
-    # Always return success to prevent user enumeration
+    The answer is the same whether an account has the address or not, and comes before the address is even looked
+    up (password_reset.send_reset_link runs after it): neither its words nor its time tell who has an account. An
+    inactive account gets no mail, an account a few a day at most (password_reset.may_send)."""
+    _reset_offered(auth)
+    background.add_task(password_reset.send_reset_link, auth, db, reset_request.email)
     return MessageResponse(
-        message="If the email exists, a password reset link has been sent",
-        detail="Check your email for reset instructions"
+        message="If an account has this address, a link to set a new password is on its way",
+        detail=f"The link holds for {auth.password_reset.link_minutes} minutes and works once",
     )
 
 
 @router.post("/password-reset", response_model=MessageResponse)
 async def reset_password(
     reset_data: PasswordReset,
+    auth: AuthConfig = Depends(_auth_config),
+    db: UserDatabase = Depends(get_db),
 ) -> MessageResponse:
-    """
-    Reset password with token (placeholder - requires token validation).
-
-    Note: This is a placeholder. In production, this would validate a
-    reset token and update the password.
-
-    Args:
-        reset_data: Password reset data with token
-
-    Returns:
-        Success message
-    """
-    # TODO: Implement token validation and password reset
-    logger.warning("Password reset endpoint called but not fully implemented")
-
-    return MessageResponse(
-        message="Password reset functionality not yet implemented",
-        detail="Use admin tools to reset passwords"
-    )
+    """Set the password a reset link was mailed for. It ends every login of the account, as any password change
+    does -- and with it the link itself: the token names the generation the change raises."""
+    _reset_offered(auth)
+    spent = HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                          detail="This link is not valid any more (used, expired, or the password changed since); "
+                                 "ask for a new one")
+    read = password_reset.read_reset_token(reset_data.token)
+    if read is None:
+        raise spent
+    user_id, generation, print_ = read
+    user = db.get_user_by_id(user_id)
+    if user is None or not user.is_active or not hmac.compare_digest(password_reset.fingerprint(user), print_):
+        raise spent
+    try:
+        updated = db.update_user(user_id, UserUpdate(password=reset_data.new_password),
+                                 expected_generation=generation)
+    except PasswordChangedMeanwhile:
+        raise spent
+    if updated is None:
+        raise spent
+    logger.info("Password reset by mail link for: %s", user.username)
+    return MessageResponse(message="Your new password is set; sign in with it")

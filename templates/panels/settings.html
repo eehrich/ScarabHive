@@ -45,6 +45,9 @@
   <form id="profileForm" class="pk-form">
     <label class="pk-field"><span class="pk-label">Username</span><input id="username" class="pk-input" disabled></label>
     <label class="pk-field"><span class="pk-label">Email</span><input id="email" name="email" class="pk-input" type="email" required></label>
+    <label id="emailPasswordField" class="pk-field" hidden><span class="pk-label">Current password</span>
+      <input id="emailPassword" class="pk-input" type="password" autocomplete="current-password">
+      <span class="pk-help">A new email needs it: a password reset link goes there.</span></label>
     <label class="pk-field"><span class="pk-label">Full name</span><input id="fullName" name="full_name" class="pk-input"></label>
     <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--primary">Save profile</button></div>
   </form>

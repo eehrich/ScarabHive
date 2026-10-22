@@ -1868,6 +1868,7 @@ EXPECTED = [
     'a mangled stored layout does not stop the shell',
     'a failing catalogue leaves the chat working',
     'a signed-in user sees their account and can save the profile',
+    'a new email in the profile asks for the current password and sends it, the same one is not sent',
     'the chat settings are kept on the account and apply to the chat at once',
     'logging out forgets the layout of the user who left',
     'an expired or deactivated sign-in goes to the login page and comes back',

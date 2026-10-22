@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Forgot password: the login page mails a link to the account's address
+  (`POST /auth/password-reset-request`, `POST /auth/password-reset`, until
+  now placeholders that sent nothing). The link holds
+  `auth.password_reset.link_minutes` (30) and works once; setting the
+  password ends every login of the account. The answer is the same for any
+  address and comes before the address is looked up; an account gets a mail
+  every two minutes and five a day at most. The link is built on
+  `auth.password_reset.public_url`, never on the request's Host, and carries
+  the token in the fragment (`/login#reset=...`), out of server and proxy
+  logs. New config: `auth.mail` (host, port, security, username, password,
+  sender, timeout) and `auth.password_reset`; without a mail server, sender and public
+  address the login page offers nothing.
+- `PATCH /auth/me` asks for `current_password` to change the email too: it is
+  where the reset link goes. The Settings panel asks for it once the address
+  differs.
 - Session folders in the sidebar. Folders sit above the sessions in none,
   and inside a folder as below it sessions group by day: Today, Yesterday
   and This week open, each month before folded, the folds kept per browser.

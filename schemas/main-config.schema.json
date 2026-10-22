@@ -550,6 +550,12 @@
         },
         "plugin_security": {
           "$ref": "#/$defs/PluginSecurityConfig"
+        },
+        "mail": {
+          "$ref": "#/$defs/MailConfig"
+        },
+        "password_reset": {
+          "$ref": "#/$defs/PasswordResetConfig"
         }
       },
       "title": "AuthConfig",
@@ -1913,6 +1919,61 @@
       "type": "object",
       "additionalProperties": false
     },
+    "MailConfig": {
+      "additionalProperties": false,
+      "description": "The mail server ScarabHive itself sends through: the password reset link. No host, no mail.",
+      "properties": {
+        "host": {
+          "default": "",
+          "title": "Host",
+          "type": "string"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port"
+        },
+        "security": {
+          "default": "starttls",
+          "enum": [
+            "starttls",
+            "ssl",
+            "none"
+          ],
+          "title": "Security",
+          "type": "string"
+        },
+        "username": {
+          "default": "",
+          "title": "Username",
+          "type": "string"
+        },
+        "password": {
+          "default": "",
+          "title": "Password",
+          "type": "string"
+        },
+        "sender": {
+          "default": "",
+          "title": "Sender",
+          "type": "string"
+        },
+        "timeout": {
+          "default": 20.0,
+          "title": "Timeout",
+          "type": "number"
+        }
+      },
+      "title": "MailConfig",
+      "type": "object"
+    },
     "ModelCapabilitiesConfig": {
       "additionalProperties": false,
       "description": "What a model can take and produce.\n\nTHE definition — llm.capabilities.ModelCapabilities derives from this\nclass instead of repeating it. It used to be a second copy, field for\nfield, and a new capability had to be added twice.",
@@ -2188,6 +2249,26 @@
       "title": "NetworkConfig",
       "type": "object",
       "additionalProperties": false
+    },
+    "PasswordResetConfig": {
+      "additionalProperties": false,
+      "description": "Forgot password (POST /auth/password-reset-request): a link to the account's own address, good once.\n\nOffered once auth.mail has a host and a sender and public_url is set.",
+      "properties": {
+        "public_url": {
+          "default": "",
+          "title": "Public Url",
+          "type": "string"
+        },
+        "link_minutes": {
+          "default": 30,
+          "maximum": 1440,
+          "minimum": 5,
+          "title": "Link Minutes",
+          "type": "integer"
+        }
+      },
+      "title": "PasswordResetConfig",
+      "type": "object"
     },
     "PathsConfig": {
       "description": "Where the system keeps what it writes (agent_system/paths.py).\n\n``data_dir`` moves the whole data directory: every relative ``data/...``\npath -- in this configuration, in plugin schema defaults, in the code --\nthen lands in it. Relative values are relative to the project; the\nenvironment variable AGENT_DATA_DIR wins over this. Only the master config\ncan set it, and changing it needs a restart.",

@@ -12,6 +12,17 @@ themeRadios.forEach((radio) => radio.addEventListener('change', () => setTheme(r
 showTheme(currentTheme());
 onThemeChange(showTheme);  // switched from the shell's header while this panel is open
 
+let savedEmail = '';
+
+// A new email needs the current password (PATCH /auth/me): asked for only once the address differs.
+function askForPasswordIfNewEmail() {
+  const changed = $('email').value.trim() !== savedEmail;
+  $('emailPasswordField').hidden = !changed;
+  $('emailPassword').required = changed;
+  if (!changed) $('emailPassword').value = '';
+}
+$('email').addEventListener('input', askForPasswordIfNewEmail);
+
 async function loadProfile() {
   let me;
   try {
@@ -27,7 +38,8 @@ async function loadProfile() {
     return;
   }
   $('username').value = me.username;
-  $('email').value = me.email || '';
+  $('email').value = savedEmail = me.email || '';
+  askForPasswordIfNewEmail();
   $('fullName').value = me.full_name || '';
   $('role').textContent = me.role;
 }
@@ -44,7 +56,16 @@ async function saveMe(json) {
 
 $('profileForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (await saveMe({ email: $('email').value.trim(), full_name: $('fullName').value.trim() })) {
+  const json = { full_name: $('fullName').value.trim() };
+  // The address only when it changed, with the password it needs: sent along unchanged, one an admin changed
+  // meanwhile would read as a change this form asks no password for.
+  if (!$('emailPasswordField').hidden) {
+    json.email = $('email').value.trim();
+    json.current_password = $('emailPassword').value;
+  }
+  if (await saveMe(json)) {
+    if (json.email) savedEmail = json.email;
+    askForPasswordIfNewEmail();
     toast('Profile saved', { kind: 'ok' });
   }
 });

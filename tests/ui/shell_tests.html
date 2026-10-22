@@ -5476,6 +5476,29 @@
     return shown && patches.at(-1).full_name === 'Ada Lovelace' && panel.getElementById('noAccounts').hidden;
   });
 
+  await check('a new email in the profile asks for the current password and sends it, the same one is not sent', async () => {
+    const panel = panelFrame('/ui/panels/settings').contentDocument;
+    const email = panel.getElementById('email');
+    const field = panel.getElementById('emailPasswordField');
+    const type = (value) => { email.value = value; email.dispatchEvent(new Event('input', { bubbles: true })); };
+    need(field.hidden, 'the password field shows for the address the account has');
+    type('ada.new@example.com');
+    need(!field.hidden, 'a new address does not ask for the password');
+    panel.getElementById('emailPassword').value = 'the-current-one';
+    const before = (await (await stub('/__stub/patches')).json()).length;
+    panel.getElementById('profileForm').requestSubmit();
+    await until('the patch', async () => (await (await stub('/__stub/patches')).json()).length === before + 1);
+    const withNew = (await (await stub('/__stub/patches')).json()).at(-1);
+    need(withNew.email === 'ada.new@example.com' && withNew.current_password === 'the-current-one', JSON.stringify(withNew));
+    await until('the field put away once saved', () => field.hidden);
+    panel.getElementById('fullName').value = 'Ada L.';  // the address it now has, sent along unchanged
+    panel.getElementById('profileForm').requestSubmit();
+    await until('the second patch', async () => (await (await stub('/__stub/patches')).json()).length === before + 2);
+    const same = (await (await stub('/__stub/patches')).json()).at(-1);
+    return need(!('email' in same) && !('current_password' in same) && same.full_name === 'Ada L.',
+      `the address it has sent along ${JSON.stringify(same)}`);
+  });
+
   await check('the chat settings are kept on the account and apply to the chat at once', async () => {
     // The Settings panel saves each choice as it is clicked; the shell hands the saved
     // preferences to the chat, which shows what is on the page their way at once --

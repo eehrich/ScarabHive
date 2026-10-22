@@ -79,7 +79,7 @@ class UserSelfUpdate(BaseModel):
 
     Role and active state are an admin's decision: sending them is rejected,
     not ignored, so a client never believes it changed them. A new password
-    needs the current one, checked on the server.
+    or a new email needs the current one, checked on the server.
     """
     model_config = {"extra": "forbid"}
 

@@ -55,9 +55,10 @@ def test_changing_to_an_email_someone_else_has_is_a_400(client, temp_db):
         "username": "other", "password": "password123"}).json()["access_token"]
 
     response = client.patch("/auth/me", headers={"Authorization": f"Bearer {token}"},
-                            json={"email": "newbie@example.com"})
+                            json={"email": "newbie@example.com", "current_password": "password123"})
 
     assert response.status_code == 400
+    assert "already exists" in response.json()["detail"], response.text
     assert temp_db.get_user_by_username("other").email == "other@example.com"
 
 

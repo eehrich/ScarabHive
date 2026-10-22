@@ -62,7 +62,7 @@ def test_patch_me_update_email(client, test_user):
     response = client.patch(
         "/auth/me",
         headers={"Authorization": f"Bearer {token}"},
-        json={"email": "newemail@example.com"}
+        json={"email": "newemail@example.com", "current_password": "password123"}
     )
     
     assert response.status_code == 200
@@ -150,7 +150,8 @@ def test_patch_me_multiple_fields(client, test_user):
         headers={"Authorization": f"Bearer {token}"},
         json={
             "email": "updated@example.com",
-            "full_name": "Updated Name"
+            "full_name": "Updated Name",
+            "current_password": "password123",
         }
     )
     
@@ -189,6 +190,50 @@ def test_patch_me_password_needs_the_current_one(client, test_user):
     assert wrong.status_code == 403
     assert client.post("/auth/login", json={
         "username": "testuser", "password": "password123"}).status_code == 200
+
+
+def test_patch_me_email_needs_the_current_password(client, test_user, temp_db):
+    """The email is where a password reset link goes: a login alone that sets it would own the account."""
+    headers = {"Authorization": f"Bearer {_token(client)}"}
+
+    missing = client.patch("/auth/me", headers=headers, json={"email": "thief@example.com"})
+    wrong = client.patch("/auth/me", headers=headers,
+                         json={"email": "thief@example.com", "current_password": "nope-nope"})
+
+    assert missing.status_code == 400 and "email" in missing.json()["detail"]
+    assert wrong.status_code == 403
+    assert temp_db.get_user_by_id(test_user.id).email == test_user.email
+
+
+def test_patch_me_the_same_email_with_a_new_name_needs_no_password(client, test_user):
+    """The profile form sends the email it shows with every save."""
+    response = client.patch("/auth/me", headers={"Authorization": f"Bearer {_token(client)}"},
+                            json={"email": test_user.email, "full_name": "Renamed"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["full_name"] == "Renamed"
+
+
+def test_patch_me_email_is_refused_when_a_reset_came_between_the_check_and_the_write(client, test_user, temp_db,
+                                                                                     monkeypatch):
+    """The old password authorised the change; an admin's reset meanwhile shuts it out, as for a new password."""
+    from agent_system.api import auth_endpoints
+    from agent_system.auth.models import UserUpdate
+
+    real = auth_endpoints.verify_password
+
+    def checked_then_reset(plain, hashed):
+        verdict = real(plain, hashed)
+        temp_db.update_user(test_user.id, UserUpdate(password="reset-by-admin-1"))
+        return verdict
+    headers = {"Authorization": f"Bearer {_token(client)}"}
+    monkeypatch.setattr(auth_endpoints, "verify_password", checked_then_reset)
+
+    response = client.patch("/auth/me", headers=headers,
+                            json={"email": "thief@example.com", "current_password": "password123"})
+
+    assert response.status_code == 409, response.text
+    assert temp_db.get_user_by_id(test_user.id).email == test_user.email
 
 
 if __name__ == "__main__":

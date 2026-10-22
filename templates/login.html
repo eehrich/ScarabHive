@@ -13,11 +13,16 @@
     .login-brand { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); color: var(--brand); text-align: center; }
     .login-brand h1 { color: var(--text-primary); font-size: 22px; }
     .login-brand p { margin: 0; color: var(--text-secondary); }
-    .login .pk-card { padding: var(--space-5); }
+    .login .pk-card { padding: var(--space-5); display: flex; flex-direction: column; gap: var(--space-4); }
     .login .pk-form { max-width: none; }
-    .login-error { display: flex; gap: var(--space-2); align-items: flex-start; padding: var(--space-2) var(--space-3);
-      font-size: var(--text-sm); color: var(--danger); background: var(--danger-subtle); border-radius: var(--radius-md); }
+    .login-error, .login-notice { display: flex; gap: var(--space-2); align-items: flex-start; padding: var(--space-2) var(--space-3);
+      font-size: var(--text-sm); border-radius: var(--radius-md); }
+    .login-error { color: var(--danger); background: var(--danger-subtle); }
+    .login-notice { color: var(--ok); background: var(--ok-subtle); }
     .login button[type="submit"] { width: 100%; }
+    .login-link { align-self: center; background: none; border: 0; padding: 0; color: var(--accent); font: inherit;
+      font-size: var(--text-sm); cursor: pointer; }
+    .login-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -25,23 +30,49 @@
     <div class="login-brand">
       {{ logo(52) }}
       <h1>ScarabHive</h1>
-      <p>Sign in to continue</p>
+      <p id="loginLead">Sign in to continue</p>
     </div>
     <div class="pk-card">
+      <div id="loginNotice" class="login-notice" role="status" hidden>{{ icon('circle-check') }}<span></span></div>
+      <div id="loginError" class="login-error" role="alert" hidden>{{ icon('circle-alert') }}<span></span></div>
       <form id="loginForm" class="pk-form">
-        <div id="loginError" class="login-error" role="alert" hidden>{{ icon('circle-alert') }}<span></span></div>
         <label class="pk-field"><span class="pk-label">Username or email</span>
           <input id="username" name="username" class="pk-input" required autocomplete="username" autofocus></label>
         <label class="pk-field"><span class="pk-label">Password</span>
           <input id="password" name="password" class="pk-input" type="password" required autocomplete="current-password"></label>
         <button id="loginButton" type="submit" class="pk-btn pk-btn--primary pk-btn--lg">Sign in</button>
+        {% if password_reset %}<button id="forgotLink" type="button" class="login-link">Forgot password?</button>{% endif %}
+      </form>
+      {% if password_reset %}
+      <form id="forgotForm" class="pk-form" hidden>
+        <label class="pk-field"><span class="pk-label">Email of your account</span>
+          <input id="forgotEmail" name="email" class="pk-input" type="email" required autocomplete="email"></label>
+        <button id="forgotButton" type="submit" class="pk-btn pk-btn--primary pk-btn--lg">Send a link</button>
+        <button type="button" class="login-link" data-back>Back to sign in</button>
+      </form>
+      {% endif %}
+      <form id="resetForm" class="pk-form" hidden>
+        <label class="pk-field"><span class="pk-label">New password</span>
+          <input id="newPassword" name="new_password" class="pk-input" type="password" required minlength="8" autocomplete="new-password"></label>
+        <label class="pk-field"><span class="pk-label">The same again</span>
+          <input id="newPasswordAgain" class="pk-input" type="password" required minlength="8" autocomplete="new-password"></label>
+        <button id="resetButton" type="submit" class="pk-btn pk-btn--primary pk-btn--lg">Set password</button>
+        <button type="button" class="login-link" data-back>Back to sign in</button>
       </form>
     </div>
   </main>
   <script type="module">
-    const form = document.getElementById('loginForm');
-    const button = document.getElementById('loginButton');
-    const error = document.getElementById('loginError');
+    const $ = (id) => document.getElementById(id);
+    const form = $('loginForm');
+    const button = $('loginButton');
+    const error = $('loginError');
+    const notice = $('loginNotice');
+    const forms = ['loginForm', 'forgotForm', 'resetForm'].map($).filter(Boolean);
+
+    // A reset link's token, in the fragment (#reset=...): a browser never sends that, so no server or proxy log
+    // holds it. Taken out of the address bar once read -- the browser's history still has the visit.
+    const resetToken = new URLSearchParams(window.location.hash.slice(1)).get('reset');
+    if (resetToken) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
 
     // Only this site: an absolute or protocol-relative ?return= would send a
     // freshly signed-in user to someone else's. Resolved by the URL parser the
@@ -58,41 +89,110 @@
     }
 
     // Signed in already -- or 404: authentication is off and there is nothing to sign in to.
-    fetch('/auth/me', { credentials: 'same-origin' }).then((response) => {
-      if (response.ok || response.status === 404) window.location.replace(returnTarget());
-    });
-
-    function showError(message) {
-      error.querySelector('span').textContent = message;
-      error.hidden = false;
+    // Not with a reset link: whoever opens it sets the password it was sent for, signed in or not.
+    if (!resetToken) {
+      fetch('/auth/me', { credentials: 'same-origin' }).then((response) => {
+        if (response.ok || response.status === 404) window.location.replace(returnTarget());
+      });
     }
 
-    form.addEventListener('input', () => { error.hidden = true; });
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      button.disabled = true;
-      button.textContent = 'Signing in…';
+    function say(box, message) {
+      box.querySelector('span').textContent = message;
+      box.hidden = false;
+    }
+    const showError = (message) => { notice.hidden = true; say(error, message); };
+    const showNotice = (message) => { error.hidden = true; say(notice, message); };
+
+    const leads = { loginForm: 'Sign in to continue', forgotForm: 'Get a link to set a new password', resetForm: 'Set a new password' };
+    function show(id) {
+      for (const each of forms) each.hidden = each.id !== id;
+      $('loginLead').textContent = leads[id];
+      error.hidden = true;
+      $(id).querySelector('input')?.focus();
+    }
+
+    async function post(path, body) {
+      const response = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      const data = await response.json().catch(() => ({}));
+      // FastAPI's validation answer is a list: its first message, not "[object Object]"
+      const detail = typeof data.detail === 'string' ? data.detail : data.detail?.[0]?.msg;
+      return { ok: response.ok, data, detail };
+    }
+
+    async function busy(submit, label, work) {
+      const idle = submit.textContent;
+      submit.disabled = true;
+      submit.textContent = label;
       try {
-        const response = await fetch('/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({ username: form.username.value.trim(), password: form.password.value }),
-        });
-        if (response.ok) {
-          window.location.replace(returnTarget());
-          return;
-        }
-        const data = await response.json().catch(() => ({}));
-        showError(typeof data.detail === 'string' ? data.detail : 'Incorrect username or password');
-        form.password.value = '';
-        form.password.focus();
+        await work();
       } catch {
         showError('The server is not reachable. Check the connection and try again.');
       }
-      button.disabled = false;
-      button.textContent = 'Sign in';
+      submit.disabled = false;
+      submit.textContent = idle;
+    }
+
+    for (const each of forms) each.addEventListener('input', () => { error.hidden = true; });
+    for (const back of document.querySelectorAll('[data-back]')) back.addEventListener('click', () => show('loginForm'));
+    $('forgotLink')?.addEventListener('click', () => {
+      notice.hidden = true;
+      if (form.username.value.includes('@')) $('forgotEmail').value = form.username.value.trim();
+      show('forgotForm');
     });
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      busy(button, 'Signing in…', async () => {
+        const answer = await post('/auth/login', { username: form.username.value.trim(), password: form.password.value });
+        if (answer.ok) {
+          window.location.replace(returnTarget());
+          return;
+        }
+        showError(answer.detail || 'Incorrect username or password');
+        form.password.value = '';
+        form.password.focus();
+      });
+    });
+
+    $('forgotForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      busy($('forgotButton'), 'Sending…', async () => {
+        const answer = await post('/auth/password-reset-request', { email: $('forgotEmail').value.trim() });
+        if (!answer.ok) {
+          showError(answer.detail || 'The link could not be requested');
+          return;
+        }
+        show('loginForm');
+        showNotice(`${answer.data.message}. ${answer.data.detail || ''}`.trim());
+      });
+    });
+
+    $('resetForm').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const password = $('newPassword').value;
+      if (password !== $('newPasswordAgain').value) {
+        showError('The two passwords differ');
+        $('newPasswordAgain').focus();
+        return;
+      }
+      busy($('resetButton'), 'Setting…', async () => {
+        const answer = await post('/auth/password-reset', { token: resetToken, new_password: password });
+        if (!answer.ok) {
+          showError(answer.detail || 'The password could not be set');
+          return;
+        }
+        $('resetForm').reset();
+        show('loginForm');
+        showNotice(answer.data.message);
+      });
+    });
+
+    if (resetToken) show('resetForm');
   </script>
 </body>
 </html>
