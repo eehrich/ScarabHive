@@ -416,6 +416,7 @@ plugins:
       blocked_agents: []           # exact names only
       allow_advanced_model: true   # false = caller's use_advanced_model is ignored
       advanced_create_only_agents: []  # use_advanced_model honoured on create only, never on continue
+      advanced_continue_only_agents: []  # the reverse: ignored on create, honoured on continue
       max_nesting_depth: 5         # levels granted below the caller
       max_sub_agents_per_session: 10
       max_sub_agents_per_type: 3

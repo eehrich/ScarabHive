@@ -1495,6 +1495,82 @@ class TestAdvancedCreateOnlyAgents:
         assert await self._run_continue(server, "gated_agent", True) is False
 
 
+class TestAdvancedContinueOnlyAgents:
+    """advanced_continue_only_agents, the mirror image: listed types spawn on
+    their normal chain whatever the caller asks; a continue still gets the
+    advanced chain. Unlisted types keep today's behaviour."""
+
+    async def _run_create(self, server, agent_type, requested):
+        """Drive a real create through the public entrypoint (wiring as in
+        test_plugin_sub_agent_manager_llm_profiles.py) and return the
+        use_advanced_model that reached the agent's run_events."""
+        captured = {}
+
+        async def run_events(*args, **kwargs):
+            captured.update(kwargs)
+            yield {"type": "final", "summary": "created"}
+
+        agent = Mock()
+        agent.agent_config.llm_profile = "normal"
+        agent._session_service = None
+        agent._session_tracker = Mock(wraps=SessionTracker())
+        agent.run_events = run_events
+        registry = Mock()
+        registry.get = Mock(return_value=agent)
+
+        session_service = Mock()
+        session_service.session_manager = Mock()
+        session_service.session_manager.load_session = AsyncMock(side_effect=FileNotFoundError())
+        session_service.session_manager.create_session = AsyncMock()
+        session_service.save_session = AsyncMock()
+
+        manager = Mock()
+        manager.create_sub_session = AsyncMock(return_value="sub_session_1")
+        manager.update_sub_session_metadata = AsyncMock()
+        manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, manager)
+        manager._write_sub_agent = manager.update_sub_session_metadata
+        manager.update_sub_agent_activity = AsyncMock()
+        manager._extract_user_id = Mock(return_value="u1")
+        manager._session_service = session_service
+
+        server.allowed_agents = ["*"]
+        server._extract_registry = Mock(return_value=registry)
+        server._extract_session_service = Mock(return_value=session_service)
+        server._get_manager = Mock(return_value=manager)
+
+        result = await server.manage_sub_agent({
+            "operation": "create", "agent_type": agent_type, "task": "draft",
+            "use_advanced_model": requested, "_session_id": "parent1", "_request_id": "r1",
+        })
+        assert result["status"] == "completed", result
+        return captured["use_advanced_model"]
+
+    @pytest.mark.asyncio
+    async def test_create_path_suppresses_for_listed_type_only(self, server):
+        server.advanced_continue_only_agents = {"gated_agent"}
+        assert await self._run_create(server, "gated_agent", True) is False
+        assert await self._run_create(server, "other_agent", True) is True
+
+    @pytest.mark.asyncio
+    async def test_continue_keeps_the_flag(self, server):
+        server.advanced_continue_only_agents = {"gated_agent"}
+        assert await TestAdvancedCreateOnlyAgents()._run_continue(server, "gated_agent", True) is True
+
+    def test_server_reads_config_and_reload_reports_it(self, server, mock_config):
+        assert server.advanced_continue_only_agents == set()
+        cfg = Mock(spec=ToolServerConfig)
+        cfg.max_sub_agents_per_session = 10
+        cfg.max_nesting_depth = 5
+        cfg.max_sub_agents_per_type = 3
+        cfg.allowed_agents = ["*"]
+        cfg.blocked_agents = []
+        cfg.advanced_continue_only_agents = ["gated_agent"]
+        assert SubAgentManagerServer(name="sam", system_config=mock_config,
+                                     server_config=cfg).advanced_continue_only_agents == {"gated_agent"}
+        assert "advanced_continue_only_agents" in server.reload_config(cfg)
+        assert server.advanced_continue_only_agents == {"gated_agent"}
+
+
 class SlowAgent:
     """Agent.run_events for the cancel tests: a run lasts until the test releases it or its request is cancelled,
     and a cancelled run ends as the real loop ends it, with its "cancelled" event. cancel_request answers False

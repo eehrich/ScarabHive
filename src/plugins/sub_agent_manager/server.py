@@ -237,6 +237,14 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         self.advanced_create_only_agents = (
             set(raw_create_only) if isinstance(raw_create_only, (list, tuple, set)) else set()
         )
+        # The mirror image: for these types use_advanced_model is ignored on
+        # `create` and honoured on `continue`. Built for a panel member whose
+        # first draft belongs on its normal chain, while synthesis and stuck
+        # rescues should still reach the advanced one. Empty by default.
+        raw_continue_only = getattr(server_config, 'advanced_continue_only_agents', None)
+        self.advanced_continue_only_agents = (
+            set(raw_continue_only) if isinstance(raw_continue_only, (list, tuple, set)) else set()
+        )
 
         # Options of the inject_sub_agent_context hook (hook_config block)
         self._injector_config = _injector_options(server_config)
@@ -317,6 +325,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         raw_create_only = getattr(server_config, 'advanced_create_only_agents', None)
         _upd("advanced_create_only_agents",
              set(raw_create_only) if isinstance(raw_create_only, (list, tuple, set)) else set())
+        raw_continue_only = getattr(server_config, 'advanced_continue_only_agents', None)
+        _upd("advanced_continue_only_agents",
+             set(raw_continue_only) if isinstance(raw_continue_only, (list, tuple, set)) else set())
 
         _upd("_injector_config", _injector_options(server_config))
 
@@ -356,6 +367,18 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             logger.info(
                 "[%s] use_advanced_model on continue of '%s' suppressed "
                 "(advanced_create_only_agents) — normal chain.",
+                self.name, agent_type,
+            )
+            return False
+        return requested
+
+    def _create_use_advanced(self, agent_type: str, requested: bool) -> bool:
+        """The guard on `create`: types listed in ``advanced_continue_only_agents``
+        spawn on their normal chain. Suppression is logged, never silent."""
+        if requested and agent_type in self.advanced_continue_only_agents:
+            logger.info(
+                "[%s] use_advanced_model on create of '%s' suppressed "
+                "(advanced_continue_only_agents) — normal chain.",
                 self.name, agent_type,
             )
             return False
@@ -826,7 +849,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 }
 
             instance_label = params.get("instance_label")
-            use_advanced_model = self._effective_use_advanced(params)
+            use_advanced_model = self._create_use_advanced(agent_name, self._effective_use_advanced(params))
             blocking = params.get("blocking", True)  # NEW: default to blocking behavior
             # Note: config_overrides would be used here when Agent.run_events supports them
             # For now, sub-agent uses its default configuration

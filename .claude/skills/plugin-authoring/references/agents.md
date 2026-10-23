@@ -153,7 +153,9 @@ There is no global registry. **All four** must hold:
 
 SAM knobs are **top-level** keys on the SAM entry (not under `config:`):
 `allowed_agents`, `blocked_agents`, `allow_advanced_model` (default true; false drops
-the caller's `use_advanced_model`), `advanced_create_only_agents`.
+the caller's `use_advanced_model`), `advanced_create_only_agents` (the flag counts on
+`create` only), `advanced_continue_only_agents` (the reverse: these types spawn on their
+normal chain).
 `allowed_agents`, limits, `allow_advanced_model` and the injector options reload via `agent-cli reload`; a
 **new** agent needs a restart (the user does restarts).
 

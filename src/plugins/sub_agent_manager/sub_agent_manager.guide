@@ -159,7 +159,7 @@ task | create | the first message; continue takes it when message is missing
 instance_label | create | goes into the instance id: sub_<label>_<number>, characters other than letters, digits, _ and - become _; without it sub_<agent_type>_<number>
 blocking | create | true (default): the answer comes when the run is over; false: the run goes on in the background, answer status running
 wake_when_done | create | with blocking false: the session is woken when the run ends (see @{" Instances, limits and waking " link rules}); default false
-use_advanced_model | create, continue | runs the agent on its advanced model chain; default false; ignored when the SAM sets allow_advanced_model false, and on continue for the agent types in advanced_create_only_agents
+use_advanced_model | create, continue | runs the agent on its advanced model chain; default false; ignored when the SAM sets allow_advanced_model false, on continue for the agent types in advanced_create_only_agents, and on create for those in advanced_continue_only_agents
 instance_id | continue, poll, wait, cancel, info, delete | the id an answer returned
 instance_ids | wait_all, delete | a list; duplicates count once. delete also takes a single id given as a string, and instance_id and instance_ids together
 message | continue | the follow-up
@@ -527,6 +527,7 @@ auto_archive_on_limit | false | true: archive the oldest instead of answering li
 default_wait_timeout | 3600 | seconds wait and wait_all wait
 allow_advanced_model | true | false: use_advanced_model is ignored (logged)
 advanced_create_only_agents | [] | agent types whose use_advanced_model counts on create only
+advanced_continue_only_agents | [] | agent types whose use_advanced_model counts on continue only
 info_default_limit | 20 | messages per info page without limit
 info_max_limit | 200 | the most one info page returns
 info_default_max_chars | 4000 | the cut per message without max_chars

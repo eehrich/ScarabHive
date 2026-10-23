@@ -704,8 +704,8 @@ sessions or runs. It changes only what a plugin can take over live:
 @{tt}inherit_parent_llm@{utt} and its role gate
 @{tt}metadata.min_role@{utt};
 @{bullet}a SAM's @{tt}allowed_agents@{utt}, @{tt}blocked_agents@{utt},
-@{tt}allow_advanced_model@{utt}, @{tt}advanced_create_only_agents@{utt} and
-its limits.
+@{tt}allow_advanced_model@{utt}, @{tt}advanced_create_only_agents@{utt},
+@{tt}advanced_continue_only_agents@{utt} and its limits.
 
 Everything else needs a @{b}restart@{ub} of @{tt}agent-api@{utt}: a new or
 removed server entry, an agent's tools, LLM profiles and timeouts, hook
@@ -1935,7 +1935,8 @@ The SAM's knobs are @{b}top-level keys of its server entry@{ub}, not under a
 @{tt}config:@{utt} block (that block in the SAM's @{tt}schema.yaml@{utt} is
 not read): @{tt}allowed_agents@{utt}, @{tt}blocked_agents@{utt},
 @{tt}allow_advanced_model@{utt} (default true; false drops a caller's
-request for the advanced model), @{tt}advanced_create_only_agents@{utt}, and
+request for the advanced model), @{tt}advanced_create_only_agents@{utt},
+@{tt}advanced_continue_only_agents@{utt}, and
 the limits @{tt}max_sub_agents_per_session@{utt} (10),
 @{tt}max_nesting_depth@{utt} (5) and @{tt}max_sub_agents_per_type@{utt}
 (3). Everything else -- operations, waiting, background runs, the map
