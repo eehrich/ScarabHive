@@ -325,8 +325,13 @@ llm_system:
 
     openrouter-kimi-k3:
       extends: openrouter-base
-      model: moonshotai/kimi-k3
+      model: moonshotai/kimi-k3.1-pro
       context_window: 1000000     # no price tier; OpenRouter only routes to endpoints the request fits
+      provider_routing:
+        # Moonshot is the only provider; its highspeed endpoint costs double.
+        order:
+        - moonshotai/mxfp4
+        allow_fallbacks: false
       capabilities:
         image_input: true
 
@@ -486,7 +491,7 @@ llm_system:
 
     or-kimi-k3:
       model_ref: openrouter-kimi-k3
-      description: "OpenRouter Kimi K3"
+      description: "OpenRouter Kimi K3.1 Pro"
       max_steps: 500
 
   # =============================================================================

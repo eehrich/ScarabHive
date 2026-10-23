@@ -576,6 +576,12 @@ z-ai/glm-5.3:
   output: 4.40
   cached_input: 0.26
 
+# Source: https://openrouter.ai/moonshotai/kimi-k3.1-pro (Moonshot standard endpoint)
+moonshotai/kimi-k3.1-pro:
+  input: 2.00
+  cached_input: 0.20
+  output: 10.00
+
 # Source: https://openrouter.ai/moonshotai/kimi-k3
 moonshotai/kimi-k3:
   input: 3.00
