@@ -245,16 +245,25 @@ llm_system:
 
     # Newest DeepSeek Flash (alias). Used by the `think` profile and the
     # writer thinking profile.
-    # Pinned to the two cheapest fp8 providers with the full 1M window
-    # (docs/llm_catalog.md). Full endpoint slugs: a bare "deepinfra" also
-    # matches its priority tier, at 1.5x the price.
+    # fp8 only and a fixed provider order, cheapest first: without `order`
+    # OpenRouter spreads the calls over every fp8 endpoint, including ones at
+    # 3-8x the price, and provider affinity then pins a run to whichever of
+    # them answered first; with `order` a pin can only land on a listed one.
+    # Full endpoint slugs: a bare "deepinfra" also matches its priority tier,
+    # at 1.5x the price. Per-M prices (input / cache read / output) for
+    # V4.1-1017, 24.10.2026: DeepInfra 0.098 / 0.003 / 0.294,
+    # InferenceNet 0.08 / 0.008 / 0.5, GMICloud 0.18 / 0.004 / 0.72,
+    # AtlasCloud 0.195 / 0.004 / 0.78. No fallbacks: otherwise OpenRouter
+    # may route to any other (pricier) fp8 provider once these four fail.
     openrouter-deepseek-latest-flash:
       extends: openrouter-deepseek
       model: ~deepseek/deepseek-flash-latest
       provider_routing:
         order:
         - deepinfra/fp8
-        - morph/fp8
+        - inference-net/fp8
+        - gmicloud/fp8
+        - atlas-cloud/fp8
         quantizations:
         - fp8
         allow_fallbacks: false
