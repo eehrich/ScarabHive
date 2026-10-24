@@ -79,7 +79,7 @@ This document covers:
 ### 2.3 Non-Goals
 
 - Plugin versioning and dependency management
-- Runtime plugin loading/unloading. Discovery and instantiation happen at startup; a partial config reload exists (`POST /admin/reload-config`, `agent-cli reload`) that calls `reload_config(new_server_config)` on servers implementing it (`services/config_reload.py`). New servers still need a restart.
+- Runtime plugin loading/unloading. Discovery and instantiation happen at startup; a config reload exists (`POST /admin/reload-config`, `agent-cli reload`) that calls `reload_config(new_server_config[, system_config])` on servers implementing it (`services/config_reload.py`); an agent takes its whole config, LLM clients are held by what they are built from (`llm/factory.py` `ProfileClients`). New servers still need a restart.
 - Cross-plugin explicit dependencies (implicit tool deps allowed)
 - Plugin marketplace or distribution system
 

@@ -291,12 +291,32 @@ class Runtime:
 
     def carry_offered(self, config: AgentSystemConfig) -> None:
         """A config read afresh (a reload) knows only its files: the servers plugins offered at the start go into it
-        as they were declared -- they run as that, until the next start offers anew."""
+        as their plugin offers them NOW -- an edited ``agent:`` block of a machine reaches its running agent like an
+        edited agent YAML. A name the plugin no longer offers, or an offer that fails, keeps the entry it runs on
+        (the last one taken over); a name offered for the first time needs a start (it was never built)."""
         servers = config.plugins.servers if config.plugins else None
         if servers is None:
             return
+        offers: dict[str, dict] = {}
+        for type_name in {decl.offered_by for decl in self._decls.values() if decl.offered_by is not None}:
+            offer = getattr(self._plugins.get(type_name), "offered_servers", None)
+            try:
+                offers[type_name] = dict(offer(config) or {}) if offer is not None else {}
+            except Exception as e:  # the running entries stay
+                logger.warning("Plugin '%s' could not offer its servers on reload: %s", type_name, e, exc_info=True)
+                offers[type_name] = {}
         for name, decl in self._decls.items():
-            if decl.offered_by is not None and name not in servers and name in self.config.plugins.servers:
+            if decl.offered_by is None or name in servers or name not in self.config.plugins.servers:
+                continue
+            entry = offers.get(decl.offered_by, {}).get(name)
+            try:
+                if entry is not None:
+                    # The entry it runs on from now: what a later failing offer falls back to, not the start's.
+                    self.config.plugins.servers[name] = ToolServerConfig.model_validate(entry)
+                servers[name] = self.config.plugins.servers[name]
+            except Exception as e:
+                logger.warning("Server '%s' offered by '%s' does not validate on reload, keeps its entry: %s",
+                               name, decl.offered_by, e)
                 servers[name] = self.config.plugins.servers[name]
 
     def declarations(self) -> dict[str, ServerDecl]:

@@ -495,3 +495,13 @@ async def test_feat2_a_reload_names_this_configs_semaphore_problem_once(servers,
 
     server.reload_config(tool_config(tmp_path, semaphores={"p": 4}))  # fixed: the problem is gone
     assert server.semaphore_problem is None and server.run_manager.semaphores == {"p": 4}
+
+
+async def test_a_reload_hands_the_next_runs_the_fresh_system_config(servers, tmp_path):
+    """A step's llm_profile, a decision and vars_from are built from the system config the run's backend gets
+    (service: ScarabHiveBackend(system_config=server.system_config)); a reload that changed a model in llm.yaml has
+    to reach it, not leave it at the start-up state."""
+    server = servers()
+    fresh = object()
+    server.reload_config(tool_config(tmp_path), system_config=fresh)
+    assert server.system_config is fresh

@@ -105,7 +105,10 @@ def _fresh_config(servers, default_agent_cfg=None):
     """A REAL config object, so the reload runs the real merge path."""
     default_cfg = ToolServerConfig(type="basic_agent", enabled=True,
                             agent_config=default_agent_cfg)
+    # The models the agents of _agent() run on: a reload builds an agent's client
+    # from the fresh config before it takes anything over.
     return AgentSystemConfig(
+        llm_system=_llm_system(),
         plugins=PluginsConfig(default_config=default_cfg, servers=servers),
     )
 
@@ -182,15 +185,18 @@ class TestReloadReport:
         assert good.seen is not None
 
 
-def _agent(max_steps=20, **kw):
-    llm_system = LLMSystemConfig(
+def _llm_system():
+    return LLMSystemConfig(
         models={"gpt-4": LLMModelConfig(provider="openai", model="gpt-4",
                                         api_key="fake-key")},
         profiles={"normal": LLMProfile(model_ref="gpt-4")},
         default_profile="normal",
     )
+
+
+def _agent(max_steps=20, **kw):
     agent_config = AgentConfig(max_steps=max_steps, **kw)
-    system_config = AgentSystemConfig(llm_system=llm_system)
+    system_config = AgentSystemConfig(llm_system=_llm_system())
     server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     return Agent("test_agent", system_config, server_config, ToolServerRegistry())
 
@@ -210,15 +216,18 @@ class TestAgentReloadConfig:
         agent = _agent(max_steps=20)
         assert agent.reload_config(_mcp(max_steps=20)) == {}
 
-    def test_startup_wired_fields_are_left_alone(self):
-        """``self.llm`` was built from the profile at startup. Refreshing the
-        config alone would desync the two, so these need a restart — and the
-        reload must not pretend otherwise."""
+    def test_a_profile_that_does_not_build_changes_nothing(self):
+        """The new primary is built before anything is copied: a profile the
+        config does not have fails the reload for this agent, and it keeps
+        running as it was -- its config and the client it answers with."""
         agent = _agent(max_steps=20)
-        vorher = agent.agent_config.default_llm_profile
-        changes = agent.reload_config(_mcp(max_steps=20, llm_profile=["anders"]))
-        assert "llm_profile" not in changes
-        assert agent.agent_config.default_llm_profile == vorher
+        running = agent.llm
+        assert running is not None, "fixture: the agent has no client to keep"
+        with pytest.raises(ValueError, match="does not build"):
+            agent.reload_config(_mcp(max_steps=50, llm_profile=["anders"]))
+        assert agent.agent_config.default_llm_profile == "normal"
+        assert agent.agent_config.max_steps == 20
+        assert agent.llm is running
 
     def test_escalation_knobs_are_refreshed(self):
         """The escalator is rebuilt per request, so its knobs are safe."""

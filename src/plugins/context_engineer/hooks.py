@@ -423,8 +423,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # sweep consults this one before deleting anything (reserved BEFORE
         # mkdir, released after registration).
         self._creating: set[str] = set()
-        # One summary client per llm profile (tool_result_summary_profile).
-        self._summary_llms: dict[str, Any] = {}
+        # One summary client per llm profile (tool_result_summary_profile), held
+        # by what it is built from: a config reload that changes the model behind
+        # the profile reaches the next summary.
+        from agent_system.llm.factory import ProfileClients
+        self._summary_llms = ProfileClients(on_error=lambda profile, exc: logger.warning(
+            "[ContextEngineer] no summary client for profile %r, none will be written: %s", profile, exc))
 
         self.apply_config(None)
 
@@ -755,20 +759,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         return summarize
 
     def _summary_llm(self, system_config: Any, profile: str):
-        """One client per profile, kept for the life of the plugin -- a failure
-        too: a profile that does not resolve would otherwise be rebuilt, and
-        logged, for every single result."""
-        if profile in self._summary_llms:
-            return self._summary_llms[profile]
-        try:
-            from agent_system.llm.factory import create_llm_from_profile
-            client = create_llm_from_profile(system_config, profile)
-        except Exception as exc:  # noqa: BLE001 - no summary is not a failed compaction
-            logger.warning("[ContextEngineer] no summary client for profile %r, none will be written: %s",
-                           profile, exc)
-            client = None
-        self._summary_llms[profile] = client
-        return client
+        """The summary client of the profile, kept until the config changes -- a
+        failure too (None): a profile that does not resolve would otherwise be
+        rebuilt, and logged, for every single result."""
+        return self._summary_llms.get(system_config, profile)
 
     def _get_session_components(self, session_id: str,
                                 overrides: dict[str, Any] | None = None) -> dict[str, Any]:

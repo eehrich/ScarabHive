@@ -7,13 +7,15 @@ sessions/jobs). It is opt-in: only servers whose underlying plugin implements
 
 Scope (by design): this covers editing an EXISTING server's config — e.g. a
 sub-agent manager's ``allowed_agents`` / limits / phase filtering, or an agent's
-template vars. Registering a BRAND-NEW agent/plugin definition still needs a
-restart (the instance has to be created and wired into hooks/tool-schemas). The
-reload is always triggered deliberately (POST /admin/reload-config, `agent-cli
-reload`) — there is no file watcher.
+whole config: its LLM profile and params, tools, prompt, and the models of
+llm.yaml it runs on (Agent.reload_config). Registering a BRAND-NEW agent/plugin
+definition still needs a restart (the instance has to be created and wired into
+hooks/tool-schemas). The reload is always triggered deliberately (POST
+/admin/reload-config, `agent-cli reload`) — there is no file watcher.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Dict
 
@@ -51,6 +53,15 @@ def _reload_target(plugin: Any):
     return None
 
 
+def _takes_system_config(fn: Any) -> bool:
+    """Whether a ``reload_config`` takes the fresh system config too (the agent, stategraph): the others keep
+    their one-argument contract."""
+    try:
+        return "system_config" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def reload_plugin_configs(fresh_config: Any) -> Dict[str, Any]:
     """Refresh live plugin instances from ``fresh_config``.
 
@@ -68,13 +79,18 @@ def reload_plugin_configs(fresh_config: Any) -> Dict[str, Any]:
     # The servers a plugin offered at the start (a stategraph machine's agent: block) are in no file: the fresh
     # config keeps them, else they would read as gone -- and app.state.config would lose them.
     from agent_system.runtime import Runtime
-    if Runtime.last_started is not None:
-        Runtime.last_started.carry_offered(fresh_config)
+    runtime = Runtime.last_started
+    if runtime is not None:
+        runtime.carry_offered(fresh_config)
+    # A client that did not build is tried again: a key added at runtime changes no spec.
+    from agent_system.llm.factory import config_reloaded
+    config_reloaded()
 
     # The process-wide registry that holds the LIVE plugin instances. Its
     # adapters expose the underlying plugin as ``.plugin_server``.
     from agent_system.plugins.tool_adapter import plugin_tool_registry
     from agent_system.config.settings import get_tool_server_config
+    from agent_system.servers.agent.server import Agent
 
     report: Dict[str, Any] = {
         "refreshed": [],
@@ -112,7 +128,19 @@ def reload_plugin_configs(fresh_config: Any) -> Dict[str, Any]:
             continue
 
         try:
-            changed = reload_fn(new_cfg) or {}
+            if _takes_system_config(reload_fn):
+                changed = reload_fn(new_cfg, system_config=fresh_config) or {}
+            else:
+                changed = reload_fn(new_cfg) or {}
+            # Description, visibility and metadata of an agent are applied by its declaration (Runtime.apply_to).
+            # Only what the reload took over goes into it: the agent editor reads the running side from the
+            # declaration, and a changed type or plugin setting must still read as "needs a restart".
+            decl = runtime.describe(name) if runtime is not None else None
+            if decl is not None and isinstance(plugin, Agent) and getattr(new_cfg, "agent_config", None) is not None:
+                decl.server_config = decl.server_config.model_copy(update={
+                    "agent_config": new_cfg.agent_config,
+                    **{key: getattr(new_cfg, key) for key in Agent.RELOADED_ENTRY_KEYS}})
+                decl.apply_to(plugin, runtime.registry)
             if changed:
                 report["refreshed"].append({"server": name, "changes": changed})
             else:

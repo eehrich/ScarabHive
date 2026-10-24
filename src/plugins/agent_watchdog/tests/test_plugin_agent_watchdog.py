@@ -345,6 +345,19 @@ class TestHook:
         assert (entry["verdict"], entry["fail_open"]) == ("continue", fail_open)
 
     @pytest.mark.asyncio
+    async def test_a_judge_that_does_not_build_is_a_judge_error_with_its_cause(self, plugin):
+        """The build fails once (ProfileClients holds the failure), but every check it misses says why --
+        not "no_judge_llm", which means the agent carries no config at all."""
+        plugin._llm_profile = "not-configured"
+        agent = FakeAgent()
+        agent.system_config = _reload_system("gpt-4")
+        for step in (10, 20):
+            await plugin.observe_step(_context(step=step, agent=agent))
+            await _drain(plugin)
+        assert [(e["fail_open"], "not-configured" in e["error"]) for e in _log(plugin)] == [
+            ("judge_error", True), ("judge_error", True)]
+
+    @pytest.mark.asyncio
     async def test_a_provider_error_in_the_body_is_a_judge_error(self, plugin):
         """A 200 body carrying an error comes back as an answer with an
         "error" key; it used to be logged as "unparseable", cause lost."""
@@ -557,3 +570,20 @@ class TestThroughTheDispatcher:
         await _drain(plugin)
         assert llm.excerpt["user_messages"] == ["Find every caller of load_config."]
         assert _log(plugin)[-1]["trigger"] == "reasoning"
+
+
+def _reload_system(model: str):
+    """A real config whose profile "normal" runs on *model* -- what a reload hands over after llm.yaml changed."""
+    from agent_system.config.models import AgentSystemConfig, LLMModelConfig, LLMProfile, LLMSystemConfig
+    models = {name: LLMModelConfig(provider="openai", model=name, api_key="fake-key") for name in ("gpt-4", "gpt-5")}
+    return AgentSystemConfig(llm_system=LLMSystemConfig(
+        models=models, profiles={"normal": LLMProfile(model_ref=model)}, default_profile="normal"))
+
+
+def test_the_judge_follows_a_model_change_after_a_reload(plugin):
+    """The judge is built from the watched agent's system config, which a reload replaces."""
+    plugin._llm_profile = "normal"
+    before = plugin._get_judge_llm(SimpleNamespace(system_config=_reload_system("gpt-4")))
+    assert before is not None and before.model == "gpt-4", "fixture"
+    assert plugin._get_judge_llm(SimpleNamespace(system_config=_reload_system("gpt-4"))) is before
+    assert plugin._get_judge_llm(SimpleNamespace(system_config=_reload_system("gpt-5"))).model == "gpt-5"

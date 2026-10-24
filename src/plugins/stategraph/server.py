@@ -798,9 +798,12 @@ class StateGraphServer(SchemaBasedToolServer):
             self.run_manager.semaphore_hold = hold
         return changed
 
-    def reload_config(self, server_config: Any) -> dict:
-        """A config reload (POST /admin/reload-config): the semaphores take effect at the next try of every acquire;
-        everything else needs a restart."""
+    def reload_config(self, server_config: Any, system_config: Any = None) -> dict:
+        """A config reload (POST /admin/reload-config): the semaphores take effect at the next try of every acquire,
+        the fresh system config with the next run (its backend builds a step's ``llm_profile``, a decision and an
+        agent's template vars from it); everything else needs a restart."""
+        if system_config is not None:
+            self.system_config = system_config
         changed = self._set_semaphores(server_config)
         if self.semaphore_problem:
             logger.error("stategraph: %s -- left out", self.semaphore_problem)

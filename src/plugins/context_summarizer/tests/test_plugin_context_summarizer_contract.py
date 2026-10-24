@@ -401,3 +401,24 @@ async def test_the_chunk_size_for_a_long_history_is_found_in_few_passes(plugin, 
     assert answer["modified"] is True
     assert hooks._summarizer_llm.chat.await_count <= hooks.max_chunks
     assert len(passes) <= 40
+
+
+def _reload_system(model: str):
+    """A real config whose profile "normal" runs on *model* -- what a reload hands over after llm.yaml changed."""
+    from agent_system.config.models import AgentSystemConfig, LLMModelConfig, LLMProfile, LLMSystemConfig
+    models = {name: LLMModelConfig(provider="openai", model=name, api_key="fake-key") for name in ("gpt-4", "gpt-5")}
+    return AgentSystemConfig(llm_system=LLMSystemConfig(
+        models=models, profiles={"normal": LLMProfile(model_ref=model)}, default_profile="normal"))
+
+
+def test_the_summarizer_follows_a_model_change_after_a_reload():
+    hooks = PLUGIN_FACTORY("context_summarizer", AgentSystemConfig(), ToolServerConfig()).server._hooks_impl
+    hooks.llm_profile = "normal"
+
+    def context(model):
+        return SimpleNamespace(agent=SimpleNamespace(system_config=_reload_system(model)), llm="the agent's own")
+
+    before = hooks._get_summarizer_llm(context("gpt-4"))
+    assert getattr(before, "model", None) == "gpt-4", "fixture: fell back to the agent's own client"
+    assert hooks._get_summarizer_llm(context("gpt-4")) is before
+    assert hooks._get_summarizer_llm(context("gpt-5")).model == "gpt-5"

@@ -446,15 +446,13 @@ Changed keys are named one level down where it helps:
 @{tt}max_steps@{utt}, @{tt}tools.allowed@{utt},
 @{tt}hooks.overrides@{utt}, @{tt}metadata.visibility@{utt}.
 
-@{b}Reload config@{ub} applies only @{tt}max_steps@{utt},
-@{tt}auto_escalate_on_stuck@{utt}, @{tt}escalate_rounds@{utt},
-@{tt}escalate_max_calls@{utt}, @{tt}escalate_error_streak@{utt},
-@{tt}fallback_recovery_seconds@{utt}, @{tt}inherit_parent_llm@{utt} and
-@{tt}metadata.min_role@{utt}, and only to agents that are built and
-registered as plugin servers; the panel lists those separately. Everything
-else -- model chain, tools, prompt, hooks, visibility, any change to an
-agent not built yet -- takes a restart. The panel only says so: restarting
-is the operator's.
+@{b}Reload config@{ub} applies the whole @{tt}agent_config@{utt} (model
+chain, tools, prompt, hooks ...) and @{tt}description@{utt},
+@{tt}metadata@{utt} and @{tt}self_tool_descriptions@{utt}, to agents that
+are built and registered as plugin servers; the panel lists those
+separately. Everything else -- a changed type, any change to an agent not
+built yet -- takes a restart. The panel only says so: restarting is the
+operator's.
 @endnode
 
 @node api "The HTTP API"

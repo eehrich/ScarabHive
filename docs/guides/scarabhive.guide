@@ -696,20 +696,33 @@ audit (who called what, allowed or denied).
 
 @{tt}agent-cli reload@{utt} (or @{tt}POST /admin/reload-config@{utt}, admin)
 makes a running server read its configuration again, without dropping
-sessions or runs. It changes only what a plugin can take over live:
+sessions or runs. It changes what a plugin can take over live:
 
-@{bullet}an agent's @{tt}max_steps@{utt}, @{tt}auto_escalate_on_stuck@{utt},
-@{tt}escalate_rounds@{utt}, @{tt}escalate_max_calls@{utt},
-@{tt}escalate_error_streak@{utt}, @{tt}fallback_recovery_seconds@{utt},
-@{tt}inherit_parent_llm@{utt} and its role gate
-@{tt}metadata.min_role@{utt};
+@{bullet}an agent's whole @{tt}agent_config@{utt} -- model chain, LLM
+params, tools, hooks, timeouts, prompt, escalation -- and its
+@{tt}description@{utt}, @{tt}metadata@{utt} (role gate, visibility) and
+@{tt}self_tool_descriptions@{utt}, also for the agent a machine's
+@{tt}agent:@{utt} block declares;
+@{bullet}the LLM models and profiles of @{tt}llm.yaml@{utt}: an agent builds
+its new client in the reload itself, the LLM-using hooks (summarizer,
+watchdog, continuation, tool-result summaries) on their first use after the
+change, a machine step with its own @{tt}llm_profile@{utt} with the next
+run; an unchanged profile keeps its client. A run in flight keeps the model
+it started on; the rest it reads from its next step on;
 @{bullet}a SAM's @{tt}allowed_agents@{utt}, @{tt}blocked_agents@{utt},
 @{tt}allow_advanced_model@{utt}, @{tt}advanced_create_only_agents@{utt},
-@{tt}advanced_continue_only_agents@{utt} and its limits.
+@{tt}advanced_continue_only_agents@{utt} and its limits;
+@{bullet}a stategraph instance's semaphores.
 
+A profile that does not build fails the reload for the agents on it; they
+keep running as they were, and the report lists them under errors.
 Everything else needs a @{b}restart@{ub} of @{tt}agent-api@{utt}: a new or
-removed server entry, an agent's tools, LLM profiles and timeouts, hook
-settings, LLM models, MCP servers, @{tt}network@{utt},
+removed server entry, a changed @{tt}type@{utt}, the settings of plugins
+without a reload (the report lists them as unsupported) -- also the models
+of the tool servers that keep their own client from the start
+(@{tt}decision@{utt}, @{tt}llm_router@{utt}, the consolidation of
+@{tt}lessons_learned@{utt}) --, the authentication
+settings, MCP servers, @{tt}network@{utt}, batch mode,
 @{tt}session_archive@{utt}, the data directory. Prompt templates need
 neither: they are read from disk on every render. There is no file watcher;
 a reload happens only when someone asks for it.
@@ -1289,7 +1302,11 @@ documentation; the defaults belong in the code. @{tt}${NAME}@{utt} values
 are expanded from the environment. Files go under the data directory:
 @{tt}data_path("my_plugin", "x.db")@{utt} from @{tt}agent_system.paths@{utt},
 called at run time -- never a spelled-out @{tt}data/@{utt}. To take changes
-without a restart, implement @{tt}reload_config(new_server_config)@{utt}.
+without a restart, implement @{tt}reload_config(new_server_config)@{utt}
+(with a @{tt}system_config@{utt} parameter as well, it gets the freshly
+loaded system config too). A plugin that builds an LLM client keeps it in a
+@{tt}ProfileClients@{utt} (@{tt}agent_system.llm.factory@{utt}): a reload
+that changes the model behind the profile then reaches it.
 See @{" Config models and schemas " link devconfig}.
 
 @{h2}Checking it
@@ -1832,11 +1849,10 @@ per agent.
 
 @{h2}Reload or restart
 
-@{tt}agent-cli reload@{utt} changes only @{tt}max_steps@{utt}, the
-escalation settings, @{tt}fallback_recovery_seconds@{utt},
-@{tt}inherit_parent_llm@{utt} and @{tt}metadata.min_role@{utt} of a
-running agent.
-@{tt}llm_profile@{utt}, tools, timeouts, hook settings and a new agent need
+@{tt}agent-cli reload@{utt} gives a running agent its whole new
+@{tt}agent_config@{utt} (model chain, LLM params, tools, hooks, timeouts,
+prompt) and its description and metadata; a model changed in
+@{tt}llm.yaml@{utt} reaches every agent on that profile. A new agent needs
 a restart. Prompt templates need neither. See
 @{" Running the server " link running}.
 

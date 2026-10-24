@@ -14,32 +14,12 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-__all__ = ["create_decisions_from_profile"]
+__all__ = ["create_decisions_from_profile", "decision_fingerprint"]
 
 
-def create_decisions_from_profile(
-    config: Any,
-    decision_profile: Optional[str] = None,
-) -> Any:
-    """Create a decisions client from a named profile in the system config.
-
-    Looks up the profile in ``config.llm_system.decision_profiles``, resolves
-    the model reference in ``config.llm_system.decision_models``, and returns a
-    configured client via the provider registry.
-
-    Args:
-        config: AgentSystemConfig instance.
-        decision_profile: Profile name (e.g. "jev"). Omitted, the configured
-            ``default_decision_profile`` decides; a caller that cares which
-            model judges its content should name it.
-
-    Returns:
-        The client its provider plugin builds.
-
-    Raises:
-        ValueError: If profile or model not found, or if no profile is named
-            and no default is configured.
-    """
+def _decision_model(config: Any, decision_profile: Optional[str] = None) -> Any:
+    """The decision model config *decision_profile* names (None: the default profile). ValueError when the
+    profile or its model is not configured."""
     llm_cfg = config.llm_system
     if not llm_cfg:
         raise ValueError("No llm_system configuration found in config.")
@@ -69,8 +49,42 @@ def create_decisions_from_profile(
             f"not found. Available: {list(models.keys())}"
         )
 
+    return models[model_ref]
+
+
+def create_decisions_from_profile(
+    config: Any,
+    decision_profile: Optional[str] = None,
+) -> Any:
+    """Create a decisions client from a named profile in the system config.
+
+    Looks up the profile in ``config.llm_system.decision_profiles``, resolves
+    the model reference in ``config.llm_system.decision_models``, and returns a
+    configured client via the provider registry.
+
+    Args:
+        config: AgentSystemConfig instance.
+        decision_profile: Profile name (e.g. "jev"). Omitted, the configured
+            ``default_decision_profile`` decides; a caller that cares which
+            model judges its content should name it.
+
+    Returns:
+        The client its provider plugin builds.
+
+    Raises:
+        ValueError: If profile or model not found, or if no profile is named
+            and no default is configured.
+    """
     # Late import for the same reason as create_tts_from_profile: the seam
     # stays patchable, and provider plugins load lazily on first use.
     from agent_system.llm import registry
 
-    return registry.build_decisions_client(models[model_ref])
+    return registry.build_decisions_client(_decision_model(config, decision_profile))
+
+
+def decision_fingerprint(config: Any, decision_profile: Optional[str] = None, _params: Any = None) -> str:
+    """What a decisions client of *decision_profile* is built from, hashed (the model config carries its key);
+    the fingerprint of llm.factory.ProfileClients for these clients."""
+    from agent_system.llm.factory import _digest
+
+    return _digest(_decision_model(config, decision_profile).model_dump_json())

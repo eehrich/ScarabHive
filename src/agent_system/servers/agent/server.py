@@ -77,6 +77,15 @@ from ...llm.structured_output import (  # noqa: F401 - re-exported
 logger = logging.getLogger(__name__)
 
 
+def _plain(value: Any) -> bool:
+    """Whether a config value goes into a reload report as is: a scalar, a short text, a list of names."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return True
+    if isinstance(value, str):
+        return len(value) <= 120
+    return isinstance(value, list) and len(value) <= 12 and all(isinstance(v, str) and len(v) <= 80 for v in value)
+
+
 class Agent(
     RunMixin,
     RunPhasesMixin,
@@ -168,28 +177,41 @@ class Agent(
         self.min_role = self._declared_min_role(server_config)
 
         # Allow dependency injection of an LLM client or a factory that
-        # creates one. This makes testing and runtime wiring explicit.
-        self.llm: LLMClient | None = llm
-        self._llm_factory = llm_factory
+        # creates one (tests). Injected -- or assigned later, ``agent.llm = x`` --
+        # the client is PINNED and never rebuilt. Otherwise ``llm`` is the client
+        # of the agent's own profile, resolved against the config the agent holds
+        # NOW (see the property): a config reload reaches it.
+        self._llm_pinned = False
+        self._llm_pin: LLMClient | None = None
+        self._llm_shown: LLMClient | None = None
+        self._llm_error: Exception | None = None
+        # Every client this agent builds -- its own, the fallbacks, the advanced
+        # profile -- kept by what it is built from (llm/factory.py ProfileClients).
+        from ...llm.factory import ProfileClients
+        self._clients = ProfileClients(on_build=self._wire_client, on_error=self._llm_build_failed)
+        if llm is not None:
+            self.llm = llm
+        elif llm_factory is not None:
+            try:
+                self.llm = llm_factory.create()
+            except Exception as e:
+                logger.warning("LLM factory creation failed: %s", e)
+                self.llm = None
 
-        # Initialize LLM if not provided
-        # Store LLM profile information for status display
+        # Store profile information for status display
         self.llm_profile_info = None
-        
-        # Store timeout configuration from agent_config
-        self.timeouts = self.agent_config.timeouts if self.agent_config else None
-        
+
         # Which LLMs are blocked (rate limit, quota, refused key) is no state of
         # this agent: the block belongs to the LLM, for every agent
-        # (llm/model_health.py). What stays here are the clients of the
-        # fallback profiles, built once each.
+        # (llm/model_health.py). What stays here are the fallback clients a run
+        # walked to, by profile; a reload empties it, self._clients answers anew.
         self._fallback_clients: Dict[str, LLMClient] = {}
         # The client answering each session's running step (fallback, escalation
         # or override included); cleared when the request ends.
         self._step_llms: Dict[str, LLMClient] = {}
 
         # Extract profile info even if LLM is provided externally
-        if self.llm is not None and self.agent_config and system_config.llm_system:
+        if self._llm_pinned and self.llm is not None and self.agent_config and system_config.llm_system:
             try:
                 # Build llm_kwargs from config for profile info extraction
                 llm_kwargs = {
@@ -200,66 +222,6 @@ class Agent(
                 self.llm_profile_info = self._extract_profile_info(system_config, name, llm_kwargs)
             except Exception as e:
                 logger.debug(f"Could not extract profile info for external LLM: {e}")
-
-        if self.llm is None:
-            # If a factory is provided, use it to create the client.
-            if self._llm_factory is not None:
-                try:
-                    self.llm = self._llm_factory.create()
-                except Exception as e:
-                    logger.warning("LLM factory creation failed: %s", e)
-                    self.llm = None
-            else:
-                # Create LLM using the new profile-based system (now required)
-                try:
-                    # Lazy import to avoid circular imports when testing
-                    from ...llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
-
-                    # Use new profile-based resolution with agent config
-                    resolved = resolve_llm_config_for_agent(system_config, self.agent_config)
-
-                    # Store profile information for status display
-                    self.llm_profile_info = self._extract_profile_info(system_config, name, {
-                        "profile_name": resolved.profile_name,
-                        "provider": resolved.spec.provider,
-                        "model": resolved.spec.model,
-                    })
-
-                    # Use factory function that properly handles batch mode
-                    self.llm = create_llm_from_profile(
-                        config=system_config,
-                        llm_profile=self.agent_config.default_llm_profile,
-                        llm_params=self.agent_config.llm_params,
-                    )
-                except Exception as e:
-                    # Missing API key is an expected situation in test/dev
-                    # environments; avoid noisy warnings for that case.
-                    try:
-                        msg = str(e)
-                    except Exception as e2:
-                        logger.debug(f"Failed to stringify exception: {e2}")
-                        msg = "<exception>"
-                    # The provider factories raise "<VAR> is required when
-                    # provider=<name>" — since the registry split there are
-                    # two openai-family variants, so match both.
-                    if isinstance(e, ValueError) and msg in (
-                            "OPENAI_API_KEY is required when provider=openai",
-                            "OPENAI_API_KEY is required when provider=openai_httpx"):
-                        logger.debug("Agent '%s': LLM not initialized (no API key): %s",
-                                     name, msg)
-                    else:
-                        # WITH the agent name. Without it these lines are
-                        # indistinguishable: one model removed from llm.yaml
-                        # produced 50 identical warnings (measured), and the
-                        # agents kept running with llm=None until their first
-                        # request.
-                        logger.warning("Agent '%s': LLM initialization failed: %s",
-                                       name, msg)
-                    self.llm = None
-
-        # Set per-agent OpenRouter app identity (unique HTTP-Referer per agent)
-        if self.llm is not None and hasattr(self.llm, 'set_app_title'):
-            self.llm.set_app_title(name)
 
         # Context management now handled by hook plugins (context_engineer, context_summarizer)
 
@@ -317,17 +279,29 @@ class Agent(
             hook_manager=self._hook_manager,
         )
 
-        # Wire LLM-client-level hooks (pre_llm_request / post_llm_response)
-        if self.llm is not None:
-            self._hook_manager.wire_llm_hooks(self.llm)
-        
-        # Store loop detection config for per-request detector creation.
-        # Each request creates its own ToolCallLoopDetector to prevent
-        # cross-request contamination when the Agent singleton handles
-        # concurrent requests or sequential requests on the same session.
-        # Reasoning loop detection, stored the same way — but the detector is
-        # created per LLM CALL, not per request: its state is the thinking of
-        # one call, and a retry has to start from an empty window.
+        # Wire LLM-client-level hooks (pre_llm_request / post_llm_response): an
+        # injected client here, a built one in _wire_client. Built now, not on
+        # the first run -- a profile that does not build is warned about at start.
+        if self._llm_pinned:
+            if self.llm is not None:
+                self._wire_client(self.llm)
+        else:
+            self.llm  # noqa: B018 - builds it
+
+        self._derive_from_config()
+
+        # Set agent reference in tool integration for cancellation support
+        self._set_agent_reference_in_mcp()
+
+    def _derive_from_config(self) -> None:
+        """What the agent reads once from its config into objects of its own -- at start and after a reload.
+
+        Loop detection is stored for per-request detector creation: each request creates its own
+        ToolCallLoopDetector, so concurrent requests on this singleton do not contaminate each other.
+        Reasoning loop detection is stored the same way, but its detector is created per LLM CALL: its
+        state is the thinking of one call, and a retry has to start from an empty window.
+        """
+        self.timeouts = self.agent_config.timeouts if self.agent_config else None
         reasoning_config = self.agent_config.reasoning_loop if self.agent_config else None
         self._reasoning_loop_config = {
             "enabled": reasoning_config.enabled if reasoning_config else True,
@@ -350,78 +324,163 @@ class Agent(
             if loop_config and not loop_config.enabled:
                 logger.debug(f"[{self.name}] Loop detection disabled via config")
 
-        # Set agent reference in tool integration for cancellation support
-        self._set_agent_reference_in_mcp()
+        # The hook switches of this agent (hooks.enabled, per-hook overrides).
+        self._hook_manager._hooks_config = getattr(self.agent_config, "hooks", None)
 
-    #: Agent-config knobs that a deliberate reload may change on a LIVE agent.
-    #: Every one of them is a plain scalar that the run loop re-reads from
-    #: ``self.agent_config`` on each request, so a change takes effect on the
-    #: NEXT run while in-flight runs keep the value they started with.
-    #:
-    #: Deliberately NOT here, because the startup wired something from them and
-    #: refreshing only the config would desync the two:
-    #:   - llm_profile / advanced_llm_profile / llm_params / fallback_chain:
-    #:     ``self.llm`` was built from these at startup.
-    #:   - tools: the tool schemas are wired into the tool integration at startup.
-    #:   - loop_detection / reasoning_loop / timeouts: read once into derived
-    #:     objects (``_loop_detection_config``, ``_reasoning_loop_config``,
-    #:     ``self.timeouts``).
-    #: Those still need a restart, and saying so beats pretending otherwise.
-    _RELOADABLE_AGENT_FIELDS = (
-        "max_steps",
-        "auto_escalate_on_stuck",
-        "escalate_rounds",
-        "escalate_max_calls",
-        "escalate_error_streak",
-        "fallback_recovery_seconds",
-        "inherit_parent_llm",
-    )
+    @property
+    def llm(self) -> LLMClient | None:
+        """The client of the agent's own profile: pinned if one was injected or assigned, else the one
+        ``self._clients`` holds for the profile as the agent's config resolves it NOW. After a reload that
+        changed the model, the first access builds the new client once; a run that started before keeps the
+        one it took (``active_llm``, llm_loop/loop.py). None when the profile does not build."""
+        if self._llm_pinned:
+            return self._llm_pin
+        cfg = self.agent_config
+        clients = getattr(self, "_clients", None)
+        if cfg is None or clients is None:
+            return None
+        from ...llm.factory import agent_params_for_profile
+        profile = cfg.default_llm_profile
+        client = clients.get(self.system_config, profile, agent_params_for_profile(cfg, profile))
+        if client is not self._llm_shown:
+            self._llm_shown = client
+            self.llm_profile_info = self._own_profile_info() if client is not None else None
+        return client
 
-    def reload_config(self, server_config: Any) -> dict:
-        """Refresh the live agent's plain config knobs from a fresh parse.
+    @llm.setter
+    def llm(self, client: LLMClient | None) -> None:
+        self._llm_pinned = True
+        self._llm_pin = client
 
-        Called by the deliberate config-reload flow (POST /admin/reload-config,
-        ``agent-cli reload``). Without this the reload skipped every agent as
-        "unsupported": raising an agent's ``max_steps`` needed a full API
-        restart, which drops in-flight book runs.
+    def _own_profile_info(self) -> str | None:
+        """``profile:provider/model`` of the agent's own profile, for the status line."""
+        try:
+            from ...llm.factory import resolve_llm_config_for_agent
+            resolved = resolve_llm_config_for_agent(self.system_config, self.agent_config)
+            return self._extract_profile_info(self.system_config, self.name, {
+                "profile_name": resolved.profile_name,
+                "provider": resolved.spec.provider,
+                "model": resolved.spec.model,
+            })
+        except Exception as e:
+            logger.debug("[%s] no profile info: %s", self.name, e)
+            return None
 
-        Returns the fields that actually changed ({} if none), so the caller
-        can report exactly what took effect.
+    def _wire_client(self, client: Any) -> None:
+        """What every client of this agent gets: its OpenRouter app identity (a unique HTTP-Referer per agent)
+        and the LLM-level hooks (pre_llm_request / post_llm_response), so debugger and cost tracking see every
+        call -- own, fallback and escalation alike."""
+        if hasattr(client, "set_app_title"):
+            client.set_app_title(self.name)
+        if getattr(self, "_hook_manager", None) is not None:
+            self._hook_manager.wire_llm_hooks(client)
 
-        The role gate (``metadata.min_role``) is refreshed too, on THIS instance:
-        the entries that read it from the instance (every HTTP check, the SAM and
-        the backstop in run_events, through ``Runtime.view``) apply the new gate
-        from the next run on. Not reached by a reload, and keeping the value
-        they started with until a restart: an agent the reload does not walk to
-        (it walks the plugin registry, so a direct ``type: agent`` entry), a lazy
-        agent that is still unbuilt (its declaration answers, and it is built
-        from that later), the wake check and the start-up warning (both read the
-        process's config, not a reloaded one).
+    def _llm_build_failed(self, profile: str, error: Exception) -> None:
+        self._llm_error = error
+        # Missing API key is an expected situation in test/dev environments;
+        # avoid noisy warnings for that case. The provider factories raise
+        # "<VAR> is required when provider=<name>" -- since the registry split
+        # there are two openai-family variants, so match both.
+        msg = str(error)
+        if isinstance(error, ValueError) and msg in (
+                "OPENAI_API_KEY is required when provider=openai",
+                "OPENAI_API_KEY is required when provider=openai_httpx"):
+            logger.debug("Agent '%s': LLM %s not initialized (no API key): %s", self.name, profile, msg)
+        else:
+            # WITH the agent name. Without it these lines are indistinguishable:
+            # one model removed from llm.yaml produced 50 identical warnings
+            # (measured), and the agents kept running with llm=None until their
+            # first request.
+            logger.warning("Agent '%s': LLM %s initialization failed: %s", self.name, profile, msg)
+
+    #: The keys of an entry besides agent_config (which a reload takes whole) that a reload applies to a running
+    #: agent -- read from server_config, applied by its declaration (Runtime.apply_to). ``type`` and a plugin
+    #: type's own settings need a restart.
+    RELOADED_ENTRY_KEYS = ("description", "metadata", "self_tool_descriptions")
+
+    def reload_config(self, server_config: Any, system_config: Any = None) -> dict:
+        """Take over a fresh parse: the agent's whole config, the system config, its own entry.
+
+        Called by the deliberate config-reload flow (POST /admin/reload-config, ``agent-cli reload``) with
+        the MERGED entry of this server and the freshly loaded system config. Until 2026-10-24 only seven
+        scalars (max_steps and the escalation knobs) were copied: llm_profile, llm_params, fallback_chain and
+        every model change in llm.yaml stayed at the start-up state, while a run switched to a profile
+        already resolved against the fresh config -- half a reload.
+
+        - Every field of the fresh agent_config is copied onto the agent's own object, in place: the tool
+          integration and discovery hold the same object. What the agent derived from it at start is
+          derived again (_derive_from_config); the LLM clients follow by themselves (``llm``).
+        - The new primary client is built HERE, before anything changes: a profile that does not build
+          raises, the reload reports it as this server's error, and the agent keeps running as it was --
+          unless it had no working client to keep, then it takes the rest of its config.
+        - A run in flight keeps its primary client; everything else it reads per step (fallback chain,
+          prompt, tool lists) it reads from the fresh config from its next step on.
+        - The role gate (``metadata.min_role``) is refreshed on THIS instance: the entries that read it from
+          the instance (every HTTP check, the SAM and the backstop in run_events, through ``Runtime.view``)
+          apply the new gate from the next run on. Not reached: the wake check and the start-up warning
+          (both read the process's config, not a reloaded one).
+
+        Returns the fields that changed ({} if none): scalars as {old, new}, anything bigger as
+        {"changed": True}; ``llm`` ({old, new} as ``profile:provider/model``) when the agent's own client is
+        another one now -- also when only llm.yaml changed, which no field of the entry shows.
         """
         changes: dict[str, dict] = {}
+        new_agent_cfg = getattr(server_config, "agent_config", None)
+        fresh_system = system_config if system_config is not None else self.system_config
+        # The client before, to report a model changed in llm.yaml: the agent's own entry is the same then.
+        running_llm, running_info = self._llm_shown, self.llm_profile_info
+
+        if new_agent_cfg is not None and self.agent_config is not None and not self._llm_pinned:
+            from ...llm.factory import agent_params_for_profile
+            profile = new_agent_cfg.default_llm_profile
+            built = self._clients.get(fresh_system, profile, agent_params_for_profile(new_agent_cfg, profile))
+            # Only a working agent is protected: one whose own profile never built (it runs on overrides,
+            # or a key is missing) still takes the rest of its config.
+            if built is None and running_llm is not None:
+                raise ValueError(f"LLM profile {profile!r} does not build ({self._llm_error}); "
+                                 f"the agent keeps its running config")
+
         new_min_role = self._declared_min_role(server_config)
         if new_min_role != self.min_role:
             changes["min_role"] = {"old": self.min_role, "new": new_min_role}
             self.min_role = new_min_role
 
-        new_agent_cfg = getattr(server_config, "agent_config", None)
+        if system_config is not None and system_config is not self.system_config:
+            self.system_config = system_config
+            self._tool_integration_manager.system_config = system_config
+        for key in self.RELOADED_ENTRY_KEYS:
+            old_value, new_value = getattr(self.server_config, key, None), getattr(server_config, key, None)
+            if old_value != new_value:
+                changes[key] = ({"old": old_value, "new": new_value} if _plain(old_value) and _plain(new_value)
+                                else {"changed": True})
+        self.server_config = server_config
+        # What this agent offers as a tool (description, llm_profile enum of basic_agent) is cached.
+        self._list_tools_cache = None
+        clear = getattr(self, "clear_schema_cache", None)
+        if callable(clear):
+            clear()
+
         if new_agent_cfg is None or self.agent_config is None:
             if changes:
                 logger.info("[%s] config reload applied: %s", self.name, changes)
             return changes
 
-        for field in self._RELOADABLE_AGENT_FIELDS:
-            if not hasattr(new_agent_cfg, field):
-                continue
+        for field in type(new_agent_cfg).model_fields:
             new_value = getattr(new_agent_cfg, field)
             old_value = getattr(self.agent_config, field, None)
             if old_value == new_value:
                 continue
             setattr(self.agent_config, field, new_value)
-            changes[field] = {"old": old_value, "new": new_value}
+            changes[field] = ({"old": old_value, "new": new_value} if _plain(old_value) and _plain(new_value)
+                              else {"changed": True})
 
+        self._derive_from_config()
+        self._fallback_clients.clear()
+        self._escalation_llm_cached = None
+        if not self._llm_pinned and self.llm is not running_llm:
+            changes["llm"] = {"old": running_info, "new": self.llm_profile_info}
         if changes:
-            logger.info("[%s] config reload applied: %s", self.name, changes)
+            logger.info("[%s] config reload applied: %s", self.name, sorted(changes))
         return changes
 
     def _set_agent_reference_in_mcp(self) -> None:

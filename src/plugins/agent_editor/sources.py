@@ -21,16 +21,18 @@ from .store import MANAGER_TYPE, PROMPT_SUFFIXES, Snapshot, Store, catalog_for, 
 #: agent_config keys whose changes are reported one level down (`tools.allowed`).
 NESTED_KEYS = ("tools", "hooks", "skills")
 
-#: Keys outside agent_config that a reload changes on a running agent, as live_state names them.
-RELOADABLE_ENTRY_KEYS = ("metadata.min_role",)
-
-
 def reloadable_fields() -> list[str]:
-    """What POST /admin/reload-config changes on a running agent; everything else needs a restart.
+    """What POST /admin/reload-config changes on a running agent: its whole agent_config and the entry keys
+    Agent.RELOADED_ENTRY_KEYS names; everything else needs a restart.
 
     Read on call, not on import: a test that swaps the Agent class must still be able to import the plugin.
     """
-    return list(agent_server.Agent._RELOADABLE_AGENT_FIELDS)
+    return ["agent_config", *agent_server.Agent.RELOADED_ENTRY_KEYS]
+
+
+def _reloads(key: str, agent_keys: set[str]) -> bool:
+    """Whether a reload applies a changed key (as changed_keys names it) to a running agent."""
+    return key in agent_keys or key.split(".", 1)[0] in agent_server.Agent.RELOADED_ENTRY_KEYS
 
 
 def agent_verdicts(state: Any, catalog: PluginCatalog) -> tuple[set[str], dict[str, bool]]:
@@ -117,8 +119,8 @@ def live_state(name: str, resolved: Optional[ToolServerConfig], enabled: bool, s
     """How the disk entry relates to what the app runs. Without a runtime in the app there is nothing to compare.
 
     The running side is the declaration, with the agent_config and the role gate (metadata.min_role) of the built
-    instance when there is one: a config reload changes those. Only a built agent the reload reaches can take the
-    reloadable fields without a restart.
+    instance when there is one: a config reload changes those, and refreshes the declaration. Only a built agent the
+    reload reaches can take the reloadable fields (reloadable_fields) without a restart.
     """
     result: dict[str, Any] = {"state": None, "changed": [], "reload_fields": [], "restart": False}
     runtime = getattr(state, "runtime", None)
@@ -140,8 +142,11 @@ def live_state(name: str, resolved: Optional[ToolServerConfig], enabled: bool, s
         # The role gate is the instance's as well: a reload moves it (Agent.reload_config), the declaration stays.
         if (live.get("metadata") or {}).get("min_role") != instance.min_role:
             live["metadata"] = {**(live.get("metadata") or {}), "min_role": instance.min_role}
-    changed = changed_keys(live, resolved.model_dump(mode="json"))
-    reload_fields = ([key for key in changed if key in reloadable_fields() or key in RELOADABLE_ENTRY_KEYS]
+    disk = resolved.model_dump(mode="json")
+    changed = changed_keys(live, disk)
+    agent_keys = set(_differing(live.get("agent_config") or {}, disk.get("agent_config") or {},
+                                lambda key: key in NESTED_KEYS))
+    reload_fields = ([key for key in changed if _reloads(key, agent_keys)]
                      if built and reload_reaches(name) else [])
     return {"state": "changed" if changed else "in_sync", "changed": changed, "reload_fields": reload_fields,
             "restart": len(reload_fields) < len(changed)}

@@ -270,8 +270,11 @@ class TestThePluginsThemselvesBuildTheRightModel:
         from plugins.agent_continuation.hooks import AgentContinuationPlugin
 
         def build(profile: str, config):
+            from agent_system.llm.factory import ProfileClients
+
             hook = AgentContinuationPlugin.__new__(AgentContinuationPlugin)
             hook._evaluator_llm = None
+            hook._evaluator_llms = ProfileClients()
             hook._llm_profile = profile
             context = SimpleNamespace(agent=SimpleNamespace(system_config=config))
             return hook._get_evaluator_llm(context)

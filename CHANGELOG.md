@@ -90,6 +90,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A config reload (`agent-cli reload`, `POST /admin/reload-config`) reaches
+  what an agent runs on: its whole `agent_config` (model chain, `llm_params`,
+  tools, hooks, timeouts, prompt), its description and metadata, and every
+  model change in `llm.yaml` -- before, it took seven scalars such as
+  `max_steps`, and a changed model needed a restart. LLM clients are held by
+  a hash of what they are built from and rebuilt once, only when that
+  changed; a run in flight keeps its model. A profile that does not build
+  fails the reload for that agent, which keeps running as it was. The report
+  names a changed model (`llm: old -> new`) also when only `llm.yaml`
+  changed. The same holds for machine steps with their own `llm_profile`,
+  the agent a machine's `agent:` block declares, and the LLM-using hooks
+  (summarizer, watchdog, continuation, tool-result summaries).
 - Every agent names its group for the agent picker (`metadata.category`):
   Assistant, Development, Testing, Writer, Writer sub-agents, Video, Media,
   Research, Automation, Collaboration, Operations -- 21 of the 49 agents the

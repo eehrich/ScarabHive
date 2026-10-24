@@ -6,6 +6,7 @@ stopping prematurely with intermediate status reports.
 
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from plugins.agent_continuation.hooks import AgentContinuationPlugin
@@ -2148,3 +2149,24 @@ class TestHybridFallback:
                 _agent_context(content="Ich sehe mir das jetzt an."))
         assert llm.await_count == 1
         assert client.calls == []
+
+
+def _reload_system(model: str):
+    """A real config whose profile "normal" runs on *model* -- what a reload hands over after llm.yaml changed."""
+    from agent_system.config.models import AgentSystemConfig, LLMModelConfig, LLMProfile, LLMSystemConfig
+    models = {name: LLMModelConfig(provider="openai", model=name, api_key="fake-key") for name in ("gpt-4", "gpt-5")}
+    return AgentSystemConfig(llm_system=LLMSystemConfig(
+        models=models, profiles={"normal": LLMProfile(model_ref=model)}, default_profile="normal"))
+
+
+def test_the_evaluator_follows_a_model_change_after_a_reload():
+    plugin = _make_plugin(strategy="llm")
+    plugin._llm_profile = "normal"
+
+    def context(model):
+        return SimpleNamespace(agent=SimpleNamespace(system_config=_reload_system(model)))
+
+    before = plugin._get_evaluator_llm(context("gpt-4"))
+    assert before is not None and before.model == "gpt-4", "fixture"
+    assert plugin._get_evaluator_llm(context("gpt-4")) is before
+    assert plugin._get_evaluator_llm(context("gpt-5")).model == "gpt-5"

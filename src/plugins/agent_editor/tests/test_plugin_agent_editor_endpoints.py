@@ -553,7 +553,15 @@ def test_a_reloadable_change_needs_no_restart_only_where_the_reload_reaches(db, 
     assert put(web, "writer", entry, version_of(team(tmp_path).read_bytes())).status_code == 200
     writer = detail(web, "writer")
     assert writer["changed"] == ["max_steps", "metadata.visibility", "tools.allowed"]
-    assert (writer["reload_fields"], writer["restart"]) == (["max_steps"], True)
+    # a reload takes the whole agent_config and the metadata (Agent.reload_config, Runtime.apply_to)
+    assert (writer["reload_fields"], writer["restart"]) == (
+        ["max_steps", "metadata.visibility", "tools.allowed"], False)
+
+    entry["type"] = "agent"
+    assert put(web, "writer", entry, version_of(team(tmp_path).read_bytes())).status_code == 200
+    writer = detail(web, "writer")
+    assert "type" in writer["changed"] and "type" not in writer["reload_fields"]
+    assert writer["restart"] is True
 
 
 def test_a_built_agent_the_reload_does_not_reach_needs_a_restart(db, tree, tmp_path, reload_reaches):
@@ -941,7 +949,7 @@ async def test_meta_names_classes_profiles_hooks_and_prompt_files(web, monkeypat
                                     "src/plugins/demo/agents/prompts/demo.md"]
     assert meta["visibility"] == ["ui", "tool", "both", "private"]
     assert meta["sub_agents"] is True
-    assert meta["reload_fields"] == list(Agent._RELOADABLE_AGENT_FIELDS)
+    assert meta["reload_fields"] == ["agent_config", *Agent.RELOADED_ENTRY_KEYS]
     assert all(set(skill) == {"name", "description"} for skill in meta["skills"])
 
 

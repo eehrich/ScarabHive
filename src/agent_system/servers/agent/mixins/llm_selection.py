@@ -101,30 +101,24 @@ class LLMSelectionMixin:
         capable, of llm_profile). Hooks are wired so cost/debugger tracking
         captures escalated calls too. Returns None if it cannot be built.
 
-        Only a SUCCESSFUL client is cached: a transient build failure is not
-        remembered on this process-wide singleton, so a later run can retry
-        (within a run, the caller disables the escalator on None to avoid
-        re-attempting every step)."""
+        A failure is held by self._clients until the config changes or a reload
+        runs (a build is deterministic: same config, same failure); within a
+        run, the caller disables the escalator on None."""
         cached = getattr(self, "_escalation_llm_cached", None)
         if cached is not None:
             return cached
-        try:
-            advanced_profile = self.agent_config.advanced_llm_profile if self.agent_config else None
-            if not advanced_profile or advanced_profile == self.agent_config.default_llm_profile:
-                return None
-            from ....llm.factory import override_for_profile
-            client, _ = override_for_profile(self.system_config, self.agent_config, advanced_profile)
-            if hasattr(client, "set_app_title"):
-                client.set_app_title(self.name)
-            if self._hook_manager:
-                self._hook_manager.wire_llm_hooks(client)
-            logger.info("[%s] built escalation (advanced) LLM: %s",
-                        self.name, advanced_profile)
-            self._escalation_llm_cached = client
-            return client
-        except Exception as e:
-            logger.warning("[%s] could not build escalation LLM: %s", self.name, e)
+        advanced_profile = self.agent_config.advanced_llm_profile if self.agent_config else None
+        if not advanced_profile or advanced_profile == self.agent_config.default_llm_profile:
             return None
+        # Built like an override of the profile (the agent's own params for it), wired by _wire_client;
+        # a failure is logged by _llm_build_failed. A reload empties the cache, self._clients answers anew.
+        from ....llm.factory import agent_params_for_profile
+        client = self._clients.get(self.system_config, advanced_profile,
+                                   agent_params_for_profile(self.agent_config, advanced_profile))
+        if client is not None:
+            logger.info("[%s] escalation (advanced) LLM: %s", self.name, advanced_profile)
+            self._escalation_llm_cached = client
+        return client
 
     def _llm_from_caller(self: Agent) -> Optional[tuple[LLMClient, str]]:
         """(client, profile info) for a run on the caller's LLM, else None.
@@ -206,34 +200,20 @@ class LLMSelectionMixin:
         Returns:
             LLM client instance or None if creation fails
         """
-        try:
-            from ....llm.factory import create_llm_from_profile
+        from ....llm.factory import agent_params_for_profile
 
-            # Fallbacks run with the SAME llm_params semantics as the
-            # primary model — create_llm_from_profile resolves the profile-
-            # keyed params itself ("*"/flat for the whole chain,
-            # exact entry wins). No special handling here.
-            fallback_llm = create_llm_from_profile(
-                config=self.system_config,
-                llm_profile=fallback_profile,
-                llm_params=self.agent_config.llm_params if self.agent_config else None,
-            )
-            fallback_llm.set_app_title(self.name)
-            # Mirror init/llm_override: wire hooks so debugger + cost tracking
-            # capture pre_llm_request / post_llm_response on fallback calls too.
-            # Without this, every fallback round-trip is silently unrecorded.
-            if self._hook_manager:
-                self._hook_manager.wire_llm_hooks(fallback_llm)
-            logger.info(f"[{self.name}] Created fallback LLM for profile: {fallback_profile}")
-            return fallback_llm
-        except Exception as e:
-            logger.warning(f"[{self.name}] Failed to create fallback LLM for profile '{fallback_profile}': {e}")
-            return None
+        # Fallbacks run with the SAME llm_params semantics as the primary
+        # model ("*"/flat for the whole chain, exact entry wins). Wired by
+        # _wire_client (debugger + cost tracking see fallback calls too); a
+        # failure is logged by _llm_build_failed.
+        return self._clients.get(self.system_config, fallback_profile,
+                                 agent_params_for_profile(self.agent_config, fallback_profile))
 
     def _fallback_client(self: Agent, profile: str) -> Optional[LLMClient]:
         """The client of a fallback profile, built on first use and kept: a step
         that walks around a blocked LLM would otherwise build one per step. A
-        profile that did not build is tried again next time."""
+        profile that did not build stays None until the config changes or a
+        reload runs (self._clients)."""
         client = self._fallback_clients.get(profile)
         if client is None:
             client = self._create_fallback_llm(profile)

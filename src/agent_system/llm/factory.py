@@ -8,6 +8,8 @@ Uses the new profile-based configuration system.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import logging
 import typing
 from dataclasses import dataclass
@@ -456,6 +458,78 @@ def resolve_llm_config_for_agent(
         is_batch=is_batch_model,
         batch_provider=batch_provider if is_batch_model else None,
     )
+
+
+#: Bumped by every deliberate config reload (config_reloaded). A build that failed is kept only until then:
+#: a key the Setup panel puts into the environment changes no spec (the provider reads the variable at build
+#: time), so the fingerprint alone would keep the failure forever.
+_reload_generation = 0
+
+
+def config_reloaded() -> None:
+    """A deliberate reload ran: failed builds are tried again on their next use."""
+    global _reload_generation
+    _reload_generation += 1
+
+
+def _digest(*parts: str) -> str:
+    """A hash, never the parts themselves: a resolved spec carries the API key in clear text."""
+    return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
+
+
+def chat_fingerprint(config: AgentSystemConfig, profile: str, llm_params: Optional[dict] = None) -> str:
+    """What a chat client of *profile* is built from: the resolved spec, its batch wiring and ssl_verify."""
+    resolved = resolve_llm_config_for_agent(
+        config, AgentConfig(llm_profile=profile, llm_params=resolve_llm_params(llm_params, profile)))
+    batch = ""
+    if resolved.is_batch and config.llm_system and config.llm_system.batch:
+        provider = config.llm_system.batch.providers.get(resolved.batch_provider)
+        batch = provider.model_dump_json() if provider else ""
+    ssl_verify = getattr(config.network, "ssl_verify", None) if config.network else None
+    return _digest(resolved.spec.model_dump_json(), str(resolved.is_batch), str(resolved.batch_provider),
+                   batch, str(ssl_verify))
+
+
+class ProfileClients:
+    """Clients by (profile, params), each kept until what it is built from changes.
+
+    Holding a client from start-up made a config reload half a reload: the run took the new prompt, the old
+    model. ``get`` resolves the profile against the config it is handed -- 0.04 ms, measured -- and builds anew
+    only when that resolves differently than the client it holds (8 ms); unchanged, it is the same object, its
+    connection pool included. A client already handed out stays the caller's: a running run keeps its model.
+
+    A failed build is kept as well (None) until the fingerprint changes or a reload runs (config_reloaded), so
+    a profile that does not build costs one build and one ``on_error``, not one per call.
+    """
+
+    def __init__(self, build: Any = None, fingerprint: Any = None,
+                 on_build: Any = None, on_error: Any = None) -> None:
+        self._build = build or (lambda config, profile, params: create_llm_from_profile(
+            config=config, llm_profile=profile, llm_params=params))
+        self._fingerprint = fingerprint or chat_fingerprint
+        self._on_build = on_build
+        self._on_error = on_error
+        self._held: Dict[str, tuple] = {}  # key -> (fingerprint, generation, client or None)
+
+    def get(self, config: Any, profile: str, params: Optional[dict] = None) -> Optional[LLMClient]:
+        key = f"{profile}\x00{json.dumps(params, sort_keys=True, default=str) if params else ''}"
+        try:
+            fingerprint = self._fingerprint(config, profile, params)
+        except Exception as e:  # a profile that does not resolve builds nothing either
+            fingerprint = f"unresolved: {type(e).__name__}"
+        held = self._held.get(key)
+        if held is not None and held[0] == fingerprint and (held[2] is not None or held[1] == _reload_generation):
+            return held[2]
+        try:
+            client = self._build(config, profile, params)
+            if self._on_build is not None:
+                self._on_build(client)
+        except Exception as e:
+            client = None
+            if self._on_error is not None:
+                self._on_error(profile, e)
+        self._held[key] = (fingerprint, _reload_generation, client)
+        return client
 
 
 class LLMFactory:

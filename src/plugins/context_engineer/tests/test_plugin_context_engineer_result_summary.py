@@ -624,3 +624,21 @@ async def test_a_key_left_blank_per_agent_keeps_the_plugins_patterns(plugin, llm
                           overrides={SUMMARY_TOOLS: None})
 
     assert out[-1].content == LONG_PROSE and llm.prompts == []
+
+
+def _reload_system(model: str):
+    """A real config whose profile "normal" runs on *model* -- what a reload hands over after llm.yaml changed."""
+    from agent_system.config.models import AgentSystemConfig, LLMModelConfig, LLMProfile, LLMSystemConfig
+    models = {name: LLMModelConfig(provider="openai", model=name, api_key="fake-key") for name in ("gpt-4", "gpt-5")}
+    return AgentSystemConfig(llm_system=LLMSystemConfig(
+        models=models, profiles={"normal": LLMProfile(model_ref=model)}, default_profile="normal"))
+
+
+def test_the_summary_client_follows_a_model_change_after_a_reload():
+    """Held per profile for the life of the plugin, the summary client kept the start-up model through every
+    config reload. Unchanged config: the very same client; changed model behind the profile: a new one."""
+    impl = ContextEngineerPlugin(PLUGIN_DIR, stats_history=[])
+    before = impl._summary_llm(_reload_system("gpt-4"), "normal")
+    assert before is not None and before.model == "gpt-4", "fixture"
+    assert impl._summary_llm(_reload_system("gpt-4"), "normal") is before
+    assert impl._summary_llm(_reload_system("gpt-5"), "normal").model == "gpt-5"

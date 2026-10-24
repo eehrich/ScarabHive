@@ -182,10 +182,26 @@ class TestEveryRunOverrideCarriesThem:
             path = src / relative
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(path))
+            # A function that hands its own parameter on as llm_params (ProfileClients' build) passes
+            # through what its caller gives -- the caller is the one checked here.
+            own_params = {id(call): {a.arg for a in fn.args.args}
+                          for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.Lambda))
+                          for call in ast.walk(fn) if isinstance(call, ast.Call)}
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
                 name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+                if (name == "get" and isinstance(node.func, ast.Attribute)
+                        and (getattr(node.func.value, "attr", None) == "_clients"
+                             or getattr(node.func.value, "id", None) == "clients")):
+                    # self._clients.get(config, profile, params), or the same object held in a local: the
+                    # agent's clients (llm/factory.py ProfileClients) -- the params are the third argument.
+                    per_module[relative] = per_module.get(relative, 0) + 1
+                    passed = node.args[2] if len(node.args) > 2 else None
+                    given = ast.get_source_segment(source, passed) if passed is not None else ""
+                    if not any(mark in (given or "") for mark in self.FROM_THE_AGENT):
+                        without.append(f"{relative}:{node.lineno} ({given or 'no llm_params'})")
+                    continue
                 if name == "override_for_profile":
                     per_module[relative] = per_module.get(relative, 0) + 1
                     # (config, agent_config, profile, ...): the agent's config
@@ -200,6 +216,8 @@ class TestEveryRunOverrideCarriesThem:
                     continue
                 per_module[relative] = per_module.get(relative, 0) + 1
                 passed = next((kw for kw in node.keywords if kw.arg == "llm_params"), None)
+                if passed and isinstance(passed.value, ast.Name) and passed.value.id in own_params.get(id(node), ()):
+                    continue
                 given = ast.get_source_segment(source, passed.value) if passed else ""
                 if not any(mark in (given or "") for mark in self.FROM_THE_AGENT):
                     without.append(f"{relative}:{node.lineno} ({given or 'no llm_params'})")

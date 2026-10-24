@@ -58,7 +58,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
         # Store system_config for later LLM instantiation
         self._system_config = None
+        # Set by a test: that client answers. Otherwise the client of llm_profile as the agent's config
+        # resolves it now -- a config reload that changes its model reaches the next summary.
         self._summarizer_llm = None
+        from agent_system.llm.factory import ProfileClients
+        self._summarizer_llms = ProfileClients(on_build=self._summarizer_built, on_error=self._summarizer_failed)
 
         logger.info(
             f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
@@ -995,39 +999,34 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         Returns:
             LLM instance configured with self.llm_profile
         """
-        # Cache LLM instance for reuse
         if self._summarizer_llm is not None:
             return self._summarizer_llm
-            
+
         # Get system_config from context
         if not context.agent or not hasattr(context.agent, 'system_config'):
             logger.warning("[ContextSummarizer] No system_config available, falling back to context.llm")
             return context.llm
-            
-        system_config = context.agent.system_config
-        
-        # Create LLM instance with configured profile
-        try:
-            # create_llm_from_profile forwards EVERY resolved field. Listing the
-            # factory arguments by hand (pre-registry make_llm) dropped thinking_level, max_tokens,
-            # safety_settings, service_tier and provider_routing - harmless for
-            # the profile configured today, silently wrong the moment this points
-            # at an OpenRouter profile. It also gets batch wrapping right, which
-            # the hand-rolled call never did.
-            from agent_system.llm.factory import create_llm_from_profile
 
-            self._summarizer_llm = create_llm_from_profile(system_config, self.llm_profile)
-
-            logger.info(
-                f"[ContextSummarizer] Created LLM instance with profile '{self.llm_profile}' "
-                f"(model: {self._summarizer_llm.model_name if hasattr(self._summarizer_llm, 'model_name') else 'unknown'})"
-            )
-            
-            return self._summarizer_llm
-        except Exception as e:
-            logger.error(f"[ContextSummarizer] Failed to create LLM with profile '{self.llm_profile}': {e}")
+        # create_llm_from_profile (ProfileClients' build) forwards EVERY resolved field. Listing the
+        # factory arguments by hand (pre-registry make_llm) dropped thinking_level, max_tokens,
+        # safety_settings, service_tier and provider_routing - harmless for
+        # the profile configured today, silently wrong the moment this points
+        # at an OpenRouter profile. It also gets batch wrapping right, which
+        # the hand-rolled call never did.
+        llm = self._summarizer_llms.get(context.agent.system_config, self.llm_profile)
+        if llm is None:
             logger.warning("[ContextSummarizer] Falling back to context.llm")
             return context.llm
+        return llm
+
+    def _summarizer_built(self, llm) -> None:
+        logger.info(
+            f"[ContextSummarizer] Created LLM instance with profile '{self.llm_profile}' "
+            f"(model: {getattr(llm, 'model_name', 'unknown')})"
+        )
+
+    def _summarizer_failed(self, profile: str, error: Exception) -> None:
+        logger.error(f"[ContextSummarizer] Failed to create LLM with profile '{profile}': {error}")
 
     async def _summarize_messages(
         self,

@@ -83,11 +83,15 @@ Without `--agent`, the CLIs and the web UI start `default_agent` from
   misspelt `enabeld: true` leaves the agent off.
 - **Changes:** a prompt template is read from disk on every render, so an edit
   applies at once, even to runs in flight. `agent-cli reload` (or
-  `POST /admin/reload-config`) refreshes only `max_steps`,
-  `fallback_recovery_seconds`, `inherit_parent_llm`, the escalation knobs and
-  `metadata.min_role` of running agents; `llm_profile`, `llm_params`, tools,
-  hooks, timeouts, `system_prompt`, `template_vars` and the `system_template`
-  path need a restart.
+  `POST /admin/reload-config`) gives a running agent its whole new
+  `agent_config` -- `llm_profile`, `llm_params`, tools, hooks, timeouts,
+  `system_prompt`, `template_vars` included -- and its `description`,
+  `metadata` and `self_tool_descriptions`; a model changed in `llm.yaml`
+  reaches every agent on that profile. Its LLM client is rebuilt once, in the
+  reload; an unchanged profile keeps its client. A run in flight keeps the
+  model it started on and reads the rest from its next step on. A profile that does not build
+  fails the reload for that agent, which keeps running as it was. A new or
+  removed entry, and a changed `type`, need a restart.
 
 ## Server-level fields
 

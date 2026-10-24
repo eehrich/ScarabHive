@@ -184,12 +184,30 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         # the hook is shown; this record is why required_spawns still knows.
         self._seen_creates: Dict[str, Dict[str, str]] = {}
 
-        # Cached evaluator LLM instance (lazy)
+        # Set by a test: that client evaluates / decides. Otherwise the clients
+        # are held by what they are built from (llm/factory.py ProfileClients),
+        # against the agent's config as it is now: a config reload that changes
+        # a model reaches the next evaluation. Keyed by the profile: an agent may
+        # override it, and one slot would hand the first agent's judge to every
+        # other agent.
         self._evaluator_llm: Any = None
-        # Cached decision-model client (lazy), keyed by the profile that built
-        # it: an agent may override the profile, and one cache slot would hand
-        # the first agent's judge to every other agent.
         self._decision_clients: Dict[str, Any] = {}
+        from agent_system.llm import decisions
+        from agent_system.llm.factory import ProfileClients
+        self._evaluator_llms = ProfileClients(
+            on_build=lambda llm: logger.info(
+                f"[AgentContinuation] Created evaluator LLM "
+                f"(profile='{self._llm_profile}', model={getattr(llm, 'model_name', 'unknown')})"),
+            on_error=lambda profile, e: logger.error(
+                f"[AgentContinuation] Failed to create evaluator LLM: {e}"))
+        self._decision_llms = ProfileClients(
+            build=lambda config, profile, _params: decisions.create_decisions_from_profile(config, profile or None),
+            fingerprint=lambda config, profile, _params: decisions.decision_fingerprint(config, profile or None),
+            on_build=lambda client: logger.info(
+                f"[AgentContinuation] Created decisions client (model={getattr(client, 'model', 'unknown')})"),
+            on_error=lambda profile, e: logger.error(
+                f"[AgentContinuation] Failed to create decisions client "
+                f"(profile={profile or 'default'}): {e}"))
 
         logger.info(
             f"[AgentContinuation] Initialized: strategy={self._strategy}, "
@@ -951,24 +969,8 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 "[AgentContinuation] No system_config — cannot create decisions client"
             )
             return None
-        try:
-            from agent_system.llm.decisions import create_decisions_from_profile
-
-            # No profile name = llm_system.default_decision_profile decides.
-            client = create_decisions_from_profile(
-                context.agent.system_config, profile or None)
-        except Exception as e:
-            logger.error(
-                f"[AgentContinuation] Failed to create decisions client "
-                f"(profile={profile or 'default'}): {e}"
-            )
-            return None
-        self._decision_clients[profile] = client
-        logger.info(
-            f"[AgentContinuation] Created decisions client "
-            f"(profile='{profile or 'default'}', model={client.model})"
-        )
-        return client
+        # No profile name = llm_system.default_decision_profile decides.
+        return self._decision_llms.get(context.agent.system_config, profile)
 
     def _get_evaluator_llm(self, context: HookContext) -> Any:
         """Lazily create a lightweight LLM for evaluation."""
@@ -982,27 +984,10 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             )
             return None
 
-        try:
-            # create_llm_from_profile forwards EVERY resolved field. Listing the
-            # factory arguments by hand (pre-registry make_llm) dropped thinking_level, max_tokens,
-            # safety_settings, service_tier and provider_routing - harmless for
-            # the profile configured today, silently wrong the moment this points
-            # at an OpenRouter profile. It also gets batch wrapping right, which
-            # the hand-rolled call never did.
-            from agent_system.llm.factory import create_llm_from_profile
-
-            self._evaluator_llm = create_llm_from_profile(
-                context.agent.system_config, self._llm_profile)
-            model_name = getattr(
-                self._evaluator_llm, "model_name", "unknown"
-            )
-            logger.info(
-                f"[AgentContinuation] Created evaluator LLM "
-                f"(profile='{self._llm_profile}', model={model_name})"
-            )
-            return self._evaluator_llm
-        except Exception as e:
-            logger.error(
-                f"[AgentContinuation] Failed to create evaluator LLM: {e}"
-            )
-            return None
+        # create_llm_from_profile (ProfileClients' build) forwards EVERY resolved
+        # field. Listing the factory arguments by hand (pre-registry make_llm)
+        # dropped thinking_level, max_tokens, safety_settings, service_tier and
+        # provider_routing - harmless for the profile configured today, silently
+        # wrong the moment this points at an OpenRouter profile. It also gets
+        # batch wrapping right, which the hand-rolled call never did.
+        return self._evaluator_llms.get(context.agent.system_config, self._llm_profile)

@@ -109,7 +109,13 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
 
         self._running: Dict[str, asyncio.Task] = {}
         self._tasks: "OrderedDict[str, Optional[Dict[str, Any]]]" = OrderedDict()
+        # Set by a test: that client judges. Otherwise the client of the judge profile as the watched agent's
+        # config resolves it now -- a config reload that changes its model reaches the next check.
         self._judge_llm: Any = None
+        from agent_system.llm.factory import ProfileClients
+        self._judge_llms = ProfileClients(on_error=self._judge_failed)
+        # Why the judge did not build, for the record of every check it misses (fail_open judge_error).
+        self._judge_error: Optional[str] = None
 
     # ------------------------------------------------------------------
     # settings
@@ -271,7 +277,10 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
                                start_msg=f"checking step {base['step']}") as scope:
             try:
                 llm = self._get_judge_llm(agent)
-                if llm is None:
+                if llm is None and getattr(agent, "system_config", None) is not None:
+                    # Built and failed (an unknown profile, a missing key): the cause goes into every record.
+                    record.update(verdict="continue", fail_open="judge_error", error=(self._judge_error or "")[:500])
+                elif llm is None:
                     record.update(verdict="continue", fail_open="no_judge_llm")
                 else:
                     record["judge_model"] = _model_of(llm)
@@ -358,10 +367,11 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
         system_config = getattr(agent, "system_config", None)
         if system_config is None:
             return None
-        from agent_system.llm.factory import create_llm_from_profile
+        return self._judge_llms.get(system_config, self._llm_profile)
 
-        self._judge_llm = create_llm_from_profile(system_config, self._llm_profile)
-        return self._judge_llm
+    def _judge_failed(self, profile: str, error: Exception) -> None:
+        self._judge_error = f"no judge LLM for profile {profile!r}: {error}"
+        logger.warning("agent_watchdog: %s", self._judge_error)
 
     def _write(self, record: Dict[str, Any]) -> None:
         record = {"ts": datetime.now(timezone.utc).isoformat(), **record}
