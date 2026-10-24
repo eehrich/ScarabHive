@@ -9,6 +9,7 @@ import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -62,14 +63,18 @@ class ComfyUIJobTracker:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # Migrate existing DBs that don't have server_url yet
-            try:
-                conn.execute("ALTER TABLE jobs ADD COLUMN server_url TEXT")
-            except sqlite3.OperationalError as exc:
-                if "duplicate column" not in str(exc).lower():
-                    logger.error("Unexpected error adding server_url column: %s", exc)
-                    raise
-                # Column already exists — expected on re-init.
+            # Migrate existing DBs: columns added after the table was first made
+            for column in ("server_url", "session_id", "request_id"):
+                try:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        logger.error("Unexpected error adding %s column: %s", column, exc)
+                        raise
+                    # Column already exists — expected on re-init.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id)"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)"
             )
@@ -89,9 +94,11 @@ class ComfyUIJobTracker:
         parameters: dict[str, Any],
         output_prefix: str = "",
         server_url: str | None = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
     ) -> None:
         """Register a new job.
-        
+
         Args:
             prompt_id: Unique job identifier from ComfyUI
             workflow_id: ID of the workflow being executed
@@ -99,14 +106,16 @@ class ComfyUIJobTracker:
             parameters: Parameters passed to the workflow
             output_prefix: Prefix for output files
             server_url: URL of the ComfyUI server that handled this job
+            session_id: The agent session that submitted it (the panel's session view), None outside one
+            request_id: The request it ran under
         """
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO jobs 
-                (prompt_id, workflow_id, workflow_name, status, 
-                 submitted_at, parameters, output_prefix, server_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO jobs
+                (prompt_id, workflow_id, workflow_name, status,
+                 submitted_at, parameters, output_prefix, server_url, session_id, request_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     prompt_id,
@@ -117,6 +126,8 @@ class ComfyUIJobTracker:
                     json.dumps(parameters),
                     output_prefix,
                     server_url,
+                    session_id,
+                    request_id,
                 )
             )
             conn.commit()
@@ -240,42 +251,58 @@ class ComfyUIJobTracker:
             row = cursor.fetchone()
             return row[0] if row else None
     
-    def get_active_jobs(self) -> list[dict[str, Any]]:
-        """Get all queued/running jobs.
-        
+    @staticmethod
+    def _of_sessions(sessions: Sequence[str] | None) -> tuple[str, list[str]]:
+        """The SQL condition narrowing to the jobs of ``sessions`` (None: every job) and its parameters."""
+        if sessions is None:
+            return "", []
+        return f" AND session_id IN ({', '.join('?' * len(sessions)) or 'NULL'})", list(sessions)
+
+    def has_jobs(self, sessions: Sequence[str]) -> bool:
+        """Whether any job was started in one of ``sessions``."""
+        where, args = self._of_sessions(sessions)
+        with sqlite3.connect(self.db_path) as conn:
+            return conn.execute(f"SELECT 1 FROM jobs WHERE 1=1{where} LIMIT 1", args).fetchone() is not None
+
+    def get_active_jobs(self, sessions: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        """Get all queued/running jobs -- of ``sessions`` only, when given.
+
         Returns:
             List of active job dicts
         """
+        where, args = self._of_sessions(sessions)
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
-                """
-                SELECT * FROM jobs 
-                WHERE status IN ('queued', 'running', 'pending')
+                f"""
+                SELECT * FROM jobs
+                WHERE status IN ('queued', 'running', 'pending'){where}
                 ORDER BY submitted_at ASC
-                """
+                """,
+                args,
             )
             return [self._row_to_dict(row) for row in cursor.fetchall()]
-    
-    def get_recent_completed(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Get recently completed/failed jobs.
-        
+
+    def get_recent_completed(self, limit: int = 10, sessions: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        """Get recently completed/failed jobs -- of ``sessions`` only, when given.
+
         Args:
             limit: Maximum number of jobs to return
-            
+
         Returns:
             List of completed job dicts
         """
+        where, args = self._of_sessions(sessions)
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
-                """
-                SELECT * FROM jobs 
-                WHERE status IN ('completed', 'failed', 'cancelled')
+                f"""
+                SELECT * FROM jobs
+                WHERE status IN ('completed', 'failed', 'cancelled'){where}
                 ORDER BY completed_at DESC
                 LIMIT ?
                 """,
-                (limit,)
+                (*args, limit),
             )
             return [self._row_to_dict(row) for row in cursor.fetchall()]
     
@@ -316,28 +343,27 @@ class ComfyUIJobTracker:
             cursor = conn.execute(query, params)
             return [self._row_to_dict(row) for row in cursor.fetchall()]
     
-    def get_stats(self) -> dict[str, Any]:
-        """Get job statistics.
-        
+    def get_stats(self, sessions: Sequence[str] | None = None) -> dict[str, Any]:
+        """Get job statistics -- of ``sessions`` only, when given.
+
         Returns:
             Dict with job counts by status
         """
+        where, args = self._of_sessions(sessions)
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                """
+                f"""
                 SELECT status, COUNT(*) as count
                 FROM jobs
+                WHERE 1=1{where}
                 GROUP BY status
-                """
+                """,
+                args,
             )
             stats = {row[0]: row[1] for row in cursor.fetchall()}
-            
-            # Get total
-            cursor = conn.execute("SELECT COUNT(*) FROM jobs")
-            total = cursor.fetchone()[0]
-            
+
             return {
-                "total": total,
+                "total": sum(stats.values()),
                 "queued": stats.get("queued", 0),
                 "running": stats.get("running", 0),
                 "pending": stats.get("pending", 0),

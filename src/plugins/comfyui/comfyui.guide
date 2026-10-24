@@ -32,8 +32,13 @@ For agents and developers
 @node panel "The ComfyUI panel"
 @{h1}The ComfyUI panel
 
-Open it from the launcher (@{b}Agents & tools@{ub}, "ComfyUI"). It shows
-the jobs of every session and every agent; it does not follow the chat.
+Open it from the launcher (@{b}Agents & tools@{ub}, "ComfyUI"), or for one
+session from the chat's panel menu for it. It shows the jobs
+of the session open in the chat and of its sub-agents, and follows the chat
+when you switch; opened for a session, it stays on that one until you pick
+@{b}Follow the chat@{ub}. @{b}All sessions@{ub} in the toolbar lists every job,
+those started outside a session too -- for admins; a user sees and cancels
+the jobs of their own sessions only.
 
 @{image docs/panel.png "The ComfyUI panel"}
 
@@ -59,7 +64,7 @@ no server reachable, nothing is changed.
 @{bullet}@{b}Servers@{ub}: every configured server, online with how many
 jobs it runs and has queued, or offline with the reason.
 @{bullet}Five figures: jobs active (queued or running), completed, failed,
-cancelled, and all recorded.
+cancelled, and all recorded -- of the sessions shown.
 @{bullet}@{b}Active jobs@{ub}, oldest first: the start of the job id (the
 whole id on hover), the workflow, the status, when it was submitted and
 how long it has run -- or waited, while it has not started.

@@ -476,7 +476,23 @@ class TestComfyUIServer:
         
         assert result["status"] == "queued"
         assert result["prompt_id"] == "test-prompt-123"
-    
+
+    @pytest.mark.asyncio
+    async def test_a_job_keeps_the_session_and_request_it_was_started_in(
+        self, mock_system_config: MagicMock, mock_server_config: MagicMock, workflow_file: Path
+    ) -> None:
+        """The panel's session view lists a session's jobs by what the tool call carried."""
+        from plugins.comfyui.server import ComfyUIServer
+
+        server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
+        server.client.queue_prompt = AsyncMock(return_value={"status": "queued", "prompt_id": "p-1"})
+        await server.workflow({"operation": "execute", "workflow_id": "test_workflow",
+                               "parameters": {"prompt": "x"}, "_status": None,
+                               "_session_id": "s-1", "_request_id": "r-1"})
+
+        job = server.job_tracker.get_job("p-1")
+        assert (job["session_id"], job["request_id"]) == ("s-1", "r-1")
+
     @pytest.mark.asyncio
     async def test_workflow_execute_missing_required_param(
         self,
@@ -1529,7 +1545,7 @@ class TestComfyUICleanup:
         mock_server_config: MagicMock,
         temp_output_dir: Path
     ) -> None:
-        """Test cleanup with 2-hour threshold (for writer_tts_comfyui)."""
+        """Test cleanup with 2-hour threshold (a short-lived TTS instance)."""
         from plugins.comfyui.server import ComfyUIServer
         
         # Create files at different ages

@@ -1,5 +1,6 @@
-// ComfyUI: the servers' state, the jobs still to finish with a way to cancel them, and the last ones finished.
-import { api, html, render, icon, confirm, toast } from '/static/kit/panel-kit.js';
+// ComfyUI: the servers' state, the jobs still to finish with a way to cancel them, and the last ones finished --
+// of the session open in the chat (or the one a link names, ?session_id=) and its sub-agents, or of every session.
+import { api, html, render, icon, confirm, toast, session } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -46,18 +47,19 @@ function duration(seconds) {
 async function refresh(event) {
   if (event?.detail?.auto && busy) return;  // a tick while a load is on its way would queue another one behind it
   const mine = ++load;
+  const id = session.shown;
+  if (!id && session.scope === 'session') {  // following the chat, and no session open there
+    busy = false;
+    clear(empty('message-square', 'No session open', 'Open a session in the chat to see its ComfyUI jobs.'));
+    return;
+  }
   busy = true;
   let answer;
   try {
-    answer = await api(`${BASE}jobs`, { quiet: true });
+    answer = await api(`${BASE}jobs${id ? `?session_id=${encodeURIComponent(id)}` : ''}`, { quiet: true });
   } catch (error) {
     if (mine !== load) return;  // a later load was started since
-    // nothing shown before stays, as if it were current
-    shown = null;
-    render($('servers'), '');
-    render($('stats'), '');
-    $('updated').textContent = '';
-    render($('jobs'), empty('circle-alert', 'Jobs could not be loaded', error.message));
+    clear(empty('circle-alert', 'Jobs could not be loaded', error.message));
     return;
   } finally {
     if (mine === load) busy = false;
@@ -68,6 +70,15 @@ async function refresh(event) {
   drawStats();
   drawJobs();
   $('updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+}
+
+/** Nothing shown before stays, as if it were current: only `message` where the jobs were. */
+function clear(message) {
+  shown = null;
+  render($('servers'), '');
+  render($('stats'), '');
+  $('updated').textContent = '';
+  render($('jobs'), message);
 }
 
 // -------------------------------------------------------------------- drawing
@@ -168,6 +179,7 @@ async function cancel(button) {
 // ---------------------------------------------------------------------- wiring
 
 document.addEventListener('refresh', refresh);
+document.addEventListener('sessionscope', () => refresh());
 $('jobs').addEventListener('click', (event) => {
   const button = event.target.closest('button[data-cancel]');
   // not the second click of a double click: on a table drawn anew in between it would hit the button now in its place

@@ -8,7 +8,8 @@ busy one. Every job is recorded; the **ComfyUI** panel shows the servers and the
 - **Tool** `comfyui_workflow` -- one tool with the operations `list`, `execute`, `wait_for_completion`, `status`,
   `result`, `load`, `cancel`, `server_status`, `queue` and `upload_image`. Image inputs that name a local file are
   uploaded to the server that runs the job.
-- **Panel** ComfyUI -- each server's state, the active and the recently finished jobs, cancel.
+- **Panel** ComfyUI -- each server's state, the active and the recently finished jobs of a session and its
+  sub-agents (or of every session, for admins), cancel.
 - **Agent** `comfyui_agent` -- generates media with the tool.
 
 Enable it in `config/plugins.yaml` (`comfyui: {type: comfyui, enabled: true, host: ..., workflows: [...]}`) and allow

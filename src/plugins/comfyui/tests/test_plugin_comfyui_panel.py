@@ -31,9 +31,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from agent_system.auth.dependencies import get_optional_user
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.ui.resources import STATIC_DIR
+from tests.session_owners import admin
 from tests.ui.browser import find_browser, run_app_test_page
 
 BROWSER = find_browser()
@@ -44,6 +46,8 @@ pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based brow
 TESTS = Path(__file__).resolve().parent
 GPU1 = "gpu1.test:8188"
 GPU2 = "gpu2.test:8189"
+# the jobs the agents of session s-1 started; the others came from outside any session (a pipeline, the CLI)
+SESSION_OF = {"run-1111-a": "s-1", "done-4444-d": "s-1"}
 
 
 class Answer:
@@ -143,8 +147,8 @@ def seed(tracker) -> None:
     with sqlite3.connect(tracker.db_path) as conn:
         conn.executemany(
             "INSERT INTO jobs (prompt_id, workflow_id, workflow_name, status, submitted_at, started_at, completed_at,"
-            " duration_seconds, outputs, error_message, server_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(*row[:10], f"http://{row[10]}") for row in rows])
+            " duration_seconds, outputs, error_message, server_url, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(*row[:10], f"http://{row[10]}", SESSION_OF.get(row[0])) for row in rows])
 
 
 def panel_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
@@ -233,6 +237,9 @@ def panel_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     registry = PluginWebRegistry()  # the plugin's router and static files, mounted as the app mounts them
     registry.register_web_plugin("comfyui", plugin)
     registry.apply_to_app(app)
+    # An admin looks: this page tests what the panel draws, every session's jobs included. Who may see which is
+    # test_plugin_comfyui_access.py.
+    app.dependency_overrides[get_optional_user] = admin
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/comfyui", StaticFiles(directory=TESTS), name="panel-tests")
     return app
@@ -262,6 +269,8 @@ EXPECTED = [
     'an answer overtaken by a later load is dropped',
     'ticks of the auto refresh ask nothing more while a load is on its way',
     'the auto refresh runs from the start and brings what changed',
+    "opened for a session, the panel lists that session's jobs and counts only",
+    'following the chat with no session open, the panel says so and asks for no jobs',
 ]
 
 

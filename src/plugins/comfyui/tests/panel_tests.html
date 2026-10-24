@@ -49,19 +49,20 @@
   const post = (path) => fetch(path, { method: 'POST' });
   const get = async (path) => (await fetch(path)).json();
   const ACTIVE = 'run-1111-a,wait-2222-b,far-6666-f';
+  const ALL = '/plugins/comfyui/?session_scope=all';  // every session's jobs: what most checks look at
   const sameSet = (list, expected) => [...list].sort().join() === [...expected].sort().join();
   const recentSeeded = () => sameSet(keys('recent'), ['lost-3333-c', 'hist-7777-g', 'done-4444-d', 'fail-5555-e', 'old-8888-h']);
   // opened on a fresh seed, the auto refresh off: what a check waits for comes from what it drives
   const fresh = async () => {
     await post('/__stub/reset');
-    await go('/plugins/comfyui/');
+    await go(ALL);
     await until('the jobs', () => keys('active').join() === ACTIVE);
     await autoOff();
   };
 
   await check('opened, the panel shows each server with its queue, or offline with the reason', async () => {
     await post('/__stub/reset');
-    await go('/plugins/comfyui/');
+    await go(ALL);
     await until('the servers', () => $('#servers [data-server="gpu2.test:8189"]'));
     const gpu1 = $('#servers [data-server="gpu1.test:8188"]');
     const gpu2 = $('#servers [data-server="gpu2.test:8189"]');
@@ -308,13 +309,35 @@
 
   await check('the auto refresh runs from the start and brings what changed', async () => {
     await post('/__stub/reset');
-    await go('/plugins/comfyui/');
+    await go(ALL);
     await until('the jobs', () => keys('active').join() === ACTIVE);
     const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
     await post('/__stub/finish?id=run-1111-a');
     await until('run-1111-a completed, brought by a tick', () => row('recent', 'run-1111-a'), 8000);
     return running && cells('recent', 'run-1111-a')[2] === 'completed' && keys('active').join() === 'wait-2222-b,far-6666-f'
       && $('#servers [data-server="gpu1.test:8188"]').textContent.includes('0 running · 2 queued');
+  });
+
+  await check("opened for a session, the panel lists that session's jobs and counts only", async () => {
+    await post('/__stub/reset');
+    const before = (await get('/__stub/asked')).jobs;
+    await go('/plugins/comfyui/?session_id=s-1');
+    await until('the jobs', () => keys('active').join() === 'run-1111-a');
+    await autoOff();
+    const query = new URL(frame.contentWindow.location.href).searchParams.get('session_id');
+    return keys('recent').join() === 'done-4444-d' && statValue('total') === '2' && statValue('active') === '1'
+      && query === 's-1' && ((await get('/__stub/asked')).jobs) > before;
+  });
+
+  await check('following the chat with no session open, the panel says so and asks for no jobs', async () => {
+    await post('/__stub/reset');
+    await go('/plugins/comfyui/');
+    await until('the notice', () => $('#jobs .pk-empty-title')?.textContent === 'No session open');
+    await autoOff();
+    const before = (await get('/__stub/asked')).jobs;
+    now();
+    await sleep(500);
+    return ((await get('/__stub/asked')).jobs) === before && !$('#stats [data-stat]') && !$('#servers [data-server]');
   });
 
   await fetch('/__results', {

@@ -172,6 +172,8 @@ web_ui:
     category: agents
     keywords: [images, workflows, jobs]
     window: {width: 760, height: 560}
+    contexts:
+      session: "/plugins/{{ name }}/?session_id={session_id}"
 
   endpoints:
     - path: "/"
@@ -183,7 +185,7 @@ web_ui:
       method: "GET"
       handler: "list_jobs"
       response_type: "json"
-      description: "Each server's state, the jobs still to finish, the last ones finished and the counts by status"
+      description: "Each server's state, the jobs still to finish, the last ones finished and the counts by status -- of a session and its sub-agents (session_id), or of every session (admins)"
     - path: "/jobs/{prompt_id}/cancel"
       method: "POST"
       handler: "cancel_job"

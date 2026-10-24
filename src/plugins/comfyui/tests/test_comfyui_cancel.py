@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,6 +20,9 @@ from plugins.comfyui.comfyui_client import ComfyUIClient
 from plugins.comfyui.job_tracker import ComfyUIJobTracker
 from plugins.comfyui.server import ComfyUIServer
 from plugins.comfyui.web_endpoints import ComfyUIWebEndpoints
+
+# a request to an instance with authentication off: every session's jobs are the one person's
+OPEN = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=SimpleNamespace(auth=SimpleNamespace(enabled=False)))))
 
 
 @pytest.fixture
@@ -88,7 +92,7 @@ async def test_the_panel_route_answers_a_refusal_as_an_error(server, prepare, ca
         server.job_tracker.update_status("job-1", prepare)
     server.client.cancel = AsyncMock(return_value=cancel)
     with pytest.raises(HTTPException) as refused:
-        await ComfyUIWebEndpoints(server).cancel_job(None, "nope" if prepare is None else "job-1")
+        await ComfyUIWebEndpoints(server).cancel_job(OPEN, "nope" if prepare is None else "job-1", None)
     assert (refused.value.status_code, refused.value.detail) == (status, detail)
     if cancel is None:
         server.client.cancel.assert_not_called()
@@ -117,15 +121,15 @@ def instance(name: str, host: str, output_dir: Path) -> ComfyUIServer:
 
 async def test_an_instance_leaves_the_jobs_of_another_instance_on_the_same_tracker_alone(tmp_path):
     mine = instance("comfyui", "a.test", tmp_path / "outputs")
-    other = instance("writer_comfyui", "b.test", tmp_path / "outputs")
+    other = instance("second_comfyui", "b.test", tmp_path / "outputs")
     assert mine.job_tracker.db_path == other.job_tracker.db_path
-    other.job_tracker.register_job("b-job", "cover_animate", "Cover", {}, server_url="http://b.test:8188")
+    other.job_tracker.register_job("b-job", "wan_animate", "Animation", {}, server_url="http://b.test:8188")
     other.job_tracker.update_status("b-job", "running")
     mine.job_tracker.register_job("a-job", "flux", "Flux", {}, server_url="http://a.test:8188")
     mine.client.ping = AsyncMock(return_value={"status": "online", "queue_pending": 0, "queue_running": 0})
     mine.client.get_queue = AsyncMock(return_value={"queue_running": [], "queue_pending": []})
     # every server answers that it never saw the job: only a.test's answer counts for this instance
     with patch.object(ComfyUIClient, "get_history", AsyncMock(return_value={})):
-        await ComfyUIWebEndpoints(mine).list_jobs(None)
+        await ComfyUIWebEndpoints(mine).list_jobs(OPEN, None, None)
     assert mine.job_tracker.get_job("b-job")["status"] == "running"
     assert mine.job_tracker.get_job("a-job")["status"] == "failed"

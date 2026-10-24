@@ -917,6 +917,8 @@ class ComfyUIServer(SchemaBasedToolServer):
             parameters=user_params,
             output_prefix=params.get("output_prefix", "comfy"),
             server_url=exec_client.base_url,
+            session_id=params.get("_session_id"),
+            request_id=params.get("_request_id"),
         )
         
         if status:
@@ -1992,6 +1994,15 @@ class ComfyUIServer(SchemaBasedToolServer):
     def get_static_assets(self) -> Path:
         """The panel's script and stylesheet, served under /plugins/<name>/static/."""
         return Path(__file__).parent / "static"
+
+    async def has_session_data(self, session_id: str, user_id: str) -> bool:
+        """Whether the panel opened on ``session_id`` lists a job: one of its own or of a session below it (a
+        sub-agent's). Another user's session (an admin's view) is offered: finding its owner is a scan."""
+        from agent_system import app_state
+        sessions = getattr(app_state.session_service, "session_manager", None)
+        if sessions is None or not sessions.belongs_to(user_id, session_id):
+            return True  # cannot say: offered
+        return self.job_tracker.has_jobs(await sessions.subtree_ids(user_id, session_id))
 
 
 # Plugin factory for discovery

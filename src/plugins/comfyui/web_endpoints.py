@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from agent_system import app_state
+from agent_system.auth.dependencies import get_optional_user
+from agent_system.auth.models import User
+from agent_system.auth.session_access import may_see_session, sees_everything, viewer
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
 
@@ -18,7 +23,30 @@ if TYPE_CHECKING:
     from .comfyui_client import ComfyUIClient
     from .server import ComfyUIServer
 
+logger = logging.getLogger(__name__)
+
 RECENT_SHOWN = 10
+
+
+async def session_tree(current_user: Optional[User], session_id: str) -> list[str]:
+    """``session_id`` and the sessions below it -- a sub-agent's jobs are the session's too. Read under the
+    session's owner: the viewer's own, or (an admin looking at another user's session) the user who holds it.
+    Without a session store, or when the tree cannot be read, the session alone."""
+    sessions = getattr(app_state.session_service, "session_manager", None)
+    if sessions is None:
+        return [session_id]
+    user = viewer(current_user)
+    try:
+        if not sessions.belongs_to(user, session_id):
+            try:
+                sessions._validate_session_id(session_id)  # the owner scan joins the bare id onto every directory
+            except ValueError:  # no session can have it: asked for every tick, so not worth a warning
+                return [session_id]
+            user = await sessions._find_session_owner_async(session_id) or user
+        return await sessions.subtree_ids(user, session_id) or [session_id]
+    except Exception:  # the session's own jobs still show
+        logger.warning("The sessions below %s could not be read", session_id, exc_info=True)
+        return [session_id]
 
 
 def since(stamp: str, now: datetime) -> float:
@@ -69,9 +97,15 @@ class ComfyUIWebEndpoints:
     async def render_panel(self, request: Request):
         return self.templates.TemplateResponse(request, "panel.html", {"plugin": self.server.name})
 
-    async def list_jobs(self, request: Request) -> dict[str, Any]:
+    async def list_jobs(self, request: Request, session_id: str | None = None,
+                        current_user: Optional[User] = Depends(get_optional_user)) -> dict[str, Any]:
         """Each server's state, the jobs still to finish and the last ones finished, after the tracker has been
-        brought up to date with what the servers report."""
+        brought up to date with what the servers report. With ``session_id`` the jobs of that session and the
+        sessions below it; without, every job -- an admin's view, as in the other session panels."""
+        if not await may_see_session(request, current_user, session_id):
+            sessions = []  # another user's session: answered as one without jobs, as the other session panels do
+        else:
+            sessions = await session_tree(current_user, session_id) if session_id else None
         server = self.server
         tracker = server.job_tracker
         clients = [server.client, *(server._build_client(s["host"], s["port"], server.output_dir) for s in server._servers[1:])]
@@ -88,15 +122,18 @@ class ComfyUIWebEndpoints:
         now = datetime.now(timezone.utc)
         return {
             "servers": states,
-            "active": [job_row(job, now) for job in tracker.get_active_jobs()],
-            "recent": [job_row(job, now) for job in tracker.get_recent_completed(limit=RECENT_SHOWN)],
-            "stats": tracker.get_stats(),
+            "active": [job_row(job, now) for job in tracker.get_active_jobs(sessions)],
+            "recent": [job_row(job, now) for job in tracker.get_recent_completed(RECENT_SHOWN, sessions)],
+            "stats": tracker.get_stats(sessions),
         }
 
-    async def cancel_job(self, request: Request, prompt_id: str) -> dict[str, Any]:
-        """Only a job still to finish; a refusal of the ComfyUI server is an error here."""
+    async def cancel_job(self, request: Request, prompt_id: str,
+                         current_user: Optional[User] = Depends(get_optional_user)) -> dict[str, Any]:
+        """Only a job still to finish, and only one the viewer may see: of their own session, or any for an admin
+        (a job outside every session too). A refusal of the ComfyUI server is an error here."""
         job = self.server.job_tracker.get_job(prompt_id)
-        if job is None:
+        if job is None or not (sees_everything(request, current_user) or (
+                job.get("session_id") is not None and await may_see_session(request, current_user, job["session_id"]))):
             raise HTTPException(status_code=404, detail=f"Job {prompt_id} not found")
         if job["status"] not in ACTIVE_STATUSES:
             raise HTTPException(status_code=409, detail=f"Job {prompt_id} is already {job['status']}")
