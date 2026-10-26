@@ -310,6 +310,13 @@ summarised here; the git history has them.
 
 ### Security
 
+- Agent prompts render in Jinja's sandbox, both an inline `system_prompt` and
+  a template file with its includes: a prompt reads its variables and calls
+  their harmless methods, but no longer reaches Python internals --
+  `{{ cycler.__init__.__globals__.os... }}` ran code in the API process
+  before. `*` and `**` refuse results past 100,000 characters, items or bits;
+  `{{ 9 ** 99999999 }}` froze the whole process while compiling. Every
+  shipped prompt renders as before.
 - The log viewer and the SSH machine panel are admin-only (rules in
   `config/config.yaml`): the logs carry every user's prompts, and the SSH panel
   runs commands on the configured hosts.

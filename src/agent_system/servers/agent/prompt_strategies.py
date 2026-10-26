@@ -11,10 +11,9 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
-from jinja2 import Template
 import logging
 
-from agent_system.utils.prompt_renderer import get_datetime_context, render_prompts
+from agent_system.utils.prompt_renderer import PROMPT_ENV, get_datetime_context, render_prompts
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentConfig, AgentSystemConfig
@@ -165,7 +164,7 @@ class RawPromptStrategy(PromptStrategy):
         )
         
         try:
-            rendered_system = Template(system_prompt_raw).render(**context_vals)
+            rendered_system = PROMPT_ENV.from_string(system_prompt_raw).render(**context_vals)
             return rendered_system, None
         except Exception as e:
             logger.warning(

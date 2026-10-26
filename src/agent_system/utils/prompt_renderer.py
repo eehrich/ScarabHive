@@ -4,12 +4,60 @@ from typing import Dict, Any, Tuple
 import logging
 from functools import lru_cache
 from pathlib import Path
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import FileSystemLoader
+from jinja2.exceptions import SecurityError
+from jinja2.sandbox import SandboxedEnvironment
 from datetime import datetime, timedelta
 import pytz
 
 
 logger = logging.getLogger(__name__)
+
+#: Most characters, items or bits a ``*`` or ``**`` in a prompt may build.
+_MAX_BINOP_SIZE = 100_000
+
+
+class PromptSandbox(SandboxedEnvironment):
+    """Jinja's sandbox, plus a size limit on ``*`` and ``**``.
+
+    The sandbox keeps a template away from Python internals, not from cost: ``{{ 9 ** 99999999 }}`` is folded
+    at compile time in one C call that holds the GIL and freezes the whole process, and ``'a' * 10**9`` fills
+    the memory. Intercepted operators are not constant-folded, so both go through :meth:`call_binop`.
+    Not bounded: memory a template builds through string methods and filters (``|center``, ``.ljust``) or by
+    doubling a string in a loop. Only a process limit bounds that; prompts that are not trusted with resources
+    belong in a separate process, not in this renderer.
+    """
+
+    intercepted_binops = frozenset({"*", "**"})
+
+    def call_binop(self, context, operator, left, right):
+        if _binop_size(operator, left, right) > _MAX_BINOP_SIZE:
+            raise SecurityError(f"'{operator}' in a prompt would build more than {_MAX_BINOP_SIZE} characters, "
+                                "items or bits")
+        return super().call_binop(context, operator, left, right)
+
+
+def _binop_size(operator: str, left: Any, right: Any) -> int:
+    """Size of what ``left <operator> right`` would build: length for a repeated sequence, bits for an int."""
+    if operator == "*":
+        if isinstance(left, int) and isinstance(right, (str, list, tuple)):
+            left, right = right, left
+        if isinstance(left, (str, list, tuple)) and isinstance(right, int):
+            return len(left) * right
+        if isinstance(left, int) and isinstance(right, int):
+            return left.bit_length() + right.bit_length()
+    elif isinstance(left, int) and isinstance(right, int) and right > 0:
+        return left.bit_length() * right
+    return 0
+
+
+#: Prompts are rendered in Jinja's sandbox: a template can read its variables and call their harmless methods,
+#: but not reach Python internals (``{{ cycler.__init__.__globals__.os }}`` and the like). A prompt is text an
+#: author -- or one day a model proposing a variant -- writes; without the sandbox, writing a prompt was running
+#: code in the API process.
+#: The environment for prompt text without a file (an agent's inline ``system_prompt``): no loader, so no
+#: ``{% include %}``, as with the bare ``Template()`` it replaces.
+PROMPT_ENV = PromptSandbox(autoescape=False)
 
 #: Repo-level shared prompt library. Partials placed here are includable from
 #: ANY prompt, which is how the same rule can live in one file instead of being
@@ -137,7 +185,7 @@ def _include_search_paths(template_path: str) -> Tuple[str, ...]:
 
 
 @lru_cache(maxsize=64)
-def _get_env(search_paths: Tuple[str, ...]) -> Environment:
+def _get_env(search_paths: Tuple[str, ...]) -> PromptSandbox:
     """Jinja environment for a set of include roots.
 
     Cached because prompts render on EVERY LLM call — the previous bare
@@ -148,9 +196,9 @@ def _get_env(search_paths: Tuple[str, ...]) -> Environment:
     restart.
 
     Settings mirror the previous bare ``Template()``: autoescape off (these are
-    markdown prompts, not HTML) and undefined variables render empty.
+    markdown prompts, not HTML) and undefined variables render empty. Sandboxed, as PROMPT_ENV.
     """
-    return Environment(
+    return PromptSandbox(
         loader=_CommentStrippingLoader(list(search_paths), encoding="utf-8"),
         autoescape=False,
     )
