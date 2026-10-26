@@ -2,11 +2,12 @@
 
 Moves images, sounds and videos between the disk and an agent's
 conversation: an agent loads a file so its model can see or hear it, and
-writes media that only exists in the conversation (a pasted image) to a file.
+writes media that only exists in the conversation (a pasted image) to a file,
+and hands a finished file to the person: the chat shows it with a download.
 Every path, read or written, must lie inside the configured folders.
 
-- **Tools:** `<instance>_load`, `<instance>_list_context`, `<instance>_save`
-  (`save` is not offered on a `read_only` instance).
+- **Tools:** `<instance>_load`, `<instance>_list_context`, `<instance>_share`,
+  `<instance>_save` (`save` is not offered on a `read_only` instance).
 - **Hooks:** none.
 - **Panel:** none.
 

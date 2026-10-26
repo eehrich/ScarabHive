@@ -224,6 +224,10 @@ label.question-choice {
 .response-text > :first-child { margin-top: 0; }
 .response-text > :last-child { margin-bottom: 0; }
 .response-text p { margin: 0 0 var(--space-3); }
+/* A file an agent handed over (chat_module.js, image rule): the picture at most as wide as the answer, its download below. */
+.response-text .chat-file { display: inline-flex; flex-direction: column; gap: var(--space-1); max-width: 100%; vertical-align: top; }
+.response-text .chat-file img { display: block; max-width: 100%; max-height: 32rem; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-1); }
+.response-text .chat-file-download { font-size: var(--text-sm); }
 .response-text h1, .response-text h2, .response-text h3, .response-text h4 { margin: var(--space-5) 0 var(--space-2); line-height: 1.3; }
 .response-text h1 { font-size: var(--text-xl); }
 .response-text h2 { font-size: var(--text-lg); }

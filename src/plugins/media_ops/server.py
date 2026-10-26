@@ -329,6 +329,55 @@ class MediaOpsServer(SchemaBasedToolServer):
             "type": entry["type"],
         }
 
+    async def share(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Hand a file to the person: a copy kept with the session, served at an address the chat shows
+        an image from and offers for download (agent_system/services/session_files.py). The model gets
+        the Markdown to put in its answer."""
+        from agent_system.services import session_files
+
+        status = params.get("_status")
+        path = params.get("path")
+        if not path or not isinstance(path, str):
+            return await _fail(status, "path is required (string)", "ValidationError")
+        from agent_system.services.session_service import is_ephemeral_session
+        session_id = params.get("_session_id")
+        # an ephemeral session is never stored: nobody could open the link once the run is over
+        if not session_id or is_ephemeral_session(session_id):
+            return await _fail(status, "Only an agent in a stored session can hand a file to its person.",
+                               "SessionContextMissing")
+        try:
+            full = self._resolve(path)
+        except PathSandboxDenied as e:
+            return await _fail(status, str(e), "PermissionError")
+        if not full.is_file():
+            return await _fail(status, f"File not found: {full}", "FileNotFoundError")
+        entry = MEDIA_TYPES.get(full.suffix.lower())
+        if entry is None:
+            return await _fail(status, f"Unsupported file type: {full.suffix or '(no extension)'}. "
+                                       f"Supported extensions: {', '.join(sorted(MEDIA_TYPES))}",
+                               "UnsupportedMediaType")
+        name = params.get("name")
+        if name is not None and (not isinstance(name, str) or not name.strip()):
+            return await _fail(status, "name must be a non-empty string", "ValidationError")
+        if name and Path(name).suffix.lower() != full.suffix.lower():
+            name = f"{name}{full.suffix}"  # the name the person sees, the type it is
+        try:
+            url, copy = session_files.hand_over(session_files.default_root(), params.get("_user_id") or "anonymous",
+                                                session_id, full, name)
+        except (OSError, ValueError) as e:
+            return await _fail(status, f"Could not hand the file over: {e}", "ShareFailed")
+        label = copy.stem.replace("]", "")
+        markdown = f"![{label}]({url})" if entry[0] == "image" else f"[{copy.name}]({url})"
+        if status:
+            await status.end(f"Handed over {copy.name} ({_fmt_size(copy.stat().st_size)})", meta={"url": url})
+        return {
+            "status": "success",
+            "url": url,
+            "markdown": markdown,
+            "message": "Put the markdown into your answer as it is: the chat shows the image (or a link) there, "
+                       "with a download. The person cannot open the path on the server.",
+        }
+
 
 def _field(obj: Any, key: str) -> Any:
     """Read `key` from a dict OR a pydantic message/content object."""

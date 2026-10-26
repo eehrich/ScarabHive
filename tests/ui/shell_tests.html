@@ -1533,7 +1533,7 @@
     }
   });
 
-  await check('an answer is drawn from its Markdown: what the model wrote shows, <br> in a table cell too; raw HTML, images and links other than http(s) do not; a fenced answer is the answer, and a JSON answer stays JSON', async () => {
+  await check('an answer is drawn from its Markdown: what the model wrote shows, <br> in a table cell too, and a file handed over to the session as its picture; raw HTML, other images and links other than http(s) do not; a fenced answer is the answer, and a JSON answer stays JSON', async () => {
     // The server sends every answer as the model wrote it; the chat draws it (markdown-it, raw HTML
     // off). The answer is test_shell_browser.MARKDOWN_ANSWER: every part of it is looked for here.
     const answerOf = async (stream, id) => {
@@ -1561,9 +1561,18 @@
       need(box.querySelector('pre > code.language-python'), 'the code block has no language for Prism');
       const link = box.querySelector('a[href="https://example.com/docs"]');
       need(link?.target === '_blank' && link.rel.includes('noopener'), "a link opens in the chat's place");
-      need(![...box.querySelectorAll('a')].some((a) => !/^https?:/.test(a.getAttribute('href') || '')),
-        'a link other than http(s) was drawn');
-      need(!box.querySelector('script, img, b'), 'raw HTML or an image got into the answer');
+      const handedOver = /^\/api\/sessions\/s-1\/files\/forest%20bg\.png(\?download=true)?$/;
+      need(![...box.querySelectorAll('a')].some((a) => !/^https?:/.test(a.getAttribute('href') || '')
+        && !handedOver.test(a.getAttribute('href') || '')
+        && a.getAttribute('href') !== '/api/sessions/s-1/files/..'), 'a link other than http(s) was drawn');
+      need(!box.querySelector('script, b'), 'raw HTML got into the answer');
+      const pictures = [...box.querySelectorAll('img')];
+      need(pictures.length === 1 && pictures[0].getAttribute('src') === '/api/sessions/s-1/files/forest%20bg.png'
+        && pictures[0].alt === 'forest bg', 'the handed-over file is not its picture, or another image was drawn');
+      need(box.querySelector('.chat-file a[download]')?.getAttribute('href')
+        === '/api/sessions/s-1/files/forest%20bg.png?download=true', 'the handed-over file has no download');
+      need(box.querySelector('a[href="https://example.com/p.png"]')?.previousSibling?.textContent?.endsWith('!'),
+        'a remote image is not left as "!" and its link');
       need(box.textContent.includes('<b>raw</b>') && box.textContent.includes('javascript:'),
         'what was kept out is not shown as text either');
       need(![...box.querySelectorAll('*')].some((el) => [...el.attributes].some((a) => a.name.startsWith('on'))),

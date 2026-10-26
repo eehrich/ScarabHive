@@ -24,6 +24,7 @@ from uuid import uuid4
 
 from ..paths import data_path
 from ..utils.io import atomic_write_json, read_json_retrying
+from . import session_files
 from .session_cache import SessionCache
 from .session_index import INDEX_LOCK_TIMEOUT  # noqa: F401 - importable from here, as before the split
 from .session_index import SessionIndex, extract_parent_id
@@ -864,13 +865,15 @@ class SessionManager:
                          session_id, sorted(context_vars))
             return True
 
-    async def delete_session(self, user_id: str, session_id: str, create_backup: bool = True) -> None:
+    async def delete_session(self, user_id: str, session_id: str, create_backup: bool = True,
+                             keep_files: bool = False) -> None:
         """Delete a session.
         
         Args:
             user_id: User identifier
             session_id: Session identifier
             create_backup: Create backup before deletion (default: True)
+            keep_files: Leave the files its agents handed over (the archive: a restore shows them again)
         
         Raises:
             SessionNotFoundError: If session doesn't exist
@@ -933,7 +936,10 @@ class SessionManager:
             await self._index.remove_entry(
                 user_id, session_id, extract_parent_id(session_data),
             )
-            
+            # the files its agents handed to the person go with it (services/session_files.py)
+            if not keep_files:
+                session_files.remove(session_files.root_beside(self.storage_path), user_id, session_id)
+
             logger.info("Deleted session %s for user %s", session_id, user_id)
 
     async def reinstate_session(self, session_data: Dict[str, Any]) -> None:

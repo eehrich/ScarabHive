@@ -550,7 +550,7 @@ class TestConfigArrives:
 class TestSchema:
     def test_every_declared_tool_has_an_implementation(self, server):
         names = [t["function"]["name"] for t in server.get_tools()]
-        assert len(names) == 3, names
+        assert len(names) == 4, names
         for name in names:
             method = server._get_method_name(name)
             assert callable(getattr(server, method)), f"{name} -> {method}() missing"
@@ -665,3 +665,42 @@ class TestStatusEvents:
         assert res["status"] == "success", res
         end = self._only(events, "END")
         assert "kept.png" in end.message and "image" in end.message, end.message
+
+
+class TestShare:
+    """Handing a file to the person: a copy kept with the session, and Markdown the chat shows it from."""
+
+    @pytest.fixture
+    def files_root(self, tmp_path, monkeypatch):
+        from agent_system.services import session_files
+        root = tmp_path / "session_files"
+        monkeypatch.setattr(session_files, "default_root", lambda: root)
+        return root
+
+    async def test_an_image_becomes_a_copy_with_the_session_and_markdown_that_shows_it(
+            self, server, image_file, files_root):
+        res = await server.call("media_ops_share", {"path": str(image_file), "name": "Forest",
+                                                    "_session_id": "s-1", "_user_id": "alice"})
+        assert res["status"] == "success", res
+        assert res["url"] == "/api/sessions/s-1/files/Forest.png"
+        assert res["markdown"] == "![Forest](/api/sessions/s-1/files/Forest.png)"
+        assert (files_root / "alice" / "s-1" / "Forest.png").read_bytes() == image_file.read_bytes()
+
+    async def test_audio_is_a_link(self, server, audio_file, files_root):
+        res = await server.call("media_ops_share", {"path": str(audio_file), "_session_id": "s-1", "_user_id": "a"})
+        assert res["markdown"] == "[clip.wav](/api/sessions/s-1/files/clip.wav)"
+
+    async def test_a_file_outside_the_media_directories_is_refused(self, server, outside_file, files_root):
+        res = await server.call("media_ops_share", {"path": str(outside_file), "_session_id": "s-1", "_user_id": "a"})
+        assert res["status"] == "error" and res["error_type"] == "PermissionError", res
+        assert not files_root.exists()
+
+    async def test_without_a_session_there_is_nobody_to_hand_it_to(self, server, image_file, files_root):
+        res = await server.call("media_ops_share", {"path": str(image_file)})
+        assert res["error_type"] == "SessionContextMissing", res
+
+    async def test_an_ephemeral_session_gets_no_link_nobody_could_open(self, server, image_file, files_root):
+        res = await server.call("media_ops_share", {"path": str(image_file), "_session_id": "ephemeral-abc",
+                                                    "_user_id": "a"})
+        assert res["error_type"] == "SessionContextMissing", res
+        assert not files_root.exists()

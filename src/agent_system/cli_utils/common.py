@@ -15,6 +15,8 @@ import os
 import re
 import sys
 from functools import lru_cache
+from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -380,6 +382,8 @@ def render_with_rich(markdown_content: str, code_theme: str = "monokai") -> None
                       and children[i + 1].content == child.attrs["href"]):  # its text is its url: once
                     for mark in (child, children[i + 2]):
                         mark.type, mark.content = "text", ""
+                elif child.type == "link_open" and (local := _handed_over_file(child.attrs.get("href", ""))):
+                    child.attrs["href"] = local.resolve().as_uri()  # a file an agent handed over: open it here
             # A <br> that ends a paragraph or a cell, behind closing marks too, draws no line in the chat.
             end = len(children)
             while end and (children[end - 1].type.endswith("_close")
@@ -393,6 +397,15 @@ def render_with_rich(markdown_content: str, code_theme: str = "monokai") -> None
     except Exception as e:
         logger.warning(f"Failed to render with Rich: {e}")
         print(markdown_content)
+
+
+def _handed_over_file(href: str) -> Optional[Path]:
+    """The local file behind a handed-over file's address (/api/sessions/<id>/files/<name>), which the chat shows
+    as the picture: in the terminal its link opens the file itself."""
+    from agent_system.services import session_files
+    if not session_files.URL_PATTERN.match(href):
+        return None
+    return session_files.find_by_url(session_files.default_root(), href)
 
 
 def _is_json(text: str) -> bool:

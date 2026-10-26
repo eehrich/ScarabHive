@@ -129,3 +129,21 @@ def test_a_drawing_that_fails_still_prints_the_answer(monkeypatch, capsys):
 
     monkeypatch.setattr(common, "render_with_rich", broken)
     assert _shown(monkeypatch, capsys, "ansi", ANSWER) == ANSWER + "\n"
+
+
+@pytest.mark.parametrize("term", ["xterm-256color", "dumb"])
+def test_a_file_an_agent_handed_over_links_to_the_file_itself(monkeypatch, capsys, tmp_path, term):
+    """The chat shows it as the picture from the server; the terminal runs beside the file and opens it."""
+    from agent_system.services import session_files
+    monkeypatch.setattr(session_files, "default_root", lambda: tmp_path)
+    picture = tmp_path / "alice" / "s-1" / "forest bg.png"
+    picture.parent.mkdir(parents=True)
+    picture.write_bytes(b"png")
+
+    out = _shown(monkeypatch, capsys, "ansi", "Done: ![forest bg](/api/sessions/s-1/files/forest%20bg.png) and"
+                 " [gone](/api/sessions/s-1/files/gone.png)", True, term)
+
+    flat = re.sub(r"\s+", "", _plain(out))  # a dumb terminal prints the address, wrapped at its width
+    assert picture.resolve().as_uri() in flat, out
+    assert "/api/sessions/s-1/files/gone.png" in flat and flat.count("file://") == 1, \
+        "a link to no file stays the address: " + out

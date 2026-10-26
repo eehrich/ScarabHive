@@ -265,10 +265,10 @@ async def test_a_retry_writes_the_SAME_archive_not_a_second_one(sm, archive, tmp
     real_delete = sm.delete_session
     blocked = {"root_r"}
 
-    async def stubborn(user_id, session_id, create_backup=True):
+    async def stubborn(user_id, session_id, create_backup=True, **kwargs):
         if session_id in blocked:
             raise OSError("file is open in another process")
-        return await real_delete(user_id, session_id, create_backup=create_backup)
+        return await real_delete(user_id, session_id, create_backup=create_backup, **kwargs)
 
     sm.delete_session = stubborn
     try:
@@ -301,10 +301,10 @@ async def test_a_session_left_behind_is_still_listed_as_a_child(sm, archive):
 
     real_delete = sm.delete_session
 
-    async def stubborn(user_id, session_id, create_backup=True):
+    async def stubborn(user_id, session_id, create_backup=True, **kwargs):
         if session_id == "kid_s1":
             raise OSError("file is open in another process")
-        return await real_delete(user_id, session_id, create_backup=create_backup)
+        return await real_delete(user_id, session_id, create_backup=create_backup, **kwargs)
 
     sm.delete_session = stubborn
     try:
@@ -560,10 +560,10 @@ async def test_a_file_that_cannot_be_deleted_still_leaves_the_tree_archived(
 
     real_delete = sm.delete_session
 
-    async def stubborn(user_id, session_id, create_backup=True):
+    async def stubborn(user_id, session_id, create_backup=True, **kwargs):
         if session_id == "kid_s1":
             raise OSError("file is open in another process")
-        return await real_delete(user_id, session_id, create_backup=create_backup)
+        return await real_delete(user_id, session_id, create_backup=create_backup, **kwargs)
 
     monkeypatch.setattr(sm, "delete_session", stubborn)
 
@@ -588,10 +588,10 @@ async def test_the_next_pass_adds_to_the_archive_instead_of_replacing_it(
     real_delete = sm.delete_session
     blocked = {"kid_t1"}
 
-    async def stubborn(user_id, session_id, create_backup=True):
+    async def stubborn(user_id, session_id, create_backup=True, **kwargs):
         if session_id in blocked:
             raise OSError("file is open in another process")
-        return await real_delete(user_id, session_id, create_backup=create_backup)
+        return await real_delete(user_id, session_id, create_backup=create_backup, **kwargs)
 
     monkeypatch.setattr(sm, "delete_session", stubborn)
     await archive.archive_user(USER)
@@ -624,10 +624,10 @@ async def test_a_retried_tree_keeps_what_the_archive_already_held(
     real_delete = sm.delete_session
     blocked = {"root_u"}
 
-    async def stubborn(user_id, session_id, create_backup=True):
+    async def stubborn(user_id, session_id, create_backup=True, **kwargs):
         if session_id in blocked:
             raise OSError("file is open in another process")
-        return await real_delete(user_id, session_id, create_backup=create_backup)
+        return await real_delete(user_id, session_id, create_backup=create_backup, **kwargs)
 
     monkeypatch.setattr(sm, "delete_session", stubborn)
     await archive.archive_user(USER)
@@ -1216,10 +1216,10 @@ async def test_a_lost_manifest_does_not_cost_the_archives(sm, archive, tmp_path,
     real_delete = sm.delete_session
     blocked = {"root_lm"}
 
-    async def stubborn(user_id, session_id, create_backup=True):
+    async def stubborn(user_id, session_id, create_backup=True, **kwargs):
         if session_id in blocked:
             raise OSError("file is open in another process")
-        return await real_delete(user_id, session_id, create_backup=create_backup)
+        return await real_delete(user_id, session_id, create_backup=create_backup, **kwargs)
 
     monkeypatch.setattr(sm, "delete_session", stubborn)
     await archive.archive_user(USER)          # kid archived and deleted, root stuck
@@ -1640,3 +1640,71 @@ async def test_a_session_id_another_user_holds_meanwhile_is_not_reinstated_besid
     with pytest.raises(ValueError, match="another user"):
         await sm.reinstate_session(archived)
     assert not (_user_dir(sm) / f"{session['session_id']}.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_handed_over_files_stay_through_the_archive_and_go_when_it_is_forgotten(sm, archive, tmp_path):
+    """A restored session shows its pictures again; only forgetting the archive deletes them."""
+    from agent_system.services import session_files
+    await _make_tree(sm, "root_f", ["kid_f1"])
+    picture = tmp_path / "pic.png"
+    picture.write_bytes(b"png")
+    root = session_files.root_beside(sm.storage_path)
+    _, copy = session_files.hand_over(root, USER, "kid_f1", picture)
+    _age(sm, ["root_f", "kid_f1"], days=60)
+
+    assert (await archive.archive_user(USER)).sessions == 2
+    assert copy.is_file(), "archiving deleted the handed-over file"
+    await archive.restore(USER, "root_f")
+    assert session_files.find(root, USER, "kid_f1", copy.name) == copy
+
+    _age(sm, ["root_f", "kid_f1"], days=60)
+    await archive.archive_user(USER)
+    await archive.forget(USER, "root_f")
+    assert not copy.exists()
+
+
+@pytest.mark.asyncio
+async def test_forgetting_an_unreadable_archive_still_removes_it(sm, archive, tmp_path):
+    from agent_system.services import session_files
+    await _make_tree(sm, "root_u", [])
+    picture = tmp_path / "pic.png"
+    picture.write_bytes(b"png")
+    _, copy = session_files.hand_over(session_files.root_beside(sm.storage_path), USER, "root_u", picture)
+    _age(sm, ["root_u"], days=60)
+    await archive.archive_user(USER)
+    entry = (await archive.list_archived(USER))[0]
+    zip_path = tmp_path / "session_archive" / USER / entry["archive"]
+    zip_path.write_bytes(b"not a zip")
+
+    await archive.forget(USER, "root_u")
+
+    assert not zip_path.exists() and copy.is_file(), "an unreadable archive keeps its files, the archive goes"
+
+
+@pytest.mark.asyncio
+async def test_forgetting_leaves_the_files_of_a_session_that_stayed_live(sm, archive, tmp_path):
+    """A delete that failed while archiving leaves the session live -- and in the zip."""
+    from agent_system.services import session_files
+    await _make_tree(sm, "root_v", ["kid_v1"])
+    picture = tmp_path / "pic.png"
+    picture.write_bytes(b"png")
+    _, copy = session_files.hand_over(session_files.root_beside(sm.storage_path), USER, "kid_v1", picture)
+    _age(sm, ["root_v", "kid_v1"], days=60)
+    real_delete = sm.delete_session
+
+    async def stubborn(user_id, session_id, create_backup=True, **kwargs):
+        if session_id == "kid_v1":
+            raise OSError("file is open in another process")
+        return await real_delete(user_id, session_id, create_backup=create_backup, **kwargs)
+
+    sm.delete_session = stubborn
+    try:
+        await archive.archive_user(USER)
+    finally:
+        sm.delete_session = real_delete
+    assert sm.belongs_to(USER, "kid_v1"), "fixture: the kid stayed live"
+
+    await archive.forget(USER, "root_v")
+
+    assert copy.is_file(), "a live session lost its handed-over file"

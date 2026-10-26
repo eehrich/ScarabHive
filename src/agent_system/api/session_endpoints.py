@@ -1055,3 +1055,35 @@ async def restore_session(
     except Exception as e:
         logger.exception("Failed to restore session %s: %s", session_id, e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@session_router.get("/{session_id}/files/{name}")
+async def session_file(
+    request: Request,
+    session_id: str,
+    name: str,
+    download: bool = False,
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """A file an agent handed to the person in this session (services/session_files.py): shown inline (the chat's
+    image), or saved with ``download=true``. Only to whoever may see the session; 404 alike for a session that is
+    not theirs and a file that is not there."""
+    from fastapi.responses import FileResponse
+
+    from agent_system.auth.session_access import may_see_session
+    from agent_system.services import session_files
+
+    if (not session_files.URL_PATTERN.match(session_files.url_of(session_id, name))
+            or not await may_see_session(request, current_user, session_id)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such file")
+    owner = viewer(current_user)
+    if not session_manager.belongs_to(owner, session_id):  # an admin looking at another user's session
+        owner = await session_manager._find_session_owner_async(session_id) or owner
+    path = session_files.find(session_files.root_beside(session_manager.storage_path), owner, session_id, name)
+    if path is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such file")
+    # the file is the agent's, not ours: never sniffed into something else, never run as a page of this origin
+    return FileResponse(path, filename=path.name, content_disposition_type="attachment" if download else "inline",
+                        headers={"X-Content-Type-Options": "nosniff",
+                                 "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self'; media-src 'self'"})

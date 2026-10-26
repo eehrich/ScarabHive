@@ -1650,7 +1650,8 @@ def results():
 
 
 #: A run's answer as a model writes it (stub_stream=markdown): what the chat draws, and what it must not
-#: let through -- raw HTML, a script, a remote image, a link other than http(s)/mailto. The data:image and
+#: let through -- raw HTML, a script, a remote image, a link other than http(s)/mailto -- and the one image it
+#: draws, a file an agent handed over to the session. The data:image and
 #: ms-settings: links pass markdown-it's own check: only the chat's allowlist keeps them out.
 MARKDOWN_ANSWER = """# Found it
 
@@ -1675,14 +1676,14 @@ and [png](data:image/png;base64,AAAA)
 
 <script>window.__mdInjected = 1</script><img src=x onerror="window.__mdInjected = 2"> <b>raw</b>
 
-![pic](https://example.com/p.png)"""
+![pic](https://example.com/p.png) ![forest bg](/api/sessions/s-1/files/forest%20bg.png) ![up](/api/sessions/s-1/files/..)"""
 #: An answer a model wrapped whole in a ```markdown fence (stub_stream=fenced): the answer, not a code sample.
 FENCED_ANSWER = "```markdown\n# Fenced\n\nText\n```"
 #: A structured run's answer (stub_stream=json).
 JSON_ANSWER = '{\n  "city": "Oslo",\n  "days": 3\n}'
 
 EXPECTED = [
-    'an answer is drawn from its Markdown: what the model wrote shows, <br> in a table cell too; raw HTML, images and links other than http(s) do not; a fenced answer is the answer, and a JSON answer stays JSON',
+    'an answer is drawn from its Markdown: what the model wrote shows, <br> in a table cell too, and a file handed over to the session as its picture; raw HTML, other images and links other than http(s) do not; a fenced answer is the answer, and a JSON answer stays JSON',
     'the shell starts for the owner when auth is off',
     'an empty message leaves the welcome in place',
     'the message form never reloads the page, not even before the chat has taken it over',

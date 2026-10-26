@@ -12,7 +12,8 @@ disk -- a render, a recording, a screenshot -- so its model can look at it
 or listen to it. And an agent writes media that only exists in the
 conversation -- an image you pasted into the chat -- to a file, so it
 survives the run and other tools can use it. Every path, read or written,
-must lie inside the folders the plugin is given.
+must lie inside the folders the plugin is given. And an agent hands a file
+it made to you: the chat shows the image in its answer, with a download.
 
 The plugin has no panel and no hooks.
 
@@ -20,6 +21,7 @@ The plugin has no panel and no hooks.
 For agents and developers
   @{"  Loading a file  " link load}
   @{"  Listing and saving the conversation's media  " link save}
+  @{"  Handing a file to the person  " link share}
   @{"  Where it may read and write  " link sandbox}
   @{"  What the model sees  " link model}
   @{"  Setting it up  " link setup}
@@ -165,6 +167,32 @@ call with that error.
 {}
 {"id": "m3f2a9c01b7de", "path": "data/workspace/pasted_diagram.png"}
 @{body}
+@endnode
+
+@node share "Handing a file to the person"
+@{h1}Handing a file to the person
+
+A file the agent wrote is on the server; the person in the chat cannot open
+its path. @{tt}media_ops_share@{utt} copies an image, sound or video from
+inside the plugin's folders to the session and answers with Markdown the
+agent puts into its reply:
+
+@{code json}
+{"path": "data/workspace/images/forest.png", "name": "Forest"}
+{"status": "success", "url": "/api/sessions/<id>/files/Forest.png",
+ "markdown": "![Forest](/api/sessions/<id>/files/Forest.png)"}
+@{body}
+
+The chat shows an image from that address with a link to download it (a
+sound or video is a link). The address serves the file only to whoever may
+see the session. The chat still loads no image from any other address. In
+the terminal the link opens the file itself. The copy is kept with the
+session -- a later change to the original does not change what was shown --
+and deleted with it. A name already used in the session gets a number
+(Forest-2.png).
+
+Refused: a file outside the folders, a type that is no image, sound or
+video, and a call outside a session.
 @endnode
 
 @node sandbox "Where it may read and write"

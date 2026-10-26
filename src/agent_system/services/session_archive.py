@@ -38,6 +38,7 @@ import asyncio
 import logging
 import os
 import time
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,8 +46,11 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from filelock import Timeout as LockTimeout
 
+from . import session_files
 from .session_archive_store import SWEEP_LOCK_NAME  # noqa: F401 - importable from here, as before the split
-from .session_archive_store import ArchiveBusy, ArchiveError, ArchiveNotFound, ArchiveStore, _read_json
+from .session_archive_store import (
+    ZIP_MANIFEST_MEMBER, ArchiveBusy, ArchiveError, ArchiveNotFound, ArchiveStore, _read_json,
+)
 from .session_index import MAIN_INDEX, SUBS_PREFIX, SUBS_SUFFIX
 from .session_paths import user_dir_of
 
@@ -566,8 +570,8 @@ class SessionArchive:
         # tree behind rather than a handful of orphan roots.
         for session_id in reversed(tree.sessions):
             try:
-                await self._session_manager.delete_session(
-                    user_id, session_id, create_backup=False)
+                await self._session_manager.delete_session(  # its handed-over files stay: forget() takes them
+                    user_id, session_id, create_backup=False, keep_files=True)
             except Exception as exc:  # noqa: BLE001 - the archive already has it
                 failures.append(f"{session_id}: {exc}")
                 continue
@@ -747,7 +751,9 @@ class SessionArchive:
 
         entry = await self._store.edit_manifest(user_id, take_it_out)
         try:
-            self._store.archive_file(user_id, entry.get("archive", "")).unlink(missing_ok=True)
+            zip_path = self._store.archive_file(user_id, entry.get("archive", ""))
+            await asyncio.to_thread(self._forget_handed_over_files, user_id, zip_path)
+            zip_path.unlink(missing_ok=True)
         except (ArchiveNotFound, OSError) as exc:
             # The entry is out of the manifest either way -- say what is left.
             logger.warning(
@@ -756,6 +762,27 @@ class SessionArchive:
             )
         logger.info("session archive: forgot %s for user %s", root_session_id, user_id)
         return {"session_id": root_session_id, "sessions": entry.get("session_count", 0)}
+
+    def _forget_handed_over_files(self, user_id: str, zip_path: Path) -> None:
+        """The files the tree's agents handed over stayed for a restore (``archive_user``); with the archive
+        forgotten they go too -- except a session still live (one whose delete failed when the tree was archived).
+        An unreadable archive keeps its files rather than stopping the forget: the archive goes either way.
+        The ids come from the member names (``write_zip`` stores ``<sid>.json``), so nothing is parsed."""
+        if not zip_path.is_file():
+            return
+        try:
+            with zipfile.ZipFile(zip_path) as archive:
+                members = archive.namelist()
+        except (OSError, zipfile.BadZipFile) as exc:
+            logger.warning("session archive: %s unreadable, its handed-over files stay (%s)", zip_path, exc)
+            return
+        files_root = session_files.root_beside(self._session_manager.storage_path)
+        for member in members:
+            if member == ZIP_MANIFEST_MEMBER or not member.endswith(".json"):
+                continue
+            session_id = member[: -len(".json")]
+            if not self._session_manager.belongs_to(user_id, session_id):
+                session_files.remove(files_root, user_id, session_id)
 
     # -- the periodic sweep --------------------------------------------------
 

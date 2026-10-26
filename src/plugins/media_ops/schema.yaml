@@ -36,6 +36,26 @@ tools:
         properties: {}
         additionalProperties: false
 
+  - type: function
+    function:
+      name: "{{ name }}_share"
+      description: >
+        Hand an image, audio or video file to the person you are working for. Returns
+        Markdown to put into your answer: the chat shows the image there with a
+        download, the terminal a link to the file. Without it they cannot see what
+        you made -- a path on the server opens nothing for them.
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: "The file, inside the configured media directories."
+          name:
+            type: string
+            description: "The name the person sees and downloads it as (default: the file's)."
+        required: [path]
+        additionalProperties: false
+
 {% if not read_only %}
   - type: function
     function:

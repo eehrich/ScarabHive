@@ -58,12 +58,15 @@
   }
 
   // An agent's answer is the Markdown the model wrote; the chat draws it. An answer carries whatever a tool
-  // fetched, so raw HTML in it stays text (<br> aside, below), and no image is loaded: a remote image is a
-  // request to an address the text chose, which is how an injected page exfiltrates. A single line break
-  // stays one, as the model meant it. Links are http(s), mailto or relative (no scheme, as the server's
-  // sanitiser has it), and open beside the chat, not in its place.
+  // fetched, so raw HTML in it stays text (<br> aside, below), and no image is loaded from an address the text
+  // chose: a remote image is a request to it, which is how an injected page exfiltrates. The one image drawn is
+  // a file an agent handed over to this session (/api/sessions/<id>/files/<name>, services/session_files.py):
+  // this server's, served only to whoever may see the session. A single line break stays one, as the model
+  // meant it. Links are http(s), mailto or relative (no scheme, as the server's sanitiser has it), and open
+  // beside the chat, not in its place.
+  const SESSION_FILE = /^\/api\/sessions\/[A-Za-z0-9_-]+\/files\/[A-Za-z0-9][^/?#]*$/;
   const markdown = typeof window.markdownit === 'function' ? (() => {
-    const md = window.markdownit({ html: false, breaks: true, linkify: false }).disable('image');
+    const md = window.markdownit({ html: false, breaks: true, linkify: false });
     md.validateLink = (url) => {
       const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url);
       return !scheme || ['http', 'https', 'mailto'].includes(scheme[1].toLowerCase());
@@ -84,6 +87,20 @@
       tokens[i].attrSet('target', '_blank');
       tokens[i].attrSet('rel', 'noopener noreferrer');
       return openLink(tokens, i, options, env, self);
+    };
+    // A handed-over file: the picture, opening full size, and its download. Any other image stays what it was
+    // before images were drawn at all: "!" and a link to its address.
+    md.renderer.rules.image = (tokens, i, options, env, self) => {
+      const src = tokens[i].attrGet('src') || '';
+      const alt = self.renderInlineAsText(tokens[i].children || [], options, env);
+      const href = md.utils.escapeHtml(src);
+      const name = md.utils.escapeHtml(alt);
+      if (!SESSION_FILE.test(src)) {
+        return `!<a href="${href}" target="_blank" rel="noopener noreferrer">${name}</a>`;
+      }
+      return `<span class="chat-file"><a href="${href}" target="_blank" rel="noopener noreferrer">`
+        + `<img src="${href}" alt="${name}" loading="lazy"></a>`
+        + `<a class="chat-file-download" href="${href}?download=true" download>Download ${name}</a></span>`;
     };
     return md;
   })() : null;
