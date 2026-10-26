@@ -132,6 +132,10 @@ def reload_plugin_configs(fresh_config: Any) -> Dict[str, Any]:
                 changed = reload_fn(new_cfg, system_config=fresh_config) or {}
             else:
                 changed = reload_fn(new_cfg) or {}
+            # The adapter keeps the tools it listed once (the admin tool list reads them); the server may now
+            # list others -- a SAM's allowed agents, an agent's description.
+            if getattr(adapter, "_tools_cache", None) is not None:
+                adapter._tools_cache = None
             # Description, visibility and metadata of an agent are applied by its declaration (Runtime.apply_to).
             # Only what the reload took over goes into it: the agent editor reads the running side from the
             # declaration, and a changed type or plugin setting must still read as "needs a restart".

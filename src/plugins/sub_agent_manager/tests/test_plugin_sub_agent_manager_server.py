@@ -3772,3 +3772,47 @@ class TestWhatEveryRunSetsUpAndReports:
         assert after_end == [], "nothing after the end is read"
         assert asked["session_id"] == "sub_1", "and it ran in the sub-agent's own session"
 
+
+
+@pytest.mark.asyncio
+async def test_the_agent_list_the_model_sees_follows_a_reload(monkeypatch):
+    """The "Available:" list in the spawn tool is what the model chooses from. A reload changes allowed_agents
+    for the spawn check; the list has to follow, not stay at its first rendering (measured 2026-10-26: two of
+    the three schema caches kept it for the life of the process)."""
+    import json
+
+    from agent_system.servers.agent.server import Agent
+
+    def listed_agent():
+        agent = Agent.__new__(Agent)
+        agent._tool_public, agent._tool_visible = True, True
+        return agent
+
+    class _Adapter:
+        def __init__(self, agent):
+            self.plugin_server = agent
+
+    class _Registry:
+        plugin_servers = {"alpha_agent": _Adapter(listed_agent()), "beta_agent": _Adapter(listed_agent())}
+
+        def list_servers(self):
+            return list(self.plugin_servers)
+
+    monkeypatch.setattr("agent_system.plugins.tool_adapter.plugin_tool_registry", _Registry())
+
+    def entry(allowed):
+        return ToolServerConfig.model_validate({"type": "sub_agent_manager", "enabled": True,
+                                                "allowed_agents": allowed})
+
+    server = SubAgentManagerServer(name="sub_agent_manager", system_config=AgentSystemConfig(),
+                                   server_config=entry(["alpha_agent"]))
+
+    def shown(tools):
+        text = json.dumps([tool.input_schema for tool in tools])
+        return [name for name in ("alpha_agent", "beta_agent") if name in text]
+
+    assert shown(await server.list_tools()) == ["alpha_agent"], "fixture: the first list"
+    server.reload_config(entry(["alpha_agent", "beta_agent"]))
+    assert shown(await server.list_tools()) == ["alpha_agent", "beta_agent"]
+    server.reload_config(entry(["beta_agent"]))
+    assert shown(await server.list_tools()) == ["beta_agent"]

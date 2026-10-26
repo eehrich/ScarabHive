@@ -464,10 +464,17 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         """Override list_tools() to re-render schema dynamically.
 
         This ensures the agent list in the schema is always up-to-date,
-        since agents are registered after this plugin is initialized.
+        since agents are registered after this plugin is initialized, and a
+        config reload changes allowed_agents / blocked_agents.
+
+        All three caches, not only the rendered schema: the rendered tools
+        (_tools_cache) and the ToolDefs built from them (_list_tools_cache)
+        kept the first list for the life of the process -- measured
+        2026-10-26, a reload let a newly allowed agent be spawned while the
+        model was still shown the old "Available:" list.
         """
-        # Invalidate schema cache to force re-rendering
-        self._schema_cache = None
+        self.clear_schema_cache()
+        self._list_tools_cache = None
 
         # Call parent implementation (will re-render with fresh template vars)
         return await super().list_tools()

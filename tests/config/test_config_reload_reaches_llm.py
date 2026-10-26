@@ -152,13 +152,16 @@ class TestTheReloadServiceHandsOverTheSystemConfig:
 
         class _Adapter:
             plugin_server = agent
+            _tools_cache = ["the tools listed before the reload"]
+
+        adapter = _Adapter()
 
         class _Registry:
             def list_servers(self):
                 return ["worker"]
 
             def get_server(self, name):
-                return _Adapter()
+                return adapter
 
         monkeypatch.setattr("agent_system.plugins.tool_adapter.plugin_tool_registry", _Registry())
         monkeypatch.setattr(Runtime, "last_started", None)
@@ -169,6 +172,7 @@ class TestTheReloadServiceHandsOverTheSystemConfig:
         assert report["errors"] == []
         assert agent.system_config is fresh
         assert agent.llm.model == "gpt-5"
+        assert adapter._tools_cache is None, "the admin tool list would show the tools from before the reload"
 
     def test_a_reload_retries_what_did_not_build(self, monkeypatch):
         """The Setup panel writes a key into the environment and reloads: the
