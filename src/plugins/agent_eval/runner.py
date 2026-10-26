@@ -87,7 +87,7 @@ def run_suite(suite_path: str | Path, run_id: Optional[str] = None, arms: Option
             "pid": os.getpid()}
     store.write_meta(run_id, meta)
     try:
-        frozen = {t.id: _setup(suite, t, rdir, progress) for t in suite.tasks if t.setup}
+        frozen = {t.id: _setup(suite, t, run_id, progress) for t in suite.tasks if t.setup}
         budget = _Budget(suite.budget_usd, progress)
         waves = _schedule(suite, run_id)
         progress(f"{run_id}: {sum(map(len, waves))} agent run(s), {len(suite.arms)} arm(s), {len(suite.tasks)} task(s)")
@@ -162,19 +162,22 @@ def _schedule(suite: Suite, run_id: str) -> List[List[Dict[str, Any]]]:
     return waves
 
 
-def _dirs(suite: Suite, base: Path) -> tuple:
-    """(workspace, data) of a run or a setup under *base*. With a fresh data directory the workspace is its
-    ``workspace/`` -- where agents' file tools point by default (``data/workspace``), so an agent finds its
-    task without a config of its own. With the shared one it sits beside it. Either way it is the directory
-    the agent is started in, what its tools take for "."."""
-    data = base / "data"
-    return (data / "workspace" if suite.data == "fresh" else base / "workspace"), data
+def _dirs(suite: Suite, run_id: str, *parts: str) -> tuple:
+    """(workspace, data) of a run or a setup at *parts* in run *run_id*. With a fresh data directory the
+    workspace is its ``workspace/`` -- where agents' file tools point by default (``data/workspace``), so an
+    agent finds its task without a config of its own. With the shared one it sits beside it. Either way it is
+    the directory the agent is started in, what its tools take for "."."""
+    data = store.run_dir(run_id, *parts, "data")
+    workspace = data / "workspace" if suite.data == "fresh" else store.run_dir(run_id, *parts, "workspace")
+    return workspace, data
 
 
-def _setup(suite: Suite, task: Task, rdir: Path, progress: Callable[[str], None]) -> Optional[Path]:
-    """Run a task's setup once and freeze it; None when it failed or timed out (its runs are then not started)."""
-    base = rdir / "setup" / task.id
-    workspace, data = _dirs(suite, base)
+def _setup(suite: Suite, task: Task, run_id: str, progress: Callable[[str], None]) -> Optional[tuple]:
+    """Run a task's setup once and freeze it: where it lies in the run, None when it failed or timed out (its
+    runs are then not started)."""
+    parts = ("setup", task.id)
+    base = store.run_dir(run_id, *parts)
+    workspace, data = _dirs(suite, run_id, *parts)
     data.mkdir(parents=True, exist_ok=True)
     _fill_workspace(suite, task, workspace)
     log = base / "setup.log"
@@ -184,7 +187,7 @@ def _setup(suite: Suite, task: Task, rdir: Path, progress: Callable[[str], None]
         why = f"timed out after {suite.timeout_s:.0f}s" if code is None else f"exit {code}"
         progress(f"setup of {task.id} failed ({why}), see {log}")
         return None
-    return base
+    return parts
 
 
 def child_env(suite: Suite, data: Path) -> Dict[str, str]:
@@ -205,7 +208,7 @@ def _fill_workspace(suite: Suite, task: Task, workspace: Path) -> None:
         shutil.copytree(suite.path(task.workspace), workspace, dirs_exist_ok=True)
 
 
-def _job_or_error(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optional[Path]],
+def _job_or_error(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optional[tuple]],
                   budget: _Budget, progress: Callable[[str], None]) -> None:
     """One run; a failure of the runner itself (a locked file, a broken result) becomes that run's record --
     unscored, the arm did not cause it -- instead of ending the suite."""
@@ -219,12 +222,11 @@ def _job_or_error(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[s
         progress(f"#{job['n']} {job['arm']}/{job['task']}: runner error {type(e).__name__}: {e}")
 
 
-def _job(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optional[Path]], budget: _Budget,
+def _job(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optional[tuple]], budget: _Budget,
          progress: Callable[[str], None]) -> None:
     task = next(t for t in suite.tasks if t.id == job["task"])
-    rdir = store.run_dir(run_id)
-    jdir = rdir / "runs" / job["dir"]
-    workspace, data = _dirs(suite, jdir)
+    jdir = store.run_dir(run_id, "runs", job["dir"])
+    workspace, data = _dirs(suite, run_id, "runs", job["dir"])
     record = {"run_id": run_id, "n": job["n"], "arm": job["arm"], "task": task.id, "kind": task.kind,
               "rep": job["rep"] + 1, "dir": f"runs/{job['dir']}", "scored": False}
     if store.stop_requested(run_id):
@@ -241,7 +243,7 @@ def _job(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optio
     data.mkdir(parents=True, exist_ok=True)
     source = frozen.get(task.id)
     if source is not None:
-        frozen_workspace, frozen_data = _dirs(suite, source)
+        frozen_workspace, frozen_data = _dirs(suite, run_id, *source)
         shutil.copytree(frozen_data, data, dirs_exist_ok=True)
         shutil.copytree(frozen_workspace, workspace, dirs_exist_ok=True)
     else:

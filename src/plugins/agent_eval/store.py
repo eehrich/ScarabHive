@@ -30,11 +30,12 @@ def root() -> Path:
     return data_path("agent_eval").resolve()
 
 
-def run_dir(run_id: str) -> Path:
-    """The directory of *run_id*. Raises ValueError for anything that is not a run id (a web caller's input)."""
+def run_dir(run_id: str, *parts: str) -> Path:
+    """The directory of *run_id*, or *parts* in it. Raises ValueError for anything that is not a run id (a web
+    caller's input)."""
     if not _RUN_ID.fullmatch(run_id or ""):
         raise ValueError(f"not a run id: {run_id!r}")
-    return root() / "runs" / run_id
+    return data_path("agent_eval", "runs", run_id, *parts).resolve()
 
 
 def new_run_id() -> str:
