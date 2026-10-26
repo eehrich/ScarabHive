@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Evals panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1200px; height: 900px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin router, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const BASELINE = '20261020-100000-aaaa';
+  const TWO_ARMS = '20261021-100000-bbbb';
+  const DIED = '20261022-100000-cccc';
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const runRow = (id) => doc().querySelector(`#runs tr[data-id="${id}"]`);
+  const cells = (row) => [...row.children].map((cell) => cell.textContent.trim());
+  const detailText = () => $('#detail')?.textContent.replace(/\s+/g, ' ') || '';
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const question = () => $('dialog.pk-dialog[open]:not([id])');
+  const answer = async (index) => (await until('the question', question))
+    .querySelector(`[data-index="${index}"]`).click();
+  const started = () => fetch('/__stub/started').then((r) => r.json()).then((s) => s.count);
+  const refresh = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+
+  await go('/plugins/agent_eval/');
+
+  await check('the runs are listed with status, baseline and pass counts', async () => {
+    await until('three runs', () => doc().querySelectorAll('#runs tbody tr').length === 3);
+    const two = cells(runRow(TWO_ARMS));
+    const base = cells(runRow(BASELINE));
+    // 6 tasks x 2 repeats: base passes the first repeat only (6 of 12), terse every run (12).
+    return two[3] === '18/24' && two[2] === 'done' && base[1].includes('baseline') && !two[1].includes('baseline');
+  });
+
+  await check('a runner that died is shown as died, not running', async () => cells(runRow(DIED))[2] === 'died');
+
+  await check('a run shows its arms, the verdict and the task matrix', async () => {
+    runRow(TWO_ARMS).click();
+    await until('the verdict', () => detailText().includes('learn tasks: better'));
+    const matrix = [...doc().querySelectorAll('#detail table[data-pk-sort="tasks"] tbody tr')];
+    const pager = matrix.find((row) => cells(row)[0] === 'fix-pager');
+    // terse beats base on all six tasks: +0.3 each, p = 2/64.
+    return matrix.length === 6 && cells(pager).slice(2).join('|') === '1/2 · 0.70|2/2 · 1.00'
+      && detailText().includes('6 better / 0 worse of 6') && detailText().includes('p = 0.031')
+      && detailText().includes('Of the 6 task(s) that moved, it takes 6 moving the same way to decide.')
+      && detailText().includes('reference: base (same run)');
+  });
+
+  await check('comparing against the baseline names it as the reference', async () => {
+    const select = $('#against');
+    select.value = 'baseline';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await until('the baseline as reference', () => detailText().includes(`reference: base of ${BASELINE} (baseline)`));
+    // Against the baseline even the run's own base arm is compared, task by task.
+    const both = detailText().includes('base against base') && detailText().includes('terse against base');
+    const back = $('#against');
+    back.value = '';
+    back.dispatchEvent(new Event('change', { bubbles: true }));
+    await until('its own reference again', () => detailText().includes('reference: base (same run)'));
+    return both;
+  });
+
+  await check('a record opens with its check output and answer', async () => {
+    $('#detail details summary').click();
+    const row = await until('a record row', () => $('#detail tr[data-record]'));
+    row.click();
+    const card = await until('the record', () => $('#detail .pk-card'));
+    return card.textContent.includes('passed') && card.textContent.includes('Changed ')
+      && card.textContent.includes('ev-bbbb-');
+  });
+
+  await check('the open runs list stays open when new runs come in', async () => {
+    await fetch('/__stub/append', { method: 'POST' });
+    refresh();
+    await until('the new run in the list', () => $('#records summary')?.textContent === 'Runs (25)');
+    return $('#records').open;
+  });
+
+  await check('switching to another run compares it against its own reference again', async () => {
+    const select = $('#against');
+    select.value = 'baseline';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await until('the baseline as reference', () => detailText().includes('(baseline)'));
+    runRow(DIED).click();
+    await until('the other run', () => detailText().includes(DIED));
+    const reset = $('#against').value === '' && detailText().includes('reference: base (same run)');
+    runRow(TWO_ARMS).click();
+    await until('back', () => detailText().includes(TWO_ARMS));
+    return reset;
+  });
+
+  await check('starting asks first: cancelled starts nothing, confirmed starts the suite', async () => {
+    await until('the suites', () => [...$('#suite').options].some((o) => o.textContent.startsWith('hello')));
+    $('#suite').value = [...$('#suite').options].find((o) => o.textContent.startsWith('hello')).value;
+    $('#start').click();
+    await answer(0);
+    await sleep(300);
+    const cancelled = (await started()) === 0;
+    $('#start').click();
+    await answer(1);
+    await until('the run to be asked for', async () => (await started()) === 1);
+    await until('the new run to be picked', () => detailText().includes('20261023-100000-dddd is starting'));
+    return cancelled;
+  });
+
+  await check('a failed load of the runs says so', async () => {
+    doc().cookie = 'ev_mode=fails; path=/';
+    refresh();
+    await until('the error', () => $('#runs .pk-empty-title')?.textContent === 'Runs could not be read');
+    doc().cookie = 'ev_mode=; path=/';
+    return true;
+  });
+
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(results) });
+</script>
+</body>
+</html>

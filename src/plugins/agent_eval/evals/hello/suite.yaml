@@ -1,0 +1,23 @@
+# A minimal suite: a file-writing task checked by pytest, and a question checked by the answer.
+# Run it with:  agent-eval run src/plugins/agent_eval/evals/hello/suite.yaml
+name: hello
+agent: file_ops_test_agent
+description: "Smoke suite: write a small function, answer a question"
+repeats: 1
+timeout_s: 600
+arms:
+  base: {}
+tasks:
+  - id: greet
+    input: >-
+      Create the file data/workspace/greet.py with a function greet(name) that returns
+      "Hello, <name>!" -- for example greet("Ada") returns "Hello, Ada!". Only create that file.
+    workspace: greet
+    check:
+      pytest: tests
+  - id: capital
+    kind: regression
+    input: "What is the capital of France? Answer with the city name only."
+    check:
+      expect:
+        contains: ["Paris"]

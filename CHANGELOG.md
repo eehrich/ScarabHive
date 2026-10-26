@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Evals (`agent_eval` plugin, admin panel "Evals", `agent-eval` command): a suite names an agent, variants of it
+  (arms: any agent_config change, another model, another prompt) and tasks with a check each -- a command,
+  pytest (the share of green tests), expectations on the answer, a script or a plugin's own function. Every
+  arm runs every task several times, each run a child process driving agent-run's own code in a fresh
+  workspace and (by default) a fresh data directory; cost by request id from the usage tracker, also for a
+  run killed at its timeout. The report compares the arms task by task: an exact sign test, how many tasks
+  must move one way to decide, a t interval of the mean difference, learn and holdout tasks apart,
+  regression tasks named; a complete run can be the suite's baseline. A task's setup runs once and every arm
+  starts from its copy; `chain: true` runs the tasks in order on shared state. An arm that cannot run is
+  refused before the first agent run. An overlay a model writes is checked separately and may only narrow
+  the agent's rights. Example suite: `src/plugins/agent_eval/evals/hello/`.
 - Docker in one command: `sh scripts/docker-setup.sh` (Windows:
   `scripts\docker-setup.ps1`) makes the installation's own signing key in
   `config/local.env`, names it in `config/local.yaml`, asks for an OpenRouter

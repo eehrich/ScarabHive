@@ -70,6 +70,8 @@ SHOTS = {
                        "/plugins/batch_monitor/", (1000, 540))],
     "session_archive": [("panel.png", "plugins.session_archive.tests.test_plugin_session_archive_panel", "panel_app",
                          "/plugins/session_archive/", (900, 380))],
+    "agent_eval": [("panel.png", "plugins.agent_eval.tests.test_plugin_agent_eval_panel", "panel_app",
+                    "/plugins/agent_eval/?run=20261021-100000-bbbb", (1200, 820))],
     "agent_editor": [("panel.png", "plugins.agent_editor.tests.test_plugin_agent_editor_panel", "panel_app",
                       "/plugins/agent_editor/", (1240, 820), {"login": "root", "script": """
         const until = async (find) => { for (;;) { const found = find(); if (found) return found;

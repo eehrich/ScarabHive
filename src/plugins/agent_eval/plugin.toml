@@ -1,0 +1,10 @@
+# agent_eval plugin manifest -- read by agent_system.plugins.plugin_manifest.
+[plugin]
+name = "agent_eval"
+version = "0.1.0"
+description = "Measure agents against task suites: arms, repeats, checks, paired comparison against a baseline."
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["web"]
+category = "tools"
+requires = { agent_system = ">=0.7.0" }
+dependencies = []

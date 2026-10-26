@@ -895,6 +895,12 @@ plugins:
       type: session_archive
       enabled: true
 
+    # Evals panel: measure agents against task suites (src/plugins/agent_eval). Runs are child processes;
+    # admin only (config/security.yaml) -- a suite's checks run commands.
+    agent_eval:
+      type: agent_eval
+      enabled: true
+
     # The agents as models behind the OpenAI Responses and Chat Completions API
     # (/plugins/openai_api/v1; key: the user's API key). src/plugins/openai_api/README.md
     openai_api:

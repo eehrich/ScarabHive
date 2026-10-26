@@ -1,0 +1,428 @@
+@database "agent_eval"
+@$VER: agent_eval.guide 0.1 (26.10.2026)
+@smartwrap
+
+@node main "Evals"
+@{h1}Evals
+
+Did the new model make the agent better or worse? Did the prompt edit help,
+or did one lucky run only look like it? @{b}agent_eval@{ub} answers that
+with numbers: a @{b}suite@{ub} names an agent, a few variants of it
+(@{b}arms@{ub}) and a set of tasks with a check each. Every arm runs every
+task several times, each run in a process and a workspace of its own, and
+the report compares the arms task by task -- with a verdict that says when
+the difference is too small to tell from noise.
+
+It changes no agent. It is the measuring instrument for everything that
+does: a prompt edit, a model switch, a new tool.
+
+@{image docs/panel.png "The Evals panel: three runs, one compared arm against arm"}
+
+@{code}
+For users
+  @{"  The Evals panel  " link panel}
+  @{"  Reading a report  " link report}
+
+For suite authors
+  @{"  Writing a suite  " link suite}
+  @{"  Checks  " link checks}
+  @{"  Arms and overlays  " link arms}
+
+For developers and administrators
+  @{"  On the command line  " link cli}
+  @{"  How a run is executed  " link execution}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Evals panel"
+@{h1}The Evals panel
+
+Open it from the launcher (@{b}Agents@{ub}, "Evals"). It is for
+administrators only: starting a run executes the suite's checks, and the
+records hold the agents' answers.
+
+@{h2}Starting a run
+
+The list at the top offers every suite found below an @{tt}evals/@{utt}
+directory -- the project's own and every plugin's (see
+@{" Writing a suite " link suite}). Pick one and press @{b}Run@{ub}; the
+panel asks first and names how many agent runs that is, because each costs
+what the agent costs. The run starts in a process of its own: it goes on
+when the panel is closed or the API restarts.
+
+@{h2}The runs
+
+The left column lists every run, newest first: its id, the suite, the agent
+and arms, its status, how many runs passed and what they cost. A run is
+@{tt}running@{utt} while its process lives; one whose process is gone
+without finishing shows @{tt}died@{utt}. @{tt}stopped@{utt} means
+somebody pressed Stop before every agent run had started;
+@{tt}incomplete@{utt}, that some agent runs did not count (see "Runs that
+did not count"). Only a @{tt}done@{utt} run can become the baseline. The
+suite's baseline carries a badge.
+
+@{h2}One run
+
+Click a run to read it on the right:
+
+@{bullet}@{b}Make baseline@{ub} (a finished run only) makes it the run
+later runs of the same suite are compared against. @{b}Stop@{ub} (while
+running) starts no further agent runs; those already running finish.
+@{bullet}@{b}Compare against@{ub}: its own reference arm (the first arm
+of the suite, run beside the others) or the suite's baseline. A baseline
+from an older version of the suite file is compared all the same, with a
+warning: a task of the same name may ask or check something else now.
+Picking another run goes back to its own reference arm.
+@{bullet}The arms: runs, share passed, mean score, cost, and the cost of a
+run at the 90th percentile.
+@{bullet}The verdict for each arm against the reference -- see
+@{" Reading a report " link report}.
+@{bullet}A table task by task: passed of runs and the mean score per arm.
+@{bullet}@{b}Runs@{ub}: every single agent run. A click opens one with the
+check's output, the end of the agent's answer, its request id (to find
+its LLM calls) and its directory.
+
+A run started from the panel whose runner ended before it set the run up
+-- an arm that cannot run, a suite broken since it was offered -- shows the
+runner's reason instead of "starting".
+
+The panel reloads every 10 seconds by itself while it is visible.
+@endnode
+
+@node report "Reading a report"
+@{h1}Reading a report
+
+@{h2}Why per task
+
+A task decides most of a run's outcome: an easy one passes for every arm, a
+hard one fails for every arm. So the unit of comparison is the task, not
+the run. For each task the report takes the mean score of the arm minus the
+mean score of the reference, and asks: on how many tasks is the arm better,
+on how many worse?
+
+@{h2}The verdict
+
+@{table}
+Verdict | Means
+better / worse | the arm is better (worse) on so many more tasks than the other way round that chance alone would do that less than one time in twenty (exact sign test, p < 0.05). The direction is the count's, never the mean's
+no detectable difference | the tasks do not decide it. Not the same as "equal"
+not decidable with so few tasks | with five tasks or fewer no outcome can reach p < 0.05 -- not even all of them better
+no common tasks | the reference has tasks of this kind, the arm ran none of them
+@{body}
+
+Next to it:
+
+@{bullet}How many tasks it takes: the sign test counts only the tasks
+that @{b}moved@{ub} -- a task both arms score alike is a tie and does not
+count either way. Of those, enough must move the same way: 6 of 6, 8 of 8,
+9 of 10, 12 of 15, 15 of 20. The report names the number for the tasks that
+moved. Six better and four tied decides; six better and four worse of ten
+does not, however large the gain on those six. With five or fewer tasks
+that moved, nothing can decide.
+@{bullet}@{b}mean difference@{ub} with a 95% interval (Student's t over the
+tasks): how large the effect is, and how sure. It assumes the differences
+scatter roughly evenly; when every task moved by the same amount there is
+no interval, and the report says "every task alike".
+
+More tasks is the lever, not more repeats: repeats make each task's mean
+steadier, but only the number of tasks decides how small an effect the
+test can see. A check with a @{b}score@{ub} (the share of green tests)
+rather than pass/fail helps each task's difference show at all.
+
+@{h2}Learn, regression, holdout
+
+Every task has a kind. @{b}learn@{ub} and @{b}holdout@{ub} tasks are
+judged apart: once anyone has tuned an agent on the learn tasks, only the
+holdout tasks are evidence. A @{b}regression@{ub} task is checked on its
+own: one the reference passed every time and the arm passes at most a third
+of the time is listed under @{b}Regressions@{ub}.
+
+@{h2}Runs that did not count
+
+A run that timed out or crashed scores 0 and counts -- that is what the arm
+did. A run refused before it started (the agent's role gate), one never
+started because the budget was spent or the run was stopped, the runs of a
+task whose setup failed or timed out, and a run the runner itself failed
+(a locked file; status @{tt}error@{utt}, the suite goes on) do not count;
+the report lists them under "Not counted". An arm that cannot run at all (an unknown agent or profile,
+an overlay that does not validate) stops the whole run before its first
+agent run, instead of scoring zeros.
+
+@{h2}Cost
+
+Cost, calls and tokens are read from the usage tracker's records by the
+run's request id -- sub-agents included, and also for a run that timed out
+or crashed. Without the @{tt}context_usage_tracker@{utt} plugin, or with
+its store moved elsewhere, a run's cost is unknown: the report counts such
+runs apart ("+ n run(s) unknown") instead of as free, and a
+@{tt}budget_usd@{utt} cannot be kept -- the runner says so once.
+
+@{h2}A baseline from another day
+
+Comparing against a baseline measures more than the change: providers route
+differently over the day, models behind a "latest" name move. Arms of one
+run started side by side, task by task, in a shuffled order -- prefer them
+for an A/B, and the baseline for "is it still as good as last week".
+@endnode
+
+@node suite "Writing a suite"
+@{h1}Writing a suite
+
+A suite is a file @{tt}suite.yaml@{utt} in a directory below
+@{tt}evals/@{utt}: the project's @{tt}evals/<name>/suite.yaml@{utt}, or a
+plugin's @{tt}<plugin>/evals/<name>/suite.yaml@{utt} -- a plugin brings its
+suites the way it brings its agents. Every relative path in it means the
+suite's own directory.
+
+@{code}
+name: coder-basics              # letters, digits, '-'
+agent: coder                    # the agent every arm starts from
+description: "Small fixes in a toy repository"
+repeats: 3                      # runs per arm and task
+timeout_s: 1800                 # one agent run, then it is killed
+parallel: 2                     # agent runs at the same time
+budget_usd: 5                   # no new runs once this is spent
+data: fresh                     # fresh (default) | shared
+chain: false
+arms:
+  base: {}                      # the first arm is the reference
+  think:
+    agent_config: {llm_profile: [think]}
+tasks:
+  - id: fix-pager
+    kind: learn                 # learn | regression | holdout
+    input: "tests/test_pager.py fails. Find and fix the bug."
+    workspace: pager_repo       # copied fresh into every run
+    check: {pytest: tests}
+  - id: capital
+    kind: regression
+    input: "What is the capital of France? Answer with the city only."
+    check: {expect: {contains: [Paris]}}
+@{body}
+
+@{h2}The workspace
+
+Every run gets a fresh copy of the task's @{tt}workspace@{utt} directory.
+The agent is started in it, so its tools take it for "."; with
+@{tt}data: fresh@{utt} it also is the data directory's
+@{tt}workspace/@{utt}, where file tools point as shipped
+(@{tt}data/workspace@{utt}). Tell the agent in the task where to work.
+
+@{h2}data: fresh or shared
+
+@{bullet}@{b}fresh@{ub}: every run gets an empty data directory of its own.
+Its sessions, caches and databases stay in the run's directory -- nothing
+it does touches the installation's data, and you can read its session
+afterwards.
+@{bullet}@{b}shared@{ub}: the run uses the installation's data directory,
+for an agent that has to read what is there (a database it works on).
+Runs then see each other's leftovers.
+
+@{h2}Setup: the same start for every arm
+
+@{code}
+  - id: sales-report
+    input: "Write the monthly report from sales.csv in the workspace."
+    setup: "agent-run --agent data_builder \"Write sample data to data/workspace/sales.csv\""
+    check: {python: "my_plugin.evals.checks:sales_report"}
+@{body}
+
+A task's @{tt}setup@{utt} command runs @{b}once@{ub} (in a copy of the
+workspace and, with @{tt}data: fresh@{utt}, a data directory of its own), and
+its result is frozen:
+every run of every arm starts from a copy of it. Generating the material
+inside each run instead would give every arm different input -- and the
+comparison would measure that. When the setup fails or runs past
+@{tt}timeout_s@{utt}, none of the task's runs start.
+
+@{h2}Chains
+
+With @{tt}chain: true@{utt} each arm runs the tasks @{b}in order@{ub}, in
+one workspace and data directory per repeat: every task sees what the one
+before left behind. For agents whose work builds on earlier decisions. Each
+repeat starts from scratch. The arms still go side by side: the next task
+starts once every arm has finished the one before.
+@endnode
+
+@node checks "Checks"
+@{h1}Checks
+
+A check scores a finished run: a score between 0 and 1 and passed or not.
+Exactly one kind per task.
+
+@{table}
+Check | Scores
+command: "make test" | runs the command in the workspace; exit 0 passes (score 1 or 0)
+pytest: "tests" | runs pytest on the given paths in the workspace; the score is the share of passed tests, passed means all
+expect: {contains: [...], regex: [...]} | the agent's final answer: the share of strings found and patterns matched
+script: "check.py" | runs the script (next to the suite) as @{tt}script <workspace> <run.json>@{utt}; its last line of output is @{tt}{"score": ..., "passed": ..., "detail": "..."}@{utt}
+python: "module:function" | calls @{tt}function(workspace, run, task)@{utt} in the runner; returns the same dict -- the way a plugin brings checks of its own
+@{body}
+
+Every check takes @{tt}timeout_s@{utt} (600 by default); past it the
+check is ended together with everything it started, and scores 0. A check
+that fails to run scores 0 and says why.
+
+@{h2}pytest and an agent that edits its tests
+
+An agent that rewrites the failing test passes it. So, before pytest runs:
+
+@{bullet}every file of the workspace template under the given paths is
+compared with the run's copy, and a @{tt}conftest.py@{utt} the template
+does not have is refused -- either scores 0 with "test files changed by the
+run";
+@{bullet}only the template's test files are collected: a test file the run
+adds does not count;
+@{bullet}a report left from before is deleted, and the workspace is not
+put first on the module path (a @{tt}pytest.py@{utt} in it cannot stand in
+for pytest);
+@{bullet}pytest runs confined to the workspace (its own rootdir and ini
+beside it), so no conftest of the repository the runs live under takes
+part.
+
+What none of this catches: the code under test runs inside the pytest
+process, and code there can do anything that process can -- end it with a
+forged report, for one. For an agent you trust that is no concern. For one
+you do not (a variant a model wrote), score the result in a process the
+agent's code never runs in -- a @{tt}script@{utt} or @{tt}python@{utt} check
+that reads files instead of importing them. The checks also run with the
+runner's rights and environment, not in the agent's sandbox.
+@endnode
+
+@node arms "Arms and overlays"
+@{h1}Arms and overlays
+
+An arm is the suite's agent with an @{b}overlay@{ub}: changes for this run
+only, the agent's YAML stays as it is.
+
+@{code}
+arms:
+  base: {}
+  adv:
+    agent_config: {llm_profile: [code_adv]}
+  terse:
+    agent_config:
+      system_prompt: "Answer in one sentence."
+      tools: {allowed: ["!terminal/*"]}
+  other-agent:
+    agent: coder_v2
+@{body}
+
+@{tt}agent_config@{utt} merges over the agent's own like a config entry over the
+one it inherits from: mappings merge, @{tt}+x@{utt} adds to a list,
+@{tt}!x@{utt} removes from it, a plain list replaces it. An inline
+@{tt}system_prompt@{utt} wins over the agent's @{tt}system_template@{utt}.
+@{tt}agent@{utt} runs another agent altogether. Each run records the model it ran
+on, so you can see an arm's profile took effect.
+
+@{h2}Admin overlays and machine overlays
+
+A suite is written by an administrator, so its overlays may set anything
+the agent's YAML may set. An overlay a @{b}model@{ub} writes -- a tool
+proposing a variant of an agent -- is checked by
+@{tt}machine_overlay_problems()@{utt} before it may run: it may only set
+@{tt}system_prompt@{utt}, @{tt}template_vars@{utt} (strings),
+@{tt}skills@{utt}, @{tt}tools.allowed@{utt} / @{tt}tools.blocked@{utt} and
+@{tt}llm_params@{utt} (temperature; thinking level and max tokens at most
+the agent's own), and the result may only narrow: no tool allowed that was
+not, no block lifted, no skill added. Hooks, templates (a path), profiles
+and every other field are refused.
+@endnode
+
+@node cli "On the command line"
+@{h1}On the command line
+
+@{code}
+agent-eval run <suite.yaml> [--arm a --arm b] [--baseline]
+agent-eval list
+agent-eval show <run_id> [--against <run_id> | --against-baseline] [--json]
+agent-eval baseline <run_id>
+agent-eval stop <run_id>
+@{body}
+
+@{tt}python -m plugins.agent_eval@{utt} is the same before the command is
+installed. @{tt}run@{utt} first checks that every arm can run (the agent
+exists, the overlay validates, its profiles exist) and refuses the suite
+otherwise; then it prints a line per agent run and the report at the end
+-- for a run of one arm against the suite's baseline, if it has one, for
+several arms against their own reference arm. @{tt}--arm@{utt} picks arms
+and keeps the suite's order, so the first picked of the suite stays the
+reference. @{tt}--baseline@{utt} makes the finished run the baseline (not a
+stopped or incomplete one). @{tt}show --json@{utt} gives the report as
+the panel reads it.
+@endnode
+
+@node execution "How a run is executed"
+@{h1}How a run is executed
+
+@{tt}run_suite@{utt} (@{tt}runner.py@{utt}) is the one place; the panel
+starts the command line, as a process of its own.
+
+@{bullet}Order: for every repeat and task the arms start next to each
+other in a shuffled order, so they meet the same provider load. With
+@{tt}parallel@{utt} several run at once; with @{tt}chain@{utt} a task starts
+once every arm finished the one before.
+@{bullet}Each agent run is a child process
+(@{tt}python -m plugins.agent_eval.child@{utt}) started in its workspace,
+with the run's data directory in @{tt}AGENT_DATA_DIR@{utt}. It drives
+@{tt}agent-run@{utt}'s own code, so a session is opened, run and saved as
+@{tt}agent-run@{utt} does; the overlay reaches the agent through the reload
+path @{tt}agent-cli reload@{utt} takes. Runs are stored under the local
+operator's user (@{tt}cli_user@{utt}), whom the agent role gate trusts for
+a local process.
+@{bullet}Cost, calls and tokens are read afterwards from the
+@{tt}context_usage_tracker@{utt}'s store by the run's request id and the
+ids of its sub-requests -- so a run killed at its timeout is charged too.
+Without that plugin, or with its store moved, they are unknown.
+@{bullet}@{tt}budget_usd@{utt} is checked before each agent run starts:
+with @{tt}parallel@{utt} the runs already in flight may still go over it.
+@{bullet}A run over @{tt}timeout_s@{utt} is killed with its process group.
+A process that left the group on purpose -- a terminal command in a
+session or job of its own -- can outlive it. Stop only keeps new runs from
+starting.
+@{bullet}A failure of the runner itself in one agent run (a locked file, a
+broken result) becomes that run's @{tt}error@{utt} record; the suite goes
+on.
+@{bullet}Started from the panel, the runner and its agent runs have no
+console window; they read the configuration the API was started with.
+
+On disk, below the data directory:
+
+@{code}
+agent_eval/runs/<run_id>/
+    meta.json        suite, agent, arms, status
+    suite.yaml       the suite as it was run
+    records.jsonl    one line per agent run
+    setup/<task>/    a task's frozen setup
+    runs/<n>-<arm>-r<rep>/   workspace, data, job, result and log of the child
+    runs/chain-<arm>-r<rep>/ the same for a chain, one per arm and repeat
+agent_eval/baselines/<suite>.txt the suite's baseline run id
+agent_eval/logs/<run_id>.log the runner's output when the panel started it (and .pid)
+@{body}
+
+Runs are not deleted by anything; remove a run's directory when you no
+longer need it.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+@{code}
+plugins:
+  servers:
+    agent_eval:
+      type: agent_eval
+      enabled: true
+@{body}
+
+The panel's routes are admin-only by a rule in
+@{tt}config/security.yaml@{utt} (@{tt}/plugins/agent_eval/*@{utt}). The
+plugin has no settings and gives agents no tools. The example suite
+@{tt}src/plugins/agent_eval/evals/hello/@{utt} runs a small file-writing
+agent against two tasks:
+
+@{code}
+agent-eval run src/plugins/agent_eval/evals/hello/suite.yaml
+@{body}
+@endnode

@@ -1,0 +1,17 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Evals{% endblock %}
+{% block toolbar %}
+<select class="pk-select" id="suite" aria-label="Suite"></select>
+<button type="button" class="pk-btn pk-btn--primary pk-btn--sm" id="start">{{ icon('play', size='sm') }} Run</button>
+<pk-refresh interval="10" auto></pk-refresh>
+{% endblock %}
+{% block content %}
+<div class="pk-split">
+  <section>
+    <div id="runs"><div class="pk-skeleton"></div></div>
+  </section>
+  <section id="detail" class="pk-stack"></section>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}

@@ -1,0 +1,455 @@
+"""agent_eval's runner and child: scheduling, setup, chains, budget and stop around a stand-in agent run, and
+one child run through the real agent-run path (the LLM is the root conftest's fake)."""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import textwrap
+from collections import Counter
+from pathlib import Path
+
+import pytest
+
+from agent_system.paths import DATA_DIR_ENV
+from plugins.agent_eval import runner, store
+
+
+@pytest.fixture(autouse=True)
+def data_dir(tmp_path, monkeypatch, request):
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "data"))
+    # The stand-in suites name agent 'a', which no configuration has; check_arms has its own test.
+    if "check_arms" not in request.node.name:
+        monkeypatch.setattr(runner, "check_arms", lambda suite: None)
+    return tmp_path / "data"
+
+
+def _usage_db(data: Path, rows) -> None:
+    import sqlite3
+    db = data / "context_usage_tracker" / "usage.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE usage_snapshots (request_id TEXT, cost REAL, prompt_tokens INTEGER, "
+                     "completion_tokens INTEGER)")
+        conn.executemany("INSERT INTO usage_snapshots VALUES (?, ?, 10, 2)", rows)
+
+
+def _suite(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "suite.yaml"
+    path.write_text(textwrap.dedent(body), encoding="utf-8")
+    return path
+
+
+def _stand_in(answer=lambda task, workspace: "ok", cost=0.0, status="done", seen=None):
+    """An agent run that writes a marker into its workspace and answers; records what it saw there."""
+    def run(suite, run_id, job, task, jdir, workspace, data):
+        if seen is not None:
+            seen.append((job["arm"], task.id, job["rep"], sorted(p.name for p in workspace.iterdir())))
+        (workspace / f"done-{task.id}").write_text("x", encoding="utf-8")
+        return {"status": status, "answer": answer(task, workspace), "cost": cost, "request_id": "r"}
+    return run
+
+
+def _records(run_id: str):
+    return store.read_records(run_id)
+
+
+def test_every_arm_runs_every_task_every_repeat_interleaved(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _stand_in())
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 2
+        arms: {one: {}, two: {}, three: {}}
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+          - {id: t2, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    run_id = runner.run_suite(path, progress=lambda _: None)
+    records = _records(run_id)
+    assert Counter((r["arm"], r["task"], r["rep"]) for r in records) == Counter(
+        {(a, t, rep): 1 for a in ("one", "two", "three") for t in ("t1", "t2") for rep in (1, 2)})
+    # Interleaved: the arms of one task and repeat start next to each other, not arm after arm.
+    order = [(r["task"], r["rep"]) for r in sorted(records, key=lambda r: r["n"])]
+    assert order[:3] == [("t1", 1)] * 3
+    assert all(r["scored"] and r["score"] == 1.0 for r in records)
+    assert store.read_meta(run_id)["status"] == "done"
+
+
+def test_setup_runs_once_and_every_run_starts_from_its_copy(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(runner, "_agent_run", _stand_in(seen=seen))
+    counter = tmp_path / "setups.txt"
+    setup = f'"{sys.executable}" -c "open(\'seed.txt\',\'w\').write(\'s\'); open(r\'{counter}\',\'a\').write(\'1\')"'
+    path = _suite(tmp_path, f"""
+        name: s
+        agent: a
+        repeats: 2
+        arms: {{one: {{}}, two: {{}}}}
+        tasks:
+          - id: t1
+            input: x
+            setup: {json.dumps(setup)}
+            check: {{expect: {{contains: [ok]}}}}
+    """)
+    runner.run_suite(path, progress=lambda _: None)
+    assert counter.read_text() == "1", "setup must run once per task, not per run"
+    assert len(seen) == 4 and all(files == ["seed.txt"] for *_, files in seen), seen
+
+
+def test_a_failed_setup_starts_none_of_its_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _stand_in())
+    path = _suite(tmp_path, f"""
+        name: s
+        agent: a
+        tasks:
+          - {{id: t1, input: x, setup: {json.dumps(f'"{sys.executable}" -c "raise SystemExit(3)"')}, check: {{expect: {{contains: [ok]}}}}}}
+          - {{id: t2, input: x, check: {{expect: {{contains: [ok]}}}}}}
+    """)
+    records = {r["task"]: r for r in _records(runner.run_suite(path, progress=lambda _: None))}
+    assert records["t1"]["status"] == "setup_failed" and not records["t1"]["scored"]
+    assert records["t2"]["scored"]
+
+
+def test_a_chain_carries_the_workspace_from_task_to_task(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(runner, "_agent_run", _stand_in(seen=seen))
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        chain: true
+        repeats: 2
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+          - {id: t2, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    runner.run_suite(path, progress=lambda _: None)
+    by_rep = {(task, rep): files for _, task, rep, files in seen}
+    assert by_rep[("t2", 0)] == ["done-t1"], "the second task must see what the first left"
+    assert by_rep[("t1", 1)] == [], "a new repeat starts from scratch"
+
+
+def test_budget_stops_starting_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _stand_in(cost=1.0))
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 4
+        budget_usd: 1.5
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    statuses = Counter(r["status"] for r in _records(runner.run_suite(path, progress=lambda _: None)))
+    assert statuses == {"done": 2, "budget": 2}
+
+
+def test_a_run_with_runs_that_did_not_count_is_incomplete_and_no_baseline(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _stand_in(cost=1.0))
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 2
+        budget_usd: 0.5
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    run_id = runner.run_suite(path, progress=lambda _: None)
+    assert store.read_meta(run_id)["status"] == "incomplete"
+    with pytest.raises(ValueError, match="incomplete"):
+        store.set_baseline("s", run_id)
+    assert store.baselines() == {}
+
+
+def test_the_check_reads_the_whole_answer_the_record_keeps_its_tail(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _stand_in(answer=lambda task, ws: "Paris" + "." * 5000))
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 1
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [Paris]}}}
+    """)
+    (record,) = _records(runner.run_suite(path, progress=lambda _: None))
+    assert record["score"] == 1.0 and len(record["answer"]) == runner._ANSWER_CHARS, record["detail"]
+
+
+def test_a_timed_out_run_scores_zero_and_counts(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _stand_in(status="timeout"))
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 1
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    (record,) = _records(runner.run_suite(path, progress=lambda _: None))
+    assert record["scored"] and record["score"] == 0.0 and record["detail"] == "timeout"
+
+
+def test_stop_starts_no_further_runs(tmp_path, monkeypatch):
+    def stop_after_first(suite, run_id, job, task, jdir, workspace, data):
+        store.request_stop(run_id)
+        return {"status": "done", "answer": "ok"}
+    monkeypatch.setattr(runner, "_agent_run", stop_after_first)
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 3
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    run_id = runner.run_suite(path, progress=lambda _: None)
+    assert Counter(r["status"] for r in _records(run_id)) == {"done": 1, "stopped": 2}
+    assert store.read_meta(run_id)["status"] == "stopped"
+
+
+def test_stop_after_the_last_run_started_leaves_the_run_done(tmp_path, monkeypatch):
+    def stop_in_the_last(suite, run_id, job, task, jdir, workspace, data):
+        store.request_stop(run_id)
+        return {"status": "done", "answer": "ok"}
+    monkeypatch.setattr(runner, "_agent_run", stop_in_the_last)
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 1
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    run_id = runner.run_suite(path, progress=lambda _: None)
+    assert store.read_meta(run_id)["status"] == "done"
+    store.set_baseline("s", run_id)
+    assert store.baseline_for("s") == run_id
+
+
+def test_child_runs_the_real_agent_run_path_with_the_overlay(tmp_path, data_dir, monkeypatch):
+    """One child run in-process: real config, real bootstrap, agent-run's own session handling; the arm's
+    llm_profile must reach the agent (the fake client carries the profile's model name)."""
+    from agent_system.config.settings import get_tool_server_config, load_settings
+    from plugins.agent_eval import child
+
+    config = load_settings()
+    agent = "file_ops_test_agent"
+    base_profile = get_tool_server_config(agent, config).agent_config.llm_profile
+    base_profile = base_profile[0] if isinstance(base_profile, list) else base_profile
+    other = next(name for name, p in config.llm_system.profiles.items()
+                 if name != base_profile and p.model_ref != config.llm_system.profiles[base_profile].model_ref)
+    expected = config.llm_system.models[config.llm_system.profiles[other].model_ref].model
+
+    result_path = tmp_path / "result.json"
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps({
+        "agent": agent, "agent_config": {"llm_profile": [other]}, "input": "say the word marmalade",
+        "request_id": "ev-test-1", "session_user": runner.SESSION_USER, "result_path": str(result_path),
+    }), encoding="utf-8")
+    # The environment the runner gives a child -- the root conftest names a session store of its own,
+    # as the API does for processes it starts; a fresh-data run must not write there.
+    env = runner.child_env(runner.load_suite(Path(runner.__file__).parent / "evals" / "hello" / "suite.yaml"), data_dir)
+    for key in set(os.environ) - set(env):
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    try:
+        child.main(str(job))
+    except SystemExit as e:  # agent-run exits 1 when the run reports errors; the result says which
+        assert e.code in (0, 1, None)
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["model"] == expected, result
+    assert "marmalade" in result["answer"], result
+    assert not result["refused"], result
+    assert list((data_dir / "sessions").rglob(f"{result['session_id']}*")), "agent-run did not save the session"
+
+
+def test_check_arms_refuses_an_arm_that_cannot_run(tmp_path):
+    """Against the real configuration: each would end every run of its arm before the agent saw its task."""
+    from plugins.agent_eval.suite import load_suite
+    hello = Path(runner.__file__).parent / "evals" / "hello" / "suite.yaml"
+    runner.check_arms(load_suite(hello))  # the shipped suite can run
+    path = _suite(tmp_path, """
+        name: s
+        agent: file_ops_test_agent
+        arms:
+          base: {}
+          ghost: {agent: no_such_agent}
+          broken: {agent_config: {max_steps: lots}}
+          nowhere: {agent_config: {llm_profile: [no_such_profile]}}
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    with pytest.raises(ValueError) as refused:
+        runner.check_arms(load_suite(path))
+    message = str(refused.value)
+    assert "arm ghost" in message and "arm broken" in message and "arm nowhere" in message
+    assert "arm base" not in message
+
+
+def test_choosing_arms_keeps_the_suites_order_and_reference(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _stand_in())
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 1
+        arms: {one: {}, two: {}, three: {}}
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    meta = store.read_meta(runner.run_suite(path, arms=["three", "one"], progress=lambda _: None))
+    assert meta["arms"] == ["one", "three"] and meta["reference_arm"] == "one"
+
+
+def test_a_runner_error_in_one_run_does_not_end_the_suite(tmp_path, monkeypatch):
+    calls = []
+
+    def flaky(suite, run_id, job, task, jdir, workspace, data):
+        calls.append(job["n"])
+        if job["n"] == 1:
+            raise OSError("file locked")
+        return {"status": "done", "answer": "ok", "cost": 0.0}
+    monkeypatch.setattr(runner, "_agent_run", flaky)
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 3
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    run_id = runner.run_suite(path, progress=lambda _: None)
+    statuses = Counter(r["status"] for r in _records(run_id))
+    assert statuses == {"error": 1, "done": 2} and store.read_meta(run_id)["status"] == "incomplete"
+    (error,) = [r for r in _records(run_id) if r["status"] == "error"]
+    assert not error["scored"] and "file locked" in error["detail"]
+
+
+def test_a_setup_that_times_out_skips_only_its_task(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _stand_in())
+    hang = f'"{sys.executable}" -c "import time; time.sleep(60)"'
+    path = _suite(tmp_path, f"""
+        name: s
+        agent: a
+        repeats: 1
+        timeout_s: 2
+        tasks:
+          - {{id: t1, input: x, setup: {json.dumps(hang)}, check: {{expect: {{contains: [ok]}}}}}}
+          - {{id: t2, input: x, check: {{expect: {{contains: [ok]}}}}}}
+    """)
+    records = {r["task"]: r for r in _records(runner.run_suite(path, progress=lambda _: None))}
+    assert records["t1"]["status"] == "setup_failed" and records["t2"]["scored"]
+
+
+def test_a_chain_runs_the_arms_side_by_side_task_by_task(tmp_path, monkeypatch):
+    """With three workers, the next task of a chain starts only when every arm is done with the one before --
+    one arm's slow first task holds the others' second, instead of them running ahead."""
+    import threading
+    import time
+    spans, lock = {}, threading.Lock()
+
+    def timed(suite, run_id, job, task, jdir, workspace, data):
+        started = time.monotonic()
+        time.sleep(0.6 if (job["arm"], task.id) == ("three", "t1") else 0.05)
+        with lock:
+            spans[(job["arm"], task.id)] = (started, time.monotonic())
+        return {"status": "done", "answer": "ok", "cost": 0.0}
+    monkeypatch.setattr(runner, "_agent_run", timed)
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        chain: true
+        repeats: 1
+        parallel: 3
+        arms: {one: {}, two: {}, three: {}}
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+          - {id: t2, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    runner.run_suite(path, progress=lambda _: None)
+    last_t1_end = max(end for (arm, task), (_, end) in spans.items() if task == "t1")
+    first_t2_start = min(start for (arm, task), (start, _) in spans.items() if task == "t2")
+    assert first_t2_start >= last_t1_end, spans
+
+
+def test_usage_of_sums_the_run_and_its_sub_requests(tmp_path):
+    data = tmp_path / "run-data"
+    _usage_db(data, [("ev-1", 0.10), ("ev-1_sub_a", 0.05), ("ev-1_001", None), ("ev-10", 9.0), ("ev-1x", 9.0)])
+    usage = runner.usage_of("ev-1", data)
+    assert usage["calls"] == 3 and usage["cost"] == pytest.approx(0.15) and usage["unpriced_calls"] == 1
+    assert runner.usage_of("ev-1", tmp_path / "nothing")["cost"] is None
+
+
+def test_a_timed_out_run_is_charged_from_the_usage_store(tmp_path, monkeypatch):
+    from plugins.agent_eval.suite import load_suite
+    suite = load_suite(_suite(tmp_path, """
+        name: s
+        agent: a
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """))
+    jdir, data = tmp_path / "job", tmp_path / "job" / "data"
+    (data / "workspace").mkdir(parents=True)
+    job = {"arm": "base", "rep": 0, "n": 7, "task": "t1"}
+    request_id = "ev-" + "20261026120000abcd"[-12:] + "-7-t1"
+    _usage_db(data, [(request_id, 0.25), (request_id + "_sub_x", 0.5)])
+    monkeypatch.setattr(runner, "run_bounded", lambda *a, **k: None)
+    result = runner._agent_run(suite, "20261026-120000-abcd", job, suite.tasks[0], jdir, data / "workspace", data)
+    assert result["status"] == "timeout" and result["cost"] == pytest.approx(0.75), result
+
+
+def test_a_run_that_raised_counts_as_crashed_with_its_reason(tmp_path, monkeypatch):
+    from plugins.agent_eval.suite import load_suite
+    suite = load_suite(_suite(tmp_path, """
+        name: s
+        agent: a
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """))
+    jdir = tmp_path / "job"
+    jdir.mkdir()
+
+    def child_that_raised(args, **kwargs):
+        (jdir / "result-t1.json").write_text(json.dumps(
+            {"answer": "", "errors": [], "exception": "RuntimeError: provider down"}), encoding="utf-8")
+        return 1
+    monkeypatch.setattr(runner, "run_bounded", child_that_raised)
+    result = runner._agent_run(suite, "20261026-120000-abcd", {"arm": "base", "rep": 0, "n": 1, "task": "t1"},
+                               suite.tasks[0], jdir, tmp_path, tmp_path / "data")
+    assert result["status"] == "crashed" and "provider down" in result["detail"], result
+
+
+def test_child_records_a_run_that_raised(tmp_path, data_dir, monkeypatch):
+    """The real child around a run that raises: the result says so instead of passing for a finished run."""
+    from agent_system import agent_run
+    from plugins.agent_eval import child
+
+    async def raising(*args, **kwargs):
+        raise RuntimeError("provider down")
+    monkeypatch.setattr(agent_run, "run_agent_request", raising)
+    env = runner.child_env(runner.load_suite(Path(runner.__file__).parent / "evals" / "hello" / "suite.yaml"), data_dir)
+    for key in set(os.environ) - set(env):
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    result_path = tmp_path / "result.json"
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps({"agent": "file_ops_test_agent", "agent_config": {}, "input": "hi",
+                               "request_id": "ev-test-2", "session_user": runner.SESSION_USER,
+                               "result_path": str(result_path)}), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        child.main(str(job))
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["exception"] == "RuntimeError: provider down", result
+
+
+def test_cli_baseline_of_an_incomplete_run_still_reports_and_fails(tmp_path, monkeypatch, capsys):
+    from plugins.agent_eval.__main__ import main
+    monkeypatch.chdir(tmp_path)  # main enters the project directory; this puts it back afterwards
+    monkeypatch.setattr(runner, "_agent_run", _stand_in(cost=1.0))
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 2
+        budget_usd: 0.5
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    assert main(["run", str(path), "--baseline"]) == 1
+    out, err = capsys.readouterr()
+    assert "reference:" in out and "not made the baseline" in err and "incomplete" in err, (out, err)
+    assert store.baselines() == {}

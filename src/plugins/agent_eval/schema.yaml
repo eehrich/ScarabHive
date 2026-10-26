@@ -1,0 +1,57 @@
+# agent_eval plugin schema: no tools, the Evals panel and its endpoints.
+# Admin only (config/security.yaml): starting a run executes the suite's checks, which run commands.
+
+tools: []
+
+web_ui:
+  panel:
+    endpoint: "/plugins/{{ name }}/"
+    title: "Evals"
+    description: "Measure agents against task suites, compare arms and baselines"
+    icon: flask-conical
+    category: agents
+    keywords: [eval, benchmark, a/b, suite, regression, baseline, measure]
+    window: {width: 1100, height: 760}
+
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "render_panel"
+      response_type: "html"
+      description: "The Evals panel"
+
+    - path: "/suites"
+      method: "GET"
+      handler: "list_suites"
+      response_type: "json"
+      description: "Suites found below the evals/ directories of the project and the plugins"
+
+    - path: "/runs"
+      method: "GET"
+      handler: "list_runs"
+      response_type: "json"
+      description: "Every run, newest first, with pass and cost totals"
+
+    - path: "/runs"
+      method: "POST"
+      handler: "start_run"
+      response_type: "json"
+      description: "Start a run of an offered suite in a process of its own"
+
+    - path: "/runs/{run_id}"
+      method: "GET"
+      handler: "get_run"
+      response_type: "json"
+      description: "A run's report and records; ?against=baseline or a run id compares against that"
+
+    - path: "/runs/{run_id}/baseline"
+      method: "POST"
+      handler: "set_baseline"
+      response_type: "json"
+      description: "Make the run its suite's baseline"
+
+    - path: "/runs/{run_id}/stop"
+      method: "POST"
+      handler: "stop_run"
+      response_type: "json"
+      description: "Start no further runs; running ones finish"
