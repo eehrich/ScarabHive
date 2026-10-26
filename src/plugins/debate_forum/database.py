@@ -68,6 +68,17 @@ class DebateForumDB:
                      "ON channels(direct_key)")
         conn.commit()
 
+    @staticmethod
+    def _migrate_group_request_column(conn: sqlite3.Connection) -> None:
+        """Remember which request created a group: a caller that restarts a run
+        under the same request id can find the forum of the interrupted run."""
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(groups)").fetchall()}
+        if "created_by_request" not in cols:
+            conn.execute("ALTER TABLE groups ADD COLUMN created_by_request TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_groups_created_by_request "
+                     "ON groups(created_by_request)")
+        conn.commit()
+
     def _get_conn(self) -> sqlite3.Connection:
         """Get thread-local database connection."""
         if not hasattr(self._local, "conn") or self._local.conn is None:
@@ -87,7 +98,8 @@ class DebateForumDB:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                created_by_request TEXT
             );
 
             CREATE TABLE IF NOT EXISTS channels (
@@ -129,6 +141,7 @@ class DebateForumDB:
         self._migrate_pinned_column(conn)
         self._migrate_group_id_column(conn)
         self._migrate_direct_columns(conn)
+        self._migrate_group_request_column(conn)
 
     # ── Channel CRUD ──────────────────────────────────────────
 
@@ -138,11 +151,12 @@ class DebateForumDB:
         self,
         name: str,
         description: str = "",
+        created_by_request: str | None = None,
     ) -> dict[str, Any]:
         conn = self._get_conn()
         cur = conn.execute(
-            "INSERT INTO groups (name, description) VALUES (?, ?)",
-            (name, description),
+            "INSERT INTO groups (name, description, created_by_request) VALUES (?, ?, ?)",
+            (name, description, created_by_request),
         )
         conn.commit()
         group_id = cur.lastrowid

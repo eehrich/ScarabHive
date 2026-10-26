@@ -56,7 +56,11 @@ class DebateForumServer(SchemaBasedToolServer):
         description = params.get("description") or ""
         if not name:
             return {"error": "name is required"}
-        result = self.db.create_group(name=name, description=description)
+        # The runtime injects _request_id (callers cannot forge it): the id of
+        # this tool call, the run's request id plus a suffix (<run>_NNN). A run
+        # restarted under the same request finds its forum again by that prefix.
+        result = self.db.create_group(name=name, description=description,
+                                      created_by_request=params.get("_request_id"))
         status = params.get("_status")
         if status:
             await status.end(

@@ -328,6 +328,29 @@ class TestDebateForumServer:
         assert posted["status"] == "posted" and posted["message_id"] != mid
 
     @pytest.mark.asyncio
+    async def test_a_group_remembers_the_request_that_created_it(self, server: DebateForumServer):
+        """A run restarted under the same request id finds its forum by this column.
+        Called the way the runtime calls a tool: the request id arrives as
+        ``request_id`` and ``call_with_status`` hands it on as ``_request_id``."""
+        made = await server.call_with_status("create_group", {"name": "g", "request_id": "req-1_003"})
+        assert server.db.get_group(made["group_id"])["created_by_request"] == "req-1_003"
+        bare = await server.call_with_status("create_group", {"name": "h"})
+        assert server.db.get_group(bare["group_id"])["created_by_request"] is None
+
+    def test_an_older_forum_gets_the_request_column(self, tmp_path: Path):
+        import sqlite3
+        path = tmp_path / "old.db"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "
+                     "description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))")
+        conn.execute("INSERT INTO groups (name) VALUES ('before')")
+        conn.commit()
+        conn.close()
+        db = DebateForumDB(path, wal_mode=False)
+        assert db.get_group(1)["created_by_request"] is None
+        assert db.get_group(db.create_group("after", created_by_request="r")["group_id"])["created_by_request"] == "r"
+
+    @pytest.mark.asyncio
     async def test_an_unknown_group_is_refused_with_a_message(self, server: DebateForumServer):
         """The foreign key would raise a bare IntegrityError; the model needs to know which id is wrong."""
         result = await server.create_channel({"name": "a", "topic": "t", "group_id": 99})
