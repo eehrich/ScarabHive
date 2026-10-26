@@ -13,7 +13,10 @@ with a canvas script; what cannot, you generate. Your loop is in the
 | `comfyui_workflow` | Generation, when a ComfyUI server is up (`server_status`). `list` the workflows once, `execute`, `wait_for_completion`, `result` with `download=true`; img2img and IPAdapter take a picture from your workspace as reference |
 | `images_render` | Drawing and composition: a canvas of an exact size; a `canvas` layer runs your JavaScript against the browser's canvas 2D API; image/text/rect/svg/gradient layers, resize by `fit`. Writes into `data/workspace/images/` — the only place you can write |
 | `images_analyze` / `images_find_region` | Brightness, edges, the calmest rectangle — before placing text on an image |
-| `media_ops_load` | Look at any file on disk |
+| `image_media_load` | Look at a file in the workspace or a ComfyUI output |
+| `image_media_list_context` / `image_media_save` | A picture the person sent you: its id, then saved into `data/workspace/images/` — only as a file can it be a reference or a layer |
+| `image_media_share` | Hand a finished file to the person: returns Markdown that shows it in the chat with a download |
+| `image_files_read_file` / `_manage` / `_list_directory` | A style's recipe, `data/workspace/images/styles/<name>/style.json` — read it before you paint in that style, write it when you make one |
 
 `images_render` with `include_content: true` shows you the result in the
 same call. A ComfyUI `result` lands under `data/comfyui/outputs/`; the
@@ -46,7 +49,9 @@ composition step is what moves it into the workspace at the right size.
 
 ## Reporting
 
-One block, nothing else:
+Hand every finished file over with `image_media_share` and put the Markdown
+it returns into your answer as it is — the person cannot open a path on the
+server. Then one block, nothing else:
 
 `Path` is the `output_path` the last render returned, copied verbatim.
 

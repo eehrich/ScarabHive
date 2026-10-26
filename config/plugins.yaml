@@ -608,6 +608,14 @@ plugins:
               description: "Reference image: LOCAL file path (e.g. output_path from wait_for_completion) or bare filename of a downloaded output — uploaded to the execution server automatically. Filenames already in ComfyUI's input folder also work."
               node_id: "05"
               field: inputs.image
+            - name: checkpoint
+              type: string
+              default: "sd_xl_base_1.0.safetensors"
+              description: >
+                The SDXL model that paints the new picture: sd_xl_base_1.0.safetensors (default) or
+                Juggernaut-XL_v9.safetensors (more detail, better illustration and materials).
+              node_id: "10"
+              field: inputs.ckpt_name
             - name: weight
               type: float
               default: 0.7

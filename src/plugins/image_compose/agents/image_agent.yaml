@@ -22,10 +22,35 @@ plugins:
       output_directories:
         - "data/workspace/images"
 
+    # Media between the conversation, disk and the person, CONFINED like `images`: a
+    # picture the person uploaded is saved into the workspace (save), a result is
+    # handed to them (share: the chat shows it with a download), and what ComfyUI
+    # wrote can be looked at (load).
+    image_media:
+      type: media_ops
+      enabled: true
+      description: "image agent: save an uploaded picture, hand a result to the person, look at a file"
+      allowed_directories:
+        - "data/workspace/images"
+        - "data/comfyui/outputs"
+
+    # Text files in the workspace, CONFINED like the rest: a style's recipe
+    # (styles/<name>/style.json) is read and written here. No search index.
+    image_files:
+      type: file_ops
+      enabled: true
+      description: "image agent: read and write style recipes in data/workspace/images"
+      allowed_directories:
+        - "data/workspace/images"
+      search:
+        enable_indexing: false
+        index_on_startup: false
+        enable_semantic_search: false
+
     image_agent:
       type: basic_agent
       enabled: true
-      description: "Produce a texture, sprite, icon, logo, illustration or UI element as a PNG of an exact size: draws it with a canvas script or generates it with ComfyUI, composes and resizes with image_compose, checks tiling and looks at the result before reporting the path"
+      description: "Produce a texture, sprite, icon, logo, illustration, game background (one scene, a horizontal tile or parallax layers) or UI element as a PNG of an exact size, also from a picture the person sends and in a named style kept the same across pictures: draws it with a canvas script or generates it with ComfyUI, composes and resizes with image_compose, checks tiling, looks at the result and hands it to the person in the chat"
 
       self_tool_descriptions:
         image_agent_execute_task: "Produce one image asset from a brief (what, exact size, tileable or not, background, style) and return the PNG path plus what was verified"
@@ -42,8 +67,9 @@ plugins:
             context_window: 200000
             prompt_cache_mode: multi_turn
         # Generate, wait, look, regenerate up to three times, compose,
-        # verify: 40 is an ordinary asset, 60 is the ceiling.
-        max_steps: 60
+        # verify: 40 is an ordinary asset; a set of parallax layers is three
+        # of those and their stacked check.
+        max_steps: 100
         system_template: "./prompts/image_agent.md"
 
         skills:
@@ -54,7 +80,10 @@ plugins:
           allowed:
             - "comfyui/*"              # generation, incl. wait_for_completion + result
             - "images/*"               # render / analyze / find_region, confined
-            - "media_ops/*"            # look at a file
+            - "image_media/*"          # save an upload, hand a result over, look at a file
+            - "image_files/image_files_read_file"       # a style recipe
+            - "image_files/image_files_manage"          # write one
+            - "image_files/image_files_list_directory"  # which styles there are
             - "skills/*"
             - "context_engineer/*"     # what the hook below evicts, it fetches back with this
             - "datetime/*"
