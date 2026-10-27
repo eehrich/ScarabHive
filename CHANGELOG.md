@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-27
+
 ### Added
 
 - Evals (`agent_eval` plugin, admin panel "Evals", `agent-eval` command): a suite names an agent, variants of it
@@ -55,11 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and This week open, each month before folded, the folds kept per browser.
   The core knows no folder: a plugin declares the one its sessions belong in
   (`[session_folder]` in its plugin.toml: name, icon, the agent groups --
-  `metadata.category` -- it files by itself; docs/plugin_authoring.md). The
-  writer pipeline declares Writer (Writer, Writer sub-agents), scarab_videos
-  Video; a stategraph machine's run session carries its `agent:` block's
-  category, so the video machines' runs land there although their agent is
-  the runner. A user makes folders of their own, changes or deletes a
+  `metadata.category` -- it files by itself; docs/plugin_authoring.md). A
+  plugin can declare a folder such as Writer (for the agent groups Writer and
+  Writer sub-agents); a stategraph machine's run session carries its `agent:`
+  block's category, so a machine's runs land in its plugin's folder although
+  their agent is the runner. A user makes folders of their own, changes or deletes a
   declared one (kept per user in `data/sessions/<user>/.folders.json`; one
   left as declared follows its plugin). A session moves by drag and drop or
   its folder button, without changing its day; its own choice is
@@ -572,5 +574,6 @@ summarised here; the git history has them.
   for; ten periodic snapshots later (under an hour at the default interval) it
   said none were recorded.
 
-[Unreleased]: https://github.com/eehrich/ScarabHive/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/eehrich/ScarabHive/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/eehrich/ScarabHive/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/eehrich/ScarabHive/releases/tag/v0.7.0
