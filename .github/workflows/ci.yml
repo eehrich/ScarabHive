@@ -153,9 +153,11 @@ jobs:
         run: docker build -t scarabhive:ci .
       - name: Start and wait for the health check
         run: |
-          # AUTH_SECRET_KEY: for a config.yaml that reads auth.secret_key from
-          # "${AUTH_SECRET_KEY}"; unused while it holds a literal value.
+          # A container refuses the signing key config.yaml ships: like
+          # scripts/docker-setup.sh, a config/local.yaml names an own one.
+          printf 'auth:\n  secret_key: "${AUTH_SECRET_KEY}"\n' > "$RUNNER_TEMP/local.yaml"
           docker run -d --name scarabhive --init -p 127.0.0.1:8000:8000 \
+            -v "$RUNNER_TEMP/local.yaml:/app/config/local.yaml:ro" \
             -e AUTH_SECRET_KEY="$(openssl rand -hex 32)" scarabhive:ci
           for _ in $(seq 1 60); do
             status=$(docker inspect -f '{{.State.Health.Status}}' scarabhive)
