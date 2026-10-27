@@ -322,7 +322,7 @@ async def test_plan_mode_only_reads(repo, log):
 
 @pytest.mark.parametrize("mode", ["edit", "plan"])
 async def test_a_web_workdir_searches_and_reads_the_web_and_no_other_does(repo, log, mode):
-    """Research and fact checks on the subscription (scarab_videos, engine claude_code): Claude Code's
+    """Research and fact checks on the subscription (a caller's engine on Claude Code): Claude Code's
     own search and page reader, named and approved -- headless, a tool nobody approved is refused."""
     server = make_server(repo, workdirs={"web": {"path": str(repo), "web": True}, "repo": {"path": str(repo)},
                                          "said": {"path": str(repo), "web": "yes"}}, allowed_commands=["pytest:*"])
@@ -355,9 +355,9 @@ async def test_a_web_workdir_keeps_the_shell_only_where_the_operator_says_so(rep
 
 def test_a_web_workdir_with_mcp_servers_is_skipped(repo, caplog):
     """A page the run reads could steer the servers' tools, with their tokens."""
-    servers = {"scarab4": RemoteMCPConfig(url="http://192.0.2.6:8768/mcp", enabled=True)}
+    servers = {"remote_mcp": RemoteMCPConfig(url="http://mcp.example:8768/mcp", enabled=True)}
     system = AgentSystemConfig(external_servers=MCPServersConfig(remote_servers=servers))
-    server = make_server(repo, system, workdirs={"both": {"path": str(repo), "web": True, "mcp_servers": ["scarab4"]},
+    server = make_server(repo, system, workdirs={"both": {"path": str(repo), "web": True, "mcp_servers": ["remote_mcp"]},
                                                  "web": {"path": str(repo), "web": True}})
     assert sorted(server.workdirs) == ["web"] and "web and mcp_servers together" in caplog.text, caplog.text
 
@@ -1470,10 +1470,10 @@ def mcp_server(repo, servers, names, **config):
 
 
 async def test_a_workdirs_mcp_servers_load_and_their_auth_is_only_in_the_childs_environment(repo, data_root, log):
-    servers = {"scarab4": RemoteMCPConfig(url="http://192.0.2.6:8768/mcp", enabled=True,
+    servers = {"remote_mcp": RemoteMCPConfig(url="http://mcp.example:8768/mcp", enabled=True,
                                           auth=MCPAuthConfig(type="bearer", bearer_token=TOKEN)),
                "events": RemoteMCPConfig(url="http://events.example/sse", enabled=True, transport="sse")}
-    server = mcp_server(repo, servers, ["scarab4", "events"], wait_s=0.2, allowed_commands=["pytest:*"])
+    server = mcp_server(repo, servers, ["remote_mcp", "events"], wait_s=0.2, allowed_commands=["pytest:*"])
     started, _ = await call(server, "run_task", task="SLEEP 30", workdir="repo", max_run_minutes=30)
     try:
         proc = psutil.Process(server._load(started["run_id"])["pid"])
@@ -1499,14 +1499,14 @@ async def test_a_workdirs_mcp_servers_load_and_their_auth_is_only_in_the_childs_
     # Read at the start; once the run ended, a key in a url's path is no longer on disk.
     assert mcp == server._file(started["run_id"], "mcp.json") and not mcp.exists()
     assert config == {"mcpServers": {
-        "scarab4": {"type": "http", "url": "http://192.0.2.6:8768/mcp",
+        "remote_mcp": {"type": "http", "url": "http://mcp.example:8768/mcp",
                     "headers": {"Authorization": "${CODING_CLI_MCP_0}"}},
         "events": {"type": "sse", "url": "http://events.example/sse", "headers": {}}}}
     # One list, ended by the next flag: the shell's commands and the servers' tools.
     shell = cli.shell_tool()
     assert argv.count("--allowedTools") == 1 and "--strict-mcp-config" in argv and "--restricted" in argv
     assert argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")] == [
-        f"{shell}(pytest:*)", "mcp__scarab4", "mcp__events"]
+        f"{shell}(pytest:*)", "mcp__remote_mcp", "mcp__events"]
     # Not on disk, not in argv, not in the answer.
     assert TOKEN not in " ".join(argv) and TOKEN not in json.dumps(answer)
     for path in [*(data_root / "runs").iterdir(), Path(os.environ["FAKE_CLAUDE_LOG"])]:
@@ -1515,12 +1515,12 @@ async def test_a_workdirs_mcp_servers_load_and_their_auth_is_only_in_the_childs_
     await call(server, "run_task", task="x", workdir="plain")
     argv = log()["argv"]
     assert json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text()) == {"mcpServers": {}}
-    assert "mcp__scarab4" not in argv and not any(n.startswith("CODING_CLI_MCP") for n in log()["env"])
+    assert "mcp__remote_mcp" not in argv and not any(n.startswith("CODING_CLI_MCP") for n in log()["env"])
 
 
 async def test_plan_mode_loads_no_mcp_server(repo, log):
     """Plan only reads; a server's tools could write."""
-    server = mcp_server(repo, {"scarab4": RemoteMCPConfig(url="http://h/mcp", enabled=True)}, ["scarab4"])
+    server = mcp_server(repo, {"remote_mcp": RemoteMCPConfig(url="http://h/mcp", enabled=True)}, ["remote_mcp"])
     await call(server, "run_task", task="look", mode="plan", workdir="repo")
     argv = log()["argv"]
     assert json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text()) == {"mcpServers": {}}
@@ -1528,13 +1528,13 @@ async def test_plan_mode_loads_no_mcp_server(repo, log):
 
 
 @pytest.mark.parametrize("name, cfg", [
-    ("scarab4", None), ("scarab4", RemoteMCPConfig(url="http://h/mcp", enabled=False)),
-    ("scarab4", RemoteMCPConfig(url="", enabled=True)),
-    ("scarab4", RemoteMCPConfig(url="http://h/mcp", enabled=True, transport="stdio", command="x")),
-    ("scarab4", RemoteMCPConfig(url="http://h/mcp", enabled=True, transport="local", command="x")),
-    ("scarab4", RemoteMCPConfig(url="http://h/mcp", enabled=True, transport="htpp")),
-    ("scarab4", RemoteMCPConfig(url="http://user:pw@h/mcp", enabled=True)),
-    ("scarab4", RemoteMCPConfig(url="http://h/mcp?api_key=k3y", enabled=True)),
+    ("remote_mcp", None), ("remote_mcp", RemoteMCPConfig(url="http://h/mcp", enabled=False)),
+    ("remote_mcp", RemoteMCPConfig(url="", enabled=True)),
+    ("remote_mcp", RemoteMCPConfig(url="http://h/mcp", enabled=True, transport="stdio", command="x")),
+    ("remote_mcp", RemoteMCPConfig(url="http://h/mcp", enabled=True, transport="local", command="x")),
+    ("remote_mcp", RemoteMCPConfig(url="http://h/mcp", enabled=True, transport="htpp")),
+    ("remote_mcp", RemoteMCPConfig(url="http://user:pw@h/mcp", enabled=True)),
+    ("remote_mcp", RemoteMCPConfig(url="http://h/mcp?api_key=k3y", enabled=True)),
     ("a,Bash", RemoteMCPConfig(url="http://h/mcp", enabled=True))])
 def test_a_workdir_naming_an_unusable_mcp_server_is_skipped(repo, name, cfg):
     server = mcp_server(repo, {name: cfg} if cfg else {}, [name])
@@ -1609,11 +1609,11 @@ async def test_max_output_chars_bounds_the_structured_output(repo):
 
 def test_shell_commands_beside_mcp_servers_are_warned_of(repo, caplog):
     """Every allowed command inherits the environment that holds the servers' tokens."""
-    servers = {"scarab4": RemoteMCPConfig(url="http://h/mcp", enabled=True)}
+    servers = {"remote_mcp": RemoteMCPConfig(url="http://h/mcp", enabled=True)}
     with caplog.at_level(logging.WARNING, logger=server_module.__name__):
-        mcp_server(repo, servers, ["scarab4"])
+        mcp_server(repo, servers, ["remote_mcp"])
         assert "inherits the environment" not in caplog.text
-        mcp_server(repo, servers, ["scarab4"], allowed_commands=["pytest:*"])
+        mcp_server(repo, servers, ["remote_mcp"], allowed_commands=["pytest:*"])
     assert "inherits the environment" in caplog.text
 
 
@@ -1632,12 +1632,12 @@ async def test_a_broken_escape_ends_the_run_and_reaches_nobody(repo):
 # ── instances, and runs whose call never answered ──
 
 async def test_each_instance_counts_and_reaches_only_its_own_runs(repo):
-    """All instances share the data folder: a production run (scarab_code, max_parallel 6) took the chat
+    """All instances share the data folder: a production run (max_parallel 6) took the chat
     instance's only slot, and a chat run one of production's."""
-    chat, producer = make_server(repo), make_server(repo, name="scarab_code", wait_s=0.2)
+    chat, producer = make_server(repo), make_server(repo, name="producer_cli", wait_s=0.2)
     started, _ = await call(producer, "run_task", task="SLEEP 30")
     try:
-        assert producer._load(started["run_id"])["instance_name"] == "scarab_code"
+        assert producer._load(started["run_id"])["instance_name"] == "producer_cli"
         own, _ = await call(chat, "run_task", task="x")
         assert own["state"] == "done", own
         refused, _ = await call(producer, "run_task", task="x")
@@ -1691,13 +1691,13 @@ async def test_a_run_whose_call_never_answered_is_stopped_once_taken_over(repo, 
 async def test_a_tool_the_servers_entry_blocks_stays_refused(repo, log):
     """mcp_servers.yaml blocks a tool whatever an allowlist says: approving the server must not reach it. In
     Claude Code a deny rule wins over every allow rule; a name is written as Claude Code writes it."""
-    servers = {"scarab4": RemoteMCPConfig(url="http://h/mcp", enabled=True,
+    servers = {"remote_mcp": RemoteMCPConfig(url="http://h/mcp", enabled=True,
                                           tools=ToolConfig(blocked=["delete_project", "odd.name x"]))}
-    await call(mcp_server(repo, servers, ["scarab4"]), "run_task", task="x", workdir="repo")
+    await call(mcp_server(repo, servers, ["remote_mcp"]), "run_task", task="x", workdir="repo")
     argv = log()["argv"]
-    assert argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")] == ["mcp__scarab4"]
+    assert argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")] == ["mcp__remote_mcp"]
     assert argv[argv.index("--disallowedTools") + 1:argv.index("--tools")] == [
-        "mcp__scarab4__delete_project", "mcp__scarab4__odd_name_x"]
+        "mcp__remote_mcp__delete_project", "mcp__remote_mcp__odd_name_x"]
 
 
 class BrokenStatus(Status):
@@ -1748,17 +1748,17 @@ async def test_a_run_whose_call_answered_early_goes_on_when_taken_over(repo, mon
 
 
 async def test_every_hint_names_the_instances_own_get_run(repo, monkeypatch):
-    """An instance's tools reach only its own runs: coding_cli_get_run refuses a scarab_code run."""
+    """An instance's tools reach only its own runs: coding_cli_get_run refuses a producer_cli run."""
     monkeypatch.setattr(server_module, "CLAIM_WAIT_S", 0)
-    owner = make_server(repo, name="scarab_code", wait_s=0.2)
+    owner = make_server(repo, name="producer_cli", wait_s=0.2)
     started, _ = await call(owner, "run_task", task="SLEEP 30")
     notes = [started["wake_note"]]
     ring_recorder(monkeypatch)
     notes.append(owner._arm_wake(started["run_id"], "s1", "admin", False)["wake_note"])
-    stopping, _ = await call(make_server(repo, name="scarab_code"), "cancel_run", run_id=started["run_id"])
+    stopping, _ = await call(make_server(repo, name="producer_cli"), "cancel_run", run_id=started["run_id"])
     notes.append(stopping["note"])
     await ended(owner, started["run_id"])
-    assert all("scarab_code_get_run" in n and "coding_cli_get_run" not in n for n in notes), notes
+    assert all("producer_cli_get_run" in n and "coding_cli_get_run" not in n for n in notes), notes
 
 
 async def test_a_run_taken_over_keeps_the_time_limit_it_started_with(repo):
@@ -1778,7 +1778,7 @@ async def test_a_run_taken_over_keeps_the_time_limit_it_started_with(repo):
 async def test_a_worktree_is_busy_for_every_instance(repo):
     """A record from before instances were told apart is every instance's: two of them resumed it into one
     worktree at once."""
-    chat, producer = make_server(repo, wait_s=0.2), make_server(repo, name="scarab_code")
+    chat, producer = make_server(repo, wait_s=0.2), make_server(repo, name="producer_cli")
     first, _ = await call(chat, "run_task", task="x")
     await call(chat, "get_run", run_id=first["run_id"], wait_s=20)
     chat._save({k: v for k, v in chat._load(first["run_id"]).items() if k != "instance_name"})
@@ -1964,7 +1964,7 @@ async def test_a_run_that_did_not_start_leaves_no_mcp_file(repo, data_root, monk
         raise OSError("broken on purpose")
 
     monkeypatch.setattr(cli, "launch", broken)
-    server = mcp_server(repo, {"scarab4": RemoteMCPConfig(url="http://h/mcp", enabled=True)}, ["scarab4"])
+    server = mcp_server(repo, {"remote_mcp": RemoteMCPConfig(url="http://h/mcp", enabled=True)}, ["remote_mcp"])
     result, _ = await call(server, "run_task", task="x", workdir="repo")
     assert "not started" in result["error"] and not list((data_root / "runs").glob("*.mcp.json"))
 

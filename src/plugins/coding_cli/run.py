@@ -162,8 +162,16 @@ def build_agy_command(exe: list[str], *, mode: str, model: str = "", resume: str
     return [*cmd, "--print="]
 
 
-# The settings an agy run reads: its home is this folder, not the user's (agy_home).
-AGY_SETTINGS = {"toolPermission": "request-review"}
+# The settings an agy run reads: its home is this folder, not the user's (agy_home). The permission preset stays
+# agy's default (request-review; agy writes a default it finds back as nothing). agy runs the hooks, plugins and MCP
+# servers a workspace's customization roots name, hooks without asking (measured 1.4.8: a command hook in
+# hooks.json ran at the session start, from each of the four roots), and an edit run may write its worktree -- so it
+# may write no root (a deny rule holds in every mode, measured), and a run does not start on a worktree that
+# carries such a file (agy_unsafe).
+AGY_ROOTS = (".agents", "_agents", ".agent", "_agent")
+AGY_SETTINGS = {"permissions": {"deny": [f"write_file({root}/)" for root in AGY_ROOTS]}}
+# What agy loads from a root and would run: a repository or an earlier run may not hand it a run.
+AGY_UNSAFE = ("hooks.json", "plugins", "mcp_config.json")
 # Claude Code's own variables: its login token goes to no other program.
 CLAUDE_ONLY_ENV = frozenset({"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"})
 
@@ -178,9 +186,9 @@ def agy_home(root: Path, env: dict) -> None:
         current = json.loads(settings.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         current = None
-    # agy writes the pinned default back as {}. Rewritten only when it holds anything else -- in one step, while
-    # parallel runs start: a truncated file is no settings at all.
-    if current not in ({}, AGY_SETTINGS):
+    # Rewritten only when it holds anything else -- in one step, while parallel runs start: a truncated file is no
+    # settings at all.
+    if current != AGY_SETTINGS:
         tmp = settings.with_name(f"settings.{os.getpid()}.{time.monotonic_ns()}.tmp")
         tmp.write_text(json.dumps(AGY_SETTINGS), encoding="utf-8")
         os.replace(tmp, settings)
@@ -189,6 +197,14 @@ def agy_home(root: Path, env: dict) -> None:
     env["HOME"] = str(root)
     if os.name == "nt":
         env["USERPROFILE"] = str(root)
+
+
+def agy_unsafe(worktree: Path) -> list[str]:
+    """What in `worktree` agy would load and run (AGY_UNSAFE in an AGY_ROOTS folder): a run must not start on it.
+    Names are compared without case -- a Windows file system finds .AGENTS/ as .agents/."""
+    return sorted(f"{root.name}/{item.name}" for root in worktree.iterdir()
+                  if root.name.lower() in AGY_ROOTS and root.is_dir()
+                  for item in root.iterdir() if item.name.lower() in AGY_UNSAFE)
 
 
 def agy_input(task: str) -> str:

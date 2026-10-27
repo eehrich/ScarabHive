@@ -657,6 +657,14 @@ files in its worktree; a plan run (@{tt}--mode plan@{utt}) only reads them.
 Headless, agy refuses whatever needs an approval and reports it as a denial:
 every shell command, every file outside the worktree. There is no shell, so
 @{tt}allowed_commands@{utt} is unused (a warning says so).
+@{bullet}agy loads what a workspace's customization folder names and runs
+it -- a command hook in @{tt}hooks.json@{utt} ran at the session start
+without asking, from each of @{tt}.agents/@{utt}, @{tt}_agents/@{utt},
+@{tt}.agent/@{utt} and @{tt}_agent/@{utt}. So a run may write none of them (a
+deny rule in its settings, which holds in every mode and any spelling), and no
+run starts or resumes on a worktree whose such folder carries
+@{tt}hooks.json@{utt}, @{tt}plugins@{utt} or @{tt}mcp_config.json@{utt}: take
+them out of the repository first.
 @{bullet}Its web search needs no approval, and no setting tried switched it
 off. Every workdir of such an instance must say @{tt}web: true@{utt}, and it
 loads no MCP server: a workdir without web or with @{tt}mcp_servers@{utt} is

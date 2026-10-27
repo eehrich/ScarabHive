@@ -7,12 +7,14 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from plugins.coding_cli import run as cli
 from plugins.coding_cli.server import CodingCliServer
 
-from test_plugin_coding_cli_server import (TEST_SESSION_MARKER, call, data_root, git, log, plain_git,  # noqa: F401
-                                            repo)
+from test_plugin_coding_cli_server import (TEST_SESSION_MARKER, call, data_root, fresh_repo, git, log,  # noqa: F401
+                                            plain_git, repo)
 
 FAKE_AGY = Path(__file__).resolve().parent / "fake_agy.py"
 
@@ -199,9 +201,41 @@ def test_the_pinned_settings_win_over_others_and_leave_agys_own_alone(tmp_path):
     settings.write_text('{"toolPermission": "always-proceed"}', encoding="utf-8")
     cli.agy_home(tmp_path, {})
     assert json.loads(settings.read_text(encoding="utf-8")) == cli.AGY_SETTINGS
-    settings.write_text("{}", encoding="utf-8")       # agy writes its default back so
+    agys_own = json.dumps(cli.AGY_SETTINGS, indent=2)   # agy writes the settings back in its own layout
+    settings.write_text(agys_own, encoding="utf-8")
     cli.agy_home(tmp_path, {})
-    assert settings.read_text(encoding="utf-8") == "{}"
+    assert settings.read_text(encoding="utf-8") == agys_own
+
+
+@pytest.mark.parametrize("root", cli.AGY_ROOTS)
+def test_an_agy_run_may_not_write_a_folder_agy_would_run_from(root):
+    """measured: agy ran a command hook from hooks.json in each of its four roots without asking; the deny rule
+    kept a run from writing any of them, in any case."""
+    assert f"write_file({root}/)" in cli.AGY_SETTINGS["permissions"]["deny"]
+
+
+@pytest.mark.parametrize("planted", [".agents/hooks.json", "_agents/plugins/x/plugin.json", ".agent/mcp_config.json",
+                                     "_Agent/Hooks.json"])
+async def test_a_worktree_carrying_what_agy_would_run_is_not_started(tmp_path, planted, log):
+    repo = fresh_repo(tmp_path / "planted")
+    (repo / planted).parent.mkdir(parents=True)
+    (repo / planted).write_text("{}", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "plant")
+    result, _ = await call(make_agy(repo), "run_task", task="x")
+    assert "not started" in result["error"] and "/".join(planted.split("/")[:2]) in result["error"]
+    assert git(repo, "branch", "--list", "coding_cli/*").strip() == ""
+
+
+async def test_a_run_whose_worktree_got_a_hook_is_not_resumed(repo, log):
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    worktree = Path(server._load(first["run_id"])["worktree"])
+    (worktree / "_agents").mkdir()
+    (worktree / "_agents" / "hooks.json").write_text("{}", encoding="utf-8")
+    result, _ = await call(server, "run_task", task="WRITE c.txt two", resume=first["run_id"])
+    assert "not started" in result["error"] and "_agents/hooks.json" in result["error"]
+    assert worktree.is_dir(), "a refused resume keeps the earlier run's worktree"
 
 
 def test_effort_beside_a_model_naming_its_level_is_dropped(repo, caplog):

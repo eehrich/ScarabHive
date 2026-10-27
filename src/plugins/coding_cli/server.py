@@ -230,7 +230,7 @@ class CodingCliServer(SchemaBasedToolServer):
                 logger.warning("coding_cli: workdir %r skipped -- a plain name and a git repository are needed", wname)
                 continue
             names = entry.get("mcp_servers") or []
-            # `mcp_servers: scarab4` is one server, not seven letters.
+            # `mcp_servers: remote_mcp` is one server, not ten letters.
             names = [str(n) for n in ([names] if isinstance(names, str) else names)]
             if self.agy and (names or entry.get("web") is not True):
                 # run.py, build_agy_command: it searches the web in every run, and loads no server of ours.
@@ -904,6 +904,11 @@ class CodingCliServer(SchemaBasedToolServer):
                session_id: str, worktree: Path, branch: str, made: cli.Worktree, schema: Optional[dict] = None,
                asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None) -> dict:
         resume = prior["claude_session"] if prior else ""
+        unsafe = cli.agy_unsafe(worktree) if self.agy else []
+        if unsafe:
+            # agy would run them, hooks without asking (run.py, AGY_SETTINGS).
+            raise OSError(f"the worktree carries {', '.join(unsafe)} -- agy would load and run it; take it out of "
+                          f"the repository (or the branch) first")
         # The call's own limit, shorter only; else the instance's. The asked one is kept as asked: a resume
         # inherits it, held to the instance's limit as it is then.
         max_run_s = min(asked_run_s, self.max_run_s) if asked_run_s else self.max_run_s

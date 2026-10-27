@@ -30,7 +30,7 @@ plugins:
           # edit runs load (enabled, with a url, HTTP or SSE); their auth reaches
           # Claude Code only through its environment. Any other name skips
           # the workdir. The user's own connectors never load.
-          # mcp_servers: [scarab4]
+          # mcp_servers: [remote_mcp]
       # Shell commands Claude Code may run, as Claude Code permission patterns
       # (e.g. "pytest:*"). Empty: no shell at all. Every allowed command runs
       # code the run may have written, with the operator's rights: it can read
