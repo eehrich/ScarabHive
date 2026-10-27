@@ -1,0 +1,10 @@
+# llm_coding_cli -- a coding CLI (Claude Code, Antigravity) driven through a coding_cli instance, as one link of
+# an agent's profile chain. No SDK and no HTTP of its own: the coding_cli plugin starts the CLI.
+[plugin]
+name = "llm_coding_cli"
+version = "0.1.0"
+description = "A coding CLI (Claude Code, Antigravity) as an LLM: one call is one CLI run with its own tool loop"
+type = ["llm-provider"]
+provides = ["claude_code", "antigravity"]
+requires = { agent_system = ">=0.7.0" }
+dependencies = []

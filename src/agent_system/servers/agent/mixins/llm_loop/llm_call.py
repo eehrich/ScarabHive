@@ -293,41 +293,49 @@ async def _polled_call(
     # Calculate heartbeat interval in iterations (config is in seconds, we poll every 0.1s)
     heartbeat_interval = int(heartbeat_interval_seconds / 0.1)  # Convert seconds to iterations
 
-    while not llm_task.done():
-        llm_iteration_count += 1
-        if llm_iteration_count > max_llm_iterations:
-            timeout_seconds = max_llm_iterations * 0.1
-            logger.error(
-                "LLM task polling exceeded max iterations (%d = %.0fs), forcing exit",
-                max_llm_iterations, timeout_seconds
-            )
+    try:
+        while not llm_task.done():
+            llm_iteration_count += 1
+            if llm_iteration_count > max_llm_iterations:
+                timeout_seconds = max_llm_iterations * 0.1
+                logger.error(
+                    "LLM task polling exceeded max iterations (%d = %.0fs), forcing exit",
+                    max_llm_iterations, timeout_seconds
+                )
+                llm_task.cancel()
+                await asyncio.sleep(0.1)
+                # Raise timeout error so it can be caught and handled appropriately
+                # This is different from CancelledError (user cancellation)
+                raise asyncio.TimeoutError(
+                    f"LLM task timed out after {timeout_seconds:.0f} seconds "
+                    f"(max_iterations={max_llm_iterations})"
+                )
+
+            # Check for status events
+            for status_event in yield_pending_status_fn():
+                yield status_event
+
+            # Send heartbeat event periodically to prevent SSE connection timeout
+            # This keeps the connection alive during long LLM calls (30+ seconds)
+            if llm_iteration_count % heartbeat_interval == 0:
+                yield {
+                    "type": "heartbeat",
+                    "step": step + 1,
+                    "timestamp": asyncio.get_event_loop().time()
+                }
+
+            # Wait 100ms before next poll
+            try:
+                await asyncio.wait_for(asyncio.shield(llm_task), timeout=0.1)
+            except asyncio.TimeoutError:
+                pass  # Continue polling
+    except BaseException:
+        # The shield keeps each 100 ms poll from cancelling the call; a consumer that closes this stream or a cancel
+        # of the run must not leave it running -- billed to its end (a coding CLI's whole run), its answer lost. One
+        # cancelled already (the max-iterations exit) is let finish its cleanup: a second cancel would cut it.
+        if not llm_task.done() and not llm_task.cancelling():
             llm_task.cancel()
-            await asyncio.sleep(0.1)
-            # Raise timeout error so it can be caught and handled appropriately
-            # This is different from CancelledError (user cancellation)
-            raise asyncio.TimeoutError(
-                f"LLM task timed out after {timeout_seconds:.0f} seconds "
-                f"(max_iterations={max_llm_iterations})"
-            )
-
-        # Check for status events
-        for status_event in yield_pending_status_fn():
-            yield status_event
-
-        # Send heartbeat event periodically to prevent SSE connection timeout
-        # This keeps the connection alive during long LLM calls (30+ seconds)
-        if llm_iteration_count % heartbeat_interval == 0:
-            yield {
-                "type": "heartbeat",
-                "step": step + 1,
-                "timestamp": asyncio.get_event_loop().time()
-            }
-
-        # Wait 100ms before next poll
-        try:
-            await asyncio.wait_for(asyncio.shield(llm_task), timeout=0.1)
-        except asyncio.TimeoutError:
-            pass  # Continue polling
+        raise
 
     # Get result
     llm_out = await llm_task

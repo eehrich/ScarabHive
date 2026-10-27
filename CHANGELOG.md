@@ -23,6 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the agent `mcp_gateway_runner` -- its allowlist is the ceiling, its tool hooks see every call -- with the
   run's account, session and request id. Served by the mcp SDK's own server; `config/security.yaml` opens the one
   route, which refuses any request without a live token.
+- Coding CLIs as an LLM (`llm_coding_cli` plugin, providers `claude_code` and `antigravity`): a model entry names
+  a coding_cli instance, and an agent's model call becomes a run of that CLI -- the conversation as one task, the
+  CLI's own tool loop through its workdir's MCP gateway, its final answer as the assistant message. A second call
+  in the same agent run that goes on from the last one resumes that run; cancelling the agent stops it. The
+  subscription's limit blocks the link until it resets, any other failure moves the profile chain on. Agent runs
+  hold their session in `current_run_session` (beside `current_run_user`), which the CLI's tool calls run in.
+
+### Fixed
+
+- A model call without streaming went on running when the agent's event stream was closed or its run cancelled
+  from outside: the 100 ms polls shielded the call from the cancel too. It is cancelled now -- not billed to its
+  end with its answer thrown away.
 
 ## [0.7.1] - 2026-10-27
 

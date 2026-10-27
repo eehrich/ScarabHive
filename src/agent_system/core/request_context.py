@@ -27,6 +27,12 @@ from typing import Optional
 #: stategraph run's own id), and the map lets go of a run's whole tree when
 #: the request that started it ends, while its background sub-agents run on.
 current_run_user: ContextVar[Optional[str]] = ContextVar("current_run_user", default=None)
+#: The session of the agent run this code runs in, set and reset beside
+#: current_run_user. A model call that is not an API request but a run of its
+#: own (a coding CLI as an LLM, plugins/llm_coding_cli) hands it to that run:
+#: the tools the run calls belong to the agent's session, as the agent's own
+#: calls do. None outside an agent run.
+current_run_session: ContextVar[Optional[str]] = ContextVar("current_run_session", default=None)
 
 # The shared map. Mutating module-level state is intentional here: the map is
 # process-wide by design (one HTTP request may be served by app code, agent
