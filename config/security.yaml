@@ -17,6 +17,9 @@ auth:
       - pattern: "POST /plugins/forge/webhook"
         policy: "allow_anonymous"
         description: "GitLab webhook (forge): the route checks X-Gitlab-Token itself"
+      - pattern: "* /plugins/mcp_gateway/mcp"
+        policy: "allow_anonymous"
+        description: "MCP for outside CLIs (mcp_gateway): the route checks the run's bearer token itself"
       # Public API endpoints - no auth required
       - pattern: "GET /agents"
         policy: "allow_anonymous"
@@ -222,6 +225,9 @@ auth:
       - pattern: "/plugins/forge/webhook"
         policy: "allow_anonymous"
         description: "GitLab webhook (forge): the route checks X-Gitlab-Token itself"
+      - pattern: "/plugins/mcp_gateway/mcp"
+        policy: "allow_anonymous"
+        description: "MCP for outside CLIs (mcp_gateway): the route checks the run's bearer token itself"
       # Block all plugin admin endpoints for non-admins
       - pattern: "/plugins/*/admin/*"
         policy: "require_auth"

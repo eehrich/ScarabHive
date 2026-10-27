@@ -1,0 +1,229 @@
+@database "mcp_gateway"
+@author "Enrico Ehrich"
+@$VER: mcp_gateway.guide 1.0 (27.10.2026)
+@smartwrap
+
+@node main "MCP gateway"
+@{h1}MCP gateway
+
+An outside CLI -- Claude Code, Antigravity -- reaches tools of this
+installation through this plugin, over MCP. It is meant for a caller that
+starts such a CLI for a task (a coding run on a subscription instead of the
+API) and wants it to work with the same tools an agent here would use.
+
+Nothing is open by configuration alone. The caller issues a token for one
+run, names the tools that run may call and what it may do with them, hands
+the token to the CLI, and revokes it when the run ends. Every call goes
+through one agent, the runner, whose allowlist is the ceiling of every token
+and whose hooks see every call.
+
+@{code}
+For developers
+  @{"  Setting it up  " link setup}
+  @{"  Grants: issue and revoke  " link grants}
+  @{"  What a call goes through  " link calls}
+  @{"  What the model sees  " link model}
+  @{"  Known gaps  " link gaps}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Two entries ship in @{tt}agents/mcp_gateway.yaml@{utt}, both switched off:
+
+@{table}
+Entry | Type | Is
+mcp_gateway | mcp_gateway | the endpoint
+mcp_gateway_runner | basic_agent | the agent every call runs through; nobody chats with it
+@{body}
+
+The runner carries @{tt}min_role: admin@{utt}: started directly as an agent, its
+model could call every tool of its allowlist without a grant's pinned and
+allowed values. The gateway's own calls do not pass this gate.
+
+Enable both and give the runner the tools any run may ever call, with
+@{tt}+@{utt} entries, in your own config:
+
+@{code yaml}
+plugins:
+  servers:
+    mcp_gateway:
+      enabled: true
+    mcp_gateway_runner:
+      enabled: true
+      agent_config:
+        tools:
+          allowed: ["+my_store/*"]
+          blocked: ["my_store/my_store_purge"]
+@{body}
+
+@{h2}Settings of the gateway
+
+@{table}
+Setting | Default | Meaning
+runner_agent | mcp_gateway_runner | the agent the calls go through
+max_result_chars | 60000 | a result longer than this is refused, not cut: it would flood the CLI's context
+@{body}
+
+New entries take effect after a restart of the API.
+
+@{h2}The route
+
+The endpoint is @{tt}/plugins/<instance>/mcp@{utt}, by default
+@{tt}http://127.0.0.1:<port>/plugins/mcp_gateway/mcp@{utt} -- the port the API
+listens on (@{tt}PORT@{utt}, else @{tt}network.port@{utt}). A CLI cannot log in,
+so @{tt}config/security.yaml@{utt} opens this one route in both auth layers
+(@{tt}endpoint_security@{utt} and @{tt}plugin_security@{utt}); the route itself
+answers 401 to any request without the bearer token of a live grant, before
+a byte reaches the MCP server. An instance of another name needs the same
+two rules for its path.
+
+It speaks MCP's Streamable HTTP through the mcp SDK's own server --
+stateless, answers as JSON, every protocol revision the SDK speaks. There
+is no server-sent event stream and no session to resume: each request
+stands alone.
+@endnode
+
+@node grants "Grants: issue and revoke"
+@{h1}Grants: issue and revoke
+
+A grant lives in the memory of the API process and is found by the sha256 of
+its token; the token itself is kept nowhere. Only code in that process can
+issue one -- a worker process cannot hand a grant to the gateway.
+
+@{code python}
+from plugins.mcp_gateway.grants import issue, revoke
+
+token = issue("ada", ["my_store_read", "my_store_search_*"],
+              request_id="run-4711",
+              pinned={"project_id": 12},
+              allowed={"my_store_read": {"operations[].op": ["get", "list"]}},
+              session_id="sess-1", ttl_s=1800)
+# hand the CLI: Authorization: Bearer <token>
+revoke(token)
+@{body}
+
+@{h2}Arguments
+
+@{table}
+Argument | Meaning
+user_id | the account the calls are made for; tools get it as @{tt}_user_id@{utt}
+tools | fnmatch patterns on the flat tool name (with the instance prefix); a subset of the runner's allowlist, never more
+request_id | prefix of every call's request id: @{tt}<request_id>_mcp001@{utt}, @{tt}_mcp002@{utt} ... -- costs of tools that call an LLM themselves are found by it
+pinned | @{tt}{parameter: value}@{utt}: set in every call; a call with another value is refused
+allowed | @{tt}{tool pattern: {path: [values]}}@{utt}: for the tools the pattern matches, every value at the path must be one of these
+session_id | the session the calls run in (@{tt}_session_id@{utt}); without it the calls have none
+ttl_s | seconds the token holds (default 3600)
+gateway | the instance (default @{tt}mcp_gateway@{utt})
+@{body}
+
+@{h2}Pinned parameters
+
+A pinned parameter is the run's, not the model's: it is left out of the
+tool list the CLI sees, set in every call, and a call that names it with
+another value is refused -- the model learns it asked for the wrong thing
+instead of being corrected without a word. A tool whose parameters do not
+include every pinned one is not shown and cannot be called with this token:
+it could not be held to the run's values. The values travel past the hooks
+(@{tt}injected_params@{utt}), as a script's configured values do.
+
+Names beginning with @{tt}_@{utt} are refused: runtime parameters are the
+framework's (pass @{tt}session_id@{utt} for that one).
+
+@{h2}Allowed values
+
+A path names keys joined by @{tt}.@{utt}; @{tt}[]@{utt} after a key means
+every element of that list: @{tt}operations[].op@{utt} is the @{tt}op@{utt} of
+every operation. A call where the path is missing is refused as well --
+the tool's own default could be a value the rule keeps out. An empty list
+passes: there is nothing in it. This is how a token reads but does not
+write a tool that does both through one parameter.
+
+@{h2}Errors
+
+@{tt}issue@{utt} raises @{tt}ValueError@{utt} for an argument that cannot
+hold (empty account, tools or request id; a lifetime of 0 or less; a
+pinned runtime parameter; a path that is none, an empty list of values) and
+@{tt}LookupError@{utt} when the gateway does not serve in this process (not
+enabled). @{tt}revoke@{utt} returns False when there was nothing to revoke.
+A revoked grant stops a call of it that is still running -- the tool's task
+is cancelled, the hooks see the cancellation token -- and its token answers
+401 from then on. A grant whose time runs out stops its calls the same way,
+and so does stopping the plugin, which ends all its grants. @{tt}revoke@{utt}
+may be called from any thread.
+@endnode
+
+@node calls "What a call goes through"
+@{h1}What a call goes through
+
+@{bullet}The route: no live grant for the bearer token, 401.
+@{bullet}tools/list and tools/call ask the same question -- which tools this
+grant may call: the runner's own tool list (its allowlist and blocklist,
+every tool interface, exactly what the runner would send a model), narrowed
+to the grant's patterns, without tools that cannot take every pinned
+parameter, without external MCP tools. What is not listed does not exist
+for the client.
+@{bullet}A call: pinned values checked and set, allowed values checked,
+the arguments checked against the tool's parameter schema (unknown
+parameters, missing required ones, types).
+@{bullet}Then @{tt}dispatch_tool_call@{utt} of the runner with
+@{tt}hook_source="mcp_gateway"@{utt}: its @{tt}pre_tool_call@{utt} hooks may
+change or block the call, the tool runs with the grant's account, session
+and request id (also as the run's context: what the tool reports without
+an agent at hand is the run's) and reports its status lines as for any
+agent, the @{tt}post_tool_call@{utt} hooks see the result. A grant revoked or
+expired meanwhile stops the call.
+@{bullet}The result goes back as JSON text; one that reports an error
+(@{tt}status: error@{utt}, or an @{tt}error@{utt} without a status) is
+flagged as an error, one over @{tt}max_result_chars@{utt} is refused.
+@{bullet}One log line per call, a failed one too: gateway, grant key (the first 12 characters
+of the token's hash -- never the token), tool, ok or error, duration.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool list
+
+Each tool the grant may call, with its own name and description, and its
+parameter schema without the pinned parameters. Nothing of the gateway
+itself is added.
+
+@{h2}Error answers, verbatim
+
+@{table}
+When | The answer
+a tool outside the grant | Unknown tool 'NAME': call one from tools/list.
+another value for a pinned parameter | KEY is fixed to VALUE for this run; this call asked for OTHER. Leave KEY out.
+a value outside the allowed ones | PATH must be one of [VALUES] for this run, not 'VALUE'
+an allowed path left out | PATH is required for this run, one of [VALUES]
+a parameter the tool does not have | NAME: unknown parameter(s) [KEYS]. Valid: [PARAMETERS]
+a schema violation | NAME: WHERE: what the validator says
+a result too long | NAME: the result has N characters, more than the M this gateway hands on. Ask for less (fewer ids, a line range, a narrower query).
+a hook blocked the call | the hook's own reason
+the grant ended during the call | NAME: the run's token was revoked or expired; the call was stopped.
+the runner is missing | The gateway's runner agent 'NAME' is not available.
+@{body}
+
+@{h2}Token and cache effect
+
+None on this installation's agents: the gateway adds nothing to any prompt
+or history. What the CLI keeps of the answers is the CLI's.
+@endnode
+
+@node gaps "Known gaps"
+@{h1}Known gaps
+
+@{bullet}One process. Grants live in the API process's memory; a caller in
+another process cannot issue one the gateway knows, and a restart ends
+every grant.
+@{bullet}Pinned and allowed values hold for what a tool takes as a
+parameter. A tool that finds its target by another id (an item id that
+belongs to some project) is only as narrow as that tool's own check of
+the id against the pinned parameter.
+@{bullet}No streaming: a long tool call answers when it is done. The CLI's
+own MCP timeout applies.
+@{bullet}Tools of external MCP servers are not passed on: the runner cannot
+dispatch them programmatically.
+@endnode

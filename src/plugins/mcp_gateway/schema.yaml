@@ -1,0 +1,4 @@
+# mcp_gateway plugin schema: no tools and no panel. Its one route, /plugins/<instance>/mcp, is built in code
+# (plugin.py): it hands the request to the mcp SDK's server.
+
+tools: []

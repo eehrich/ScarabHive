@@ -1,0 +1,36 @@
+# The gateway and the agent its calls run through. Both ship switched off.
+#
+# An outside CLI (Claude Code, Antigravity) started by a caller in the API process reaches tools through the
+# gateway with a token that caller issued for the run (plugins.mcp_gateway.grants.issue). Every call goes through
+# mcp_gateway_runner: its tool allowlist is everything any token may ever call, its hooks see every call. Give it
+# tools with "+" entries in your own config, e.g.
+#
+#   mcp_gateway_runner:
+#     enabled: true
+#     agent_config: {tools: {allowed: ["+my_store/*"]}}
+#
+# config/security.yaml opens /plugins/mcp_gateway/mcp to requests without a login (the route checks the run's token
+# itself); an instance of another name needs the same two rules.
+plugins:
+  servers:
+    mcp_gateway:
+      type: mcp_gateway
+      enabled: false
+      description: "MCP endpoint for outside CLIs, one token per run"
+      runner_agent: mcp_gateway_runner   # whose allowlist and hooks the calls go through
+      max_result_chars: 60000            # a longer result is refused: it would flood the CLI's context
+
+    mcp_gateway_runner:
+      type: basic_agent
+      enabled: false
+      description: "Runs the tool calls of outside CLIs for mcp_gateway; its allowlist is everything they may call"
+      agent_config:
+        max_steps: 1
+        tools:
+          allowed: []                    # nothing until you add tools
+      metadata:
+        category: "Automation"
+        visibility: private              # not a chat partner
+        # role gate (auth/agent_access.py): run directly (/run), its model could call every tool of the
+        # allowlist without a grant's pinned and allowed values. The gateway's calls do not pass this gate.
+        min_role: "admin"

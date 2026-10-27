@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loads no MCP server. Its web search cannot be switched off, so such an instance takes only workdirs that
   say `web: true`. agy reports no subscription windows: no quota tool, no budget guard. A run records its CLI,
   and a resume stays with it.
+- MCP gateway (`mcp_gateway` plugin, off by default): an outside CLI (Claude Code, Antigravity) reaches tools of
+  this installation over MCP at `/plugins/mcp_gateway/mcp`. Nothing is open by configuration: a caller in the API
+  process issues a token per run (`grants.issue`) naming the tools, optionally parameters fixed to one value and
+  allowed values reaching into lists (read but not write), and revokes it when the run ends. Every call goes
+  through the agent `mcp_gateway_runner` -- its allowlist is the ceiling, its tool hooks see every call -- with the
+  run's account, session and request id. Served by the mcp SDK's own server; `config/security.yaml` opens the one
+  route, which refuses any request without a live token.
 
 ## [0.7.1] - 2026-10-27
 

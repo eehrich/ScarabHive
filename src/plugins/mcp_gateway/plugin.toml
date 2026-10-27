@@ -1,0 +1,11 @@
+# mcp_gateway plugin manifest -- read by agent_system.plugins.plugin_manifest.
+[plugin]
+name = "mcp_gateway"
+version = "0.1.0"
+description = "Hands configured tools to an outside CLI (Claude Code, Antigravity) over MCP, one token per run."
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["web"]
+category = "integration"
+requires = { agent_system = ">=0.7.0" }
+# jsonschema and referencing come with the core (requirements/core.txt).
+dependencies = ["mcp>=2.2,<3"]
