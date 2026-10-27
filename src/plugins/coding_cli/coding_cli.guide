@@ -1,6 +1,6 @@
 @database "coding_cli"
 @author "Enrico Ehrich"
-@$VER: coding_cli.guide 1.2 (15.10.2026)
+@$VER: coding_cli.guide 1.3 (27.10.2026)
 @smartwrap
 
 @node main "Coding CLI"
@@ -21,6 +21,10 @@ workdir, a fixed tool list, no shell unless the operator allows commands),
 only listed users may start them, and none starts
 while the subscription is near its limit. A long run goes on in the
 background; the session that started it is woken when it ends.
+
+An instance can run Google's @{b}Antigravity CLI@{ub} (@{tt}agy@{utt})
+instead, on the Google login it was set up with: @{tt}cli: antigravity@{utt},
+see @{" Antigravity instead of Claude Code " link setup}.
 
 The plugin has four tools, no hooks and no panel. It also ships an agent,
 @{tt}claude_code_agent@{utt}, that only relays work to Claude Code; the
@@ -631,13 +635,63 @@ A workdir that gives its runs MCP servers names them; each must be in
 An agent gets the tools with @{tt}+coding_cli/*@{utt} in its
 @{tt}agent_config.tools.allowed@{utt}.
 
+@{h2}Antigravity instead of Claude Code
+
+With @{tt}cli: antigravity@{utt} an instance starts Google's Antigravity CLI
+(@{tt}agy@{utt}, the successor of the Gemini CLI) instead. Log in once,
+interactively, by running @{tt}agy@{utt} under the account ScarabHive runs
+under. A run gets a home folder of its own, @{tt}agy_home/<user>@{utt} in
+the data folder, with pinned settings: the user's own agy settings, MCP
+servers and memories stay out, and so do Claude Code's variables. Runs of
+one ScarabHive user share their folder -- a resume finds its conversation
+there --, another user's runs have their own. On Windows agy finds
+the login in the credential store from there (measured); elsewhere it may
+keep it in the home folder -- then log in once with @{tt}HOME@{utt} set to
+that folder. Its stream is read as Claude Code's, so
+the tools, the answers, the branch, @{tt}resume@{utt} (agy's conversation
+id) and @{tt}json_schema@{utt} work the same. What differs, measured on
+agy 1.4.8:
+
+@{bullet}An edit run starts with @{tt}--mode accept-edits@{utt}: it writes
+files in its worktree; a plan run (@{tt}--mode plan@{utt}) only reads them.
+Headless, agy refuses whatever needs an approval and reports it as a denial:
+every shell command, every file outside the worktree. There is no shell, so
+@{tt}allowed_commands@{utt} is unused (a warning says so).
+@{bullet}Its web search needs no approval, and no setting tried switched it
+off. Every workdir of such an instance must say @{tt}web: true@{utt}, and it
+loads no MCP server: a workdir without web or with @{tt}mcp_servers@{utt} is
+skipped with a warning.
+@{bullet}agy reports no subscription window. No run is held back for the
+budget, the model is offered neither @{tt}quota@{utt} nor
+@{tt}max_window_utilization@{utt}, and @{tt}quota.json@{utt} is Claude
+Code's and is not read.
+@{bullet}@{tt}model@{utt} names one of @{tt}agy models@{utt}.
+@{tt}effort@{utt} takes the same levels as Claude Code's, but only with a
+model id that names no level (@{tt}gemini-3.8-flash@{utt}) or with none; beside
+one that does (@{tt}gemini-3.8-flash-medium@{utt}) agy would refuse every run,
+so the instance drops the effort with a warning.
+@{bullet}A resume stays with its CLI: a Claude Code run is not continued on
+agy, nor the other way round.
+
+@{code yaml}
+    gemini_cli:
+      type: coding_cli
+      enabled: true
+      cli: antigravity
+      allowed_users: [admin]
+      workdirs:
+        texts: {path: data/texts_repo, web: true}
+      model: gemini-3.8-flash-medium
+@{body}
+
 @{h2}Settings
 
 All flat in the server entry, read once when the instance is made.
 
 @{table}
 Key | Default | Meaning
-command | claude | the Claude Code executable, a name on the PATH or a path
+cli | claude | which CLI runs: @{tt}claude@{utt} (Claude Code) or @{tt}antigravity@{utt} (agy, see above); any other value: a warning, and the instance offers no tools
+command | claude | the CLI's executable, a name on the PATH or a path; @{tt}agy@{utt} for an Antigravity instance
 workdirs | none | name -> @{tt}{path, exclude}@{utt} or just a path; name of letters, digits, _ and -, at most 40; path relative to the project, must hold @{tt}.git@{utt} -- otherwise skipped with a warning
 workdirs.<name>.exclude | none | tracked files a run never sees (see @{" What a run may do " link lockdown})
 workdirs.<name>.web | false | true: the workdir's runs search and read the web with Claude Code's @{tt}WebSearch@{utt} and @{tt}WebFetch@{utt}, approved, in either mode, and get no shell unless @{tt}web_with_shell@{utt}; with @{tt}mcp_servers@{utt} as well the workdir is skipped with a warning; anything else than true: neither
@@ -676,6 +730,7 @@ runs/<id>.answered | the starting call answered with the run id of a run still g
 runs/<id>.read-<session> | that session has read the run's end: it is not woken for it
 runs/<id>.released-<instance>, .adopt-<instance> | a stopped instance let the run go; the claim of the instance that took it over
 quota.json | the last subscription report
+agy_home/<user> | an Antigravity run's home folder, one per user: its pinned settings, agy's state
 runs/<id>.mcp.json | the run's MCP config, for a workdir with @{tt}mcp_servers@{utt}: urls and placeholders, no secret; deleted when the run ends, or when it did not start
 no_mcp.json | the empty MCP config
 worktrees/<id> | the worktrees; their branches are @{tt}coding_cli/<id>@{utt} in the workdir's repository
@@ -684,6 +739,13 @@ worktrees/<id> | the worktrees; their branches are @{tt}coding_cli/<id>@{utt} in
 
 @node gaps "Known gaps"
 @{h1}Known gaps
+
+@{bullet}@{b}Antigravity searches the web in every run.@{ub} A query can carry
+what the worktree shows, and a page can steer the run -- which can then only
+edit files in its worktree. How agy ends a run its subscription stops is not
+measured yet: such a run fails with agy's own words, not with a
+@{tt}limit@{utt} field. agy updates itself; the lockdown above was measured
+on 1.4.8.
 
 @{bullet}@{b}An allowed command runs code.@{ub} Every entry in
 @{tt}allowed_commands@{utt} -- above all a test runner -- executes what the

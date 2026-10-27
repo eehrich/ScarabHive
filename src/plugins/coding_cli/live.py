@@ -73,6 +73,7 @@ class LiveRun:
         self._open: dict[str, tuple[str, str, str]] = {}   # tool_use id -> (request id, tool, line)
         self._closed = False
         self._relay_broken = False
+        self.label = "Claude Code"   # the CLI that runs, as the end says it
 
     @property
     def request_id(self) -> str:
@@ -192,7 +193,7 @@ class LiveRun:
                 self._relay({"type": "cancelled"})
             else:
                 why = record.get("note") or _first_line(str(record.get("result") or "")) or "the run failed"
-                self._relay({"type": "error", "message": f"Claude Code: {why}"})
+                self._relay({"type": "error", "message": f"{self.label}: {why}"})
             self._relay({"type": "end"})
         except Exception:  # noqa: BLE001 - see the module docstring
             logger.exception("coding_cli: closing a run's live view failed")

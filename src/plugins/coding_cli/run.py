@@ -1,5 +1,6 @@
-"""Claude Code as a child process: its command line, its environment, its
-stream, and the git worktree it works in.
+"""Claude Code -- or the Antigravity CLI (agy) -- as a child process: its
+command line, its environment, its stream, and the git worktree it works in.
+agy's stream is read in Claude Code's shape (_from_agy).
 
 Every flag here was measured on Claude Code 2.1.257, the MCP servers and
 --json-schema on 2.1.285 (concept §2, M-CC-*). The
@@ -71,6 +72,13 @@ def find_claude(command: str) -> Optional[list[str]]:
     return [found] if found else None
 
 
+def find_agy(command: str) -> Optional[list[str]]:
+    """The Antigravity CLI to start, or None. Its installer places a native executable; a .cmd or .bat would run
+    it through cmd.exe, which parses the arguments -- json_schema among them -- by its own rules."""
+    found = shutil.which(command or "agy")
+    return [found] if found and not (os.name == "nt" and found.lower().endswith((".cmd", ".bat"))) else None
+
+
 def shell_tool() -> str:
     """Claude Code's shell tool here: on Windows it offers PowerShell, and a
     Bash named in --tools does not appear (M-CC-9)."""
@@ -127,6 +135,111 @@ def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_comman
         # --restricted leaves the project's CLAUDE.md unread; appended, it is read (M-CC-9).
         cmd += ["--append-system-prompt-file", str(rules)]
     return cmd
+
+
+# The Antigravity CLI (agy), measured on 1.4.8, 2026-10-27. Headless it refuses whatever needs an approval and
+# reports it as denied_actions: every shell command, every file outside the workspace (its working directory);
+# accept-edits lets it write files inside, plan only read them. Its web search needs no approval and no setting
+# switched it off (disabledTools, excludeTools, toolPermission strict): an instance takes only web workdirs.
+# It has no allow list for single commands and loads no MCP server of the operator's here. All of this holds for
+# the settings agy_home pins; the user's own (an auto-approval, an MCP server, memories) stay out of a run.
+# --effort works with a model id without its level (gemini-3.8-flash); with one that names it
+# (gemini-3.8-flash-medium) agy refuses the run -- the server drops such an effort.
+def build_agy_command(exe: list[str], *, mode: str, model: str = "", resume: str = "",
+                      json_schema: Optional[dict] = None, effort: str = "") -> list[str]:
+    """The whole agy command line; the task goes in on stdin (agy_input), as Claude Code's does."""
+    cmd = [*exe, "--output-format", "stream-json", "--input-format", "stream-json", "--disable-slash-commands",
+           "--mode", "plan" if mode == "plan" else "accept-edits"]
+    if isinstance(json_schema, dict):
+        cmd += ["--json-schema", json.dumps(json_schema, allow_nan=False)]
+    if model:
+        cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
+    if resume:
+        cmd += ["--conversation", resume]
+    # Last and empty: --print takes the next word as its prompt, a flag too.
+    return [*cmd, "--print="]
+
+
+# The settings an agy run reads: its home is this folder, not the user's (agy_home).
+AGY_SETTINGS = {"toolPermission": "request-review"}
+# Claude Code's own variables: its login token goes to no other program.
+CLAUDE_ONLY_ENV = frozenset({"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"})
+
+
+def agy_home(root: Path, env: dict) -> None:
+    """Points env's home at `root`, holding the settings an agy run is measured under (AGY_SETTINGS) and nothing
+    of the user's -- their permission presets, MCP servers and memories live in their own home. The login is not
+    there: on Windows agy finds it in the credential store (measured, 1.4.8)."""
+    settings = root / ".gemini" / "antigravity-cli" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        current = json.loads(settings.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        current = None
+    # agy writes the pinned default back as {}. Rewritten only when it holds anything else -- in one step, while
+    # parallel runs start: a truncated file is no settings at all.
+    if current not in ({}, AGY_SETTINGS):
+        tmp = settings.with_name(f"settings.{os.getpid()}.{time.monotonic_ns()}.tmp")
+        tmp.write_text(json.dumps(AGY_SETTINGS), encoding="utf-8")
+        os.replace(tmp, settings)
+    for key in [k for k in env if k.upper() in CLAUDE_ONLY_ENV | {"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"}]:
+        del env[key]
+    env["HOME"] = str(root)
+    if os.name == "nt":
+        env["USERPROFILE"] = str(root)
+
+
+def agy_input(task: str) -> str:
+    """The task as the one stdin message agy's stream-json input takes."""
+    return json.dumps({"event": "user", "message": {"role": "user", "content": task}}, ensure_ascii=False) + "\n"
+
+
+# agy's tool parameters under the names tool_line looks for.
+_AGY_ARGS = {"Path": "path", "AbsolutePath": "path", "TargetFile": "path", "CommandLine": "command",
+             "query": "pattern", "Query": "pattern"}
+
+
+def _agy_error(error: Any) -> str:
+    """A failed step's reason: measured as {"type", "message"}; anything else as it stands."""
+    return str(error.get("message") or "") if isinstance(error, dict) else str(error or "")
+
+
+def _from_agy(event: dict) -> Optional[dict]:
+    """An agy stream event in Claude Code's shape, so outcome, actions and the live view read both; None for what
+    they need not see -- the answer's text deltas: the result carries it whole."""
+    kind = event.get("event")
+    if kind == "init":
+        init = event.get("init") if isinstance(event.get("init"), dict) else {}
+        return {"type": "system", "subtype": "init", "session_id": event.get("conversation_id"),
+                "model": init.get("model")}
+    if kind == "result":
+        result = event.get("result") if isinstance(event.get("result"), dict) else {}
+        ok = result.get("status") == "SUCCESS"
+        denied = result.get("denied_actions") if isinstance(result.get("denied_actions"), list) else []
+        return {"type": "result", "subtype": "success" if ok else "error", "is_error": not ok,
+                "result": result.get("response") if ok else (result.get("error") or result.get("response")),
+                "num_turns": result.get("num_turns"),
+                "duration_ms": 1000 * float(result.get("duration_seconds") or 0),
+                "permission_denials": [{"tool_name": d.get("display_name") or d.get("action")}
+                                       for d in denied if isinstance(d, dict)],
+                "structured_output": result.get("structured_output"), "usage": result.get("usage")}
+    step = event.get("step_update")
+    if kind != "step_update" or not isinstance(step, dict) or step.get("step_type") != "tool":
+        return None
+    info = step.get("tool_info") if isinstance(step.get("tool_info"), dict) else {}
+    call = f"{step.get('conversation_id')}-{step.get('step_index')}"
+    if step.get("state") == "ACTIVE":
+        params = info.get("parameters") if isinstance(info.get("parameters"), dict) else {}
+        args = {_AGY_ARGS.get(k, k): v for k, v in params.items()}
+        return {"type": "assistant", "message": {"id": call, "content": [
+            {"type": "tool_use", "id": call, "name": step.get("tool_name"), "input": args}]}}
+    if step.get("state") in ("DONE", "ERROR"):
+        return {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": call, "is_error": step.get("state") == "ERROR",
+             "content": str(info.get("output") or _agy_error(info.get("error")))}]}}
+    return None
 
 
 def child_env(extra: Iterable[str] = ()) -> dict[str, str]:
@@ -201,6 +314,8 @@ def events_from(path: Path, offset: int) -> tuple[list[dict], int]:
         except (ValueError, RecursionError):
             # No JSON, or nested past what the parser takes (the model's deep tool arguments): no event.
             continue
+        if isinstance(event, dict) and "event" in event and "type" not in event:
+            event = _from_agy(event)
         if isinstance(event, dict):
             found.append(event)
     return found, offset + end

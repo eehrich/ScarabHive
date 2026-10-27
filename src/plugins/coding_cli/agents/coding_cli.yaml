@@ -11,6 +11,9 @@ plugins:
       type: coding_cli
       enabled: true
       description: "Claude Code, headless on the operator's subscription: programming tasks in a git worktree, results on a branch"
+      # Which CLI runs: claude (Claude Code) or antigravity (Google's agy, whose
+      # workdirs say web: true -- the guide's "Antigravity instead of Claude Code").
+      cli: claude
       # The subscription belongs to one person: only these ScarabHive users start runs.
       allowed_users: [admin, cli_user]
       # Repositories by name; each run gets a fresh worktree of the repo's HEAD

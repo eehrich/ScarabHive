@@ -87,8 +87,9 @@ SAVE_ATTEMPTS = 40
 # instance and process.
 QUOTA_FRESH_S = 300
 PROBE_TIMEOUT_S = 60
-# Claude Code's --effort levels.
+# Claude Code's --effort levels; agy takes the same (run.py, build_agy_command).
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+CLIS = ("claude", "antigravity")
 # Run ids are made here; anything else the model passes never becomes a path.
 _RUN_ID = re.compile(r"[0-9a-f]{12}")
 _SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -181,11 +182,11 @@ def _instance_alive(owner: Any) -> bool:
     return isinstance(owner, dict) and alive(owner.get("pid"), owner.get("started"))
 
 
-def _no_claude(command: str) -> str:
-    """Why run_task finds no Claude Code: a name looked up on PATH, or a path that holds none."""
+def _no_claude(command: str, label: str = "Claude Code") -> str:
+    """Why run_task finds no CLI: a name looked up on PATH, or a path that holds none."""
     if os.path.dirname(command):
-        return f"Claude Code is not installed here: no executable at {command!r} (coding_cli command)"
-    return (f"Claude Code is not installed here: {command!r} is not on this process's PATH (coding_cli command: "
+        return f"{label} is not installed here: no executable at {command!r} (coding_cli command)"
+    return (f"{label} is not installed here: {command!r} is not on this process's PATH (coding_cli command: "
             "its full path)")
 
 
@@ -210,8 +211,15 @@ class CodingCliServer(SchemaBasedToolServer):
 
     def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         super().__init__(name, system_config, server_config)
-        self._command_name = str(getattr(server_config, "command", "") or "claude")
-        self.command = cli.find_claude(self._command_name)
+        # Which CLI runs: Claude Code, or Google's Antigravity CLI (agy, run.build_agy_command).
+        self.cli = str(getattr(server_config, "cli", "") or "claude")
+        self.agy = self.cli == "antigravity"
+        self.label = "Antigravity" if self.agy else "Claude Code"
+        self._command_name = str(getattr(server_config, "command", "") or ("agy" if self.agy else "claude"))
+        # An unknown cli offers nothing: a typo must not spend the other subscription.
+        self.command = self._find(self._command_name) if self.cli in CLIS else None
+        if self.cli not in CLIS:
+            logger.warning("coding_cli: %s: cli %r is none of %s -- no tools", name, self.cli, ", ".join(CLIS))
         remote = getattr(getattr(system_config, "external_servers", None), "remote_servers", None) or {}
         self.workdirs: dict[str, dict] = {}
         for wname, entry in (getattr(server_config, "workdirs", None) or {}).items():
@@ -224,6 +232,11 @@ class CodingCliServer(SchemaBasedToolServer):
             names = entry.get("mcp_servers") or []
             # `mcp_servers: scarab4` is one server, not seven letters.
             names = [str(n) for n in ([names] if isinstance(names, str) else names)]
+            if self.agy and (names or entry.get("web") is not True):
+                # run.py, build_agy_command: it searches the web in every run, and loads no server of ours.
+                logger.warning("coding_cli: workdir %r skipped -- an Antigravity run searches the web whatever it "
+                               "is told and takes no mcp_servers: its workdirs say web: true and name none", wname)
+                continue
             if names and entry.get("web") is True:
                 # A page can tell the model what to do; a server's tools would do it with its token.
                 logger.warning("coding_cli: workdir %r skipped -- web and mcp_servers together: a page the run "
@@ -243,6 +256,9 @@ class CodingCliServer(SchemaBasedToolServer):
         self.allowed_commands = [str(c) for c in getattr(server_config, "allowed_commands", None) or ()]
         # A web workdir's runs keep their shell only when the operator says so: a page could steer it.
         self.web_with_shell = getattr(server_config, "web_with_shell", False) is True
+        if self.agy and self.allowed_commands:
+            logger.warning("coding_cli: %s: allowed_commands unused -- an Antigravity run has no shell, headless it "
+                           "refuses every command", name)
         if self.allowed_commands and any(w["mcp_servers"] for w in self.workdirs.values()):
             logger.warning("coding_cli: %s allows shell commands and gives runs MCP servers -- every allowed "
                            "command inherits the environment that holds the servers' tokens", name)
@@ -251,8 +267,13 @@ class CodingCliServer(SchemaBasedToolServer):
         # --restricted leaves the user's settings unread, their effortLevel too: the instance names its own.
         self.effort = str(getattr(server_config, "effort", "") or "")
         if self.effort and self.effort not in EFFORTS:
-            logger.warning("coding_cli: %s: effort %r is none of %s -- Claude Code's default instead",
-                           name, self.effort, ", ".join(EFFORTS))
+            logger.warning("coding_cli: %s: effort %r is none of %s -- %s's default instead",
+                           name, self.effort, ", ".join(EFFORTS), self.label)
+            self.effort = ""
+        if self.agy and self.effort and self.model.endswith(tuple(f"-{level}" for level in EFFORTS)):
+            # agy refuses every run whose model id names a level and an --effort beside it (run.py).
+            logger.warning("coding_cli: %s: effort %r dropped -- model %r names its level already; an effort goes "
+                           "with a model id without one", name, self.effort, self.model)
             self.effort = ""
         self.max_utilization = _bounded(getattr(server_config, "max_window_utilization", None), 0.8, 0.05, 1.0) or 0.8
         self.wait_s = _bounded(getattr(server_config, "wait_s", None), 300, 0, 3600)
@@ -279,14 +300,20 @@ class CodingCliServer(SchemaBasedToolServer):
         self._me = {"pid": os.getpid(), "started": cli.process_start(os.getpid()), "instance": self._instance}
 
         if self.command is None:
-            logger.info("coding_cli: no Claude Code executable found -- %s offers no tools", name)
+            logger.info("coding_cli: no %s executable found -- %s offers no tools", self.label, name)
         elif not self.workdirs:
             # info, like no executable: an instance whose workdirs a user registers later starts this way
             logger.info("coding_cli: no usable workdir -- %s offers no tools", name)
 
+    def _find(self, command: str) -> Optional[list[str]]:
+        """The CLI's executable, looked up at each call: one installed after the start is found by the next run."""
+        return (cli.find_agy if self.agy else cli.find_claude)(command)
+
     def get_template_vars(self) -> dict[str, Any]:
         template_vars = super().get_template_vars()
         template_vars["configured"] = bool(self.command and self.workdirs)
+        # windows: Claude Code reports the subscription's, agy none -- no quota tool, no threshold to ask.
+        template_vars["cli_name"], template_vars["windows"] = self.label, not self.agy
         template_vars["workdirs"] = sorted(self.workdirs)
         return template_vars
 
@@ -498,7 +525,9 @@ class CodingCliServer(SchemaBasedToolServer):
     async def _quota_now(self, threshold: float, user_id: str) -> Any:
         """The last known state (_quota) -- asked anew when it would refuse a run at `threshold` and is older than
         QUOTA_FRESH_S, by a user who may run on the subscription (allowed_users). Without an answer the state on
-        file stands."""
+        file stands. An Antigravity instance knows none: agy reports no window, and quota.json is Claude Code's."""
+        if self.agy:
+            return None
         state = self._quota()
         if (self.command is None or user_id not in self.allowed_users
                 or not cli.quota_limit(state, threshold, time.time())):
@@ -545,13 +574,14 @@ class CodingCliServer(SchemaBasedToolServer):
         status = params.get("_status") or _NoStatus()
         user_id, session_id = str(params.get("_user_id") or ""), str(params.get("_session_id") or "")
         if user_id not in self.allowed_users:
-            return await self._fail(status, "Claude Code runs on the operator's subscription: this user may not "
+            return await self._fail(status, f"{self.label} runs on the operator's subscription: this user may not "
                                             "start runs (coding_cli allowed_users)")
         if self.command is None:
             # A machine calls the tool by name, offered or not; Claude Code installed after the start is found now.
-            self.command = cli.find_claude(self._command_name)
+            self.command = self._find(self._command_name) if self.cli in CLIS else None
             if self.command is None:
-                return await self._fail(status, _no_claude(self._command_name))
+                return await self._fail(status, _no_claude(self._command_name, self.label) if self.cli in CLIS
+                                        else f"cli {self.cli!r} is none of {', '.join(CLIS)} (coding_cli cli)")
         if not self.workdirs:
             # The same by-name call: every configured workdir was skipped at the start (the log says why).
             return await self._fail(status, "no usable workdir (coding_cli workdirs: a git repository each -- the "
@@ -590,6 +620,9 @@ class CodingCliServer(SchemaBasedToolServer):
             prior = await self._settle(prior["run_id"], session_id)
             if prior.get("state") not in FINAL_STATES:
                 return await self._fail(status, f"resume: run {prior['run_id']} has not ended yet")
+            if prior.get("cli", "claude") != self.cli:
+                return await self._fail(status, f"resume: run {prior['run_id']} ran on {prior.get('cli', 'claude')}, "
+                                                f"this instance runs {self.cli} -- start a new run")
             if not prior.get("claude_session") or not Path(prior["worktree"]).is_dir():
                 return await self._fail(status, f"resume: run {prior['run_id']} left no conversation or "
                                                 f"worktree to continue -- start a new run")
@@ -678,6 +711,8 @@ class CodingCliServer(SchemaBasedToolServer):
         session has nobody to wake)."""
         run_id = record["run_id"]
         live = await LiveRun.open(request_id, task, Path(record.get("worktree") or "."))
+        if live is not None:
+            live.label = self.label
         if live is not None:
             self._live[run_id] = live
         self._listeners[run_id] = status
@@ -786,6 +821,9 @@ class CodingCliServer(SchemaBasedToolServer):
         run_task's: None when none), at the instance's threshold, or the lower one asked. No run has reported yet:
         known false, no limit -- nothing to go by refuses nothing."""
         status = params.get("_status") or _NoStatus()
+        if self.agy:
+            # Not offered (schema.yaml); called by name it says why instead of "below 80 %".
+            return await self._fail(status, "Antigravity reports no subscription windows: there is nothing to show")
         utilization = params.get("max_window_utilization")
         if utilization is not None and not _utilization_ok(utilization):
             return await self._fail(status, "max_window_utilization: a share above 0 and at most 1")
@@ -874,9 +912,14 @@ class CodingCliServer(SchemaBasedToolServer):
         # Plan mode only reads: no server whose tools could write.
         servers = self.workdirs[workdir]["mcp_servers"] if mode != "plan" else {}
         env, values = cli.child_env(self.pass_env), {}
-        # Claude Code gives up on an MCP tool that says nothing for 5 min (its default): a tool that works
-        # longer without a word was given up on and called again. The run's own limit bounds a call.
-        env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] = str(round(max_run_s * 1000))
+        if self.agy:
+            # One per ScarabHive user: what agy keeps there (conversations for a resume, memories) is not handed
+            # from one user's runs to another's.
+            cli.agy_home(self._root() / "agy_home" / (re.sub(r"[^A-Za-z0-9_-]", "_", user_id)[:60] or "_"), env)
+        else:
+            # Claude Code gives up on an MCP tool that says nothing for 5 min (its default): a tool that works
+            # longer without a word was given up on and called again. The run's own limit bounds a call.
+            env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] = str(round(max_run_s * 1000))
         if servers:
             mcp, config = self._file(run_id, "mcp.json"), {}
             for name, cfg in servers.items():
@@ -893,12 +936,17 @@ class CodingCliServer(SchemaBasedToolServer):
         else:
             mcp = self._no_mcp()
         rules = worktree / "CLAUDE.md"
-        cmd = cli.build_command(self.command, mode=mode, mcp_config=mcp, allowed_commands=self.allowed_commands,
-                                mcp_servers={n: (getattr(c, "tools", None) and c.tools.blocked) or []
-                                             for n, c in servers.items()}, model=self.model, effort=self.effort, resume=resume,
-                                rules=rules if rules.is_file() else None, json_schema=schema,
-                                web=self.workdirs[workdir]["web"], web_with_shell=self.web_with_shell)
-        record = {"run_id": run_id, "instance_name": self.name, "max_run_s": max_run_s, "asked_run_s": asked_run_s,
+        if self.agy:
+            cmd = cli.build_agy_command(self.command, mode=mode, model=self.model, effort=self.effort,
+                                        resume=resume, json_schema=schema)
+        else:
+            cmd = cli.build_command(self.command, mode=mode, mcp_config=mcp, allowed_commands=self.allowed_commands,
+                                    mcp_servers={n: (getattr(c, "tools", None) and c.tools.blocked) or []
+                                                 for n, c in servers.items()}, model=self.model, effort=self.effort,
+                                    resume=resume, rules=rules if rules.is_file() else None, json_schema=schema,
+                                    web=self.workdirs[workdir]["web"], web_with_shell=self.web_with_shell)
+        record = {"run_id": run_id, "instance_name": self.name, "cli": self.cli,
+                  "max_run_s": max_run_s, "asked_run_s": asked_run_s,
                   "asked_utilization": asked_utilization,
                   "user_id": user_id,
                   "session_id": session_id, "workdir": workdir,
@@ -906,13 +954,13 @@ class CodingCliServer(SchemaBasedToolServer):
                   "git_dir": made.git_dir, "hidden": made.hidden, "json_schema": schema,
                   "prior": prior["run_id"] if prior else None, "state": "running", "started_at": time.time(),
                   "owner": self._me}
-        self._file(run_id, "task").write_text(task, encoding="utf-8")
+        self._file(run_id, "task").write_text(cli.agy_input(task) if self.agy else task, encoding="utf-8")
         self._save(record)
         try:
             proc = cli.launch(cmd, worktree, env, self._file(run_id, "task"),
                               self._file(run_id, "jsonl"), self._file(run_id, "err"))
         except OSError as exc:
-            record.update(state="failed", ended_at=time.time(), note=f"Claude Code did not start: {exc}")
+            record.update(state="failed", ended_at=time.time(), note=f"{self.label} did not start: {exc}")
             if prior is None:
                 # _prepare removes the worktree and branch: the record must not name them.
                 for key in ("worktree", "branch", "base", "git_dir", "hidden"):
@@ -1139,7 +1187,8 @@ class CodingCliServer(SchemaBasedToolServer):
                         err = self._file(run_id, "err").read_text(encoding="utf-8", errors="replace").strip()
                     except OSError:
                         err = ""
-                    notes.append("Claude Code ended without a result" + (", its stderr is in details" if err else ""))
+                    label = "Antigravity" if record.get("cli") == "antigravity" else "Claude Code"
+                    notes.append(f"{label} ended without a result" + (", its stderr is in details" if err else ""))
                     if err:
                         details.append(err[-CAP_STDERR:])
             if result:
@@ -1259,4 +1308,4 @@ def _denial(denial: Any) -> str:
         return str(denial)[:120]
     args = denial.get("tool_input") if isinstance(denial.get("tool_input"), dict) else {}
     target = args.get("file_path") or args.get("command") or args.get("path") or ""
-    return f"{denial.get('tool_name')} {' '.join(str(target).split())}"[:120]
+    return f"{denial.get('tool_name')} {' '.join(str(target).split())}".strip()[:120]

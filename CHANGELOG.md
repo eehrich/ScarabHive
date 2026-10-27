@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- coding_cli runs Google's Antigravity CLI (`agy`) as well as Claude Code: `cli: antigravity` on an instance.
+  agy's stream is read as Claude Code's, so the tools, the branch, `resume` and `json_schema` work the same.
+  A run gets a home folder of its own per user (pinned settings, nothing of the user's agy setup, no Claude
+  Code variables), edits only its worktree (`--mode accept-edits`, plan mode only reads), has no shell and
+  loads no MCP server. Its web search cannot be switched off, so such an instance takes only workdirs that
+  say `web: true`. agy reports no subscription windows: no quota tool, no budget guard. A run records its CLI,
+  and a resume stays with it.
+
 ## [0.7.1] - 2026-10-27
 
 ### Added
