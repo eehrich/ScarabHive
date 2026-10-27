@@ -192,7 +192,7 @@ class LiveRun:
             elif state == "cancelled":
                 self._relay({"type": "cancelled"})
             else:
-                why = record.get("note") or _first_line(str(record.get("result") or "")) or "the run failed"
+                why = record.get("note") or _first_line(str(record.get("result") or ""))[:300] or "the run failed"
                 self._relay({"type": "error", "message": f"{self.label}: {why}"})
             self._relay({"type": "end"})
         except Exception:  # noqa: BLE001 - see the module docstring

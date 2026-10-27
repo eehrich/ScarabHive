@@ -29,6 +29,11 @@ tools:
           json_schema:
             type: object
             description: "A JSON schema (an object, at most 20000 characters as JSON) for a structured answer: the run then also returns output, an object matching it. A resume without one keeps the prior run's"
+{% if pins %}
+          pin:
+            type: object
+            description: "Only for a workdir with a gateway: a value for each parameter it fixes -- its tools then reach only these. A resume keeps the prior run's"
+{% endif %}
           wake:
             type: boolean
             default: true

@@ -2046,3 +2046,41 @@ async def test_a_call_still_answering_holds_its_run(repo, how):
         if run_id:
             await call(taker, "cancel_run", run_id=run_id)
         await taker.stop_plugin()
+
+
+async def test_an_instances_env_reaches_its_runs_and_the_plugins_own_values_win(repo, log):
+    server = make_server(repo, wait_s=0.2, env={"MAX_MCP_OUTPUT_TOKENS": "50000",
+                                                "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT": "1", "not a name": "x"})
+    assert "not a name" not in server.env
+    started, _ = await call(server, "run_task", task="SLEEP 30")
+    try:
+        env = psutil.Process(server._load(started["run_id"])["pid"]).environ()
+    finally:
+        await call(server, "cancel_run", run_id=started["run_id"])
+    assert env["MAX_MCP_OUTPUT_TOKENS"] == "50000"
+    assert env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] == str(round(server.max_run_s * 1000))
+
+
+@pytest.mark.parametrize("cap, cut", [(None, True), (16_000, False)])
+async def test_the_final_report_is_bounded_by_the_instances_max_result_chars(repo, log, cap, cut):
+    """A caller that takes the report as its answer (an LLM provider) raises the bound; the default keeps a chat's."""
+    server = make_server(repo, **({"max_result_chars": cap} if cap else {}))
+    result, _ = await call(server, "run_task", task="WRITE b.txt " + "x" * 15_000)
+    report = result["result"]["content"]
+    assert len(report) > 15_000 or cut, "the fixture's report is under the bound it tests"
+    assert bool(result.get("result_cut")) is cut and len(report) == (server_module.CAP_RESULT if cut else len(report))
+
+
+async def test_the_quota_probe_runs_under_the_instances_env(repo, data_root, monkeypatch):
+    """A login or proxy set in env is the runs': the windows asked for must be theirs."""
+    full_window(data_root, used=0.91, name="seven_day")
+    aged(data_root, server_module.QUOTA_FRESH_S + 60)
+    probes = []
+    monkeypatch.setattr(cli, "probe_quota", lambda *a: probes.append(a))
+    await call(make_server(repo, env={"HTTPS_PROXY": "http://proxy.example:3128"}), "run_task", task="x")
+    assert probes and probes[0][3]["HTTPS_PROXY"] == "http://proxy.example:3128"
+
+
+def test_an_env_value_no_launch_takes_is_left_out(repo, caplog):
+    server = make_server(repo, env={"GOOD": "1", "NUL": "a\0b", "EMPTY": None})
+    assert server.env == {"GOOD": "1"} and "left out" in caplog.text

@@ -6,7 +6,7 @@ The task is the content of the one stdin message; it is a script, one command pe
   DENY                  a shell command refused headless (denied_actions)
   ERROR                 end with an error result
   OUTPUT <json>         with --json-schema, the result's structured_output (else {"done": true})
-With FAKE_CLAUDE_LOG set, argv, the environment's names and the task go there as JSON.
+With FAKE_CLAUDE_LOG set, argv, the environment's names, the task and the workspace's MCP file go there as JSON.
 """
 import json
 import os
@@ -29,10 +29,12 @@ def main():
     message = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     task = message["message"]["content"]
     argv = sys.argv[1:]
+    mcp = Path(".agents") / "mcp_config.json"     # what agy would load from the workspace
     if os.environ.get("FAKE_CLAUDE_LOG"):
         Path(os.environ["FAKE_CLAUDE_LOG"]).write_text(json.dumps(
             {"argv": argv, "env": sorted(os.environ), "task": task, "cwd": os.getcwd(),
-             "home": os.environ.get("HOME"), "userprofile": os.environ.get("USERPROFILE")}), encoding="utf-8")
+             "home": os.environ.get("HOME"), "userprofile": os.environ.get("USERPROFILE"),
+             "mcp_config": mcp.read_text(encoding="utf-8") if mcp.is_file() else None}), encoding="utf-8")
     conversation = argv[argv.index("--conversation") + 1] if "--conversation" in argv else str(uuid.uuid4())
     emit({"event": "init", "conversation_id": conversation, "init": {
         "model": argv[argv.index("--model") + 1] if "--model" in argv else "gemini-3.8-flash-medium",

@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the same agent run that goes on from the last one resumes that run; cancelling the agent stops it. The
   subscription's limit blocks the link until it resets, any other failure moves the profile chain on. Agent runs
   hold their session in `current_run_session` (beside `current_run_user`), which the CLI's tool calls run in.
+- coding_cli: a workdir's `gateway` (tools, `pin`, `allowed`, `read_only`) hands its runs tools of this
+  installation through the MCP gateway -- a grant per run, revoked at its end; `run_task` takes the values it fixes
+  as `pin`. Claude Code gets the token in its environment only, agy in its workspace's MCP file, removed before the
+  commit. Beside web (for agy always) the workdir must say `read_only: true`. An instance's `env` sets values its
+  runs get (the plugin's own win), and `max_result_chars` bounds the final report (default 12,000, up to 200,000)
+  for a caller that takes it as its answer.
 
 ### Fixed
 

@@ -169,7 +169,11 @@ def build_agy_command(exe: list[str], *, mode: str, model: str = "", resume: str
 # may write no root (a deny rule holds in every mode, measured), and a run does not start on a worktree that
 # carries such a file (agy_unsafe).
 AGY_ROOTS = (".agents", "_agents", ".agent", "_agent")
-AGY_SETTINGS = {"permissions": {"deny": [f"write_file({root}/)" for root in AGY_ROOTS]}}
+# The MCP server a run's gateway grant is reached by (both CLIs). agy calls a server's tools headless only with an
+# allow rule (measured 1.4.8); only the file agy_gateway writes names this one -- a repository's is refused.
+GATEWAY_SERVER = "gateway"
+AGY_SETTINGS = {"permissions": {"allow": [f"mcp({GATEWAY_SERVER}/*)"],
+                                "deny": [f"write_file({root}/)" for root in AGY_ROOTS]}}
 # What agy loads from a root and would run: a repository or an earlier run may not hand it a run.
 AGY_UNSAFE = ("hooks.json", "plugins", "mcp_config.json")
 # Claude Code's own variables: its login token goes to no other program.
@@ -205,6 +209,21 @@ def agy_unsafe(worktree: Path) -> list[str]:
     return sorted(f"{root.name}/{item.name}" for root in worktree.iterdir()
                   if root.name.lower() in AGY_ROOTS and root.is_dir()
                   for item in root.iterdir() if item.name.lower() in AGY_UNSAFE)
+
+
+def agy_gateway(worktree: Path, url: str, token: Optional[str]) -> None:
+    """Writes (token) or removes (None) the MCP file through which an agy run reaches its gateway grant. The token
+    stands in it as it is: agy expands no ${VAR} in a header (measured 1.4.8). Written after agy_unsafe looked,
+    removed before the run's commit."""
+    path = worktree / AGY_ROOTS[0] / "mcp_config.json"
+    if token is None:
+        path.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            path.parent.rmdir()         # only when nothing else is in it
+        return
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps({"mcpServers": {GATEWAY_SERVER: {
+        "serverUrl": url, "headers": {"Authorization": f"Bearer {token}"}}}}), encoding="utf-8")
 
 
 def agy_input(task: str) -> str:

@@ -250,3 +250,12 @@ def test_a_failed_step_whose_error_is_no_object_still_reads(tmp_path):
         "conversation_id": "c", "step_index": 1, "state": "ERROR", "step_type": "tool", "tool_name": "x",
         "tool_info": {"name": "x", "error": "plain words"}}}) + "\n", encoding="utf-8")
     assert cli.events(stream)[0]["message"]["content"][0]["content"] == "plain words"
+
+
+async def test_an_instances_env_reaches_an_agy_run_but_no_claude_login(repo, log):
+    server = make_agy(repo, env={"AGY_PROBE": "1", "CLAUDE_CODE_OAUTH_TOKEN": "claude-subscription-token",
+                                 "HOME": "/elsewhere"})
+    result, _ = await call(server, "run_task", task="x")
+    sent = log()
+    assert result["state"] == "done" and "AGY_PROBE" in sent["env"] and "CLAUDE_CODE_OAUTH_TOKEN" not in sent["env"]
+    assert Path(sent["home"]).name == "admin", "the run's home is the plugin's, not env's"

@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from agent_system.core.session_presence import alive, presence_for, wake_blocked, wake_depth, wake_session
 from agent_system.paths import PROJECT_ROOT, data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.servers.agent.components.tool_call_contract import FRAMEWORK_REQUEST_ID_KEYS
 from plugins.mcp_client.auth import build_auth_headers
 # The transport names the MCP client dials by ("streaming" is HTTP, "http+sse" SSE); stdio and a typo are not
 # among them.
@@ -67,6 +68,7 @@ MAX_TASK_CHARS_CAP = 1_000_000
 # Windows' 32,767 characters.
 MAX_SCHEMA_CHARS = 20_000
 CAP_RESULT = 12_000
+MAX_RESULT_CHARS_CAP = 200_000
 CAP_STDERR = 600
 CAP_HIDDEN = 50
 LAST_ACTIONS = 12
@@ -115,6 +117,58 @@ def _untrusted(content: Any) -> dict:
     """Claude Code's own words: it read files to write them, so they are data
     for the model, never instructions."""
     return {"untrusted": True, "content": content}
+
+
+# run id -> the token of its gateway grant, for the revoke at its end. In memory, as the grants are (the gateway
+# serves in this process only): a run another process finalizes has its grant end by its time limit.
+_GRANTS: dict[str, str] = {}
+# What a grant holds beyond the run's limit: the run's end (commit, finalize) still reads nothing through it.
+GRANT_SLACK_S = 300.0
+
+
+def _revoke(run_id: str) -> None:
+    token = _GRANTS.pop(run_id, None)
+    if token:
+        from plugins.mcp_gateway import grants
+        grants.revoke(token)
+
+
+def _gateway(entry: Any) -> tuple[Optional[dict], str]:
+    """A workdir's `gateway:` (the operator's): which tools of this installation its runs reach through an MCP
+    gateway grant -- or why it cannot be one."""
+    if entry is None:
+        return None, ""
+    if not isinstance(entry, dict):
+        return None, "gateway: {tools: [...], ...}"
+    unknown = set(entry) - {"tools", "pin", "allowed", "read_only", "instance"}
+    if unknown:
+        # A misspelt `allowed` or `pin` would leave the grant wider than meant.
+        return None, f"gateway: unknown key(s) {sorted(unknown)} -- tools, pin, allowed, read_only, instance"
+    tools, pin, allowed = entry.get("tools"), entry.get("pin") or [], entry.get("allowed") or {}
+    pin = [pin] if isinstance(pin, str) else pin
+    instance = entry.get("instance") or "mcp_gateway"
+    if not isinstance(tools, list) or not tools or not all(isinstance(t, str) and t for t in tools):
+        return None, "gateway.tools: a list of tool name patterns"
+    if not isinstance(pin, list) or not all(isinstance(k, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", k)
+                                            and k not in FRAMEWORK_REQUEST_ID_KEYS for k in pin):
+        return None, "gateway.pin: the names of the parameters a call fixes (run_task pin)"
+    if not isinstance(allowed, dict) or not all(
+            isinstance(pattern, str) and pattern and isinstance(rules, dict) and rules
+            and all(isinstance(path, str) and path and isinstance(values, list) and values
+                    for path, values in rules.items())
+            for pattern, rules in allowed.items()):
+        return None, "gateway.allowed: {tool pattern: {path: [values]}}"
+    from plugins.mcp_gateway.grants import _check_path
+    try:
+        for rules in allowed.values():
+            for path in rules:
+                _check_path(path)       # the gateway's own check, which would refuse every run
+    except ValueError as exc:
+        return None, f"gateway.{exc}"
+    if not isinstance(instance, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", instance):
+        return None, "gateway.instance: a plugin instance name"
+    return {"instance": instance, "tools": tools, "pin": sorted(set(pin)), "allowed": allowed,
+            "read_only": entry.get("read_only") is True}, ""
 
 
 def _transport(cfg: Any) -> str:
@@ -232,6 +286,17 @@ class CodingCliServer(SchemaBasedToolServer):
             names = entry.get("mcp_servers") or []
             # `mcp_servers: remote_mcp` is one server, not ten letters.
             names = [str(n) for n in ([names] if isinstance(names, str) else names)]
+            gateway, problem = _gateway(entry.get("gateway"))
+            if problem or cli.GATEWAY_SERVER in names:
+                logger.warning("coding_cli: workdir %r skipped -- %s", wname,
+                               problem or f"mcp_servers names {cli.GATEWAY_SERVER!r}, the gateway's server")
+                continue
+            if gateway and entry.get("web") is True and not gateway["read_only"]:
+                # As with mcp_servers below: a page could steer what the tools write. The operator vouches that
+                # the tools and allowed values only read.
+                logger.warning("coding_cli: workdir %r skipped -- web and a gateway that is not read_only: a page "
+                               "the run reads could steer its tools", wname)
+                continue
             if self.agy and (names or entry.get("web") is not True):
                 # run.py, build_agy_command: it searches the web in every run, and loads no server of ours.
                 logger.warning("coding_cli: workdir %r skipped -- an Antigravity run searches the web whatever it "
@@ -248,7 +313,15 @@ class CodingCliServer(SchemaBasedToolServer):
                                "a url or not a plain name (external_servers.remote_servers)", wname, unusable)
                 continue
             self.workdirs[str(wname)] = {"path": path, "exclude": [str(e) for e in entry.get("exclude") or []],
-                                         "mcp_servers": {n: remote[n] for n in names}, "web": entry.get("web") is True}
+                                         "mcp_servers": {n: remote[n] for n in names}, "web": entry.get("web") is True,
+                                         "gateway": gateway}
+        # The gateway serves under this process's API (its port as agent_system.app.run takes it).
+        network = getattr(system_config, "network", None)
+        self.gateway_port = int(os.getenv("PORT") or getattr(network, "port", 0) or 8000)
+        host = str(os.getenv("HOST") or getattr(network, "host", "") or "")
+        # A wildcard bind is reached on loopback; an IPv6 address goes in brackets.
+        host = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
+        self.gateway_host = f"[{host}]" if ":" in host else host
         # The subscription belongs to one person (concept §7).
         users = getattr(server_config, "allowed_users", None) or ()
         # `allowed_users: admin` is one user, not five letters.
@@ -259,10 +332,19 @@ class CodingCliServer(SchemaBasedToolServer):
         if self.agy and self.allowed_commands:
             logger.warning("coding_cli: %s: allowed_commands unused -- an Antigravity run has no shell, headless it "
                            "refuses every command", name)
-        if self.allowed_commands and any(w["mcp_servers"] for w in self.workdirs.values()):
+        if self.allowed_commands and any(w["mcp_servers"] or w["gateway"] for w in self.workdirs.values()):
             logger.warning("coding_cli: %s allows shell commands and gives runs MCP servers -- every allowed "
                            "command inherits the environment that holds the servers' tokens", name)
         self.pass_env = [str(v) for v in getattr(server_config, "pass_env", None) or ()]
+        # Values this instance's runs get (e.g. a CLI's output limits): set before the plugin's own, which win.
+        env = getattr(server_config, "env", None) or {}
+        env = env if isinstance(env, dict) else {}
+        # A value with NUL would fail the launch after the record says running; an empty YAML value is no value.
+        self.env = {str(k): str(v) for k, v in env.items()
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(k)) and v is not None and "\0" not in str(v)}
+        if len(self.env) != len(env) or not isinstance(getattr(server_config, "env", None) or {}, dict):
+            logger.warning("coding_cli: %s: env takes {NAME: value} with plain names and values -- the others are "
+                           "left out", name)
         self.model = str(getattr(server_config, "model", "") or "")
         # --restricted leaves the user's settings unread, their effortLevel too: the instance names its own.
         self.effort = str(getattr(server_config, "effort", "") or "")
@@ -284,6 +366,9 @@ class CodingCliServer(SchemaBasedToolServer):
                                            MAX_TASK_CHARS_CAP) or MAX_TASK_CHARS)
         self.max_output_chars = int(_bounded(getattr(server_config, "max_output_chars", None), CAP_RESULT, 1_000,
                                              100_000) or CAP_RESULT)
+        # The final report's bound: a caller that takes it as the answer itself (an LLM provider) needs more.
+        self.max_result_chars = int(_bounded(getattr(server_config, "max_result_chars", None), CAP_RESULT, 1_000,
+                                             MAX_RESULT_CHARS_CAP) or CAP_RESULT)
         self._monitors: dict[str, asyncio.Task] = {}
         self._listeners: dict[str, Any] = {}
         # run id -> its live view (live.py), for the life of the run, not only
@@ -315,6 +400,8 @@ class CodingCliServer(SchemaBasedToolServer):
         # windows: Claude Code reports the subscription's, agy none -- no quota tool, no threshold to ask.
         template_vars["cli_name"], template_vars["windows"] = self.label, not self.agy
         template_vars["workdirs"] = sorted(self.workdirs)
+        # pins: a workdir's gateway fixes values -- only then run_task offers pin.
+        template_vars["pins"] = any(w["gateway"] and w["gateway"]["pin"] for w in self.workdirs.values())
         return template_vars
 
     async def start_plugin(self) -> None:
@@ -550,7 +637,8 @@ class CodingCliServer(SchemaBasedToolServer):
             return found
 
     def _probe_and_store(self) -> Optional[dict]:
-        found = cli.probe_quota(self.command, self._no_mcp(), self._root(), cli.child_env(self.pass_env),
+        # Under the environment the runs get: a login or proxy set in env is theirs.
+        found = cli.probe_quota(self.command, self._no_mcp(), self._root(), {**cli.child_env(self.pass_env), **self.env},
                                 PROBE_TIMEOUT_S)
         if isinstance(found, dict):
             self._store_quota(found)
@@ -639,6 +727,22 @@ class CodingCliServer(SchemaBasedToolServer):
             workdir = params.get("workdir") or (next(iter(self.workdirs)) if len(self.workdirs) == 1 else None)
         if workdir not in self.workdirs:
             return await self._fail(status, f"workdir: one of {', '.join(sorted(self.workdirs))}")
+        gateway, pin = self.workdirs[workdir]["gateway"], params.get("pin")
+        if prior:
+            # The conversation goes on with the values it was given: other values make another run.
+            if (pin or None) is not None and (pin or None) != prior.get("pin"):
+                return await self._fail(status, f"pin: a resume keeps run {prior['run_id']}'s -- "
+                                                f"{json.dumps(prior.get('pin'))}")
+            pin = prior.get("pin")
+            if sorted(pin or {}) != (gateway["pin"] if gateway else []):
+                return await self._fail(status, f"resume: workdir {workdir}'s gateway fixes other values than when "
+                                                f"run {prior['run_id']} ran -- start a new run")
+        if not gateway and pin:
+            return await self._fail(status, f"pin: workdir {workdir} has no gateway -- leave it out")
+        if gateway and (not isinstance(pin or {}, dict) or sorted(pin or {}) != gateway["pin"]
+                        or not all(isinstance(v, (str, int, float)) for v in (pin or {}).values())):
+            return await self._fail(status, f"pin: {{{', '.join(f'{k}: <value>' for k in gateway['pin'])}}} -- "
+                                            f"what workdir {workdir}'s gateway fixes, nothing else")
         # As asked; _start holds it to the instance's, what its operator allows a run. None: the instance's.
         asked_run_s = 60 * limit if limit is not None else None
         # The given one or the one a resume inherits, before anything is made.
@@ -672,7 +776,7 @@ class CodingCliServer(SchemaBasedToolServer):
             # task at the loop's end does not reach it.
             prepare = asyncio.get_running_loop().run_in_executor(None, functools.partial(
                 self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema, asked_run_s,
-                utilization))
+                utilization, pin or None, str(params.get("_request_id") or run_id)))
             try:
                 try:
                     record = await asyncio.shield(prepare)
@@ -876,7 +980,8 @@ class CodingCliServer(SchemaBasedToolServer):
 
     def _prepare(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict],
                  user_id: str, session_id: str, schema: Optional[dict] = None,
-                 asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None) -> dict:
+                 asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
+                 pin: Optional[dict] = None, request_id: str = "") -> dict:
         """Worktree, command line and record, then the process (sync, off the loop)."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
         spec = self.workdirs[workdir]
@@ -890,8 +995,13 @@ class CodingCliServer(SchemaBasedToolServer):
             if not prior:
                 cli.seed_worktree(spec["path"], worktree, spec.get("seed") or ())
             return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema,
-                               asked_run_s, asked_utilization)
+                               asked_run_s, asked_utilization, pin, request_id or run_id)
         except BaseException:
+            issued = run_id in _GRANTS
+            _revoke(run_id)
+            if self.agy and issued:     # only the file written here: one the branch carries is the user's
+                with contextlib.suppress(OSError):
+                    cli.agy_gateway(worktree, "", None)
             # Answered "not started": no MCP file is left (a url may hold a key in its path), and for a fresh
             # run no worktree or branch that no answer names.
             with contextlib.suppress(OSError):
@@ -902,7 +1012,8 @@ class CodingCliServer(SchemaBasedToolServer):
 
     def _start(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict], user_id: str,
                session_id: str, worktree: Path, branch: str, made: cli.Worktree, schema: Optional[dict] = None,
-               asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None) -> dict:
+               asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
+               pin: Optional[dict] = None, request_id: str = "") -> dict:
         resume = prior["claude_session"] if prior else ""
         unsafe = cli.agy_unsafe(worktree) if self.agy else []
         if unsafe:
@@ -916,7 +1027,21 @@ class CodingCliServer(SchemaBasedToolServer):
             raise OSError(f"run {prior['run_id']} holds no usable session id")
         # Plan mode only reads: no server whose tools could write.
         servers = self.workdirs[workdir]["mcp_servers"] if mode != "plan" else {}
-        env, values = cli.child_env(self.pass_env), {}
+        gateway = self.workdirs[workdir]["gateway"] if mode != "plan" else None
+        token, url = None, ""
+        if gateway:
+            from plugins.mcp_gateway import grants
+            try:
+                # Under the caller's id (cost attribution by prefix), its own per run: two runs of one turn,
+                # or a resume, count their calls apart.
+                token = grants.issue(user_id, gateway["tools"], request_id=f"{request_id or run_id}_{run_id}",
+                                     pinned=pin, allowed=gateway["allowed"], session_id=session_id or None,
+                                     ttl_s=max_run_s + GRANT_SLACK_S, gateway=gateway["instance"])
+            except (LookupError, ValueError) as exc:
+                raise OSError(f"mcp gateway: {exc}") from None
+            _GRANTS[run_id] = token
+            url = f"http://{self.gateway_host}:{self.gateway_port}/plugins/{gateway['instance']}/mcp"
+        env, values = {**cli.child_env(self.pass_env), **self.env}, {}
         if self.agy:
             # One per ScarabHive user: what agy keeps there (conversations for a resume, memories) is not handed
             # from one user's runs to another's.
@@ -925,7 +1050,7 @@ class CodingCliServer(SchemaBasedToolServer):
             # Claude Code gives up on an MCP tool that says nothing for 5 min (its default): a tool that works
             # longer without a word was given up on and called again. The run's own limit bounds a call.
             env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] = str(round(max_run_s * 1000))
-        if servers:
+        if servers or (token and not self.agy):
             mcp, config = self._file(run_id, "mcp.json"), {}
             for name, cfg in servers.items():
                 headers = {}
@@ -936,18 +1061,26 @@ class CodingCliServer(SchemaBasedToolServer):
                     values[var], headers[header] = value, f"${{{var}}}"
                 config[name] = {"type": "sse" if _transport(cfg) in _SSE_ALIASES else "http", "url": cfg.url,
                                 "headers": headers}
+            if token:
+                var = f"CODING_CLI_MCP_{len(values)}"
+                values[var] = f"Bearer {token}"
+                config[cli.GATEWAY_SERVER] = {"type": "http", "url": url, "headers": {"Authorization": f"${{{var}}}"}}
             mcp.write_text(json.dumps({"mcpServers": config}, indent=1), encoding="utf-8")
             env.update(values)
         else:
             mcp = self._no_mcp()
         rules = worktree / "CLAUDE.md"
         if self.agy:
+            if token:
+                cli.agy_gateway(worktree, url, token)
             cmd = cli.build_agy_command(self.command, mode=mode, model=self.model, effort=self.effort,
                                         resume=resume, json_schema=schema)
         else:
             cmd = cli.build_command(self.command, mode=mode, mcp_config=mcp, allowed_commands=self.allowed_commands,
-                                    mcp_servers={n: (getattr(c, "tools", None) and c.tools.blocked) or []
-                                                 for n, c in servers.items()}, model=self.model, effort=self.effort,
+                                    mcp_servers={**{n: (getattr(c, "tools", None) and c.tools.blocked) or []
+                                                    for n, c in servers.items()},
+                                                 **({cli.GATEWAY_SERVER: []} if token else {})},
+                                    model=self.model, effort=self.effort,
                                     resume=resume, rules=rules if rules.is_file() else None, json_schema=schema,
                                     web=self.workdirs[workdir]["web"], web_with_shell=self.web_with_shell)
         record = {"run_id": run_id, "instance_name": self.name, "cli": self.cli,
@@ -958,6 +1091,9 @@ class CodingCliServer(SchemaBasedToolServer):
                   "mode": mode, "task": task[:300], "worktree": str(worktree), "branch": branch, "base": made.base,
                   "git_dir": made.git_dir, "hidden": made.hidden, "json_schema": schema,
                   "prior": prior["run_id"] if prior else None, "state": "running", "started_at": time.time(),
+                  "pin": pin, "gateway": gateway["instance"] if gateway else None,
+                  # Read at the end, by whichever instance finalizes: the starting one's bound.
+                  "max_result_chars": self.max_result_chars,
                   "owner": self._me}
         self._file(run_id, "task").write_text(cli.agy_input(task) if self.agy else task, encoding="utf-8")
         self._save(record)
@@ -1140,7 +1276,14 @@ class CodingCliServer(SchemaBasedToolServer):
         # Read once, at the start: a url (its path may hold a key) need not lie on disk any longer.
         with contextlib.suppress(OSError):
             self._file(run_id, "mcp.json").unlink(missing_ok=True)
+        _revoke(run_id)
         record = self._load(run_id) or {"run_id": run_id}
+        if record.get("cli") == "antigravity" and record.get("gateway") and record.get("worktree"):
+            # Its token is not committed, and a resume would not start on it (agy_unsafe).
+            with contextlib.suppress(OSError):
+                cli.agy_gateway(Path(record["worktree"]), "", None)
+        leftover = (record.get("cli") == "antigravity" and record.get("gateway") and record.get("worktree")
+                    and (Path(record["worktree"]) / cli.AGY_ROOTS[0] / "mcp_config.json").exists())
         try:
             found = cli.outcome(cli.events(self._file(run_id, "jsonl")))
             result = found["result"] if isinstance(found["result"], dict) else None
@@ -1155,7 +1298,10 @@ class CodingCliServer(SchemaBasedToolServer):
             # -- never in the process's own directory.
             git_dir, base = str(record.get("git_dir") or ""), str(record.get("base") or "")
             worktree = Path(record["worktree"]) if record.get("worktree") and git_dir else None
-            if record.get("mode") == "edit" and worktree and worktree.is_dir():
+            if leftover:
+                # Its token is dead, but the branch would carry the file -- and no resume would start on it.
+                notes.append("not committed: the gateway's MCP file could not be removed from the worktree")
+            elif record.get("mode") == "edit" and worktree and worktree.is_dir():
                 try:
                     record["commit"] = cli.commit_all(worktree, git_dir, f"coding_cli {run_id}: {_first_line(record)}")
                 except cli.GitError as exc:
@@ -1198,8 +1344,8 @@ class CodingCliServer(SchemaBasedToolServer):
                         details.append(err[-CAP_STDERR:])
             if result:
                 # cost_usd: on the subscription a notional amount, the measure the stream reports (M-CC-7).
-                text = str(result.get("result") or "")
-                record.update(result=text[:CAP_RESULT], result_cut=len(text) > CAP_RESULT,
+                text, cap = str(result.get("result") or ""), int(record.get("max_result_chars") or CAP_RESULT)
+                record.update(result=text[:cap], result_cut=len(text) > cap,
                               subtype=result.get("subtype"), turns=result.get("num_turns"),
                               duration_s=round(float(result.get("duration_ms") or 0) / 1000),
                               denials=[_denial(d) for d in result.get("permission_denials") or []][:20],

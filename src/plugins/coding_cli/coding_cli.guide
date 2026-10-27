@@ -1,6 +1,6 @@
 @database "coding_cli"
 @author "Enrico Ehrich"
-@$VER: coding_cli.guide 1.3 (27.10.2026)
+@$VER: coding_cli.guide 1.4 (27.10.2026)
 @smartwrap
 
 @node main "Coding CLI"
@@ -257,6 +257,38 @@ MCP client included.
 @{bullet}Plan mode loads no server: it only reads, and a server's tools may
 write.
 
+@{h2}Tools of this installation: the gateway
+
+A workdir's @{tt}gateway@{utt} hands its runs tools of this installation
+through the MCP gateway plugin (@{tt}mcp_gateway@{utt}, enabled in the same
+process). Nothing is open by default: at the start of each edit run, a resume
+too, the plugin issues a grant for that run alone and revokes it when the run
+ends; the grant holds the run's time limit and five minutes beyond, no longer.
+
+@{bullet}The grant names the workdir's @{tt}tools@{utt} (patterns on the
+tool names), its @{tt}allowed@{utt} values and the values the call fixes
+with @{tt}pin@{utt} -- exactly the parameters the workdir's @{tt}pin@{utt}
+names. The gateway keeps those parameters out of the tools the CLI sees and
+sets them in every call; a tool without them is not shown. Its calls run as
+the caller's user and session, under the call's request id.
+@{bullet}Claude Code reaches it as the MCP server @{tt}gateway@{utt}
+(@{tt}mcp__gateway__<tool>@{utt}, approved like any server's tools): the run's
+MCP file names the url and a placeholder, the token is only in the child's
+environment. agy expands no placeholder, so its token stands in the
+workspace's @{tt}.agents/mcp_config.json@{utt}, written after the check that
+refuses such a file and removed before the run's commit; an allow rule
+@{tt}mcp(gateway/*)@{utt} in its settings lets it call the tools headless.
+@{bullet}With @{tt}web@{utt} -- for agy always -- the workdir needs
+@{tt}read_only: true@{utt}: the operator vouches that its tools and allowed
+values only read, as a page the run reads could steer them. Plan mode gets no
+grant.
+@{bullet}A gateway that does not serve in this process answers "not started:
+mcp gateway ..." -- a caller can fall back on another way.
+
+Measured with Claude Code (haiku) and agy 1.4.8 (Gemini 3.8 Flash) against an
+endpoint checking the grant as the gateway does: both called the tool with
+the run's token, and the grant was gone after the run.
+
 Measured on Claude Code 2.1.285 with a bearer token in
 the child's environment only: the server came up @{tt}connected@{utt} (so
 @{tt}${VAR}@{utt} in a header is expanded from the environment), its 12
@@ -377,6 +409,7 @@ json_schema | a JSON schema, an object of at most 20,000 characters as JSON on t
 wake | @{tt}true@{utt} (default): a run still going when the call answers wakes the session at its end, where a wake can be armed (the answer's @{tt}wake@{utt} and @{tt}wake_note@{utt} say whether); @{tt}false@{utt}: it wakes nobody -- the caller waits with @{" get_run " link get_run} itself (see @{" What the model sees " link model})
 max_run_minutes | a shorter time limit for this run, in minutes (a number above 0); one above the instance's @{tt}max_run_minutes@{utt} counts as the instance's. A resume without one keeps the one its run asked for; a run that asked none resumes under the instance's
 max_window_utilization | a lower threshold for the subscription's windows than the instance's (a share above 0, at most 1); one above it counts as the instance's. Refused for it, the answer carries @{tt}limit@{utt} (see @{" How a run goes " link run}). A resume without one keeps the one its run asked for
+pin | only for a workdir with a @{tt}gateway@{utt}: an object with a value (text or number) for each parameter it fixes, no other; a resume keeps its run's and refuses another (see @{" What a run may do " link lockdown})
 @{body}
 
 @{h2}The answer of an ended run
@@ -394,7 +427,7 @@ model | the run's model, as the stream's init event names it (a helper model may
 abo | subscription usage per window, e.g. @{tt}{"five_hour": 0.34, "seven_day": 0.51}@{utt}
 changes | untrusted: @{tt}M<TAB>path@{utt} per file against base, plus @{tt}uncommitted ...@{utt} lines; at most 100 lines and a "... N more"
 denials | untrusted: tool calls Claude Code was refused, e.g. @{tt}Write /elsewhere/x.txt@{utt}; at most 20, 120 characters each
-result | untrusted: Claude Code's final report, at most 12,000 characters (@{tt}result_cut: true@{utt} when cut)
+result | untrusted: Claude Code's final report, at most @{tt}max_result_chars@{utt} (12,000) characters (@{tt}result_cut: true@{utt} when cut)
 output | untrusted, only with a @{tt}json_schema@{utt}: the object Claude Code returned for it (@{tt}structured_output@{utt}); dropped, with a note, when its JSON is over @{tt}max_output_chars@{utt} (12,000) characters (characters, not escapes) -- cut, it would match the schema no more -- or nests deeper than 100: Python's own encoder, which writes the record and prints an answer in the agent-cli, gives up at about 1,000. A broken character escape in it, as in every part of the stream, arrives as U+FFFD
 hidden | files kept out of the worktree for their secrets; at most 50 and a "... N more"
 note | the plugin's own words: why it was stopped, "not committed, the changes are in the worktree", "Claude Code ended without a result, its stderr is in details", "stopped by the subscription: ...", ...
@@ -579,7 +612,7 @@ words, or "below 80%". Errors show their text, cut to 140 characters.
 @{h2}Tokens and cache
 
 Append-only: each call returns one tool result and nothing earlier is
-rewritten. The result is bounded -- the report at 12,000 characters, the structured output at
+rewritten. The result is bounded -- the report at @{tt}max_result_chars@{utt} (12,000), the structured output at
 @{tt}max_output_chars@{utt}, the change list at 100 lines, denials at 20, hidden files at 50, the running
 report at 12 lines. Claude Code's own tokens are spent on the subscription,
 not on the calling agent's model; @{tt}resume@{utt} continues its
@@ -667,8 +700,8 @@ run starts or resumes on a worktree whose such folder carries
 them out of the repository first.
 @{bullet}Its web search needs no approval, and no setting tried switched it
 off. Every workdir of such an instance must say @{tt}web: true@{utt}, and it
-loads no MCP server: a workdir without web or with @{tt}mcp_servers@{utt} is
-skipped with a warning.
+loads no MCP server but the gateway (with @{tt}read_only@{utt}): a workdir
+without web or with @{tt}mcp_servers@{utt} is skipped with a warning.
 @{bullet}agy reports no subscription window. No run is held back for the
 budget, the model is offered neither @{tt}quota@{utt} nor
 @{tt}max_window_utilization@{utt}, and @{tt}quota.json@{utt} is Claude
@@ -703,11 +736,13 @@ command | claude | the CLI's executable, a name on the PATH or a path; @{tt}agy@
 workdirs | none | name -> @{tt}{path, exclude}@{utt} or just a path; name of letters, digits, _ and -, at most 40; path relative to the project, must hold @{tt}.git@{utt} -- otherwise skipped with a warning
 workdirs.<name>.exclude | none | tracked files a run never sees (see @{" What a run may do " link lockdown})
 workdirs.<name>.web | false | true: the workdir's runs search and read the web with Claude Code's @{tt}WebSearch@{utt} and @{tt}WebFetch@{utt}, approved, in either mode, and get no shell unless @{tt}web_with_shell@{utt}; with @{tt}mcp_servers@{utt} as well the workdir is skipped with a warning; anything else than true: neither
+workdirs.<name>.gateway | none | @{tt}{tools, pin, allowed, read_only, instance}@{utt}: tools of this installation through the MCP gateway (see @{" What a run may do " link lockdown}). @{tt}tools@{utt} a list of name patterns; @{tt}pin@{utt} the parameter names each call fixes; @{tt}allowed@{utt} as the gateway takes it; @{tt}read_only@{utt} true where the tools only read (needed beside web); @{tt}instance@{utt} the gateway plugin's, default @{tt}mcp_gateway@{utt}. Malformed, beside web without @{tt}read_only@{utt}, or with an @{tt}mcp_servers@{utt} entry named @{tt}gateway@{utt}: the workdir is skipped with a warning
 workdirs.<name>.mcp_servers | none | names in @{tt}external_servers.remote_servers@{utt} whose servers the workdir's edit runs load -- enabled, with a url without user, password or query, an HTTP or SSE transport, a plain name; otherwise the workdir is skipped with a warning. The server's @{tt}tools.blocked@{utt} stay refused
 allowed_users | none | user ids that may start runs; empty: nobody
 allowed_commands | none | shell commands as Claude Code permission patterns; empty: no shell
 web_with_shell | false | true: a @{tt}web@{utt} workdir's edit runs keep the shell -- a page the run reads could steer what the allowed commands run
 pass_env | none | environment variable names Claude Code gets beyond its allowlist
+env | none | @{tt}{NAME: value}@{utt} every run of this instance gets in its environment, e.g. Claude Code's @{tt}MAX_MCP_OUTPUT_TOKENS@{utt} for long tool results; what the plugin sets itself (home, MCP tokens, the tool timeout) wins, and an agy run gets none of Claude Code's login variables. The quota probe runs under it too. A @{tt}PATH@{utt} here replaces the runs' own, whose first entry is this process's interpreter (what @{tt}allowed_commands@{utt} such as @{tt}python -m pytest@{utt} run); a name or value that is no plain one is left out with a warning
 model | "" | Claude Code's @{tt}--model@{utt}; empty: the subscription's default
 effort | "" | Claude Code's @{tt}--effort@{utt} (low, medium, high, xhigh, max); empty: its default -- @{tt}--restricted@{utt} leaves the user's settings, their effortLevel too, unread; any other value: a warning in the log, and its default
 max_window_utilization | 0.8 | no run starts while a window is at or past this share (0.05 to 1)
@@ -716,6 +751,7 @@ max_run_minutes | 60 | a run still going after this is stopped (1 to 10080, a we
 max_parallel | 1 | this instance's runs going at the same time, counted over the data folder (1 to 8)
 max_task_chars | 20000 | longest task @{tt}run_task@{utt} takes, in characters (1000 to 1000000)
 max_output_chars | 12000 | longest structured output a run returns, in characters as JSON (1000 to 100000); a longer one is dropped
+max_result_chars | 12000 | longest final report a run returns, in characters (1000 to 200000); a longer one is cut (@{tt}result_cut@{utt}). Raise it for a caller that takes the report as its answer, not for a chat: it lands in the caller's context
 @{body}
 
 Numbers outside the range are clamped; a value that is no number falls back
@@ -754,6 +790,12 @@ edit files in its worktree. How agy ends a run its subscription stops is not
 measured yet: such a run fails with agy's own words, not with a
 @{tt}limit@{utt} field. agy updates itself; the lockdown above was measured
 on 1.4.8.
+
+@{bullet}@{b}A gateway grant lives in this process only.@{ub} The gateway
+keeps grants in memory: after an API restart a run still going reaches its
+tools no more (it gets 401), and a run another process finalizes keeps its
+grant until the time limit and five minutes beyond. An agy run can read its
+token in its workspace -- the token of its own grant, no further.
 
 @{bullet}@{b}An allowed command runs code.@{ub} Every entry in
 @{tt}allowed_commands@{utt} -- above all a test runner -- executes what the
