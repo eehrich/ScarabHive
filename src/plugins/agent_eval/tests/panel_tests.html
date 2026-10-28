@@ -49,18 +49,20 @@
     const two = cells(runRow(TWO_ARMS));
     const base = cells(runRow(BASELINE));
     // 6 tasks x 2 repeats: base passes the first repeat only (6 of 12), terse every run (12).
-    return two[3] === '18/24' && two[2] === 'done' && base[1].includes('baseline') && !two[1].includes('baseline');
+    return two[2] === '18/24' && two[1] === 'done' && two[0].includes('coder-basics')
+      && base[0].includes('baseline') && !two[0].includes('baseline');
   });
 
-  await check('a runner that died is shown as died, not running', async () => cells(runRow(DIED))[2] === 'died');
+  await check('a runner that died is shown as died, not running', async () => cells(runRow(DIED))[1] === 'died');
 
   await check('a run shows its arms, the verdict and the task matrix', async () => {
     runRow(TWO_ARMS).click();
     await until('the verdict', () => detailText().includes('learn tasks: better'));
     const matrix = [...doc().querySelectorAll('#detail table[data-pk-sort="tasks"] tbody tr')];
     const pager = matrix.find((row) => cells(row)[0] === 'fix-pager');
+    const figures = [...doc().querySelectorAll('#detail .pk-stat-value')].map((el) => el.textContent.trim());
     // terse beats base on all six tasks: +0.3 each, p = 2/64.
-    return matrix.length === 6 && cells(pager).slice(2).join('|') === '1/2 · 0.70|2/2 · 1.00'
+    return figures.join('|') === '24 / 24|18 / 24|$0.2520' && matrix.length === 6 && cells(pager).slice(2).join('|') === '1/2 · 0.70|2/2 · 1.00'
       && detailText().includes('6 better / 0 worse of 6') && detailText().includes('p = 0.031')
       && detailText().includes('Of the 6 task(s) that moved, it takes 6 moving the same way to decide.')
       && detailText().includes('reference: base (same run)');
@@ -81,19 +83,20 @@
   });
 
   await check('a record opens with its check output and answer', async () => {
-    $('#detail details summary').click();
-    const row = await until('a record row', () => $('#detail tr[data-record]'));
+    $('#detail [data-tab="records"]').click();
+    const row = await until('a record row', () => $('#ev-records:not([hidden]) tr[data-id]'));
     row.click();
-    const card = await until('the record', () => $('#detail .pk-card'));
+    const card = await until('the record', () => $('#record'));
     return card.textContent.includes('passed') && card.textContent.includes('Changed ')
       && card.textContent.includes('ev-bbbb-');
   });
 
-  await check('the open runs list stays open when new runs come in', async () => {
+  await check('the chosen tab stays chosen when new runs come in', async () => {
     await fetch('/__stub/append', { method: 'POST' });
     refresh();
-    await until('the new run in the list', () => $('#records summary')?.textContent === 'Runs (25)');
-    return $('#records').open;
+    const tab = () => $('#detail [data-tab="records"]');
+    await until('the new run in the list', () => tab()?.querySelector('.pk-tab-count')?.textContent === '25');
+    return tab().getAttribute('aria-selected') === 'true' && !$('#ev-records').hidden && Boolean($('#record'));
   });
 
   await check('switching to another run compares it against its own reference again', async () => {
@@ -107,6 +110,19 @@
     runRow(TWO_ARMS).click();
     await until('back', () => detailText().includes(TWO_ARMS));
     return reset;
+  });
+
+  await check('a run counts only the agent runs that ran', async () => {
+    await fetch('/__stub/stop_one', { method: 'POST' });
+    runRow(DIED).click();
+    await until('the died run', () => detailText().includes(DIED) && detailText().includes('2 not counted'));
+    const perRun = detailText().includes('$0.0120 per run');
+    const figures = [...doc().querySelectorAll('#detail .pk-stat-value')].map((el) => el.textContent.trim());
+    runRow(TWO_ARMS).click();
+    await until('back', () => detailText().includes(TWO_ARMS));
+    // 12 planned (one arm, six tasks, two repeats), 12 ran; the stopped and the refused one are written down but
+    // never ran -- nor do they count in the cost per run (12 x $0.012)
+    return figures[0] === '12 / 12' && figures[2] === '$0.1440' && perRun;
   });
 
   await check('starting asks first: cancelled starts nothing, confirmed starts the suite', async () => {

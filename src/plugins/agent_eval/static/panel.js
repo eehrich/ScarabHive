@@ -1,7 +1,7 @@
 // Evals: start a suite, read its runs, compare arms and baselines.
 import {
-  api, html, update, icon, confirm, toast, notice, emptyState, errorText, isAborted, localTime, selectRow, withBusy,
-  pluginBase,
+  api, html, update, icon, confirm, toast, emptyState, errorText, isAborted, localTime, selectRow, withBusy,
+  pluginBase, status, initTabs, keepInSight, scrollerOf,
 } from '/static/kit/panel-kit.js';
 
 const BASE = pluginBase(import.meta.url);
@@ -11,14 +11,19 @@ let suites = [];
 let selected = new URLSearchParams(location.search).get('run');
 let against = '';   // '' = the run's own reference arm, 'baseline' = the suite's baseline
 let openRecord = null;
-let recordsOpen = false;  // the Runs list stays open through every redraw once opened
+let tab = 'summary';  // the detail's tab, kept through every redraw and from run to run
 
 const pct = (v) => (v == null ? '—' : `${Math.round(v * 100)}%`);
 const num = (v, digits = 2) => (v == null ? '—' : Number(v).toFixed(digits));
 const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
 const signed = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(3)}`);
-const STATUS_KIND = { done: 'ok', running: 'info', stopped: 'warn', incomplete: 'warn', failed: 'danger', died: 'danger' };
+// A run's status in the kit's set of run states; its own word stays the label.
+const STATUS = { done: 'success', running: 'running', stopped: 'canceled', incomplete: 'skipped', failed: 'failed', died: 'failed' };
+const runStatus = (name) => status(STATUS[name] || 'pending', { label: name, pill: true });
 const badge = (text, kind = '') => html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${text}</span>`;
+// pass rate as a tone: all passed, none, or in between
+const tone = (passes, runs) => (!runs ? '' : passes === runs ? 'pk-text--ok' : passes ? 'pk-text--warn' : 'pk-text--danger');
+const planned = (m) => (m.arms?.length || 0) * (m.tasks || 0) * (m.repeats || 0);
 
 // ------------------------------------------------------------------- suites
 
@@ -29,8 +34,10 @@ async function loadSuites() {
     toast(`Suites could not be read: ${errorText(error)}`, { kind: 'error' });
     return;
   }
-  const options = suites.map((s) => html`<option value="${s.path}" ${s.error ? 'disabled' : ''}>${
-    s.error ? `${s.path} (broken)` : `${s.name} — ${s.agent}, ${s.tasks} task(s), ${s.arms.length} arm(s)`}</option>`);
+  const options = suites.map((s) => (s.error
+    ? html`<option value="${s.path}" disabled title="${s.error}">${s.path} (broken)</option>`
+    : html`<option value="${s.path}" title="${s.description || ''}">${s.name} · ${s.agent} · ${
+      s.arms.length * s.tasks * s.repeats} runs</option>`));
   update($('suite'), options.length ? options : html`<option value="" disabled selected>No suites found below evals/</option>`);
   $('start').disabled = !suites.some((s) => !s.error);
 }
@@ -54,6 +61,14 @@ async function start() {
 
 // --------------------------------------------------------------------- runs
 
+// *done*: the agent runs that counted -- a stopped, skipped or refused one is written down too, but never ran
+function progress(done, total, state) {
+  if (!total) return '';
+  const kind = state === 'running' ? '' : state === 'done' ? ' pk-progress--ok' : ' pk-progress--warn';
+  return html`<progress class="pk-progress${kind}" max="${total}" value="${Math.min(done, total)}"
+    aria-label="${done} of ${total} runs"></progress>`;
+}
+
 async function loadRuns() {
   let runs;
   try {
@@ -67,16 +82,20 @@ async function loadRuns() {
     return;
   }
   update($('runs'), html`<div class="pk-table-wrap"><table class="pk-table" data-pk-select data-pk-sort="runs">
-    <thead><tr><th aria-sort="descending">Run</th><th>Suite</th><th>Status</th>
-      <th class="pk-num">Passed</th><th class="pk-num">Cost</th></tr></thead>
-    <tbody>${runs.map((r) => html`<tr data-id="${r.run_id}" tabindex="0">
-      <td data-sort-value="${r.run_id}"><div class="pk-mono">${r.run_id}</div>
-        <div class="pk-muted">${r.agent} · ${r.arms.join(', ')}</div></td>
-      <td>${r.suite} ${r.baseline ? badge('baseline', 'info') : ''}</td>
-      <td>${badge(r.status, STATUS_KIND[r.status])}</td>
-      <td class="pk-num" data-sort-value="${r.scored ? r.passed / r.scored : ''}">${r.passed}/${r.scored}</td>
+    <thead><tr><th aria-sort="descending">Run</th><th>Status</th><th class="pk-num">Passed</th>
+      <th class="pk-num">Cost</th></tr></thead>
+    <tbody>${runs.map((r) => {
+      const total = planned(r);
+      return html`<tr data-id="${r.run_id}" tabindex="0">
+      <td data-sort-value="${r.run_id}"><div><strong>${r.suite}</strong> ${r.baseline ? badge('baseline', 'info') : ''}</div>
+        <div class="pk-muted">${localTime(r.started || '', { relative: true })} · ${r.agent} · ${r.arms.join(' / ')}</div></td>
+      <td data-sort-value="${r.status}">${runStatus(r.status)}
+        ${r.status === 'running' ? html`<div class="pk-muted">${r.scored} of ${total}</div>${progress(r.scored, total, r.status)}` : ''}</td>
+      <td class="pk-num" data-sort-value="${r.scored ? r.passed / r.scored : ''}"><span class="${tone(r.passed, r.scored)}">${
+        r.passed}/${r.scored}</span></td>
       <td class="pk-num" data-sort-value="${r.cost}">${usd(r.cost)}</td>
-    </tr>`)}</tbody></table></div>`);
+    </tr>`;
+    })}</tbody></table></div>`);
   if (selected) selectRow($('runs').querySelector('table'), selected);
 }
 
@@ -100,35 +119,64 @@ async function loadDetail() {
       : emptyState('circle-alert', `Run ${selected} could not be read`, errorText(error)));
     return;
   }
-  update($('detail'), detail(rep));
+  if (update($('detail'), detail(rep))) initTabs($('detail'));
 }
 
 function detail(rep) {
   const m = rep.meta;
   const ref = rep.against ? `${rep.reference_arm} of ${rep.against} (baseline)` : `${rep.reference_arm} (same run)`;
   const skipped = Object.entries(rep.skipped).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ');
+  const records = rep.records;
+  const scored = records.filter((r) => r.scored);
+  const passed = scored.filter((r) => r.passed).length;
+  // the runs that counted, as the Arms table costs them: a refused one carries a cost of 0 and ran nothing
+  const priced = scored.filter((r) => r.cost != null);
+  const cost = priced.reduce((sum, r) => sum + Number(r.cost), 0);
+  const unpriced = scored.length - priced.length;
+  const notCounted = records.length - scored.length;
+  const total = planned(m);
+  const comparable = rep.baseline && rep.baseline !== m.run_id;
+  const tabButton = (name, label, count) => html`<button class="pk-tab" role="tab" data-tab="${name}" data-key="tab:${name}"
+    aria-selected="${String(tab === name)}" aria-controls="ev-${name}">${label}${
+    count != null ? html` <span class="pk-tab-count">${count}</span>` : ''}</button>`;
+  const pane = (name, content) => html`<section id="ev-${name}" role="tabpanel" class="pk-stack" ${tab === name ? '' : 'hidden'}>${content}</section>`;
   return html`
     <div class="pk-row">
-      <div class="pk-grow"><div class="pk-mono">${m.run_id}</div>
-        <div class="pk-muted">${m.suite} · ${m.agent} · ${m.tasks} task(s) × ${m.repeats} · started ${localTime(m.started, { relative: true })}</div></div>
-      ${badge(m.status, STATUS_KIND[m.status])}
-      ${rep.baseline === m.run_id ? badge('baseline', 'info')
-        : m.status === 'done' ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="baseline">${icon('flag', { size: 'sm' })} Make baseline</button>` : ''}
+      <div class="pk-grow"><h2 class="pk-card-title">${m.suite} ${rep.baseline === m.run_id ? badge('baseline', 'info') : ''}</h2>
+        <div class="pk-muted"><span class="pk-mono">${m.run_id}</span> · ${m.agent} · ${m.tasks} task(s) × ${m.repeats}
+          · started ${localTime(m.started, { relative: true })}</div></div>
+      ${runStatus(m.status)}
+      ${rep.baseline !== m.run_id && m.status === 'done'
+        ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="baseline">${icon('flag', { size: 'sm' })} Make baseline</button>` : ''}
       ${m.status === 'running' ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="stop">${icon('square', { size: 'sm' })} Stop</button>` : ''}
     </div>
-    <div class="pk-row">
-      <label class="pk-muted" for="against">Compare against</label>
+    <div class="pk-stats">
+      <div class="pk-stat"><div class="pk-stat-label">Runs</div><div class="pk-stat-value">${scored.length} / ${total}</div>
+        ${progress(scored.length, total, m.status)}
+        ${notCounted ? html`<div class="pk-muted">${notCounted} not counted</div>` : ''}</div>
+      <div class="pk-stat"><div class="pk-stat-label">Passed</div>
+        <div class="pk-stat-value ${tone(passed, scored.length)}">${passed} / ${scored.length}</div>
+        <div class="pk-muted">${scored.length ? pct(passed / scored.length) : 'none scored yet'}</div></div>
+      <div class="pk-stat"><div class="pk-stat-label">Cost</div><div class="pk-stat-value">${usd(cost)}</div>
+        <div class="pk-muted">${[priced.length && `${usd(cost / priced.length)} per run`,
+          unpriced && `${unpriced} run(s) unknown`].filter(Boolean).join(' · ')}</div></div>
+    </div>
+    <div class="pk-filters">
+      ${comparable ? html`<label class="pk-muted" for="against">Compare against</label>
       <select class="pk-select" id="against">
         <option value="" ${against ? '' : 'selected'}>its own reference arm</option>
-        <option value="baseline" ${against ? 'selected' : ''} ${rep.baseline && rep.baseline !== m.run_id ? '' : 'disabled'}>the suite's baseline</option>
-      </select>
+        <option value="baseline" ${against ? 'selected' : ''}>the suite's baseline</option>
+      </select>` : ''}
       <span class="pk-muted">reference: ${ref}</span>
     </div>
     ${skipped ? html`<div class="pk-callout pk-callout--warn">Not counted: ${skipped}</div>` : ''}
     ${(rep.warnings || []).map((w) => html`<div class="pk-callout pk-callout--warn">${w}</div>`)}
-    ${arms(rep)}
-    ${matrix(rep)}
-    ${records(rep.records)}`;
+    <div class="pk-tabs" role="tablist" data-pk-tabs>
+      ${tabButton('summary', 'Arms')}${tabButton('tasks', 'Tasks')}${tabButton('records', 'Runs', records.length)}
+    </div>
+    ${pane('summary', arms(rep))}
+    ${pane('tasks', matrix(rep))}
+    ${pane('records', recordList(records))}`;
 }
 
 function verdict(c, kind) {
@@ -137,14 +185,14 @@ function verdict(c, kind) {
     return html`<div class="pk-callout pk-callout--warn"><strong>${kind}: no common tasks</strong> —
       the reference has ${c.reference_tasks}, this arm ran none of them.</div>`;
   }
-  const tone = c.verdict === 'better' ? 'ok' : c.verdict === 'worse' ? 'danger' : 'info';
+  const kindTone = c.verdict === 'better' ? 'ok' : c.verdict === 'worse' ? 'danger' : 'info';
   const decides = c.needed == null
     ? `${c.moved} task(s) moved; with so few no outcome can be significant, it takes six or more (ties do not count).`
     : `Of the ${c.moved} task(s) that moved, it takes ${c.needed} moving the same way to decide.`;
-  return html`<div class="pk-callout pk-callout--${tone}"><strong>${kind}: ${c.verdict}</strong> —
+  return html`<div class="pk-callout pk-callout--${kindTone}"><strong>${kind}: ${c.verdict}</strong> —
     ${c.better_tasks} better / ${c.worse_tasks} worse of ${c.tasks} task(s), p = ${num(c.p, 3)};
     mean difference ${signed(c.mean_diff)}${c.ci95 ? ` (95% ${signed(c.ci95[0])} … ${signed(c.ci95[1])})` : ', every task alike'}.
-    ${decides}</div>`;
+    <div class="pk-muted">${decides}</div></div>`;
 }
 
 function arms(rep) {
@@ -152,13 +200,14 @@ function arms(rep) {
   return html`<div class="pk-table-wrap"><table class="pk-table">
     <thead><tr><th>Arm</th><th class="pk-num">Runs</th><th class="pk-num">Pass</th><th class="pk-num">Mean score</th>
       <th class="pk-num">Cost</th><th class="pk-num">p90 / run</th></tr></thead>
-    <tbody>${entries.map(([name, a]) => html`<tr><td>${name}</td><td class="pk-num">${a.runs}</td>
+    <tbody>${entries.map(([name, a]) => html`<tr><td>${name}${name === rep.reference_arm && !rep.against
+      ? html` <span class="pk-muted">(reference)</span>` : ''}</td><td class="pk-num">${a.runs}</td>
       <td class="pk-num">${pct(a.pass_rate)}</td><td class="pk-num">${num(a.mean_score)}</td>
       <td class="pk-num">${usd(a.cost)}${a.cost_unknown_runs ? html`<div class="pk-muted">+ ${a.cost_unknown_runs} run(s) unknown</div>` : ''}</td>
       <td class="pk-num">${usd(a.cost_p90)}</td></tr>`)}</tbody>
   </table></div>
-  ${entries.filter(([, a]) => a.learn).map(([name, a]) => html`<div class="pk-stack">
-    <div><strong>${name}</strong> against ${rep.reference_arm}</div>
+  ${entries.filter(([, a]) => a.learn).map(([name, a]) => html`<div class="pk-card pk-stack">
+    <h3 class="pk-card-title">${name} against ${rep.reference_arm}</h3>
     ${verdict(a.learn, 'learn tasks')}${verdict(a.holdout, 'holdout tasks')}
     ${a.regressions?.length ? html`<div class="pk-callout pk-callout--danger">Regressions: ${a.regressions.join(', ')}</div>` : ''}
   </div>`)}`;
@@ -167,8 +216,10 @@ function arms(rep) {
 function matrix(rep) {
   const names = Object.keys(rep.arms);
   const tasks = [...new Set(names.flatMap((n) => Object.keys(rep.arms[n].tasks)))].sort();
-  if (!tasks.length) return '';
-  const cell = (t) => (t ? html`<td class="pk-num" data-sort-value="${t.mean}">${t.passes}/${t.runs} · ${num(t.mean)}</td>` : html`<td class="pk-num">—</td>`);
+  if (!tasks.length) return emptyState('clock', 'No task finished yet');
+  const cell = (t) => (t
+    ? html`<td class="pk-num" data-sort-value="${t.mean}"><span class="${tone(t.passes, t.runs)}">${t.passes}/${t.runs}</span> · ${num(t.mean)}</td>`
+    : html`<td class="pk-num">—</td>`);
   return html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="tasks">
     <thead><tr><th>Task</th><th>Kind</th>${names.map((n) => html`<th class="pk-num">${n}</th>`)}</tr></thead>
     <tbody>${tasks.map((task) => {
@@ -177,25 +228,26 @@ function matrix(rep) {
     })}</tbody></table></div>`;
 }
 
-function records(list) {
+function recordList(list) {
   if (!list.length) return emptyState('clock', 'No runs finished yet');
-  return html`<details class="pk-details" id="records" ${recordsOpen ? 'open' : ''}><summary>Runs (${list.length})</summary>
-    <div class="pk-table-wrap"><table class="pk-table" data-pk-sort="records">
+  return html`${openRecord !== null && list[openRecord] ? record(list[openRecord]) : ''}
+    <div class="pk-table-wrap"><table class="pk-table" data-pk-select data-pk-sort="records">
     <thead><tr><th class="pk-num">#</th><th>Arm</th><th>Task</th><th class="pk-num">Rep</th><th>Status</th>
       <th class="pk-num">Score</th><th class="pk-num">Cost</th><th class="pk-num">Time</th><th>Model</th></tr></thead>
-    <tbody>${list.map((r, i) => html`<tr data-record="${i}" tabindex="0">
+    <tbody>${list.map((r, i) => html`<tr data-id="${i}" tabindex="0" aria-selected="${String(i === openRecord)}">
       <td class="pk-num">${r.n}</td><td>${r.arm}</td><td>${r.task}</td><td class="pk-num">${r.rep}</td>
       <td>${badge(r.status, r.scored ? (r.passed ? 'ok' : 'danger') : 'warn')}</td>
       <td class="pk-num" data-sort-value="${r.score ?? ''}">${r.scored ? num(r.score) : '—'}</td>
       <td class="pk-num" data-sort-value="${r.cost ?? ''}">${usd(r.cost)}</td>
       <td class="pk-num" data-sort-value="${r.duration_s ?? ''}">${r.duration_s != null ? `${num(r.duration_s, 1)} s` : '—'}</td>
-      <td class="pk-mono">${r.model || ''}</td></tr>`)}</tbody></table></div>
-    ${openRecord !== null && list[openRecord] ? record(list[openRecord]) : ''}</details>`;
+      <td class="pk-mono">${r.model || ''}</td></tr>`)}</tbody></table></div>`;
 }
 
 function record(r) {
-  return html`<div class="pk-card pk-stack">
-    <div><strong>#${r.n} ${r.arm} / ${r.task}</strong> <span class="pk-muted pk-mono">${r.request_id || ''} · ${r.dir}</span></div>
+  return html`<div class="pk-card pk-stack" id="record">
+    <div class="pk-row"><h3 class="pk-card-title pk-grow">#${r.n} ${r.arm} / ${r.task}</h3>
+      <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="close" data-key="record-close" aria-label="Close">${icon('x', { size: 'sm' })}</button></div>
+    <div class="pk-muted pk-mono">${r.request_id || ''} · ${r.dir}</div>
     ${r.errors?.length ? html`<div class="pk-callout pk-callout--danger">${r.errors.join('\n')}</div>` : ''}
     <div class="pk-muted">Check</div><pre class="pk-code">${r.detail || ''}</pre>
     <div class="pk-muted">Answer (end)</div><pre class="pk-code">${r.answer || ''}</pre>
@@ -205,6 +257,7 @@ function record(r) {
 // ------------------------------------------------------------------ actions
 
 async function act(button) {
+  if (button.dataset.act === 'close') { openRecord = null; loadDetail(); return; }
   await withBusy([button], async () => {
     if (button.dataset.act === 'baseline') {
       await api(`${BASE}/runs/${encodeURIComponent(selected)}/baseline`, { method: 'POST' });
@@ -228,18 +281,20 @@ $('runs').addEventListener('rowselect', (event) => {
   against = '';  // a baseline of one suite means nothing for a run of another
   loadDetail();
 });
+$('detail').addEventListener('rowselect', async (event) => {
+  openRecord = Number(event.detail.id);
+  await loadDetail();
+  const card = $('record');
+  if (card) keepInSight(scrollerOf(card), card);
+});
+$('detail').addEventListener('tabchange', (event) => { tab = event.detail.tab; });
 $('detail').addEventListener('click', (event) => {
   const button = event.target.closest('[data-act]');
-  if (button && !button.disabled) { act(button); return; }
-  const row = event.target.closest('[data-record]');
-  if (row) { openRecord = Number(row.dataset.record); loadDetail(); }
+  if (button && !button.disabled) act(button);
 });
 $('detail').addEventListener('change', (event) => {
   if (event.target.id === 'against') { against = event.target.value; loadDetail(); }
 });
-$('detail').addEventListener('toggle', (event) => {
-  if (event.target.id === 'records') recordsOpen = event.target.open;
-}, true);
 $('start').addEventListener('click', start);
 document.addEventListener('refresh', refresh);
 loadSuites();

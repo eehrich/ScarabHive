@@ -242,13 +242,16 @@ def test_stop_after_the_last_run_started_leaves_the_run_done(tmp_path, monkeypat
     assert store.baseline_for("s") == run_id
 
 
-@pytest.mark.parametrize("task_wants, arm_wants", [("base", "other"), ("other", None), ("legacy", "other")],
-                         ids=["the_arm_over_the_task", "the_task_alone", "a_job_from_before_overlays"])
+@pytest.mark.parametrize("task_wants, arm_wants", [("base", "other"), ("other", None), ("legacy", "other"),
+                                                    ("layer", "other")],
+                         ids=["the_arm_over_the_task", "the_task_alone", "a_job_from_before_overlays",
+                              "the_arms_layer_for_the_agent"])
 def test_child_runs_the_real_agent_run_path_with_the_overlays(tmp_path, data_dir, monkeypatch, task_wants,
                                                               arm_wants):
     """One child run in-process: real config, real bootstrap, agent-run's own session handling; the overlays'
     llm_profile must reach the agent (the fake client carries the profile's model name) -- the arm's over the
-    task's, the task's where the arm leaves it, and the arm of a job a runner from before 'overlays' wrote."""
+    task's, the task's where the arm leaves it, the arm of a job a runner from before 'overlays' wrote, and an
+    arm's layer for the agent (``agents``), which the registry builds it from."""
     from agent_system.config.settings import get_tool_server_config, load_settings
     from plugins.agent_eval import child
 
@@ -265,6 +268,7 @@ def test_child_runs_the_real_agent_run_path_with_the_overlays(tmp_path, data_dir
     job = tmp_path / "job.json"
     arm = {"llm_profile": [profile[arm_wants]]} if arm_wants else {}
     overlays = ({"agent_config": arm} if task_wants == "legacy"
+                else {"overlays": [], "agents": {agent: arm}} if task_wants == "layer"
                 else {"overlays": [{"llm_profile": [profile[task_wants]]}, arm]})
     job.write_text(json.dumps({
         "agent": agent, "input": "say the word marmalade", **overlays,
@@ -288,6 +292,31 @@ def test_child_runs_the_real_agent_run_path_with_the_overlays(tmp_path, data_dir
     assert list((data_dir / "sessions").rglob(f"{result['session_id']}*")), "agent-run did not save the session"
 
 
+def test_an_arms_layer_reaches_the_agents_that_inherit_from_it_and_leaves_the_config_alone():
+    """Against the real configuration: an agent that inherits from a layered one inherits its overlay, '+x' acts
+    on what the agent resolves to, and the configuration it was laid over is not changed (check_arms lays every
+    arm over the same one)."""
+    from agent_system.config.settings import get_tool_server_config, load_settings
+    from plugins.agent_eval.overlay import layer_agents
+
+    config = load_settings()
+    parent, heir = "skills_agent", "skills_agent_multimodal"
+    assert config.plugins.servers[heir].type == parent, "fixture: the heir no longer inherits from the parent"
+    before = get_tool_server_config(heir, config).agent_config
+    layered = layer_agents(config, {parent: {"max_steps": before.max_steps + 7,
+                                             "tools": {"allowed": ["+zz_eval_marker/*"]}}})
+    after = get_tool_server_config(heir, layered).agent_config
+    assert after.max_steps == before.max_steps + 7
+    assert set(after.tools.allowed) == set(before.tools.allowed) | {"zz_eval_marker/*"}
+    assert get_tool_server_config(heir, config).agent_config == before
+    # Named heir first: it still gets its parent's overlay under its own.
+    both = layer_agents(config, {heir: {"system_prompt": "heir"}, parent: {"max_steps": before.max_steps + 7}})
+    assert get_tool_server_config(heir, both).agent_config.max_steps == before.max_steps + 7
+    assert get_tool_server_config(heir, both).agent_config.system_prompt == "heir"
+    with pytest.raises(ValueError, match="no_such_agent"):
+        layer_agents(config, {"no_such_agent": {}})
+
+
 def test_check_arms_refuses_an_arm_that_cannot_run(tmp_path):
     """Against the real configuration: each would end every run of its arm before the agent saw its task."""
     from plugins.agent_eval.suite import load_suite
@@ -301,6 +330,9 @@ def test_check_arms_refuses_an_arm_that_cannot_run(tmp_path):
           ghost: {agent: no_such_agent}
           broken: {agent_config: {max_steps: lots}}
           nowhere: {agent_config: {llm_profile: [no_such_profile]}}
+          stray: {agents: {no_such_agent: {}}}
+          lost: {agents: {skills_agent: {llm_profile: [no_such_profile]}}}
+          tool: {agents: {file_ops: {max_steps: 3}}}
         tasks:
           - {id: t1, input: x, check: {expect: {contains: [ok]}}}
     """)
@@ -308,6 +340,8 @@ def test_check_arms_refuses_an_arm_that_cannot_run(tmp_path):
         runner.check_arms(load_suite(path))
     message = str(refused.value)
     assert "arm ghost" in message and "arm broken" in message and "arm nowhere" in message
+    assert "arm stray: agents" in message and "arm lost, agent skills_agent: unknown llm_profile" in message
+    assert "arm tool: agents: ['file_ops'] are not agents" in message
     assert "arm base" not in message
 
 
@@ -398,6 +432,81 @@ def test_a_run_gets_the_tasks_overlay_then_the_arms(tmp_path, monkeypatch):
                       suite.tasks[0], jdir, tmp_path, tmp_path / "data")
     job = json.loads((jdir / "job-t1.json").read_text(encoding="utf-8"))
     assert job["overlays"] == [{"template_vars": {"genre": "kids"}}, {"template_vars": {"tone": "dry"}}]
+
+
+def test_a_run_names_its_data_directory_and_the_machine_runs_it_started(tmp_path, monkeypatch):
+    """What a check reads the products from: the run's data directory, and the stategraph runs begun or moved on
+    in it during this agent run -- not one a task before it left there untouched (a chain keeps its data
+    directory), but one it left waiting and this run drove on."""
+    import time
+    from plugins.agent_eval.suite import load_suite
+    from plugins.stategraph.engine.journal import RunStore
+
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    suite = load_suite(path)
+    jdir, data = tmp_path / "job", tmp_path / "rundata"
+    jdir.mkdir()
+    runs = RunStore(data / "stategraph" / "runs.db")
+    runs.create_run("before", "m", {})
+    runs.create_run("waiting", "m", {}, status="waiting")
+    time.sleep(0.01)
+
+    def child(args, **kwargs):
+        runs.update_run("waiting", status="succeeded")
+        runs.create_run("mine", "m", {}, status="succeeded")
+        (jdir / "result-t1.json").write_text(json.dumps({"answer": "ok"}), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(runner, "run_bounded", child)
+    result = runner._agent_run(suite, "20261028-120000-abcd", {"arm": "base", "rep": 0, "n": 1, "task": "t1"},
+                               suite.tasks[0], jdir, tmp_path, data)
+    assert result["status"] == "done", result
+    assert result["data_dir"] == str(data)
+    assert [r["id"] for r in result["stategraph_runs"]] == ["waiting", "mine"], result["stategraph_runs"]
+    assert {r["status"] for r in result["stategraph_runs"]} == {"succeeded"}
+    assert result["stategraph_runs"][1]["caller_run"] is None
+
+
+def test_a_shared_run_names_the_installations_data_directory_absolute(tmp_path, monkeypatch):
+    """A check runs in the workspace: a relative data directory would point into it."""
+    from agent_system.paths import PROJECT_ROOT, data_path
+    from plugins.agent_eval.suite import load_suite
+
+    monkeypatch.delenv(DATA_DIR_ENV)  # the installation's, as configured
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        data: shared
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    suite = load_suite(path)
+    jdir = tmp_path / "job"
+    jdir.mkdir()
+    monkeypatch.setattr(runner, "run_bounded", lambda *a, **k: 0)
+    monkeypatch.setattr(runner, "usage_of", lambda *a, **k: {})
+    result = runner._agent_run(suite, "20261028-120000-abcd", {"arm": "base", "rep": 0, "n": 1, "task": "t1"},
+                               suite.tasks[0], jdir, tmp_path, tmp_path / "data")
+    assert Path(result["data_dir"]).is_absolute(), result["data_dir"]
+    assert Path(result["data_dir"]) == PROJECT_ROOT / data_path()
+    assert result["stategraph_runs"] is None
+
+
+def test_usage_and_machine_runs_read_a_data_directory_whose_path_has_a_hash(tmp_path):
+    """'#' ends a URI: read raw, the read-only open lost its mode, created a stray database and read nothing."""
+    from plugins.stategraph.engine.journal import RunStore
+
+    data = tmp_path / "a#b%20c"
+    _usage_db(data, [("r1", 0.5)])
+    RunStore(data / "stategraph" / "runs.db").create_run("one", "m", {})
+    assert runner.usage_of("r1", data)["cost"] == 0.5
+    assert [r["id"] for r in runner.stategraph_runs(data, "")] == ["one"]
+    assert not (tmp_path / "a").exists(), "a stray database next to the data directory"
 
 
 def test_choosing_arms_keeps_the_suites_order_and_reference(tmp_path, monkeypatch):

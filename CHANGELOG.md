@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the arm's overlay; a `./` path in an arm's or a task's `system_template` means the suite's directory, so the
   prompt as it was before an edit, kept beside the suite, makes the reference arm; `python` in a setup command
   is the runner's own interpreter, also when its environment was never activated.
+- Evals: an arm may change the agents its agent starts, not only the agent: `agents: {<agent>: {overlay}}` is laid
+  over the configuration before anything is built from it, so a machine's or a panel's sub-agents run with it;
+  agents that inherit from a named one get it too. A check gets the run's `data_dir` (its stores) and
+  `stategraph_runs` (the machine runs it started or drove on there), instead of guessing them from the workspace.
 - coding_cli runs Google's Antigravity CLI (`agy`) as well as Claude Code: `cli: antigravity` on an instance.
   agy's stream is read as Claude Code's, so the tools, the branch, `resume` and `json_schema` work the same.
   A run gets a home folder of its own per user (pinned settings, nothing of the user's agy setup, no Claude
@@ -57,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   job, one that answered and a cancelled one are joined as without it, so a dispatcher may send it every time.
 
 ### Changed
+
+- The Evals panel: a run's head and three figures (agent runs that counted of planned, passed, cost per run), arms,
+  tasks and single runs in tabs that stay chosen as the run reloads, a running run's progress in the list.
 
 - stategraph: a run that failed transiently goes on when its run key comes again -- the same run, rewound to the
   activity that failed (an `internal` failure resumes where it stood), its agent instances and resources its own --

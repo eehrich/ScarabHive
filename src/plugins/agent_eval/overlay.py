@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from agent_system.config.merging import _deep_merge_dict
-from agent_system.config.models import AgentConfig
+from agent_system.config.models import AgentConfig, AgentSystemConfig
 
 #: agent_config fields a machine overlay may set.
 MACHINE_FIELDS = frozenset({"system_prompt", "template_vars", "skills", "tools", "llm_params"})
@@ -31,6 +31,36 @@ def apply_overlay(base: AgentConfig, overlay: Dict[str, Any]) -> AgentConfig:
         return base
     merged = _deep_merge_dict(base.model_dump(), overlay)
     return AgentConfig.model_validate(merged)
+
+
+def layer_agents(config: AgentSystemConfig, overlays: Dict[str, Dict[str, Any]]) -> AgentSystemConfig:
+    """*config* with each named agent's server entry replaced by what it resolves to, its overlay merged over
+    that -- before a registry is built from it, so every run of the agent sees it: a sub-agent a machine or a
+    panel starts as well as the suite's own. Every agent that inherits from a named one inherits its overlay
+    too; a named heir gets its parent's and its own, whatever order the suite names them in. Raises ValueError
+    for a name the configuration lacks."""
+    from agent_system.config.settings import get_tool_server_config
+
+    servers = config.plugins.servers if config.plugins else {}
+
+    def named_ancestors(name: str) -> int:
+        # A layered entry holds what it resolved to and follows its parent no longer: parents go first.
+        chain, entry = set(), servers.get(name)
+        while entry is not None and entry.type in servers and entry.type != name and entry.type not in chain:
+            name = entry.type
+            chain.add(name)
+            entry = servers.get(name)
+        return len(chain & set(overlays))
+
+    for name in sorted(overlays or {}, key=named_ancestors):
+        overlay = overlays[name]
+        resolved = get_tool_server_config(name, config)
+        if resolved is None:
+            raise ValueError(f"'{name}' is not a server of this configuration")
+        servers = {**config.plugins.servers,
+                   name: resolved.model_copy(update={"agent_config": apply_overlay(resolved.agent_config, overlay)})}
+        config = config.model_copy(update={"plugins": config.plugins.model_copy(update={"servers": servers})})
+    return config
 
 
 def machine_overlay_problems(base: AgentConfig, overlay: Dict[str, Any]) -> List[str]:

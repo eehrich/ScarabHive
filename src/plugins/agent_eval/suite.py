@@ -87,6 +87,9 @@ class Arm(BaseModel):
     #: Merged over the agent's agent_config like a config entry over the one it inherits from
     #: (``+x``/``!x`` in lists). An admin overlay: anything the agent YAML may set.
     agent_config: Dict[str, Any] = Field(default_factory=dict)
+    #: Agent names to overlays for the whole run: laid over the configuration before anything is built from it,
+    #: so the sub-agents the agent starts (a machine's, a panel's) run with them. Admin overlays, like agent_config.
+    agents: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class Suite(BaseModel):
@@ -173,6 +176,8 @@ def load_suite(path: str | Path) -> Suite:
     # A './' path in an overlay means the suite's directory, as in an agent YAML it means the YAML's -- the run
     # would otherwise look for it in its own workspace.
     owners = [(f"arm {name}", arm.agent_config) for name, arm in suite.arms.items()]
+    owners += [(f"arm {name}, agent {agent}", overlay) for name, arm in suite.arms.items()
+               for agent, overlay in arm.agents.items()]
     owners += [(f"task {task.id}", task.agent_config) for task in suite.tasks]
     for owner, overlay in owners:
         _resolve_relative_paths(overlay, suite.root)

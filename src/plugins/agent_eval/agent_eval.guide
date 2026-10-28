@@ -46,16 +46,18 @@ records hold the agents' answers.
 
 The list at the top offers every suite found below an @{tt}evals/@{utt}
 directory -- the project's own and every plugin's (see
-@{" Writing a suite " link suite}). Pick one and press @{b}Run@{ub}; the
+@{" Writing a suite " link suite}) -- with its agent and how many agent
+runs it makes. Pick one and press @{b}Run@{ub}; the
 panel asks first and names how many agent runs that is, because each costs
 what the agent costs. The run starts in a process of its own: it goes on
 when the panel is closed or the API restarts.
 
 @{h2}The runs
 
-The left column lists every run, newest first: its id, the suite, the agent
-and arms, its status, how many runs passed and what they cost. A run is
-@{tt}running@{utt} while its process lives; one whose process is gone
+The left column lists every run, newest first: the suite, when it started,
+the agent and arms, its status, how many runs passed and what they cost. A
+run is @{tt}running@{utt} while its process lives, with how many of its
+agent runs counted so far and a bar for it; one whose process is gone
 without finishing shows @{tt}died@{utt}. @{tt}stopped@{utt} means
 somebody pressed Stop before every agent run had started;
 @{tt}incomplete@{utt}, that some agent runs did not count (see "Runs that
@@ -64,22 +66,30 @@ suite's baseline carries a badge.
 
 @{h2}One run
 
-Click a run to read it on the right:
+Click a run to read it on the right. Its head names the suite, the run id,
+the agent and when it started; below it three figures: agent runs that
+counted of planned (with how many did not count), passed of those, and the
+cost in all and per run (with how many runs had no known cost).
 
 @{bullet}@{b}Make baseline@{ub} (a finished run only) makes it the run
 later runs of the same suite are compared against. @{b}Stop@{ub} (while
 running) starts no further agent runs; those already running finish.
 @{bullet}@{b}Compare against@{ub}: its own reference arm (the first arm
-of the suite, run beside the others) or the suite's baseline. A baseline
+of the suite, run beside the others) or the suite's baseline; offered only
+while the suite has a baseline other than this run. A baseline
 from an older version of the suite file is compared all the same, with a
 warning: a task of the same name may ask or check something else now.
 Picking another run goes back to its own reference arm.
-@{bullet}The arms: runs, share passed, mean score, cost, and the cost of a
-run at the 90th percentile.
-@{bullet}The verdict for each arm against the reference -- see
-@{" Reading a report " link report}.
-@{bullet}A table task by task: passed of runs and the mean score per arm.
-@{bullet}@{b}Runs@{ub}: every single agent run. A click opens one with the
+Three tabs below, the chosen one kept as the run reloads and from run to
+run:
+
+@{bullet}@{b}Arms@{ub}: runs, share passed, mean score, cost, and the cost of
+a run at the 90th percentile; then the verdict for each arm against the
+reference -- see @{" Reading a report " link report}.
+@{bullet}@{b}Tasks@{ub}: a table task by task, passed of runs and the mean
+score per arm.
+@{bullet}@{b}Runs@{ub}: every single agent run. A click opens one above the
+table with the
 check's output, the end of the agent's answer, its request id (to find
 its LLM calls) and its directory.
 
@@ -281,6 +291,31 @@ Every check takes @{tt}timeout_s@{utt} (600 by default); past it the
 check is ended together with everything it started, and scores 0. A check
 that fails to run scores 0 and says why.
 
+@{h2}What a check reads
+
+The run a @{tt}script@{utt} gets as @{tt}run.json@{utt} and a
+@{tt}python@{utt} check as @{tt}run@{utt} is the agent run's result: the
+@{tt}answer@{utt} (all of it), @{tt}errors@{utt}, @{tt}model@{utt},
+@{tt}session_id@{utt} and @{tt}request_id@{utt} (its LLM calls, sub-agents'
+under @{tt}<request_id>_@{utt}), @{tt}calls@{utt}, @{tt}cost@{utt} and
+@{tt}duration_s@{utt} among others, and what the agent left behind:
+
+@{bullet}@{tt}data_dir@{utt}: the run's data directory -- the stores its
+agents wrote (a JSON store, a database) are below it, as in the
+installation's @{tt}data/@{utt}. With @{tt}data: shared@{utt}, the
+installation's own.
+@{bullet}@{tt}stategraph_runs@{utt}: the machine runs in that data
+directory that began or moved on during this agent run -- in a chain also
+one an earlier task started and this one drove on --, oldest first, each
+with @{tt}id@{utt},
+@{tt}machine@{utt}, @{tt}status@{utt}, @{tt}final_state@{utt},
+@{tt}caller_run@{utt} (the run whose call activity started it; none for
+one an agent started) and @{tt}parent_run@{utt} (the run it was forked
+from); their journal is
+@{tt}<data_dir>/stategraph/runs.db@{utt}. Only with @{tt}data: fresh@{utt}
+(otherwise @{tt}null@{utt}): in the installation's every run since would
+count.
+
 @{h2}pytest and an agent that edits its tests
 
 An agent that rewrites the failing test passes it. So, before pytest runs:
@@ -337,6 +372,31 @@ reference arm of an A/B on the edit. A file that is not there refuses the
 suite. @{tt}agent@{utt} runs another agent altogether. Each run records the model it ran
 on, so you can see an arm's profile took effect.
 
+@{h2}Overlays for the agents it starts
+
+@{tt}agent_config@{utt} reaches the suite's agent only. An agent that hands
+its work on -- a machine that runs a panel, an agent that spawns
+sub-agents -- runs those with their own configuration. @{tt}agents@{utt}
+names them:
+
+@{code}
+arms:
+  base: {}
+  strict-review:
+    agents:
+      reviewer: {llm_profile: [review_alt]}
+      reviewer_panel: {template_vars: {strictness: high}}
+@{body}
+
+Each is laid over the named agent's configuration before anything is built
+from it, so every run of that agent within the arm's runs gets it, however
+deep in the chain. Merged like @{tt}agent_config@{utt}, over what the agent
+resolves to. Every agent that inherits from a named one gets its overlay
+too -- name a parent, and you change its heirs; a named heir gets both, in
+whatever order they are listed. A name that is no agent of the
+configuration, an overlay that does not validate or an unknown profile
+refuses the suite.
+
 @{h2}Admin overlays and machine overlays
 
 A suite is written by an administrator, so its overlays may set anything
@@ -388,8 +448,10 @@ once every arm finished the one before.
 (@{tt}python -m plugins.agent_eval.child@{utt}) started in its workspace,
 with the run's data directory in @{tt}AGENT_DATA_DIR@{utt}. It drives
 @{tt}agent-run@{utt}'s own code, so a session is opened, run and saved as
-@{tt}agent-run@{utt} does; the overlay reaches the agent through the reload
-path @{tt}agent-cli reload@{utt} takes. Runs are stored under the local
+@{tt}agent-run@{utt} does. The arm's @{tt}agents@{utt} are laid over the
+configuration as it is loaded, before the registry is built from it; the
+overlay of the suite's agent reaches it through the reload path
+@{tt}agent-cli reload@{utt} takes. Runs are stored under the local
 operator's user (@{tt}cli_user@{utt}), whom the agent role gate trusts for
 a local process.
 @{bullet}Cost, calls and tokens are read afterwards from the

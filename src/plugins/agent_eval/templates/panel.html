@@ -2,8 +2,10 @@
 {% from "kit/macros.html" import icon %}
 {% block title %}Evals{% endblock %}
 {% block toolbar %}
-<select class="pk-select" id="suite" aria-label="Suite"></select>
-<button type="button" class="pk-btn pk-btn--primary pk-btn--sm" id="start">{{ icon('play', size='sm') }} Run</button>
+<div class="pk-filters">
+  <select class="pk-select" id="suite" aria-label="Suite"></select>
+  <button type="button" class="pk-btn pk-btn--primary pk-btn--sm" id="start">{{ icon('play', size='sm') }} Run</button>
+</div>
 <pk-refresh interval="10" auto></pk-refresh>
 {% endblock %}
 {% block content %}

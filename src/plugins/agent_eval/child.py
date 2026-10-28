@@ -4,8 +4,10 @@
 
 Started by the runner in the run's workspace (what the agent's tools take for ".") with the run's data
 directory in AGENT_DATA_DIR. It drives agent-run's own main_async, so a run opens, runs and saves its session
-exactly as `agent-run` does; two of its steps are wrapped: the agent it builds gets the overlays, the task's
-then the arm's (the reload path, the same one `agent-cli reload` takes), and the finished run writes its result
+exactly as `agent-run` does; three of its steps are wrapped: the configuration it loads gets the arm's
+overlays for other agents (``job["agents"]``, before anything is built from it), the agent it builds gets the
+overlays, the task's then the arm's (the reload path, the same one `agent-cli reload` takes), and the finished
+run writes its result
 -- answer, errors, the model it ran on -- to ``job["result_path"]``. Cost is the runner's to read, from the usage
 store by request id: a run killed at its timeout writes nothing here.
 """
@@ -27,10 +29,16 @@ def main(job_path: str) -> None:
     from agent_system.cli_utils.agent_runner import run_as_local_operator
     from agent_system.config.settings import get_tool_server_config
     from agent_system.paths import enter_project
-    from plugins.agent_eval.overlay import apply_overlay
+    from plugins.agent_eval.overlay import apply_overlay, layer_agents
 
     build = agent_run.create_agent
     run = agent_run.run_agent_request
+    load = agent_run.load_settings
+
+    def load_settings(*args, **kwargs):
+        # The arm's overlays for other agents (the sub-agents of a machine, a panel) are a layer of the
+        # configuration: in place before the registry is built from it, so every agent built here sees them.
+        return layer_agents(load(*args, **kwargs), job.get("agents") or {})
 
     async def create_agent(config, registry, agent_name, session_service=None):
         agent = await build(config, registry, agent_name, session_service=session_service)
@@ -83,11 +91,12 @@ def main(job_path: str) -> None:
             request_id=job["request_id"]))
 
     # Put back afterwards: in the child it makes no difference, in-process (a test) it would outlive the run.
-    agent_run.create_agent, agent_run.run_agent_request = create_agent, run_agent_request
+    agent_run.create_agent, agent_run.run_agent_request, agent_run.load_settings = (
+        create_agent, run_agent_request, load_settings)
     try:
         run_as_local_operator(entry)
     finally:
-        agent_run.create_agent, agent_run.run_agent_request = build, run
+        agent_run.create_agent, agent_run.run_agent_request, agent_run.load_settings = build, run, load
 
 
 if __name__ == "__main__":

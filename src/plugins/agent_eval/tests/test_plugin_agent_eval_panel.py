@@ -9,7 +9,7 @@ Seeded in a data directory of its own:
 
 With the cookie ``ev_mode=fails`` the run list answers 500. POST /plugins/agent_eval/runs is answered by the stub
 (never a real run); GET /__stub/started says how many it took; POST /__stub/append adds a 25th run to the two-arm
-run.
+run; POST /__stub/stop_one writes a stopped and a refused record (neither counts) into the died run.
 """
 from __future__ import annotations
 
@@ -92,6 +92,18 @@ def panel_app(tmp_path: Path) -> FastAPI:
     async def count():
         return started
 
+    @app.post("/__stub/stop_one")
+    async def stop_one():
+        from plugins.agent_eval import store
+        store.append_record("20261022-100000-cccc", {
+            "run_id": "20261022-100000-cccc", "n": 13, "arm": "base", "task": "fix-pager", "kind": "learn",
+            "rep": 3, "dir": "runs/0013-base-r3", "scored": False, "status": "stopped"})
+        # refused before it ran: the usage store found no call, so its cost is 0, not unknown
+        store.append_record("20261022-100000-cccc", {
+            "run_id": "20261022-100000-cccc", "n": 14, "arm": "base", "task": "add-cli-flag", "kind": "learn",
+            "rep": 3, "dir": "runs/0014-base-r3", "scored": False, "status": "refused", "cost": 0.0})
+        return {"ok": True}
+
     @app.post("/__stub/append")
     async def append():
         from plugins.agent_eval import store
@@ -128,8 +140,9 @@ EXPECTED = [
     'a run shows its arms, the verdict and the task matrix',
     'comparing against the baseline names it as the reference',
     'a record opens with its check output and answer',
-    'the open runs list stays open when new runs come in',
+    'the chosen tab stays chosen when new runs come in',
     'switching to another run compares it against its own reference again',
+    'a run counts only the agent runs that ran',
     'starting asks first: cancelled starts nothing, confirmed starts the suite',
     'a failed load of the runs says so',
 ]

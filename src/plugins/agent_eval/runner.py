@@ -20,6 +20,7 @@ import sys
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -27,7 +28,7 @@ from agent_system.paths import DATA_DIR_ENV, PROJECT_ROOT, data_path
 
 from . import store
 from .checks import run_check
-from .overlay import apply_overlay
+from .overlay import apply_overlay, layer_agents
 from .proc import run_bounded, tail
 from .suite import Suite, Task, load_suite
 
@@ -118,13 +119,31 @@ def check_arms(suite: Suite) -> None:
     config = load_settings()
     agents = set(agent_entry_names(config))
     profiles = set((config.llm_system.profiles or {}) if config.llm_system else {})
+
+    def unknown_profiles(agent_config) -> List[str]:
+        named = agent_config.llm_profile if isinstance(agent_config.llm_profile, list) else [agent_config.llm_profile]
+        return [p for p in named if p not in profiles]
+
     problems = []
     for name, arm in suite.arms.items():
         agent = arm.agent or suite.agent
         if agent not in agents:
             problems.append(f"arm {name}: '{agent}' is not an agent of this configuration")
             continue
-        base = get_tool_server_config(agent, config).agent_config
+        stray = [other for other in arm.agents if other not in agents]
+        if stray:
+            problems.append(f"arm {name}: agents: {stray} are not agents of this configuration")
+            continue
+        try:
+            layered = layer_agents(config, arm.agents)
+        except Exception as e:  # noqa: BLE001 - an agent it names that is none, an overlay that does not validate
+            problems.append(f"arm {name}: agents: {e}")
+            continue
+        for other in arm.agents:
+            unknown = unknown_profiles(get_tool_server_config(other, layered).agent_config)
+            if unknown:
+                problems.append(f"arm {name}, agent {other}: unknown llm_profile {unknown}")
+        base = get_tool_server_config(agent, layered).agent_config
         # What a run gets: the arm over the task's material, the task's first (as the child applies them).
         combos = [(f"arm {name}", {})] + [(f"arm {name}, task {t.id}", t.agent_config)
                                          for t in suite.tasks if t.agent_config]
@@ -136,8 +155,7 @@ def check_arms(suite: Suite) -> None:
                 if not task_overlay:
                     break  # the arm's own overlay: every task would only repeat it
                 continue
-            named = merged.llm_profile if isinstance(merged.llm_profile, list) else [merged.llm_profile]
-            unknown = [p for p in named if p not in profiles]
+            unknown = unknown_profiles(merged)
             if unknown:
                 problems.append(f"{who}: unknown llm_profile {unknown}")
     if problems:
@@ -282,15 +300,21 @@ def _agent_run(suite: Suite, run_id: str, job: Dict[str, Any], task: Task, jdir:
     job_file = jdir / f"job-{task.id}.json"
     job_file.write_text(json.dumps({
         # In order: the task's material first, the arm's change over it.
-        "agent": arm.agent or suite.agent, "overlays": [task.agent_config, arm.agent_config], "input": task.input,
+        "agent": arm.agent or suite.agent, "overlays": [task.agent_config, arm.agent_config],
+        "agents": arm.agents, "input": task.input,
         "request_id": request_id, "session_user": SESSION_USER, "result_path": str(result_path),
     }, ensure_ascii=False), encoding="utf-8")
     log = jdir / f"child-{task.id}.log"
+    started = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     exit_code = run_bounded([sys.executable, "-m", "plugins.agent_eval.child", str(job_file)], cwd=workspace,
                             log=log, timeout=suite.timeout_s, env=child_env(suite, data))
     # From the usage store, not from the child: a run killed at its timeout wrote nothing, and is often the
-    # costliest one.
-    usage = usage_of(request_id, data if suite.data == "fresh" else None)
+    # costliest one. With it what a check reads the run's products from: the data directory (its stores) and the
+    # machine runs it started -- those of a fresh one only: in the installation's, every run since would count.
+    fresh = suite.data == "fresh"
+    usage = {**usage_of(request_id, data if fresh else None),
+             "data_dir": str(data if fresh else PROJECT_ROOT / data_path()),  # absolute: a check runs elsewhere
+             "stategraph_runs": stategraph_runs(data, started) if fresh else None}
     if exit_code is None:
         return {"status": "timeout", "request_id": request_id, "exit": None, **usage,
                 "detail": f"timed out after {suite.timeout_s:.0f}s"}
@@ -305,6 +329,23 @@ def _agent_run(suite: Suite, run_id: str, job: Dict[str, Any], task: Task, jdir:
     return {**result, **usage, "status": "refused" if result.get("refused") else "done", "exit": exit_code}
 
 
+def stategraph_runs(data: Path, since: str) -> List[Dict[str, Any]]:
+    """The stategraph runs in *data* that began or moved on at *since* or later (UTC, as the journal writes it): a
+    chain keeps its data directory from task to task, and a task's are the runs its own agent run started or drove
+    on. Only the child writes that journal: nothing else moves them."""
+    db = data / "stategraph" / "runs.db"
+    if not db.is_file():
+        return []
+    try:
+        with sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True, timeout=10) as conn:
+            rows = conn.execute("SELECT id, machine_id, status, final_state, caller_run, parent_run FROM runs "
+                                "WHERE created_at >= ? OR updated_at >= ? ORDER BY created_at",
+                                (since, since)).fetchall()
+    except sqlite3.Error:
+        return []
+    return [dict(zip(("id", "machine", "status", "final_state", "caller_run", "parent_run"), row)) for row in rows]
+
+
 def usage_of(request_id: str, data: Optional[Path]) -> Dict[str, Any]:
     """Calls, tokens and cost of one run, sub-agents included: the usage tracker's records whose request id is
     the run's or starts with ``<run's>_`` (sub-requests). *data* is the run's own data directory; None means the
@@ -314,7 +355,8 @@ def usage_of(request_id: str, data: Optional[Path]) -> Dict[str, Any]:
     if not db.is_file():
         return unknown
     try:
-        with sqlite3.connect(f"file:{db.resolve().as_posix()}?mode=ro", uri=True, timeout=10) as conn:
+        # as_uri: a '#' or '%' in the path would otherwise cut the URI -- and open a stray database read-write
+        with sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True, timeout=10) as conn:
             # '`' sorts right after '_': the range is exactly the ids that start with "<id>_".
             row = conn.execute(
                 "SELECT COUNT(*), SUM(cost), SUM(cost IS NULL), SUM(prompt_tokens), SUM(completion_tokens) "
