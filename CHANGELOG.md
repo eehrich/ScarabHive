@@ -80,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Evals: `key: null` in an arm's overlay removes what the agent has there; before, it changed nothing, so an arm
+  could not swap the model of an agent whose `llm_params` are keyed by its profile (the overlay did not validate).
 - stategraph: a watchpoint saw no change in a run's first step -- its value was first taken after it; it is now
   taken where the frame starts.
 - A model call without streaming went on running when the agent's event stream was closed or its run cancelled

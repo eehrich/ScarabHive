@@ -422,7 +422,13 @@ arms:
 
 @{tt}agent_config@{utt} merges over the agent's own like a config entry over the
 one it inherits from: mappings merge, @{tt}+x@{utt} adds to a list,
-@{tt}!x@{utt} removes from it, a plain list replaces it. An inline
+@{tt}!x@{utt} removes from it, a plain list replaces it, and
+@{tt}key: null@{utt} removes what the agent has there (the field's
+default applies) -- the way to swap the model of an agent whose
+@{tt}llm_params@{utt} are keyed by its profile:
+@{tt}{llm_profile: [other], llm_params: {own_profile: null}}@{utt}. Below a
+key the agent does not have, a null is a value, as in an agent YAML
+(@{tt}max_tokens: null@{utt}: the provider's default). An inline
 @{tt}system_prompt@{utt} wins over the agent's @{tt}system_template@{utt}.
 A @{tt}system_template@{utt} starting with @{tt}./@{utt} or @{tt}../@{utt}
 means the suite's directory, as in an agent YAML it means the YAML's: the

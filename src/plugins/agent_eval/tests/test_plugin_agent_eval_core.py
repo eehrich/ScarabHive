@@ -53,6 +53,20 @@ class TestOverlay:
         assert merged.tools.allowed == ["file_ops/*", "web/*"]
         assert self.BASE.llm_profile == "normal", "the base must stay untouched"
 
+    def test_null_in_an_admin_overlay_removes_what_the_agent_has(self):
+        """An agent whose llm_params name its profile: an arm on another profile must take them away, else the
+        merged config names a profile its chain lacks and does not validate."""
+        base = AgentConfig(llm_profile=["normal"], llm_params={"normal": {"max_tokens": 1000}})
+        with pytest.raises(ValueError, match="appear in no LLM chain"):
+            apply_overlay(base, {"llm_profile": ["think"]})
+        merged = apply_overlay(base, {"llm_profile": ["think"], "llm_params": {"normal": None},
+                                      "tools": {"blocked": None}})
+        assert merged.llm_profile == ["think"] and "normal" not in (merged.llm_params or {}), merged.llm_params
+        assert base.llm_params == {"normal": {"max_tokens": 1000}}, "the base must stay untouched"
+        # where the agent has nothing, a null is a value, as in an agent YAML: the provider's default
+        bare = apply_overlay(AgentConfig(llm_profile=["normal"]), {"llm_params": {"*": {"max_tokens": None}}})
+        assert bare.llm_params == {"*": {"max_tokens": None}}, bare.llm_params
+
     def test_machine_overlay_may_narrow(self):
         assert machine_overlay_problems(self.BASE, {
             "system_prompt": "Be brief.", "template_vars": {"tone": "dry"},
@@ -66,6 +80,11 @@ class TestOverlay:
         ({"llm_profile": "expensive"}, "'llm_profile' is not open"),
         ({"tools": {"allowed": ["+ssh_control/*"]}}, "tools.allowed gains"),
         ({"tools": {"blocked": ["!terminal/kill"]}}, "tools.blocked loses"),
+        ({"tools": {"blocked": None}}, "tools.blocked loses"),  # null removes -- for an admin only
+        ({"llm_params": {"*": None}}, "llm_params.*: a mapping"),
+        ({"llm_params": None}, "llm_params: a mapping"),
+        ({"tools": None}, "only 'allowed' and 'blocked'"),
+        ({"template_vars": None}, "strings only"),
         ({"tools": {"deferred": ["x"]}}, "only 'allowed' and 'blocked'"),
         ({"template_vars": {"n": 3}}, "strings only"),
         ({"llm_params": {"*": {"thinking_level": "high"}}}, "thinking_level: at most"),

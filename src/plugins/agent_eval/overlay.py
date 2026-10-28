@@ -26,11 +26,28 @@ _THINKING = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 def apply_overlay(base: AgentConfig, overlay: Dict[str, Any]) -> AgentConfig:
     """*base* with *overlay* merged over it, as a config entry over the one it inherits from: mappings merge,
-    ``+x``/``!x`` extend or prune a list, a plain list replaces it. Validated like a config entry."""
+    ``+x``/``!x`` extend or prune a list, a plain list replaces it -- and ``key: null`` removes the inherited key
+    (its default applies): the only way an arm takes away what the agent has, a profile's ``llm_params`` for a
+    model it swaps out. Validated like a config entry."""
     if not overlay:
         return base
-    merged = _deep_merge_dict(base.model_dump(), overlay)
-    return AgentConfig.model_validate(merged)
+    kept, rest = _without_nulls(base.model_dump(), overlay)
+    return AgentConfig.model_validate(_deep_merge_dict(kept, rest))
+
+
+def _without_nulls(base: Dict[str, Any], overlay: Dict[str, Any]) -> tuple:
+    """(*base* without the keys *overlay* sets to null, at any depth; *overlay* without them). Below a key the agent
+    lacks the overlay goes to the merge as it is: there a null is a value, as in an agent YAML (``max_tokens:
+    null`` -- the provider's default over the model entry's)."""
+    kept, rest = dict(base), {}
+    for key, value in overlay.items():
+        if value is None:
+            kept.pop(key, None)
+        elif isinstance(value, dict) and isinstance(kept.get(key), dict):
+            kept[key], rest[key] = _without_nulls(kept[key], value)
+        else:
+            rest[key] = value
+    return kept, rest
 
 
 def layer_agents(config: AgentSystemConfig, overlays: Dict[str, Dict[str, Any]]) -> AgentSystemConfig:
@@ -66,13 +83,14 @@ def layer_agents(config: AgentSystemConfig, overlays: Dict[str, Dict[str, Any]])
 def machine_overlay_problems(base: AgentConfig, overlay: Dict[str, Any]) -> List[str]:
     """Why *overlay*, written by a model, may not run over *base* -- empty when it may."""
     problems = [f"field '{key}' is not open to a machine overlay" for key in overlay if key not in MACHINE_FIELDS]
-    tools = overlay.get("tools") or {}
+    # .get(key, {}): a null would else pass as nothing said -- and, merged, remove what the agent has
+    tools = overlay.get("tools", {})
     if not isinstance(tools, dict) or set(tools) - {"allowed", "blocked"}:
         problems.append("tools: only 'allowed' and 'blocked' may change")
-    template_vars = overlay.get("template_vars") or {}
+    template_vars = overlay.get("template_vars", {})
     if not isinstance(template_vars, dict) or not all(isinstance(v, str) for v in template_vars.values()):
         problems.append("template_vars: strings only")
-    problems += _llm_params_problems(base.llm_params or {}, overlay.get("llm_params") or {})
+    problems += _llm_params_problems(base.llm_params or {}, overlay.get("llm_params", {}))
     if problems:
         return problems
 
