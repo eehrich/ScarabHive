@@ -156,7 +156,9 @@ write a tool that does both through one parameter.
 hold (empty account, tools or request id; a lifetime of 0 or less; a
 pinned runtime parameter; a path that is none, an empty list of values) and
 @{tt}LookupError@{utt} when the gateway does not serve in this process (not
-enabled). @{tt}revoke@{utt} returns False when there was nothing to revoke.
+enabled, or a process whose app does not mount its route: agent-cli, a
+worker -- a CLI handed a token there would reach no gateway that knows it).
+@{tt}revoke@{utt} returns False when there was nothing to revoke.
 A revoked grant stops a call of it that is still running -- the tool's task
 is cancelled, the hooks see the cancellation token -- and its token answers
 401 from then on. A grant whose time runs out stops its calls the same way,
@@ -226,8 +228,11 @@ or history. What the CLI keeps of the answers is the CLI's.
 @{h1}Known gaps
 
 @{bullet}One process. Grants live in the API process's memory; a caller in
-another process cannot issue one the gateway knows, and a restart ends
-every grant.
+another process cannot issue one the gateway knows (it is refused there),
+and a restart ends every grant.
+@{bullet}One instance. @{tt}config/security.yaml@{utt} opens the route of
+@{tt}mcp_gateway@{utt} only; a second instance answers every request with
+401 until its route is opened there as well.
 @{bullet}Pinned and allowed values hold for what a tool takes as a
 parameter. A tool that finds its target by another id (an item id that
 belongs to some project) is only as narrow as that tool's own check of

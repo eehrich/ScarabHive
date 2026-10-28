@@ -435,6 +435,16 @@ class PluginWebRegistry:
                     logger.info(f"Mounted web router for plugin {name} (no auth)")
             except Exception as e:
                 logger.error(f"Failed to mount router for plugin {name}: {e}")
+                continue
+            # Every process builds its plugins and asks them for their router; only the app's
+            # serves it. A plugin that tells others its route is reachable (the MCP gateway's
+            # grants) learns here that it is.
+            mounted = getattr(self.web_plugins.get(name), "router_mounted", None)
+            if callable(mounted):
+                try:
+                    mounted()
+                except Exception:
+                    logger.exception("Plugin %s failed on router_mounted", name)
         
         # Mount static assets (no auth required for static files)
         for name, path in self.static_mounts.items():

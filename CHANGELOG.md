@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A model call without streaming went on running when the agent's event stream was closed or its run cancelled
   from outside: the 100 ms polls shielded the call from the cancel too. It is cancelled now -- not billed to its
   end with its answer thrown away.
+- The MCP gateway issued grants in every process that built it (agent-cli, a worker), where no app serves its
+  route: the CLI of such a run could reach no gateway, or one that knew no token, and went on without its tools. A
+  gateway serves now once the app has mounted its route (a web plugin's `router_mounted`, called by
+  `apply_to_app`); elsewhere `grants.issue` refuses, and the run does not start.
 
 ## [0.7.1] - 2026-10-27
 

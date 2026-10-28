@@ -36,7 +36,14 @@ class McpGatewayPlugin(SchemaBasedPluginWebInterface):
         self._ready: Optional[asyncio.Future] = None
         self._stop: Optional[asyncio.Event] = None
         self._holder: Optional[asyncio.Task] = None
-        grants.serve(name, True)
+        # Built in every process (agent-cli, a worker), served only by the app's: until the app has mounted the
+        # route, a grant is refused -- a CLI handed one here would reach no gateway, or one that knows no token.
+        self._mounted = False
+
+    def router_mounted(self) -> None:
+        """The app serves this instance's route (PluginWebRegistry.apply_to_app): grants may be issued."""
+        self._mounted = True
+        grants.serve(self.name, True)
 
     async def call(self, tool: Optional[str] = None, params: Optional[dict] = None, *args: Any, **kwargs: Any):
         """No tools: the gateway is for outside clients."""
@@ -119,7 +126,8 @@ class McpGatewayPlugin(SchemaBasedPluginWebInterface):
         return router
 
     async def start_plugin(self) -> None:
-        grants.serve(self.name, True)
+        if self._mounted:
+            grants.serve(self.name, True)
 
     async def stop_plugin(self) -> None:
         """Stop serving; a start_plugin afterwards serves again with a new session manager (the SDK runs one

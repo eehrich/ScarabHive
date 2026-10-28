@@ -110,6 +110,7 @@ async def gateway(monkeypatch):
                               ToolServerConfig(type="mcp_gateway", enabled=True, max_result_chars=2000))
     app = FastAPI()
     app.include_router(plugin.get_web_router())
+    plugin.router_mounted()
     app.state.plugin = plugin
     yield app, store
     await plugin.stop_plugin()
@@ -362,6 +363,25 @@ class TestTokens:
     async def test_no_grant_for_a_gateway_that_does_not_serve(self, gateway):
         with pytest.raises(LookupError):
             issue(gateway="nowhere")
+
+    async def test_a_gateway_serves_only_once_the_app_has_mounted_its_route(self):
+        """Every process builds the plugin; only the app's mounts its route. Before that, no grant."""
+        from agent_system.plugins.web_adapter import PluginWebRegistry
+
+        plugin = McpGatewayPlugin("mcp_gateway_mount", AgentSystemConfig(),
+                                  ToolServerConfig(type="mcp_gateway", enabled=True))
+        try:
+            await plugin.start_plugin()
+            with pytest.raises(LookupError):
+                issue(gateway="mcp_gateway_mount")
+            web = PluginWebRegistry()
+            web.register_web_plugin("mcp_gateway_mount", plugin)
+            with pytest.raises(LookupError):
+                issue(gateway="mcp_gateway_mount")   # asked for its router, as every process does
+            web.apply_to_app(FastAPI())
+            assert issue(gateway="mcp_gateway_mount")
+        finally:
+            await plugin.stop_plugin()
 
 
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
