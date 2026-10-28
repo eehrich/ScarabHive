@@ -97,6 +97,27 @@ def test_setup_runs_once_and_every_run_starts_from_its_copy(tmp_path, monkeypatc
     assert len(seen) == 4 and all(files == ["seed.txt"] for *_, files in seen), seen
 
 
+def test_python_in_a_setup_is_the_runners_interpreter(tmp_path, monkeypatch):
+    """A setup command says plain `python` -- with no environment activated (a PATH without any python) it must
+    still be the interpreter the runner runs on, not whatever else is first or nothing. The agent under test
+    keeps the PATH it would have in production."""
+    seen = []
+    monkeypatch.setattr(runner, "_agent_run", _stand_in(seen=seen))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert runner.child_env(runner.load_suite(Path(runner.__file__).parent / "evals" / "hello" / "suite.yaml"),
+                            tmp_path)["PATH"] == str(tmp_path / "empty")
+    setup = 'python -c "import sys; open(\'py.txt\',\'w\').write(sys.executable)"'
+    path = _suite(tmp_path, f"""
+        name: s
+        agent: a
+        tasks:
+          - {{id: t1, input: x, setup: {json.dumps(setup)}, check: {{expect: {{contains: [ok]}}}}}}
+    """)
+    records = _records(runner.run_suite(path, progress=lambda _: None))
+    assert records[0]["status"] == "done", records
+    assert seen[0][3] == ["py.txt"], seen
+
+
 def test_a_failed_setup_starts_none_of_its_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_agent_run", _stand_in())
     path = _suite(tmp_path, f"""
@@ -221,9 +242,13 @@ def test_stop_after_the_last_run_started_leaves_the_run_done(tmp_path, monkeypat
     assert store.baseline_for("s") == run_id
 
 
-def test_child_runs_the_real_agent_run_path_with_the_overlay(tmp_path, data_dir, monkeypatch):
-    """One child run in-process: real config, real bootstrap, agent-run's own session handling; the arm's
-    llm_profile must reach the agent (the fake client carries the profile's model name)."""
+@pytest.mark.parametrize("task_wants, arm_wants", [("base", "other"), ("other", None), ("legacy", "other")],
+                         ids=["the_arm_over_the_task", "the_task_alone", "a_job_from_before_overlays"])
+def test_child_runs_the_real_agent_run_path_with_the_overlays(tmp_path, data_dir, monkeypatch, task_wants,
+                                                              arm_wants):
+    """One child run in-process: real config, real bootstrap, agent-run's own session handling; the overlays'
+    llm_profile must reach the agent (the fake client carries the profile's model name) -- the arm's over the
+    task's, the task's where the arm leaves it, and the arm of a job a runner from before 'overlays' wrote."""
     from agent_system.config.settings import get_tool_server_config, load_settings
     from plugins.agent_eval import child
 
@@ -234,11 +259,15 @@ def test_child_runs_the_real_agent_run_path_with_the_overlay(tmp_path, data_dir,
     other = next(name for name, p in config.llm_system.profiles.items()
                  if name != base_profile and p.model_ref != config.llm_system.profiles[base_profile].model_ref)
     expected = config.llm_system.models[config.llm_system.profiles[other].model_ref].model
+    profile = {"base": base_profile, "other": other}
 
     result_path = tmp_path / "result.json"
     job = tmp_path / "job.json"
+    arm = {"llm_profile": [profile[arm_wants]]} if arm_wants else {}
+    overlays = ({"agent_config": arm} if task_wants == "legacy"
+                else {"overlays": [{"llm_profile": [profile[task_wants]]}, arm]})
     job.write_text(json.dumps({
-        "agent": agent, "agent_config": {"llm_profile": [other]}, "input": "say the word marmalade",
+        "agent": agent, "input": "say the word marmalade", **overlays,
         "request_id": "ev-test-1", "session_user": runner.SESSION_USER, "result_path": str(result_path),
     }), encoding="utf-8")
     # The environment the runner gives a child -- the root conftest names a session store of its own,
@@ -280,6 +309,95 @@ def test_check_arms_refuses_an_arm_that_cannot_run(tmp_path):
     message = str(refused.value)
     assert "arm ghost" in message and "arm broken" in message and "arm nowhere" in message
     assert "arm base" not in message
+
+
+def test_check_arms_refuses_a_task_overlay_that_breaks_an_arm(tmp_path):
+    from plugins.agent_eval.suite import load_suite
+    path = _suite(tmp_path, """
+        name: s
+        agent: file_ops_test_agent
+        arms:
+          base: {}
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+          - {id: t2, input: x, check: {expect: {contains: [ok]}}, agent_config: {max_steps: lots}}
+    """)
+    with pytest.raises(ValueError) as refused:
+        runner.check_arms(load_suite(path))
+    assert "arm base, task t2" in str(refused.value) and "task t1" not in str(refused.value)
+
+
+def test_check_arms_checks_the_profile_a_run_gets_from_task_and_arm(tmp_path):
+    """A task's unknown llm_profile would crash every run of the task; an arm that names its own profile over
+    it runs (the arm's overlay comes after the task's)."""
+    from agent_system.config.settings import get_tool_server_config, load_settings
+    from plugins.agent_eval.suite import load_suite
+    own = get_tool_server_config("file_ops_test_agent", load_settings()).agent_config.llm_profile
+    own = own[0] if isinstance(own, list) else own
+    path = _suite(tmp_path, f"""
+        name: s
+        agent: file_ops_test_agent
+        arms:
+          base: {{}}
+          fixed: {{agent_config: {{llm_profile: [{own}]}}}}
+        tasks:
+          - {{id: t1, input: x, check: {{expect: {{contains: [ok]}}}}, agent_config: {{llm_profile: [no_such_profile]}}}}
+    """)
+    with pytest.raises(ValueError) as refused:
+        runner.check_arms(load_suite(path))
+    assert "arm base, task t1: unknown llm_profile" in str(refused.value), refused.value
+    assert "arm fixed" not in str(refused.value), refused.value
+
+
+def test_a_suites_overlay_paths_mean_its_own_directory(tmp_path):
+    """'./' in an arm's or a task's system_template is the suite's directory, as in an agent YAML it is the
+    YAML's -- not the run's workspace, where the file is not."""
+    from plugins.agent_eval.suite import load_suite
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "old.md").write_text("old", encoding="utf-8")
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        arms:
+          base: {}
+          old: {agent_config: {system_template: ./prompts/old.md}}
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}, agent_config: {system_template: ./prompts/old.md}}
+    """)
+    suite = load_suite(path)
+    expected = str((tmp_path / "prompts" / "old.md").resolve())
+    assert suite.arms["old"].agent_config["system_template"] == expected
+    assert suite.tasks[0].agent_config["system_template"] == expected
+    path.write_text(path.read_text(encoding="utf-8").replace("old.md}}\ntasks", "gone.md}}\ntasks"), encoding="utf-8")
+    with pytest.raises(ValueError, match="arm old: system_template .*gone.md does not exist"):
+        load_suite(path)
+    # Any other relative path is the project's, as in an agent YAML -- checked there.
+    path.write_text(path.read_text(encoding="utf-8").replace("./prompts/gone.md", "config/no_such_prompt.md"),
+                    encoding="utf-8")
+    with pytest.raises(ValueError, match="arm old: system_template config/no_such_prompt.md does not exist"):
+        load_suite(path)
+
+
+def test_a_run_gets_the_tasks_overlay_then_the_arms(tmp_path, monkeypatch):
+    """The job names both, the task's first: the arm's change acts on the task's material."""
+    from plugins.agent_eval.suite import load_suite
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        arms:
+          base: {}
+          b: {agent_config: {template_vars: {tone: dry}}}
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}, agent_config: {template_vars: {genre: kids}}}
+    """)
+    suite = load_suite(path)
+    jdir = tmp_path / "job"
+    jdir.mkdir()
+    monkeypatch.setattr(runner, "run_bounded", lambda *a, **k: 0)
+    runner._agent_run(suite, "20261028-120000-abcd", {"arm": "b", "rep": 0, "n": 1, "task": "t1"},
+                      suite.tasks[0], jdir, tmp_path, tmp_path / "data")
+    job = json.loads((jdir / "job-t1.json").read_text(encoding="utf-8"))
+    assert job["overlays"] == [{"template_vars": {"genre": "kids"}}, {"template_vars": {"tone": "dry"}}]
 
 
 def test_choosing_arms_keeps_the_suites_order_and_reference(tmp_path, monkeypatch):
@@ -428,7 +546,7 @@ def test_child_records_a_run_that_raised(tmp_path, data_dir, monkeypatch):
         monkeypatch.setenv(key, value)
     result_path = tmp_path / "result.json"
     job = tmp_path / "job.json"
-    job.write_text(json.dumps({"agent": "file_ops_test_agent", "agent_config": {}, "input": "hi",
+    job.write_text(json.dumps({"agent": "file_ops_test_agent", "overlays": [], "input": "hi",
                                "request_id": "ev-test-2", "session_user": runner.SESSION_USER,
                                "result_path": str(result_path)}), encoding="utf-8")
     with pytest.raises(SystemExit):

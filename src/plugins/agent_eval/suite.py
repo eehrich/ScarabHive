@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agent_system.config.layers import _resolve_relative_paths
+from agent_system.paths import PROJECT_ROOT
 from agent_system.utils import yaml_io
 
 #: Ids end up in directory names and request ids.
@@ -63,6 +65,9 @@ class Task(BaseModel):
     #: Command run ONCE per task (in a copy of the workspace template, with the task's own data directory);
     #: its result is frozen and every run gets a copy, so all arms start from the same state.
     setup: Optional[str] = None
+    #: Task material for every arm (template_vars this task's prompt needs, say): merged over the agent's
+    #: agent_config BEFORE the arm's overlay, so the arm still decides what it changes.
+    agent_config: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("id")
     @classmethod
@@ -165,4 +170,14 @@ def load_suite(path: str | Path) -> Suite:
         for value in (task.workspace, task.check.script):
             if value and not suite.path(value).exists():
                 raise ValueError(f"{path}: task {task.id}: {value} does not exist")
+    # A './' path in an overlay means the suite's directory, as in an agent YAML it means the YAML's -- the run
+    # would otherwise look for it in its own workspace.
+    owners = [(f"arm {name}", arm.agent_config) for name, arm in suite.arms.items()]
+    owners += [(f"task {task.id}", task.agent_config) for task in suite.tasks]
+    for owner, overlay in owners:
+        _resolve_relative_paths(overlay, suite.root)
+        template = overlay.get("system_template")
+        # Any other relative path stays what it is in a YAML: the project's, where the child runs.
+        if isinstance(template, str) and not (PROJECT_ROOT / template).is_file():
+            raise ValueError(f"{path}: {owner}: system_template {template} does not exist")
     return suite

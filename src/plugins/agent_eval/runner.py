@@ -124,15 +124,22 @@ def check_arms(suite: Suite) -> None:
         if agent not in agents:
             problems.append(f"arm {name}: '{agent}' is not an agent of this configuration")
             continue
-        try:
-            merged = apply_overlay(get_tool_server_config(agent, config).agent_config, arm.agent_config)
-        except Exception as e:  # noqa: BLE001 - reported with the arm's name
-            problems.append(f"arm {name}: the overlay does not validate: {e}")
-            continue
-        named = merged.llm_profile if isinstance(merged.llm_profile, list) else [merged.llm_profile]
-        unknown = [p for p in named if p not in profiles]
-        if unknown:
-            problems.append(f"arm {name}: unknown llm_profile {unknown}")
+        base = get_tool_server_config(agent, config).agent_config
+        # What a run gets: the arm over the task's material, the task's first (as the child applies them).
+        combos = [(f"arm {name}", {})] + [(f"arm {name}, task {t.id}", t.agent_config)
+                                         for t in suite.tasks if t.agent_config]
+        for who, task_overlay in combos:
+            try:
+                merged = apply_overlay(apply_overlay(base, task_overlay), arm.agent_config)
+            except Exception as e:  # noqa: BLE001 - reported with the arm's (and the task's) name
+                problems.append(f"{who}: the overlay does not validate: {e}")
+                if not task_overlay:
+                    break  # the arm's own overlay: every task would only repeat it
+                continue
+            named = merged.llm_profile if isinstance(merged.llm_profile, list) else [merged.llm_profile]
+            unknown = [p for p in named if p not in profiles]
+            if unknown:
+                problems.append(f"{who}: unknown llm_profile {unknown}")
     if problems:
         raise ValueError("; ".join(problems))
 
@@ -181,8 +188,11 @@ def _setup(suite: Suite, task: Task, run_id: str, progress: Callable[[str], None
     data.mkdir(parents=True, exist_ok=True)
     _fill_workspace(suite, task, workspace)
     log = base / "setup.log"
-    code = run_bounded(task.setup, cwd=workspace, log=log, timeout=suite.timeout_s, env=child_env(suite, data),
-                       shell=True)
+    env = child_env(suite, data)
+    # `python` in the command is the runner's own interpreter, also when its environment was never activated.
+    # The setup's only: the agent under test gets the PATH it would get in production.
+    env["PATH"] = os.pathsep.join(filter(None, [str(Path(sys.executable).parent), env.get("PATH")]))
+    code = run_bounded(task.setup, cwd=workspace, log=log, timeout=suite.timeout_s, env=env, shell=True)
     if code != 0:
         why = f"timed out after {suite.timeout_s:.0f}s" if code is None else f"exit {code}"
         progress(f"setup of {task.id} failed ({why}), see {log}")
@@ -271,7 +281,8 @@ def _agent_run(suite: Suite, run_id: str, job: Dict[str, Any], task: Task, jdir:
     result_path = jdir / f"result-{task.id}.json"
     job_file = jdir / f"job-{task.id}.json"
     job_file.write_text(json.dumps({
-        "agent": arm.agent or suite.agent, "agent_config": arm.agent_config, "input": task.input,
+        # In order: the task's material first, the arm's change over it.
+        "agent": arm.agent or suite.agent, "overlays": [task.agent_config, arm.agent_config], "input": task.input,
         "request_id": request_id, "session_user": SESSION_USER, "result_path": str(result_path),
     }, ensure_ascii=False), encoding="utf-8")
     log = jdir / f"child-{task.id}.log"

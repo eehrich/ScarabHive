@@ -1,13 +1,13 @@
-"""One eval run: an agent-run, in a process of its own, with the arm's overlay.
+"""One eval run: an agent-run, in a process of its own, with the task's and the arm's overlay.
 
     python -m plugins.agent_eval.child <job.json>
 
 Started by the runner in the run's workspace (what the agent's tools take for ".") with the run's data
 directory in AGENT_DATA_DIR. It drives agent-run's own main_async, so a run opens, runs and saves its session
-exactly as `agent-run` does; two of its steps are wrapped: the agent it builds gets the overlay (the reload
-path, the same one `agent-cli reload` takes), and the finished run writes its result -- answer, errors, the model
-it ran on -- to ``job["result_path"]``. Cost is the runner's to read, from the usage store by request id: a run
-killed at its timeout writes nothing here.
+exactly as `agent-run` does; two of its steps are wrapped: the agent it builds gets the overlays, the task's
+then the arm's (the reload path, the same one `agent-cli reload` takes), and the finished run writes its result
+-- answer, errors, the model it ran on -- to ``job["result_path"]``. Cost is the runner's to read, from the usage
+store by request id: a run killed at its timeout writes nothing here.
 """
 from __future__ import annotations
 
@@ -34,11 +34,15 @@ def main(job_path: str) -> None:
 
     async def create_agent(config, registry, agent_name, session_service=None):
         agent = await build(config, registry, agent_name, session_service=session_service)
-        overlay = job.get("agent_config") or {}
-        if overlay:
+        # A job a runner from before 'overlays' wrote (a pull while a suite runs: the runner lives on, each child
+        # imports the new code) still carries its arm -- else every arm would quietly run as the agent.
+        overlays = [o for o in job.get("overlays", [job.get("agent_config")]) or [] if o]
+        if overlays:
             merged = get_tool_server_config(agent_name, config)
-            entry = merged.model_copy(update={"agent_config": apply_overlay(merged.agent_config, overlay)})
-            agent.reload_config(entry, config)
+            agent_config = merged.agent_config
+            for overlay in overlays:  # one by one: each '+x'/'!x' acts on what the one before left
+                agent_config = apply_overlay(agent_config, overlay)
+            agent.reload_config(merged.model_copy(update={"agent_config": agent_config}), config)
         return agent
 
     async def run_agent_request(agent, request, session_id, llm_override=None, llm_profile_info=None,

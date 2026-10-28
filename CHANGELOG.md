@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Evals: a task may carry its own `agent_config` (the template variables its prompt needs, say), merged before
+  the arm's overlay; a `./` path in an arm's or a task's `system_template` means the suite's directory, so the
+  prompt as it was before an edit, kept beside the suite, makes the reference arm; `python` in a setup command
+  is the runner's own interpreter, also when its environment was never activated.
 - coding_cli runs Google's Antigravity CLI (`agy`) as well as Claude Code: `cli: antigravity` on an instance.
   agy's stream is read as Claude Code's, so the tools, the branch, `resume` and `json_schema` work the same.
   A run gets a home folder of its own per user (pinned settings, nothing of the user's agy setup, no Claude
