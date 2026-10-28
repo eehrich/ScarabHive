@@ -172,6 +172,20 @@ async def test_execute_task_with_images(agent_service, mock_agent):
         assert len(result_events) == 2
 
 
+@pytest.mark.asyncio
+async def test_images_are_checked_against_the_services_own_agent(agent_service, mock_agent):
+    """The real message builder, not a mock of it: the attachment gate gets the agent the service runs."""
+    seen = {}
+
+    def gate(text, kinds, llm_override, agent):
+        seen.update(images=len(kinds["image"]), agent=agent)
+        return "multimodal_message"
+
+    with patch("agent_system.utils.multimodal_processor.message_with_attachments", gate):
+        assert await agent_service._create_multimodal_message("Describe image", [b"fake"]) == "multimodal_message"
+    assert seen == {"images": 1, "agent": mock_agent}
+
+
 # ===== Task Execution Tests (Collect Result) =====
 
 @pytest.mark.asyncio

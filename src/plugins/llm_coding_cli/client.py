@@ -14,7 +14,7 @@ import hashlib
 import logging
 import time
 from collections import OrderedDict
-from typing import Any, Optional
+from typing import Any
 
 from agent_system.llm.models import LLMClient, LLMQuotaExhaustedError, LLMServerError
 

@@ -414,7 +414,7 @@ class AgentService:
                 
                 # Through the gate every entry point shares: the agent's model
                 # is asked whether it takes images before they are built in.
-                return message_with_attachments(task, {"image": temp_files}, None, self.agent)
+                return message_with_attachments(task, {"image": temp_files}, None, self._agent)
                 
             finally:
                 # Cleanup temp files
