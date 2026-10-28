@@ -266,9 +266,11 @@ too, the plugin issues a grant for that run alone and revokes it when the run
 ends; the grant holds the run's time limit and five minutes beyond, no longer.
 
 @{bullet}The grant names the workdir's @{tt}tools@{utt} (patterns on the
-tool names), its @{tt}allowed@{utt} values and the values the call fixes
-with @{tt}pin@{utt} -- exactly the parameters the workdir's @{tt}pin@{utt}
-names. The gateway keeps those parameters out of the tools the CLI sees and
+tool names), its @{tt}allowed@{utt} values and the run's tool bindings,
+@{tt}pin@{utt}: @{tt}{tool pattern: {parameter: value}}@{utt}, the form an
+agent run's bindings have, so a caller hands its own on as they are. The run
+must bring at least what the workdir's @{tt}pin@{utt} requires
+(@{tt}{tool pattern: [parameters]}@{utt}); more only narrows it further. The gateway keeps those parameters out of the tools the CLI sees and
 sets them in every call; a tool without them is not shown. Its calls run as
 the caller's user and session, under the call's request id.
 @{bullet}Claude Code reaches it as the MCP server @{tt}gateway@{utt}
@@ -279,8 +281,11 @@ workspace's @{tt}.agents/mcp_config.json@{utt}, written after the check that
 refuses such a file and removed before the run's commit; an allow rule
 @{tt}mcp(gateway/*)@{utt} in its settings lets it call the tools headless.
 @{bullet}With @{tt}web@{utt} -- for agy always -- the workdir needs
-@{tt}read_only: true@{utt}: the operator vouches that its tools and allowed
-values only read, as a page the run reads could steer them. Plan mode gets no
+@{tt}read_only: true@{utt} or @{tt}confined: true@{utt}. read_only: the
+operator vouches that its tools and allowed values only read. confined (needs a
+@{tt}pin@{utt}): that every write the tools can make is held by the run's
+bindings to what the run writes anyway -- its own file -- where a page could
+steer no more than the answer. Either way the vouch is the operator's, as a page the run reads could steer them. Plan mode gets no
 grant.
 @{bullet}A gateway that does not serve in this process answers "not started:
 mcp gateway ..." -- a caller can fall back on another way.
@@ -409,7 +414,7 @@ json_schema | a JSON schema, an object of at most 20,000 characters as JSON on t
 wake | @{tt}true@{utt} (default): a run still going when the call answers wakes the session at its end, where a wake can be armed (the answer's @{tt}wake@{utt} and @{tt}wake_note@{utt} say whether); @{tt}false@{utt}: it wakes nobody -- the caller waits with @{" get_run " link get_run} itself (see @{" What the model sees " link model})
 max_run_minutes | a shorter time limit for this run, in minutes (a number above 0); one above the instance's @{tt}max_run_minutes@{utt} counts as the instance's. A resume without one keeps the one its run asked for; a run that asked none resumes under the instance's
 max_window_utilization | a lower threshold for the subscription's windows than the instance's (a share above 0, at most 1); one above it counts as the instance's. Refused for it, the answer carries @{tt}limit@{utt} (see @{" How a run goes " link run}). A resume without one keeps the one its run asked for
-pin | only for a workdir with a @{tt}gateway@{utt}: an object with a value (text or number) for each parameter it fixes, no other; a resume keeps its run's and refuses another (see @{" What a run may do " link lockdown})
+pin | only for a workdir with a @{tt}gateway@{utt}: the run's tool bindings, @{tt}{tool pattern: {parameter: value}}@{utt} (values text, number or true/false), at least what the workdir requires; a resume keeps its run's and refuses another (see @{" What a run may do " link lockdown})
 @{body}
 
 @{h2}The answer of an ended run
@@ -700,7 +705,7 @@ run starts or resumes on a worktree whose such folder carries
 them out of the repository first.
 @{bullet}Its web search needs no approval, and no setting tried switched it
 off. Every workdir of such an instance must say @{tt}web: true@{utt}, and it
-loads no MCP server but the gateway (with @{tt}read_only@{utt}): a workdir
+loads no MCP server but the gateway (@{tt}read_only@{utt} or @{tt}confined@{utt}): a workdir
 without web or with @{tt}mcp_servers@{utt} is skipped with a warning.
 @{bullet}agy reports no subscription window. No run is held back for the
 budget, the model is offered neither @{tt}quota@{utt} nor
@@ -736,7 +741,7 @@ command | claude | the CLI's executable, a name on the PATH or a path; @{tt}agy@
 workdirs | none | name -> @{tt}{path, exclude}@{utt} or just a path; name of letters, digits, _ and -, at most 40; path relative to the project, must hold @{tt}.git@{utt} -- otherwise skipped with a warning
 workdirs.<name>.exclude | none | tracked files a run never sees (see @{" What a run may do " link lockdown})
 workdirs.<name>.web | false | true: the workdir's runs search and read the web with Claude Code's @{tt}WebSearch@{utt} and @{tt}WebFetch@{utt}, approved, in either mode, and get no shell unless @{tt}web_with_shell@{utt}; with @{tt}mcp_servers@{utt} as well the workdir is skipped with a warning; anything else than true: neither
-workdirs.<name>.gateway | none | @{tt}{tools, pin, allowed, read_only, instance}@{utt}: tools of this installation through the MCP gateway (see @{" What a run may do " link lockdown}). @{tt}tools@{utt} a list of name patterns; @{tt}pin@{utt} the parameter names each call fixes; @{tt}allowed@{utt} as the gateway takes it; @{tt}read_only@{utt} true where the tools only read (needed beside web); @{tt}instance@{utt} the gateway plugin's, default @{tt}mcp_gateway@{utt}. Malformed, beside web without @{tt}read_only@{utt}, or with an @{tt}mcp_servers@{utt} entry named @{tt}gateway@{utt}: the workdir is skipped with a warning
+workdirs.<name>.gateway | none | @{tt}{tools, pin, allowed, read_only, confined, instance}@{utt}: tools of this installation through the MCP gateway (see @{" What a run may do " link lockdown}). @{tt}tools@{utt} a list of name patterns; @{tt}pin@{utt} @{tt}{tool pattern: [parameters]}@{utt}, the bindings each run must bring; @{tt}allowed@{utt} as the gateway takes it; @{tt}read_only@{utt} true where the tools only read, @{tt}confined@{utt} true where the bindings hold every write to the run's own file (one of them needed beside web); @{tt}instance@{utt} the gateway plugin's, default @{tt}mcp_gateway@{utt}. Malformed, beside web with neither, or with an @{tt}mcp_servers@{utt} entry named @{tt}gateway@{utt}: the workdir is skipped with a warning
 workdirs.<name>.mcp_servers | none | names in @{tt}external_servers.remote_servers@{utt} whose servers the workdir's edit runs load -- enabled, with a url without user, password or query, an HTTP or SSE transport, a plain name; otherwise the workdir is skipped with a warning. The server's @{tt}tools.blocked@{utt} stay refused
 allowed_users | none | user ids that may start runs; empty: nobody
 allowed_commands | none | shell commands as Claude Code permission patterns; empty: no shell

@@ -12,7 +12,7 @@ and answers, no shell, web search in every run (its workdirs say `web: true`), n
 no subscription guard.
 
 A workdir's `gateway` hands its runs tools of this installation through the `mcp_gateway` plugin: a grant per run,
-revoked at its end, with the parameters the call fixes (`pin`). Both CLIs reach it.
+revoked at its end, held to the run's tool bindings (`pin`). Both CLIs reach it.
 
 - **Tools** -- `coding_cli_run_task` (start a run, optionally with a `json_schema` for a structured answer, or
   `resume` an ended one), `coding_cli_get_run`, `coding_cli_cancel_run` and `coding_cli_quota` (the subscription's

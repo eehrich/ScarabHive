@@ -3,7 +3,7 @@
 A run may carry ``{pattern: {parameter: value}}`` (``Agent.run_events(tool_bindings=...)``, a grant of the MCP
 gateway): every call of a tool a pattern matches gets those values, and may ask for no other. Patterns are the
 allowlist's (``tool_matches_patterns``: ``server/tool``, ``server/*``, a wildcard on the full path or the bare
-name). Bindings only narrow -- the allowlist stays the ceiling -- and a run without them is not touched.
+name), and the bare tool name besides. Bindings only narrow -- the allowlist stays the ceiling -- and a run without them is not touched.
 
 One function holds a call to them, whichever way the call comes: the model's own tool loop
 (``ToolInvoker.execute_tool``, after the pre_tool_call hooks), ``dispatch_tool_call`` (scripts, hooks) and the
@@ -15,6 +15,11 @@ start with bindings of their own (none, unless their caller passes some: AgentCa
 that must stay inside its bindings gets no tool that starts another agent; its allowlist decides that. The model
 sees a bound parameter in the tool's schema as before (schemas are shared by every session of an agent, for the
 prompt cache); a call that asks for another value is refused with the value to leave out.
+
+Every later run must be handed them again; nothing reads them from the session. The sub-agent manager keeps a
+bound instance's in its metadata for its continues, and a sub-agent's session is never woken (SessionPresence.notify
+leaves its input to the run that spawned it). A bound run in a session that can be woken would need them read from
+its record -- a woken run gets none.
 """
 from __future__ import annotations
 
@@ -49,7 +54,9 @@ def values_for(bindings: Optional[Bindings], tool_name: str, server_name: Option
     hold one parameter to different values."""
     values: dict[str, Any] = {}
     for pattern, bound in (bindings or {}).items():
-        if not tool_matches_patterns(tool_name, server_name or "", [pattern]):
+        # The bare tool name too, which the allowlist reads as a server's: a gateway's `tools` name tools that way,
+        # and a binding written alike would otherwise hold nothing. Matching more only binds more.
+        if pattern != tool_name and not tool_matches_patterns(tool_name, server_name or "", [pattern]):
             continue
         for key, value in bound.items():
             if key in values and values[key] != value:

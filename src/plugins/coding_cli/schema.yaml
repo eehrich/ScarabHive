@@ -32,7 +32,7 @@ tools:
 {% if pins %}
           pin:
             type: object
-            description: "Only for a workdir with a gateway: a value for each parameter it fixes -- its tools then reach only these. A resume keeps the prior run's"
+            description: "Only for a workdir with a gateway: {tool pattern: {parameter: value}}, at least what the workdir fixes -- those tools then reach only these values. A resume keeps the prior run's"
 {% endif %}
           wake:
             type: boolean

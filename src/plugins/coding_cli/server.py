@@ -140,18 +140,24 @@ def _gateway(entry: Any) -> tuple[Optional[dict], str]:
         return None, ""
     if not isinstance(entry, dict):
         return None, "gateway: {tools: [...], ...}"
-    unknown = set(entry) - {"tools", "pin", "allowed", "read_only", "instance"}
+    unknown = set(entry) - {"tools", "pin", "allowed", "read_only", "confined", "instance"}
     if unknown:
         # A misspelt `allowed` or `pin` would leave the grant wider than meant.
-        return None, f"gateway: unknown key(s) {sorted(unknown)} -- tools, pin, allowed, read_only, instance"
-    tools, pin, allowed = entry.get("tools"), entry.get("pin") or [], entry.get("allowed") or {}
-    pin = [pin] if isinstance(pin, str) else pin
+        return None, (f"gateway: unknown key(s) {sorted(unknown)} -- tools, pin, allowed, read_only, confined, "
+                      "instance")
+    tools, pin, allowed = entry.get("tools"), entry.get("pin") or {}, entry.get("allowed") or {}
     instance = entry.get("instance") or "mcp_gateway"
     if not isinstance(tools, list) or not tools or not all(isinstance(t, str) and t for t in tools):
         return None, "gateway.tools: a list of tool name patterns"
-    if not isinstance(pin, list) or not all(isinstance(k, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", k)
-                                            and k not in FRAMEWORK_REQUEST_ID_KEYS for k in pin):
-        return None, "gateway.pin: the names of the parameters a call fixes (run_task pin)"
+    if not isinstance(pin, dict) or not all(
+            isinstance(pattern, str) and pattern and isinstance(keys, list) and keys
+            and all(isinstance(k, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", k)
+                    and k not in FRAMEWORK_REQUEST_ID_KEYS for k in keys)
+            for pattern, keys in pin.items()):
+        return None, "gateway.pin: {tool pattern: [the parameters a run must fix]} (run_task pin)"
+    confined = entry.get("confined") is True
+    if confined and not pin:
+        return None, "gateway.confined: needs a pin -- the bindings are what holds the writes to the run"
     if not isinstance(allowed, dict) or not all(
             isinstance(pattern, str) and pattern and isinstance(rules, dict) and rules
             and all(isinstance(path, str) and path and isinstance(values, list) and values
@@ -167,8 +173,22 @@ def _gateway(entry: Any) -> tuple[Optional[dict], str]:
         return None, f"gateway.{exc}"
     if not isinstance(instance, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", instance):
         return None, "gateway.instance: a plugin instance name"
-    return {"instance": instance, "tools": tools, "pin": sorted(set(pin)), "allowed": allowed,
-            "read_only": entry.get("read_only") is True}, ""
+    return {"instance": instance, "tools": tools, "pin": {p: sorted(set(k)) for p, k in pin.items()},
+            "allowed": allowed, "read_only": entry.get("read_only") is True, "confined": confined}, ""
+
+
+def _pin_problem(pin: Any, required: dict[str, list[str]]) -> str:
+    """Why ``pin`` (a run's tool bindings, {tool pattern: {parameter: value}}) does not do for a gateway that
+    requires ``required`` ({tool pattern: [parameters]}), or "". More than required only narrows the run further;
+    the gateway checks the rest of the form when it issues the grant."""
+    if not isinstance(pin, dict) or not all(
+            isinstance(pattern, str) and pattern and isinstance(values, dict) and values
+            and all(isinstance(k, str) and isinstance(v, (str, int, float)) for k, v in values.items())
+            for pattern, values in pin.items()):
+        return "pin: {tool pattern: {parameter: value}} -- values text, number or true/false"
+    missing = [f"{pattern}: {key}" for pattern, keys in required.items() for key in keys
+               if key not in (pin.get(pattern) or {})]
+    return f"pin: this workdir's runs must fix {', '.join(missing)}" if missing else ""
 
 
 def _transport(cfg: Any) -> str:
@@ -291,11 +311,12 @@ class CodingCliServer(SchemaBasedToolServer):
                 logger.warning("coding_cli: workdir %r skipped -- %s", wname,
                                problem or f"mcp_servers names {cli.GATEWAY_SERVER!r}, the gateway's server")
                 continue
-            if gateway and entry.get("web") is True and not gateway["read_only"]:
+            if gateway and entry.get("web") is True and not (gateway["read_only"] or gateway["confined"]):
                 # As with mcp_servers below: a page could steer what the tools write. The operator vouches that
-                # the tools and allowed values only read.
-                logger.warning("coding_cli: workdir %r skipped -- web and a gateway that is not read_only: a page "
-                               "the run reads could steer its tools", wname)
+                # the tools and allowed values only read -- or that the run's bindings hold every write to what
+                # the run writes anyway (its own file), where a page could steer no more than the answer.
+                logger.warning("coding_cli: workdir %r skipped -- web and a gateway neither read_only nor "
+                               "confined: a page the run reads could steer its tools", wname)
                 continue
             if self.agy and (names or entry.get("web") is not True):
                 # run.py, build_agy_command: it searches the web in every run, and loads no server of ours.
@@ -727,22 +748,19 @@ class CodingCliServer(SchemaBasedToolServer):
             workdir = params.get("workdir") or (next(iter(self.workdirs)) if len(self.workdirs) == 1 else None)
         if workdir not in self.workdirs:
             return await self._fail(status, f"workdir: one of {', '.join(sorted(self.workdirs))}")
-        gateway, pin = self.workdirs[workdir]["gateway"], params.get("pin")
+        gateway, pin = self.workdirs[workdir]["gateway"], params.get("pin") or None
         if prior:
             # The conversation goes on with the values it was given: other values make another run.
-            if (pin or None) is not None and (pin or None) != prior.get("pin"):
+            if pin is not None and pin != prior.get("pin"):
                 return await self._fail(status, f"pin: a resume keeps run {prior['run_id']}'s -- "
                                                 f"{json.dumps(prior.get('pin'))}")
             pin = prior.get("pin")
-            if sorted(pin or {}) != (gateway["pin"] if gateway else []):
-                return await self._fail(status, f"resume: workdir {workdir}'s gateway fixes other values than when "
-                                                f"run {prior['run_id']} ran -- start a new run")
         if not gateway and pin:
             return await self._fail(status, f"pin: workdir {workdir} has no gateway -- leave it out")
-        if gateway and (not isinstance(pin or {}, dict) or sorted(pin or {}) != gateway["pin"]
-                        or not all(isinstance(v, (str, int, float)) for v in (pin or {}).values())):
-            return await self._fail(status, f"pin: {{{', '.join(f'{k}: <value>' for k in gateway['pin'])}}} -- "
-                                            f"what workdir {workdir}'s gateway fixes, nothing else")
+        problem = _pin_problem(pin or {}, gateway["pin"]) if gateway else ""
+        if problem:
+            return await self._fail(status, f"resume: {problem}, which run {prior['run_id']} did not -- start a new "
+                                            "run" if prior else problem)
         # As asked; _start holds it to the instance's, what its operator allows a run. None: the instance's.
         asked_run_s = 60 * limit if limit is not None else None
         # The given one or the one a resume inherits, before anything is made.

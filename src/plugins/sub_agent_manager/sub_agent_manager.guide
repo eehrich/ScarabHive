@@ -167,6 +167,7 @@ include_completed | list | true: archived ones too; failed and cancelled ones ar
 limit | info | messages per page; default 20, at most 200 (info_default_limit, info_max_limit)
 offset | info | 0-based index to start at; without it the page is the last limit messages
 max_chars | info | each text and each tool call's arguments are cut after it, saying how much was left out; default 4000; 0 or less: no cut
+_tool_bindings | create, continue | framework code only (a model's or a script's call loses it, as every name with a leading _): @{tt}{tool pattern: {parameter: value}}@{utt} every tool call of the instance is held to. Kept with the instance from its create, so each later run of it has them; a continue that names other ones is refused (error_type tool_bindings_mismatch), a malformed one creates no instance (invalid_tool_bindings)
 @{body}
 
 @{h2}Answers

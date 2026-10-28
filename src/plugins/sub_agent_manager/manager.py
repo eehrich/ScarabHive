@@ -325,6 +325,10 @@ class SubAgentManager:
             session_data["metadata"] = {}
         if "sub_agents" not in session_data["metadata"]:
             session_data["metadata"]["sub_agents"] = {}
+        # The run's tool bindings (create's `_tool_bindings`): kept with the instance, so every later run of it --
+        # a continue, a run in another process -- is held to the same values.
+        if params and params.get("_tool_bindings"):
+            session_data["metadata"]["tool_bindings"] = params["_tool_bindings"]
 
         # Inherit context_vars from parent (can be overridden by sub-agent's set_context).
         #

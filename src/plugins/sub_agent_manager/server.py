@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, List, Optional
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.core.session_presence import presence_for, wake_blocked, wake_session
+from agent_system.servers.agent.components.tool_bindings import form_problem
 from agent_system.services.session_manager import SessionNotFoundError
 from agent_system.services.session_service import is_ephemeral_session
 from agent_system.utils.id import short_id
@@ -718,6 +719,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         request_id: str,
         use_advanced_model: bool = False,
         run: Optional[dict[str, Any]] = None,
+        tool_bindings: Optional[dict[str, Any]] = None,
     ) -> str:
         """One run of a sub-agent, from its first event to its last, and the text it ends with.
 
@@ -733,6 +735,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
         The text is what the caller hands back to the model: the answer, or "Error: ..." /
         "Cancelled: ..." -- the two prefixes `_outcome_status` reads the outcome from.
+
+        `tool_bindings` are the instance's (`_tool_bindings` of its create, kept in its metadata):
+        every run of it -- create, continue, a background job -- is held to them.
         """
         async def track(activity: Optional[str]) -> None:
             try:
@@ -749,11 +754,15 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         # cleared at the ending event, and nothing said after it. The finally is for a run that
         # raised.
         result_text, over = "", False
+        # Only when there are any: an agent of its own kind whose run_events lacks the parameter is called as
+        # before when unbound, and fails loudly when bound instead of running unbound.
+        bound = {"tool_bindings": tool_bindings} if tool_bindings else {}
         events = agent.run_events(
             task=task,
             request_id=request_id,
             session_id=instance_id,
             use_advanced_model=use_advanced_model,
+            **bound,
             # Note: config_overrides would go here if Agent.run_events supported them
             # For now, sub-agent uses its default configuration
         )
@@ -854,6 +863,15 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     "error": error_msg,
                     "error_type": "missing_parameter",
                 }
+
+            # The run's tool bindings, framework-set only (the leading `_`: drop_runtime_params takes it out of a
+            # model's or a script's call). Checked before a sub-session exists that could never run with them.
+            tool_bindings = params.get("_tool_bindings") or None
+            problem = form_problem(tool_bindings) if tool_bindings is not None else None
+            if problem:
+                if status:
+                    await status.error(problem)
+                return {"status": "error", "error": problem, "error_type": "invalid_tool_bindings"}
 
             instance_label = params.get("instance_label")
             use_advanced_model = self._create_use_advanced(agent_name, self._effective_use_advanced(params))
@@ -962,7 +980,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     params=params,
                     agent_name=agent_name,
                     task=task,
-                    use_advanced_model=use_advanced_model
+                    use_advanced_model=use_advanced_model,
+                    tool_bindings=tool_bindings,
                 )
                 task_handle = asyncio.create_task(task_coro)
                 
@@ -1030,7 +1049,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     agent, manager,
                     parent_session_id=parent_session_id, instance_id=sub_session_id,
                     task=task, request_id=sub_request_id,
-                    use_advanced_model=use_advanced_model, run=run,
+                    use_advanced_model=use_advanced_model, run=run, tool_bindings=tool_bindings,
                 )
                 refused = await self._answer_refused_run(run, manager, parent_session_id, sub_session_id, status,
                                                          agent=agent, created=True, params=params)
@@ -1146,6 +1165,16 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             user_id = manager._extract_user_id(parent_session_id, params)
 
             sub_session_data = await self._callers_sub_session(manager, user_id, parent_session_id, instance_id)
+            # The instance keeps the bindings of its create: a continue that names none runs with them, one that
+            # names others is refused -- they would loosen or change what its runs may touch.
+            tool_bindings = (sub_session_data.get("metadata") or {}).get("tool_bindings") or None
+            asked = params.get("_tool_bindings") or None
+            if asked is not None and asked != tool_bindings:
+                error_msg = (f"Sub-agent '{instance_id}' holds other tool bindings than this continue names -- "
+                             "spawn a new instance for other values.")
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg, "error_type": "tool_bindings_mismatch"}
 
             # Get agent type from session data
             agent_type = sub_session_data.get("agent_name") or ""
@@ -1260,7 +1289,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     agent, manager,
                     parent_session_id=parent_session_id, instance_id=instance_id,
                     task=message, request_id=sub_request_id,
-                    use_advanced_model=use_advanced_model, run=run,
+                    use_advanced_model=use_advanced_model, run=run, tool_bindings=tool_bindings,
                 )
                 refused = await self._answer_refused_run(run, manager, parent_session_id, instance_id, status)
                 if refused is not None:
@@ -2356,7 +2385,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         params: dict[str, Any],
         agent_name: str,
         task: str,
-        use_advanced_model: bool
+        use_advanced_model: bool,
+        tool_bindings: Optional[dict[str, Any]] = None,
     ) -> None:
         """Execute sub-agent in background and update job status.
         
@@ -2407,7 +2437,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 agent, manager,
                 parent_session_id=parent_session_id, instance_id=instance_id,
                 task=task, request_id=sub_request_id,
-                use_advanced_model=use_advanced_model, run=run,
+                use_advanced_model=use_advanced_model, run=run, tool_bindings=tool_bindings,
             )
             refused = self._refusal_of(run)  # refused before it started: nothing to save, the job says why
 

@@ -128,6 +128,14 @@ class TestTheModelsCalls:
         files, _ = await _run(_call("c1", "files_note", text="free"))
         assert [n for n, _ in files.received] == ["note"], "a tool no pattern names was held"
 
+    async def test_the_bare_tool_name_binds_as_the_full_path_does(self):
+        """A gateway's `tools` name tools bare; a binding written alike must hold, not pass as a server name."""
+        files, model = await _run(_call("c1", "files_write", text="a"),
+                                  _call("c2", "files_write", text="b", path="../other.md"),
+                                  bindings={"files_write": {"path": "out.md"}})
+        assert [(n, p["path"]) for n, p in files.received] == [("write", "out.md")]
+        assert "path is fixed to 'out.md'" in model.tool_results()["c2"]["error"]
+
     async def test_two_patterns_that_disagree_hold_nothing(self):
         files, model = await _run(_call("c1", "files_write", text="a"),
                                   bindings={"files/*": {"path": "a.md"}, "*_write": {"path": "b.md"}})

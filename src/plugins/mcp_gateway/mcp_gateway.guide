@@ -111,7 +111,7 @@ Argument | Meaning
 user_id | the account the calls are made for; tools get it as @{tt}_user_id@{utt}
 tools | fnmatch patterns on the flat tool name (with the instance prefix); a subset of the runner's allowlist, never more
 request_id | prefix of every call's request id: @{tt}<request_id>_mcp001@{utt}, @{tt}_mcp002@{utt} ... -- costs of tools that call an LLM themselves are found by it
-pinned | the run's tool bindings, @{tt}{tool pattern: {parameter: value}}@{utt}: set in every call of a tool the pattern matches; a call with another value is refused
+pinned | the run's tool bindings, @{tt}{tool pattern: {parameter: value}}@{utt} (a pattern as an agent's allowlist writes it -- @{tt}server/tool@{utt}, @{tt}server/*@{utt}, a wildcard -- or the bare tool name): set in every call of a tool the pattern matches; a call with another value is refused
 allowed | @{tt}{tool pattern: {path: [values]}}@{utt}: for the tools the pattern matches, every value at the path must be one of these
 session_id | the session the calls run in (@{tt}_session_id@{utt}); without it the calls have none
 ttl_s | seconds the token holds (default 3600)
