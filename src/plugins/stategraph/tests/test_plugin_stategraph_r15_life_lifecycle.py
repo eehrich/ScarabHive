@@ -493,6 +493,46 @@ def test_lc_r5_a_run_compacted_since_the_selection_is_not_compacted_again(tmp_pa
     assert len(compacted) == 1 and compacted[0]["data"]["spend"]["cost"] == 1.0, compacted
 
 
+def test_retention_leaves_a_failed_run_whose_lease_holds(tmp_path):
+    """A transient failure's resume takes the lease, then rewinds: retention must not drop the journal under it."""
+    from plugins.stategraph.engine.journal import RunStore
+
+    store = RunStore(tmp_path / "runs.db")
+    try:
+        store.create_run("held", "m", {}, owner="o", status="failed", lease_until=utc_at(60))
+        store.update_run("held", finished_at=utc_at(-40 * 86400), error={"type": "agent_failed"})
+        store.record("held", "activity", "s0", status="error", data={})
+        while_held = store.compact_ended(before=utc_at(-30 * 86400))
+        store.update_run("held", lease_until=utc_at(-1))
+        after = store.compact_ended(before=utc_at(-30 * 86400))
+    finally:
+        store.close()
+
+    assert (while_held, after) == ([], ["held"])
+
+
+def test_a_key_counts_its_runs_and_their_resumes_after_a_failure_also_once_compacted(tmp_path):
+    """A schedule's slot tries at most ATTEMPTS times; a transient failure resumes the same run, so the resumes of a
+    failed run count -- not one after an interrupt -- and retention, which drops the journal, keeps the count."""
+    from plugins.stategraph.engine.journal import RunStore
+
+    store = RunStore(tmp_path / "runs.db")
+    try:
+        store.create_run("r1", "m", {}, owner="o", status="failed", run_key="slot")
+        store.update_run("r1", finished_at=utc_at(-40 * 86400), error={"type": "agent_failed"})
+        store.record("r1", "activity", "s0", status="error", data={})
+        for was in ("failed", "interrupted", "failed"):
+            store.lifecycle("r1", "resumed", {"was": was})
+        counted = store.count_by_key("slot")
+        store.compact_ended(before=utc_at(-30 * 86400))
+        compacted = store.compacted("r1")
+        after = store.count_by_key("slot")
+    finally:
+        store.close()
+
+    assert (counted, compacted, after) == (3, True, 3)
+
+
 # ------------------------------------------------------------------ PROD-5: run lists read no blobs
 
 def test_prod5_the_run_lists_read_a_covering_index(tmp_path):

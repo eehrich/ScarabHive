@@ -360,7 +360,7 @@ async def test_a_known_session_id_does_not_hand_another_user_the_run(env, monkey
     assert (answer["type"], "another user's run" in answer.get("message", "")) == ("error", True), answer
 
 
-async def test_the_same_request_in_the_same_session_runs_anew_after_a_transient_failure(env, tmp_path, monkeypatch):
+async def test_the_same_request_in_the_same_session_goes_on_after_a_transient_failure(env, tmp_path, monkeypatch):
     monkeypatch.setenv("SG_BACKLOG_MARK", str(tmp_path / "mark"))
     (tmp_path / "machines" / "m.py").write_text(FLAKY, encoding="utf-8")
     first = final_of(await env.ask("Nachtzug", request_id="job-1", session_id="s1"))
@@ -368,7 +368,115 @@ async def test_the_same_request_in_the_same_session_runs_anew_after_a_transient_
 
     again = final_of(await env.ask("Nachtzug", request_id="job-1", session_id="s1"))
 
-    assert (again["type"], again.get("story_id"), len(env.runs())) == ("final", 812, 2), again
+    assert (again["type"], again.get("story_id"), again["run_id"], len(env.runs())) == (
+        "final", 812, first["run_id"], 1), again
+
+
+STEPPED = """\
+stategraph: 1
+id: m
+python: m.py
+params: {task: {type: string, required: true}}
+resources:
+  ns:
+    open: {call: ns_open, args: {run: "{{ run.id }}"}}
+context: {prep: null, story: null}
+initial: prep
+states:
+  prep:
+    do: {call: prep, args: {task: "{{ params.task }}"}}
+    transitions: [{target: parts, effect: ctx.prep = out}]
+  parts:
+    do:
+      map: "['a', 'b', 'c']"
+      as: part
+      concurrency: 1
+      each: {call: part, args: {name: "{{ part }}", ns: "{{ resources.ns }}"}}
+    transitions: [{target: done, effect: "ctx.story = {'story_id': 812, 'title': ctx.prep, 'parts': out}"}]
+  done: {type: final, output: "{{ ctx.story }}"}
+"""
+
+STEPPED_PY = """\
+import os
+from plugins.stategraph.kinds import ActivityError
+LOG = os.environ["SG_REWIND_LOG"]
+def _log(line):
+    with open(LOG, "a", encoding="utf-8") as f:
+        f.write(line + "\\n")
+def ns_open(run):
+    _log("open")
+    return "ns_" + run
+def ns_close(ns):
+    _log("close")
+def prep(task):
+    _log("prep")
+    return task.upper()
+def part(name, ns):
+    _log(name + " " + ns)
+    with open(LOG, encoding="utf-8") as f:
+        if name == "b" and sum(line.startswith("b ") for line in f) == 1:
+            raise ActivityError(os.environ["SG_REWIND_ERROR"], "provider hiccup")
+    return name
+"""
+
+
+@pytest.mark.parametrize("case", ["agent_failed", "diverged", "machine_changed", "closed_resource"])
+async def test_a_transient_failure_goes_on_where_it_failed(env, tmp_path, monkeypatch, case):
+    """The same request after a transient failure resumes its run, rewound: only the failed item of the map runs
+    again -- the steps and items before replay, the resource stays open -- instead of a new run paying every step
+    again. A run whose replay cannot hold starts anew: it diverged, or its machine's files changed (a fix reaches
+    only a new run) -- or its resource was closed when it failed."""
+    log = tmp_path / "log"
+    monkeypatch.setenv("SG_REWIND_LOG", str(log))
+    monkeypatch.setenv("SG_REWIND_ERROR", "diverged" if case == "diverged" else "agent_failed")
+    closing = '    close: {call: ns_close, args: {ns: "{{ resources.ns }}"}}\n'
+    machine = (STEPPED.replace("    open: {call: ns_open", closing + "    open: {call: ns_open")
+               if case == "closed_resource" else STEPPED)
+    assert ("ns_close" in machine) is (case == "closed_resource"), "fixture"
+    (tmp_path / "machines" / "m.yaml").write_text(machine, encoding="utf-8")
+    (tmp_path / "machines" / "m.py").write_text(STEPPED_PY, encoding="utf-8")
+    first = final_of(await env.ask("nachtzug", request_id="job-1", session_id="s1"))
+    assert first["type"] == "error", first
+    if case == "machine_changed":
+        (tmp_path / "machines" / "m.py").write_text(STEPPED_PY + "# fixed\n", encoding="utf-8")
+
+    again = final_of(await env.ask("nachtzug", request_id="job-1", session_id="s1"))
+
+    calls = log.read_text(encoding="utf-8").splitlines()
+    ns = f"ns_{first['run_id']}"
+    assert (again["type"], again.get("story_id")) == ("final", 812), again
+    if case == "agent_failed":
+        assert calls == ["open", "prep", f"a {ns}", f"b {ns}", f"b {ns}", f"c {ns}"], calls
+        assert (again["run_id"], len(env.runs())) == (first["run_id"], 1)
+        third = final_of(await env.ask("nachtzug", request_id="job-1", session_id="s1"))
+        assert (third["run_id"], len(env.runs())) == (first["run_id"], 1), "its outcome answers the request now"
+    else:
+        ns2 = f"ns_{again['run_id']}"
+        closes = case == "closed_resource"
+        assert calls == ["open", "prep", f"a {ns}", f"b {ns}", *["close"] * closes, "open", "prep", f"a {ns2}",
+                         f"b {ns2}", f"c {ns2}", *["close"] * closes], calls
+        assert again["run_id"] != first["run_id"] and len(env.runs()) == 2
+
+async def test_two_requests_for_a_transiently_failed_run_resume_it_once(env, tmp_path, monkeypatch):
+    """Both find it failed; one resumes it, the other -- its resume refused, the run running now -- attaches:
+    no second run, the failed item runs again once."""
+    log = tmp_path / "log"
+    monkeypatch.setenv("SG_REWIND_LOG", str(log))
+    monkeypatch.setenv("SG_REWIND_ERROR", "agent_failed")
+    (tmp_path / "machines" / "m.yaml").write_text(STEPPED, encoding="utf-8")
+    (tmp_path / "machines" / "m.py").write_text(STEPPED_PY, encoding="utf-8")
+    service = env.server.service
+    first = await service.start_run("m", params={"task": "x"}, run_key="k")
+    assert (await settle(env.server.run_manager, first["run_id"]))["status"] == "failed", "fixture"
+
+    answers = await asyncio.gather(*(service.start_run("m", params={"task": "x"}, run_key="k") for _ in range(2)))
+
+    row = await settle(env.server.run_manager, first["run_id"])
+    assert sorted(answers, key=str) == [{"run_id": first["run_id"], "attached": True},
+                                        {"run_id": first["run_id"], "resumed": True}], answers
+    assert (row["status"], len(env.runs())) == ("succeeded", 1), row.get("error")
+    assert [line.split()[0] for line in log.read_text(encoding="utf-8").splitlines()] == [
+        "open", "prep", "a", "b", "b", "c"]
 
 
 # ------------------------------------------------------------------ R8: a machine agent's config is checked early

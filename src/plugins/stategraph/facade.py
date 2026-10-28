@@ -22,7 +22,7 @@ Config (flat keys next to ``type``; ``agent_config`` forbids unknown keys)::
 Request ids: the run key is ``<agent>:<request id>`` (and belongs to the user who started the
 run), the run id ``<request id>_sg<n>``. So a re-dispatch of the same request attaches to its
 run, resumes it after a crash, or -- once it ended -- answers its outcome again: the output, the
-failure, the cancel; only a transient failure starts a new run (service.start_run); cancel, status
+failure, the cancel; only a transient failure goes on, resumed where it failed (service.start_run); cancel, status
 lines and cost accounting stay under the caller; and a cancel of the caller reaches the run's token,
 which terminates the run (its ``finally`` activities run). A bare task cancel -- the process
 stops, the SSE client left -- leaves the run alone: it ends ``interrupted`` and the next

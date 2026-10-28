@@ -550,7 +550,8 @@ class StateGraphService:
                         tags: Optional[dict[str, Any]] = None, detached: bool = False) -> dict[str, Any]:
         """Start a run of ``machine_id``. With ``run_key`` the same request gets the run of that key, if there is
         one: attached to while it runs, resumed when interrupted, and once it ended its outcome again (``ended``:
-        its status) -- only after a transient failure (runner.TRANSIENT_ERRORS) does a new run try it anew.
+        its status) -- only a transient failure (runner.TRANSIENT_ERRORS) goes on: resumed where it failed (_replayable,
+        rewound_rows), else a new run.
 
         ``run_id`` (the agent facade: ``<request id>_sg<n>``) keeps cancel, status and cost attribution under
         the caller's request id; it must be a session-id-safe word of at most 128 characters.
@@ -580,8 +581,10 @@ class StateGraphService:
         checked, tree = await asyncio.to_thread(self._checked_tree, machine_id)
         if run_key:
             # the key looked up again after that await, and the run started with no await in between: two requests
-            # with one key never both start a run
-            found = await self._by_key(run_key, machine_id, params, mocks, mock_only, user_id, live, detached)
+            # with one key never both start a run (a transiently failed run the first lookup could not resume
+            # is not tried again)
+            found = await self._by_key(run_key, machine_id, params, mocks, mock_only, user_id, live, detached,
+                                       go_on=False)
             if found is not None:
                 return found
         try:
@@ -613,7 +616,8 @@ class StateGraphService:
 
     async def _by_key(self, run_key: str, machine_id: str, params: Optional[dict[str, Any]],
                       mocks: Optional[dict[str, Any]], mock_only: bool, user_id: Optional[str],
-                      live: Optional[dict[str, Any]], detached: bool = False) -> Optional[dict[str, Any]]:
+                      live: Optional[dict[str, Any]], detached: bool = False,
+                      go_on: bool = True) -> Optional[dict[str, Any]]:
         """The answer of the run ``run_key`` names, if that run answers this request -- None when a new run starts.
         Up to its answer nothing awaits but a resume of that run."""
         existing = self.run_store.latest_by_key(run_key)
@@ -634,7 +638,10 @@ class StateGraphService:
         if existing["status"] in ACTIVE_STATUSES:
             return {"run_id": existing["id"], "attached": False, "owner": existing.get("owner"),
                     "note": "another process runs it; this call started nothing"}
-        if existing["status"] == "interrupted":
+        transient = existing["status"] == "failed" and failed_transiently(existing.get("error"))
+        if transient and not (go_on and await asyncio.to_thread(self._replayable, existing)):  # off the loop: it
+            return None                                                                       # loads the machine
+        if existing["status"] == "interrupted" or transient:
             # whoever resumes it now is its caller: the run that started it once may have ended since, and its end
             # must not end a child another run goes on in (end_children); resumed from no run, or detached, it is
             # nobody's child
@@ -644,11 +651,34 @@ class StateGraphService:
             if (caller[0] if caller else None) != existing.get("caller_run"):
                 self._quietly(self.run_store.update_run, existing["id"], caller_run=caller[0] if caller else None,
                               caller_request=caller[1] if caller else None)
-            await self._resume(existing["id"], live=live, who=user_id, why="start_run with its run_key")
+            try:
+                await self._resume(existing["id"], live=live, who=user_id, why="start_run with its run_key",
+                                   transient=transient)
+            except ServiceError as exc:
+                if not transient:
+                    raise
+                # start_run looks again: another request's resume of it is attached to, else a new run starts
+                logger.info("stategraph: run %s failed transiently and is not resumed here (%s)", existing["id"],
+                            exc.message)
+                return None
             return {"run_id": existing["id"], "resumed": True}
-        if not (existing["status"] == "failed" and failed_transiently(existing.get("error"))):
-            return {"run_id": existing["id"], "ended": existing["status"]}
-        return None
+        return {"run_id": existing["id"], "ended": existing["status"]}
+
+    def _replayable(self, row: dict[str, Any]) -> bool:
+        """Whether a run that failed transiently can go on where it failed (rewound_rows, transient): its replay
+        holds -- it did not diverge, and its machine's files are still those of its snapshot (a fix of the machine,
+        a longer timeout, reaches only a new run). Else the same request starts a new run on the current files."""
+        error, causes = row.get("error"), []
+        while isinstance(error, dict) and len(causes) < 50:
+            causes.append(error.get("type"))
+            error = error.get("cause")
+        if "diverged" in causes:
+            return False
+        try:
+            current, _ = self._files_of(row["machine_id"], self.store.load(row["machine_id"]))
+        except Exception:  # gone or broken: a new run says why
+            return False
+        return current == ((row.get("definition") or {}).get("files") or {})
 
     def _caller(self) -> Optional[tuple[str, str]]:
         """``(run id, request id)`` of the call activity of a run in this process that this code runs under, if
@@ -781,7 +811,9 @@ class StateGraphService:
         return keep_on_cancel is not None and _keeps(keep_on_cancel, run_id)
 
     async def _resume(self, run_id: str, live: Optional[dict[str, Any]] = None, *, who: Optional[str] = None,
-                      why: str = "resume") -> None:
+                      why: str = "resume", transient: bool = False) -> None:
+        """``transient``: a run that failed transiently goes on too, rewound (runner.resume) -- the same request
+        again (_by_key); an operator's resume of it still replays that failure."""
         row = self.run_store.get_run(run_id) or {}
         if row.get("status") in ACTIVE_STATUSES and run_id not in self.runs.live:
             self.sweep()  # its process may be gone: then its lease is dropped and the resume takes it now
@@ -790,7 +822,8 @@ class StateGraphService:
             raise ServiceError(409, f"run {run_id} is compacted (retention): its journal is gone, so no resume replays "
                                     "it; start the machine again")
         error = row.get("error") or {}
-        if row.get("status") == "failed" and not resumable_failure(error):
+        if row.get("status") == "failed" and not resumable_failure(error) and not (
+                transient and failed_transiently(error)):
             # a resume replays the journal up to that failure, and it fails the same way (API-10); an internal error
             # is the engine's -- a fixed engine may get past it
             raise ServiceError(409, f"run {run_id} failed ({error.get('type')}): a resume replays that failure; fork "
@@ -803,7 +836,7 @@ class StateGraphService:
         options = row.get("mocks") or {}
         try:
             await self.runs.resume(run_id, live=live, backend_factory=None if options.get("mock_only")
-                                   else self.backend_factory())
+                                   else self.backend_factory(), transient=transient)
         except (ValueError, CompileError) as exc:
             raise ServiceError(409, str(exc)) from None
         self._note(run_id, "resumed", who=who, why=why, machine=row.get("machine_id"), was=row.get("status"),

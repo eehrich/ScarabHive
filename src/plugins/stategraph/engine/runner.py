@@ -34,7 +34,7 @@ from .activity import _IN_ENDING, ReplayDivergence
 from .backend import CALL_SPEND, NoBackend
 from .debugger import Debugger, UnknownState, apply_edit, check_points, known_states, unknown_state
 from .interpreter import Frame, RunAbort, bind_params
-from .journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore, utc_now
+from .journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore, resumable_failure, utc_now
 from .machine import Machine, compile_tree, unresolved_calls
 
 logger = logging.getLogger(__name__)
@@ -110,9 +110,14 @@ def _resumable_error(row: dict[str, Any]) -> bool:
     return row.get("status") == "error" and bool(((row.get("data") or {}).get("error") or {}).get("resumable"))
 
 
-def rewound_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _transient_error(row: dict[str, Any]) -> bool:
+    return row.get("status") == "error" and failed_transiently((row.get("data") or {}).get("error"))
+
+
+def rewound_rows(rows: list[dict[str, Any]], *, transient: bool = False) -> list[dict[str, Any]]:
     """The rows a resume sets aside in a run that ended on a resumable failure (docs/stategraph_design.md §5.3), so
-    that activity runs again and nothing else does: the innermost activity whose error is resumable and ended the
+    that activity runs again and nothing else does -- with ``transient``, on a transient one (TRANSIENT_ERRORS: the
+    same request again, service._by_key): the innermost activity whose error is resumable and ended the
     run (each one, when several did -- two items of one map) with every row below it; the composites it was in
     (their outcome was its); and in every frame on its path, what came after it -- later steps and the frame's end
     with its finally and close activities. A sibling the failure cancelled (fail: fast, a quorum) has no outcome,
@@ -122,17 +127,31 @@ def rewound_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     The failure that ended the run is the one whose every enclosing composite ended on it too: a refused branch a
     quorum outvoted, or a finally's failure (swallowed), ended nothing. Raises NotRewindable when a frame on its path
-    (or below a cancelled sibling) has resources: its end closed them, and the steps before would replay with them
-    closed."""
+    (or below a cancelled sibling) has resources its end closed (their close activity ran): the steps before would
+    replay with them closed. A resource without a close stays as it was opened."""
     activities = {r["key"]: r for r in rows if r["kind"] == "activity" and not r["key"].startswith(REWOUND)}
+    reached: dict[str, int] = {}  # each frame's last step taken (a failure's trace is none)
+    for r in rows:
+        if not r["key"].startswith(REWOUND) and (r["kind"] == "activity" or r.get("status") == "step"):
+            for prefix, step in key_steps(r["key"] if r["kind"] == "activity" else _head(r["key"])):
+                reached[prefix] = max(reached.get(prefix, step), step)
+
+    def ended_its_frame(row: dict[str, Any]) -> bool:
+        """The frame went no further than the activity's step: a resumable error is never caught, a transient
+        one an error transition may have handled -- the run went on, and that step is done."""
+        steps = key_steps(row["key"])
+        return not steps or reached.get(steps[-1][0], steps[-1][1]) <= steps[-1][1]
+
+    failed = (lambda row: _transient_error(row) and ended_its_frame(row)) if transient else _resumable_error
 
     def ended_the_run(key: str) -> bool:
         return not _IN_ENDING.search(key) and all(
-            _resumable_error(row) for k, row in activities.items() if key.startswith(f"{k}/"))
+            failed(row) for k, row in activities.items() if key.startswith(f"{k}/"))
 
-    stopped = [k for k, row in activities.items() if _resumable_error(row) and ended_the_run(k)]
+    stopped = [k for k, row in activities.items() if failed(row) and ended_the_run(k)]
     if not stopped:
-        raise NotRewindable("its journal names no activity whose resumable failure ended it")
+        raise NotRewindable(f"its journal names no activity whose {'transient' if transient else 'resumable'} "
+                            "failure ended it")
     within = {k for f in stopped for k in activities if f.startswith(f"{k}/")}  # the composites it ended
     cancelled = [k for k, row in activities.items() if row.get("status") == "started"  # not below a stopped one:
                  and any(k.startswith(f"{c}/") for c in within)                       # that goes aside whole
@@ -149,10 +168,12 @@ def rewound_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for f in inner:  # the frames on its path -- and for a cancelled one, the frame it had open, which runs on
         frames = ({prefix for prefix, _ in key_steps(f)} | {f[:f.rfind("/m/") + 3] if "/m/" in f else ""}
                   | ({open_frame(f)} if f in cancelled else set()))
-        held = sorted({k[len(p) + 2:].split("/", 1)[0] for p in frames for k in activities if k.startswith(f"{p}r.")})
-        if held:
+        held = {(p, k[len(p) + 2:].split("/", 1)[0]) for p in frames for k in activities if k.startswith(f"{p}r.")}
+        closed = sorted(name for p, name in held if any(
+            k.startswith(f"{p}end.") and k.endswith(f".close.{name}") for k in activities))
+        if closed:
             raise NotRewindable(
-                f"it stopped in a frame with resources ({', '.join(held)}): its end closed them, and the steps a "
+                f"it stopped in a frame with resources ({', '.join(closed)}): its end closed them, and the steps a "
                 "resume would replay used them -- fork it from the step it stopped at, or start it again")
     out = []
     for row in rows:
@@ -1345,10 +1366,12 @@ class RunManager:
 
     async def resume(self, run_id: str, *, backend: Any = None, backend_factory: Optional[Callable[[str], Any]] = None,
                      token_factory: Optional[Callable[[str], Any]] = None, cancel: bool = False,
-                     live: Optional[dict[str, Any]] = None, cancel_reason: Optional[str] = None) -> str:
+                     live: Optional[dict[str, Any]] = None, cancel_reason: Optional[str] = None,
+                     transient: bool = False) -> str:
         """Continue a run from its journal. ``cancel``: resume it into its termination -- the journaled prefix
         replays, then it ends as cancelled and its finally and close activities run (§3.10). ``live``: the
-        caller's objects for call functions again (``sg.live``) -- they are not in the journal."""
+        caller's objects for call functions again (``sg.live``) -- they are not in the journal. ``transient``: a
+        run that failed transiently is rewound like one that failed resumably (rewound_rows)."""
         self._refuse_while_stopping()
         row = self.store.get_run(run_id)
         if row is None:
@@ -1383,6 +1406,9 @@ class RunManager:
                                   status=LIVE_OBJECTS, data={"names": sorted(live or {})})
             if row["status"] == "failed" and (row.get("error") or {}).get("resumable"):
                 self._rewind(run_id, row["error"])  # the activity it ended on runs again, nothing else (§5.3)
+            elif (row["status"] == "failed" and transient and failed_transiently(row.get("error"))
+                  and not resumable_failure(row.get("error"))):  # an internal one goes on where it stopped
+                self._rewind(run_id, row["error"], transient=True)
             debugger = Debugger.from_state(row.get("debug"), run_id)  # its points, and the pause or step that held it
             options = row.get("mocks") or {}
             self.store.update_run(run_id, status="running", finished_at=None, error=None, output=None,
@@ -1404,7 +1430,7 @@ class RunManager:
             raise
         return run_id
 
-    def _rewind(self, run_id: str, error: dict[str, Any]) -> None:
+    def _rewind(self, run_id: str, error: dict[str, Any], *, transient: bool = False) -> None:
         """Set aside what the run's resumable failure decided (rewound_rows), under REWOUND<n>/, with a trace row
         that names them, in one transaction: the resume then runs that activity again and replays the rest. Under the
         lease. Raises NotRewindable (a ValueError) when that cannot be: the journal is left as it was. Nothing to do
@@ -1417,7 +1443,7 @@ class RunManager:
             return
         n = 1 + len(rewinds)
         try:
-            aside = rewound_rows(rows)
+            aside = rewound_rows(rows, transient=transient)
         except NotRewindable as exc:
             raise NotRewindable(f"run {run_id} cannot be resumed: {exc}") from None
         keys = [row["key"] for row in aside]

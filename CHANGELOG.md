@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   end (a finished job is kept until the process ends, so a dispatcher's retry only saw the old failure). A running
   job, one that answered and a cancelled one are joined as without it, so a dispatcher may send it every time.
 
+### Changed
+
+- stategraph: a run that failed transiently goes on when its run key comes again -- the same run, rewound to the
+  activity that failed (an `internal` failure resumes where it stood), its agent instances and resources its own --
+  instead of a new run. A new run only where the replay cannot hold (diverged, its machine's files changed,
+  `NotRewindable`, a compacted journal). Each such resume counts as a try of the key (`count_by_key`).
+
 ### Fixed
 
 - A model call without streaming went on running when the agent's event stream was closed or its run cancelled

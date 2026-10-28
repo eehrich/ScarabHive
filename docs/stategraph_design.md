@@ -803,12 +803,14 @@ A resume re-runs the interpreter from the start against the run's own definition
   `rewound.<n>` naming them -- their cost still counts, a mock's `$visits` counts their visits, and
   nothing else of them is read: no replay, fork or join (`joined`) matches them. So that activity
   and the cancelled children run again, and everything before it and a join's children that ended
-  replay. A frame with resources on the failure's path, or of a cancelled child, refuses the resume
-  (`NotRewindable`, the journal untouched): its end closed them, and the steps before would replay
-  with them closed -- fork it, or start it again. A resume that fails after its rewind (its launch)
+  replay. A frame on the failure's path, or of a cancelled child, whose end closed resources (their
+  `close` ran) refuses the resume (`NotRewindable`, the journal untouched): the steps before would
+  replay with them closed -- fork it, or start it again. A resource without a `close` stays as it
+  was opened and does not refuse. A resume that fails after its rewind (its launch)
   leaves the run as it was, `failed` with its resumable error; the next one does not rewind again
   while nothing ran since. A schedule or a run key never resumes it: the reason has to
-  change first, and a resume too early stops again at the same activity.
+  change first, and a resume too early stops again at the same activity. A transient failure is
+  rewound the same way when its run key comes again (§5.7 `run_key`).
 
 ### 5.4 Divergence
 
@@ -940,7 +942,13 @@ A run executes as an asyncio task in the process that started it (usually the AP
     Only a failed run whose error, or one of its unhandled causes, is transient
     (`runner.TRANSIENT_ERRORS`: `timeout`, `agent_failed`, `decision_failed`,
     `internal` -- e.g. a journal write refused by a locked database --, and `diverged`, which only
-    a resume can cause) starts a new run. Not transient: the run's own `timed_out` (a new run
+    a resume can cause) goes on: the same run is resumed, rewound as in §5.3 -- the activity that
+    failed runs again (of a map, that item), everything before it replays, its agent instances and
+    resources are still its own; an `internal` failure (the engine's) resumes where it stood, as an
+    operator's resume does. Each such resume counts as a try of the key (`count_by_key`, a
+    schedule's ATTEMPTS). A new run only when the replay cannot hold: the run diverged, its
+    machine's files changed since it started (a fix reaches only a new run), or the rewind is
+    refused (`NotRewindable`, a compacted journal). Not transient: the run's own `timed_out` (a new run
     would spend the same budget), `schema_invalid`/`parse_failed` (the agent had its feedback
     rounds), `tool_failed` (a tool's own refusal) and `interrupted` (a non-idempotent activity a
     crash cut off: a new run would repeat every finished one -- the machine's error transition
@@ -1322,8 +1330,8 @@ covered by tests.
      outcome again: its output, its failure, its cancel. Only a failure that is transient
      (`timeout`, `agent_failed`, `decision_failed`, `internal`, `diverged` as the
      error or an unhandled cause, §5.7; not `interrupted`: a new run would repeat every finished
-     non-idempotent activity) starts a new run: a duplicate delivery gets the old answer, a retry after a
-     provider failure a new run.
+     non-idempotent activity) goes on where it failed (§5.7 `run_key`): a duplicate delivery gets the old
+     answer, a retry after a provider failure the same run, rewound.
    - Failures are `error` events, never a `final` (writer_jobs counts any `final` as success).
 2. **`finally:`** (§2.8, §3.10).
 3. **`resources:`** (§2.8): `open`/`fork`/`close`; hashes take resource values as tokens (§5.4).

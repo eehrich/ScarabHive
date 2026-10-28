@@ -37,6 +37,10 @@ async def slow(sg, n=0):
 
 async def opener(sg):
     return await sg.tool("open", {})
+
+
+async def closer(sg):
+    return await sg.tool("close", {})
 """
 
 FLAT = """\
@@ -516,6 +520,7 @@ python: m.py
 resources:
   res:
     open: {call: opener}
+    close: {call: closer}
 initial: a
 states:
   a:
@@ -555,7 +560,8 @@ async def test_a_cancelled_sibling_with_resources_is_not_resumed_either(tmp_path
         manager = harness.manager()
         files = {"m.yaml": FAST_RES, "r.yaml": child, "m.py": PY}
         run_id = await manager.start(runnable(files), backend=FakeBackend(
-            {"two/a/resources/res/open/open": "R", "two/a/a/slowtool": _held, "two/b/budget": _late_full}))
+            {"two/a/resources/res/open/open": "R", "two/a/resources/res/close/close": "closed",
+             "two/a/a/slowtool": _held, "two/b/budget": _late_full}))
         row = await settle(manager, run_id)
         with pytest.raises(NotRewindable, match=r"resources \(res\)"):
             await harness.manager().resume(run_id, backend=FakeBackend({}))
@@ -613,6 +619,7 @@ python: m.py
 resources:
   res:
     open: {call: opener}
+    close: {call: closer}
 initial: first
 states:
   first:
@@ -630,7 +637,8 @@ async def test_a_run_stopped_in_a_frame_with_resources_is_not_resumed(tmp_path):
     try:
         manager = harness.manager()
         run_id = await manager.start(runnable({"m.yaml": RES, "m.py": PY}),
-                                     backend=FakeBackend({"first/budget": "full", "resources/res/open/open": "R"}))
+                                     backend=FakeBackend({"first/budget": "full", "resources/res/open/open": "R",
+                                                          "resources/res/close/close": "closed"}))
         row = await settle(manager, run_id)
         keys = [r["key"] for r in harness.store.rows(run_id)]
         with pytest.raises(NotRewindable, match=r"resources \(res\).*fork it"):
@@ -641,6 +649,27 @@ async def test_a_run_stopped_in_a_frame_with_resources_is_not_resumed(tmp_path):
         await harness.close()
     assert row["status"] == "failed" and row["error"]["resumable"], row
     assert again["status"] == "failed" and kept == keys, (again["status"], kept)
+
+
+async def test_resources_without_a_close_do_not_refuse_the_resume(tmp_path):
+    """Nothing closed them when the run failed: the resume goes on with the values it opened -- not opened again."""
+    harness = Harness(tmp_path)
+    try:
+        manager = harness.manager()
+        first = FakeBackend({"first/budget": "full", "resources/res/open/open": "R"})
+        unclosed = RES.replace("    close: {call: closer}\n", "")
+        assert "close" not in unclosed, "fixture: the resource has no close"
+        run_id = await manager.start(runnable({"m.yaml": unclosed, "m.py": PY}), backend=first)
+        row = await settle(manager, run_id)
+        later = FakeBackend({"first/budget": "ok", "resources/res/open/open": "R2"})
+        resumer = harness.manager()
+        await resumer.resume(run_id, backend=later)
+        done = await settle(resumer, run_id)
+    finally:
+        await harness.close()
+    assert row["status"] == "failed" and row["error"]["resumable"], row
+    assert done["status"] == "succeeded", done.get("error")
+    assert [c["path"] for c in later.calls] == ["first/budget"], later.calls
 
 
 def test_setting_aside_is_all_or_nothing(tmp_path):
@@ -778,6 +807,7 @@ python: m.py
 resources:
   res:
     open: {call: opener}
+    close: {call: closer}
 initial: a
 states:
   a:
@@ -884,3 +914,97 @@ async def test_a_stopped_call_with_a_tool_still_in_flight_asks_again(tmp_path):
     assert row["status"] == "failed" and row["error"]["resumable"], row
     assert resumed["status"] == "succeeded" and [r["out"] for r in resumed["output"]] == [["ok", "ok"]] * 2, resumed
     assert sorted(c["tool"] for c in later.calls) == ["budget", "budget", "slowtool", "slowtool"], later.calls
+
+
+CONTINUED = """\
+stategraph: 1
+id: m
+context: {inst: null}
+initial: a
+states:
+  a:
+    do: {agent: worker, task: begin}
+    transitions: [{target: b, effect: ctx.inst = activity.instance_id}]
+  b:
+    do: {agent: worker, continue: "{{ ctx.inst }}", task: go on}
+    transitions: [{target: done}]
+  done: {type: final}
+"""
+
+
+async def test_a_transient_failure_resumed_goes_on_in_the_agent_instance_an_earlier_step_made(tmp_path):
+    """A transient failure (the same request again, service._by_key) resumes the run itself: its continue reaches
+    the instance step a made -- a new run, or a fork with a session of its own, could not continue it."""
+    from agent_system.config.models import AgentSystemConfig
+    from plugins.stategraph.engine.backend import ScarabHiveBackend
+    from plugins.stategraph.tests.stategraph_testkit import AgentHost, FakeAgent
+
+    tries: list[str] = []
+
+    def answer(call):
+        tries.append(call["task"])
+        return RuntimeError("provider hiccup") if tries.count("go on") == 1 else f"{call['task']}: ok"
+
+    worker = FakeAgent("worker", answer)
+    host = AgentHost(tmp_path / "s", worker)
+    harness = Harness(tmp_path)
+    backend = lambda rid: ScarabHiveBackend(runner=host, system_config=AgentSystemConfig(),  # noqa: E731
+                                            session_id=f"sg_{rid}", user_id="ann")
+    try:
+        manager = harness.manager()
+        run_id = await manager.start(runnable({"m.yaml": CONTINUED}), backend_factory=backend)
+        row = await settle(manager, run_id)
+        resumer = harness.manager()
+        await resumer.resume(run_id, backend_factory=backend, transient=True)
+        done = await settle(resumer, run_id)
+    finally:
+        await harness.close()
+    assert row["status"] == "failed" and row["error"]["type"] == "agent_failed", row["error"]
+    assert done["status"] == "succeeded", done.get("error")
+    assert tries == ["begin", "go on", "go on"], tries
+    assert len({call["session"] for call in worker.calls}) == 1, "one instance, continued twice"
+
+
+CAUGHT = """\
+stategraph: 1
+id: m
+python: m.py
+initial: a
+states:
+  a:
+    do: {call: work, args: {n: 1}}
+    transitions:
+      - target: b
+      - trigger: error
+        target: b
+  b:
+    do: {call: work, args: {n: 2}}
+    transitions: [{target: c}]
+  c:
+    do: {call: work, args: {n: 3}}
+    transitions: [{target: done}]
+  done: {type: final}
+"""
+
+
+async def test_a_transient_error_the_machine_caught_is_not_where_the_resume_starts(tmp_path):
+    """Step a failed transiently and its error transition went on; step c failed the run. The resume runs c again --
+    not a and b, which the run had finished."""
+    from plugins.stategraph.kinds import ActivityError
+
+    harness = Harness(tmp_path)
+    try:
+        manager = harness.manager()
+        run_id = await manager.start(runnable({"m.yaml": CAUGHT, "m.py": PY}), backend=FakeBackend({
+            "a/budget": ActivityError("agent_failed", "hiccup"), "b/budget": "ok",
+            "c/budget": ActivityError("agent_failed", "hiccup")}))
+        row = await settle(manager, run_id)
+        later = FakeBackend({"a/budget": "ok", "b/budget": "ok", "c/budget": "ok"})
+        resumer = harness.manager()
+        await resumer.resume(run_id, backend=later, transient=True)
+        done = await settle(resumer, run_id)
+    finally:
+        await harness.close()
+    assert row["status"] == "failed" and row["error"]["type"] == "agent_failed", row["error"]
+    assert done["status"] == "succeeded", done.get("error")
+    assert [c["path"] for c in later.calls] == ["c/budget"], later.calls

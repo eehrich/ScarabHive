@@ -233,7 +233,9 @@ run of that key instead of a second one -- attached to while it runs (`attached:
 if another process runs it), resumed when interrupted, and once it ended its outcome
 again (`ended: <status>`: the same output, failure or cancel). Only a failure that is
 transient -- `timeout`, `agent_failed`, `decision_failed`, `internal` or `diverged` as the
-error or an unhandled cause -- starts a new run. Not `interrupted`: a new run would repeat
+error or an unhandled cause -- goes on: the run is resumed where it failed (the failed
+activity runs again, the rest replays; an `internal` one goes on where it stood); a new run
+only when it diverged, its machine files changed, or it cannot be rewound. Not `interrupted`: a new run would repeat
 every finished non-idempotent activity; handle it in the machine, or take a new key.
 
 ---

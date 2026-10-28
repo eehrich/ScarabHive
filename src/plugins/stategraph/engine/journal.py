@@ -509,7 +509,8 @@ class RunStore:
         """Retention (FEAT-11): the journal of up to ``limit`` runs that ended before ``before`` dropped -- their
         runs row stays (status, output, error, run_key: a key's answer, a fork's origin), so do their lifecycle
         rows, and a row ``compacted`` that keeps what they spent. Never a run that is not over: active,
-        interrupted, or failed resumably (resumable_failure: a resume runs it on). The run ids compacted."""
+        interrupted, or failed resumably (resumable_failure: a resume runs it on) -- nor one whose lease holds: a
+        resume has it (a transient failure's, the same request again). The run ids compacted."""
         done = []
         for run_id in self._compactable(before, limit):
             with self._lock:  # per run, not per batch: the event loop's journal writes wait one run at most
@@ -518,8 +519,9 @@ class RunStore:
                 try:  # another process may have compacted or resumed it since the selection
                     if db.execute("SELECT 1 FROM runs WHERE id = ? AND status IN ('succeeded', 'failed', 'cancelled')"
                                   f" AND NOT {_RESUMABLE_FAILURE}"
+                                  " AND (lease_until IS NULL OR lease_until < ?)"
                                   " AND EXISTS (SELECT 1 FROM journal WHERE run_id = runs.id AND kind != 'lifecycle')",
-                                  (run_id,)).fetchone() is None:
+                                  (run_id, utc_now())).fetchone() is None:
                         db.execute("COMMIT")
                         continue
                     spent = self.spend(run_id)
@@ -828,9 +830,14 @@ class RunStore:
         return [dict(row) for row in rows]
 
     def count_by_key(self, run_key: str) -> int:
-        """How many runs had this key: a schedule's slot tries at most so many (schedules.ATTEMPTS)."""
+        """How often this key was tried: its runs, and the resumes that ran one of them on after it failed (a
+        transient failure resumes the same run, rewound or -- internal -- as it stood): their ``resumed`` lifecycle
+        rows, which retention keeps. A schedule's slot tries at most so many (schedules.ATTEMPTS)."""
         with self._lock:
-            return self._db().execute("SELECT COUNT(*) FROM runs WHERE run_key = ?", (run_key,)).fetchone()[0]
+            return self._db().execute(
+                "SELECT (SELECT COUNT(*) FROM runs WHERE run_key = ?) + (SELECT COUNT(*) FROM journal WHERE kind ="
+                " 'lifecycle' AND status = 'resumed' AND json_extract(data, '$.was') = 'failed'"
+                " AND run_id IN (SELECT id FROM runs WHERE run_key = ?))", (run_key, run_key)).fetchone()[0]
 
     def set_caller(self, caller: str, run_id: str) -> None:
         """Remember the run of a caller (``<agent>:<session id>``)."""

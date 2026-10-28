@@ -818,7 +818,10 @@ an interrupted one is resumed (@{tt}resumed: true@{utt}); an ended one
 answers again with @{tt}ended@{utt}: its status, output or error. Only a
 run that failed transiently (@{tt}timeout@{utt},
 @{tt}agent_failed@{utt}, @{tt}decision_failed@{utt}, @{tt}internal@{utt},
-@{tt}diverged@{utt}) starts a new run. Not one that failed
+@{tt}diverged@{utt}) goes on: the run is resumed where it failed (the
+failed activity runs again, the rest replays; an internal failure goes
+on where it stood) -- a new run only when it
+diverged, its machine files changed, or it cannot be rewound. Not one that failed
 @{tt}interrupted@{utt} (a non-idempotent activity a crash cut off): a new
 run would repeat every finished one -- the machine's error transition
 reconciles it, or the caller takes a new key. The same key with another machine,

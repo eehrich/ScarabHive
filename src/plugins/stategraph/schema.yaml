@@ -95,7 +95,7 @@ tools:
           mock_only: {type: boolean, default: false, description: "refuse every unmocked agent, tool, decision or acquire"}
           breakpoints: {type: array, items: {}, description: "state names, 'state@exit', or {state, at, condition}"}
           watchpoints: {type: array, items: {}, description: "Python expressions over the scope, or {expr, condition}"}
-          run_key: {type: string, description: "the same request again: the run with this key instead of a second one -- attached to while it runs, resumed when interrupted, its outcome again once it ended (only a transient failure starts a new run)"}
+          run_key: {type: string, description: "the same request again: the run with this key instead of a second one -- attached to while it runs, resumed when interrupted, its outcome again once it ended (a transient failure: resumed where it failed)"}
           tags: {type: object, description: "flat {name: text or number} that list_runs filters on, e.g. {book: 95}"}
           pause_at_start: {type: boolean, default: false, description: "hold the run at its first hook (then step or continue with control_run)"}
           full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}

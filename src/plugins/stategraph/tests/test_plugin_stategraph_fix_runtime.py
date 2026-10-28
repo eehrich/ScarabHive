@@ -188,11 +188,12 @@ async def test_the_same_request_after_a_failure_gets_the_failure_again(env):
     assert again["run_id"] == first["run_id"] and len(env.runs()) == 1
 
 
-@pytest.mark.parametrize("error_type,anew", [
+@pytest.mark.parametrize("error_type,again_goes_on", [
     ("agent_failed", True), ("decision_failed", True), ("timeout", True),
     ("tool_failed", False), ("call_failed", False),
 ])
-async def test_only_a_transient_failure_lets_the_same_request_run_anew(env, error_type, anew):
+async def test_only_a_transient_failure_lets_the_same_request_go_on(env, error_type, again_goes_on):
+    """A transient failure: the same request resumes the run where it failed (rewound); any other: its failure."""
     service = env.server.service
     mocks = {"design": {"$error": {"type": error_type, "message": "boom"}}}
     first = await service.start_run("m", params={"task": "x"}, mocks=mocks, run_key="k")
@@ -201,10 +202,9 @@ async def test_only_a_transient_failure_lets_the_same_request_run_anew(env, erro
 
     again = await service.start_run("m", params={"task": "x"}, mocks=mocks, run_key="k")
 
-    assert (again["run_id"] != first["run_id"]) is anew, again
-    assert len(env.runs()) == (2 if anew else 1)
-    if not anew:
-        assert again == {"run_id": first["run_id"], "ended": "failed"}
+    assert again == ({"run_id": first["run_id"], "resumed": True} if again_goes_on
+                     else {"run_id": first["run_id"], "ended": "failed"}), again
+    assert len(env.runs()) == 1
 
 
 @pytest.mark.parametrize("error,transient", [
@@ -222,8 +222,9 @@ def test_a_transient_cause_makes_the_failure_transient(error, transient):
     assert failed_transiently(error) is transient
 
 
-async def test_a_run_the_engine_failed_is_tried_anew_by_the_same_request(env, monkeypatch):
-    """One "database is locked" on a journal write fails the run as internal -- not the machine's answer."""
+async def test_a_run_the_engine_failed_goes_on_with_the_same_request(env, monkeypatch):
+    """One "database is locked" on a journal write fails the run as internal -- not the machine's answer: the same
+    request resumes it where it stopped."""
     store = env.server.run_store
     real = store.record
     locked: list[str] = []
@@ -241,8 +242,9 @@ async def test_a_run_the_engine_failed_is_tried_anew_by_the_same_request(env, mo
 
     again = await env.server.service.start_run("m", params={"task": "x"}, run_key="k")
 
-    assert again["run_id"] != first["run_id"], again
+    assert again == {"run_id": first["run_id"], "resumed": True}, again
     assert (await settle(env.server.run_manager, again["run_id"]))["status"] == "succeeded"
+    assert store.count_by_key("k") == 2, "the resume of the failed run is a try (a schedule's slot counts them)"
 
 
 # ------------------------------------------------------------------ H9/P1: a resume runs as the run's user
