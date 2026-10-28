@@ -210,7 +210,13 @@ function arms(rep) {
     <h3 class="pk-card-title">${name} against ${rep.reference_arm}</h3>
     ${verdict(a.learn, 'learn tasks')}${verdict(a.holdout, 'holdout tasks')}
     ${a.regressions?.length ? html`<div class="pk-callout pk-callout--danger">Regressions: ${a.regressions.join(', ')}</div>` : ''}
-  </div>`)}`;
+  </div>`)}
+  ${entries.filter(([, a]) => Object.keys(a.fallbacks || {}).length).map(([name, a]) => html`<div class="pk-callout pk-callout--warn">
+    ${name}: ${Object.entries(a.fallbacks).map(([agent, models]) => `${agent} fell back to ${models.join(', ')}`).join('; ')}
+    -- those runs did not measure this arm's model alone.</div>`)}
+  ${entries.filter(([, a]) => Object.keys(a.escalated || {}).length).map(([name, a]) => html`<div class="pk-callout pk-callout--info">
+    ${name}: ${Object.entries(a.escalated).map(([agent, models]) => `${agent} also ran on its advanced model ${models.join(', ')}`).join('; ')}
+    -- an escalation, or a fallback past its chain.</div>`)}`;
 }
 
 function matrix(rep) {
@@ -240,7 +246,13 @@ function recordList(list) {
       <td class="pk-num" data-sort-value="${r.score ?? ''}">${r.scored ? num(r.score) : '—'}</td>
       <td class="pk-num" data-sort-value="${r.cost ?? ''}">${usd(r.cost)}</td>
       <td class="pk-num" data-sort-value="${r.duration_s ?? ''}">${r.duration_s != null ? `${num(r.duration_s, 1)} s` : '—'}</td>
-      <td class="pk-mono">${r.model || ''}</td></tr>`)}</tbody></table></div>`;
+      <td class="pk-mono">${usedModels(r)}</td></tr>`)}</tbody></table></div>`;
+}
+
+/** What a run's agents really ran on (the usage store's), else the model its agent was built with. */
+function usedModels(r) {
+  const used = [...new Set(Object.values(r.models || {}).flatMap((m) => Object.keys(m)))];
+  return used.length ? used.join(', ') : (r.model || '');
 }
 
 function record(r) {

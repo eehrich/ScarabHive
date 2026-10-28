@@ -168,6 +168,24 @@ its store moved elsewhere, a run's cost is unknown: the report counts such
 runs apart ("+ n run(s) unknown") instead of as free, and a
 @{tt}budget_usd@{utt} cannot be kept -- the runner says so once.
 
+@{h2}Fallbacks
+
+An agent runs on the first profile of its chain, and on the next when that
+one fails -- an arm that sets a model may so have run partly on another.
+The same records tell: every run lists, per agent, the models it really
+called (@{tt}models@{utt}), and the run keeps, per arm, the model each agent
+it names runs on first -- the suite's agent with the arm's overlay (a
+task's overlay included), every agent of its @{tt}agents@{utt}. An agent
+that also ran on another model is named in the report
+(@{tt}fallbacks@{utt}; a warning under the arm, on the command line a
+WARNING line): those runs did not measure the arm's choice alone. An agent
+with @{tt}auto_escalate_on_stuck@{utt} may run on its advanced model by
+design: that one is a note (@{tt}escalated@{utt}) -- with a chain of one
+profile it is also where a fallback goes first, the usage cannot tell the
+two apart. Without escalation, the advanced chain is one more fallback.
+Compared against a baseline, a fallback in the baseline's reference is a
+warning of the report too.
+
 @{h2}A baseline from another day
 
 Comparing against a baseline measures more than the change: providers route
@@ -351,7 +369,9 @@ that fails to run scores 0 and says why.
 
 The run a @{tt}script@{utt} gets as @{tt}run.json@{utt} and a
 @{tt}python@{utt} check as @{tt}run@{utt} is the agent run's result: the
-@{tt}answer@{utt} (all of it), @{tt}errors@{utt}, @{tt}model@{utt},
+@{tt}answer@{utt} (all of it), @{tt}errors@{utt}, @{tt}model@{utt} (what
+the suite's agent was built with) and @{tt}models@{utt} (per agent, the
+models it really called and how often),
 @{tt}session_id@{utt} and @{tt}request_id@{utt} (its LLM calls, sub-agents'
 under @{tt}<request_id>_@{utt}), @{tt}calls@{utt}, @{tt}cost@{utt} and
 @{tt}duration_s@{utt} among others, and what the agent left behind:

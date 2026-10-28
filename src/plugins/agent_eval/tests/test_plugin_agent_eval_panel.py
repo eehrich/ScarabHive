@@ -45,7 +45,10 @@ def _seed() -> None:
         store.write_meta(run_id, {"run_id": run_id, "suite": "coder-basics", "suite_path": "evals/coder/suite.yaml",
                                   "agent": "coder", "arms": arms, "reference_arm": arms[0], "tasks": len(TASKS),
                                   "repeats": 2, "status": status, "started": "2026-10-21T10:00:00+00:00",
-                                  "pid": pid or os.getpid()})
+                                  "pid": pid or os.getpid(),
+                                  "expected_models": {arm: {"agent": "coder", "models": {
+                                      "coder": {"model": "~vendor/model-a", "advanced": "~vendor/model-c"}}}
+                                      for arm in arms}})
         n = 0
         for rep in (1, 2):
             for task in TASKS:
@@ -58,6 +61,11 @@ def _seed() -> None:
                         "score": 1.0 if passed else 0.4, "passed": passed,
                         "detail": f"{5 if passed else 2}/5 passed", "answer": f"Changed {task}: all tests green.",
                         "cost": 0.012 if arm == "base" else 0.009, "duration_s": 41.5, "model": "~vendor/model-a",
+                        # one terse run fell back: its agent's first model failed, the next profile answered
+                        # and one base run escalated to its advanced model
+                        "models": {"coder": {"~vendor/model-a": 1, "~vendor/model-c": 1} if arm == "base" and n == 1
+                                   else {"~vendor/model-a": 2} if arm == "base" or n != 2
+                                   else {"~vendor/model-a": 1, "~vendor/model-b": 1}},
                         "request_id": f"ev-{run_id[-4:]}-{n}-{task}", "errors": []})
 
     run("20261020-100000-aaaa", ["base"])
@@ -143,6 +151,7 @@ EXPECTED = [
     'the chosen tab stays chosen when new runs come in',
     'switching to another run compares it against its own reference again',
     'a run counts only the agent runs that ran',
+    'an arm whose agent fell back to another model says so',
     'starting asks first: cancelled starts nothing, confirmed starts the suite',
     'a failed load of the runs says so',
 ]

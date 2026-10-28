@@ -77,6 +77,7 @@ def run_suite(suite_path: str | Path, run_id: Optional[str] = None, arms: Option
             raise ValueError(f"unknown arms {unknown}; the suite has {list(suite.arms)}")
         suite.arms = {name: arm for name, arm in suite.arms.items() if name in arms}
     check_arms(suite)
+    expected = expected_models(suite)
     run_id = run_id or store.new_run_id()
     rdir = store.run_dir(run_id)
     rdir.mkdir(parents=True, exist_ok=False)
@@ -85,7 +86,7 @@ def run_suite(suite_path: str | Path, run_id: Optional[str] = None, arms: Option
             "suite_sha": hashlib.sha256(Path(suite_path).read_bytes()).hexdigest(),
             "agent": suite.agent, "arms": list(suite.arms), "reference_arm": suite.reference_arm,
             "tasks": len(suite.tasks), "repeats": suite.repeats, "status": "running", "started": store.now(),
-            "pid": os.getpid()}
+            "pid": os.getpid(), "expected_models": expected}
     store.write_meta(run_id, meta)
     try:
         frozen = {t.id: _setup(suite, t, run_id, progress) for t in suite.tasks if t.setup}
@@ -160,6 +161,53 @@ def check_arms(suite: Suite) -> None:
                 problems.append(f"{who}: unknown llm_profile {unknown}")
     if problems:
         raise ValueError("; ".join(problems))
+
+
+def expected_models(suite: Suite) -> Dict[str, Dict[str, Any]]:
+    """Per arm, its suite agent's name and, for each agent it names -- that one with the arm's overlay, every agent
+    of its ``agents`` --, the model it runs on first and, for an agent that escalates by itself
+    (auto_escalate_on_stuck), the first of its advanced chain: what an agent ran on besides, it fell back to, and
+    the run did not measure the arm's choice (the report says so). Without escalation an advanced model is one
+    more fallback (fallback_chain runs the advanced chain after the normal one). ``tasks``: the suite agent's
+    first model where a task's own overlay changes it. An agent or a profile the configuration lacks is left out
+    (check_arms refuses what cannot run)."""
+    from agent_system.config.settings import get_tool_server_config, load_settings
+
+    try:
+        config = load_settings()
+    except Exception:  # noqa: BLE001 - no expectation is no reason to refuse a suite
+        return {}
+    llm = config.llm_system
+    profiles, models = (llm.profiles or {}, llm.models or {}) if llm else ({}, {})
+
+    def first(chain: Any) -> Optional[str]:
+        chain = chain if isinstance(chain, list) else [chain] if chain else []
+        profile = profiles.get(chain[0]) if chain else None
+        return getattr(models.get(profile.model_ref), "model", None) if profile is not None else None
+
+    def runs_on(agent_config) -> Dict[str, Optional[str]]:
+        return {"model": first(agent_config.llm_profile),
+                "advanced": first(agent_config.llm_profile_advanced) if agent_config.auto_escalate_on_stuck else None}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, arm in suite.arms.items():
+        agent = arm.agent or suite.agent
+        try:
+            layered = layer_agents(config, arm.agents)
+            found = {other: runs_on(get_tool_server_config(other, layered).agent_config) for other in arm.agents}
+            # last: the suite's agent gets the arm's overlay over its layer, as the child builds it
+            own = get_tool_server_config(agent, layered).agent_config
+            found[agent] = runs_on(apply_overlay(own, arm.agent_config))
+            # as the child applies them: the task's material first, the arm's change over it
+            by_task = {task.id: first(apply_overlay(apply_overlay(own, task.agent_config),
+                                                    arm.agent_config).llm_profile)
+                       for task in suite.tasks if task.agent_config}
+        except Exception:  # noqa: BLE001 - an agent this configuration lacks (a stand-in in a test)
+            found, by_task = {}, {}
+        out[name] = {"agent": agent, "models": {who: runs for who, runs in found.items() if runs["model"]},
+                     "tasks": {task: model for task, model in by_task.items()
+                               if model and model != (found.get(agent) or {}).get("model")}}
+    return out
 
 
 def _schedule(suite: Suite, run_id: str) -> List[List[Dict[str, Any]]]:
@@ -366,22 +414,31 @@ def usage_of(request_id: str, data: Optional[Path]) -> Dict[str, Any]:
     the run's or starts with ``<run's>_`` (sub-requests). *data* is the run's own data directory; None means the
     installation's. Unknown (None) when the store is not where the tracker keeps it by default."""
     db = (data or data_path()) / "context_usage_tracker" / "usage.db"
-    unknown = {"calls": None, "cost": None, "prompt_tokens": None, "completion_tokens": None}
+    unknown = {"calls": None, "cost": None, "prompt_tokens": None, "completion_tokens": None, "models": None}
     if not db.is_file():
         return unknown
     try:
         # as_uri: a '#' or '%' in the path would otherwise cut the URI -- and open a stray database read-write
         with sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True, timeout=10) as conn:
             # '`' sorts right after '_': the range is exactly the ids that start with "<id>_".
-            row = conn.execute(
-                "SELECT COUNT(*), SUM(cost), SUM(cost IS NULL), SUM(prompt_tokens), SUM(completion_tokens) "
-                "FROM usage_snapshots WHERE request_id = ? OR (request_id > ? AND request_id < ?)",
-                (request_id, request_id + "_", request_id + "`")).fetchone()
+            mine = "FROM usage_snapshots WHERE request_id = ? OR (request_id > ? AND request_id < ?)"
+            ids = (request_id, request_id + "_", request_id + "`")
+            row = conn.execute("SELECT COUNT(*), SUM(cost), SUM(cost IS NULL), SUM(prompt_tokens), "
+                               f"SUM(completion_tokens) {mine}", ids).fetchone()
+            try:
+                by_agent = conn.execute(f"SELECT agent_name, model, COUNT(*) {mine} GROUP BY agent_name, model",
+                                        ids).fetchall()
+            except sqlite3.OperationalError:  # a store without those columns: its cost still counts
+                by_agent = None
     except sqlite3.Error:
         return unknown
     calls, cost, unpriced, prompt, completion = row
+    models: Optional[Dict[str, Dict[str, int]]] = None if by_agent is None else {}
+    for agent, model, n in by_agent or ():  # what each agent really ran on: a fallback in its chain shows here
+        models.setdefault(agent or "?", {})[model or "?"] = n
     return {"calls": calls, "cost": round(cost, 6) if cost is not None else (0.0 if calls == 0 else None),
-            "unpriced_calls": unpriced or 0, "prompt_tokens": prompt or 0, "completion_tokens": completion or 0}
+            "unpriced_calls": unpriced or 0, "prompt_tokens": prompt or 0, "completion_tokens": completion or 0,
+            "models": models}
 
 
 def export_run(run_id: str, out: Path, data: Optional[Path] = None, include: Sequence[str] = ()) -> Path:

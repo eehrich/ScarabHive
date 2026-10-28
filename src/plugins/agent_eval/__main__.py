@@ -34,10 +34,16 @@ def build_report(run_id: str, against: Optional[str] = None) -> Dict[str, Any]:
         if ref_meta.get("suite_sha") != meta.get("suite_sha"):
             warnings.append(f"The suite file changed between {against} and this run: tasks of the same name "
                             "may ask or check something else.")
-        out = report(records, ref_meta["reference_arm"], meta["arms"], store.read_records(against))
+        out = report(records, ref_meta["reference_arm"], meta["arms"], store.read_records(against),
+                     meta.get("expected_models"))
         out["against"] = against
+        # the reference is the baseline's: an agent of it that fell back makes it measure something else too
+        base = report(store.read_records(against), ref_meta["reference_arm"], [ref_meta["reference_arm"]],
+                      expected=ref_meta.get("expected_models"))["arms"][ref_meta["reference_arm"]]
+        for agent, models in base["fallbacks"].items():
+            warnings.append(f"In the baseline {against}, {agent} fell back to {', '.join(models)}.")
     else:
-        out = report(records, meta["reference_arm"], meta["arms"])
+        out = report(records, meta["reference_arm"], meta["arms"], expected=meta.get("expected_models"))
     out["meta"] = meta
     out["warnings"] = warnings
     out["skipped"] = {s: sum(1 for r in records if r.get("status") == s) for s in store.NOT_COUNTED}
@@ -57,6 +63,11 @@ def _print_report(rep: Dict[str, Any]) -> None:
         rate = f"{arm['pass_rate']:.0%}" if arm.get("pass_rate") is not None else "n/a"
         print(f"\n[{name}] runs {arm['runs']}  pass {rate}  mean score {arm['mean_score']}"
               f"  cost ${arm['cost']:.4f}{unknown} (p90/run {p90})")
+        for agent, models in (arm.get("fallbacks") or {}).items():
+            print(f"  WARNING: {agent} fell back to {', '.join(models)} -- those runs did not measure this arm's model")
+        for agent, models in (arm.get("escalated") or {}).items():
+            print(f"  note: {agent} also ran on its advanced model {', '.join(models)} -- an escalation, "
+                  "or a fallback past its chain")
         for task, t in arm["tasks"].items():
             print(f"  {task:<30} {t['kind']:<10} {t['passes']}/{t['runs']}  score {t['mean']:.2f}")
         for kind in ("learn", "holdout"):

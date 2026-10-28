@@ -80,6 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Evals: a run that fell back to a later profile of an agent's chain counted for the arm as if it had run on the
+  arm's model -- the record named only the model the agent was built with. Every run now lists the models each
+  agent really called (from the usage store), the run keeps the model each agent an arm names runs on first, and
+  the report, the panel and `show` name every agent that ran on another (an agent that escalates by itself to
+  its advanced model gets a note instead).
 - Evals: `key: null` in an arm's overlay removes what the agent has there; before, it changed nothing, so an arm
   could not swap the model of an agent whose `llm_params` are keyed by its profile (the overlay did not validate).
 - stategraph: a watchpoint saw no change in a run's first step -- its value was first taken after it; it is now

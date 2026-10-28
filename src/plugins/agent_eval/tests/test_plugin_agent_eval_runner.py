@@ -598,7 +598,125 @@ def test_usage_of_sums_the_run_and_its_sub_requests(tmp_path):
     _usage_db(data, [("ev-1", 0.10), ("ev-1_sub_a", 0.05), ("ev-1_001", None), ("ev-10", 9.0), ("ev-1x", 9.0)])
     usage = runner.usage_of("ev-1", data)
     assert usage["calls"] == 3 and usage["cost"] == pytest.approx(0.15) and usage["unpriced_calls"] == 1
+    assert usage["models"] is None, "a store without agent_name/model columns: its cost counts, its models are unknown"
     assert runner.usage_of("ev-1", tmp_path / "nothing")["cost"] is None
+
+
+def test_usage_of_names_what_each_agent_really_ran_on(tmp_path):
+    """A fallback in an agent's chain shows: the calls of the run and its sub-requests, per agent and model."""
+    import sqlite3
+    db = tmp_path / "context_usage_tracker" / "usage.db"
+    db.parent.mkdir(parents=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE usage_snapshots (request_id TEXT, agent_name TEXT, model TEXT, cost REAL, "
+                     "prompt_tokens INTEGER, completion_tokens INTEGER)")
+        conn.executemany("INSERT INTO usage_snapshots VALUES (?, ?, ?, 0.01, 10, 2)", [
+            ("ev-1", "judge", "m-a"), ("ev-1_sg1_001", "judge", "m-a"), ("ev-1_sg1_002", "judge", "m-b"),
+            ("ev-1_sg1_003", "writer", "m-c"), ("ev-2", "judge", "m-x")])
+    assert runner.usage_of("ev-1", tmp_path)["models"] == {"judge": {"m-a": 2, "m-b": 1}, "writer": {"m-c": 1}}
+
+
+def _expect(agent, **models):
+    """expected_models' form for one arm: agent -> (model, advanced)."""
+    return {"agent": agent, "models": {who: {"model": m, "advanced": a} for who, (m, a) in models.items()}}
+
+
+def _scored(arm, models, model=None):
+    return {"arm": arm, "task": "t", "kind": "learn", "scored": True, "score": 1.0, "passed": True, "cost": 0.01,
+            "models": models, **({"model": model} if model else {})}
+
+
+def test_a_report_names_an_agent_that_fell_back_from_the_model_its_arm_set(tmp_path, monkeypatch, capsys):
+    """Expected per arm: the model each agent it names runs on first, and its advanced one. An agent that also ran
+    on another fell back in its chain -- the run counted for the arm without measuring its choice; the report says
+    so. Its advanced model is an escalation, as configured: said apart."""
+    from plugins.agent_eval.__main__ import _print_report, build_report
+    from plugins.agent_eval.stats import report
+
+    records = [_scored("cand", {"judge": {"m-cand": 2, "m-ref": 1, "m-big": 1}, "writer": {"m-w": 3}}),
+               _scored("ref", {"judge": {"m-ref": 3}})]
+    expected = {"cand": _expect("a", judge=("m-cand", "m-big")), "ref": _expect("a", judge=("m-ref", None))}
+    out = report(records, "ref", ["ref", "cand"], expected=expected)
+    assert out["arms"]["cand"]["fallbacks"] == {"judge": ["m-ref"]}, out["arms"]["cand"]
+    assert out["arms"]["cand"]["escalated"] == {"judge": ["m-big"]}, out["arms"]["cand"]
+    assert out["arms"]["ref"]["fallbacks"] == {} and out["arms"]["ref"]["escalated"] == {}
+    assert out["arms"]["cand"]["models"] == {"judge": {"m-cand": 2, "m-ref": 1, "m-big": 1}, "writer": {"m-w": 3}}
+    assert report(records, "ref", ["ref", "cand"])["arms"]["cand"]["fallbacks"] == {}, "nothing expected"
+
+    run_id = "20261028-230000-abcd"
+    store.run_dir(run_id).mkdir(parents=True)
+    store.write_meta(run_id, {"run_id": run_id, "suite": "s", "agent": "a", "arms": ["ref", "cand"],
+                              "reference_arm": "ref", "status": "done", "expected_models": expected})
+    for record in records:
+        store.append_record(run_id, record)
+    _print_report(build_report(run_id))
+    printed = capsys.readouterr().out
+    assert "WARNING: judge fell back to m-ref" in printed and "judge also ran on its advanced model m-big" in printed
+
+
+def test_the_suite_agent_is_held_to_the_model_its_run_was_built_with():
+    """A task's own llm_profile: the child's record names the model the agent was built with after it -- that is
+    no fallback; one of another model still is."""
+    from plugins.agent_eval.stats import report
+
+    expected = {"base": _expect("me", me=("m-arm", None))}
+    by_task = [_scored("base", {"me": {"m-task": 2}}, model="m-task")]
+    assert report(by_task, "base", ["base"], expected=expected)["arms"]["base"]["fallbacks"] == {}
+    fell = [_scored("base", {"me": {"m-task": 1, "m-other": 1}}, model="m-task")]
+    assert report(fell, "base", ["base"], expected=expected)["arms"]["base"]["fallbacks"] == {"me": ["m-other"]}
+    # timed out: no model in the record -- the task's own expectation holds it
+    timed_out = [{**_scored("base", {"me": {"m-task": 3}}), "status": "timeout"}]
+    with_task = {"base": {**expected["base"], "tasks": {"t": "m-task"}}}
+    assert report(timed_out, "base", ["base"], expected=with_task)["arms"]["base"]["fallbacks"] == {}
+    assert report(timed_out, "base", ["base"], expected=expected)["arms"]["base"]["fallbacks"] == {"me": ["m-task"]}
+
+
+def test_comparing_against_a_baseline_warns_when_its_reference_fell_back():
+    from plugins.agent_eval.__main__ import build_report
+
+    for run_id, arms, models in [("20261027-100000-aaaa", ["ref"], {"j": {"m-1": 1, "m-2": 1}}),
+                                 ("20261028-100000-bbbb", ["ref"], {"j": {"m-1": 2}})]:
+        store.run_dir(run_id).mkdir(parents=True)
+        store.write_meta(run_id, {"run_id": run_id, "suite": "s", "agent": "a", "arms": arms, "reference_arm": "ref",
+                                  "status": "done", "expected_models": {"ref": _expect("a", j=("m-1", None))}})
+        store.append_record(run_id, _scored("ref", models))
+    rep = build_report("20261028-100000-bbbb", against="20261027-100000-aaaa")
+    assert any("20261027-100000-aaaa" in w and "j fell back to m-2" in w for w in rep["warnings"]), rep["warnings"]
+
+
+def test_expected_models_are_the_first_profile_of_each_named_agent_after_the_arm():
+    """From the real configuration: the suite's agent with the arm's overlay, and every agent of its agents."""
+    from agent_system.config.settings import get_tool_server_config, load_settings
+    from plugins.agent_eval.suite import Arm, Suite
+
+    config = load_settings()
+    llm = config.llm_system
+
+    def model_of(profile):
+        return llm.models[llm.profiles[profile].model_ref].model
+
+    base = get_tool_server_config("file_ops_test_agent", config).agent_config.llm_profile
+    base = base[0] if isinstance(base, list) else base
+    other = next(name for name, p in llm.profiles.items() if model_of(name) != model_of(base))
+    suite = Suite(name="s", agent="file_ops_test_agent", tasks=[{"id": "t", "input": "x",
+                                                                 "check": {"expect": {"contains": ["x"]}}}],
+                  arms={"base": Arm(), "swap": Arm(agent_config={"llm_profile": [other]},
+                                                   agents={"stategraph_example_agent": {"llm_profile": [other]}})})
+    swapped = Arm(agent_config={"llm_profile": [other]}, agents={"file_ops_test_agent": {"llm_profile": [base]}})
+    suite.arms["named-too"] = swapped  # the suite's agent under agents as well: the arm's overlay goes over that
+    # an advanced chain is an escalation's only where the agent escalates by itself; else it is one more fallback
+    suite.arms["escalates"] = Arm(agent_config={"llm_profile_advanced": [other], "auto_escalate_on_stuck": True})
+    suite.arms["advanced-only"] = Arm(agent_config={"llm_profile_advanced": [other]})
+    suite.tasks.append(suite.tasks[0].model_copy(update={"id": "own", "agent_config": {"llm_profile": [other]}}))
+    got = runner.expected_models(suite)
+    assert got["escalates"]["models"]["file_ops_test_agent"]["advanced"] == model_of(other), got
+    assert got["advanced-only"]["models"]["file_ops_test_agent"]["advanced"] is None, got
+    assert got["base"]["tasks"] == {"own": model_of(other)} and got["swap"]["tasks"] == {}, got
+    first = {name: runs["model"] for name, runs in got["base"]["models"].items()}
+    assert (got["base"]["agent"], first) == ("file_ops_test_agent", {"file_ops_test_agent": model_of(base)}), got
+    assert {name: runs["model"] for name, runs in got["swap"]["models"].items()} == {
+        "file_ops_test_agent": model_of(other), "stategraph_example_agent": model_of(other)}, got
+    assert got["named-too"]["models"]["file_ops_test_agent"]["model"] == model_of(other), got
 
 
 def test_a_timed_out_run_is_charged_from_the_usage_store(tmp_path, monkeypatch):
@@ -680,3 +798,17 @@ def test_cli_baseline_of_an_incomplete_run_still_reports_and_fails(tmp_path, mon
     out, err = capsys.readouterr()
     assert "reference:" in out and "not made the baseline" in err and "incomplete" in err, (out, err)
     assert store.baselines() == {}
+
+
+def test_a_run_keeps_its_arms_expected_models_for_the_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _stand_in())
+    monkeypatch.setattr(runner, "expected_models", lambda suite: {"base": _expect("a", a=("m-1", None))})
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 1
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """)
+    run_id = runner.run_suite(path)
+    assert store.read_meta(run_id)["expected_models"] == {"base": _expect("a", a=("m-1", None))}

@@ -117,13 +117,50 @@ def _p90(values: List[float]) -> Optional[float]:
     return ordered[math.ceil(0.9 * len(ordered)) - 1]
 
 
+def _models(records) -> Dict[str, Dict[str, int]]:
+    total: Dict[str, Dict[str, int]] = {}
+    for record in records:
+        for agent, used in (record.get("models") or {}).items():
+            for model, calls in used.items():
+                total.setdefault(agent, {})[model] = total.get(agent, {}).get(model, 0) + calls
+    return total
+
+
+def _off_model(records: List[Dict[str, Any]], expected: Dict[str, Any]) -> tuple:
+    """({agent: models it fell back to}, {agent: its advanced model it escalated to}) over *records* of one arm.
+    The suite's agent is held to the model its run's agent was built with (``model``, after the task's overlay
+    too); a run that left no result (timed out, crashed) to the one its task's overlay gives (``tasks``)."""
+    fell: Dict[str, set] = {}
+    escalated: Dict[str, set] = {}
+    for record in records:
+        wanted = dict(expected.get("models") or {})
+        own = expected.get("agent")
+        built = record.get("model") or (expected.get("tasks") or {}).get(record.get("task"))
+        if own in wanted and built:
+            wanted[own] = {**wanted[own], "model": built}
+        for agent, used in (record.get("models") or {}).items():
+            runs = wanted.get(agent)
+            if runs is None:
+                continue
+            advanced = runs.get("advanced") if runs.get("advanced") != runs.get("model") else None
+            for model in set(used) - {runs.get("model")}:
+                (escalated if model == advanced else fell).setdefault(agent, set()).add(model)
+    return ({agent: sorted(models) for agent, models in fell.items()},
+            {agent: sorted(models) for agent, models in escalated.items()})
+
+
 def report(records: List[Dict[str, Any]], reference_arm: str, arms: List[str],
-           reference_records: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+           reference_records: Optional[List[Dict[str, Any]]] = None,
+           expected: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Every arm against the reference arm -- of the same records, or of *reference_records* (a baseline).
 
     Learn and holdout tasks are judged apart: only the holdout is evidence once someone has tuned on the
     learn tasks. Regression tasks are checked one by one. Cost counts every run that started; a run whose cost
-    could not be read is counted in ``cost_unknown_runs`` instead of as free.
+    could not be read is counted in ``cost_unknown_runs`` instead of as free. ``models``: each agent's calls per
+    model it ran on. *expected* (runner.expected_models): per arm, the model each agent it names runs on first and,
+    if it escalates by itself, its advanced one; ``fallbacks`` names the agents that also ran on another -- those
+    runs did not measure the arm's choice alone --, ``escalated`` the ones that also ran on their advanced model
+    (an escalation; with a one-profile chain also what a fallback would look like).
     """
     reference = task_means(reference_records if reference_records is not None else records, reference_arm)
     out: Dict[str, Any] = {"reference_arm": reference_arm, "arms": {}}
@@ -140,7 +177,10 @@ def report(records: List[Dict[str, Any]], reference_arm: str, arms: List[str],
             "cost": round(sum(costs), 4),
             "cost_unknown_runs": len(ran) - len(costs),
             "cost_p90": round(_p90(costs), 4) if costs else None,
+            "models": _models(r for r in records if r.get("arm") == name),
         }
+        entry["fallbacks"], entry["escalated"] = _off_model([r for r in records if r.get("arm") == name],
+                                                            (expected or {}).get(name) or {})
         if reference_records is not None or name != reference_arm:
             entry["learn"] = compare(reference, means, ("learn",))
             entry["holdout"] = compare(reference, means, ("holdout",))

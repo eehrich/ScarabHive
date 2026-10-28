@@ -112,6 +112,22 @@
     return reset;
   });
 
+  await check('an arm whose agent fell back to another model says so', async () => {
+    runRow(TWO_ARMS).click();
+    await until('the arms', () => detailText().includes('learn tasks: better'));
+    $('#detail [data-tab="summary"]').click();
+    await until('the arms tab', () => !$('#ev-summary').hidden);
+    const warned = [...doc().querySelectorAll('#ev-summary .pk-callout--warn')].map((el) => el.textContent);
+    const noted = [...doc().querySelectorAll('#ev-summary .pk-callout--info')].map((el) => el.textContent);
+    $('#detail [data-tab="records"]').click();
+    await until('the runs tab', () => !$('#ev-records').hidden);
+    const models = [...doc().querySelectorAll('#ev-records table[data-pk-sort="records"] tbody tr')]
+      .map((row) => cells(row).at(-1));
+    return warned.length === 1 && warned[0].includes('terse: coder fell back to ~vendor/model-b')
+      && noted.length === 1 && noted[0].includes('base: coder also ran on its advanced model ~vendor/model-c')
+      && models.includes('~vendor/model-a, ~vendor/model-b') && models.includes('~vendor/model-a');
+  });
+
   await check('a run counts only the agent runs that ran', async () => {
     await fetch('/__stub/stop_one', { method: 'POST' });
     runRow(DIED).click();
