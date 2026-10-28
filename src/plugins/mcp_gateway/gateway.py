@@ -39,33 +39,37 @@ class Gateway:
         except KeyError:
             return None
 
-    async def visible(self, grant: Grant, runner: Any) -> dict[str, tuple[str, dict[str, Any]]]:
-        """name -> (description, parameters as the tool declares them) of every tool the grant may call: the
-        runner's own list (allowlist, blocklist, every tool interface), narrowed to the grant's patterns. A tool
-        that does not take every pinned parameter is left out -- it could not be held to the run's values."""
-        found: dict[str, tuple[str, dict[str, Any]]] = {}
+    async def visible(self, grant: Grant, runner: Any) -> dict[str, tuple[str, dict[str, Any], dict[str, Any]]]:
+        """name -> (description, parameters as the tool declares them, the values the grant's bindings hold it to)
+        of every tool the grant may call: the runner's own list (allowlist, blocklist, every tool interface),
+        narrowed to the grant's patterns. A tool its bindings cannot hold -- one without a bound parameter, or held
+        to two values -- is left out (components/tool_bindings.py)."""
+        from agent_system.servers.agent.components.tool_bindings import hold, values_for
+
+        found: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = {}
         for entry in await runner.build_llm_tool_schemas():
             function = (entry.get("function") or {}) if isinstance(entry, dict) else {}
             name = function.get("name")
             if not isinstance(name, str) or not any(fnmatch.fnmatchcase(name, p) for p in grant.tools):
                 continue
-            if runner._resolve_flat_tool_name(name)[0] is None:
+            server, server_name = runner._resolve_flat_tool_name(name)
+            if server is None:
                 continue  # an external MCP tool: programmatic dispatch cannot run it
             parameters = function.get("parameters") or {"type": "object", "properties": {}}
-            if any(key not in (parameters.get("properties") or {}) for key in grant.pinned):
+            if hold(grant.pinned, name, server_name, {}, set(parameters.get("properties") or {}))[1]:
                 continue
-            found[name] = (str(function.get("description") or ""), parameters)
+            found[name] = (str(function.get("description") or ""), parameters,
+                           values_for(grant.pinned, name, server_name)[0])
         return found
 
     async def list_tools(self, grant: Grant) -> types.ListToolsResult:
         runner = self.runner()
         tools = []
-        for name, (description, parameters) in sorted((await self.visible(grant, runner)).items() if runner else []):
-            shown = copy.deepcopy(parameters)  # the pinned ones are the run's, not the model's to choose
-            for key in grant.pinned:
-                (shown.get("properties") or {}).pop(key, None)
-            if grant.pinned and isinstance(shown.get("required"), list):
-                shown["required"] = [key for key in shown["required"] if key not in grant.pinned]
+        from agent_system.servers.agent.components.tool_bindings import without_bound
+
+        for name, (description, parameters, bound) in sorted((await self.visible(grant, runner)).items()
+                                                             if runner else []):
+            shown = without_bound(copy.deepcopy(parameters), bound)  # the run's values, not the model's to choose
             tools.append(types.Tool(name=name, description=description, input_schema=shown))
         return types.ListToolsResult(tools=tools)
 
@@ -88,32 +92,34 @@ class Gateway:
         visible = await self.visible(grant, runner)
         if name not in visible:
             return f"Unknown tool {name!r}: call one from tools/list.", True
-        parameters = visible[name][1]
-        for key, value in grant.pinned.items():
-            if key in arguments and arguments[key] != value:
-                return (f"{key} is fixed to {value!r} for this run; this call asked for {arguments[key]!r}. "
-                        f"Leave {key} out."), True
-            arguments.pop(key, None)
-        injected = dict(grant.pinned)
-        complete = {**arguments, **injected}
-        problem = grants.refusal(grant, name, complete) or _schema_problem(name, parameters, complete)
+        from agent_system.servers.agent.components.tool_bindings import hold
+
+        _description, parameters, bound = visible[name]
+        complete, problem = hold(grant.pinned, name, runner._resolve_flat_tool_name(name)[1], arguments,
+                                 set(parameters.get("properties") or {}))
+        problem = problem or grants.refusal(grant, name, complete) or _schema_problem(name, parameters, complete)
         if problem:
             return problem, True
-        from agent_system.core.request_context import current_run_user
+        # The hooks see the call as the model asked for it: the bound values go in after them, in dispatch_tool_call.
+        arguments = {key: value for key, value in arguments.items() if key not in bound}
+        from agent_system.core.request_context import current_run_user, current_tool_bindings
         from agent_system.tools.status import current_request_id
 
         request_id = grant.next_request_id()
         grant.loop = asyncio.get_running_loop()
         # Whose call this is, for what the tool does without an agent at hand (a status without an id, an LLM call
-        # reported through the hooks): a run of an agent sets both, and the task copies them at its creation.
-        reset = (current_request_id.set(request_id), current_run_user.set(grant.user_id))
+        # reported through the hooks): a run of an agent sets them, and the task copies them at its creation --
+        # the bindings among them, which dispatch_tool_call holds the call to.
+        reset = (current_request_id.set(request_id), current_run_user.set(grant.user_id),
+                 current_tool_bindings.set(grant.pinned or None))
         try:
             call = asyncio.ensure_future(runner.dispatch_tool_call(
                 name, arguments, session_id=grant.session_id, user_id=grant.user_id, request_id=request_id,
-                hook_source=SOURCE, cancellation_token=grant.cancel, injected_params=injected or None))
+                hook_source=SOURCE, cancellation_token=grant.cancel))
         finally:
             current_request_id.reset(reset[0])
             current_run_user.reset(reset[1])
+            current_tool_bindings.reset(reset[2])
         # The tool does not watch the grant's cancellation token (dispatch hands it to the hooks only): a revoked
         # grant, or one whose time runs out while the call runs, stops the call here, as a client that goes away
         # does.

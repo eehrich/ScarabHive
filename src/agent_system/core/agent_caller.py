@@ -108,13 +108,18 @@ class AgentCaller:
         task: str,
         *,
         use_advanced_model: bool = False,
+        tool_bindings: dict | None = None,
     ) -> str:
-        """Spawn a sub-agent, one attempt, return its result text."""
-        text, _ = await self._create(agent_type, task, use_advanced_model=use_advanced_model)
+        """Spawn a sub-agent, one attempt, return its result text.
+
+        ``tool_bindings`` (``{tool pattern: {parameter: value}}``) hold the sub-agent's tool calls to those values
+        (servers/agent/components/tool_bindings.py); every follow-up of the instance passes the same again."""
+        text, _ = await self._create(agent_type, task, use_advanced_model=use_advanced_model,
+                                     tool_bindings=tool_bindings)
         return text
 
     async def _create(
-        self, agent_type: str, task: str, *, use_advanced_model: bool,
+        self, agent_type: str, task: str, *, use_advanced_model: bool, tool_bindings: dict | None = None,
     ) -> tuple[str, str | None]:
         """One ``create``; returns ``(text, instance_id)``.
 
@@ -131,6 +136,8 @@ class AgentCaller:
         }
         if use_advanced_model:
             params["use_advanced_model"] = True
+        if tool_bindings:
+            params["_tool_bindings"] = tool_bindings
         await self._note(f"▶ {agent_type}")
         t0 = time.monotonic()
         result = await self._invoke(params, label=agent_type)
@@ -150,6 +157,7 @@ class AgentCaller:
         message: str,
         *,
         use_advanced_model: bool = False,
+        tool_bindings: dict | None = None,
     ) -> str:
         """Continue an existing sub-agent, one attempt, return its text.
 
@@ -164,6 +172,8 @@ class AgentCaller:
         }
         if use_advanced_model:
             params["use_advanced_model"] = True
+        if tool_bindings:
+            params["_tool_bindings"] = tool_bindings
         result = await self._invoke(params, label=instance_id)
         text = self._result_text(result, instance_id)
         self._reject_transport_failure("follow_up", text)
@@ -178,6 +188,7 @@ class AgentCaller:
         *,
         schema: type[T] | None = None,
         use_advanced_model: bool = False,
+        tool_bindings: dict | None = None,
     ) -> Any:
         """Call a sub-agent and return its JSON result, with retries.
 
@@ -195,6 +206,7 @@ class AgentCaller:
             try:
                 return await self._call_once(
                     agent_type, task, schema=schema, use_advanced_model=use_advanced_model,
+                    tool_bindings=tool_bindings,
                 )
             except Exception as e:  # noqa: BLE001 — retry covers agent + parse errors
                 last_error = e
@@ -217,7 +229,7 @@ class AgentCaller:
             self.check_cancelled()
             try:
                 return await self._call_once(
-                    agent_type, task, schema=schema, use_advanced_model=True,
+                    agent_type, task, schema=schema, use_advanced_model=True, tool_bindings=tool_bindings,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.error("Advanced-model fallback for %s also failed: %s", agent_type, e)
@@ -232,6 +244,7 @@ class AgentCaller:
         *,
         schema: type[T] | None = None,
         use_advanced_model: bool = False,
+        tool_bindings: dict | None = None,
     ) -> Any:
         """Continue a sub-agent and return its JSON result, with retries."""
         last_error: Exception | None = None
@@ -239,10 +252,10 @@ class AgentCaller:
             self.check_cancelled()
             try:
                 raw = await self.follow_up_text(
-                    instance_id, message, use_advanced_model=use_advanced_model,
+                    instance_id, message, use_advanced_model=use_advanced_model, tool_bindings=tool_bindings,
                 )
                 return await self._validate(
-                    parse_json_value(raw), schema, instance_id, use_advanced_model,
+                    parse_json_value(raw), schema, instance_id, use_advanced_model, tool_bindings,
                 )
             except Exception as e:  # noqa: BLE001
                 last_error = e
@@ -268,17 +281,18 @@ class AgentCaller:
 
     async def _call_once(
         self, agent_type: str, task: str, *, schema: type[T] | None, use_advanced_model: bool,
+        tool_bindings: dict | None = None,
     ) -> Any:
         raw, instance_id = await self._create(
-            agent_type, task, use_advanced_model=use_advanced_model,
+            agent_type, task, use_advanced_model=use_advanced_model, tool_bindings=tool_bindings,
         )
         return await self._validate(
-            parse_json_value(raw), schema, instance_id, use_advanced_model,
+            parse_json_value(raw), schema, instance_id, use_advanced_model, tool_bindings,
         )
 
     async def _validate(
         self, value: Any, schema: type[T] | None,
-        instance_id: str | None, use_advanced_model: bool,
+        instance_id: str | None, use_advanced_model: bool, tool_bindings: dict | None = None,
     ) -> Any:
         if schema is None:
             return _as_object(value)
@@ -295,6 +309,7 @@ class AgentCaller:
             )
             raw = await self.follow_up_text(
                 instance_id, _schema_feedback(first), use_advanced_model=use_advanced_model,
+                tool_bindings=tool_bindings,
             )
             return adapter.validate_python(parse_json_value(raw))
 

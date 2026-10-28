@@ -218,6 +218,21 @@ class UsableToolsMixin:
     # callers that execute tools on the agent's behalf)
     # ------------------------------------------------------------------
 
+    async def tool_parameter_names(self: Agent, tool_name: str,
+                                   session_id: Optional[str] = None) -> Optional[set[str]]:
+        """The parameters *tool_name* declares: as the run of *session_id* was
+        offered it, else as this agent's schema build shows it. None for a tool
+        neither knows."""
+        def declared(schemas: list) -> Optional[set[str]]:
+            for entry in schemas:
+                function = entry.get("function") if isinstance(entry, dict) else None
+                if isinstance(function, dict) and function.get("name") == tool_name:
+                    return set((function.get("parameters") or {}).get("properties") or {})
+            return None
+
+        found = declared(self.get_run_tool_schemas(session_id))
+        return found if found is not None else declared(await self.build_llm_tool_schemas())
+
     def _resolve_flat_tool_name(self: Agent, tool_name: str):
         """Resolve a flat tool name (e.g. 'v6_json_manage_json') to
         (server, server_name). Returns (None, None) if nothing matches.
@@ -361,6 +376,19 @@ class UsableToolsMixin:
                 logger.warning("Dropping runtime param(s) %s injected into programmatic "
                                "dispatch of %s", dropped, tool_name)
             params = {**params, **extra}
+
+        # Held to the run's tool bindings -- the gateway's grant sets them for its calls -- after the hooks
+        # and the injected values, so neither can ask for another value than the run's.
+        from ....core.request_context import current_tool_bindings
+        bindings = current_tool_bindings.get()
+        if bindings:
+            from ..components.tool_bindings import hold, values_for
+            values, conflict = values_for(bindings, tool_name, server_name)
+            if values or conflict:
+                params, refusal = hold(bindings, tool_name, server_name, params,
+                                       await self.tool_parameter_names(tool_name, session_id))
+                if refusal:
+                    raise ToolDispatchError(refusal)
 
         params = inject_runtime_params(
             params, session_id=session_id, user_id=user_id,

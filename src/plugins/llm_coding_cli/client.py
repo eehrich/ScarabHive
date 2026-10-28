@@ -93,7 +93,7 @@ class CodingCliClient(LLMClient):
         return (await self.chat_tools(messages, [], cancellation_token=cancellation_token))["assistant"]["content"]
 
     async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None) -> dict:
-        from agent_system.core.request_context import current_run_session, current_run_user
+        from agent_system.core.request_context import current_run_session, current_run_user, current_tool_bindings
         from agent_system.tools.status import current_request_id
 
         request_id, user, session = current_request_id.get(), current_run_user.get(), current_run_session.get()
@@ -110,6 +110,11 @@ class CodingCliClient(LLMClient):
                 # compacted since, another caller of this client in the same agent run (a hook's own call) --
                 # starts a run of its own, or the CLI would answer another conversation.
                 args = {"task": added, "resume": prior[0]}
+        bindings = current_tool_bindings.get()
+        if bindings:
+            # The agent run's tool bindings hold the CLI's tool calls too (coding_cli hands them to its grant); a
+            # run without sends no pin at all, which a workdir without pins expects.
+            args["pin"] = bindings
         started = time.monotonic()
         await self._notify_pre_request({"provider": self.provider, "model": self.instance, "url": self.base_url,
                                         "payload": args, "is_streaming": False,

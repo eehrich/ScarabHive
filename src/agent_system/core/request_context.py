@@ -33,6 +33,11 @@ current_run_user: ContextVar[Optional[str]] = ContextVar("current_run_user", def
 #: the tools the run calls belong to the agent's session, as the agent's own
 #: calls do. None outside an agent run.
 current_run_session: ContextVar[Optional[str]] = ContextVar("current_run_session", default=None)
+#: The tool bindings of the agent run this code runs in ({tool pattern: {parameter: value}},
+#: servers/agent/components/tool_bindings.py), set and reset beside current_run_session -- None for a run
+#: without, so a sub-agent's run never takes over its caller's. The run's tool calls are held to them, and so
+#: are those of a model call that is a run of its own (llm_coding_cli hands them on).
+current_tool_bindings: ContextVar[Optional[dict]] = ContextVar("current_tool_bindings", default=None)
 
 # The shared map. Mutating module-level state is intentional here: the map is
 # process-wide by design (one HTTP request may be served by app code, agent

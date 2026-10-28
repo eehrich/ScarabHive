@@ -100,6 +100,24 @@ class TestCalls:
         assert (params["_user_id"], params["_session_id"], params["_request_id"]) == ("ada", "sess-1", "req-1")
         assert params["task"] == render(MESSAGES) and "resume" not in params
 
+    async def test_the_agent_runs_tool_bindings_go_with_every_run_and_none_without(self, instance):
+        from agent_system.core.request_context import current_tool_bindings
+
+        bindings = {"files/*_write": {"path": "out.md"}}
+        server = instance(done("first"), done("second"), done("free"))
+        llm = client()
+        token = current_tool_bindings.set(bindings)
+        try:
+            await llm.chat_tools(MESSAGES, [])
+            more = MESSAGES + [{"role": "assistant", "content": "first"}, {"role": "user", "content": "Shorter."}]
+            await llm.chat_tools(more, [])
+        finally:
+            current_tool_bindings.reset(token)
+        await client().chat_tools(MESSAGES, [])
+        assert [(p.get("resume"), p.get("pin")) for _, p in server.calls] == [
+            (None, bindings), ("r1", bindings), (None, None)]
+        assert "pin" not in server.calls[2][1], "a run without bindings sent a pin (a workdir without pins refuses one)"
+
     async def test_a_running_run_is_waited_for_and_stops_with_its_caller(self, instance):
         server = instance({"status": "success", "run_id": "r1", "state": "running"},
                           {"status": "success", "run_id": "r1", "state": "running"}, done("late"))

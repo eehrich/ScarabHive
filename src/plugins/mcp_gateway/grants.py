@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
 from agent_system.core.cancellation import CancellationToken
-from agent_system.servers.agent.components.tool_call_contract import FRAMEWORK_REQUEST_ID_KEYS
+from agent_system.servers.agent.components.tool_bindings import form_problem
 
 #: Gateway instances serving now (an enabled plugin adds its name): a grant for one that does not serve is refused.
 _serving: set[str] = set()
@@ -32,7 +32,7 @@ class Grant:
     user_id: str
     tools: tuple[str, ...]          # fnmatch patterns on the flat tool name
     request_id: str                 # prefix of every call's request id
-    pinned: dict[str, Any]          # parameter -> the only value a call may have
+    pinned: dict[str, dict[str, Any]]  # the run's tool bindings: tool pattern -> {parameter: its only value}
     allowed: dict[str, dict[str, list[Any]]]  # tool pattern -> {path: allowed values}
     session_id: Optional[str]
     expires_at: float
@@ -70,10 +70,10 @@ def issue(user_id: str, tools: list[str], *, request_id: str, pinned: Optional[d
         raise ValueError("request_id: the prefix of the run's calls (cost attribution)")
     if not isinstance(ttl_s, (int, float)) or not math.isfinite(ttl_s) or ttl_s <= 0:
         raise ValueError("ttl_s: seconds the token holds, more than 0")
-    pinned = dict(pinned or {})
-    for key in pinned:
-        if not isinstance(key, str) or not key or key.startswith("_") or key in FRAMEWORK_REQUEST_ID_KEYS:
-            raise ValueError(f"pinned: {key!r} -- runtime parameters are the framework's (session_id is one)")
+    problem = form_problem(pinned) if pinned else None
+    if problem:
+        raise ValueError(f"pinned: {problem}")
+    pinned = {pattern: dict(values) for pattern, values in (pinned or {}).items()}
     allowed = dict(allowed or {})
     for pattern, rules in allowed.items():
         if not isinstance(pattern, str) or not pattern or not isinstance(rules, dict) or not rules:

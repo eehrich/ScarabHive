@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the same agent run that goes on from the last one resumes that run; cancelling the agent stops it. The
   subscription's limit blocks the link until it resets, any other failure moves the profile chain on. Agent runs
   hold their session in `current_run_session` (beside `current_run_user`), which the CLI's tool calls run in.
+- Tool bindings of a run: `Agent.run_events(tool_bindings={tool pattern: {parameter: value}})` holds every call of
+  a tool a pattern matches (the allowlist's patterns) to those values -- put in where the call leaves them out, the
+  call refused where it asks for another, a matched tool that does not take the parameter refused. One check for
+  every way a tool is called: the model's own loop, `dispatch_tool_call` (scripts, hooks) and the MCP gateway,
+  whose grant `pinned` takes the same form. A model call that is a coding CLI's run hands them on as `pin`;
+  `AgentCaller` passes them to the sub-agent manager (`_tool_bindings`). The bindings are the run's own: a
+  sub-agent does not take over its caller's.
 - coding_cli: a workdir's `gateway` (tools, `pin`, `allowed`, `read_only`) hands its runs tools of this
   installation through the MCP gateway -- a grant per run, revoked at its end; `run_task` takes the values it fixes
   as `pin`. Claude Code gets the token in its environment only, agy in its workspace's MCP file, removed before the

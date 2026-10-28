@@ -50,6 +50,7 @@ class RunMixin:
         llm_profile_info_override: Optional[str] = None,
         use_advanced_model: bool = False,
         response_format: Optional[ResponseFormat] = None,
+        tool_bindings: Optional[dict] = None,
     ):
         """Run the agent and yield structured events for UI streaming.
 
@@ -65,10 +66,20 @@ class RunMixin:
                 LLM takes it, described in the conversation where it does not and the format allows
                 the prompt fallback, refused otherwise. The final answer is validated, and sent back
                 once for correction; its ``final`` event carries it unformatted (content_format "json").
+            tool_bindings: ``{tool pattern: {parameter: value}}`` this run's tool calls are held to
+                (components/tool_bindings.py) -- also those of a model call that is a run of its own. None: none.
+                The caller that resumes a session passes them again; a run never takes over its caller's.
         """
         if response_format is not None and not isinstance(response_format, ResponseFormat):
             # A dict would pass for "no field" at every client and then fail deep in the loop.
             raise TypeError(f"response_format must be a ResponseFormat, not {type(response_format).__name__}")
+        if tool_bindings is not None:
+            from ..components.tool_bindings import form_problem
+
+            problem = form_problem(tool_bindings)
+            if problem:
+                # Ignored, they would leave the run free where its caller meant to hold it.
+                raise ValueError(problem)
 
         # Generate request ID if not provided
         if request_id is None:
@@ -193,9 +204,12 @@ class RunMixin:
         # were is what they are again when this generator ends -- and at "end", its
         # last event: a consumer that stops there (app, agent_service) never closes
         # it, and the garbage collector closes it in another task.
-        from ....core.request_context import current_run_session, current_run_user
+        from ....core.request_context import current_run_session, current_run_user, current_tool_bindings
         request_before, user_before = current_request_id.get(), current_run_user.get()
-        session_before = current_run_session.get()
+        session_before, bindings_before = current_run_session.get(), current_tool_bindings.get()
+        # Set here, before anything of the run can call a tool, and to None for a run without: one run's
+        # bindings are not its sub-agents', whose runs start in a copy of this context.
+        current_tool_bindings.set(tool_bindings or None)
         try:
             # Pass status_scope parameters to _run_events which will open them AFTER
             # sending the 'start' event - this ensures frontend has currentRequestId
@@ -219,6 +233,7 @@ class RunMixin:
                         current_request_id.set(request_before)
                         current_run_user.set(user_before)
                         current_run_session.set(session_before)
+                        current_tool_bindings.set(bindings_before)
                     yield event
         except GeneratorExit:
             # Generator is being closed early - clean exit without error
@@ -240,6 +255,7 @@ class RunMixin:
             current_request_id.set(request_before)
             current_run_user.set(user_before)
             current_run_session.set(session_before)
+            current_tool_bindings.set(bindings_before)
 
     async def _run_events(
         self: Agent,

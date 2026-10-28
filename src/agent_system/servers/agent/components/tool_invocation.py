@@ -25,6 +25,7 @@ from ....tools.integration import get_tool_integration
 from ....utils.redact import redact_secrets
 from .server_resolution import resolve_longest_prefix
 from .tool_call_contract import (
+    BLOCKED_CALL_TYPE,
     call_id_or,
     inject_runtime_params,
     make_params_serializable,
@@ -194,10 +195,42 @@ class ToolInvoker:
                            params: Dict[str, Any], step: int, request_id: str | None = None,
                            session_id: str | None = None, user_id: str | None = None) -> CallOutcome:
         """Run one call of the model: on its external server when the name is
-        dotted (``<server>.<tool>``), else as a plugin tool."""
+        dotted (``<server>.<tool>``), else as a plugin tool -- held to the run's
+        tool bindings first (components/tool_bindings.py)."""
+        params, refusal = await self._held_to_bindings(tool_name, openai_tool_name, params, session_id)
+        if refusal:
+            logger.info("Tool call %s refused by the run's tool bindings: %s", openai_tool_name, refusal)
+            return tool_error_message(
+                call_id_or(tc, "blocked-call"), openai_tool_name,
+                json.dumps({"status": "error", "error": refusal, "type": BLOCKED_CALL_TYPE}, ensure_ascii=False),
+            ), [{"type": "tool_error", "tool": openai_tool_name, "error": refusal}], []
         if "." in tool_name:
             return await self.execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
         return await self.execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id, session_id, user_id)
+
+    async def _held_to_bindings(self, tool_name: str, openai_tool_name: str, params: Dict[str, Any],
+                                session_id: str | None) -> Tuple[Dict[str, Any], Optional[str]]:
+        """The call's params with the run's bound values in, or why it may not run. Matched as the
+        allowlist matches it: by the name the model called, and as its server a plugin tool's server, an
+        external tool's dotted ``<server>.<tool>`` (*tool_name* here, the plugin's server for a plugin tool)."""
+        from ....core.request_context import current_tool_bindings
+        from .tool_bindings import hold, values_for
+
+        bindings = current_tool_bindings.get()
+        if not bindings or self._agent is None:
+            return params, None
+        external = "." in tool_name
+        name = openai_tool_name
+        server_name = tool_name if external else self._agent._resolve_flat_tool_name(name)[1]
+        values, conflict = values_for(bindings, name, server_name)
+        if not values and conflict is None:
+            return params, None
+        if external:
+            # Its parameters come from its MCP server at run time: a bound one is not held there, so the call
+            # does not run.
+            return params, (f"{openai_tool_name} is not callable in this run: an external tool cannot be held "
+                            "to the run's tool bindings")
+        return hold(bindings, name, server_name, params, await self._agent.tool_parameter_names(name, session_id))
 
     async def execute_external_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                     params: Dict[str, Any], step: int, request_id: str | None = None,

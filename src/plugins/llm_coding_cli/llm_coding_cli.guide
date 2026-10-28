@@ -54,9 +54,12 @@ chain moves on when the CLI cannot answer.
 claude_code, @{tt}antigravity@{utt} for antigravity), or every call falls
 back with an error in the log.
 @{bullet}It has exactly one workdir: the call names none. A workdir with a
-@{tt}gateway@{utt} gives the CLI that gateway's tools; one whose gateway fixes
-values (@{tt}pin@{utt}) does not work here -- the provider has no values to
-give it.
+@{tt}gateway@{utt} gives the CLI that gateway's tools. The agent run's tool
+bindings (@{tt}Agent.run_events(tool_bindings=...)@{utt}, a sub-agent's
+spawn) go to the run as its @{tt}pin@{utt}, so the CLI's tool calls are held
+to the same values as the agent's own; a run without bindings sends none. A
+workdir whose gateway requires values (@{tt}pin@{utt}) refuses a run that
+does not bring them, and the chain falls back.
 @{bullet}The calling account is in its @{tt}allowed_users@{utt}.
 @{bullet}@{tt}max_task_chars@{utt} holds the whole conversation: the task is the
 system prompt and the history as text, and coding_cli refuses a longer one

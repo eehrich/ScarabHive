@@ -97,7 +97,7 @@ from plugins.mcp_gateway.grants import issue, revoke
 
 token = issue("ada", ["my_store_read", "my_store_search_*"],
               request_id="run-4711",
-              pinned={"project_id": 12},
+              pinned={"my_store/*": {"project_id": 12}},
               allowed={"my_store_read": {"operations[].op": ["get", "list"]}},
               session_id="sess-1", ttl_s=1800)
 # hand the CLI: Authorization: Bearer <token>
@@ -111,7 +111,7 @@ Argument | Meaning
 user_id | the account the calls are made for; tools get it as @{tt}_user_id@{utt}
 tools | fnmatch patterns on the flat tool name (with the instance prefix); a subset of the runner's allowlist, never more
 request_id | prefix of every call's request id: @{tt}<request_id>_mcp001@{utt}, @{tt}_mcp002@{utt} ... -- costs of tools that call an LLM themselves are found by it
-pinned | @{tt}{parameter: value}@{utt}: set in every call; a call with another value is refused
+pinned | the run's tool bindings, @{tt}{tool pattern: {parameter: value}}@{utt}: set in every call of a tool the pattern matches; a call with another value is refused
 allowed | @{tt}{tool pattern: {path: [values]}}@{utt}: for the tools the pattern matches, every value at the path must be one of these
 session_id | the session the calls run in (@{tt}_session_id@{utt}); without it the calls have none
 ttl_s | seconds the token holds (default 3600)
@@ -120,16 +120,26 @@ gateway | the instance (default @{tt}mcp_gateway@{utt})
 
 @{h2}Pinned parameters
 
-A pinned parameter is the run's, not the model's: it is left out of the
-tool list the CLI sees, set in every call, and a call that names it with
-another value is refused -- the model learns it asked for the wrong thing
-instead of being corrected without a word. A tool whose parameters do not
-include every pinned one is not shown and cannot be called with this token:
-it could not be held to the run's values. The values travel past the hooks
-(@{tt}injected_params@{utt}), as a script's configured values do.
+@{tt}pinned@{utt} are the run's tool bindings, the same form an agent run
+takes (@{tt}Agent.run_events(tool_bindings=...)@{utt}): each pattern -- the
+allowlist's syntax, @{tt}server/tool@{utt}, @{tt}server/*@{utt}, or a
+wildcard on the full path or the bare name; a bare name without @{tt}*@{utt}
+names a server, as in the allowlist -- holds the tools it matches to its
+values. A tool no pattern matches is not touched.
 
-Names beginning with @{tt}_@{utt} are refused: runtime parameters are the
-framework's (pass @{tt}session_id@{utt} for that one).
+A bound parameter is the run's, not the model's: it is left out of the tool
+list the CLI sees, set in every call, and a call that names it with another
+value is refused -- the model learns it asked for the wrong thing instead of
+being corrected without a word. A tool a pattern matches that does not take
+the parameter, or that two patterns hold to different values, is not shown
+and cannot be called with this token: it could not be held to the run's
+values. The values go in after the runner's pre_tool_call hooks, in
+@{tt}dispatch_tool_call@{utt} -- the same check an agent's own tool loop
+holds its run's bindings with.
+
+Values are text, numbers or true/false. Names beginning with @{tt}_@{utt}
+and the request id are refused: runtime parameters are the framework's (pass
+@{tt}session_id@{utt} for that one).
 
 @{h2}Allowed values
 
@@ -161,10 +171,10 @@ may be called from any thread.
 @{bullet}tools/list and tools/call ask the same question -- which tools this
 grant may call: the runner's own tool list (its allowlist and blocklist,
 every tool interface, exactly what the runner would send a model), narrowed
-to the grant's patterns, without tools that cannot take every pinned
-parameter, without external MCP tools. What is not listed does not exist
+to the grant's patterns, without tools its pinned values cannot hold,
+without external MCP tools. What is not listed does not exist
 for the client.
-@{bullet}A call: pinned values checked and set, allowed values checked,
+@{bullet}A call: pinned values checked, allowed values checked,
 the arguments checked against the tool's parameter schema (unknown
 parameters, missing required ones, types).
 @{bullet}Then @{tt}dispatch_tool_call@{utt} of the runner with

@@ -164,11 +164,28 @@ class TestListing:
 
     async def test_pinned_parameters_are_not_the_models_and_a_tool_without_them_is_gone(self, gateway):
         app, _ = gateway
-        async with session_of(app, issue(pinned={"project_id": 12})) as session:
+        async with session_of(app, issue(pinned={"store_*": {"project_id": 12}})) as session:
             tools = {tool.name: tool.input_schema for tool in (await session.list_tools()).tools}
         assert sorted(tools) == ["store_batch", "store_echo"]   # store_global, store_any: no project_id to hold
         assert "project_id" not in tools["store_echo"]["properties"]
         assert tools["store_batch"]["required"] == ["operations"]
+
+    async def test_bindings_hold_only_the_tools_their_pattern_names(self, gateway):
+        """Per tool: one tool's parameter is fixed, the others are not touched -- not hidden for lacking it."""
+        app, store = gateway
+        token = issue(pinned={"store/store_echo": {"text": "fixed"}})
+        async with session_of(app, token) as session:
+            tools = {tool.name: tool.input_schema for tool in (await session.list_tools()).tools}
+        assert sorted(tools) == ["store_any", "store_batch", "store_echo", "store_global"]
+        assert "text" not in tools["store_echo"]["properties"] and "project_id" in tools["store_echo"]["properties"]
+        assert (await call(app, token, "store_echo", {"project_id": 4}))[0] is False
+        assert [(p["project_id"], p["text"]) for _, p in store.received] == [(4, "fixed")]
+
+    async def test_a_tool_held_to_two_values_is_gone(self, gateway):
+        app, _ = gateway
+        token = issue(pinned={"store_*": {"project_id": 1}, "store/store_echo": {"project_id": 2}})
+        async with session_of(app, token) as session:
+            assert sorted(tool.name for tool in (await session.list_tools()).tools) == ["store_batch"]
 
 
 class TestCalls:
@@ -184,7 +201,7 @@ class TestCalls:
 
     async def test_a_pinned_value_is_set_and_another_one_refused(self, gateway):
         app, store = gateway
-        token = issue(pinned={"project_id": 12})
+        token = issue(pinned={"store_*": {"project_id": 12}})
         assert (await call(app, token, "store_echo", {"text": "a"}))[0] is False
         assert (await call(app, token, "store_echo", {"text": "b", "project_id": 12}))[0] is False
         failed, text = await call(app, token, "store_echo", {"text": "c", "project_id": 5})
@@ -193,7 +210,7 @@ class TestCalls:
 
     async def test_allowed_values_reach_into_lists(self, gateway):
         app, store = gateway
-        token = issue(pinned={"project_id": 1}, allowed={"store_batch": {"operations[].op": ["get"]}})
+        token = issue(pinned={"store_*": {"project_id": 1}}, allowed={"store_batch": {"operations[].op": ["get"]}})
         assert (await call(app, token, "store_batch", {"operations": [{"op": "get", "id": 1}]}))[0] is False
         failed, text = await call(app, token, "store_batch", {"operations": [{"op": "get"}, {"op": "edit"}]})
         assert failed and text == "operations[1].op must be one of ['get'] for this run, not 'edit'"
@@ -252,8 +269,8 @@ class TestHooks:
         hooks = get_hook_registry()
         await hooks.register_hook(HookType.PRE_TOOL_CALL, "gw.probe", Hook("gw.probe"))
         try:
-            token = issue(pinned={"project_id": 9})
-            assert (await call(app, token, "store_echo", {"text": "go"}))[0] is False
+            token = issue(pinned={"store_*": {"project_id": 9}})
+            assert (await call(app, token, "store_echo", {"text": "go", "project_id": 9}))[0] is False
             assert await call(app, token, "store_echo", {"text": "stop"}) == (True, "not this one")
         finally:
             await hooks.unregister_hook(HookType.PRE_TOOL_CALL, "gw.probe")
@@ -332,8 +349,10 @@ class TestTokens:
 
     @pytest.mark.parametrize("kwargs,word", [
         ({"user_id": ""}, "user_id"), ({"tools": []}, "tools"), ({"request_id": " "}, "request_id"),
-        ({"ttl_s": 0}, "ttl_s"), ({"pinned": {"_session_id": "x"}}, "runtime"),
-        ({"pinned": {"request_id": "x"}}, "runtime"),
+        ({"ttl_s": 0}, "ttl_s"), ({"pinned": {"store_*": {"_session_id": "x"}}}, "cannot be bound"),
+        ({"pinned": {"store_*": {"request_id": "x"}}}, "cannot be bound"),
+        ({"pinned": {"project_id": 1}}, "must map parameters"),
+        ({"pinned": {"store_*": {"project_id": [1]}}}, "string, number or boolean"),
         ({"allowed": {"store_*": {"ops[0].op": ["get"]}}}, "no path"),
         ({"allowed": {"store_*": {"operations[].op": []}}}, "non-empty")])
     async def test_a_grant_that_cannot_hold_is_refused(self, gateway, kwargs, word):
