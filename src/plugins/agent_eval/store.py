@@ -4,6 +4,7 @@
         meta.json        suite, agent, arms, status, timestamps
         suite.yaml       the suite as it was run
         records.jsonl    one line per agent run, appended as runs finish
+        judged.jsonl     the judge's verdict on a run (by its ``n``), appended after all runs
         setup/<task>/    a task's frozen setup (workspace, data)
         runs/<n>-.../    one agent run: workspace, data, job.json, result.json, child.log
     <data>/agent_eval/baselines/<suite>.txt   the suite's baseline run id
@@ -63,8 +64,20 @@ def append_record(run_id: str, record: Dict[str, Any]) -> None:
         f.write(line + "\n")
 
 
+def append_judgment(run_id: str, judgment: Dict[str, Any]) -> None:
+    """The judge's verdict on the run numbered ``judgment["n"]``: read_records lays it over that run's record."""
+    line = json.dumps(judgment, ensure_ascii=False, default=str)
+    with _lock, open(run_dir(run_id) / "judged.jsonl", "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
 def read_records(run_id: str) -> List[Dict[str, Any]]:
-    path = run_dir(run_id) / "records.jsonl"
+    """Every run's record, the judge's verdict over a judged one."""
+    judged = {j["n"]: j for j in _lines(run_dir(run_id) / "judged.jsonl")}
+    return [{**r, **judged[r["n"]]} if r.get("n") in judged else r for r in _lines(run_dir(run_id) / "records.jsonl")]
+
+
+def _lines(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -85,8 +98,24 @@ def list_runs() -> List[Dict[str, Any]]:
     return out
 
 
-#: Records that did not count, by status: never started, refused before the agent ran, or the runner's own error.
-NOT_COUNTED = ("budget", "stopped", "setup_failed", "refused", "error")
+#: Records that did not count, by status: never started, refused before the agent ran, the runner's own error, or
+#: a run the judge left unjudged.
+NOT_COUNTED = ("budget", "stopped", "setup_failed", "refused", "error", "judge_failed")
+
+
+def alive(pid: Any) -> bool:
+    try:
+        import psutil
+        return bool(pid) and psutil.pid_exists(int(pid))
+    except (ValueError, TypeError):
+        return False
+
+
+def live_status(meta: Dict[str, Any]) -> str:
+    """'running' only while its process lives: a runner that died leaves its meta saying so forever."""
+    if meta.get("status") == "running" and not alive(meta.get("pid")):
+        return "died"
+    return meta.get("status", "?")
 
 
 def baselines() -> Dict[str, str]:

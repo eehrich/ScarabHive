@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
@@ -18,6 +18,8 @@ from agent_system.utils import yaml_io
 
 #: Ids end up in directory names and request ids.
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,39}")
+#: The kinds of check, in the order a check names them.
+_KINDS = ("command", "pytest", "script", "python", "expect", "judge")
 
 
 class Check(BaseModel):
@@ -37,20 +39,75 @@ class Check(BaseModel):
     python: Optional[str] = None
     #: Plain expectations on the final answer: every ``contains`` string and every ``regex`` must match.
     expect: Optional[Dict[str, List[str]]] = None
+    #: The suite's judge, after all runs: the ids of its criteria this task is judged by, or true for all.
+    judge: Union[bool, List[str], None] = None
     timeout_s: float = 600
 
     @model_validator(mode="after")
     def _one_kind(self) -> "Check":
-        kinds = [k for k in ("command", "pytest", "script", "python", "expect") if getattr(self, k)]
+        kinds = [k for k in _KINDS if getattr(self, k)]
         if len(kinds) != 1:
-            raise ValueError(f"a check needs exactly one of command, pytest, script, python, expect (got {kinds or 'none'})")
+            raise ValueError(f"a check needs exactly one of {', '.join(_KINDS)} (got {kinds or 'none'})")
         if self.expect is not None and not set(self.expect) <= {"contains", "regex"}:
             raise ValueError("expect takes 'contains' and 'regex' lists only")
         return self
 
     @property
     def kind(self) -> str:
-        return next(k for k in ("command", "pytest", "script", "python", "expect") if getattr(self, k))
+        return next(k for k in _KINDS if getattr(self, k))
+
+
+class Product(BaseModel):
+    """What the judge reads of a run; without one, the agent's final answer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Python script (relative to the suite) called as ``script <workspace> <run.json>``; what it prints is the
+    #: product.
+    script: Optional[str] = None
+    #: ``module:function`` called in the runner as ``function(workspace, run, task)``, returning the product text.
+    python: Optional[str] = None
+    timeout_s: float = 600
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> "Product":
+        if bool(self.script) == bool(self.python):
+            raise ValueError("a product needs exactly one of script, python")
+        return self
+
+
+class Judge(BaseModel):
+    """Scoring by a model, after all runs: per task the products of every arm and repeat in one call, shuffled and
+    unnamed, and for each product and criterion a yes or no -- a yes/no on a feature, where a grade would measure
+    how much text there is. The judge's model has to be of a family no arm's agent runs on (a model favours its
+    own family's text); runner.check_judge refuses one that is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The agent that judges (one without tools, say): its llm_profile is the judge's model.
+    agent: str
+    #: Merged over its agent_config, as an arm's.
+    agent_config: Dict[str, Any] = Field(default_factory=dict)
+    #: What the products are and what to look for, before the criteria.
+    instructions: str = ""
+    #: Criterion id to its question, asked so that yes is good.
+    criteria: Dict[str, str]
+    product: Optional[Product] = None
+    #: Seconds one judge call may take.
+    timeout_s: float = 900
+
+    @field_validator("criteria")
+    @classmethod
+    def _criteria(cls, value: Dict[str, str]) -> Dict[str, str]:
+        if not value:
+            raise ValueError("a judge needs at least one criterion")
+        bad = [name for name in value if not _ID.fullmatch(name)]
+        if bad:
+            raise ValueError(f"criterion ids {bad}: letters, digits and '-', at most 40")
+        labels = [name for name in value if re.fullmatch(r"P\d+", name)]
+        if labels:
+            raise ValueError(f"criterion ids {labels}: P<number> names a product in the judge's answer")
+        return value
 
 
 class Fork(BaseModel):
@@ -180,6 +237,8 @@ class Suite(BaseModel):
     #: Arm names to overlays; the first is the reference the others are compared against.
     arms: Dict[str, Arm] = Field(default_factory=lambda: {"base": Arm()})
     tasks: List[Task]
+    #: What a task with a ``judge`` check is judged by.
+    judge: Optional[Judge] = None
 
     #: The suite file's directory, set by load_suite.
     root: Path = Field(default=Path("."), exclude=True)
@@ -218,12 +277,24 @@ class Suite(BaseModel):
         if own:
             raise ValueError(f"fork tasks {own} take no agent_config: the machine's agents run, put it in an "
                              "arm's agents")
+        for task in self.tasks:
+            wanted = task.check.judge
+            if wanted and self.judge is None:
+                raise ValueError(f"task {task.id}: a judge check needs the suite's judge")
+            unknown = sorted(set(wanted) - set(self.judge.criteria)) if isinstance(wanted, list) else []
+            if unknown:
+                raise ValueError(f"task {task.id}: the judge has no criteria {unknown}")
         if len(forks) == len(self.tasks):
             idle = [name for name, arm in self.arms.items() if arm.agent or arm.agent_config]
             if idle:
                 raise ValueError(f"arms {idle}: every task is a fork task, where agent and agent_config change "
                                  "nothing -- an arm changes the machine's agents in agents")
         return self
+
+    def criteria(self, task: Task) -> Dict[str, str]:
+        """The judge's criteria *task* is judged by."""
+        wanted = task.check.judge
+        return {k: v for k, v in self.judge.criteria.items() if wanted is True or k in wanted}
 
     def path(self, value: str) -> Path:
         """A path the suite names, resolved against its directory."""
@@ -236,10 +307,21 @@ class Suite(BaseModel):
 
 
 def discover_suites(plugin_dirs: List[str], project_root: Path) -> List[Path]:
-    """Every suite file the panel offers: ``suite.yaml`` below an ``evals/`` directory -- the project's own and
-    each plugin's (``<plugin root>/<plugin>/evals/``). A plugin brings its suites the way it brings agents."""
+    """Every suite file the panel offers, below an ``evals/`` directory -- the project's own and each plugin's
+    (``<plugin root>/<plugin>/evals/``); a plugin brings its suites the way it brings agents. A ``suite.yaml``
+    always (a broken one shows its error), any other YAML that names an ``agent`` and ``tasks`` -- several suites
+    in one directory."""
     roots = [project_root / "evals"] + [p for d in plugin_dirs for p in Path(d).glob("*/evals") if p.is_dir()]
-    return sorted({f.resolve() for r in roots if r.is_dir() for f in r.rglob("suite.yaml")})
+    return sorted({f.resolve() for r in roots if r.is_dir() for f in r.rglob("*.yaml")
+                   if f.name == "suite.yaml" or _names_a_suite(f)})
+
+
+def _names_a_suite(path: Path) -> bool:
+    try:
+        data = yaml_io.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - workspace material that is no YAML of ours
+        return False
+    return isinstance(data, dict) and "agent" in data and "tasks" in data
 
 
 def load_suite(path: str | Path) -> Suite:
@@ -251,6 +333,9 @@ def load_suite(path: str | Path) -> Suite:
     except Exception as e:
         raise ValueError(f"{path}: {e}") from e
     suite.root = path.parent
+    product = suite.judge.product if suite.judge else None
+    if product and product.script and not suite.path(product.script).exists():
+        raise ValueError(f"{path}: judge: product script {product.script} does not exist")
     for task in suite.tasks:
         for value in (task.workspace, task.check.script):
             if value and not suite.path(value).exists():
@@ -263,6 +348,7 @@ def load_suite(path: str | Path) -> Suite:
     owners += [(f"arm {name}, agent {agent}", overlay) for name, arm in suite.arms.items()
                for agent, overlay in arm.agents.items()]
     owners += [(f"task {task.id}", task.agent_config) for task in suite.tasks]
+    owners += [("judge", suite.judge.agent_config)] if suite.judge else []
     for owner, overlay in owners:
         _resolve_relative_paths(overlay, suite.root)
         template = overlay.get("system_template")

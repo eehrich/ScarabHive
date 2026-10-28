@@ -61,7 +61,7 @@
     const matrix = [...doc().querySelectorAll('#detail table[data-pk-sort="tasks"] tbody tr')];
     const pager = matrix.find((row) => cells(row)[0] === 'fix-pager');
     const figures = [...doc().querySelectorAll('#detail .pk-stat-value')].map((el) => el.textContent.trim());
-    // terse beats base on all six tasks: +0.3 each, p = 2/64.
+    // terse beats base on all six tasks (+0.3, on cache-lookup +0.5), p = 2/64.
     return figures.join('|') === '24 / 24|18 / 24|$0.2520' && matrix.length === 6 && cells(pager).slice(2).join('|') === '1/2 · 0.70|2/2 · 1.00'
       && detailText().includes('6 better / 0 worse of 6') && detailText().includes('p = 0.031')
       && detailText().includes('Of the 6 task(s) that moved, it takes 6 moving the same way to decide.')
@@ -110,6 +110,29 @@
     runRow(TWO_ARMS).click();
     await until('back', () => detailText().includes(TWO_ARMS));
     return reset;
+  });
+
+  await check('the arms show the pooled score below the mean', async () => {
+    runRow(TWO_ARMS).click();
+    await until('the arms', () => detailText().includes('learn tasks: better'));
+    $('#detail [data-tab="summary"]').click();
+    await until('the arms tab', () => !$('#ev-summary').hidden);
+    const rows = [...doc().querySelectorAll('#ev-summary table tbody tr')].map((row) => cells(row)[3]);
+    return rows.join('|') === '0.67pooled 0.60|1.00pooled 1.00';
+  });
+
+  await check('a judged run says what the judge did and how length went', async () => {
+    runRow(TWO_ARMS).click();
+    await until('the arms', () => detailText().includes('learn tasks: better'));
+    $('#detail [data-tab="summary"]').click();
+    await until('the arms tab', () => !$('#ev-summary').hidden);
+    const judge = [...doc().querySelectorAll('#detail .pk-callout--info')].map((el) => el.textContent.replace(/\s+/g, ' '))
+      .find((t) => t.startsWith('Judge:'));
+    const length = $('#ev-summary').textContent.replace(/\s+/g, ' ');
+    // base: the second repeat's product is the longer one and scored less than the first, on every task
+    return judge?.includes('3 of 4 product(s) judged in 1 call(s), $0.2500') && judge.includes("fix-pager: no true/false")
+      && length.includes('base: products of 150 characters on average; of two of a task, the longer scored higher 0×, lower 6×')
+      && length.includes('terse: products of 150 characters on average; of two of a task, the longer scored higher 0×, lower 0×');
   });
 
   await check('an arm whose agent fell back to another model says so', async () => {

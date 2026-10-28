@@ -1,4 +1,5 @@
-"""Scoring a finished run. Every check returns ``{"score": 0..1, "passed": bool, "detail": str}``.
+"""Scoring a finished run. Every check returns ``{"score": 0..1, "passed": bool, "detail": str}``, and ``of`` where
+the score is a share of countable things (tests, expectations): how many -- the report pools by it.
 
 A score is the continuous measure (share of green tests, share of expectations met): a task's difference between
 two arms shows in it long before a pass/fail check flips.
@@ -29,8 +30,10 @@ def run_check(check: Check, suite: Suite, task: Task, workspace: Path, run: Dict
     except Exception as e:  # noqa: BLE001 - a broken check is a failed check, with its reason
         return {"score": 0.0, "passed": False, "detail": f"check failed: {type(e).__name__}: {e}"}
     score = min(1.0, max(0.0, score))
+    of = verdict.get("of")
     return {"score": score, "passed": bool(verdict.get("passed", score >= 1.0)),
-            "detail": str(verdict.get("detail", ""))[-_DETAIL_CHARS:]}
+            "detail": str(verdict.get("detail", ""))[-_DETAIL_CHARS:],
+            **({"of": of} if isinstance(of, int) and not isinstance(of, bool) and of > 0 else {})}
 
 
 def _bounded(check: Check, args, workspace: Path, shell: bool = False, env=None) -> tuple:
@@ -92,7 +95,7 @@ def _pytest(check: Check, suite: Suite, task: Task, workspace: Path, run: Dict[s
     if total <= 0:
         return {"score": 0.0, "passed": False, "detail": f"no tests ran (exit {code})\n{output}"}
     passed = total - failed
-    return {"score": passed / total, "passed": failed == 0 and code == 0,
+    return {"score": passed / total, "passed": failed == 0 and code == 0, "of": total,
             "detail": f"{passed}/{total} passed\n{output}"}
 
 
@@ -145,7 +148,7 @@ def _script(check: Check, suite: Suite, task: Task, workspace: Path, run: Dict[s
     run_file.write_text(json.dumps(run, ensure_ascii=False, default=str), encoding="utf-8")
     log = workspace.parent / "check.log"
     code = run_bounded([sys.executable, str(suite.path(check.script)), str(workspace), str(run_file)],
-                       cwd=workspace, log=log, timeout=check.timeout_s)
+                       cwd=workspace, log=log, timeout=check.timeout_s, env=_utf8_env())
     output = log.read_text(encoding="utf-8", errors="replace")
     if code is None:
         return _timed_out(check, output[-_DETAIL_CHARS:])
@@ -168,7 +171,37 @@ def _expect(check: Check, suite: Suite, task: Task, workspace: Path, run: Dict[s
     missing = [f"{kind} {value!r}" for kind, value, hit in wanted if not hit]
     met = len(wanted) - len(missing)
     return {"score": met / len(wanted) if wanted else 0.0, "passed": not missing and bool(wanted),
+            **({"of": len(wanted)} if wanted else {}),
             "detail": f"{met}/{len(wanted)} met" + (f"; missing: {', '.join(missing)}" if missing else "")}
+
+
+def product_of(suite: Suite, task: Task, workspace: Path, run: Dict[str, Any]) -> str:
+    """What the judge reads of a finished run: the suite judge's product of it, or the final answer. Raises when the
+    product cannot be read (a script that fails, runs past its timeout or prints nothing)."""
+    product = suite.judge.product
+    if product is None:
+        return run.get("answer") or ""
+    if product.python:
+        module, _, name = product.python.partition(":")
+        text = getattr(importlib.import_module(module), name)(workspace, run, task)
+        if not isinstance(text, str):
+            raise ValueError(f"a product must be a str, got {type(text).__name__}")
+        return text
+    run_file = workspace.parent / "run.json"
+    run_file.write_text(json.dumps(run, ensure_ascii=False, default=str), encoding="utf-8")
+    out, err = workspace.parent / "product.txt", workspace.parent / "product.log"
+    code = run_bounded([sys.executable, str(suite.path(product.script)), str(workspace), str(run_file)],
+                       cwd=workspace, log=out, errors=err, timeout=product.timeout_s, env=_utf8_env())
+    text = out.read_text(encoding="utf-8", errors="replace")
+    if code != 0 or not text.strip():
+        raise ValueError(f"product script {'timed out' if code is None else f'exit {code}'}"
+                         f"{'' if text.strip() else ', printed nothing'}\n{tail(err, _DETAIL_CHARS)}")
+    return text
+
+
+def _utf8_env() -> Dict[str, str]:
+    """A script's environment: its output read back as UTF-8, also where the console's code page is another."""
+    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 
 def _verdict(value: Any) -> Dict[str, Any]:

@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from agent_system.paths import DATA_DIR_ENV, PROJECT_ROOT, data_path
 
 from . import store
-from .checks import run_check
+from .checks import product_of, run_check
 from .overlay import apply_overlay, layer_agents
 from .proc import run_bounded, tail
 from .suite import Suite, Task, load_suite
@@ -78,6 +78,7 @@ def run_suite(suite_path: str | Path, run_id: Optional[str] = None, arms: Option
         suite.arms = {name: arm for name, arm in suite.arms.items() if name in arms}
     check_arms(suite)
     expected = expected_models(suite)
+    check_judge(suite, expected)
     run_id = run_id or store.new_run_id()
     rdir = store.run_dir(run_id)
     rdir.mkdir(parents=True, exist_ok=False)
@@ -96,10 +97,9 @@ def run_suite(suite_path: str | Path, run_id: Optional[str] = None, arms: Option
         with ThreadPoolExecutor(max_workers=suite.parallel) as pool:
             for wave in waves:
                 list(pool.map(lambda job: _job_or_error(suite, run_id, job, frozen, budget, progress), wave))
-        # Done only when every agent run counted: a baseline with tasks missing would make every later
-        # comparison quietly run on the rest.
-        missed = {r.get("status") for r in store.read_records(run_id)} & set(store.NOT_COUNTED)
-        meta["status"] = "stopped" if "stopped" in missed else "incomplete" if missed else "done"
+        if suite.judge is not None:
+            _judge(suite, run_id, progress, meta)
+        meta["status"] = _status(run_id, meta)
     except BaseException as e:
         meta["status"] = "failed"
         meta["error"] = f"{type(e).__name__}: {e}"
@@ -177,13 +177,8 @@ def expected_models(suite: Suite) -> Dict[str, Dict[str, Any]]:
         config = load_settings()
     except Exception:  # noqa: BLE001 - no expectation is no reason to refuse a suite
         return {}
-    llm = config.llm_system
-    profiles, models = (llm.profiles or {}, llm.models or {}) if llm else ({}, {})
-
     def first(chain: Any) -> Optional[str]:
-        chain = chain if isinstance(chain, list) else [chain] if chain else []
-        profile = profiles.get(chain[0]) if chain else None
-        return getattr(models.get(profile.model_ref), "model", None) if profile is not None else None
+        return _first_model(config, chain)
 
     def runs_on(agent_config) -> Dict[str, Optional[str]]:
         return {"model": first(agent_config.llm_profile),
@@ -331,7 +326,9 @@ def _job(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optio
         shutil.copytree(exported, data, dirs_exist_ok=True, copy_function=shutil.copy)
     result = _agent_run(suite, run_id, job, task, jdir, workspace, data)
     record.update(result)
-    if result["status"] in ("done", "timeout", "crashed"):
+    if result["status"] == "done" and task.check.judge:
+        record.update(_product(suite, task, jdir, workspace, result))
+    elif result["status"] in ("done", "timeout", "crashed"):
         record["scored"] = True
         verdict = (run_check(task.check, suite, task, workspace, result) if result["status"] == "done"
                    else {"score": 0.0, "passed": False, "detail": result.get("detail") or result["status"]})
@@ -348,20 +345,28 @@ def _job(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optio
 def _agent_run(suite: Suite, run_id: str, job: Dict[str, Any], task: Task, jdir: Path, workspace: Path,
                data: Path) -> Dict[str, Any]:
     arm = suite.arms[job["arm"]]
-    request_id = f"ev-{run_id.replace('-', '')[-12:]}-{job['n']}-{task.id}"[:64]
-    result_path = jdir / f"result-{task.id}.json"
-    job_file = jdir / f"job-{task.id}.json"
-    job_file.write_text(json.dumps({
+    return _child(suite, {
         # In order: the task's material first, the arm's change over it.
         "agent": arm.agent or suite.agent, "overlays": [task.agent_config, arm.agent_config],
         "agents": arm.agents, "input": task.input if task.fork is None else f"fork at {task.fork.at}",
-        "fork": _fork_job(task), "request_id": request_id, "session_user": SESSION_USER,
-        "result_path": str(result_path),
-    }, ensure_ascii=False), encoding="utf-8")
-    log = jdir / f"child-{task.id}.log"
+        "fork": _fork_job(task), "request_id": f"ev-{run_id.replace('-', '')[-12:]}-{job['n']}-{task.id}"[:64],
+    }, jdir, task.id, workspace, data, suite.timeout_s)
+
+
+def _child(suite: Suite, job: Dict[str, Any], jdir: Path, name: str, workspace: Path, data: Path,
+           timeout: float) -> Dict[str, Any]:
+    """Run *job* (child.py's job file) in a child process: its result with its usage, and a ``status`` of done,
+    refused, crashed or timeout. *name* tells its files in *jdir* apart."""
+    request_id = job["request_id"]
+    result_path = jdir / f"result-{name}.json"
+    job_file = jdir / f"job-{name}.json"
+    job_file.write_text(json.dumps({**job, "session_user": SESSION_USER, "result_path": str(result_path)},
+                                   ensure_ascii=False), encoding="utf-8")
+    result_path.unlink(missing_ok=True)  # one of an earlier call (a judge's again) is not this one's answer
+    log = jdir / f"child-{name}.log"
     started = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     exit_code = run_bounded([sys.executable, "-m", "plugins.agent_eval.child", str(job_file)], cwd=workspace,
-                            log=log, timeout=suite.timeout_s, env=child_env(suite, data))
+                            log=log, timeout=timeout, env=child_env(suite, data))
     # From the usage store, not from the child: a run killed at its timeout wrote nothing, and is often the
     # costliest one. With it what a check reads the run's products from: the data directory (its stores) and the
     # machine runs it started -- those of a fresh one only: in the installation's, every run since would count.
@@ -371,7 +376,7 @@ def _agent_run(suite: Suite, run_id: str, job: Dict[str, Any], task: Task, jdir:
              "stategraph_runs": stategraph_runs(data, started) if fresh else None}
     if exit_code is None:
         return {"status": "timeout", "request_id": request_id, "exit": None, **usage,
-                "detail": f"timed out after {suite.timeout_s:.0f}s"}
+                "detail": f"timed out after {timeout:.0f}s"}
     if not result_path.exists():
         return {"status": "crashed", "request_id": request_id, "exit": exit_code, **usage,
                 "detail": f"exit {exit_code} without a result\n{tail(log)}"}
@@ -381,6 +386,198 @@ def _agent_run(suite: Suite, run_id: str, job: Dict[str, Any], task: Task, jdir:
         return {**result, **usage, "status": "crashed", "exit": exit_code, "detail": result["exception"]}
     # Refused before it ran (role gate, a session held elsewhere): the setup is wrong, the arm did nothing.
     return {**result, **usage, "status": "refused" if result.get("refused") else "done", "exit": exit_code}
+
+
+def _product(suite: Suite, task: Task, jdir: Path, workspace: Path, result: Dict[str, Any]) -> Dict[str, Any]:
+    """A finished run of a judged task: its product kept for the judge, the run unscored until judged. One that
+    cannot be read scores 0, as a check that fails to run does -- the run left nothing to judge."""
+    try:
+        text = product_of(suite, task, workspace, result)
+    except Exception as e:  # noqa: BLE001 - scored with its reason
+        return {"scored": True, "score": 0.0, "passed": False,
+                "detail": f"product failed: {type(e).__name__}: {e}"[-2000:]}
+    path = jdir / f"product-{task.id}.txt"
+    path.write_text(text, encoding="utf-8")
+    return {"judge": "pending", "product": str(path), "product_chars": len(text)}
+
+
+def check_judge(suite: Suite, expected: Dict[str, Dict[str, Any]]) -> None:
+    """Refuse a judge that cannot run, or one whose model is of a family an arm's agent runs on (*expected*,
+    expected_models): a model favours text of its own family, and would score that arm up."""
+    if suite.judge is None:
+        return
+    from agent_system.config.settings import get_tool_server_config, load_settings
+    from agent_system.servers.agent.entry import agent_entry_names
+
+    from .stats import families
+
+    config = load_settings()
+    if suite.judge.agent not in set(agent_entry_names(config)):
+        raise ValueError(f"judge: '{suite.judge.agent}' is not an agent of this configuration")
+    try:
+        merged = apply_overlay(get_tool_server_config(suite.judge.agent, config).agent_config,
+                               suite.judge.agent_config)
+    except Exception as e:  # noqa: BLE001 - reported as the judge's
+        raise ValueError(f"judge: the overlay does not validate: {e}") from e
+    model = _first_model(config, merged.llm_profile)
+    if model is None:
+        raise ValueError(f"judge: llm_profile {merged.llm_profile} names no model of this configuration")
+    candidates = [(f"arm {arm}, agent {agent}", m) for arm, wants in expected.items()
+                  for agent, runs in (wants.get("models") or {}).items()
+                  for m in (runs.get("model"), runs.get("advanced")) if m]
+    candidates += [(f"arm {arm}, task {task}", m) for arm, wants in expected.items()
+                   for task, m in (wants.get("tasks") or {}).items()]
+    shared = sorted(f"{who} ({m})" for who, m in candidates if families(m) & families(model))
+    if shared:
+        raise ValueError(f"judge: its model {model} is of a family {'; '.join(shared)} runs on -- a judge "
+                         "favours its own family's text; take one of another")
+
+
+def _first_model(config: Any, chain: Any) -> Optional[str]:
+    """The model the first profile of *chain* names, None when the configuration lacks it."""
+    llm = config.llm_system
+    profiles, models = (llm.profiles or {}, llm.models or {}) if llm else ({}, {})
+    chain = chain if isinstance(chain, list) else [chain] if chain else []
+    profile = profiles.get(chain[0]) if chain else None
+    return getattr(models.get(profile.model_ref), "model", None) if profile is not None else None
+
+
+def _judge(suite: Suite, run_id: str, progress: Callable[[str], None], meta: Dict[str, Any]) -> None:
+    """Judge every task's runs that wait for it or that it failed to judge, a call per task, each call written to
+    the meta's ``judge.calls`` as soon as it is made -- a runner that dies on the next keeps what it spent. Also
+    after a stop, and past the budget: those runs ran, unjudged they would count as never run. A call that
+    raises (a broken result, a product file gone) fails its task's runs with the reason, not the others'."""
+    calls = meta.setdefault("judge", {"agent": suite.judge.agent, "calls": []}).setdefault("calls", [])
+    records = store.read_records(run_id)
+    for task in suite.tasks:
+        pending = [r for r in records if r["task"] == task.id and r.get("judge") in ("pending", "failed")]
+        if not pending:
+            continue
+        try:
+            calls.append(_judge_task(suite, run_id, task, pending, progress))
+        except Exception as e:  # noqa: BLE001 - recorded on every run it left unjudged
+            why = f"the judge call failed: {type(e).__name__}: {e}"[-2000:]
+            for record in pending:
+                store.append_judgment(run_id, {"n": record["n"], "judge": "failed", "status": "judge_failed",
+                                               "detail": why})
+            calls.append({"task": task.id, "status": "error", "products": len(pending), "judged": 0, "cost": None,
+                          "problem": why[-500:]})
+            progress(f"judging {task.id} failed: {type(e).__name__}: {e}")
+        store.write_meta(run_id, meta)
+
+
+def rejudge(run_id: str, progress: Callable[[str], None] = print) -> None:
+    """Judge again what run *run_id* left unjudged -- its runner ended before the judge did, a judge call failed --
+    with the suite as it ran (refused when its file changed since); the run's status follows."""
+    meta = store.read_meta(run_id)
+    if store.live_status(meta) == "running":
+        raise ValueError(f"{run_id} is still running")
+    path = Path(meta["suite_path"])
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != meta.get("suite_sha"):
+        raise ValueError(f"{path} changed since {run_id} ran: its judge would ask something else")
+    suite = load_suite(path)
+    if suite.judge is None:
+        raise ValueError(f"suite {suite.name} has no judge")
+    expected = meta.get("expected_models") or expected_models(suite)  # a run from before it kept them
+    check_judge(suite, {arm: wants for arm, wants in expected.items() if arm in meta["arms"]})
+    # running while it judges: a second judge on the run is refused, the panel shows it at work
+    meta.update(status="running", pid=os.getpid())
+    store.write_meta(run_id, meta)
+    try:
+        _judge(suite, run_id, progress, meta)
+    finally:
+        meta["status"] = _status(run_id, meta)
+        store.write_meta(run_id, meta)
+
+
+def _status(run_id: str, meta: Dict[str, Any]) -> str:
+    """done when every agent run counted: a baseline with tasks missing would make every later comparison quietly
+    run on the rest. Every run the meta planned, too: one that ended before all had their record (a runner
+    stopped by hand) is incomplete, judged again or not."""
+    records = store.read_records(run_id)
+    missed = {r.get("status") for r in records} & set(store.NOT_COUNTED)
+    if "stopped" in missed:
+        return "stopped"
+    planned = len(meta["arms"]) * meta["tasks"] * meta["repeats"]
+    return "incomplete" if missed or len(records) < planned else "done"
+
+
+def _judge_task(suite: Suite, run_id: str, task: Task, pending: List[Dict[str, Any]],
+                progress: Callable[[str], None]) -> Dict[str, Any]:
+    """One judge call over a task's products, shuffled (by the run id: the same run asks the same) and labelled
+    P1..Pn; each run's judgment appended. A run whose product the answer leaves out is not counted."""
+    order = sorted(pending, key=lambda r: r["n"])
+    random.Random(f"{run_id}:{task.id}").shuffle(order)
+    labelled = {f"P{i}": r for i, r in enumerate(order, 1)}
+    criteria = suite.criteria(task)
+    products = {label: Path(r["product"]).read_text(encoding="utf-8") for label, r in labelled.items()}
+    jdir = store.run_dir(run_id, "judge", task.id)
+    workspace, data = _dirs(suite, run_id, "judge", task.id)
+    workspace.mkdir(parents=True, exist_ok=True)
+    # the task's how-manyth call, by the calls on disk: each its own request id -- the usage store would count an
+    # earlier one's cost again under the same --, also after a runner that died before its meta knew of them
+    attempt = 1 + len(list(jdir.glob("job-judge*.json")))
+    request_id = f"ev-{run_id.replace('-', '')[-12:]}-judge{attempt}-{task.id}"[:64]
+    result = _child(suite, {"agent": suite.judge.agent, "overlays": [suite.judge.agent_config], "agents": {},
+                            "input": judge_prompt(suite, task, criteria, products), "fork": None,
+                            "request_id": request_id}, jdir, f"judge{attempt}", workspace, data,
+                    suite.judge.timeout_s)
+    verdicts, problem = ({}, result.get("detail") or result["status"]) if result["status"] != "done" \
+        else parse_verdicts(result.get("answer") or "", list(labelled), list(criteria))
+    for label, record in labelled.items():
+        said = verdicts.get(label)
+        if said is None:
+            store.append_judgment(run_id, {"n": record["n"], "judge": "failed", "status": "judge_failed",
+                                           "detail": f"the judge did not judge it: {problem}"[-2000:]})
+            continue
+        yes = sum(said.values())
+        store.append_judgment(run_id, {
+            "n": record["n"], "judge": "done", "scored": True, "score": yes / len(said), "of": len(said),
+            "passed": yes == len(said), "verdicts": said,
+            "detail": ", ".join(f"{c}: {'yes' if v else 'no'}" for c, v in said.items())})
+    progress(f"judged {task.id}: {len(verdicts)} of {len(labelled)} product(s)"
+             + (f" ${result['cost']:.4f}" if result.get("cost") else ""))
+    return {"task": task.id, "request_id": request_id, "status": result["status"], "products": len(labelled),
+            "judged": len(verdicts), "cost": result.get("cost"), "models": result.get("models"),
+            **({"problem": str(problem)[-500:]} if problem else {})}
+
+
+def judge_prompt(suite: Suite, task: Task, criteria: Dict[str, str], products: Dict[str, str]) -> str:
+    """What the judge is asked: the products under labels that say nothing of where they come from."""
+    parts = [suite.judge.instructions.strip(),
+             f"The task the products were made for:\n{task.input.strip()}" if task.input else "",
+             "Judge every product below on its own against every criterion: answer true (it has it) or false. The "
+             "labels and the order say nothing about where a product comes from, and a longer product is no better "
+             "for its length.",
+             "Criteria:\n" + "\n".join(f"- {cid}: {question}" for cid, question in criteria.items()),
+             *(f"=== {label} ===\n{text.strip()}\n=== end of {label} ===" for label, text in products.items()),
+             "Answer with one JSON object and nothing after it: a key per product, in it a key per criterion with "
+             'true or false -- {"P1": {"<criterion>": true, "<another>": false, ...}, "P2": {...}, ...}']
+    return "\n\n".join(p for p in parts if p)
+
+
+def parse_verdicts(answer: str, labels: List[str], criteria: List[str]) -> tuple:
+    """({label: {criterion: bool}}, problem): the last JSON object of the judge's answer; a product counts only
+    with a true or false for every criterion. The problem says what was missing, None when nothing was."""
+    found = None
+    decoder = json.JSONDecoder()
+    for start in (i for i, ch in enumerate(answer) if ch == "{"):
+        try:
+            value, _ = decoder.raw_decode(answer, start)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and any(label in value for label in labels):
+            found = value  # the last one that is an answer: a model may think aloud in JSON before it
+    if found is None:
+        return {}, f"no JSON object with the products in the answer: {answer[-300:]!r}"
+    out, missing = {}, []
+    for label in labels:
+        said = found.get(label)
+        if isinstance(said, dict) and all(isinstance(said.get(c), bool) for c in criteria):
+            out[label] = {c: said[c] for c in criteria}
+        else:
+            missing.append(label)
+    return out, (f"no true/false for every criterion of {missing}" if missing else None)
 
 
 def _fork_job(task: Task) -> Optional[Dict[str, Any]]:

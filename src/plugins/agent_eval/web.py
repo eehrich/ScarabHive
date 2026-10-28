@@ -23,6 +23,7 @@ from agent_system.ui.resources import ui_templates
 from . import store
 from .__main__ import build_report
 from .proc import GROUP, tail
+from .store import alive as _alive, live_status as _status
 from .suite import discover_suites, load_suite
 
 
@@ -30,20 +31,6 @@ class StartRun(BaseModel):
     suite: str
     arms: Optional[List[str]] = None
 
-
-def _alive(pid: Any) -> bool:
-    try:
-        import psutil
-        return bool(pid) and psutil.pid_exists(int(pid))
-    except (ValueError, TypeError):
-        return False
-
-
-def _status(meta: Dict[str, Any]) -> str:
-    """'running' only while its process lives: a runner that died leaves its meta saying so forever."""
-    if meta.get("status") == "running" and not _alive(meta.get("pid")):
-        return "died"
-    return meta.get("status", "?")
 
 
 class AgentEvalEndpoints:

@@ -6,6 +6,7 @@
     agent-eval baseline <run_id>
     agent-eval stop <run_id>
     agent-eval export-run <stategraph run_id> <out dir> [--data <dir>] [--include <data path> ...]
+    agent-eval judge <run_id>
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import sys
 from typing import Any, Dict, Optional
 
 from . import store
-from .stats import report
+from .stats import ALPHA, judge_shares, report
 
 
 def build_report(run_id: str, against: Optional[str] = None) -> Dict[str, Any]:
@@ -44,9 +45,25 @@ def build_report(run_id: str, against: Optional[str] = None) -> Dict[str, Any]:
             warnings.append(f"In the baseline {against}, {agent} fell back to {', '.join(models)}.")
     else:
         out = report(records, meta["reference_arm"], meta["arms"], expected=meta.get("expected_models"))
+    calls = (meta.get("judge") or {}).get("calls") or []
+    warnings += judge_shares(calls, records)
+    for name, arm in out["arms"].items():
+        length = arm.get("length")
+        if length and length["p"] < ALPHA and length["longer_higher"] > length["longer_lower"]:
+            warnings.append(f"In arm {name} the judge scored the longer of two products higher "
+                            f"{length['longer_higher']} times, lower {length['longer_lower']} (p={length['p']}): "
+                            "it may be judging length.")
+    if calls:
+        costs = [c["cost"] for c in calls if c.get("cost") is not None]
+        out["judge"] = {"calls": len(calls), "products": sum(c["products"] for c in calls),
+                        "judged": sum(c["judged"] for c in calls), "cost": round(sum(costs), 4) if costs else None,
+                        "problems": [f"{c['task']}: {c['problem']}" for c in calls if c.get("problem")]}
     out["meta"] = meta
     out["warnings"] = warnings
     out["skipped"] = {s: sum(1 for r in records if r.get("status") == s) for s in store.NOT_COUNTED}
+    # judging that never ended, its runner did: agent-eval judge does it (while it runs, the judge is still to come)
+    if store.live_status(meta) != "running":
+        out["skipped"]["judge_pending"] = sum(1 for r in records if r.get("judge") == "pending")
     return out
 
 
@@ -61,7 +78,8 @@ def _print_report(rep: Dict[str, Any]) -> None:
         unknown = f" + {arm['cost_unknown_runs']} run(s) unknown" if arm.get("cost_unknown_runs") else ""
         p90 = f"${arm['cost_p90']:.4f}" if arm.get("cost_p90") is not None else "n/a"
         rate = f"{arm['pass_rate']:.0%}" if arm.get("pass_rate") is not None else "n/a"
-        print(f"\n[{name}] runs {arm['runs']}  pass {rate}  mean score {arm['mean_score']}"
+        pooled = f" (pooled {arm['pooled_score']})" if arm.get("pooled_score") is not None else ""
+        print(f"\n[{name}] runs {arm['runs']}  pass {rate}  mean score {arm['mean_score']}{pooled}"
               f"  cost ${arm['cost']:.4f}{unknown} (p90/run {p90})")
         for agent, models in (arm.get("fallbacks") or {}).items():
             print(f"  WARNING: {agent} fell back to {', '.join(models)} -- those runs did not measure this arm's model")
@@ -70,6 +88,10 @@ def _print_report(rep: Dict[str, Any]) -> None:
                   "or a fallback past its chain")
         for task, t in arm["tasks"].items():
             print(f"  {task:<30} {t['kind']:<10} {t['passes']}/{t['runs']}  score {t['mean']:.2f}")
+        length = arm.get("length")
+        if length:
+            print(f"  length: products {length['mean_chars']} chars on average; of two, the longer scored higher "
+                  f"{length['longer_higher']}x, lower {length['longer_lower']}x (p={length['p']})")
         for kind in ("learn", "holdout"):
             c = arm.get(kind)
             if not c or not c["reference_tasks"]:
@@ -85,6 +107,12 @@ def _print_report(rep: Dict[str, Any]) -> None:
                   f"{needs}")
         if arm.get("regressions"):
             print(f"  REGRESSIONS: {', '.join(arm['regressions'])}")
+    judge = rep.get("judge")
+    if judge:
+        cost = f"${judge['cost']:.4f}" if judge.get("cost") is not None else "cost unknown"
+        print(f"\njudge: {judge['judged']} of {judge['products']} product(s) judged in {judge['calls']} call(s), {cost}")
+        for problem in judge["problems"]:
+            print(f"  {problem}")
     skipped = {k: v for k, v in rep["skipped"].items() if v}
     if skipped:
         print(f"\nnot counted: {skipped}")
@@ -109,6 +137,8 @@ def main(argv: Optional[list] = None) -> int:
     p_base.add_argument("run_id")
     p_stop = sub.add_parser("stop", help="start no further runs of a running suite")
     p_stop.add_argument("run_id")
+    p_judge = sub.add_parser("judge", help="judge again what a run left unjudged")
+    p_judge.add_argument("run_id")
     p_export = sub.add_parser("export-run", help="freeze a stategraph run for fork tasks")
     p_export.add_argument("run_id")
     p_export.add_argument("out", help="the export directory (empty or new), usually next to the suite")
@@ -162,6 +192,10 @@ def main(argv: Optional[list] = None) -> int:
         elif args.command == "stop":
             store.request_stop(args.run_id)
             print(f"{args.run_id}: no further runs start; running ones finish")
+        elif args.command == "judge":
+            from .runner import rejudge
+            rejudge(args.run_id)
+            _print_report(build_report(args.run_id))
         elif args.command == "export-run":
             from agent_system.paths import user_path
             from .runner import export_run

@@ -35,11 +35,14 @@ def kill_tree(proc: subprocess.Popen) -> None:
 
 
 def run_bounded(args: Union[str, List[str]], *, cwd: Path, log: Path, timeout: float,
-                env: Optional[Dict[str, str]] = None, shell: bool = False) -> Optional[int]:
-    """Run *args* with its output in *log*; its exit code, or None when it was killed at *timeout*."""
-    with open(log, "w", encoding="utf-8", errors="replace") as out:
-        proc = subprocess.Popen(args, cwd=cwd, env=env, shell=shell, stdout=out, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, **GROUP)
+                env: Optional[Dict[str, str]] = None, shell: bool = False,
+                errors: Optional[Path] = None) -> Optional[int]:
+    """Run *args* with its output in *log* (its error output too, unless *errors* names a file of its own); its
+    exit code, or None when it was killed at *timeout*."""
+    with (open(log, "w", encoding="utf-8", errors="replace") as out,
+          open(errors or os.devnull, "w", encoding="utf-8", errors="replace") as err):
+        proc = subprocess.Popen(args, cwd=cwd, env=env, shell=shell, stdout=out,
+                                stderr=err if errors else subprocess.STDOUT, stdin=subprocess.DEVNULL, **GROUP)
         try:
             return proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:

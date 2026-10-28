@@ -29,6 +29,18 @@ class TestSuite:
         found = discover_suites([str(PLUGIN.parent)], PLUGIN.parents[2])
         assert PLUGIN / "evals" / "hello" / "suite.yaml" in found
 
+    def test_several_suites_in_one_directory_are_discovered_material_is_not(self, tmp_path):
+        evals = tmp_path / "plug" / "p" / "evals" / "pair"
+        (evals / "ws").mkdir(parents=True)
+        for name in ("speed.yaml", "style.yaml"):
+            (evals / name).write_text("name: s\nagent: a\ntasks: []\n", encoding="utf-8")
+        (evals / "suite.yaml").write_text("{ broken", encoding="utf-8")  # still offered: the panel shows why
+        (evals / "ws" / "config.yaml").write_text("agent: a\n", encoding="utf-8")  # no tasks: workspace material
+        (evals / "ws" / "list.yaml").write_text("- agent\n- tasks\n", encoding="utf-8")
+        (evals / "ws" / "bad.yaml").write_text("{ :", encoding="utf-8")
+        found = discover_suites([str(tmp_path / "plug")], tmp_path)
+        assert [p.name for p in found] == ["speed.yaml", "style.yaml", "suite.yaml"], found
+
     @pytest.mark.parametrize("tasks, error", [
         ("- {id: a, input: x, check: {command: 'true'}}\n- {id: a, input: y, check: {command: 'true'}}",
          "duplicate task ids"),
@@ -176,6 +188,24 @@ class TestStats:
         assert regressions(ref, broken) == ["keep"]
         assert regressions(ref, ref) == []
 
+    def test_the_pooled_score_weighs_every_counted_thing_the_mean_every_task(self):
+        records = [{"arm": "a", "task": "big", "kind": "learn", "scored": True, "score": 0.9, "of": 10},
+                   {"arm": "a", "task": "small", "kind": "learn", "scored": True, "score": 0.0, "of": 2},
+                   # timed out: counted nothing itself, weighs what its task's other run counted
+                   {"arm": "a", "task": "small", "kind": "learn", "scored": True, "score": 0.0, "status": "timeout"},
+                   {"arm": "a", "task": "small", "kind": "learn", "scored": False, "status": "budget"}]
+        arm = report(records, "a", ["a"])["arms"]["a"]
+        assert arm["mean_score"] == 0.45 and arm["pooled_score"] == 0.6429, arm  # 9 of 14
+        uncounted = records + [{"arm": "a", "task": "judged", "kind": "learn", "scored": True, "score": 1.0}]
+        assert report(uncounted, "a", ["a"])["arms"]["a"]["pooled_score"] is None
+        # an import that broke counts one error, not the task's tests; a task another arm alone counted weighs it too
+        broken = [{"arm": "a", "task": "big", "kind": "learn", "scored": True, "score": 0.0, "of": 1},
+                  {"arm": "b", "task": "big", "kind": "learn", "scored": True, "score": 1.0, "of": 10},
+                  {"arm": "a", "task": "small", "kind": "learn", "scored": True, "score": 0.0, "status": "timeout"},
+                  {"arm": "b", "task": "small", "kind": "learn", "scored": True, "score": 1.0, "of": 2},
+                  {"arm": "a", "task": "mid", "kind": "learn", "scored": True, "score": 1.0, "of": 3}]
+        assert report(broken, "a", ["a", "b"])["arms"]["a"]["pooled_score"] == 0.2  # 3 of 10 + 2 + 3
+
     def test_holdout_is_judged_apart_from_learn(self):
         records = (_records("a", {"l1": 0.0, "l2": 0.0}) + _records("a", {"h1": 0.0, "h2": 0.0}, kind="holdout")
                    + _records("b", {"l1": 1.0, "l2": 1.0}) + _records("b", {"h1": 0.0, "h2": 0.0}, kind="holdout"))
@@ -208,7 +238,7 @@ class TestChecks:
         suite, task, ws = self._task_suite(tmp_path, "{pytest: tests}")
         (ws / "m.py").write_text("def f():\n    return 1\n", encoding="utf-8")
         verdict = run_check(task.check, suite, task, ws, {})
-        assert verdict["score"] == 0.5 and not verdict["passed"], verdict
+        assert verdict["score"] == 0.5 and not verdict["passed"] and verdict["of"] == 2, verdict
 
     def test_pytest_ignores_a_conftest_above_the_workspace(self, tmp_path):
         """Runs live under the data directory, i.e. below the repository: its conftest must not take part."""
@@ -237,6 +267,7 @@ class TestChecks:
         suite, task, ws = self._task_suite(tmp_path, "{expect: {contains: [Paris], regex: ['^\\\\d+$']}}")
         assert run_check(task.check, suite, task, ws, {"answer": "Paris"})["score"] == 0.5
         assert run_check(task.check, suite, task, ws, {"answer": "Lyon"})["detail"].startswith("0/2")
+        assert run_check(task.check, suite, task, ws, {"answer": "Lyon"})["of"] == 2
 
     def test_python_check_and_a_broken_one(self, tmp_path, monkeypatch):
         (tmp_path / "evalcheck_mod.py").write_text(
@@ -249,6 +280,15 @@ class TestChecks:
         suite, task, ws = self._task_suite(tmp_path / "broken", "{python: 'builtins:print'}")
         verdict = run_check(task.check, suite, task, ws, {})
         assert verdict["score"] == 0.0 and "must return a dict" in verdict["detail"], verdict
+
+    @pytest.mark.parametrize("n, of, kept", [(1, 3, 3), (2, 0, None), (3, True, None), (4, "3", None)])
+    def test_a_check_says_how_many_things_it_counted(self, tmp_path, monkeypatch, n, of, kept):
+        module = f"evalcheck_of{n}"  # one per case: a module once imported stays imported
+        (tmp_path / f"{module}.py").write_text(
+            f"def f(workspace, run, task):\n    return {{'score': 1.0, 'of': {of!r}}}\n", encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        suite, task, ws = self._task_suite(tmp_path, f"{{python: '{module}:f'}}")
+        assert run_check(task.check, suite, task, ws, {}).get("of") == kept
 
     def test_a_score_that_is_no_number_fails_the_check(self, tmp_path, monkeypatch):
         (tmp_path / "evalcheck_none.py").write_text("def f(workspace, run, task):\n    return {'score': None}\n",

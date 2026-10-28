@@ -48,7 +48,13 @@ def _seed() -> None:
                                   "pid": pid or os.getpid(),
                                   "expected_models": {arm: {"agent": "coder", "models": {
                                       "coder": {"model": "~vendor/model-a", "advanced": "~vendor/model-c"}}}
-                                      for arm in arms}})
+                                      for arm in arms},
+                                  # the two-arm run was judged: one call, one product the judge left out
+                                  **({"judge": {"agent": "judge", "calls": [
+                                      {"task": "fix-pager", "products": 4, "judged": 3, "cost": 0.25,
+                                       "models": {"judge": {"~other/judge-x": 1}},
+                                       "problem": "no true/false for every criterion of ['P2']"}]}}
+                                     if len(arms) == 2 else {})})
         n = 0
         for rep in (1, 2):
             for task in TASKS:
@@ -58,7 +64,10 @@ def _seed() -> None:
                     store.append_record(run_id, {
                         "run_id": run_id, "n": n, "arm": arm, "task": task, "kind": "learn", "rep": rep,
                         "dir": f"runs/{n:04d}-{arm}-r{rep}", "scored": True, "status": "done",
-                        "score": 1.0 if passed else 0.4, "passed": passed,
+                        # cache-lookup counts five times the tests of the others, and base fails it worst:
+                        # pooled 0.60 below a mean of 0.67
+                        "score": 1.0 if passed else 0.0 if task == "cache-lookup" else 0.4, "passed": passed,
+                        "of": 10 if task == "cache-lookup" else 2,
                         "detail": f"{5 if passed else 2}/5 passed", "answer": f"Changed {task}: all tests green.",
                         "cost": 0.012 if arm == "base" else 0.009, "duration_s": 41.5, "model": "~vendor/model-a",
                         # one terse run fell back: its agent's first model failed, the next profile answered
@@ -66,7 +75,8 @@ def _seed() -> None:
                         "models": {"coder": {"~vendor/model-a": 1, "~vendor/model-c": 1} if arm == "base" and n == 1
                                    else {"~vendor/model-a": 2} if arm == "base" or n != 2
                                    else {"~vendor/model-a": 1, "~vendor/model-b": 1}},
-                        "request_id": f"ev-{run_id[-4:]}-{n}-{task}", "errors": []})
+                        "request_id": f"ev-{run_id[-4:]}-{n}-{task}", "errors": [],
+                        **({"judge": "done", "product_chars": 100 * rep} if len(arms) == 2 else {})})
 
     run("20261020-100000-aaaa", ["base"])
     store.set_baseline("coder-basics", "20261020-100000-aaaa")
@@ -146,6 +156,8 @@ EXPECTED = [
     'the runs are listed with status, baseline and pass counts',
     'a runner that died is shown as died, not running',
     'a run shows its arms, the verdict and the task matrix',
+    'the arms show the pooled score below the mean',
+    'a judged run says what the judge did and how length went',
     'comparing against the baseline names it as the reference',
     'a record opens with its check output and answer',
     'the chosen tab stays chosen when new runs come in',

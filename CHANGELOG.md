@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run (its row and journal, and the data paths its fork hooks read), and `fork: {source, at, until}` forks it in
   every run's own data directory where it entered `at`, lets the machine run on and stops it when it enters
   `until` -- an arm changes the stage's agents, the stages before cost nothing.
+- Evals: a judge scores what no script can: `judge: {agent, criteria}` in the suite and `check: {judge: true}` on a
+  task. After all runs one call per task gets every arm's products shuffled and unnamed and answers yes or no per
+  criterion; the score is the share of yes. A judge of a model family an arm's agent runs on is refused, and the
+  report warns when one ran on it after a fallback, or when within an arm the longer product keeps scoring higher.
+  `product: {script}` judges what a run left in its stores instead of its answer; `agent-eval judge <run_id>`
+  judges again what a judge call left unjudged.
+- Evals: `plugins.agent_eval.evidence` reads a run's products for a check -- a JSON store document, the states a
+  machine run entered, what it spent per state. A check may say how many things its score is a share of (`of`);
+  the report adds the pooled score beside the mean over tasks. Several suites may share one directory.
 - stategraph: a fork takes `breakpoints` and `watchpoints` in place of its source's; `RunStore.export_run` and
   `import_run` carry a run from one runs.db to another; `fork_run` forks from code under a given run id.
   `run.entered` names the step each state was last entered at (it only grows, unlike `run.visits`, which starts

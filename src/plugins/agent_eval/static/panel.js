@@ -129,11 +129,14 @@ function detail(rep) {
   const records = rep.records;
   const scored = records.filter((r) => r.scored);
   const passed = scored.filter((r) => r.passed).length;
-  // the runs that counted, as the Arms table costs them: a refused one carries a cost of 0 and ran nothing
-  const priced = scored.filter((r) => r.cost != null);
+  // the runs that spent, as the Arms table costs them: a refused one carries a cost of 0 and ran nothing; one
+  // the judge left unjudged ran
+  const spent = records.filter((r) => r.scored || r.status === 'judge_failed');
+  const priced = spent.filter((r) => r.cost != null);
   const cost = priced.reduce((sum, r) => sum + Number(r.cost), 0);
-  const unpriced = scored.length - priced.length;
+  const unpriced = spent.length - priced.length;
   const notCounted = records.length - scored.length;
+  const waiting = records.filter((r) => r.judge === 'pending').length;
   const total = planned(m);
   const comparable = rep.baseline && rep.baseline !== m.run_id;
   const tabButton = (name, label, count) => html`<button class="pk-tab" role="tab" data-tab="${name}" data-key="tab:${name}"
@@ -153,7 +156,7 @@ function detail(rep) {
     <div class="pk-stats">
       <div class="pk-stat"><div class="pk-stat-label">Runs</div><div class="pk-stat-value">${scored.length} / ${total}</div>
         ${progress(scored.length, total, m.status)}
-        ${notCounted ? html`<div class="pk-muted">${notCounted} not counted</div>` : ''}</div>
+        ${notCounted ? html`<div class="pk-muted">${notCounted} not counted${waiting ? `, ${waiting} waiting for the judge` : ''}</div>` : ''}</div>
       <div class="pk-stat"><div class="pk-stat-label">Passed</div>
         <div class="pk-stat-value ${tone(passed, scored.length)}">${passed} / ${scored.length}</div>
         <div class="pk-muted">${scored.length ? pct(passed / scored.length) : 'none scored yet'}</div></div>
@@ -171,6 +174,9 @@ function detail(rep) {
     </div>
     ${skipped ? html`<div class="pk-callout pk-callout--warn">Not counted: ${skipped}</div>` : ''}
     ${(rep.warnings || []).map((w) => html`<div class="pk-callout pk-callout--warn">${w}</div>`)}
+    ${rep.judge ? html`<div class="pk-callout pk-callout--info">Judge: ${rep.judge.judged} of ${rep.judge.products}
+      product(s) judged in ${rep.judge.calls} call(s), ${rep.judge.cost != null ? usd(rep.judge.cost) : 'cost unknown'}
+      (not in the arms' cost).${rep.judge.problems.map((p) => html`<div class="pk-muted">${p}</div>`)}</div>` : ''}
     <div class="pk-tabs" role="tablist" data-pk-tabs>
       ${tabButton('summary', 'Arms')}${tabButton('tasks', 'Tasks')}${tabButton('records', 'Runs', records.length)}
     </div>
@@ -202,7 +208,8 @@ function arms(rep) {
       <th class="pk-num">Cost</th><th class="pk-num">p90 / run</th></tr></thead>
     <tbody>${entries.map(([name, a]) => html`<tr><td>${name}${name === rep.reference_arm && !rep.against
       ? html` <span class="pk-muted">(reference)</span>` : ''}</td><td class="pk-num">${a.runs}</td>
-      <td class="pk-num">${pct(a.pass_rate)}</td><td class="pk-num">${num(a.mean_score)}</td>
+      <td class="pk-num">${pct(a.pass_rate)}</td><td class="pk-num">${num(a.mean_score)}${a.pooled_score != null
+        ? html`<div class="pk-muted" title="every test or expectation counted alike">pooled ${num(a.pooled_score)}</div>` : ''}</td>
       <td class="pk-num">${usd(a.cost)}${a.cost_unknown_runs ? html`<div class="pk-muted">+ ${a.cost_unknown_runs} run(s) unknown</div>` : ''}</td>
       <td class="pk-num">${usd(a.cost_p90)}</td></tr>`)}</tbody>
   </table></div>
@@ -211,6 +218,9 @@ function arms(rep) {
     ${verdict(a.learn, 'learn tasks')}${verdict(a.holdout, 'holdout tasks')}
     ${a.regressions?.length ? html`<div class="pk-callout pk-callout--danger">Regressions: ${a.regressions.join(', ')}</div>` : ''}
   </div>`)}
+  ${entries.filter(([, a]) => a.length).map(([name, a]) => html`<div class="pk-muted">${name}: products of
+    ${a.length.mean_chars} characters on average; of two of a task, the longer scored higher ${a.length.longer_higher}×,
+    lower ${a.length.longer_lower}× (p = ${num(a.length.p, 3)}).</div>`)}
   ${entries.filter(([, a]) => Object.keys(a.fallbacks || {}).length).map(([name, a]) => html`<div class="pk-callout pk-callout--warn">
     ${name}: ${Object.entries(a.fallbacks).map(([agent, models]) => `${agent} fell back to ${models.join(', ')}`).join('; ')}
     -- those runs did not measure this arm's model alone.</div>`)}

@@ -26,6 +26,7 @@ For users
 For suite authors
   @{"  Writing a suite  " link suite}
   @{"  Checks  " link checks}
+  @{"  Judging by a model  " link judge}
   @{"  Arms and overlays  " link arms}
 
 For developers and administrators
@@ -84,7 +85,13 @@ Three tabs below, the chosen one kept as the run reloads and from run to
 run:
 
 @{bullet}@{b}Arms@{ub}: runs, share passed, mean score, cost, and the cost of
-a run at the 90th percentile; then the verdict for each arm against the
+a run at the 90th percentile. The mean score is the mean over tasks, each
+task weighing the same, as in the verdict; below it, where the checks count
+what they score (tests, expectations; a script or python check returns
+@{i}of@{ui}), the pooled score: every test or expectation weighing the same
+-- each run weighs the most any run of its task counted, so one whose
+import broke (one error instead of the task's tests) or that timed out
+met none of them; then the verdict for each arm against the
 reference -- see @{" Reading a report " link report}.
 @{bullet}@{b}Tasks@{ub}: a table task by task, passed of runs and the mean
 score per arm.
@@ -200,8 +207,10 @@ for an A/B, and the baseline for "is it still as good as last week".
 A suite is a file @{tt}suite.yaml@{utt} in a directory below
 @{tt}evals/@{utt}: the project's @{tt}evals/<name>/suite.yaml@{utt}, or a
 plugin's @{tt}<plugin>/evals/<name>/suite.yaml@{utt} -- a plugin brings its
-suites the way it brings its agents. Every relative path in it means the
-suite's own directory.
+suites the way it brings its agents. Several suites may share a directory:
+any other YAML file there that names an @{tt}agent@{utt} and
+@{tt}tasks@{utt} is one too. Every relative path in it means the suite's own
+directory.
 
 @{code}
 name: coder-basics              # letters, digits, '-'
@@ -359,6 +368,7 @@ pytest: "tests" | runs pytest on the given paths in the workspace; the score is 
 expect: {contains: [...], regex: [...]} | the agent's final answer: the share of strings found and patterns matched
 script: "check.py" | runs the script (next to the suite) as @{tt}script <workspace> <run.json>@{utt}; its last line of output is @{tt}{"score": ..., "passed": ..., "detail": "..."}@{utt}
 python: "module:function" | calls @{tt}function(workspace, run, task)@{utt} in the runner; returns the same dict -- the way a plugin brings checks of its own
+judge: true, or judge: [ids] | the suite's judge, after all runs: yes or no on each of its criteria (or the ones named), the score the share of yes -- see @{" Judging by a model " link judge}
 @{body}
 
 Every check takes @{tt}timeout_s@{utt} (600 by default); past it the
@@ -395,6 +405,25 @@ from); their journal is
 (otherwise @{tt}null@{utt}): in the installation's every run since would
 count.
 
+@{h2}Reading the products
+
+@{tt}plugins.agent_eval.evidence@{utt} reads them for a check, read-only;
+each function takes the run (the parsed @{tt}run.json@{utt}):
+
+@{table}
+Function | Gives
+store_doc(run, doc, namespace=None, server="json_store") | the value of a JSON store document as the run left it on disk, None when there is none; without a namespace any, refused when several have it
+entered(run, run_id=None) | the states the machine run entered, in order (a composite, then the state inside it), each with @{tt}state@{utt}, its journal @{tt}key@{utt} and @{tt}ts@{utt} (UTC) -- how long a stage took is the gap
+spend(run, run_id=None) | what the machine run spent, the runs it called included: @{tt}cost@{utt}, @{tt}tokens@{utt} and, once more than one state spent, @{tt}by_state@{utt} (the cost per state path, a state above its children)
+machine_run(run) | the run the two above read by default: a fork task's fork, else the one machine run the agent started (refused when it started several: pass @{tt}run_id@{utt})
+@{body}
+
+A @{tt}script@{utt} or @{tt}python@{utt} check whose score is a share of
+countable things -- found facts, met criteria -- returns @{tt}of@{utt}
+with it, how many: the report pools by it (see
+@{" The Evals panel " link panel}). pytest and expect checks do so by
+themselves.
+
 @{h2}pytest and an agent that edits its tests
 
 An agent that rewrites the failing test passes it. So, before pytest runs:
@@ -419,6 +448,84 @@ you do not (a variant a model wrote), score the result in a process the
 agent's code never runs in -- a @{tt}script@{utt} or @{tt}python@{utt} check
 that reads files instead of importing them. The checks also run with the
 runner's rights and environment, not in the agent's sandbox.
+@endnode
+
+@node judge "Judging by a model"
+@{h1}Judging by a model
+
+Some products have no check a script could run: a chapter, a synopsis, a
+review. A task with @{tt}check: {judge: true}@{utt} is scored by a model
+instead, the suite's @{b}judge@{ub}:
+
+@{code}
+judge:
+  agent: plain_judge            # an agent without tools; its llm_profile is the judge's model
+  agent_config: {llm_profile: [or-gemini-pro]}   # over it, as an arm's
+  instructions: "The products are the first scene of a children's book."
+  criteria:                     # ask so that yes is good
+    concrete: "Does the scene show what happens through actions, not summaries?"
+    voice: "Can a child of six follow every sentence?"
+  product: {script: product.py} # what is judged; without it, the final answer
+  timeout_s: 900
+tasks:
+  - id: scene-1
+    input: "..."
+    check: {judge: true}          # or [concrete]: only those
+@{body}
+
+@{h2}How it judges
+
+Once every run has ended, the judge gets one call per task: the products of
+every arm and every repeat of it, shuffled, labelled P1, P2, ... -- no arm
+name, no order it could read --, with the task's input, the instructions
+and the criteria. It answers true or false per product and criterion. A
+run's score is the share of true, its @{tt}of@{utt} the number of criteria
+(the pooled score counts each criterion alike); it passes with every one.
+The verdicts are in the run's @{tt}verdicts@{utt}, its detail says them.
+
+Why not a grade from 1 to 10: a grade measures how much text there is more
+than what is in it. A yes or no on one feature is harder to inflate.
+
+A product the answer leaves out, or one without a true or false for every
+criterion, is not counted (@{tt}judge_failed@{utt}), and neither are the
+runs of a judge call that failed; the run is then incomplete, as with a
+stop, and @{tt}agent-eval judge <run_id>@{utt} judges them again. Their
+cost still counts: they ran. A product that cannot be read scores 0, as a
+check that fails does. A criterion may not be named like a label
+(@{tt}P2@{utt}).
+
+@{h2}The product
+
+Without @{tt}product@{utt} the judge reads the agent's final answer. With
+@{tt}script@{utt} the script is called as
+@{tt}script <workspace> <run.json>@{utt} right after the run -- in a chain
+before the next task changes the workspace -- and what it prints is the
+product (its error output is not); with @{tt}python: "module:function"@{utt}
+the function gets @{tt}(workspace, run, task)@{utt} and returns it. Either
+reads what the run made with @{" the reading helpers " link checks}, a
+store document, say.
+
+@{h2}Its own family and length
+
+A model favours text of its own family. The judge's model must therefore be
+of a family none of the arms' agents runs on, nor escalates to: a run does
+not start otherwise. The family is told by the model's name -- its vendor prefix and
+its first word, so @{tt}~anthropic/claude-sonnet-latest@{utt} and
+@{tt}claude-opus-5-5@{utt} share one; two names of one vendor without a
+prefix (@{tt}gpt-6@{utt}, @{tt}o3@{utt}) are not told apart. After the
+runs, the report checks again what really ran: an agent that fell back
+onto the judge's family, or a judge that fell back onto an arm's, is a
+warning.
+
+Length is checked within each arm: of every two products of a task, how
+often the longer one scored higher and how often lower. When the longer
+wins significantly more often, the report warns that the judge may be
+judging length. With @{tt}repeats: 1@{utt} there are no two, and nothing to
+check.
+
+The judge's calls cost, but not the arms: the report shows them apart.
+They run after a stop and past @{tt}budget_usd@{utt} too -- the runs they
+judge ran, and unjudged they would count as never run.
 @endnode
 
 @node arms "Arms and overlays"
@@ -506,6 +613,7 @@ agent-eval show <run_id> [--against <run_id> | --against-baseline] [--json]
 agent-eval baseline <run_id>
 agent-eval stop <run_id>
 agent-eval export-run <run_id> <dir> [--data <dir>] [--include <path> ...]
+agent-eval judge <run_id>
 @{body}
 
 @{tt}python -m plugins.agent_eval@{utt} is the same before the command is
@@ -520,6 +628,9 @@ stopped or incomplete one). @{tt}show --json@{utt} gives the report as
 the panel reads it. @{tt}export-run@{utt} freezes a stategraph run for fork
 tasks (see @{" Writing a suite " link suite}); @{tt}--data@{utt} reads it from another data
 directory than the installation's -- a copy of another host's.
+@{tt}judge@{utt} judges again what a run's judge left unjudged -- its runner
+ended while judging, a judge call failed -- with the suite file as it ran
+(refused once the file changed), and prints the report.
 @endnode
 
 @node execution "How a run is executed"

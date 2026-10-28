@@ -9,7 +9,9 @@ few tasks the test cannot decide at all; the report says how many tasks must mov
 """
 from __future__ import annotations
 
+import itertools
 import math
+import re
 import statistics
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -117,6 +119,66 @@ def _p90(values: List[float]) -> Optional[float]:
     return ordered[math.ceil(0.9 * len(ordered)) - 1]
 
 
+def _pooled(runs: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> Optional[float]:
+    """What *runs* met of all their checks counted. Every run weighs what its task counts -- the most any run of
+    it counted, in any arm of *records*: one that counted less (pytest after an import broke counts one error) or
+    nothing (timed out, crashed) met none of the rest. None when some task's runs never say."""
+    counted: Dict[str, int] = {}
+    for r in records:
+        if r.get("of"):
+            counted[r["task"]] = max(counted.get(r["task"], 0), r["of"])
+    of = [counted.get(r["task"]) for r in runs]
+    if not runs or not all(of):
+        return None
+    return round(sum(float(r.get("score", 0.0)) * n for r, n in zip(runs, of)) / sum(of), 4)
+
+
+def families(model: Optional[str]) -> set:
+    """What tells a model's family: its vendor prefix (``~vendor/``) and the first word of its name, digits off --
+    ``claude-opus-5-5`` and ``~anthropic/claude-sonnet-latest`` share ``claude``. No table: the name is the
+    evidence; two names of one vendor without a prefix (``gpt-6``, ``o3``) are not told apart."""
+    if not model:
+        return set()
+    name = model.lstrip("~").lower()
+    vendor, _, name = name.rpartition("/")
+    word = re.split(r"[-_.:\s]", name)[0].rstrip("0123456789") or name
+    return {word} | ({vendor} if vendor else set())
+
+
+def judge_shares(judge_calls: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> List[str]:
+    """What the judge ran on that an arm's agents ran on too, by family: a judge favours its own family's text."""
+    judged_on = {m for call in judge_calls for used in (call.get("models") or {}).values() for m in used}
+    out = set()
+    for record in records:
+        for agent, used in (record.get("models") or {}).items():
+            for model in used:
+                for mine in judged_on:
+                    common = families(mine) & families(model)
+                    if common:
+                        out.add(f"the judge ran on {mine}, of the family '{min(common)}' {agent} of arm "
+                                f"{record.get('arm')} ran on ({model})")
+    return sorted(out)
+
+
+def length_pairs(runs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Whether the judge scored length: over the pairs of judged runs of one task (of one arm), how often the
+    longer product scored higher and how often lower, and the sign test on that. None without such a pair."""
+    judged = [r for r in runs if r.get("judge") == "done" and r.get("product_chars") is not None]
+    if not judged:
+        return None
+    higher = lower = pairs = 0
+    for task in {r["task"] for r in judged}:
+        for a, b in itertools.combinations([r for r in judged if r["task"] == task], 2):
+            sign = (a["product_chars"] - b["product_chars"]) * (float(a["score"]) - float(b["score"]))
+            higher += sign > 0
+            lower += sign < 0
+            pairs += 1
+    if not pairs:  # one judged run per task: nothing to compare
+        return None
+    return {"longer_higher": higher, "longer_lower": lower, "p": round(sign_test(higher, lower), 4),
+            "mean_chars": round(statistics.fmean(r["product_chars"] for r in judged))}
+
+
 def _models(records) -> Dict[str, Dict[str, int]]:
     total: Dict[str, Dict[str, int]] = {}
     for record in records:
@@ -156,31 +218,40 @@ def report(records: List[Dict[str, Any]], reference_arm: str, arms: List[str],
 
     Learn and holdout tasks are judged apart: only the holdout is evidence once someone has tuned on the
     learn tasks. Regression tasks are checked one by one. Cost counts every run that started; a run whose cost
-    could not be read is counted in ``cost_unknown_runs`` instead of as free. ``models``: each agent's calls per
-    model it ran on. *expected* (runner.expected_models): per arm, the model each agent it names runs on first and,
+    could not be read is counted in ``cost_unknown_runs`` instead of as free. ``mean_score`` is the mean over tasks
+    (each weighs the same, as in the comparison); ``pooled_score`` weighs each run by how many things its score is
+    a share of (the check's ``of``: tests, expectations) -- None unless every task's check says. ``models``: each
+    agent's calls per model it ran on. *expected* (runner.expected_models): per arm, the model each agent it names runs on first and,
     if it escalates by itself, its advanced one; ``fallbacks`` names the agents that also ran on another -- those
     runs did not measure the arm's choice alone --, ``escalated`` the ones that also ran on their advanced model
-    (an escalation; with a one-profile chain also what a fallback would look like).
+    (an escalation; with a one-profile chain also what a fallback would look like). ``length`` (judged tasks):
+    length_pairs over the arm's runs.
     """
     reference = task_means(reference_records if reference_records is not None else records, reference_arm)
     out: Dict[str, Any] = {"reference_arm": reference_arm, "arms": {}}
     for name in arms:
         means = task_means(records, name)
         ran = [r for r in records if r.get("arm") == name and r.get("scored")]
-        costs = [float(r["cost"]) for r in ran if r.get("cost") is not None]
+        # what the arm spent: a run the judge left unjudged ran all the same
+        spent = ran + [r for r in records if r.get("arm") == name and r.get("status") == "judge_failed"]
+        costs = [float(r["cost"]) for r in spent if r.get("cost") is not None]
         runs = sum(m["runs"] for m in means.values())
         entry: Dict[str, Any] = {
             "tasks": {t: {k: v for k, v in m.items() if k != "scores"} for t, m in sorted(means.items())},
             "runs": runs,
             "pass_rate": round(sum(m["passes"] for m in means.values()) / runs, 4) if runs else None,
             "mean_score": round(statistics.fmean([m["mean"] for m in means.values()]), 4) if means else None,
+            "pooled_score": _pooled(ran, records),
             "cost": round(sum(costs), 4),
-            "cost_unknown_runs": len(ran) - len(costs),
+            "cost_unknown_runs": len(spent) - len(costs),
             "cost_p90": round(_p90(costs), 4) if costs else None,
             "models": _models(r for r in records if r.get("arm") == name),
         }
         entry["fallbacks"], entry["escalated"] = _off_model([r for r in records if r.get("arm") == name],
                                                             (expected or {}).get(name) or {})
+        length = length_pairs(ran)
+        if length is not None:
+            entry["length"] = length
         if reference_records is not None or name != reference_arm:
             entry["learn"] = compare(reference, means, ("learn",))
             entry["holdout"] = compare(reference, means, ("holdout",))
