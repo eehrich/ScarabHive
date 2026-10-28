@@ -236,6 +236,16 @@ async def test_an_unknown_machine_is_an_error_event(tmp_path):
 
 # ------------------------------------------------------------------ through a real SAM and AgentCaller's checks
 
+async def test_a_machine_refuses_tool_bindings_it_could_not_hold(env):
+    """Its steps run agents of their own: bindings would hold nothing, so the run says so instead of starting."""
+    events = [e async for e in env.agent.run_events("go", request_id="bound1", session_id="sb1",
+                                                    tool_bindings={"files/*": {"path": "out.md"}})]
+    assert [e["type"] for e in events] == ["error", "end"]
+    assert "cannot hold tool bindings" in events[0]["message"]
+    plain = [e async for e in env.agent.run_events("go", request_id="bound2", session_id="sb2", tool_bindings=None)]
+    assert plain[0]["type"] == "start", "a run without bindings was refused"
+
+
 async def test_a_sam_spawn_gets_the_json_answer(env):
     from agent_system.config.models import ToolServerConfig
     from plugins.sub_agent_manager.manager import SubAgentManager

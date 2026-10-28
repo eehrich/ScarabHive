@@ -103,12 +103,20 @@ class MachineAgent(Agent):
     async def run_events(self, task: Union[str, ChatMessage], request_id: Optional[str] = None,
                          session_id: Optional[str] = None, llm_override: Any = None,
                          llm_profile_info_override: Optional[str] = None,
-                         use_advanced_model: bool = False) -> AsyncIterator[dict[str, Any]]:
+                         use_advanced_model: bool = False,
+                         tool_bindings: Optional[dict] = None) -> AsyncIterator[dict[str, Any]]:
         request_id = request_id or short_id()
         # The role gate Agent.run_events asks first -- this override does not call it.
         refusal = self._refusal_event(request_id, session_id)
         if refusal:
             yield refusal
+            yield {"type": "end"}
+            return
+        if tool_bindings:
+            # Its steps run agents of their own (Agent.run_events(tool_bindings=...) is the run's, not its
+            # sub-runs'): taken, the bindings would hold nothing. Refused, so the caller knows.
+            yield {"type": "error", "request_id": request_id,
+                   "message": f"{self.name}: a machine cannot hold tool bindings -- its steps run agents of their own"}
             yield {"type": "end"}
             return
         session_id = session_id or short_id()
