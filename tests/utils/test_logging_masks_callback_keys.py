@@ -50,12 +50,20 @@ def _access_line(tmp_path, path):
     access = logging.getLogger("uvicorn.access")
     own = logging.FileHandler(tmp_path / "access.log", encoding="utf-8")
     own.setFormatter(AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s', use_colors=False))
+    # Writing, whatever a test before left: a uvicorn server started in the run with log_level="warning" (the
+    # browser tests' stub apps) leaves this logger at WARNING, and the line would never be written -- an empty
+    # file, read as a key that was not masked. Its filters stay.
+    kept = access.disabled, access.level
+    access.disabled = False
+    access.setLevel(logging.INFO)
     access.addHandler(own)
     try:
         access.info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:50000", "POST", path, "1.1", 404)
     finally:
         access.removeHandler(own)
         own.close()
+        access.disabled = kept[0]
+        access.setLevel(kept[1])
     return (tmp_path / "access.log").read_text(encoding="utf-8")
 
 

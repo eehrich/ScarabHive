@@ -1511,11 +1511,16 @@ async def test_a_workdirs_mcp_servers_load_and_their_auth_is_only_in_the_childs_
     assert TOKEN not in " ".join(argv) and TOKEN not in json.dumps(answer)
     for path in [*(data_root / "runs").iterdir(), Path(os.environ["FAKE_CLAUDE_LOG"])]:
         assert TOKEN not in path.read_text(encoding="utf-8", errors="replace"), path
-    # A workdir without servers stays as it was.
-    await call(server, "run_task", task="x", workdir="plain")
-    argv = log()["argv"]
-    assert json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text()) == {"mcpServers": {}}
-    assert "mcp__remote_mcp" not in argv and not any(n.startswith("CODING_CLI_MCP") for n in log()["env"])
+    # A workdir without servers stays as it was. Read while it runs, as above: the run's file goes with its end.
+    bare, _ = await call(server, "run_task", task="SLEEP 30", workdir="plain")
+    try:
+        proc = psutil.Process(server._load(bare["run_id"])["pid"])
+        argv, env = proc.cmdline(), proc.environ()
+        config = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(encoding="utf-8"))
+    finally:
+        await call(server, "cancel_run", run_id=bare["run_id"])
+    assert config == {"mcpServers": {}}
+    assert "mcp__remote_mcp" not in argv and not any(n.startswith("CODING_CLI_MCP") for n in env)
 
 
 async def test_plan_mode_loads_no_mcp_server(repo, log):
@@ -1976,7 +1981,10 @@ async def test_a_plugin_stopped_once_the_process_ended_answers_the_runs_own_end(
     """The plugin stopped after the process had ended: the cancelled watch's finalize still ran in its thread
     (the call read the record as running and answered so, without a wake), and a late stop made the run's
     own failure a cancel."""
-    server = make_server(repo)
+    # The call waits longer than the loop below for the process to end (up to 60 s): under load the way from the
+    # launch to the observed end took over the 30 s default, and the call answered "running" before the plugin
+    # was stopped at all.
+    server = make_server(repo, wait_s=90)
     if how == "finalizing":
         commit_all = cli.commit_all
 

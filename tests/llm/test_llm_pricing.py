@@ -196,19 +196,23 @@ class TestPricingPath:
         A model without an entry is estimated as unknown, so a new profile or
         latest-alias slips through until someone reads a cost report and
         wonders. Local models get an entry too (0), which says "free" --
-        except where the client itself reports cost 0: Ollama natively and
-        Ollama's decision models (its openai_compat mode reports no cost).
+        except where the client itself reports cost 0: Ollama natively,
+        Ollama's decision models (its openai_compat mode reports no cost) and
+        a coding CLI run as a model (llm_coding_cli: the subscription pays, its
+        client says 0 on every answer).
 
         Decision models as well: an answer without a billed cost (a local
         laya-serve, TypeSafe direct) is priced from this table by the
         configured model -- the usage tracker's only figure for it.
         """
         from agent_system.config.settings import load_settings
+        from plugins.llm_coding_cli.provider import PROVIDERS as CODING_CLIS
 
         table = pricing.load_pricing()
         llm = load_settings().llm_system
         models = [m for m in llm.models.values()
-                  if not (m.provider == "ollama" and (m.ollama_mode or "").lower() == "native")]
+                  if not (m.provider == "ollama" and (m.ollama_mode or "").lower() == "native")
+                  and m.provider not in CODING_CLIS]
         models += [m for m in llm.decision_models.values() if m.provider != "ollama_decisions"]
         missing = sorted({m.model for m in models if m.model and m.model not in table})
         assert not missing, (

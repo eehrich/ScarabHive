@@ -294,7 +294,9 @@ def test_the_sweep_spares_every_process_this_one_descends_from(root_conftest, sp
     parent = spawn(SLEEPER, marker=ended_token(root_conftest), code=PARENT)
     child = psutil.Process(int(parent.reported[0]))
     try:
-        assert child.ppid() == parent.pid
+        # Descends, not necessarily its direct child: a venv's python.exe on Windows is a launcher that runs the
+        # interpreter as a process of its own, so the parent's interpreter stands between the two.
+        assert parent.pid in {ancestor.pid for ancestor in child.parents()}
         before = [proc.pid for proc, _marker in root_conftest._find_orphans()]
         require_alive(parent)
         assert {parent.pid, child.pid} <= set(before), "the fixture does not reach the sparing"
