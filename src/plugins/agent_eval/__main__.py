@@ -5,11 +5,13 @@
     agent-eval show <run_id> [--against <run_id>|--against-baseline] [--json]
     agent-eval baseline <run_id>
     agent-eval stop <run_id>
+    agent-eval export-run <stategraph run_id> <out dir> [--data <dir>] [--include <data path> ...]
 """
 from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from typing import Any, Dict, Optional
 
@@ -96,6 +98,12 @@ def main(argv: Optional[list] = None) -> int:
     p_base.add_argument("run_id")
     p_stop = sub.add_parser("stop", help="start no further runs of a running suite")
     p_stop.add_argument("run_id")
+    p_export = sub.add_parser("export-run", help="freeze a stategraph run for fork tasks")
+    p_export.add_argument("run_id")
+    p_export.add_argument("out", help="the export directory (empty or new), usually next to the suite")
+    p_export.add_argument("--data", help="the data directory that holds the run (default the installation's)")
+    p_export.add_argument("--include", action="append", default=[],
+                          help="a path in the data directory to take along, what the fork hooks read (repeatable)")
     args = parser.parse_args(argv)
 
     from agent_system.paths import enter_project
@@ -143,7 +151,13 @@ def main(argv: Optional[list] = None) -> int:
         elif args.command == "stop":
             store.request_stop(args.run_id)
             print(f"{args.run_id}: no further runs start; running ones finish")
-    except (ValueError, FileNotFoundError) as e:
+        elif args.command == "export-run":
+            from agent_system.paths import user_path
+            from .runner import export_run
+            out = export_run(args.run_id, user_path(args.out), user_path(args.data) if args.data else None,
+                             args.include)
+            print(f"{args.run_id} exported to {out}")
+    except (ValueError, OSError, sqlite3.Error) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     return 0

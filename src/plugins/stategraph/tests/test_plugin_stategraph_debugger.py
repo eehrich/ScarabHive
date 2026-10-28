@@ -271,6 +271,38 @@ async def test_watchpoint_pauses_on_a_change_that_meets_its_condition(harness):
     assert [hook for _, hook in pauses(harness, run_id)] == ["watch"], "only the change 2 -> 3 meets the condition"
 
 
+ONE_STEP = """\
+stategraph: 1
+id: m
+initial: a
+states:
+  a:
+    do: {agent: w, task: go}
+    transitions: [{target: stage}]
+  stage:
+    initial: inner
+    states:
+      inner:
+        do: {agent: w, task: in}
+        transitions: [{target: end}]
+      end: {type: final}
+    transitions: [{target: done}]
+  done: {type: final}
+"""
+
+
+async def test_a_watchpoint_sees_the_change_of_the_first_step_and_run_entered_only_grows(harness):
+    """The value where the frame starts counts: the first step's change pauses. run.entered names the step a state
+    was last entered at -- a composite's too, which has no enter hook to stop at."""
+    manager, run_id = await start(harness, ONE_STEP, FakeBackend({"a": "A", "inner": "I"}),
+                                  watchpoints=["run.entered.get('stage')"])
+    paused = await next_pause(manager, run_id)
+    assert (paused["hook"], paused["step"]) == ("watch", 1), paused
+    assert manager.evaluate(run_id, "run.entered") == {"a": 0, "stage": 1, "inner": 1}
+    manager.control(run_id, "continue")
+    assert (await settle(manager, run_id))["status"] == "succeeded"
+
+
 # ------------------------------------------------------------------ evaluate and set
 
 async def _paused_at_b(harness, backend):

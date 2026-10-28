@@ -1355,10 +1355,22 @@ class StateGraphService:
                 begun = begun or here
         return f"s{last}:{'exit' if begun else 'enter'}"
 
-    async def _fork(self, run_id: str, kwargs: dict[str, Any], user_id: Optional[str]) -> dict[str, Any]:
+    async def fork_run(self, run_id: str, *, user_id: Optional[str] = None, fork_id: Optional[str] = None,
+                       **kwargs: Any) -> dict[str, Any]:
+        """control_run's fork from code, as ``fork_id`` when given: ``<request id>_sg<n>`` keeps the fork's cancel,
+        status and cost under the caller's request id, as start_run's ``run_id`` does (agent_eval forks so)."""
+        self._run(run_id, user_id)
+        _check_control_args(kwargs)
+        if fork_id is not None and not _RUN_ID.fullmatch(fork_id):
+            raise ServiceError(422, f"fork_id {fork_id!r} must match {_RUN_ID.pattern}")
+        return await self._fork(run_id, kwargs, user_id, fork_id)
+
+    async def _fork(self, run_id: str, kwargs: dict[str, Any], user_id: Optional[str],
+                    fork_id: Optional[str] = None) -> dict[str, Any]:
         """A fork is a new run, and it is the forking user's: they started it. It never continues an agent instance
         of its source (§5.6: its own session refuses them), so no conversation of the source's user runs on under
-        another; its new instances are the fork's user's. Without a user (no auth) it keeps the source's."""
+        another; its new instances are the fork's user's. Without a user (no auth) it keeps the source's.
+        ``breakpoints`` and ``watchpoints`` replace the source's (without them the fork keeps the source's)."""
         row = self.run_store.get_run(run_id)
         assert row is not None
         tree = None
@@ -1378,6 +1390,8 @@ class StateGraphService:
                                           backend_factory=None if options.get("mock_only")
                                           else self.backend_factory(), user_id=user_id or row.get("user_id"),
                                           pause_at_start=bool(kwargs.get("pause")), mocks=kwargs.get("mocks"),
+                                          breakpoints=kwargs.get("breakpoints"),
+                                          watchpoints=kwargs.get("watchpoints"), fork_id=fork_id,
                                           # the snapshot keeps the source's runner; the current file its folder's
                                           runner=self._runner_of(checked) if tree else None)
         except (ValueError, CompileError) as exc:

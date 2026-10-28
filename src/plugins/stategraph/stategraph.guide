@@ -922,7 +922,7 @@ step | -- | goes on to the next hook
 run_to | state, machine | goes on until that state is entered
 terminate | -- | ends the run; its finally activities run first (the answer waits up to 10 s)
 resume | -- | an interrupted run goes on from its journal; one that ended on a resumable failure runs that activity again
-fork | at_step, definition, pause, mocks | a new run from a top-level step
+fork | at_step, definition, pause, mocks, breakpoints, watchpoints | a new run from a top-level step
 set_breakpoints | breakpoints | replaces the run's breakpoints
 set_watchpoints | watchpoints | replaces the run's watchpoints
 evaluate | expr | a read-only Python expression in the paused scope
@@ -937,7 +937,7 @@ at_step | fork: 0 or more; default where the source's journal ends
 definition | fork: snapshot (default, the run's own) or current (the machine now; refused if it has errors)
 pause | fork: hold the fork at the fork point
 mocks | fork: mocks over the source's; what the fork replays keeps its answer
-breakpoints, watchpoints | as for run_machine
+breakpoints, watchpoints | as for run_machine; fork: in place of the source's (without them it keeps the source's)
 expr, path | evaluate and set
 steps | 1 to 500: the answer carries that many journal rows; without it none
 @{body}

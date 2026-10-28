@@ -5,11 +5,12 @@ resolves against the suite file's directory. See agent_eval.guide for the format
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from agent_system.config.layers import _resolve_relative_paths
 from agent_system.paths import PROJECT_ROOT
@@ -52,11 +53,72 @@ class Check(BaseModel):
         return next(k for k in ("command", "pytest", "script", "python", "expect") if getattr(self, k))
 
 
+class Fork(BaseModel):
+    """A task that starts in the middle of a machine run: a fork of a run ``agent-eval export-run`` froze, at a
+    top-level state; the machine runs on by itself from there, an arm changes what its agents do."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The export directory (relative to the suite): the run's ``source.json``, and in ``data/`` what its fork hooks
+    #: read (a store's documents), copied into every run's data directory.
+    source: str
+    #: The top-level state the fork starts at: where the source entered it the ``visit``-th time.
+    at: str
+    visit: int = Field(1, ge=1)
+    #: Stop once the fork enters this state, and check what it made up to there; without it the fork runs to its end.
+    until: Optional[str] = None
+    #: current: the machine as it is now (what an arm's change is measured on); snapshot: as the source ran it.
+    definition: Literal["current", "snapshot"] = "current"
+    #: Mocks over the source run's ({state path: out}): stages the task does not measure, at no cost.
+    mocks: Dict[str, Any] = Field(default_factory=dict)
+    #: The stategraph instance that runs the fork.
+    stategraph: str = "stategraph"
+
+    #: The top-level step ``at``/``visit`` names in the source's journal, set by load_suite.
+    _step: int = PrivateAttr(0)
+
+    @property
+    def step(self) -> int:
+        return self._step
+
+
+def fork_steps(journal: List[Dict[str, Any]], state: str) -> List[int]:
+    """The top-level steps at which a run entered *state*, in order (its journal's trace rows)."""
+    steps = set()
+    for row in journal:
+        if row.get("kind") == "trace" and row.get("status") == "enter" and row.get("state") == state:
+            found = re.match(r"s(\d+):enter:", row.get("key") or "")
+            if found:
+                steps.add(int(found.group(1)))
+    return sorted(steps)
+
+
+def is_composite(machine: Any, machine_id: str, state: str) -> bool:
+    """Whether *state* of the compiled *machine* is a composite -- which has no enter of its own: a fork stops at
+    it by watching ``run.entered`` (the step of its last entry, it only grows), after the step that entered it and
+    before the work of the state inside it."""
+    from plugins.stategraph.engine.debugger import known_states
+
+    node = known_states(machine).get(machine_id, {}).get(state)
+    return node is not None and node.composite
+
+
+def until_machine(definition: Any) -> Any:
+    """A run's stored definition (a snapshot, as runs.db holds it), compiled -- without running its Python."""
+    from plugins.stategraph.engine.machine import compile_tree
+    from plugins.stategraph.model.loader import load_snapshot
+
+    return compile_tree(load_snapshot(json.loads(definition) if isinstance(definition, str) else definition,
+                                      execute_python=False))
+
+
 class Task(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    input: str
+    #: The agent's task. A fork task has none: its machine runs on from the fork.
+    input: Optional[str] = None
+    fork: Optional[Fork] = None
     check: Check
     #: learn: what tuning may look at; regression: must keep passing; holdout: evidence only.
     kind: Literal["learn", "regression", "holdout"] = "learn"
@@ -75,6 +137,12 @@ class Task(BaseModel):
         if not _ID.fullmatch(value):
             raise ValueError(f"task id {value!r}: letters, digits and '-', at most 40")
         return value
+
+    @model_validator(mode="after")
+    def _input_or_fork(self) -> "Task":
+        if (self.input is None) == (self.fork is None):
+            raise ValueError(f"task {self.id}: needs exactly one of input and fork")
+        return self
 
 
 class Arm(BaseModel):
@@ -141,6 +209,20 @@ class Suite(BaseModel):
         dupes = sorted({i for i in ids if ids.count(i) > 1})
         if dupes:
             raise ValueError(f"duplicate task ids: {dupes}")
+        forks = [t.id for t in self.tasks if t.fork]
+        # The source run goes into the run's runs.db: the installation's would keep it, a chain's holds it already.
+        if forks and (self.data != "fresh" or self.chain):
+            raise ValueError(f"fork tasks {forks} need data: fresh and no chain")
+        # A fork runs the machine's agents, never the suite's: an overlay for that one would change nothing.
+        own = [t.id for t in self.tasks if t.fork and t.agent_config]
+        if own:
+            raise ValueError(f"fork tasks {own} take no agent_config: the machine's agents run, put it in an "
+                             "arm's agents")
+        if len(forks) == len(self.tasks):
+            idle = [name for name, arm in self.arms.items() if arm.agent or arm.agent_config]
+            if idle:
+                raise ValueError(f"arms {idle}: every task is a fork task, where agent and agent_config change "
+                                 "nothing -- an arm changes the machine's agents in agents")
         return self
 
     def path(self, value: str) -> Path:
@@ -173,6 +255,8 @@ def load_suite(path: str | Path) -> Suite:
         for value in (task.workspace, task.check.script):
             if value and not suite.path(value).exists():
                 raise ValueError(f"{path}: task {task.id}: {value} does not exist")
+        if task.fork:
+            _resolve_fork(path, task)
     # A './' path in an overlay means the suite's directory, as in an agent YAML it means the YAML's -- the run
     # would otherwise look for it in its own workspace.
     owners = [(f"arm {name}", arm.agent_config) for name, arm in suite.arms.items()]
@@ -186,3 +270,34 @@ def load_suite(path: str | Path) -> Suite:
         if isinstance(template, str) and not (PROJECT_ROOT / template).is_file():
             raise ValueError(f"{path}: {owner}: system_template {template} does not exist")
     return suite
+
+
+def _resolve_fork(path: Path, task: Task) -> None:
+    """Point a fork task at its export directory and find its step there -- a state the source never entered is
+    refused now, not in every run."""
+    fork = task.fork
+    source = (path.parent / fork.source).resolve()
+    if not (source / "source.json").is_file():
+        raise ValueError(f"{path}: task {task.id}: {fork.source} has no source.json (agent-eval export-run makes it)")
+    fork.source = str(source)
+    try:
+        journal = json.loads((source / "source.json").read_text(encoding="utf-8"))["journal"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise ValueError(f"{path}: task {task.id}: {fork.source}/source.json does not read: {e}") from e
+    steps = fork_steps(journal, fork.at)
+    if len(steps) < fork.visit:
+        raise ValueError(f"{path}: task {task.id}: the source entered {fork.at!r} {len(steps)} time(s) at the top "
+                         f"level, not {fork.visit}")
+    fork._step = steps[fork.visit - 1]
+    if fork.until and fork.definition == "snapshot":  # the machine now is the stategraph's to check, in the run
+        from plugins.stategraph.engine.debugger import UnknownState, check_points
+
+        from plugins.stategraph.engine.machine import CompileError
+
+        try:
+            run = json.loads((source / "source.json").read_text(encoding="utf-8"))["run"]
+            machine = until_machine(run["definition"])
+            if not is_composite(machine, run["machine_id"], fork.until):
+                check_points(machine, [{"state": fork.until, "machine": run["machine_id"]}])
+        except (UnknownState, CompileError, KeyError, TypeError, ValueError) as e:  # an export of a newer stategraph
+            raise ValueError(f"{path}: task {task.id}: until: {type(e).__name__}: {e}") from e

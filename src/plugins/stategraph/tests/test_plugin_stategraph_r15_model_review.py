@@ -77,7 +77,9 @@ def test_mod1_calls_and_item_access_below_a_namespace_stay_clean():
 # ------------------------------------------------------------------ MOD-2: state names in code
 
 @pytest.mark.parametrize("code", ["run.visits['nope'] < 2", "run.visits.get('nope', 0) < 2", "'nope' in run.visits",
-                                  "run.state == 'nope'", "run.state in ('a', 'nope')", "'nope' != run.state"])
+                                  "run.state == 'nope'", "run.state in ('a', 'nope')", "'nope' != run.state",
+                                  "run.entered['nope'] > 2", "run.entered.get('nope') is None",
+                                  "'nope' in run.entered"])
 def test_mod2_unknown_state_name_in_code_is_an_error(code):
     tree = validate(machine(f"""\
         a:

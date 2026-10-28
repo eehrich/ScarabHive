@@ -1457,8 +1457,10 @@ class RunManager:
                    backend: Any = None, backend_factory: Optional[Callable[[str], Any]] = None,
                    token_factory: Optional[Callable[[str], Any]] = None, breakpoints: Any = None,
                    watchpoints: Any = None, pause_at_start: bool = False, user_id: Optional[str] = None,
-                   mocks: Optional[dict[str, Any]] = None, runner: Optional[str] = None) -> str:
-        """A new run that replays ``run_id``'s journal before top-level step ``at_step`` and continues live.
+                   mocks: Optional[dict[str, Any]] = None, runner: Optional[str] = None,
+                   fork_id: Optional[str] = None) -> str:
+        """A new run that replays ``run_id``'s journal before top-level step ``at_step`` and continues live -- as
+        ``fork_id`` when given (start's ``run_id``), else under a new id.
 
         ``mocks`` go over the source's (an activity replayed from the journal keeps its outcome); ``pause_at_start``
         holds the fork at its first live hook -- the fork point: the replayed hooks before it are silent.
@@ -1508,7 +1510,7 @@ class RunManager:
             strict_points=breakpoints is not None,  # the source's own points may name states the current file lost
             watchpoints=debug.get("watchpoints") if watchpoints is None else watchpoints,
             pause_at_start=pause_at_start, backend=backend, backend_factory=backend_factory,
-            token_factory=token_factory, user_id=user_id or row.get("user_id"), parent_run=run_id,
+            token_factory=token_factory, user_id=user_id or row.get("user_id"), run_id=fork_id, parent_run=run_id,
             fork_step=at_step, copy_rows=keep, fork_resources={"sources": sources, "chain": chain, "at": at_step},
             runner=runner if runner is not None else row.get("runner"))
 

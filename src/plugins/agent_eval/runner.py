@@ -22,7 +22,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from agent_system.paths import DATA_DIR_ENV, PROJECT_ROOT, data_path
 
@@ -276,6 +276,11 @@ def _job(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optio
         shutil.copytree(frozen_workspace, workspace, dirs_exist_ok=True)
     else:
         _fill_workspace(suite, task, workspace)
+    exported = Path(task.fork.source) / "data" if task.fork else None
+    if exported is not None and exported.is_dir():
+        # What the source's fork hooks read (a store's documents), as new files: a store that drops them by age
+        # would else find an export of yesterday's run expired.
+        shutil.copytree(exported, data, dirs_exist_ok=True, copy_function=shutil.copy)
     result = _agent_run(suite, run_id, job, task, jdir, workspace, data)
     record.update(result)
     if result["status"] in ("done", "timeout", "crashed"):
@@ -301,8 +306,9 @@ def _agent_run(suite: Suite, run_id: str, job: Dict[str, Any], task: Task, jdir:
     job_file.write_text(json.dumps({
         # In order: the task's material first, the arm's change over it.
         "agent": arm.agent or suite.agent, "overlays": [task.agent_config, arm.agent_config],
-        "agents": arm.agents, "input": task.input,
-        "request_id": request_id, "session_user": SESSION_USER, "result_path": str(result_path),
+        "agents": arm.agents, "input": task.input if task.fork is None else f"fork at {task.fork.at}",
+        "fork": _fork_job(task), "request_id": request_id, "session_user": SESSION_USER,
+        "result_path": str(result_path),
     }, ensure_ascii=False), encoding="utf-8")
     log = jdir / f"child-{task.id}.log"
     started = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -327,6 +333,15 @@ def _agent_run(suite: Suite, run_id: str, job: Dict[str, Any], task: Task, jdir:
         return {**result, **usage, "status": "crashed", "exit": exit_code, "detail": result["exception"]}
     # Refused before it ran (role gate, a session held elsewhere): the setup is wrong, the arm did nothing.
     return {**result, **usage, "status": "refused" if result.get("refused") else "done", "exit": exit_code}
+
+
+def _fork_job(task: Task) -> Optional[Dict[str, Any]]:
+    """What the child forks for a fork task: the source, its step, where to stop."""
+    fork = task.fork
+    if fork is None:
+        return None
+    return {"source": str(Path(fork.source) / "source.json"), "at_step": fork.step, "until": fork.until,
+            "definition": fork.definition, "mocks": fork.mocks, "stategraph": fork.stategraph}
 
 
 def stategraph_runs(data: Path, since: str) -> List[Dict[str, Any]]:
@@ -367,3 +382,60 @@ def usage_of(request_id: str, data: Optional[Path]) -> Dict[str, Any]:
     calls, cost, unpriced, prompt, completion = row
     return {"calls": calls, "cost": round(cost, 6) if cost is not None else (0.0 if calls == 0 else None),
             "unpriced_calls": unpriced or 0, "prompt_tokens": prompt or 0, "completion_tokens": completion or 0}
+
+
+def export_run(run_id: str, out: Path, data: Optional[Path] = None, include: Sequence[str] = ()) -> Path:
+    """Freeze stategraph run *run_id* for fork tasks: its row and journal in ``<out>/source.json``, and every data
+    path *include* names (relative to the data directory -- what the machine's fork hooks read, a store's
+    documents) under ``<out>/data/``. *data*: the data directory that holds the run, default the installation's;
+    a copy of another host's works the same."""
+    from plugins.stategraph.engine.journal import TERMINAL_STATUSES, RunStore
+
+    data = (data or data_path()).resolve()
+    db = data / "stategraph" / "runs.db"
+    if not db.is_file():
+        raise ValueError(f"{db} does not exist")
+    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+        raise ValueError(f"{out} is not an empty directory")
+    paths = []
+    for rel in include:
+        path = (data / rel).resolve()
+        if not path.is_relative_to(data) or not path.exists():
+            raise ValueError(f"{rel} is no path in {data}")
+        paths.append(path)
+    # a path inside another one named comes with it
+    paths = [p for p in paths if not any(p != q and p.is_relative_to(q) for q in paths)]
+    runs = RunStore.read_only(db)
+    try:
+        exported = runs.export_run(run_id)
+        if exported is None:
+            raise ValueError(f"no run {run_id} in {db}")
+        # A live run changes under the export; a compacted one has no journal left to replay.
+        if exported["run"]["status"] not in TERMINAL_STATUSES:
+            raise ValueError(f"run {run_id} is {exported['run']['status']}: export a run that ended")
+        if runs.compacted(run_id):
+            raise ValueError(f"run {run_id} is compacted (retention): its journal is gone")
+    finally:
+        runs.close()
+    # Who ran it and where it hung in a session: an import sets its own, and an export next to a suite may be
+    # published with it. Params, outputs and the definition stay -- the fork replays them.
+    exported["run"].update(dict.fromkeys(_UNEXPORTED))
+    out.mkdir(parents=True, exist_ok=True)
+    try:
+        for path in dict.fromkeys(paths):
+            target = out / "data" / path.relative_to(data)
+            if path.is_dir():
+                shutil.copytree(path, target)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+        (out / "source.json").write_text(json.dumps(exported, ensure_ascii=False), encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(out, ignore_errors=True)  # it was empty: no half export that blocks the next try
+        raise
+    return out
+
+
+#: The columns of a source's row an export leaves empty (runs.db's).
+_UNEXPORTED = ("user_id", "session_id", "run_key", "owner", "lease_until", "nesting", "control", "control_answer",
+               "caller_run", "caller_request")

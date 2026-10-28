@@ -136,8 +136,8 @@ tools:
           definition: {type: string, enum: ["snapshot", "current"], default: "snapshot", description: "fork: the run's own definition, or the machine as it is now"}
           pause: {type: boolean, default: false, description: "fork: hold the fork at the fork point (its first live hook), to look at or set ctx before it goes on"}
           mocks: {type: object, description: "fork: mocks over the source run's ({state path: out}); what the fork replays keeps its outcome"}
-          breakpoints: {type: array, items: {}, description: "set_breakpoints: 'state', 'state@exit', or {state, at, condition}"}
-          watchpoints: {type: array, items: {}, description: "set_watchpoints: Python expressions, or {expr, condition}"}
+          breakpoints: {type: array, items: {}, description: "set_breakpoints, fork: 'state', 'state@exit', or {state, at, condition}"}
+          watchpoints: {type: array, items: {}, description: "set_watchpoints, fork: Python expressions, or {expr, condition}"}
           expr: {type: string, description: "evaluate / set: a read-only Python expression over the paused scope (set on an interrupted or resumably failed run: a value)"}
           path: {type: string, description: "set: the ctx path to assign, e.g. ctx.draft -- or out, at an exit or error breakpoint of a state with do: the activity completes with that out (a failure too)"}
           steps: {type: integer, minimum: 1, maximum: 500, description: "how many of the run's last journal rows the answer carries (as get_run); without it, none"}

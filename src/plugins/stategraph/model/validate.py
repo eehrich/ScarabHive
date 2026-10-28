@@ -414,8 +414,8 @@ def _check_code(fc: _FileContext, source: str, path: list[Any], *, mode: str, bo
             fc.problem("error", "SG004", f"resources.{name} is not open yet here: a resource's open and fork see "
                                          "only the resources declared before it", path)
     for name in sorted(use.state_refs - set(fc.states)):
-        fc.problem("error", "SG002", f"{name!r} is not a state of this machine: run.visits and run.state hold the "
-                                     "names of its states", path)
+        fc.problem("error", "SG002", f"{name!r} is not a state of this machine: run.visits, run.entered and "
+                                     "run.state hold the names of its states", path)
     for slip in use.misuse:
         fc.problem("error", "SG004", slip, path)
     for impure in use.impure:

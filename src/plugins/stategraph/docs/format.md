@@ -101,7 +101,9 @@ resumes an interrupted run by itself, unless its caller handed it `live` objects
 
 Access: `ctx.draft`, `params.text`, `error.type` at the top level; below it item
 access -- `ctx.notes["x"]`, `out["value"]`, `event.data["reason"]`, `error.cause["type"]`,
-`run.visits["x"]` (a state name there that is no state is SG002). Only `effect`,
+`run.visits["x"]` (a state name there that is no state is SG002; the visits of the states inside a
+composite start anew with each of its entries), `run.entered["x"]` (the step it was last entered at: it
+only grows). Only `effect`,
 `entry` and `exit` write `ctx`; `params`, `run`, `resources`, `error`, `event`, `activity`
 and `ending` are read-only (SG004). A blank guard is no guard. Code and templates are pure:
 no I/O, clock, randomness, environment, sets or `hash()`.

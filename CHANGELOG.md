@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over the configuration before anything is built from it, so a machine's or a panel's sub-agents run with it;
   agents that inherit from a named one get it too. A check gets the run's `data_dir` (its stores) and
   `stategraph_runs` (the machine runs it started or drove on there), instead of guessing them from the workspace.
+- Evals: a fork task starts in the middle of a machine run: `agent-eval export-run` freezes a finished stategraph
+  run (its row and journal, and the data paths its fork hooks read), and `fork: {source, at, until}` forks it in
+  every run's own data directory where it entered `at`, lets the machine run on and stops it when it enters
+  `until` -- an arm changes the stage's agents, the stages before cost nothing.
+- stategraph: a fork takes `breakpoints` and `watchpoints` in place of its source's; `RunStore.export_run` and
+  `import_run` carry a run from one runs.db to another; `fork_run` forks from code under a given run id.
+  `run.entered` names the step each state was last entered at (it only grows, unlike `run.visits`, which starts
+  anew inside a composite on each of its entries).
 - coding_cli runs Google's Antigravity CLI (`agy`) as well as Claude Code: `cli: antigravity` on an instance.
   agy's stream is read as Claude Code's, so the tools, the branch, `resume` and `json_schema` work the same.
   A run gets a home folder of its own per user (pinned settings, nothing of the user's agy setup, no Claude
@@ -72,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- stategraph: a watchpoint saw no change in a run's first step -- its value was first taken after it; it is now
+  taken where the frame starts.
 - A model call without streaming went on running when the agent's event stream was closed or its run cancelled
   from outside: the 100 ms polls shielded the call from the cancel too. It is cancelled now -- not billed to its
   end with its answer thrown away.

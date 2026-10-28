@@ -212,19 +212,25 @@ def _texts_of(node: ast.AST) -> Iterator[ast.Constant]:
             yield item
 
 
+def _by_state(node: ast.AST) -> bool:
+    """``run.visits`` or ``run.entered``: the run fields keyed by state name."""
+    return _is_run_field(node, "visits") or _is_run_field(node, "entered")
+
+
 def _state_constants(tree: ast.AST) -> Iterator[ast.Constant]:
     """The string constants code compares with state names: ``run.visits["x"]``, ``run.visits.get("x", 0)``,
-    ``"x" in run.visits``, ``run.state == "x"`` (also ``!=``, ``in ("x", "y")``, and the other way round)."""
+    ``"x" in run.visits`` (``run.entered`` alike), ``run.state == "x"`` (also ``!=``, ``in ("x", "y")``, and the
+    other way round)."""
     for node in ast.walk(tree):
-        if isinstance(node, ast.Subscript) and _is_run_field(node.value, "visits"):
+        if isinstance(node, ast.Subscript) and _by_state(node.value):
             yield from _texts_of(node.slice)
         elif (isinstance(node, ast.Call) and node.args and isinstance(node.func, ast.Attribute)
-              and node.func.attr == "get" and _is_run_field(node.func.value, "visits")):
+              and node.func.attr == "get" and _by_state(node.func.value)):
             yield from _texts_of(node.args[0])
         elif isinstance(node, ast.Compare):
             sides = [node.left, *node.comparators]
             for op, left, right in zip(node.ops, sides, sides[1:]):
-                if isinstance(op, (ast.In, ast.NotIn)) and _is_run_field(right, "visits"):
+                if isinstance(op, (ast.In, ast.NotIn)) and _by_state(right):
                     yield from _texts_of(left)
                 elif isinstance(op, (ast.Eq, ast.NotEq, ast.In, ast.NotIn)) and _is_run_field(left, "state"):
                     yield from _texts_of(right)
@@ -349,7 +355,7 @@ NAMESPACE_FIELDS = {
                  "model", "cost"),
     "error": ("type", "message", "state", "data", "cause", "branch", "index", "visits", "where"),
     "event": ("name", "data"),
-    "run": ("id", "origin", "step", "machine", "state", "visits", "frame", "cost"),
+    "run": ("id", "origin", "step", "machine", "state", "visits", "entered", "frame", "cost"),
     "ending": ("reason", "state", "error"),
 }
 

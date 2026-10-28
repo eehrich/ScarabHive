@@ -550,6 +550,43 @@ class RunStore:
             return self._db().execute("SELECT 1 FROM journal WHERE run_id = ? AND kind = 'lifecycle'"
                                       " AND status = 'compacted'", (run_id,)).fetchone() is not None
 
+    def export_run(self, run_id: str) -> Optional[dict[str, Any]]:
+        """A run as this database holds it: its row and journal, every value as stored -- what ``import_run`` puts
+        into another runs.db, to fork it there. None when there is no such run."""
+        with self._lock:
+            db = self._db()
+            row = db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                return None
+            journal = db.execute("SELECT * FROM journal WHERE run_id = ? ORDER BY seq", (run_id,)).fetchall()
+        return {"run": dict(row), "journal": [dict(r) for r in journal]}
+
+    def import_run(self, exported: dict[str, Any], **row: Any) -> None:
+        """Put a run ``export_run`` gave into this database, ``row`` over its row (``user_id`` of who owns it here).
+        Refused when the id is taken here, or the export has columns this database lacks (a newer stategraph's):
+        dropped, the run would replay differently."""
+        run = {**exported["run"], **row}
+        journal = exported["journal"]
+        with self._lock:
+            db = self._db()
+            for table, rows in (("runs", [run]), ("journal", journal)):
+                known = {c[1] for c in db.execute(f"PRAGMA table_info({table})")}
+                extra = sorted({name for r in rows for name in r} - known)
+                if extra:
+                    raise ValueError(f"the export has {table} columns this stategraph does not know: {extra}")
+            if db.execute("SELECT 1 FROM runs WHERE id = ?", (run["id"],)).fetchone():
+                raise ValueError(f"run {run['id']} is here already")
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                for table, rows in (("runs", [run]), ("journal", journal)):
+                    for r in rows:
+                        db.execute(f"INSERT INTO {table} ({', '.join(r)}) VALUES ({', '.join('?' * len(r))})",
+                                   tuple(r.values()))
+                db.execute("COMMIT")
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+
     def update_debug_unowned(self, run_id: str, debug: Any, *, now: str) -> bool:
         """Change a run's breakpoints from outside its owner -- only while nobody holds a live lease on it.
 

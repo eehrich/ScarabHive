@@ -194,6 +194,7 @@ class Frame:
             "run": namespace_of({"id": self.run.id, "origin": self.run.origin, "step": self.step,
                                  "machine": self.machine.id,
                                  "state": leaf.name if leaf else None, "visits": dict(self.visits),
+                                 "entered": dict(self.entered_step),
                                  "frame": self.prefix, "cost": round(self.run.cost, 6)}, "run"),
             # a resource not opened (its open failed, or has not run yet) reads as None: a finally can check it
             "resources": namespace_of({**dict.fromkeys(self.machine.spec.resources), **self.resources}, "resources"),
@@ -275,6 +276,8 @@ class Frame:
                 self._init_vars()
                 await self._enter_initial()
                 self.run.initial_entered(self)  # its guards, for a replay (PROD-1)
+                # the watchpoints' values where the frame starts: a change in its first step is one
+                await self.run.debugger.after_step(self.run, self, silent=True)
                 self.run.persist()  # the stored view names the initial state while its first activity runs
                 while True:
                     if self.run.forking is self:  # a fork's root: its resources before anything of this step runs

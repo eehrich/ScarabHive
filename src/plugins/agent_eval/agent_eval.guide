@@ -270,6 +270,62 @@ one workspace and data directory per repeat: every task sees what the one
 before left behind. For agents whose work builds on earlier decisions. Each
 repeat starts from scratch. The arms still go side by side: the next task
 starts once every arm has finished the one before.
+
+@{h2}Starting in the middle of a machine run
+
+A stage deep in a long machine run is costly to reach: every arm would run
+all the stages before it. A @{b}fork task@{ub} starts there instead -- from a
+run of the machine that has already been, frozen once:
+
+@{code}
+agent-eval export-run <run_id> evals/review-stage/source --include json_store/<namespace>
+@{body}
+
+@{code}
+  - id: review
+    fork:
+      source: source            # the export directory, next to the suite
+      at: review                # the top-level state the fork starts at
+      visit: 1                  # its first entry (default); 2 the second
+      until: polish             # stop when the fork enters it (default: run to the end)
+      definition: current       # current (default): the machine as it is now; snapshot: as it ran
+      mocks: {notify: "skip"}   # over the source's: stages the task does not measure
+    check: {script: check_review.py}
+@{body}
+
+Every run of every arm forks the source at the step where it entered
+@{tt}at@{utt}: the steps before are replayed from its journal, at no cost,
+and the machine runs on by itself from there -- a fork task has no
+@{tt}input@{utt}. What an arm changes is what the machine's agents do, so
+its overlays go in @{tt}agents@{utt}. An @{tt}until@{utt} that is a
+composite (it has no enter of its own) stops the fork right after the step
+that entered it, before the work of the state inside it.
+@{tt}until@{utt} is the next entry after the fork point: forked at a state
+until the same one -- or one the fork point's own step enters --, the fork
+runs to where it comes again. A fork task's own
+@{tt}agent_config@{utt} is refused, and so are an arm's @{tt}agent@{utt} and
+@{tt}agent_config@{utt} when every task is a fork task (they change the
+suite's agent, which a fork never runs; its record names no model). Once the fork enters @{tt}until@{utt}
+(or waits for an event -- nobody sends one here --, also one with a
+timeout; a timer state and a semaphore slot are waited out) it is
+terminated and the check reads what it made up to there. The source's own breakpoints and watchpoints do
+not come along.
+
+The export is the run's row and journal (@{tt}source.json@{utt}) and, in
+@{tt}data/@{utt}, every path of the data directory @{tt}--include@{utt}
+names -- what the machine's fork hooks read, a store's documents. It leaves
+out who ran it (user, session, run key, caller) but keeps its params, the
+outputs of its steps and its definition: what a run worked on goes with it,
+so keep an export of private work out of a directory that is published. Each run
+gets a copy of those in its data directory, as new files. A fork task needs
+@{tt}data: fresh@{utt} and no chain: the source goes into the run's own
+@{tt}runs.db@{utt}. A state the source never entered there (as often as
+@{tt}visit@{utt} says), or an export missing, refuses the suite, and so
+does an @{tt}until@{utt} the machine lacks or never stops at (a top-level
+final) with @{tt}definition: snapshot@{utt}. With
+@{tt}current@{utt} the run finds out: a fork that does not start is
+@{tt}refused@{utt}, not scored. Only a run that ended exports, and not one
+retention compacted.
 @endnode
 
 @node checks "Checks"
@@ -304,6 +360,9 @@ under @{tt}<request_id>_@{utt}), @{tt}calls@{utt}, @{tt}cost@{utt} and
 agents wrote (a JSON store, a database) are below it, as in the
 installation's @{tt}data/@{utt}. With @{tt}data: shared@{utt}, the
 installation's own.
+@{bullet}@{tt}fork@{utt} (a fork task's): the fork's @{tt}run_id@{utt},
+its @{tt}source@{utt} and @{tt}at_step@{utt}, its @{tt}status@{utt} when it
+stopped, and @{tt}until_reached@{utt}.
 @{bullet}@{tt}stategraph_runs@{utt}: the machine runs in that data
 directory that began or moved on during this agent run -- in a chain also
 one an earlier task started and this one drove on --, oldest first, each
@@ -420,6 +479,7 @@ agent-eval list
 agent-eval show <run_id> [--against <run_id> | --against-baseline] [--json]
 agent-eval baseline <run_id>
 agent-eval stop <run_id>
+agent-eval export-run <run_id> <dir> [--data <dir>] [--include <path> ...]
 @{body}
 
 @{tt}python -m plugins.agent_eval@{utt} is the same before the command is
@@ -431,7 +491,9 @@ several arms against their own reference arm. @{tt}--arm@{utt} picks arms
 and keeps the suite's order, so the first picked of the suite stays the
 reference. @{tt}--baseline@{utt} makes the finished run the baseline (not a
 stopped or incomplete one). @{tt}show --json@{utt} gives the report as
-the panel reads it.
+the panel reads it. @{tt}export-run@{utt} freezes a stategraph run for fork
+tasks (see @{" Writing a suite " link suite}); @{tt}--data@{utt} reads it from another data
+directory than the installation's -- a copy of another host's.
 @endnode
 
 @node execution "How a run is executed"
