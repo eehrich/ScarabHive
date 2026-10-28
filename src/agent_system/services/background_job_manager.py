@@ -117,6 +117,12 @@ class BackgroundJob:
     llm_params: Optional[dict] = None
     # The run has sent its answer (ANSWER_EVENTS) and only finishes now: saves, session-end hooks
     answered: bool = False
+
+    @property
+    def broke_off(self) -> bool:
+        """Over without an answer and not cancelled: it failed, or its stream ended without one (a run that
+        reports its failure as an error event ends normally). What a caller's ``rerun_ended`` starts again."""
+        return self.status not in (JobStatus.RUNNING, JobStatus.CANCELLED) and not self.answered
     # A mirror of a run someone else collects (POST /run): pages follow it like any job, but
     # the answer went to that caller, not through here -- so once it is over, the status
     # endpoint does not offer it as proof that the run finished (writer_jobs' reconcile

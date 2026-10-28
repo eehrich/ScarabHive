@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commit. Beside web (for agy always) the workdir must say `read_only: true`. An instance's `env` sets values its
   runs get (the plugin's own win), and `max_result_chars` bounds the final report (default 12,000, up to 200,000)
   for a caller that takes it as its answer.
+- `/events` takes `rerun_ended` (POST body or query): a job under the request_id that broke off -- failed, or
+  ended without an answer, not cancelled -- runs again under that id as the same agent, instead of replaying its
+  end (a finished job is kept until the process ends, so a dispatcher's retry only saw the old failure). A running
+  job, one that answered and a cancelled one are joined as without it, so a dispatcher may send it every time.
 
 ### Fixed
 

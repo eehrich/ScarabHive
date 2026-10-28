@@ -99,12 +99,17 @@ async def _handle_events(
     session_title: Optional[str] = None,
     attended: bool = False,
     llm_params: Optional[dict] = None,
+    rerun_ended: bool = False,
 ):
     """Shared implementation for GET/POST /events endpoints.
 
     Streams agent SSE events for a task. ``attended``: the client shows the
     run's questions to the person who started it, who can answer them (the
     web chat); a new run records it, a reconnect keeps what its start said.
+    ``rerun_ended``: a job under the request_id that broke off (failed, or
+    ended without an answer, not cancelled) is run again under that id, as
+    the same agent, instead of replaying its end; a running one, or one that
+    answered or was cancelled, is joined as without it.
     """
     logger = logging.getLogger(__name__)
 
@@ -128,9 +133,16 @@ async def _handle_events(
             # Verify user owns this job
             if existing_job.user_id != user_id:
                 raise HTTPException(status_code=403, detail="Access denied to this request")
-            logger.info(f"Client reconnecting to job {request_id}")
             # Use the agent_name from the original job, not from query params
             agent_name = existing_job.agent_name
+            if rerun_ended and existing_job.broke_off:
+                # Its end is kept until the process ends: joined, a dispatcher's retry would only replay the
+                # failure. A new run takes the id over (create_job replaces a job that no longer runs), through
+                # the guards of a new run below.
+                logger.info(f"Running job {request_id} again: it broke off ({existing_job.status.value})")
+                existing_job = None
+            else:
+                logger.info(f"Client reconnecting to job {request_id}")
 
     # Not reconnecting: adopt a caller-supplied request_id (parity with
     # POST /run) so external dispatchers can track/cancel the run under
@@ -378,6 +390,7 @@ async def events_get(
     force: bool = Query(default=False),
     session_title: Optional[str] = Query(default=None),
     attended: bool = Query(default=False),
+    rerun_ended: bool = Query(default=False),
     ctx: AppContext = Depends(app_context),
 ):
     """Stream agent events for a task (GET).
@@ -393,6 +406,9 @@ async def events_get(
       with POST /run; the guards of validate_client_request_id apply)
     - attended: the client shows the run's questions to the person who
       started it (tool_approval asks there); default false
+    - rerun_ended: a job under request_id that broke off (failed, or ended
+      without an answer, not cancelled) runs again instead of replaying its
+      end; default false
 
     Note: For long task texts, prefer POST /events to avoid URL length limits.
     """
@@ -409,6 +425,7 @@ async def events_get(
         force=force,
         session_title=session_title,
         attended=attended,
+        rerun_ended=rerun_ended,
     )
 
 
@@ -447,5 +464,6 @@ async def events_post(request: Request, ctx: AppContext = Depends(app_context)):
         force=bool(body.get("force")),
         session_title=body.get("session_title"),
         attended=body.get("attended") is True,
+        rerun_ended=body.get("rerun_ended") is True,
         llm_params=llm_params_from(body.get("llm_params")),
     )
