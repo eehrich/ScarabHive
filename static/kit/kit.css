@@ -674,6 +674,10 @@ pk-refresh:has(.pk-refresh-auto[aria-pressed="true"]) .pk-refresh-pick { --btn-b
 .pk-prose > :first-child { margin-top: 0; }
 .pk-prose blockquote { margin: 0 0 var(--space-3); padding-left: var(--space-3); border-left: 3px solid var(--border-strong); color: var(--text-secondary); }
 .pk-prose code { font-family: var(--font-mono); font-size: 0.92em; padding: 0 0.25em; border-radius: var(--radius-sm); background: var(--surface-3); }
+/* a markdown table: as the guide draws one; wider than the text column, it scrolls sideways in place */
+.pk-prose table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0 0 var(--space-3); font-size: var(--text-sm); line-height: 1.45; overflow-wrap: normal; }
+.pk-prose :is(th, td) { border: 1px solid var(--border-default); padding: var(--space-1) var(--space-2); text-align: left; vertical-align: top; min-width: 6ch; }
+.pk-prose th { background: var(--surface-1); }
 /* The markdown editor (panel-kit.js initMarkdownEditors): toolbar above the textarea, preview in its place. */
 .pk-md-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
 .pk-md-preview { max-width: none; min-height: 72px; overflow: auto; padding: var(--space-2) var(--space-3);
