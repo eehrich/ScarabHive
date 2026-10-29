@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, List, Optional
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.core.session_presence import presence_for, wake_blocked, wake_session
-from agent_system.servers.agent.components.tool_bindings import form_problem
+from agent_system.servers.agent.components.tool_bindings import form_problem, inherited
 from agent_system.services.session_manager import SessionNotFoundError
 from agent_system.services.session_service import is_ephemeral_session
 from agent_system.utils.id import short_id
@@ -866,8 +866,12 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
             # The run's tool bindings, framework-set only (the leading `_`: drop_runtime_params takes it out of a
             # model's or a script's call). Checked before a sub-session exists that could never run with them.
+            # The calling run's own come along: a sub-agent of a bound run is held at least as tight.
             tool_bindings = params.get("_tool_bindings") or None
             problem = form_problem(tool_bindings) if tool_bindings is not None else None
+            if not problem:
+                tool_bindings, problem = inherited(tool_bindings)
+                params["_tool_bindings"] = tool_bindings  # what the manager keeps with the instance
             if problem:
                 if status:
                     await status.error(problem)
@@ -1169,12 +1173,20 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             # names others is refused -- they would loosen or change what its runs may touch.
             tool_bindings = (sub_session_data.get("metadata") or {}).get("tool_bindings") or None
             asked = params.get("_tool_bindings") or None
-            if asked is not None and asked != tool_bindings:
+            # as its create kept them, or with the run's own (a create in this bound run): AgentCaller names its
+            # own again -- the run's own are added below either way, so neither loosens anything
+            if asked is not None and asked != tool_bindings and inherited(asked)[0] != tool_bindings:
                 error_msg = (f"Sub-agent '{instance_id}' holds other tool bindings than this continue names -- "
                              "spawn a new instance for other values.")
                 if status:
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg, "error_type": "tool_bindings_mismatch"}
+            # and those of the run that continues it, as at a create: an instance from before its caller was bound
+            tool_bindings, problem = inherited(tool_bindings)
+            if problem:
+                if status:
+                    await status.error(problem)
+                return {"status": "error", "error": problem, "error_type": "tool_bindings_mismatch"}
 
             # Get agent type from session data
             agent_type = sub_session_data.get("agent_name") or ""

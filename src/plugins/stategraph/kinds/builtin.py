@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from agent_system.servers.agent.components.tool_bindings import form_problem
 from plugins.stategraph.model.code import jsonable
 from plugins.stategraph.model.spec import check_name
 from plugins.stategraph.model.spec import Strict
@@ -61,6 +62,9 @@ class AgentSpec(KindSpec):
         default_factory=dict, description="LLM params for this call (service_tier, thinking_level, ...) over the "
                                           "agent's own for the model it runs on: a map of templates, or one "
                                           "template that renders to an object; not which model (provider, model, ...)")
+    tool_bindings: dict[str, dict[str, Any]] = Field(
+        default_factory=dict, description="{tool pattern: {parameter: value (template)}}: the call's tool calls are "
+                                          "held to these values, and so are the sub-agents it spawns through a SAM")
     advanced: bool = Field(False, description="use the agent's advanced model profile")
     continue_: Optional[str] = Field(
         None, alias="continue", description="instance id (template) of this agent to follow up instead of spawning")
@@ -74,6 +78,14 @@ class AgentSpec(KindSpec):
     @classmethod
     def _llm_params(cls, value: Union[dict[str, Any], str]) -> Union[dict[str, Any], str]:
         problem = llm_params_problem(value) if isinstance(value, dict) else None
+        if problem:
+            raise ValueError(problem)
+        return value
+
+    @field_validator("tool_bindings")
+    @classmethod
+    def _tool_bindings(cls, value: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        problem = form_problem(value) if value else None
         if problem:
             raise ValueError(problem)
         return value
@@ -108,7 +120,7 @@ class AgentKind(ActivityKind):
     spends = True
     external = True
     spec_model = AgentSpec
-    template_fields = ("agent", "task", "vars", "llm_profile", "llm_params", "continue")
+    template_fields = ("agent", "task", "vars", "llm_profile", "llm_params", "tool_bindings", "continue")
     title = "Agent"
     icon = "brain"
     summary = ("Run an agent (a new instance, or continue one) with a task; out = its answer (parsed with "
@@ -139,8 +151,13 @@ class AgentKind(ActivityKind):
         if problem:
             raise ActivityError("config", problem)
         profile = str(act.render(spec.llm_profile, "llm_profile")) if spec.llm_profile else None
+        bindings = act.render(spec.tool_bindings, "tool_bindings") if spec.tool_bindings else None
+        problem = form_problem(bindings) if bindings else None  # a template may render to what cannot be bound
+        if problem:
+            raise ActivityError("config", f"{act.path}: {problem}")
         # passed only when set: a backend written before them runs every other machine as it did
-        tuned = {key: value for key, value in (("llm_profile", profile), ("llm_params", llm_params)) if value}
+        tuned = {key: value for key, value in (("llm_profile", profile), ("llm_params", llm_params),
+                                               ("tool_bindings", bindings)) if value}
         act.meta["agent"] = agent
         if spec.continue_:
             instance: Optional[str] = str(act.render(spec.continue_, "continue"))

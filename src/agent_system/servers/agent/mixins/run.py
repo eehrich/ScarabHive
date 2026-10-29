@@ -207,8 +207,8 @@ class RunMixin:
         from ....core.request_context import current_run_session, current_run_user, current_tool_bindings
         request_before, user_before = current_request_id.get(), current_run_user.get()
         session_before, bindings_before = current_run_session.get(), current_tool_bindings.get()
-        # Set here, before anything of the run can call a tool, and to None for a run without: one run's
-        # bindings are not its sub-agents', whose runs start in a copy of this context.
+        # Set here, before anything of the run can call a tool, and to None for a run without: a run started in a
+        # copy of this context binds its own (a SAM sub-agent takes these over explicitly, tool_bindings.inherited).
         current_tool_bindings.set(tool_bindings or None)
         try:
             # Pass status_scope parameters to _run_events which will open them AFTER

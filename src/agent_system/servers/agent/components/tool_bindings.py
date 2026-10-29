@@ -10,14 +10,16 @@ One function holds a call to them, whichever way the call comes: the model's own
 gateway, which dispatches through it. An external MCP tool a pattern matches does not run: nothing can be put into
 its call.
 
-What they do not reach: the runs a bound run starts -- an agent called as a tool, a sub-agent the model spawns --
-start with bindings of their own (none, unless their caller passes some: AgentCaller's ``tool_bindings``). A run
-that must stay inside its bindings gets no tool that starts another agent; its allowlist decides that. The model
+What they reach of the runs a bound run starts: a sub-agent the sub-agent manager spawns gets them (``inherited``),
+with its own on top -- it can only be held tighter; an AgentCaller call goes through it too. A machine refuses them
+(stategraph's facade: its steps run agents of their own), so a SAM spawn of one in a bound run is refused. Every
+other run it starts (an agent or a machine called as a tool) starts with bindings of its own (none, unless its caller
+passes some); a run that must stay inside its bindings gets no such tool, its allowlist decides that. The model
 sees a bound parameter in the tool's schema as before (schemas are shared by every session of an agent, for the
 prompt cache); a call that asks for another value is refused with the value to leave out.
 
-Every later run must be handed them again; nothing reads them from the session. The sub-agent manager keeps a
-bound instance's in its metadata for its continues, and a sub-agent's session is never woken (SessionPresence.notify
+Every later run must be handed them again; nothing reads them from the session. The sub-agent manager and a
+stategraph machine keep a bound instance's in its metadata for its continues, and a sub-agent's session is never woken (SessionPresence.notify
 leaves its input to the run that spawned it). A bound run in a session that can be woken would need them read from
 its record -- a woken run gets none.
 """
@@ -47,6 +49,23 @@ def form_problem(bindings: Any) -> Optional[str]:
             if not isinstance(value, (str, int, float, bool)):
                 return f"tool_bindings[{pattern!r}][{key!r}] must be a string, number or boolean"
     return None
+
+
+def inherited(own: Optional[Bindings]) -> tuple[Optional[Bindings], Optional[str]]:
+    """The bindings of a run this run starts: this run's (the context's, set by code, never by a model) with *own*
+    on top, or the problem -- *own* holding a parameter this run holds to another value. A pattern of both keeps
+    the values of each; two patterns that meet on one tool with different values are refused at its call."""
+    from ....core.request_context import current_tool_bindings
+
+    merged = {pattern: dict(values) for pattern, values in (current_tool_bindings.get() or {}).items()}
+    for pattern, values in (own or {}).items():
+        held = merged.setdefault(pattern, {})
+        for key, value in values.items():
+            if key in held and held[key] != value:
+                return None, (f"tool_bindings[{pattern!r}][{key!r}]: this run holds it to {held[key]!r}; a run it "
+                              f"starts cannot have {value!r}")
+            held[key] = value
+    return merged or None, None
 
 
 def values_for(bindings: Optional[Bindings], tool_name: str, server_name: Optional[str]) -> tuple[dict, Optional[str]]:

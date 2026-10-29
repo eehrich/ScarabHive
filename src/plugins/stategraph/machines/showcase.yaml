@@ -200,6 +200,8 @@ states:
             agent: stategraph_example_agent
             task: "{{ section_task(heading, index, ctx, params) }}"
             vars: {section: "{{ heading }}"}   # only for this call, over the machine's vars
+            # its store calls -- and those of a sub-agent it spawns -- stay in this run's namespace, whatever it asks
+            tool_bindings: {"stategraph_json/*": {namespace: "{{ resources.store }}"}}
             check: long_enough             # a companion check; ValueError is feedback
             parse_retries: 2               # feedback rounds before check_failed
         transitions:

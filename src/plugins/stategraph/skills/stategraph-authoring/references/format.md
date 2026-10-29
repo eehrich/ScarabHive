@@ -351,6 +351,7 @@ instance session of its own; there is no list of spawnable agents to add it to.
 | `vars` | Template vars for this call (templates), over the machine's (§11). |
 | `llm_profile` | The LLM profile this call runs on instead of the agent's own, as `--llm` does; the agent's chain stays its fallback. A literal, or `"{{ params.x }}"` with an `enum` -- every value must be a configured profile (SG007). Not together with `advanced`. |
 | `llm_params` | LLM params for this call -- `service_tier`, `thinking_level`, `max_tokens` ... -- over the agent's own for the model it runs on (`llm_profile`, or its advanced one with `advanced`), in the feedback rounds too; a fallback model the agent switches to after an error, and its advanced model when it escalates a stuck run, run with the agent's own params. A map of templates, or one template that renders to an object. Only `service_tier`, `thinking_level`, `thinking_budget`, `include_thoughts`, `max_tokens`, `temperature`, `provider_affinity_minutes`: which model and where the request goes stay the agent's (SG005, or `config` for one template). Example: `llm_params: {service_tier: "{{ params.service_tier }}"}`. |
+| `tool_bindings` | `{tool pattern: {parameter: value}}` the call's tool calls are held to -- in its feedback rounds too, and kept with the instance: a later `continue` that names none runs bound, one naming others fails (`config`); and in every sub-agent it spawns through a SAM, which can hold it tighter but never looser. Patterns as in the allowlist; the values are templates, rendered per call, a value that renders to no string, number or boolean fails the step (`config`) before the agent runs. Example: `tool_bindings: {"store/*": {namespace: "{{ ctx.store }}"}}`. |
 | `advanced` | `true` uses the agent's advanced model profile. |
 | `continue` | Template: an instance id (of this run, and of the agent `agent` names) to follow up instead of starting a new instance. The instance keeps its conversation, also across a resume. One call per instance at a time: a second concurrent `continue` of it fails with `config`. |
 
@@ -802,7 +803,7 @@ contains them -- a dict literal, a string with a colon -- goes into a block scal
 
 ### Template fields
 
-Exactly these: `task`, `args`, `params`, `vars`, `llm_params`, `question`, `questions`,
+Exactly these: `task`, `args`, `params`, `vars`, `llm_params`, the values of `tool_bindings`, `question`, `questions`,
 `criteria`, `input`, `continue`, `emit`, a callback's `frame`, a final's `output`, and
 the kind value (`agent`, `tool`, `by`, `llm_profile`) of the form
 `"{{ params.<name> }}"`. `max_visits`, a `timeout` and a timer's `after` may be a

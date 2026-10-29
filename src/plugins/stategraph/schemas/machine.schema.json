@@ -271,6 +271,15 @@
           "description": "deadline of one attempt (or a {{ }} expression over params)",
           "title": "Timeout"
         },
+        "tool_bindings": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "description": "{tool pattern: {parameter: value (template)}}: the call's tool calls are held to these values, and so are the sub-agents it spawns through a SAM",
+          "title": "Tool Bindings",
+          "type": "object"
+        },
         "vars": {
           "anyOf": [
             {

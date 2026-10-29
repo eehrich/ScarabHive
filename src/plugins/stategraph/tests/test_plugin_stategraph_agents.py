@@ -607,6 +607,57 @@ async def test_a_calls_llm_params_run_it_on_its_own_model_with_them(harness, tmp
     assert [call["advanced"] for call in writer.calls] == [False, False, True, False, False]
 
 
+async def test_a_calls_tool_bindings_hold_its_runs_with_the_values_rendered(harness, tmp_path):
+    """tool_bindings of a step: the agent's run is held to them -- rendered from the run's values, in a continue and
+    a feedback round too; a step without runs unbound, a value no binding can take fails it before the agent runs."""
+    writer = FakeAgent("writer", lambda call: '{"ok": true}' if len(writer.calls) > 1 else "not json")
+    host = AgentHost(tmp_path / "sessions", writer)
+    _, row = await run(harness, host, machine("""\
+        a:
+          do: {agent: writer, task: rate it, schema: {type: object},
+               tool_bindings: {"store/*": {namespace: "story_{{ params.n }}"}}}
+          transitions: [{target: b}]
+        b:
+          do: {agent: writer, task: plain}
+          transitions: [{target: done}]
+        done: {type: final}
+        """, head="params: {n: {type: string, default: '7'}}\n"))
+    assert row["status"] == "succeeded", row["error"]
+    bound = {"store/*": {"namespace": "story_7"}}
+    assert [call["tool_bindings"] for call in writer.calls] == [bound, bound, None]
+
+    host = AgentHost(tmp_path / "other", FakeAgent("writer"))
+    _, row = await run(harness, host, machine("""\
+        a:
+          do: {agent: writer, task: t, tool_bindings: {"store/*": {namespace: "{{ [1, 2] }}"}}}
+          transitions: [{target: done}]
+        done: {type: final}
+        """))
+    assert row["status"] == "failed" and "must be a string, number or boolean" in row["error"]["message"], row["error"]
+    assert host.calls() == []
+
+
+async def test_an_instance_keeps_the_tool_bindings_of_its_create(harness, tmp_path):
+    """A later step continuing a bound instance without naming bindings runs it bound all the same; one naming
+    others fails before the agent runs -- they would loosen what it may touch."""
+    host = AgentHost(tmp_path / "sessions", FakeAgent("writer"))
+    _, row = await run(harness, host, machine("""\
+        a:
+          do: {agent: writer, task: draft it, tool_bindings: {"store/*": {namespace: s7}}}
+          transitions: [{target: b, effect: "ctx.inst = activity.instance_id"}]
+        b:
+          do: {agent: writer, continue: "{{ ctx.inst }}", task: shorten it}
+          transitions: [{target: c}]
+        c:
+          do: {agent: writer, continue: "{{ ctx.inst }}", task: again, tool_bindings: {"store/*": {namespace: s8}}}
+          transitions: [{target: done}]
+        done: {type: final}
+        """, head="context: {inst: null}\n"))
+    bound = {"store/*": {"namespace": "s7"}}
+    assert [call["tool_bindings"] for call in host.calls()] == [bound, bound], host.calls()
+    assert row["status"] == "failed" and "holds other tool bindings" in row["error"]["message"], row["error"]
+
+
 @pytest.mark.parametrize("case", ["computed", "no enum", "with advanced", "not configured", "literal not configured"])
 def test_llm_profile_is_a_profile_the_configuration_has(case):
     """Like an agent name: a literal or a parameter with an enum, so the configuration check sees every value."""

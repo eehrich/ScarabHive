@@ -60,8 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused. One check for
   every way a tool is called: the model's own loop, `dispatch_tool_call` (scripts, hooks) and the MCP gateway,
   whose grant `pinned` takes the same form. A model call that is a coding CLI's run hands them on as `pin`;
-  `AgentCaller` passes them to the sub-agent manager (`_tool_bindings`). The bindings are the run's own: a
-  sub-agent does not take over its caller's.
+  `AgentCaller` passes them to the sub-agent manager (`_tool_bindings`). A sub-agent the manager spawns in a bound
+  run takes over its caller's (it can be held tighter, never looser); a SAM spawn of a machine in a bound run is
+  refused; every other run a bound run starts begins with bindings of its own. A stategraph `agent` step takes
+  `tool_bindings` (values are templates) for the agent it runs; the instance keeps them for its continues.
 - coding_cli: a workdir's `gateway` (tools, `pin`, `allowed`, `read_only`, `confined`) hands its runs tools of
   this installation through the MCP gateway -- a grant per run, revoked at its end; `run_task` takes the run's tool
   bindings as `pin` (`{tool pattern: {parameter: value}}`, at least what the workdir requires). Claude Code gets the
@@ -71,7 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the final report (default 12,000, up to 200,000) for a caller that takes it as its answer.
 - sub_agent_manager: the tool bindings a create gets (`_tool_bindings`, framework code only) are kept with the
   instance -- every later run of it, a continue or a background run, is held to them; a continue naming other ones
-  is refused.
+  is refused. A create or continue in a bound run adds that run's bindings; one holding a parameter of the same
+  pattern to another value than the run does is refused (two patterns that meet on one tool with different values
+  refuse that tool's calls).
 - `/events` takes `rerun_ended` (POST body or query): a job under the request_id that broke off -- failed, or
   ended without an answer, not cancelled -- runs again under that id as the same agent, instead of replaying its
   end (a finished job is kept until the process ends, so a dispatcher's retry only saw the old failure). A running

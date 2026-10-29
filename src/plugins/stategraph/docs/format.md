@@ -65,7 +65,7 @@ states:
 
 | Kind (`do:`) | Keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task`, `schema`, `parse`, `check`, `parse_retries`, `vars`, `llm_profile`, `llm_params`, `advanced`, `continue` | answer text or parsed value |
+| `agent: <name>` | `task`, `schema`, `parse`, `check`, `parse_retries`, `vars`, `llm_profile`, `llm_params`, `tool_bindings`, `advanced`, `continue` | answer text or parsed value |
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result |
 | `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile` -- or `by` (an agent decides), `advanced`, `parse_retries` | `{value, confidence, probabilities}` |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`, `input`, `profile` or `by` | `{name: {...}}` |
@@ -89,7 +89,7 @@ resumes an interrupted run by itself, unless its caller handed it `live` objects
 | Field kind | Fields | Syntax |
 |---|---|---|
 | code (Python, no braces) | `guard`, `effect`, `entry`, `exit`, `map`, `until`, `error_if` | `ctx.round < params.rounds` |
-| template (literal unless `{{ }}`) | `task`, `args`, `params`, `vars`, `llm_params`, `question`, `questions`, `criteria`, `input`, `continue`, `emit`, `frame`, `output`; `agent`/`tool`/`by`/`llm_profile` only as `"{{ params.x }}"` (an enum, and required or a default) | `"{{ ctx.draft }}"` keeps the type; mixed text interpolates |
+| template (literal unless `{{ }}`) | `task`, `args`, `params`, `vars`, `llm_params`, `tool_bindings` values, `question`, `questions`, `criteria`, `input`, `continue`, `emit`, `frame`, `output`; `agent`/`tool`/`by`/`llm_profile` only as `"{{ params.x }}"` (an enum, and required or a default) | `"{{ ctx.draft }}"` keeps the type; mixed text interpolates |
 
 | Bound | Where |
 |---|---|

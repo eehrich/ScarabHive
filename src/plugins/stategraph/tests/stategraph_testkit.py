@@ -102,16 +102,20 @@ class FakeBackend:
 
     async def agent_create(self, act: Any, *, agent: str, task: str, advanced: bool, vars: dict[str, Any],
                            llm_profile: Optional[str] = None,
-                           llm_params: Optional[dict[str, Any]] = None) -> tuple[Any, Optional[str]]:
+                           llm_params: Optional[dict[str, Any]] = None,
+                           tool_bindings: Optional[dict[str, Any]] = None) -> tuple[Any, Optional[str]]:
         answer = await self._answer("agent_create", act, agent=agent, task=task, vars=dict(vars),
-                                    **_passed(llm_profile=llm_profile, llm_params=llm_params))
+                                    **_passed(llm_profile=llm_profile, llm_params=llm_params,
+                                              tool_bindings=tool_bindings))
         return answer, f"inst-{act.path}"
 
     async def agent_continue(self, act: Any, *, agent: str, instance_id: str, message: str,
                              advanced: bool, vars: dict[str, Any], llm_profile: Optional[str] = None,
-                             llm_params: Optional[dict[str, Any]] = None) -> Any:
+                             llm_params: Optional[dict[str, Any]] = None,
+                             tool_bindings: Optional[dict[str, Any]] = None) -> Any:
         return await self._answer("agent_continue", act, agent=agent, instance_id=instance_id, message=message,
-                                  vars=dict(vars), **_passed(llm_profile=llm_profile, llm_params=llm_params))
+                                  vars=dict(vars), **_passed(llm_profile=llm_profile, llm_params=llm_params,
+                                                             tool_bindings=tool_bindings))
 
     async def call_tool(self, act: Any, *, tool: str, args: dict[str, Any]) -> Any:
         return await self._answer("call_tool", act, tool=tool, args=dict(args))
@@ -157,7 +161,7 @@ class FakeAgent:
 
     async def run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None,
                          llm_override: Any = None, llm_profile_info_override: Any = None,
-                         use_advanced_model: bool = False):
+                         use_advanced_model: bool = False, tool_bindings: Any = None):
         from agent_system.core.cancellation import get_cancellation_manager
         from agent_system.llm.models import ChatMessage
 
@@ -168,7 +172,7 @@ class FakeAgent:
         call = {"agent": self.name, "task": task, "session": session_id, "request_id": request_id,
                 "advanced": use_advanced_model, "llm": (llm_override, llm_profile_info_override),
                 "vars": dict(tracker.get_session_template_vars(session_id)),
-                "history": [message.content for message in history], "token": token}
+                "history": [message.content for message in history], "token": token, "tool_bindings": tool_bindings}
         self.calls.append(call)
         try:
             yield {"type": "start"}

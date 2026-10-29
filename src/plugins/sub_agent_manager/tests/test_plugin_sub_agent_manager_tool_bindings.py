@@ -94,6 +94,64 @@ async def test_malformed_bindings_create_no_instance(setup):
     assert not (parent.get("metadata") or {}).get("sub_agents")
 
 
+@pytest.fixture
+def bound_caller():
+    """The calling run is bound, as Agent.run_events binds it: the context its tool calls run in."""
+    from agent_system.core.request_context import current_tool_bindings
+
+    token = current_tool_bindings.set({"store/*": {"namespace": "story_7"}})
+    yield
+    current_tool_bindings.reset(token)
+
+
+async def test_a_bound_runs_sub_agent_is_held_by_its_bindings_and_its_own(setup, bound_caller):
+    server, sessions, runs = setup
+    created = await call(server, operation="create", agent_type="worker", task="write", _tool_bindings=BINDINGS)
+    held = {"store/*": {"namespace": "story_7"}, **BINDINGS}
+    stored = await sessions.load_session(USER, created["instance_id"])
+    assert stored["metadata"]["tool_bindings"] == held and runs[-1]["tool_bindings"] == held
+    # a follow-up naming its own again, as AgentCaller's do, runs with the same
+    again = await call(server, operation="continue", instance_id=created["instance_id"], message="more",
+                       _tool_bindings=BINDINGS)
+    assert again["status"] == "completed", again
+    assert runs[-1]["tool_bindings"] == held
+    # one it creates without bindings of its own gets the caller's
+    await call(server, operation="create", agent_type="worker", task="read")
+    assert runs[-1]["tool_bindings"] == {"store/*": {"namespace": "story_7"}}
+
+
+async def test_a_sub_agent_cannot_loosen_what_its_caller_is_held_to(setup, bound_caller):
+    server, _, runs = setup
+    refused = await call(server, operation="create", agent_type="worker", task="write",
+                         _tool_bindings={"store/*": {"namespace": "story_8"}})
+    assert refused["error_type"] == "invalid_tool_bindings" and "story_7" in refused["error"] and runs == []
+
+
+async def test_a_bound_run_continuing_an_unbound_instance_holds_it(setup):
+    """An instance created before its caller was bound: the caller's bindings hold its continue all the same."""
+    from agent_system.core.request_context import current_tool_bindings
+
+    server, _, runs = setup
+    plain = await call(server, operation="create", agent_type="worker", task="read")
+    token = current_tool_bindings.set({"store/*": {"namespace": "story_7"}})
+    try:
+        result = await call(server, operation="continue", instance_id=plain["instance_id"], message="more")
+    finally:
+        current_tool_bindings.reset(token)
+    assert result["status"] == "completed", result
+    assert runs[-1]["tool_bindings"] == {"store/*": {"namespace": "story_7"}}
+    # one created unbound with bindings of its own: a bound run naming them again continues it, held by both
+    own = await call(server, operation="create", agent_type="worker", task="read", _tool_bindings=BINDINGS)
+    token = current_tool_bindings.set({"store/*": {"namespace": "story_7"}})
+    try:
+        result = await call(server, operation="continue", instance_id=own["instance_id"], message="more",
+                            _tool_bindings=BINDINGS)
+    finally:
+        current_tool_bindings.reset(token)
+    assert result["status"] == "completed", result
+    assert runs[-1]["tool_bindings"] == {**BINDINGS, "store/*": {"namespace": "story_7"}}
+
+
 async def test_a_background_create_runs_with_its_bindings(setup):
     server, _, runs = setup
     started = await call(server, operation="create", agent_type="worker", task="write", blocking=False,

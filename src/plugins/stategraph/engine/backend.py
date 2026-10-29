@@ -58,13 +58,16 @@ def _stop_grace() -> float:
 class Backend(Protocol):
     async def agent_create(self, act: "ActivityRun", *, agent: str, task: str, advanced: bool,
                            vars: dict[str, Any], llm_profile: Optional[str] = None,
-                           llm_params: Optional[dict[str, Any]] = None) -> tuple[str, Optional[str]]:
+                           llm_params: Optional[dict[str, Any]] = None,
+                           tool_bindings: Optional[dict[str, Any]] = None) -> tuple[str, Optional[str]]:
         """Run a new instance of an agent: ``(answer text, instance id)``. ``llm_profile``, ``llm_params``: the
-        model this call runs on, and params over the agent's own for it (passed only when an activity sets them)."""
+        model this call runs on, and params over the agent's own for it; ``tool_bindings``: what its tool calls are
+        held to (each passed only when an activity sets it)."""
 
     async def agent_continue(self, act: "ActivityRun", *, agent: str, instance_id: str, message: str,
                              advanced: bool, vars: dict[str, Any], llm_profile: Optional[str] = None,
-                             llm_params: Optional[dict[str, Any]] = None) -> str:
+                             llm_params: Optional[dict[str, Any]] = None,
+                             tool_bindings: Optional[dict[str, Any]] = None) -> str:
         """Follow up an instance of ``agent``: its answer text."""
 
     async def call_tool(self, act: "ActivityRun", *, tool: str, args: dict[str, Any]) -> Any:
@@ -196,8 +199,9 @@ class ScarabHiveBackend:
         """The run's token -- none for a finally or close activity: it runs on after a terminate (§3.10)."""
         return None if act.finalizer else self.token
 
-    async def _instance_of_this_run(self, service: Any, user: str, instance_id: str, agent: str) -> None:
-        """A continue reaches only an instance this run created, of the agent the activity names."""
+    async def _instance_of_this_run(self, service: Any, user: str, instance_id: str, agent: str) -> Optional[dict]:
+        """A continue reaches only an instance this run created, of the agent the activity names: its tool
+        bindings (those of its create), or None."""
         try:
             data = await service.session_manager.load_session(user, instance_id)
         except Exception:  # unknown, another user's, or not a session id at all
@@ -208,6 +212,7 @@ class ScarabHiveBackend:
         if data.get("agent_name") != agent:
             raise ActivityError("config", f"continue: instance {instance_id!r} belongs to agent "
                                           f"{data.get('agent_name')!r}, not {agent!r}")
+        return (data.get("metadata") or {}).get("tool_bindings") or None
 
     def _llm_for(self, agent: Any, advanced: bool, profile: Optional[str],
                  params: Optional[dict[str, Any]]) -> tuple[Any, Optional[str]]:
@@ -233,7 +238,8 @@ class ScarabHiveBackend:
 
     async def _run_agent(self, act: "ActivityRun", agent: Any, service: Any, *, instance_id: str, message: str,
                          advanced: bool, variables: dict[str, Any], new: bool,
-                         llm: tuple[Any, Optional[str]] = (None, None)) -> str:
+                         llm: tuple[Any, Optional[str]] = (None, None),
+                         tool_bindings: Optional[dict[str, Any]] = None) -> str:
         """One run of ``agent`` on its instance session: the run's final answer.
 
         The instance session holds exactly this call's effective vars -- replaced, never accumulated
@@ -270,7 +276,8 @@ class ScarabHiveBackend:
             if variables:
                 tracker.set_session_template_vars(instance_id, dict(variables))
             await self._show_call(act, agent.name, instance_id, message, request_id, new)
-            work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced, spend, *llm))
+            work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced, spend, *llm,
+                                                      tool_bindings=tool_bindings))
             try:
                 text = await self._guarded(act, agent.name, work)
             except asyncio.CancelledError:  # a timeout, a terminate, a failed parallel sibling
@@ -300,7 +307,8 @@ class ScarabHiveBackend:
 
     @staticmethod
     async def _answer(agent: Any, instance_id: str, message: str, request_id: str, advanced: bool,
-                      spend: _Spend, llm: Any = None, label: Optional[str] = None) -> str:
+                      spend: _Spend, llm: Any = None, label: Optional[str] = None,
+                      tool_bindings: Optional[dict[str, Any]] = None) -> str:
         """Consume the run's events to its end; the final summary is the answer, an error or cancel a failure.
         ``spend`` adds up what its calls cost. ``llm``: the client of a call with llm_params, ``label`` its name."""
         from contextlib import aclosing
@@ -308,7 +316,8 @@ class ScarabHiveBackend:
         text = ""
         async with aclosing(agent.run_events(task=message, request_id=request_id, session_id=instance_id,
                                              llm_override=llm, llm_profile_info_override=label,
-                                             use_advanced_model=advanced)) as events:
+                                             use_advanced_model=advanced,
+                                             **({"tool_bindings": tool_bindings} if tool_bindings else {}))) as events:
             async for event in events:
                 spend.add(event)
                 kind = event.get("type")
@@ -362,7 +371,8 @@ class ScarabHiveBackend:
 
     async def agent_create(self, act: "ActivityRun", *, agent: str, task: str, advanced: bool,
                            vars: dict[str, Any], llm_profile: Optional[str] = None,
-                           llm_params: Optional[dict[str, Any]] = None) -> tuple[str, Optional[str]]:
+                           llm_params: Optional[dict[str, Any]] = None,
+                           tool_bindings: Optional[dict[str, Any]] = None) -> tuple[str, Optional[str]]:
         target = self._agent(agent)
         service = self._sessions(target)
         llm = self._llm_for(target, advanced, llm_profile, llm_params)  # refused before an instance exists
@@ -379,12 +389,15 @@ class ScarabHiveBackend:
                 created["depth"] = int(self.nesting.get("depth") or 1) + 1  # instance calls counts on from there
                 if budget is not None:
                     created["depth_budget"] = budget - 1
+            if tool_bindings:  # kept with the instance: a continue that names none runs with them
+                created.setdefault("metadata", {})["tool_bindings"] = tool_bindings
+            if self.nesting or tool_bindings:
                 await service.session_manager.save_session(created)
         except Exception as exc:
             raise ActivityError("agent_failed", f"{agent}: its session could not be created: {exc}") from exc
         instance = created["session_id"]
         text = await self._run_agent(act, target, service, instance_id=instance, message=task, advanced=advanced,
-                                     variables=vars, new=True, llm=llm)
+                                     variables=vars, new=True, llm=llm, tool_bindings=tool_bindings)
         return text, instance
 
     # ------------------------------------------------------------ the run's own session
@@ -504,13 +517,19 @@ class ScarabHiveBackend:
 
     async def agent_continue(self, act: "ActivityRun", *, agent: str, instance_id: str, message: str,
                              advanced: bool, vars: dict[str, Any], llm_profile: Optional[str] = None,
-                             llm_params: Optional[dict[str, Any]] = None) -> str:
+                             llm_params: Optional[dict[str, Any]] = None,
+                             tool_bindings: Optional[dict[str, Any]] = None) -> str:
         target = self._agent(agent)
         service = self._sessions(target)
-        await self._instance_of_this_run(service, self.user_id or "anonymous", instance_id, target.name)
+        kept = await self._instance_of_this_run(service, self.user_id or "anonymous", instance_id, target.name)
+        if tool_bindings is not None and tool_bindings != kept:  # they would loosen or change what it may touch
+            raise ActivityError("config", f"continue: instance {instance_id!r} holds other tool bindings than this "
+                                          "step names -- the instance keeps those of its create")
+        tool_bindings = kept
         llm = self._llm_for(target, advanced, llm_profile, llm_params)
         return await self._run_agent(act, target, service, instance_id=instance_id, message=message,
-                                     advanced=advanced, variables=vars, new=False, llm=llm)
+                                     advanced=advanced, variables=vars, new=False, llm=llm,
+                                     tool_bindings=tool_bindings)
 
     def agent_template_vars(self, agent: str) -> dict[str, Any]:
         from agent_system.config.settings import get_tool_server_config
