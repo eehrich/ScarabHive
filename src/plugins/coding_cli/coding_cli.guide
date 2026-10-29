@@ -285,9 +285,10 @@ agy shows a server's tools to its model only through its own
 @{tt}call_mcp_tool@{utt}, under no name of their own, so an agy run with a
 grant gets a fixed note in front of its task: the workdir's tools, how to
 reach them, that its own file tools are refused outside its working
-directory, and that it has no shell (a headless run's command is refused).
-Without it a run that was to edit a file outside took its own tools, was
-refused and ended without an answer.
+directory, and that it has no shell. Without it a run that was to edit a
+file outside took its own tools, was refused and ended without an answer.
+An agy run without a grant gets the shell sentence alone: a headless run's
+command is refused, and a run that tried one ended without an answer.
 @{bullet}With @{tt}web@{utt} -- for agy always -- the workdir needs
 @{tt}read_only: true@{utt} or @{tt}confined: true@{utt}. read_only: the
 operator vouches that its tools and allowed values only read. confined (needs a

@@ -231,14 +231,18 @@ def agy_gateway(worktree: Path, url: str, token: Optional[str]) -> None:
         "serverUrl": url, "headers": {"Authorization": f"Bearer {token}"}}}}), encoding="utf-8")
 
 
-def agy_gateway_note(tools: Iterable[str]) -> str:
-    """What an agy run with a gateway grant reads before its task. agy offers MCP tools only through its
-    call_mcp_tool, under no name of their own; a task that names them is read as naming agy's own file tools, and
-    those a headless run is refused for a file outside its workspace -- the run ends without an answer. A task on a
-    file outside the workspace that named no tool: with this note every run took the gateway, without it every run
-    its own tools (measured 1.4.9, 2026-10-29). Inside the working directory its own tools stay the ones to use.
-    A headless run has no shell either: a command it runs (to list a folder) is refused and the run ends without an
-    answer (1 of 30 runs, 2026-10-29)."""
+def agy_note(tools: Optional[Iterable[str]] = None) -> str:
+    """What every agy run reads before its task. A headless run has no shell: a command it runs (to list a folder,
+    `git status`) is refused and the run ends without an answer -- measured with and without a gateway (1 of 30
+    runs with one; 3 of 8 of a tool-less answering agent without, 2026-10-29).
+
+    *tools*: those of the run's gateway grant. agy offers MCP tools only through its call_mcp_tool, under no name
+    of their own; a task that names them is read as naming agy's own file tools, and those a headless run is refused
+    for a file outside its workspace. A task on a file outside the workspace that named no tool: with the note every
+    run took the gateway, without it every run its own tools (measured 1.4.9, 2026-10-29). Inside the working
+    directory its own tools stay the ones to use."""
+    if not tools:
+        return "You have no shell: a command is refused. Work from the task and your file tools.\n\n"
     return (f"Besides your own tools you have the MCP tools of the server `{GATEWAY_SERVER}`: {', '.join(tools)}. "
             f"You reach them only through call_mcp_tool (server `{GATEWAY_SERVER}`). For files outside your working "
             "directory use them: your own file tools (read_file, write_file, edit_file, ...) are refused there. "

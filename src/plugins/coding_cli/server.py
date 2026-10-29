@@ -1118,7 +1118,7 @@ class CodingCliServer(SchemaBasedToolServer):
                   "owner": self._me}
         if self.agy:
             # Before the task, the same for every run in the workdir: the cached prefix stays one.
-            note = cli.agy_gateway_note(gateway["tools"]) if token else ""
+            note = cli.agy_note(gateway["tools"] if token else None)
             self._file(run_id, "task").write_text(cli.agy_input(note + task), encoding="utf-8")
         else:
             self._file(run_id, "task").write_text(task, encoding="utf-8")

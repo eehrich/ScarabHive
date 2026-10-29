@@ -38,13 +38,14 @@ async def test_an_agy_run_is_read_like_a_claude_code_run(repo, log):
     result, status = await call(server, "run_task", task="WRITE b.txt hello\nDENY")
     assert result["state"] == "done", result
     assert git(repo, "show", f"{result['branch']}:b.txt") == "hello" and result["commit"]
-    assert result["result"] == {"untrusted": True, "content": "did: WRITE b.txt hello"}
+    # the fake answers with the task's first line: the note every agy run reads before its task
+    assert result["result"] == {"untrusted": True, "content": "did: " + cli.agy_note().splitlines()[0]}
     assert result["denials"] == {"untrusted": True, "content": ["RunCommand"]}
     record = server._load(result["run_id"])
     assert record["model"] == "gemini-3.8-flash" and record["claude_session"] and record["cli"] == "antigravity"
     sent = log()
-    # The task went in on stdin as agy's one stream message, whole; --print= is the last word.
-    assert sent["task"] == "WRITE b.txt hello\nDENY"
+    # The task went in on stdin as agy's one stream message, whole, behind the note; --print= is the last word.
+    assert sent["task"] == cli.agy_note() + "WRITE b.txt hello\nDENY"
     argv = sent["argv"]
     assert argv[-1] == "--print=" and argv[argv.index("--mode") + 1] == "accept-edits"
     assert argv[argv.index("--effort") + 1] == "high" and "--disable-slash-commands" in argv

@@ -74,6 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run's own file. An instance's `env` sets values its runs get (the plugin's own win), and `max_result_chars` bounds
   the final report (default 12,000, up to 200,000) for a caller that takes it as its answer. A CLI still going a
   minute after its result event is ended, the result stands -- its caller no longer waits for the time limit.
+  Every agy run reads before its task that it has no shell (a headless run's command is refused, the run ended
+  without an answer), with or without a gateway.
 - sub_agent_manager: the tool bindings a create gets (`_tool_bindings`, framework code only) are kept with the
   instance -- every later run of it, a continue or a background run, is held to them; a continue naming other ones
   is refused. A create or continue in a bound run adds that run's bindings; one holding a parameter of the same

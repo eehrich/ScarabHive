@@ -122,7 +122,7 @@ async def test_an_agy_run_finds_its_grant_in_the_workspace_and_commits_none(repo
     token = config["mcpServers"][cli.GATEWAY_SERVER]["headers"]["Authorization"].removeprefix("Bearer ")
     assert config["mcpServers"][cli.GATEWAY_SERVER]["serverUrl"].endswith("/plugins/mcp_gateway/mcp")
     # agy offers the gateway's tools only through call_mcp_tool: the run is told so before its task.
-    assert log()["task"] == cli.agy_gateway_note(GATEWAY["tools"]) + "WRITE b.txt one"
+    assert log()["task"] == cli.agy_note(GATEWAY["tools"]) + "WRITE b.txt one"
     assert f"mcp({cli.GATEWAY_SERVER}/*)" in cli.AGY_SETTINGS["permissions"]["allow"]
     assert first["state"] == "done" and grants.lookup("mcp_gateway", token) is None
     worktree = Path(server._load(first["run_id"])["worktree"])
