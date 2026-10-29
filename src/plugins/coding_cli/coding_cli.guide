@@ -10,7 +10,10 @@ This plugin lets an agent hand a programming task to @{b}Claude Code@{ub}.
 Each task becomes a @{i}run@{ui}: one headless Claude Code process, started
 on the Claude Code login of the account ScarabHive runs under -- the
 operator's subscription, not an API key -- in a fresh git worktree of a
-repository the operator listed. What the run changed is committed on a
+repository the operator listed. Claude Code renews that login in its own
+files (@{tt}~/.claude@{utt}, @{tt}~/.claude.json@{utt}, or
+@{tt}CLAUDE_CONFIG_DIR@{utt}); a service that may not write them gets a
+warning at the start -- its login would end with the token, after 8 h. What the run changed is committed on a
 branch of its own; nothing is merged or pushed. The agent gets back the
 branch, the changed files and Claude Code's report -- with a
 @{tt}json_schema@{utt} also an object matching it -- and can continue the

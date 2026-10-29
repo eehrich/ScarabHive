@@ -180,6 +180,25 @@ AGY_UNSAFE = ("hooks.json", "plugins", "mcp_config.json")
 CLAUDE_ONLY_ENV = frozenset({"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"})
 
 
+def claude_login_unwritable(env: Mapping[str, str]) -> list[str]:
+    """Where Claude Code keeps its login and could not write it under *env* -- its config folder (CLAUDE_CONFIG_DIR,
+    else ~/.claude) and, without that variable, ~/.claude.json, which it keeps writing as it runs. The renewed access
+    token goes into the folder (.credentials.json); unwritable, every login holds only until the token expires
+    (8 h), then each run fails with 401 and its caller falls back -- measured on a server whose service unit made
+    the home read-only. A long-lived token (CLAUDE_CODE_OAUTH_TOKEN) is renewed by nobody: nothing to write. No
+    home to be found: nothing said -- the check is a warning, never what keeps an instance from starting."""
+    if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return []
+    try:
+        home = Path(env.get("HOME") or env.get("USERPROFILE") or Path.home())
+    except (RuntimeError, OSError):  # no HOME and no passwd entry for the uid
+        return []
+    configured = env.get("CLAUDE_CONFIG_DIR")
+    paths = [Path(configured)] if configured else [home / ".claude", home / ".claude.json"]
+    # One that is not there yet is written into its folder.
+    return [str(path) for path in paths if not os.access(path if path.exists() else path.parent, os.W_OK)]
+
+
 def agy_home(root: Path, env: dict) -> None:
     """Points env's home at `root`, holding the settings an agy run is measured under (AGY_SETTINGS) and nothing
     of the user's -- their permission presets, MCP servers and memories live in their own home. The login is not

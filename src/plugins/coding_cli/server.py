@@ -369,6 +369,12 @@ class CodingCliServer(SchemaBasedToolServer):
         if len(self.env) != len(env) or not isinstance(getattr(server_config, "env", None) or {}, dict):
             logger.warning("coding_cli: %s: env takes {NAME: value} with plain names and values -- the others are "
                            "left out", name)
+        if not self.agy:
+            unwritable = cli.claude_login_unwritable({**cli.child_env(self.pass_env), **self.env})
+            if unwritable:
+                logger.warning("coding_cli: %s: Claude Code cannot write its login files in this process (%s) -- "
+                               "without its folder it cannot renew its token, and every run fails once it expires "
+                               "(8 h): make them writable for the service", name, ", ".join(unwritable))
         self.model = str(getattr(server_config, "model", "") or "")
         # --restricted leaves the user's settings unread, their effortLevel too: the instance names its own.
         self.effort = str(getattr(server_config, "effort", "") or "")

@@ -111,6 +111,49 @@ def test_a_single_name_without_brackets_is_one_user(tmp_path):
     assert make_server(tmp_path, allowed_users="admin").allowed_users == {"admin"}
 
 
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root writes a read-only file all the same")
+def test_an_instance_says_when_claude_code_could_not_renew_its_login(tmp_path, monkeypatch, caplog):
+    """A login file Claude Code may not write holds until its token expires, then every run fails: said at the start,
+    for the instance's own CLAUDE_CONFIG_DIR too -- and not for agy, nor where a long-lived token needs no renewal."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    login = home / ".claude.json"
+    login.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    def warned(**config):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="plugins.coding_cli.server"):
+            make_server(tmp_path, **config)
+        return [r.getMessage() for r in caplog.records if "cannot write its login" in r.getMessage()]
+
+    assert warned() == []
+    login.chmod(0o444)  # read-only, as a service unit's ProtectHome makes it
+    try:
+        assert str(login) in warned()[0]
+        assert warned(cli="antigravity") == []
+        assert warned(env={"CLAUDE_CODE_OAUTH_TOKEN": "t"}) == []
+        own = tmp_path / "own"
+        own.mkdir()
+        assert warned(env={"CLAUDE_CONFIG_DIR": str(own)}) == [], "the instance's own folder is the one it writes"
+    finally:
+        login.chmod(0o644)
+
+
+def test_no_home_to_be_found_keeps_the_instance_starting(tmp_path, monkeypatch):
+    def nowhere(cls):
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(nowhere))
+    assert cli.claude_login_unwritable({}) == []
+    make_server(tmp_path)  # builds, the warning is left out
+
+
 async def call(server, tool, user="admin", session="s1", **params):
     status = Status()
     result = await getattr(server, tool)({**params, "_status": status, "_user_id": user, "_session_id": session})

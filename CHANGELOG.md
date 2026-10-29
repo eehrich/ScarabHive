@@ -75,7 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the final report (default 12,000, up to 200,000) for a caller that takes it as its answer. A CLI still going a
   minute after its result event is ended, the result stands -- its caller no longer waits for the time limit.
   Every agy run reads before its task that it has no shell (a headless run's command is refused, the run ended
-  without an answer), with or without a gateway.
+  without an answer), with or without a gateway. A Claude Code instance warns at its start when this process may
+  not write Claude Code's login files (a service with a read-only home): its token would not be renewed, and every
+  run would fail once it expired.
 - sub_agent_manager: the tool bindings a create gets (`_tool_bindings`, framework code only) are kept with the
   instance -- every later run of it, a continue or a background run, is held to them; a continue naming other ones
   is refused. A create or continue in a bound run adds that run's bindings; one holding a parameter of the same
