@@ -14,6 +14,7 @@ The task on stdin is a script, one command per line:
   GARBAGE               a line that is no JSON
   OUTPUT <json>         with --json-schema, the result's structured_output (else {"done": true})
   DEEP <n>              a tool call whose arguments nest n deep
+  LINGER <seconds>      after the result, wait before exiting (a CLI that does not end with its answer)
 With FAKE_CLAUDE_LOG set, argv and the environment's names go there as JSON.
 """
 import json
@@ -108,6 +109,9 @@ def main():
         result["structured_output"] = next((json.loads(line[7:]) for line in task.splitlines()
                                             if line.startswith("OUTPUT ")), {"done": True})
     emit(result)
+    for line in task.splitlines():
+        if line.startswith("LINGER "):
+            time.sleep(float(line.split()[1]))
 
 
 if __name__ == "__main__":

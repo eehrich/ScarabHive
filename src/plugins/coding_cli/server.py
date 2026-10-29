@@ -73,6 +73,9 @@ CAP_STDERR = 600
 CAP_HIDDEN = 50
 LAST_ACTIONS = 12
 POLL_S = 1.0
+# How long a CLI may go on after its result event before it is ended: the answer is on disk, and an agy run once
+# idled 14 minutes so until its time limit (1 of 146 runs, 2026-10-29; every other ended within 60 s).
+RESULT_GRACE_S = 60.0
 # Finalizing takes a few git calls; a claim this old belongs to a dead process.
 STALE_CLAIM_S = 300
 # How long a watcher that lost the claim waits for the winner's end.
@@ -1154,7 +1157,7 @@ class CodingCliServer(SchemaBasedToolServer):
         going = ((lambda: proc.poll() is None) if proc is not None
                  else (lambda: alive(record.get("pid"), record.get("pid_started"))))
         offset, deadline = 0, float(record.get("started_at") or time.time()) + self._limit_s(record)
-        stopped = False
+        stopped, answered = False, None
         try:
             while going():
                 await asyncio.sleep(POLL_S)
@@ -1166,10 +1169,19 @@ class CodingCliServer(SchemaBasedToolServer):
                     limit = self._limit_s(record) / 60
                     await self._stop_run(record, f"stopped after the time limit of {limit:.0f} min")
                     deadline, stopped = float("inf"), True
+                found, offset = cli.events_from(self._file(run_id, "jsonl"), offset)
+                if answered is None and any(event.get("type") == "result" for event in found):
+                    answered = time.time()
+                elif answered is not None and not stopped and time.time() - answered > RESULT_GRACE_S:
+                    # Its result is written and it does not exit: ended, the result stands (finalize: a success
+                    # result wins over a stop that came after it).
+                    logger.warning("coding_cli: run %s still going %.0f s after its result, ended", run_id,
+                                   time.time() - answered)
+                    await asyncio.to_thread(cli.kill_tree, record.get("pid"), record.get("pid_started"))
+                    stopped = True
                 listener, live = self._listeners.get(run_id), self._live.get(run_id)
                 if listener is None and live is None:
                     continue
-                found, offset = cli.events_from(self._file(run_id, "jsonl"), offset)
                 if live is not None:
                     await live.feed(found)
                 if listener is None:
