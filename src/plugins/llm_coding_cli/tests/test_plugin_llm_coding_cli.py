@@ -193,6 +193,49 @@ class TestFallback:
             await client().chat_tools(MESSAGES, [])
         assert any("next link of the chain answers" in r.getMessage() for r in caplog.records), "a silent fallback"
 
+    @pytest.mark.parametrize("provider,turns,why,second,runs", [
+        ("antigravity", 0, "authentication failed or timed out", done("late"), 2),  # renewed meanwhile: it answers
+        ("antigravity", 0, "authentication failed or timed out", "again", 2),       # really gone: once, then on
+        ("antigravity", 3, "authentication failed or timed out", None, 1),          # it ran: not the login at start
+        ("antigravity", 0, "the model is overloaded", None, 1),                     # another failure before a turn
+        ("claude_code", 0, "authentication failed or timed out", None, 1)])         # agy only
+    async def test_an_agy_run_that_found_its_login_expired_starts_once_more(self, instance, monkeypatch, provider,
+                                                                             turns, why, second, runs):
+        import plugins.llm_coding_cli.client as module
+
+        monkeypatch.setattr(module, "AUTH_RETRY_S", 0)
+        monkeypatch.setattr(module, "_login_lost_until", {})   # what an earlier case's lost login left
+        expired = {"status": "success", "run_id": "r1", "state": "failed", "turns": turns,
+                   "result": {"untrusted": True, "content": why}}
+        server = instance(expired, expired if second == "again" else second,
+                          cli=module.CLI_OF[provider])
+        if second is not None and second != "again":
+            assert (await client(provider).chat_tools(MESSAGES, []))["assistant"]["content"] == "late"
+        else:
+            with pytest.raises(LLMServerError, match="failed"):
+                await client(provider).chat_tools(MESSAGES, [])
+        assert [name for name, _ in server.calls] == ["run_task"] * runs
+
+    async def test_a_login_that_is_gone_costs_no_wait_per_call(self, instance, monkeypatch):
+        """Its second run failed the same way: the next calls on that instance -- another client's too -- start one
+        run each, until a run answers again."""
+        import plugins.llm_coding_cli.client as module
+
+        monkeypatch.setattr(module, "AUTH_RETRY_S", 0)
+        monkeypatch.setattr(module, "_login_lost_until", {})
+        expired = {"status": "success", "run_id": "r1", "state": "failed", "turns": 0,
+                   "result": {"untrusted": True, "content": "authentication failed or timed out"}}
+        server = instance(expired, expired, expired, done("back"), expired, expired, cli="antigravity")
+        with pytest.raises(LLMServerError):
+            await client("antigravity").chat_tools(MESSAGES, [])
+        with pytest.raises(LLMServerError):
+            await client("antigravity").chat_tools(MESSAGES, [])     # another agent's client: the same login
+        assert len(server.calls) == 3, server.calls          # two for the first call, one for the next
+        assert (await client("antigravity").chat_tools(MESSAGES, []))["assistant"]["content"] == "back"
+        with pytest.raises(LLMServerError):
+            await client("antigravity").chat_tools(MESSAGES, [])
+        assert len(server.calls) == 6, "after a run that answered, a login moment gets its second run again"
+
     async def test_no_run_without_the_agents_session(self, instance):
         server = instance(done())
         token = current_run_session.set(None)

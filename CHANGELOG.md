@@ -52,8 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a coding_cli instance, and an agent's model call becomes a run of that CLI -- the conversation as one task, the
   CLI's own tool loop through its workdir's MCP gateway, its final answer as the assistant message. A second call
   in the same agent run that goes on from the last one resumes that run; cancelling the agent stops it. The
-  subscription's limit blocks the link until it resets, any other failure moves the profile chain on. Agent runs
-  hold their session in `current_run_session` (beside `current_run_user`), which the CLI's tool calls run in.
+  subscription's limit blocks the link until it resets, any other failure moves the profile chain on -- an agy run
+  that failed on its login before its first turn starts once more after 15 s first (on that instance not again for
+  ten minutes once that failed too). Agent runs hold their session in `current_run_session` (beside
+  `current_run_user`), which the CLI's tool calls run in.
 - Tool bindings of a run: `Agent.run_events(tool_bindings={tool pattern: {parameter: value}})` holds every call of
   a tool a pattern matches (the allowlist's patterns, or the bare tool name) to those values -- put in where the
   call leaves them out, the call refused where it asks for another, a matched tool that does not take the parameter

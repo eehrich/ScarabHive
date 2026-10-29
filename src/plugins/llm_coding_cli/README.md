@@ -11,7 +11,8 @@ workdir (the [MCP gateway](../mcp_gateway/README.md)), and its final answer come
 - **One run per agent run**: a second model call in the same agent run resumes that CLI run with the messages added
   since.
 - **Fallback**: the subscription's limit blocks the link until it resets, every other failure (instance busy or
-  missing, a failed run, no answer) moves the chain on at once -- with a log line naming why.
+  missing, a failed run, no answer) moves the chain on at once -- with a log line naming why. An agy run that
+  failed on its login before its first turn starts once more first.
 
 The full manual -- the model entry, what the CLI sees, sessions, cancelling, the fallback cases and the gaps -- is
 the plugin's guide, `llm_coding_cli.guide`, in the Help panel.

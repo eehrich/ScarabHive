@@ -141,6 +141,7 @@ The CLI's own context is the CLI's.
 Case | Raised | The chain
 the subscription's limit (coding_cli's limit field) | LLMQuotaExhaustedError | blocks this link until the limit resets (when coding_cli knows it), then moves on
 not started for another reason (runs still going, git, the gateway) | LLMServerError | moves on, no block
+an agy run that failed on its login before its first turn | LLMServerError, if it fails again | starts once more after 15 s first; failed again, moves on, and for ten minutes no run on that instance starts twice (a run that answers ends that)
 a run that failed, was stopped or was cancelled | LLMServerError | moves on, no block
 an answer cut by max_result_chars, or none | LLMServerError | moves on, no block
 the instance missing, or another cli than the provider's | LLMServerError | moves on, no block
