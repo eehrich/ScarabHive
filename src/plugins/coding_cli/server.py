@@ -1113,7 +1113,12 @@ class CodingCliServer(SchemaBasedToolServer):
                   # Read at the end, by whichever instance finalizes: the starting one's bound.
                   "max_result_chars": self.max_result_chars,
                   "owner": self._me}
-        self._file(run_id, "task").write_text(cli.agy_input(task) if self.agy else task, encoding="utf-8")
+        if self.agy:
+            # Before the task, the same for every run in the workdir: the cached prefix stays one.
+            note = cli.agy_gateway_note(gateway["tools"]) if token else ""
+            self._file(run_id, "task").write_text(cli.agy_input(note + task), encoding="utf-8")
+        else:
+            self._file(run_id, "task").write_text(task, encoding="utf-8")
         self._save(record)
         try:
             proc = cli.launch(cmd, worktree, env, self._file(run_id, "task"),

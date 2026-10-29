@@ -226,6 +226,17 @@ def agy_gateway(worktree: Path, url: str, token: Optional[str]) -> None:
         "serverUrl": url, "headers": {"Authorization": f"Bearer {token}"}}}}), encoding="utf-8")
 
 
+def agy_gateway_note(tools: Iterable[str]) -> str:
+    """What an agy run with a gateway grant reads before its task. agy offers MCP tools only through its
+    call_mcp_tool, under no name of their own; a task that names them is read as naming agy's own file tools, and
+    those a headless run is refused for a file outside its workspace -- the run ends without an answer. A task on a
+    file outside the workspace that named no tool: with this note every run took the gateway, without it every run
+    its own tools (measured 1.4.9, 2026-10-29). Inside the working directory its own tools stay the ones to use."""
+    return (f"Besides your own tools you have the MCP tools of the server `{GATEWAY_SERVER}`: {', '.join(tools)}. "
+            f"You reach them only through call_mcp_tool (server `{GATEWAY_SERVER}`). For files outside your working "
+            "directory use them: your own file tools (read_file, write_file, edit_file, ...) are refused there.\n\n")
+
+
 def agy_input(task: str) -> str:
     """The task as the one stdin message agy's stream-json input takes."""
     return json.dumps({"event": "user", "message": {"role": "user", "content": task}}, ensure_ascii=False) + "\n"
