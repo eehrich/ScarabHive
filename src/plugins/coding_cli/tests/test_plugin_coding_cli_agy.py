@@ -195,6 +195,20 @@ async def test_each_user_has_an_agy_home_of_their_own(repo, log, data_root):  # 
     assert Path(log()["home"]) == data_root / "agy_home" / "other"
 
 
+def test_an_agy_home_reached_over_a_symlink_is_handed_on_resolved(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("this system makes no symlinks for this user")
+    env = {}
+    cli.agy_home(link / "admin", env)
+    assert env["HOME"] == str(real.resolve() / "admin")
+    assert (real / "admin" / ".gemini" / "antigravity-cli" / "settings.json").is_file()
+
+
 def test_the_pinned_settings_win_over_others_and_leave_agys_own_alone(tmp_path):
     settings = tmp_path / ".gemini" / "antigravity-cli" / "settings.json"
     settings.parent.mkdir(parents=True)

@@ -183,7 +183,12 @@ CLAUDE_ONLY_ENV = frozenset({"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"})
 def agy_home(root: Path, env: dict) -> None:
     """Points env's home at `root`, holding the settings an agy run is measured under (AGY_SETTINGS) and nothing
     of the user's -- their permission presets, MCP servers and memories live in their own home. The login is not
-    there: on Windows agy finds it in the credential store (measured, 1.4.8)."""
+    there: on Windows agy finds it in the credential store (measured, 1.4.8).
+
+    The home is given resolved: agy reads its own files (the schemas of a gateway's tools) through a path it
+    resolves, and a home reached over a symlink made them files outside the run -- refused, and the run never
+    reached the gateway (measured 1.4.10, 2026-10-29)."""
+    root = root.resolve()
     settings = root / ".gemini" / "antigravity-cli" / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
     try:
