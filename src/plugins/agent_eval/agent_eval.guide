@@ -251,7 +251,9 @@ The agent is started in it, so its tools take it for "."; with
 @{bullet}@{b}fresh@{ub}: every run gets an empty data directory of its own.
 Its sessions, caches and databases stay in the run's directory -- nothing
 it does touches the installation's data, and you can read its session
-afterwards.
+afterwards. The panels that read the installation's data (context and
+usage, the message debugger) therefore do not show such a run; its usage
+and models are in the suite's report.
 @{bullet}@{b}shared@{ub}: the run uses the installation's data directory,
 for an agent that has to read what is there (a database it works on).
 Runs then see each other's leftovers.
