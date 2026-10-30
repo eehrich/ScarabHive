@@ -29,9 +29,11 @@ WAIT_S = 600
 #: started again after the second one failed the same way too: a login that is gone costs no wait per call.
 AUTH_RETRY_S = 15
 LOGIN_LOST_S = 600
-#: coding_cli instance -> until when its login counts as gone: the login is the instance's (its agy home), not one
-#: client's -- every agent and hook with a link to it builds a client of its own.
-_login_lost_until: dict[str, float] = {}
+#: (coding_cli instance, user) -> until when that login counts as gone: not one client's -- every agent and hook
+#: with a link to it builds a client of its own. Per user, as agy may keep the login in the user's home of the
+#: instance (agy_home/<user>); where all homes share one (Windows: the credential store), a lost login costs each
+#: user one second run per LOGIN_LOST_S, never one too few.
+_login_lost_until: dict[tuple[str, str], float] = {}
 
 
 def _field(message: Any, name: str) -> Any:
@@ -130,22 +132,23 @@ class CodingCliClient(LLMClient):
         try:
             try:
                 answer = await self._run(server, args, user, session, request_id, cancellation_token)
-                if self._login_raced(answer):
+                login = (self.instance, user)
+                if self._login_raced(answer, login):
                     # agy renews its login itself; measured, one run ended before its first turn on "authentication
                     # failed or timed out" 73 s before the token's expiry, while another process used the same agy
                     # home, and the next run renewed it. A start once more is the cheap answer to such a moment
                     # (whether 15 s is long enough is not measured); a login that is really gone fails again, the
-                    # chain moves on, and for LOGIN_LOST_S no call on this instance starts a second run.
+                    # chain moves on, and for LOGIN_LOST_S no call of this user on this instance starts a second run.
                     logger.info("%s %s: run %s found the login expired, starting once more in %d s", self.provider,
                                 self.instance, answer.get("run_id"), AUTH_RETRY_S)
                     from plugins.llm_common.cancellation import await_call
 
                     await await_call(asyncio.ensure_future(asyncio.sleep(AUTH_RETRY_S)), cancellation_token)
                     answer = await self._run(server, args, user, session, request_id, cancellation_token)
-                    if self._login_raced(answer):
-                        _login_lost_until[self.instance] = time.monotonic() + LOGIN_LOST_S
+                    if self._login_raced(answer, login):
+                        _login_lost_until[login] = time.monotonic() + LOGIN_LOST_S
                 if isinstance(answer, dict) and answer.get("state") == "done":
-                    _login_lost_until.pop(self.instance, None)  # the login is there again
+                    _login_lost_until.pop(login, None)  # the login is there again
             except Exception as exc:
                 # coding_cli raised instead of answering (a file it could not write, a tool name it does not
                 # know): an error the chain moves on at, not the end of the agent run. A cancel is no Exception.
@@ -214,11 +217,11 @@ class CodingCliClient(LLMClient):
 
         return await await_call(asyncio.ensure_future(drive()), token)
 
-    def _login_raced(self, answer: Any) -> bool:
+    def _login_raced(self, answer: Any, login: tuple[str, str]) -> bool:
         """An agy run that ended before its first turn on its login (agy: "authentication failed or timed out")."""
         if self.provider != "antigravity" or not isinstance(answer, dict) or answer.get("state") != "failed":
             return False
-        if answer.get("turns") or time.monotonic() < _login_lost_until.get(self.instance, 0.0):
+        if answer.get("turns") or time.monotonic() < _login_lost_until.get(login, 0.0):
             return False
         result = answer.get("result")
         return "authentication" in str((result.get("content") if isinstance(result, dict) else result) or "")

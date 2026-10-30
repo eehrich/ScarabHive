@@ -124,8 +124,9 @@ A run is stopped after @{tt}max_run_minutes@{utt} (60), or after the
 shorter limit its call gave (@{tt}run_task@{utt}'s own
 @{tt}max_run_minutes@{utt}). A stop -- time
 limit, cancel, stopped turn -- kills Claude Code and everything it started.
-A CLI still going a minute after it wrote its result is ended the same way;
-its result stands. Then, once per run, the plugin commits everything left in the worktree as
+A CLI that wrote its result and then says nothing for a minute without
+exiting is ended the same way; its result stands. Then, once per run, the
+plugin commits everything left in the worktree as
 one commit @{tt}coding_cli <run_id>: <first line of the task>@{utt} (its
 first 60 characters; edit mode only), lists the changes against the base, stores the subscription
 usage, the cost and the structured output Claude Code reported and records

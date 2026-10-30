@@ -15,6 +15,7 @@ The task on stdin is a script, one command per line:
   OUTPUT <json>         with --json-schema, the result's structured_output (else {"done": true})
   DEEP <n>              a tool call whose arguments nest n deep
   LINGER <seconds>      after the result, wait before exiting (a CLI that does not end with its answer)
+  TALK <seconds>        after the result, an event every 0.1 s that long, then a second result "talked"
 With FAKE_CLAUDE_LOG set, argv and the environment's names go there as JSON.
 """
 import json
@@ -112,6 +113,12 @@ def main():
     for line in task.splitlines():
         if line.startswith("LINGER "):
             time.sleep(float(line.split()[1]))
+        if line.startswith("TALK "):
+            until = time.monotonic() + float(line.split()[1])
+            while time.monotonic() < until:
+                emit({"type": "system", "subtype": "status", "session_id": session})
+                time.sleep(0.1)
+            emit({**result, "result": "talked"})
 
 
 if __name__ == "__main__":

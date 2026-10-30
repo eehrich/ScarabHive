@@ -842,6 +842,14 @@ async def test_a_cli_that_goes_on_after_its_result_is_ended_and_the_result_stand
     assert time.monotonic() - started < 15, "it waited for the CLI instead of ending it"
 
 
+async def test_a_cli_that_goes_on_working_after_its_result_is_left_to(repo, monkeypatch):
+    """The minute counts from its last event after the result: one that still writes is not ended."""
+    monkeypatch.setattr(server_module, "RESULT_GRACE_S", 0.5)
+    server = make_server(repo)
+    result, _ = await call(server, "run_task", task="WRITE b.txt x\nTALK 2")
+    assert result["state"] == "done" and "talked" in str(result["result"]), result
+
+
 async def test_a_call_may_give_its_run_a_shorter_limit(repo):
     """run_task's max_run_minutes: a shorter limit for this run -- a quick research hands over to its agent in
     time -- recorded with the run (a sweep in another process holds it to the same), never above the

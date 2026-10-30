@@ -236,6 +236,24 @@ class TestFallback:
             await client("antigravity").chat_tools(MESSAGES, [])
         assert len(server.calls) == 6, "after a run that answered, a login moment gets its second run again"
 
+    async def test_one_users_lost_login_leaves_anothers_its_second_run(self, instance, monkeypatch):
+        """agy may keep the login in the user's home of the instance: one user's lost login is not another's."""
+        import plugins.llm_coding_cli.client as module
+
+        monkeypatch.setattr(module, "AUTH_RETRY_S", 0)
+        monkeypatch.setattr(module, "_login_lost_until", {})
+        expired = {"status": "success", "run_id": "r1", "state": "failed", "turns": 0,
+                   "result": {"untrusted": True, "content": "authentication failed or timed out"}}
+        server = instance(expired, expired, expired, done("bob's"), cli="antigravity")
+        with pytest.raises(LLMServerError):
+            await client("antigravity").chat_tools(MESSAGES, [])      # ada's: gone
+        token = current_run_user.set("bob")
+        try:
+            assert (await client("antigravity").chat_tools(MESSAGES, []))["assistant"]["content"] == "bob's"
+        finally:
+            current_run_user.reset(token)
+        assert len(server.calls) == 4, server.calls
+
     async def test_no_run_without_the_agents_session(self, instance):
         server = instance(done())
         token = current_run_session.set(None)

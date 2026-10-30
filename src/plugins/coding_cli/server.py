@@ -73,8 +73,9 @@ CAP_STDERR = 600
 CAP_HIDDEN = 50
 LAST_ACTIONS = 12
 POLL_S = 1.0
-# How long a CLI may go on after its result event before it is ended: the answer is on disk, and an agy run once
-# idled 14 minutes so until its time limit (1 of 146 runs, 2026-10-29; every other ended within 60 s).
+# How long a CLI may stay silent after its result event (counted from its last event) before it is ended: the
+# answer is on disk, and an agy run once idled 14 minutes so until its time limit (1 of 146 runs, 2026-10-29;
+# every other ended within 60 s).
 RESULT_GRACE_S = 60.0
 # Finalizing takes a few git calls; a claim this old belongs to a dead process.
 STALE_CLAIM_S = 300
@@ -1176,11 +1177,12 @@ class CodingCliServer(SchemaBasedToolServer):
                     await self._stop_run(record, f"stopped after the time limit of {limit:.0f} min")
                     deadline, stopped = float("inf"), True
                 found, offset = cli.events_from(self._file(run_id, "jsonl"), offset)
-                if answered is None and any(event.get("type") == "result" for event in found):
+                if found and (answered is not None or any(event.get("type") == "result" for event in found)):
+                    # Counted from its last word after a result: a CLI that goes on working after it is left to.
                     answered = time.time()
                 elif answered is not None and not stopped and time.time() - answered > RESULT_GRACE_S:
-                    # Its result is written and it does not exit: ended, the result stands (finalize: a success
-                    # result wins over a stop that came after it).
+                    # Its result is written and it says nothing more, nor exits: ended, the result stands
+                    # (finalize: a success result wins over a stop that came after it).
                     logger.warning("coding_cli: run %s still going %.0f s after its result, ended", run_id,
                                    time.time() - answered)
                     await asyncio.to_thread(cli.kill_tree, record.get("pid"), record.get("pid_started"))

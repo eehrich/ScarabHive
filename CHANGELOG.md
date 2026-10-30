@@ -53,9 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CLI's own tool loop through its workdir's MCP gateway, its final answer as the assistant message. A second call
   in the same agent run that goes on from the last one resumes that run; cancelling the agent stops it. The
   subscription's limit blocks the link until it resets, any other failure moves the profile chain on -- an agy run
-  that failed on its login before its first turn starts once more after 15 s first (on that instance not again for
-  ten minutes once that failed too). Agent runs hold their session in `current_run_session` (beside
-  `current_run_user`), which the CLI's tool calls run in.
+  that failed on its login before its first turn starts once more after 15 s first (for that user on that
+  instance not again for ten minutes once that failed too). Agent runs hold their session in `current_run_session`
+  (beside `current_run_user`), which the CLI's tool calls run in.
 - Tool bindings of a run: `Agent.run_events(tool_bindings={tool pattern: {parameter: value}})` holds every call of
   a tool a pattern matches (the allowlist's patterns, or the bare tool name) to those values -- put in where the
   call leaves them out, the call refused where it asks for another, a matched tool that does not take the parameter
@@ -72,8 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token in its environment only, agy in its workspace's MCP file, removed before the commit. Beside web (for agy
   always) the workdir must say `read_only: true`, or `confined: true` where the bindings hold every write to the
   run's own file. An instance's `env` sets values its runs get (the plugin's own win), and `max_result_chars` bounds
-  the final report (default 12,000, up to 200,000) for a caller that takes it as its answer. A CLI still going a
-  minute after its result event is ended, the result stands -- its caller no longer waits for the time limit.
+  the final report (default 12,000, up to 200,000) for a caller that takes it as its answer. A CLI silent and still
+  going a minute after its result event is ended, the result stands -- its caller no longer waits for the time limit.
   Every agy run reads before its task that it has no shell (a headless run's command is refused, the run ended
   without an answer), with or without a gateway. A Claude Code instance warns at its start when this process may
   not write Claude Code's login files (a service with a read-only home): its token would not be renewed, and every
