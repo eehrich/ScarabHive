@@ -319,7 +319,7 @@ def _job(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optio
         shutil.copytree(frozen_workspace, workspace, dirs_exist_ok=True)
     else:
         _fill_workspace(suite, task, workspace)
-    exported = Path(task.fork.source) / "data" if task.fork else None
+    exported = Path(task.fork.source) / "data" if task.fork else None  # not-the-data-dir: an export's own folder
     if exported is not None and exported.is_dir():
         # What the source's fork hooks read (a store's documents), as new files: a store that drops them by age
         # would else find an export of yesterday's run expired.
@@ -677,7 +677,7 @@ def export_run(run_id: str, out: Path, data: Optional[Path] = None, include: Seq
     out.mkdir(parents=True, exist_ok=True)
     try:
         for path in dict.fromkeys(paths):
-            target = out / "data" / path.relative_to(data)
+            target = out / "data" / path.relative_to(data)  # not-the-data-dir: the export's own folder
             if path.is_dir():
                 shutil.copytree(path, target)
             else:
