@@ -74,9 +74,11 @@ CAP_HIDDEN = 50
 LAST_ACTIONS = 12
 POLL_S = 1.0
 # How long a CLI may stay silent after its result event (counted from its last event) before it is ended: the
-# answer is on disk, and an agy run once idled 14 minutes so until its time limit (1 of 146 runs, 2026-10-29;
-# every other ended within 60 s).
-RESULT_GRACE_S = 60.0
+# answer is on disk. agy 1.4.10-1.4.11 (2026-10-29/30): 75 of 257 new conversations did not exit after their
+# result, no resumed one (0 of 227); 74 of the 75 had no title stored, against 5 of 182 that exited -- it seems
+# to wait at its exit for a title that never came. The rest exited within 1.4 s (99 %), at most 12.5 s; Claude
+# Code's 34 runs within 1.5 s.
+RESULT_GRACE_S = 20.0
 # Finalizing takes a few git calls; a claim this old belongs to a dead process.
 STALE_CLAIM_S = 300
 # How long a watcher that lost the claim waits for the winner's end.

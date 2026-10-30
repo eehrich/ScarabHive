@@ -843,7 +843,7 @@ async def test_a_cli_that_goes_on_after_its_result_is_ended_and_the_result_stand
 
 
 async def test_a_cli_that_goes_on_working_after_its_result_is_left_to(repo, monkeypatch):
-    """The minute counts from its last event after the result: one that still writes is not ended."""
+    """The grace counts from its last event after the result: one that still writes is not ended."""
     monkeypatch.setattr(server_module, "RESULT_GRACE_S", 0.5)
     server = make_server(repo)
     result, _ = await call(server, "run_task", task="WRITE b.txt x\nTALK 2")

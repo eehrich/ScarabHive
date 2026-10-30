@@ -73,7 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always) the workdir must say `read_only: true`, or `confined: true` where the bindings hold every write to the
   run's own file. An instance's `env` sets values its runs get (the plugin's own win), and `max_result_chars` bounds
   the final report (default 12,000, up to 200,000) for a caller that takes it as its answer. A CLI silent and still
-  going a minute after its result event is ended, the result stands -- its caller no longer waits for the time limit.
+  going 20 s after its result event is ended, the result stands -- its caller no longer waits for the time limit
+  (agy on a new conversation, about 3 in 10: it seems to wait for the conversation's title).
   Every agy run reads before its task that it has no shell (a headless run's command is refused, the run ended
   without an answer), with or without a gateway. A Claude Code instance warns at its start when this process may
   not write Claude Code's login files (a service with a read-only home): its token would not be renewed, and every
