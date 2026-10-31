@@ -158,6 +158,7 @@ Case | Raised | The chain
 the subscription's limit (coding_cli's limit field) | LLMQuotaExhaustedError | blocks this link until the limit resets (when coding_cli knows it), then moves on
 not started for another reason (runs still going, git, the gateway) | LLMServerError | moves on, no block
 an agy run that failed on its login before its first turn | LLMServerError, if it fails again | starts once more after 15 s first; failed again, moves on, and for ten minutes no run of that user on that instance starts twice (a run that answers ends that)
+an agy run that ended without an answer on a refused step (a command, say: agy then ends its whole conversation) | LLMServerError, if it ends so again | resumed once, told that such steps are refused and to go on with its other tools (measured for a command: it answers then); a second such end moves on. The call's usage holds both runs
 a run that failed, was stopped or was cancelled | LLMServerError | moves on, no block
 an answer cut by max_result_chars, or none | LLMServerError | moves on, no block
 the instance missing, or another cli than the provider's | LLMServerError | moves on, no block
@@ -178,6 +179,9 @@ windows: a run it stops at its limit is expected to arrive as a failed run
 but the gateway does not hand on (a sub-agent manager) is missing for the
 CLI. Say so in the prompt the agent renders for this profile.
 @{bullet}One process: the instance must run where the agent runs.
+@{bullet}One more resume after an agy run that ended on a refused step: a call
+that needs it takes as long as two runs, and the second sees the note, not
+the step's refusal itself.
 @{bullet}Every CLI run is a coding_cli run with a worktree and a branch of its
 own, which coding_cli does not remove. As an LLM link that is one per agent
 run: give the instance a small repository of its own as its workdir, and

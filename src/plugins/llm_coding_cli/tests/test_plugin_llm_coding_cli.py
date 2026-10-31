@@ -262,6 +262,102 @@ class TestCalls:
         assert (server.calls[1][1]["resume"], server.calls[1][1]["task"]) == ("r1", render(more[2:]))
 
 
+def silent(run_id="r1", denied=("RunCommand",)):
+    """An agy run that ended on a refused step: done, no answer, the refusal in its denials."""
+    return done("", run_id=run_id, denials={"untrusted": True, "content": list(denied)})
+
+
+class TestARefusedStep:
+    """agy ends the whole conversation with an empty answer when a step it took is refused headless (a command):
+    the call resumes that run once, told so -- measured, it answers then."""
+
+    async def test_a_run_that_ended_on_a_refused_command_is_resumed_once_and_answers(self, instance):
+        server = instance(silent(), done("fixed", run_id="r2"), cli="antigravity")
+        out = await client("antigravity").chat_tools(MESSAGES, [])
+        assert out["assistant"]["content"] == "fixed"
+        (_, first), (_, again) = server.calls
+        assert "resume" not in first and again["resume"] == "r1"
+        assert "refused (RunCommand)" in again["task"] and "no shell" in again["task"]
+
+    async def test_both_runs_are_counted_once_each(self, instance):
+        """The silent run spent tokens too: the call's usage holds both; a resume that fails is answered with no
+        tokens of the silent run's a second time."""
+        tokens = {"input_tokens": 1000, "output_tokens": 0, "cache_read_tokens": 4000, "total_tokens": 1000}
+        instance(silent() | {"usage": tokens}, done("fixed", run_id="r2", usage={"input_tokens": 7, "output_tokens": 3,
+                                                                                 "total_tokens": 10}),
+                 cli="antigravity")
+        usage = (await client("antigravity").chat_tools(MESSAGES, []))["usage"]
+        assert (usage["prompt_tokens"], usage["completion_tokens"], usage["prompt_tokens_details"]["cached_tokens"])             == (5000 + 7, 3, 4000)
+
+        instance(silent() | {"usage": tokens}, {"status": "success", "run_id": "r2", "state": "failed", "turns": 1},
+                 cli="antigravity")
+        posted = []
+
+        async def post(info):
+            posted.append(info)
+
+        llm = client("antigravity")
+        llm._on_post_llm_response = post
+        with pytest.raises(LLMServerError):
+            await llm.chat_tools(MESSAGES, [])
+        assert [p["response_data"]["run_id"] for p in posted] == ["r1", "r2"]
+        assert posted[1]["usage"]["prompt_tokens"] == 0
+
+        instance(silent() | {"usage": tokens}, RuntimeError("the resume broke"), cli="antigravity")
+        posted.clear()
+        llm = client("antigravity")
+        llm._on_post_llm_response = post
+        with pytest.raises(LLMServerError):
+            await llm.chat_tools(MESSAGES, [])
+        assert posted[0]["response_data"]["run_id"] == "r1" and posted[1]["response_data"] is None
+
+    @pytest.mark.parametrize("provider, cli, answer", [
+        ("antigravity", "antigravity", done("")),                 # no refusal: nothing to tell it
+        ("claude_code", "claude", silent())], ids=["agy_without_a_refusal", "claude_code"])
+    async def test_only_an_agy_run_with_a_refusal_is_resumed(self, instance, provider, cli, answer):
+        server = instance(answer, done("fixed", run_id="r2"), cli=cli)
+        with pytest.raises(LLMServerError, match="ended without an answer"):
+            await client(provider).chat_tools(MESSAGES, [])
+        assert len(server.calls) == 1
+
+    async def test_a_second_refusal_is_not_resumed_again(self, instance):
+        server = instance(silent(), silent("r2"), done("fixed", run_id="r3"), cli="antigravity")
+        with pytest.raises(LLMServerError):
+            await client("antigravity").chat_tools(MESSAGES, [])
+        assert len(server.calls) == 2
+
+    async def test_the_runs_it_went_on_from_are_not_resumed_again(self, instance):
+        """A continued conversation: r1 answered, r2 resumed it and ended on a refusal, r3 resumed r2. Both r1 and
+        r2 hold turns r3 has too -- the next call goes on from r3 alone."""
+        server = instance(done(), silent("r2"), done("again", run_id="r3"), done("third", run_id="r4"),
+                          cli="antigravity")
+        llm = client("antigravity")
+        await llm.chat_tools(MESSAGES, [])
+        two = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        assert (await llm.chat_tools(two, []))["assistant"]["content"] == "again"
+        three = two + [{"role": "assistant", "content": "again"}, {"role": "user", "content": "More."}]
+        await llm.chat_tools(three, [])
+        assert [p.get("resume") for _, p in server.calls] == [None, "r1", "r2", "r3"]
+        assert [r[0] for r in client_module._conversations[("cc", "ada", "sess-1")]] == ["r4"]
+
+    async def test_the_silent_run_and_its_resume_are_two_requests(self, instance):
+        instance(silent(), done("fixed", run_id="r2"), cli="antigravity")
+        seen = []
+
+        async def pre(info):
+            seen.append(("pre", info))
+
+        async def post(info):
+            seen.append(("post", info))
+
+        llm = client("antigravity")
+        llm._on_pre_llm_request, llm._on_post_llm_response = pre, post
+        await llm.chat_tools(MESSAGES, [])
+        assert [kind for kind, _ in seen] == ["pre", "post", "pre", "post"]
+        assert "ended on a refused step: RunCommand" in seen[1][1]["error"]
+        assert seen[2][1]["payload"]["resume"] == "r1" and seen[3][1]["error"] is None
+
+
 class TestFallback:
     async def test_the_subscriptions_limit_blocks_the_link_until_it_resets(self, instance):
         import time

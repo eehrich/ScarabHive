@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Coding CLIs as an LLM: an agy run that ended without an answer on a refused step (a command, say -- agy then ends
+  its whole conversation) is resumed once, told that such steps are refused and to go on with its other tools;
+  measured for a command, it answers then. A second such end moves the chain on. Both runs' tokens are counted.
 - Coding CLIs as an LLM: a run's tokens reach the usage store, the cache's reads and writes among them -- coding_cli
   hands the CLI's counts on (`usage` in its answer), the provider reads Claude Code's as Anthropic's API names them
   and agy's with its cache reads beside the input. The cost stays 0. Summed over the CLI's own model calls, they are

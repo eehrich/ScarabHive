@@ -39,6 +39,11 @@ WAIT_S = 600
 #: started again after the second one failed the same way too: a login that is gone costs no wait per call.
 AUTH_RETRY_S = 15
 LOGIN_LOST_S = 600
+#: What an agy run is told when it ended on a step refused headless: agy then ends the whole conversation with an
+#: empty answer -- measured on a server, 7 of 16 runs of a Flash instance, each with a refused command -- and resumed
+#: with these words it answered (4 of 4, gemini-3.8-flash, the refusal provoked). Once per call.
+REFUSED_NOTE = ("Your last step was refused ({denied}): such steps are refused in this run, and there is no shell. "
+                "Go on with your other tools and answer the task as it was asked.")
 #: (coding_cli instance, user) -> until when that login counts as gone: not one client's -- every agent and hook
 #: with a link to it builds a client of its own. Per user, as agy may keep the login in the user's home of the
 #: instance (agy_home/<user>); where all homes share one (Windows: the credential store), a lost login costs each
@@ -113,6 +118,19 @@ def _usage(answer: Any) -> dict:
                                       "cache_write_tokens": call.cache_write_tokens}}
 
 
+def _summed(*usages: dict) -> dict:
+    """Several runs' usage (_usage) as the one call they answered."""
+    if len(usages) == 1:
+        return usages[0]
+    total = {**USAGE}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        total[key] = sum(u.get(key, 0) for u in usages)
+    details = [u.get("prompt_tokens_details") or {} for u in usages]
+    total["prompt_tokens_details"] = {key: sum(d.get(key, 0) for d in details)
+                                      for key in ("cached_tokens", "cache_write_tokens")}
+    return total
+
+
 def _refused_resume(answer: Any) -> bool:
     """coding_cli refused to go on with the run it was asked to resume (run_task's "resume: ..." errors, and other
     bindings than the run's)."""
@@ -163,6 +181,8 @@ class CodingCliClient(LLMClient):
         started = time.monotonic()
         await self._pre(args)
         answer, error, posted = None, None, False
+        went_on: list[str] = []         # runs a run of this call resumed: their conversation holds its turns
+        spent: list[dict] = []          # the usage of runs of this call another went on from: counted too
         try:
             try:
                 answer = await self._run(server, args, user, session, request_id, cancellation_token)
@@ -196,6 +216,22 @@ class CodingCliClient(LLMClient):
                         _login_lost_until[login] = time.monotonic() + LOGIN_LOST_S
                 if isinstance(answer, dict) and answer.get("state") == "done":
                     _login_lost_until.pop(login, None)  # the login is there again
+                denied = self._ended_on_a_refusal(answer)
+                if denied:
+                    logger.info("%s %s: run %s ended without an answer on a refused step (%s), resuming it once",
+                                self.provider, self.instance, answer.get("run_id"), ", ".join(denied))
+                    posted = True
+                    await self._post(answer, f"ended on a refused step: {', '.join(denied)}", started)
+                    if "resume" in args:
+                        went_on.append(args["resume"])
+                    spent.append(_usage(answer))
+                    args = {**args, "task": REFUSED_NOTE.format(denied=", ".join(denied)),
+                            "resume": answer["run_id"]}
+                    answer = None           # answered: a notice from here on is the resume's
+                    started = time.monotonic()
+                    await self._pre(args)
+                    posted = False
+                    answer = await self._run(server, args, user, session, request_id, cancellation_token)
             except Exception as exc:
                 # coding_cli raised instead of answering (a file it could not write, a tool name it does not
                 # know): an error the chain moves on at, not the end of the agent run. A cancel is no Exception.
@@ -211,7 +247,9 @@ class CodingCliClient(LLMClient):
                 # The run it resumed went on, ended well or not (a cancel, a failed or cut run): the CLI's
                 # conversation holds the new turns, one that went on from the old run's history would get them twice.
                 # Only a refusal before the start (coding_cli's error answer) leaves it as it was.
-                kept = [r for r in _conversations.get(key, []) if r[0] != args["resume"]]
+                went_on.append(args["resume"])
+            if went_on:
+                kept = [r for r in _conversations.get(key, []) if r[0] not in went_on]
                 if kept:
                     _conversations[key] = kept
                 else:
@@ -223,7 +261,7 @@ class CodingCliClient(LLMClient):
             _conversations.popitem(last=False)
         return {"assistant": {"role": "assistant", "content": text,
                               "served_by": f"{self.provider}:{self.instance}"},
-                "usage": _usage(answer), "finish_reason": "stop"}
+                "usage": _summed(*spent, _usage(answer)), "finish_reason": "stop"}
 
     async def _pre(self, args: dict) -> None:
         await self._notify_pre_request({"provider": self.provider, "model": self.instance, "url": self.base_url,
@@ -297,6 +335,16 @@ class CodingCliClient(LLMClient):
             return answer
 
         return await await_call(asyncio.ensure_future(drive()), token)
+
+    def _ended_on_a_refusal(self, answer: Any) -> list[str]:
+        """What an agy run that ended without an answer had refused (permission denials), or []."""
+        if self.provider != "antigravity" or not isinstance(answer, dict) or answer.get("state") != "done":
+            return []
+        text = _content(answer.get("result"))
+        if (isinstance(text, str) and text.strip()) or not answer.get("run_id"):
+            return []
+        denials = _content(answer.get("denials"))
+        return [str(d) for d in denials if d] if isinstance(denials, list) else []
 
     def _login_raced(self, answer: Any, login: tuple[str, str]) -> bool:
         """An agy run that ended before its first turn on its login (agy: "authentication failed or timed out")."""
