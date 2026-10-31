@@ -33,7 +33,7 @@ class Gateway:
     def runner(self) -> Any:
         from agent_system import app_state
 
-        registry = app_state.app_registry
+        registry = app_state.registry
         try:
             return registry.get(self.runner_agent) if registry is not None else None
         except KeyError:

@@ -243,15 +243,16 @@ def test_stop_after_the_last_run_started_leaves_the_run_done(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("task_wants, arm_wants", [("base", "other"), ("other", None), ("legacy", "other"),
-                                                    ("layer", "other")],
+                                                    ("layer", "other"), ("base", "suite")],
                          ids=["the_arm_over_the_task", "the_task_alone", "a_job_from_before_overlays",
-                              "the_arms_layer_for_the_agent"])
+                              "the_arms_layer_for_the_agent", "a_profile_of_the_suites_config"])
 def test_child_runs_the_real_agent_run_path_with_the_overlays(tmp_path, data_dir, monkeypatch, task_wants,
                                                               arm_wants):
     """One child run in-process: real config, real bootstrap, agent-run's own session handling; the overlays'
     llm_profile must reach the agent (the fake client carries the profile's model name) -- the arm's over the
-    task's, the task's where the arm leaves it, the arm of a job a runner from before 'overlays' wrote, and an
-    arm's layer for the agent (``agents``), which the registry builds it from."""
+    task's, the task's where the arm leaves it, the arm of a job a runner from before 'overlays' wrote, an
+    arm's layer for the agent (``agents``), which the registry builds it from, and a profile only the suite's
+    ``config:`` defines."""
     from agent_system.config.settings import get_tool_server_config, load_settings
     from plugins.agent_eval import child
 
@@ -262,7 +263,10 @@ def test_child_runs_the_real_agent_run_path_with_the_overlays(tmp_path, data_dir
     other = next(name for name, p in config.llm_system.profiles.items()
                  if name != base_profile and p.model_ref != config.llm_system.profiles[base_profile].model_ref)
     expected = config.llm_system.models[config.llm_system.profiles[other].model_ref].model
-    profile = {"base": base_profile, "other": other}
+    profile = {"base": base_profile, "other": other, "suite": "zz_eval_suite_profile"}
+    # Known only through the suite's layer: a run that does not get it fails its profile, it does not fall back.
+    layer = {"llm_system": {"profiles": {"zz_eval_suite_profile": {
+        "model_ref": config.llm_system.profiles[other].model_ref}}}}
 
     result_path = tmp_path / "result.json"
     job = tmp_path / "job.json"
@@ -273,6 +277,7 @@ def test_child_runs_the_real_agent_run_path_with_the_overlays(tmp_path, data_dir
     job.write_text(json.dumps({
         "agent": agent, "input": "say the word marmalade", **overlays,
         "request_id": "ev-test-1", "session_user": runner.SESSION_USER, "result_path": str(result_path),
+        "config": layer if arm_wants == "suite" else {},
     }), encoding="utf-8")
     # The environment the runner gives a child -- the root conftest names a session store of its own,
     # as the API does for processes it starts; a fresh-data run must not write there.
@@ -288,6 +293,8 @@ def test_child_runs_the_real_agent_run_path_with_the_overlays(tmp_path, data_dir
     result = json.loads(result_path.read_text(encoding="utf-8"))
     assert result["model"] == expected, result
     assert "marmalade" in result["answer"], result
+    from agent_system.config import layers
+    assert layers.process_layer == {}, "the suite's layer outlived the run"
     assert not result["refused"], result
     assert list((data_dir / "sessions").rglob(f"{result['session_id']}*")), "agent-run did not save the session"
 
@@ -343,6 +350,52 @@ def test_check_arms_refuses_an_arm_that_cannot_run(tmp_path):
     assert "arm stray: agents" in message and "arm lost, agent skills_agent: unknown llm_profile" in message
     assert "arm tool: agents: ['file_ops'] are not agents" in message
     assert "arm base" not in message
+
+
+def test_check_arms_and_the_runs_see_the_suites_config(tmp_path, monkeypatch):
+    """A profile only the suite's ``config:`` defines: the runner's checks know it, the expected models name its
+    model, every run's job carries the layer -- and once the suite ran, the runner's configuration is its own
+    again."""
+    from agent_system.config import layers
+    from agent_system.config.settings import load_settings
+
+    llm = load_settings().llm_system
+    ref = next(iter(llm.profiles.values())).model_ref
+    jobs = []
+    monkeypatch.setattr(runner, "run_bounded", lambda argv, **kw: jobs.append(
+        json.loads(Path(argv[-1]).read_text(encoding="utf-8"))) or 0)
+    path = _suite(tmp_path, f"""
+        name: s
+        agent: file_ops_test_agent
+        repeats: 1
+        config:
+          llm_system: {{profiles: {{zz_eval_suite_profile: {{model_ref: {ref}}}}}}}
+        arms:
+          base: {{}}
+          suite: {{agent_config: {{llm_profile: [zz_eval_suite_profile]}}}}
+        tasks:
+          - {{id: t1, input: x, check: {{expect: {{contains: [ok]}}}}}}
+    """)
+    run_id = runner.run_suite(path, progress=lambda _: None)
+    expected = store.read_meta(run_id)["expected_models"]
+    assert expected["suite"]["models"]["file_ops_test_agent"]["model"] == llm.models[ref].model
+    assert [job["config"] for job in jobs] == [{"llm_system": {"profiles": {
+        "zz_eval_suite_profile": {"model_ref": ref}}}}] * 2
+    assert layers.process_layer == {} and "zz_eval_suite_profile" not in load_settings().llm_system.profiles
+
+
+@pytest.mark.parametrize("section", ["paths", "auth", "includes"])
+def test_a_suites_config_leaves_data_auth_and_includes_alone(tmp_path, section):
+    from plugins.agent_eval.suite import load_suite
+    path = _suite(tmp_path, f"""
+        name: s
+        agent: a
+        config: {{{section}: {{}}}}
+        tasks:
+          - {{id: t1, input: x, check: {{expect: {{contains: [ok]}}}}}}
+    """)
+    with pytest.raises(ValueError, match=f"config: \\['{section}'\\] cannot be set by a suite"):
+        load_suite(path)
 
 
 def test_check_arms_refuses_a_task_overlay_that_breaks_an_arm(tmp_path):

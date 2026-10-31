@@ -10,6 +10,8 @@ failed for the runner's own reasons does not count.
 """
 from __future__ import annotations
 
+import contextlib
+import copy
 import hashlib
 import json
 import os
@@ -22,7 +24,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 from agent_system.paths import DATA_DIR_ENV, PROJECT_ROOT, data_path
 
@@ -66,11 +68,37 @@ class _Budget:
                               "(is the context_usage_tracker plugin on?)")
 
 
+def config_layer(suite: Suite) -> Dict[str, Any]:
+    """The suite's ``config:`` as this process's layer takes it: a ``./`` template path resolved against the suite's
+    directory, as the loader does for the file that names it."""
+    from agent_system.config.layers import _resolve_relative_paths
+
+    return _resolve_relative_paths(copy.deepcopy(suite.config), suite.root)
+
+
+@contextlib.contextmanager
+def layered(suite: Suite) -> Iterator[None]:
+    """The suite's configuration layer in place in this process (its checks load settings), and put back after."""
+    from agent_system.config import layers
+
+    before, layers.process_layer = layers.process_layer, config_layer(suite)
+    try:
+        yield
+    finally:
+        layers.process_layer = before
+
+
 def run_suite(suite_path: str | Path, run_id: Optional[str] = None, arms: Optional[List[str]] = None,
               progress: Callable[[str], None] = print) -> str:
     """Run the suite at *suite_path* (only *arms*, when given -- in the suite's order, its first arm stays the
     reference); returns the run id. Raises ValueError before anything runs when an arm cannot run at all."""
     suite = load_suite(suite_path)
+    with layered(suite):
+        return _run_suite(suite, suite_path, run_id, arms, progress)
+
+
+def _run_suite(suite: Suite, suite_path: str | Path, run_id: Optional[str], arms: Optional[List[str]],
+               progress: Callable[[str], None]) -> str:
     if arms:
         unknown = [a for a in arms if a not in suite.arms]
         if unknown:
@@ -360,8 +388,8 @@ def _child(suite: Suite, job: Dict[str, Any], jdir: Path, name: str, workspace: 
     request_id = job["request_id"]
     result_path = jdir / f"result-{name}.json"
     job_file = jdir / f"job-{name}.json"
-    job_file.write_text(json.dumps({**job, "session_user": SESSION_USER, "result_path": str(result_path)},
-                                   ensure_ascii=False), encoding="utf-8")
+    job_file.write_text(json.dumps({**job, "session_user": SESSION_USER, "result_path": str(result_path),
+                                    "config": config_layer(suite)}, ensure_ascii=False), encoding="utf-8")
     result_path.unlink(missing_ok=True)  # one of an earlier call (a judge's again) is not this one's answer
     log = jdir / f"child-{name}.log"
     started = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -478,16 +506,17 @@ def rejudge(run_id: str, progress: Callable[[str], None] = print) -> None:
     suite = load_suite(path)
     if suite.judge is None:
         raise ValueError(f"suite {suite.name} has no judge")
-    expected = meta.get("expected_models") or expected_models(suite)  # a run from before it kept them
-    check_judge(suite, {arm: wants for arm, wants in expected.items() if arm in meta["arms"]})
-    # running while it judges: a second judge on the run is refused, the panel shows it at work
-    meta.update(status="running", pid=os.getpid())
-    store.write_meta(run_id, meta)
-    try:
-        _judge(suite, run_id, progress, meta)
-    finally:
-        meta["status"] = _status(run_id, meta)
+    with layered(suite):
+        expected = meta.get("expected_models") or expected_models(suite)  # a run from before it kept them
+        check_judge(suite, {arm: wants for arm, wants in expected.items() if arm in meta["arms"]})
+        # running while it judges: a second judge on the run is refused, the panel shows it at work
+        meta.update(status="running", pid=os.getpid())
         store.write_meta(run_id, meta)
+        try:
+            _judge(suite, run_id, progress, meta)
+        finally:
+            meta["status"] = _status(run_id, meta)
+            store.write_meta(run_id, meta)
 
 
 def _status(run_id: str, meta: Dict[str, Any]) -> str:

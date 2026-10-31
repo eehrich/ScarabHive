@@ -348,13 +348,6 @@ class CodingCliServer(SchemaBasedToolServer):
             self.workdirs[str(wname)] = {"path": path, "exclude": [str(e) for e in entry.get("exclude") or []],
                                          "mcp_servers": {n: remote[n] for n in names}, "web": entry.get("web") is True,
                                          "gateway": gateway}
-        # The gateway serves under this process's API (its port as agent_system.app.run takes it).
-        network = getattr(system_config, "network", None)
-        self.gateway_port = int(os.getenv("PORT") or getattr(network, "port", 0) or 8000)
-        host = str(os.getenv("HOST") or getattr(network, "host", "") or "")
-        # A wildcard bind is reached on loopback; an IPv6 address goes in brackets.
-        host = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
-        self.gateway_host = f"[{host}]" if ":" in host else host
         # The subscription belongs to one person (concept §7).
         users = getattr(server_config, "allowed_users", None) or ()
         # `allowed_users: admin` is one user, not five letters.
@@ -804,6 +797,17 @@ class CodingCliServer(SchemaBasedToolServer):
         blocked = cli.quota_limit(await self._quota_now(threshold, user_id), threshold, time.time())
         if blocked:
             return await self._fail(status, f"not started: {cli.limit_text(blocked)}", limit=blocked)
+        gateway_url = ""
+        if gateway and mode != "plan":
+            from plugins.mcp_gateway import grants
+            try:
+                # This process's gateway, which holds the run's grant: under the API's port, or a listener of its
+                # own where no app serves it (agent-run, a suite's run).
+                gateway_url = await grants.address(gateway["instance"])
+            except (LookupError, OSError) as exc:
+                said = str(exc)  # the gateway's own errors name it already
+                return await self._fail(status, "not started: " + (said if "mcp gateway" in said
+                                                                   else f"mcp gateway: {said}"))
         # Held until the process runs: a run being prepared is not on disk as running yet.
         async with self._start_lock:
             running = await self._running()
@@ -824,7 +828,7 @@ class CodingCliServer(SchemaBasedToolServer):
             # task at the loop's end does not reach it.
             prepare = asyncio.get_running_loop().run_in_executor(None, functools.partial(
                 self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema, asked_run_s,
-                utilization, pin or None, str(params.get("_request_id") or run_id)))
+                utilization, pin or None, str(params.get("_request_id") or run_id), gateway_url))
             try:
                 try:
                     record = await asyncio.shield(prepare)
@@ -1029,7 +1033,7 @@ class CodingCliServer(SchemaBasedToolServer):
     def _prepare(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict],
                  user_id: str, session_id: str, schema: Optional[dict] = None,
                  asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
-                 pin: Optional[dict] = None, request_id: str = "") -> dict:
+                 pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "") -> dict:
         """Worktree, command line and record, then the process (sync, off the loop)."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
         spec = self.workdirs[workdir]
@@ -1043,7 +1047,7 @@ class CodingCliServer(SchemaBasedToolServer):
             if not prior:
                 cli.seed_worktree(spec["path"], worktree, spec.get("seed") or ())
             return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema,
-                               asked_run_s, asked_utilization, pin, request_id or run_id)
+                               asked_run_s, asked_utilization, pin, request_id or run_id, gateway_url)
         except BaseException:
             issued = run_id in _GRANTS
             _revoke(run_id)
@@ -1061,7 +1065,7 @@ class CodingCliServer(SchemaBasedToolServer):
     def _start(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict], user_id: str,
                session_id: str, worktree: Path, branch: str, made: cli.Worktree, schema: Optional[dict] = None,
                asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
-               pin: Optional[dict] = None, request_id: str = "") -> dict:
+               pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "") -> dict:
         resume = prior["claude_session"] if prior else ""
         unsafe = cli.agy_unsafe(worktree) if self.agy else []
         if unsafe:
@@ -1088,7 +1092,7 @@ class CodingCliServer(SchemaBasedToolServer):
             except (LookupError, ValueError) as exc:
                 raise OSError(f"mcp gateway: {exc}") from None
             _GRANTS[run_id] = token
-            url = f"http://{self.gateway_host}:{self.gateway_port}/plugins/{gateway['instance']}/mcp"
+            url = gateway_url
         env, values = {**cli.child_env(self.pass_env), **self.env}, {}
         if self.agy:
             # One per ScarabHive user: what agy keeps there (conversations for a resume, memories) is not handed

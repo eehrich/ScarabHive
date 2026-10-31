@@ -4,7 +4,8 @@
 
 Started by the runner in the run's workspace (what the agent's tools take for ".") with the run's data
 directory in AGENT_DATA_DIR. It drives agent-run's own main_async, so a run opens, runs and saves its session
-exactly as `agent-run` does; three of its steps are wrapped: the configuration it loads gets the arm's
+exactly as `agent-run` does. The suite's ``config:`` (``job["config"]``) is this process's configuration layer,
+over the local one. Three of its steps are wrapped: the configuration it loads gets the arm's
 overlays for other agents (``job["agents"]``, before anything is built from it), the agent it builds gets the
 overlays, the task's then the arm's (the reload path, the same one `agent-cli reload` takes), and the finished
 run writes its result
@@ -30,6 +31,7 @@ def main(job_path: str) -> None:
 
     from agent_system import agent_run
     from agent_system.cli_utils.agent_runner import run_as_local_operator
+    from agent_system.config import layers
     from agent_system.config.settings import get_tool_server_config
     from agent_system.paths import enter_project
     from plugins.agent_eval.overlay import apply_overlay, layer_agents
@@ -103,10 +105,13 @@ def main(job_path: str) -> None:
     # Put back afterwards: in the child it makes no difference, in-process (a test) it would outlive the run.
     agent_run.create_agent, agent_run.run_agent_request, agent_run.load_settings = (
         create_agent, run_agent_request, load_settings)
+    # The suite's layer (its `config:`), under every load of the settings in this run.
+    layer, layers.process_layer = layers.process_layer, job.get("config") or {}
     try:
         run_as_local_operator(entry)
     finally:
         agent_run.create_agent, agent_run.run_agent_request, agent_run.load_settings = build, run, load
+        layers.process_layer = layer
 
 
 async def run_fork(registry: Any, spec: Dict[str, Any], request_id: str, user: str) -> Dict[str, Any]:

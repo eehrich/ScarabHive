@@ -5,6 +5,7 @@ client accepts, an outside CLI's client accepts.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 from contextlib import asynccontextmanager
 from typing import Any
@@ -91,9 +92,8 @@ class _Store(ToolServer):
         return await self._record("store_any", params)
 
 
-@pytest.fixture
-async def gateway(monkeypatch):
-    """(app, store): the gateway's route in an app, its runner allowed every store tool but store_secret."""
+def with_runner(monkeypatch):
+    """The store, behind a runner allowed every store tool but store_secret, in this process's registry."""
     store = _Store()
     tools_of_runner = ToolServerRegistry()
     tools_of_runner.register("store", store)
@@ -105,7 +105,14 @@ async def gateway(monkeypatch):
             tools=ToolConfig(allowed=["store/*"], blocked=["store/store_secret"]))), tools_of_runner)
     registry = ToolServerRegistry()
     registry.register("mcp_gateway_runner", runner)
-    monkeypatch.setattr(app_state, "app_registry", registry)
+    monkeypatch.setattr(app_state, "registry", registry)
+    return store
+
+
+@pytest.fixture
+async def gateway(monkeypatch):
+    """(app, store): the gateway's route in an app, its runner allowed every store tool but store_secret."""
+    store = with_runner(monkeypatch)
     plugin = McpGatewayPlugin("mcp_gateway", AgentSystemConfig(),
                               ToolServerConfig(type="mcp_gateway", enabled=True, max_result_chars=2000))
     app = FastAPI()
@@ -295,7 +302,7 @@ class TestTokens:
 
     async def test_a_token_of_another_gateway_is_not_taken(self, gateway):
         app, _ = gateway
-        grants.serve("other_gateway", True)
+        grants.serve("other_gateway", True, "http://127.0.0.1:1/plugins/other_gateway/mcp")
         try:
             assert (await post(app, issue(gateway="other_gateway"))).status_code == 401
         finally:
@@ -431,7 +438,7 @@ def test_a_user_cannot_run_the_runner_directly():
 
 async def test_a_call_that_raises_leaves_its_audit_line_too(gateway, caplog, monkeypatch):
     app, _ = gateway
-    runner = app_state.app_registry.get("mcp_gateway_runner")
+    runner = app_state.registry.get("mcp_gateway_runner")
 
     async def broken():
         raise RuntimeError("discovery broke")
@@ -442,3 +449,123 @@ async def test_a_call_that_raises_leaves_its_audit_line_too(gateway, caplog, mon
     assert raised.group_contains(Exception, match="discovery broke", depth=None)
     assert [r.getMessage().split(" in ")[0] for r in caplog.records if r.name == "plugins.mcp_gateway.gateway"] \
         == [f"mcp_gateway mcp_gateway: grant {next(iter(grants._grants.values())).key} store_echo error"]
+
+
+class TestWithoutTheApp:
+    """A process no app serves the route in (agent-run, a suite's run): the gateway serves it on a listener of its
+    own, reached over the network as a CLI reaches it."""
+
+    @pytest.fixture
+    async def plugin(self, monkeypatch):
+        with_runner(monkeypatch)
+        plugin = McpGatewayPlugin("mcp_gateway", AgentSystemConfig(), ToolServerConfig(type="mcp_gateway",
+                                                                                       enabled=True))
+        yield plugin
+        await plugin.stop_plugin()
+        grants._grants.clear()
+
+    async def test_it_listens_on_its_own_once_a_run_asks_where_it_is(self, plugin):
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
+
+        with pytest.raises(LookupError):
+            issue()                                     # nobody asked yet: nothing listens, no grant
+        url = await grants.address("mcp_gateway")
+        assert url.startswith("http://127.0.0.1:") and url.endswith("/plugins/mcp_gateway/mcp")
+        assert await grants.address("mcp_gateway") == url  # one listener per process
+        token = issue()
+        async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}) as client:
+            async with streamable_http_client(url, http_client=client) as streams:
+                async with ClientSession(dispatcher=JSONRPCDispatcher(streams[0], streams[1])) as session:
+                    await session.initialize()
+                    names = [tool.name for tool in (await session.list_tools()).tools]
+                    echoed = await session.call_tool("store_echo", {"project_id": 3, "text": "hi"})
+        assert names == ["store_any", "store_batch", "store_echo", "store_global"]
+        assert not echoed.is_error and '"text": "hi"' in echoed.content[0].text
+        async with httpx2.AsyncClient() as client:
+            refused = await client.post(url, json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        assert refused.status_code == 401
+
+    async def test_its_listener_leaves_the_processs_signals_and_logging_alone(self, plugin):
+        """agent-run's Ctrl-C and SIGTERM stay its own: uvicorn would take them over for as long as it serves; and
+        its loggers are the process's (an access_log=False would empty uvicorn.access for everyone)."""
+        import logging
+        import signal
+
+        access = logging.getLogger("uvicorn.access")
+        before = signal.getsignal(signal.SIGINT), list(access.handlers), access.propagate
+        await grants.address("mcp_gateway")
+        assert (signal.getsignal(signal.SIGINT), list(access.handlers), access.propagate) == before
+
+    async def test_a_listener_that_ended_is_started_anew_not_named(self, plugin):
+        """Its loop gone (a process that ran one asyncio.run and starts another), or the server down: the next ask
+        gets a listener that answers, never the address of the one that ended."""
+        first = await grants.address("mcp_gateway")
+        plugin._listener.should_exit = True
+        await plugin._listener_task
+        url = await grants.address("mcp_gateway")
+        async with httpx2.AsyncClient() as client:
+            answer = await client.post(url, json={})
+        assert answer.status_code == 401, (first, url)  # someone listens there, and asks for the run's token
+
+    async def test_a_stop_while_its_listener_starts_leaves_no_address_behind(self, plugin):
+        asking = asyncio.ensure_future(grants.address("mcp_gateway"))
+        await asyncio.sleep(0)                       # the listener is starting, under its lock
+        await plugin.stop_plugin()
+        with contextlib.suppress(LookupError):
+            await asking
+        assert "mcp_gateway" not in grants._serving and "mcp_gateway" not in grants._addresses
+        await plugin.start_plugin()
+        url = await grants.address("mcp_gateway")    # started again: a listener that answers
+        async with httpx2.AsyncClient() as client:
+            assert (await client.post(url, json={})).status_code == 401
+
+    async def test_a_port_it_cannot_bind_refuses_the_run_and_ends_nothing(self, plugin, monkeypatch):
+        import socket
+
+        def refuse(self, address):
+            raise OSError("no port for you")
+
+        monkeypatch.setattr(socket.socket, "bind", refuse)
+        with pytest.raises(OSError, match="no port for you"):
+            await grants.address("mcp_gateway")
+        assert plugin._listener is None and "mcp_gateway" not in grants._serving
+
+    async def test_the_api_never_listens_on_its_own(self, plugin, monkeypatch):
+        """A run in the API before the app mounted the route (a machine resumed at the start) is refused."""
+        monkeypatch.setattr(app_state, "app_registry", app_state.registry)
+        with pytest.raises(LookupError):
+            await grants.address("mcp_gateway")
+        assert plugin._listener is None
+
+    async def test_a_stopped_gateway_listens_no_more_and_answers_no_address(self, plugin):
+        url = await grants.address("mcp_gateway")
+        token = issue()
+        await plugin.stop_plugin()
+        assert grants.lookup("mcp_gateway", token) is None
+        with pytest.raises(LookupError):
+            await grants.address("mcp_gateway")
+        async with httpx2.AsyncClient() as client:
+            with pytest.raises(httpx2.ConnectError):
+                await client.post(url, json={})
+
+
+@pytest.mark.parametrize("host, dialled", [("10.0.0.5", "10.0.0.5"), ("0.0.0.0", "127.0.0.1"), ("::1", "[::1]")])
+async def test_under_the_app_it_is_dialled_where_the_api_listens(monkeypatch, host, dialled):
+    monkeypatch.setenv("HOST", host)
+    monkeypatch.setenv("PORT", "8123")
+    plugin = McpGatewayPlugin("mcp_gateway", AgentSystemConfig(), ToolServerConfig(type="mcp_gateway", enabled=True))
+    plugin.router_mounted()
+    try:
+        assert await grants.address("mcp_gateway") == f"http://{dialled}:8123/plugins/mcp_gateway/mcp"
+        assert plugin._listener is None                 # the app's port: no listener of its own
+    finally:
+        await plugin.stop_plugin()
+
+
+def test_serving_needs_the_address_a_cli_dials():
+    """Without one, address() would hand a run an empty URL instead of saying the gateway does not serve."""
+    with pytest.raises(ValueError, match="needs the address"):
+        grants.serve("mcp_gateway", True)
+    assert "mcp_gateway" not in grants._serving

@@ -624,7 +624,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 len(gated_agents), ", ".join(gated_agents))
 
     # Store registry globally
-    app_state.app_registry = registry
+    app_state.app_registry = app_state.registry = registry
 
     # Include API router
     app.include_router(api_router)

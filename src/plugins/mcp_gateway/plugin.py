@@ -3,12 +3,15 @@
 ``/plugins/<instance>/mcp`` speaks MCP's Streamable HTTP through the mcp SDK's own server (stateless, JSON
 answers). The route has no login -- config/security.yaml opens it in both layers -- and lets nothing reach the SDK
 without the bearer token of a live grant (grants.py). No grant is configured here: a caller in this process issues
-one per run.
+one per run. A process without the app (agent-run, a suite's run) serves the same route on a loopback listener of
+its own, started when a run first asks for the gateway's address.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 from typing import Any, Optional
 
 from fastapi import APIRouter, Request
@@ -36,14 +39,72 @@ class McpGatewayPlugin(SchemaBasedPluginWebInterface):
         self._ready: Optional[asyncio.Future] = None
         self._stop: Optional[asyncio.Event] = None
         self._holder: Optional[asyncio.Task] = None
-        # Built in every process (agent-cli, a worker), served only by the app's: until the app has mounted the
-        # route, a grant is refused -- a CLI handed one here would reach no gateway, or one that knows no token.
+        # Built in every process (agent-cli, a worker). The app's serves under its own port once it has mounted the
+        # route; any other serves on a listener of its own, started when a run first asks where it is (grants.address)
+        # -- the grants live in this process, so the CLI must reach this process's gateway.
         self._mounted = False
+        network = getattr(system_config, "network", None)
+        port = int(os.getenv("PORT") or getattr(network, "port", 0) or 8000)  # as agent_system.app.run takes it
+        host = str(os.getenv("HOST") or getattr(network, "host", "") or "")
+        # A wildcard bind is reached on loopback; an IPv6 address goes in brackets.
+        host = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
+        self.api_address = f"http://{f'[{host}]' if ':' in host else host}:{port}/plugins/{name}/mcp"
+        self._listener: Any = None          # the uvicorn server of its own listener, while one runs
+        self._listener_task: Optional[asyncio.Task] = None
+        self._listening = asyncio.Lock()
+        self._stopped = False
+        grants.offer(name, self._listen)
 
     def router_mounted(self) -> None:
         """The app serves this instance's route (PluginWebRegistry.apply_to_app): grants may be issued."""
         self._mounted = True
-        grants.serve(self.name, True)
+        grants.serve(self.name, True, self.api_address)
+
+    async def _listen(self) -> None:
+        """Serve the route on a listener of this process's own, on loopback and a free port (no app serves it
+        here). Its calls run in the loop that asked -- the loop the process's agents run in. Never in the API: a run
+        there before the app mounted the route (a machine resumed at the start) is refused, as before."""
+        from agent_system import app_state
+
+        async with self._listening:
+            if self._mounted or self._stopped or self._listener is not None or app_state.app_registry is not None:
+                return
+            import socket
+
+            import uvicorn
+            from fastapi import FastAPI
+
+            class Server(uvicorn.Server):
+                @contextlib.contextmanager
+                def capture_signals(self):  # the process's own Ctrl-C and SIGTERM stay its own
+                    yield
+
+            app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+            app.include_router(self.get_web_router())
+            # log_config None: uvicorn leaves the process's logging as it is (access_log too: False would empty the
+            # uvicorn.access logger of the whole process). MCP needs no websockets.
+            server = Server(uvicorn.Config(app, log_config=None, lifespan="off", ws="none"))
+            # Bound here: a bind uvicorn makes itself ends the whole process when it fails (sys.exit), this one
+            # raises OSError -- the run is not started, its caller falls back.
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.bind(("127.0.0.1", 0))
+            except OSError:
+                sock.close()
+                raise
+            port = sock.getsockname()[1]
+            task = asyncio.get_running_loop().create_task(server.serve(sockets=[sock]))
+            while not server.started and not task.done():
+                await asyncio.sleep(0.01)
+            if not server.started:
+                sock.close()
+                with contextlib.suppress(Exception):
+                    await task  # what kept it from starting is in its log
+                raise OSError(f"mcp gateway {self.name}: its listener did not start")
+            self._listener, self._listener_task = server, task
+            task.add_done_callback(lambda _: self._gone(server))
+            grants.serve(self.name, True, f"http://127.0.0.1:{port}/plugins/{self.name}/mcp")
+            logger.info("mcp_gateway %s: no app serves it here, listening on 127.0.0.1:%d", self.name, port)
 
     async def call(self, tool: Optional[str] = None, params: Optional[dict] = None, *args: Any, **kwargs: Any):
         """No tools: the gateway is for outside clients."""
@@ -97,6 +158,13 @@ class McpGatewayPlugin(SchemaBasedPluginWebInterface):
         await asyncio.shield(self._ready)
         return manager if manager is self._manager else None  # None: stopped meanwhile
 
+    def _gone(self, server: Any) -> None:
+        """Its listener ended (its loop closed, or a stop): no address names it any longer, its grants end."""
+        if self._listener is server:
+            self._listener = self._listener_task = None
+            if not self._mounted:
+                grants.serve(self.name, False)
+
     def get_web_router(self) -> Any:
         plugin = self
 
@@ -126,13 +194,24 @@ class McpGatewayPlugin(SchemaBasedPluginWebInterface):
         return router
 
     async def start_plugin(self) -> None:
+        self._stopped = False
+        grants.offer(self.name, self._listen)
         if self._mounted:
-            grants.serve(self.name, True)
+            grants.serve(self.name, True, self.api_address)
 
     async def stop_plugin(self) -> None:
-        """Stop serving; a start_plugin afterwards serves again with a new session manager (the SDK runs one
-        only once)."""
-        grants.serve(self.name, False)
+        """Stop serving, and its own listener; a start_plugin afterwards serves again with a new session manager
+        (the SDK runs one only once)."""
+        self._stopped = True
+        grants.offer(self.name, None, self._listen)
+        # A listener still starting finishes first: served after this stop, its address would outlive it.
+        async with self._listening:
+            grants.serve(self.name, False)
+            listener, task, self._listener, self._listener_task = self._listener, self._listener_task, None, None
+        if listener is not None:
+            listener.should_exit = True
+            with contextlib.suppress(Exception):
+                await task
         holder, stop = self._holder, self._stop
         self._manager = self._ready = self._stop = self._holder = None
         if stop is not None:

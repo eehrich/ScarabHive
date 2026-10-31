@@ -148,7 +148,10 @@ class InitializationService:
         
         # Bootstrap and inject
         registry = self.bootstrap_and_inject(inject_sessions=True)
-        
+        # This process's agents are built in it: a plugin finds its siblings here (app_registry stays the API's).
+        from .. import app_state
+        app_state.registry = registry
+
         logger.info("[InitializationService] CLI initialization complete")
         return registry, self.session_service
 

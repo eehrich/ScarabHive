@@ -21,11 +21,13 @@ from test_plugin_coding_cli_server import (call, data_root, fresh_repo, git, log
 
 GATEWAY = {"tools": ["probe_*"], "pin": {"probe_*": ["scope_id"]}, "allowed": {"probe_edit": {"op": ["get"]}}}
 PIN = {"probe_*": {"scope_id": 7}}
+#: Where this process's gateway says it is reached (the API's port, or a listener of its own).
+ADDRESS = "http://127.0.0.9:8123/plugins/mcp_gateway/mcp"
 
 
 @pytest.fixture
 def gateway():
-    grants.serve("mcp_gateway", True)
+    grants.serve("mcp_gateway", True, ADDRESS)
     yield
     grants.serve("mcp_gateway", False)
 
@@ -34,8 +36,7 @@ def with_gateway(repo, **gateway):
     return {"repo": {"path": str(repo), "exclude": ["config/secrets.env"], "gateway": {**GATEWAY, **gateway}}}
 
 
-async def test_a_claude_code_run_reaches_its_grant_and_only_while_it_runs(repo, data_root, log, gateway, monkeypatch):
-    monkeypatch.setenv("HOST", "127.0.0.9")     # the address the API listens on
+async def test_a_claude_code_run_reaches_its_grant_and_only_while_it_runs(repo, data_root, log, gateway):
     server = make_server(repo, workdirs=with_gateway(repo), wait_s=0.2)
     # More than the workdir requires only narrows the run further: the grant gets it whole.
     pin = {**PIN, "probe_edit": {"op": "get"}}
@@ -49,7 +50,7 @@ async def test_a_claude_code_run_reaches_its_grant_and_only_while_it_runs(repo, 
     finally:
         await call(server, "cancel_run", run_id=started["run_id"])
     assert config == {"mcpServers": {cli.GATEWAY_SERVER: {
-        "type": "http", "url": f"http://127.0.0.9:{server.gateway_port}/plugins/mcp_gateway/mcp",
+        "type": "http", "url": ADDRESS,
         "headers": {"Authorization": "${CODING_CLI_MCP_0}"}}}}
     assert (grant.user_id, grant.session_id, grant.pinned) == ("admin", "s1", pin)
     # Under the caller's id, a prefix of its own per run.
@@ -72,6 +73,30 @@ async def test_a_run_brings_at_least_the_bindings_its_gateway_requires(repo, gat
     workdirs = with_gateway(repo) if workdir_gateway else {"repo": {"path": str(repo)}}
     result, _ = await call(make_server(repo, workdirs=workdirs), "run_task", task="x", pin=pin)
     assert said in result["error"], result
+
+
+async def test_a_run_asks_this_processs_gateway_where_it_is(repo, log, monkeypatch):
+    """Where no app serves the route, asking for the address is what starts the gateway's own listener."""
+    asked = []
+
+    async def listen():
+        asked.append(True)
+        grants.serve("mcp_gateway", True, "http://127.0.0.7:9/plugins/mcp_gateway/mcp")
+
+    grants.offer("mcp_gateway", listen)
+    try:
+        server = make_server(repo, workdirs=with_gateway(repo), wait_s=0.2)
+        started, _ = await call(server, "run_task", task="SLEEP 30", pin=PIN)
+        try:
+            argv = psutil.Process(server._load(started["run_id"])["pid"]).cmdline()
+            config = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(encoding="utf-8"))
+        finally:
+            await call(server, "cancel_run", run_id=started["run_id"])
+    finally:
+        grants.offer("mcp_gateway", None, listen)
+        grants.serve("mcp_gateway", False)
+    assert asked == [True]
+    assert config["mcpServers"][cli.GATEWAY_SERVER]["url"] == "http://127.0.0.7:9/plugins/mcp_gateway/mcp"
 
 
 async def test_a_gateway_that_does_not_serve_starts_no_run(tmp_path, log):
@@ -120,7 +145,7 @@ async def test_an_agy_run_finds_its_grant_in_the_workspace_and_commits_none(repo
     first, _ = await call(server, "run_task", task="WRITE b.txt one", pin=PIN)
     config = json.loads(log()["mcp_config"])
     token = config["mcpServers"][cli.GATEWAY_SERVER]["headers"]["Authorization"].removeprefix("Bearer ")
-    assert config["mcpServers"][cli.GATEWAY_SERVER]["serverUrl"].endswith("/plugins/mcp_gateway/mcp")
+    assert config["mcpServers"][cli.GATEWAY_SERVER]["serverUrl"] == ADDRESS
     # agy offers the gateway's tools only through call_mcp_tool: the run is told so before its task.
     assert log()["task"] == cli.agy_note(GATEWAY["tools"]) + "WRITE b.txt one"
     assert f"mcp({cli.GATEWAY_SERVER}/*)" in cli.AGY_SETTINGS["permissions"]["allow"]
@@ -145,13 +170,6 @@ async def test_a_refused_resume_leaves_the_workspace_file_it_did_not_write(repo,
     planted.write_text("{}", encoding="utf-8")
     refused, _ = await call(server, "run_task", task="x", resume=first["run_id"])
     assert "not started" in refused["error"] and planted.read_text(encoding="utf-8") == "{}"
-
-
-def test_the_gateway_is_dialled_where_the_api_listens(repo, monkeypatch):
-    monkeypatch.setenv("HOST", "10.0.0.5")
-    assert make_server(repo).gateway_host == "10.0.0.5"
-    monkeypatch.setenv("HOST", "0.0.0.0")
-    assert make_server(repo).gateway_host == "127.0.0.1"
 
 
 def spy_tokens(monkeypatch):

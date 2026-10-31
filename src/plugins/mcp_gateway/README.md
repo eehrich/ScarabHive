@@ -1,11 +1,12 @@
 # MCP gateway
 
 Hands tools of this installation to an outside CLI -- Claude Code, Antigravity -- over MCP. Nothing is open by
-configuration alone: a caller in the API process issues a token for one run of the CLI, names the tools that run
-may call, and revokes the token when the run ends.
+configuration alone: a caller in the process that starts the CLI issues a token for one run of it, names the tools
+that run may call, and revokes the token when the run ends.
 
 - **Endpoint** `/plugins/mcp_gateway/mcp` -- MCP's Streamable HTTP, served by the mcp SDK's own server (stateless,
-  JSON answers). Without the run's `Authorization: Bearer <token>` the request ends at 401.
+  JSON answers). Without the run's `Authorization: Bearer <token>` the request ends at 401. A process without the
+  app (agent-run, an eval run) serves it on a loopback listener of its own: `grants.address()` names where to dial.
 - **Grants** `plugins.mcp_gateway.grants.issue(...)` / `revoke(token)` -- per run: the account, the tool patterns, an
   optional session, parameters fixed to one value (`pinned`), allowed values reaching into lists (`allowed`), a
   lifetime.

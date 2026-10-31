@@ -9,6 +9,7 @@ that need only that.
 """
 from __future__ import annotations
 
+import copy
 import glob as glob_module
 import logging
 import os
@@ -107,6 +108,11 @@ AUTH_RULE_SECTIONS = ("endpoint_security", "llm_security", "plugin_security")
 #: include, so it wins, and -- unlike an include -- it may set auth and paths too: the Setup panel and the install
 #: scripts point auth.secret_key at the machine's own key here, never in a tracked file.
 LOCAL_CONFIG = "local.yaml"
+
+#: A layer of this process's own, over the local one, for as long as it is set -- never on disk: what an eval
+#: suite's runs are measured under (agent_eval's suite ``config:``), in its runner and in each of its runs. Laid
+#: as the local layer is, section by section; the includes stay the master's.
+process_layer: dict = {}
 
 
 def local_layer(cfg_path: Path) -> dict:
@@ -260,11 +266,12 @@ def read_layers(cfg_path: Path) -> dict:
     # This machine's own layer, over everything: every section but another include list.
     local = local_layer(cfg_path)
     _resolve_relative_paths(local, cfg_path.parent)
-    for key, value in local.items():
-        if key in ("includes", "files"):
-            logger.warning("%s: '%s' is read from %s only -- ignored here", LOCAL_CONFIG, key, cfg_path.name)
-            continue
-        data[key] = overlay_section(data.get(key), value)
+    for layer, name in ((local, LOCAL_CONFIG), (copy.deepcopy(process_layer), "this process's layer")):
+        for key, value in layer.items():
+            if key in ("includes", "files"):
+                logger.warning("%s: '%s' is read from %s only -- ignored here", name, key, cfg_path.name)
+                continue
+            data[key] = overlay_section(data.get(key), value)
     return data
 
 

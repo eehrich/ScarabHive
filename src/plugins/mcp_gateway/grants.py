@@ -1,8 +1,10 @@
 """What one run of an outside CLI may call through the gateway, behind a token only that run holds.
 
-A caller in the API process (the one that starts the CLI) issues a grant for the run and revokes it when the run
-ends; the CLI sends the token as ``Authorization: Bearer <token>``. Only the token's sha256 is kept, in memory --
-a grant does not outlive the process, and another process cannot issue one the gateway would know.
+A caller in the process that starts the CLI issues a grant for the run and revokes it when the run ends; the CLI
+sends the token as ``Authorization: Bearer <token>`` to the gateway of that same process -- the API's route, or,
+where no app serves one (agent-run), a listener of the process's own (``address``). Only the token's sha256 is
+kept, in memory -- a grant does not outlive the process, and another process cannot issue one the gateway would
+know.
 """
 from __future__ import annotations
 
@@ -14,13 +16,17 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Optional
+from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from agent_system.core.cancellation import CancellationToken
 from agent_system.servers.agent.components.tool_bindings import form_problem
 
 #: Gateway instances serving now (an enabled plugin adds its name): a grant for one that does not serve is refused.
 _serving: set[str] = set()
+#: Where a CLI reaches each serving instance, set with serve(): under the API's port, or a listener of its own.
+_addresses: dict[str, str] = {}
+#: Enabled instances that no app serves: the awaitable each starts its own listener with, on the first ask.
+_listeners: dict[str, Callable[[], Awaitable[None]]] = {}
 _grants: dict[str, "Grant"] = {}
 _lock = threading.Lock()
 _MISSING = object()
@@ -139,16 +145,47 @@ def _cancel(grant: Grant) -> None:
         grant.cancel.cancel()
 
 
-def serve(gateway: str, serving: bool) -> None:
-    """Start or stop serving ``gateway``; stopping ends its grants (a later start serves new ones only)."""
+def serve(gateway: str, serving: bool, address: Optional[str] = None) -> None:
+    """Start serving ``gateway`` at ``address`` (the URL a CLI dials, required then), or stop; stopping ends its
+    grants (a later start serves new ones only)."""
+    if serving and not address:
+        raise ValueError(f"mcp gateway {gateway!r}: serving needs the address a CLI dials")
     with _lock:
         if serving:
             _serving.add(gateway)
+            _addresses[gateway] = address
             return
         _serving.discard(gateway)
+        _addresses.pop(gateway, None)
         ended = [_grants.pop(d) for d, g in list(_grants.items()) if g.gateway == gateway]
     for grant in ended:
         _cancel(grant)
+
+
+def offer(gateway: str, listen: Optional[Callable[[], Awaitable[None]]],
+          withdrawn: Optional[Callable[[], Awaitable[None]]] = None) -> None:
+    """``listen`` starts a listener of ``gateway``'s own, which then serves: the way to it in a process that no app
+    serves it in -- agent-run, a suite's run. None withdraws the offer ``withdrawn``, and only that one: a plugin
+    built since offers its own."""
+    with _lock:
+        if listen is not None:
+            _listeners[gateway] = listen
+        elif _listeners.get(gateway) == withdrawn:
+            _listeners.pop(gateway, None)
+
+
+async def address(gateway: str = "mcp_gateway") -> str:
+    """The URL a CLI reaches ``gateway`` at: under the API's port, or a listener of this process's own, started
+    now where no app serves it. LookupError when it does not serve in this process (not enabled)."""
+    with _lock:
+        found, listen = _addresses.get(gateway) if gateway in _serving else None, _listeners.get(gateway)
+    if found is None and listen is not None:
+        await listen()
+        with _lock:
+            found = _addresses.get(gateway) if gateway in _serving else None
+    if found is None:
+        raise LookupError(f"mcp gateway {gateway!r} does not serve in this process (plugin not enabled?)")
+    return found
 
 
 def _walk(node: Any, parts: list[str], where: str) -> Iterator[tuple[str, Any]]:

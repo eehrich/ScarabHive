@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Evals on a subscription CLI: a suite's `config:` is a configuration layer for its runner and every run (a coding_cli
+  instance, an LLM profile or model entry), never on disk; `paths`, `auth`, `includes` and `files` are refused. An
+  arm on `claude_code` or `antigravity` now runs as in the API: the provider finds its coding_cli instance in any
+  process that builds agents (`app_state.registry`, set by the API, agent-run and agent-cli; `app_registry` stays
+  the API's), and the MCP gateway serves a process without the app on a loopback listener of its own, started when a
+  run first asks for its address (`grants.address`), so a run's CLI reaches the grants of its own process.
 - Evals: a task may carry its own `agent_config` (the template variables its prompt needs, say), merged before
   the arm's overlay; a `./` path in an arm's or a task's `system_template` means the suite's directory, so the
   prompt as it was before an edit, kept beside the suite, makes the reference arm; `python` in a setup command

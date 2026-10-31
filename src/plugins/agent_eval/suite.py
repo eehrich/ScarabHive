@@ -239,6 +239,9 @@ class Suite(BaseModel):
     tasks: List[Task]
     #: What a task with a ``judge`` check is judged by.
     judge: Optional[Judge] = None
+    #: A layer over the configuration, as config/local.yaml lays one, for this suite's runs only (its runner and
+    #: every run): a plugin instance, an LLM profile or model entry the arms run on.
+    config: Dict[str, Any] = Field(default_factory=dict)
 
     #: The suite file's directory, set by load_suite.
     root: Path = Field(default=Path("."), exclude=True)
@@ -248,6 +251,16 @@ class Suite(BaseModel):
     def _name(cls, value: str) -> str:
         if not _ID.fullmatch(value):
             raise ValueError(f"suite name {value!r}: letters, digits and '-', at most 40")
+        return value
+
+    @field_validator("config")
+    @classmethod
+    def _config(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+        # paths: the data directory is the suite's `data:`; auth: a run judges its user as the installation does;
+        # includes and files are the master config's.
+        kept = sorted(set(value) & {"paths", "auth", "includes", "files"})
+        if kept:
+            raise ValueError(f"config: {kept} cannot be set by a suite")
         return value
 
     @field_validator("arms")

@@ -222,6 +222,7 @@ parallel: 2                     # agent runs at the same time
 budget_usd: 5                   # no new runs once this is spent
 data: fresh                     # fresh (default) | shared
 chain: false
+config: {}                      # a configuration layer for this suite's runs (below)
 arms:
   base: {}                      # the first arm is the reference
   think:
@@ -257,6 +258,38 @@ and models are in the suite's report.
 @{bullet}@{b}shared@{ub}: the run uses the installation's data directory,
 for an agent that has to read what is there (a database it works on).
 Runs then see each other's leftovers.
+
+@{h2}config: what the arms run on
+
+@{code}
+config:
+  llm_system:
+    models:
+      agy_flash: {provider: antigravity, model: agy_eval}   # agy_eval: a coding_cli instance
+    profiles:
+      flash_on_agy: {model_ref: agy_flash}
+  plugins:
+    servers:
+      # inherits an instance of the installation (its workdirs, users), on another model
+      agy_eval: {type: my_agy_instance, enabled: true, model: gemini-3.8-flash}
+arms:
+  api: {}
+  agy:
+    agent_config: {llm_profile: [flash_on_agy]}
+@{body}
+
+A layer over the configuration, laid as @{tt}config/local.yaml@{utt} lays
+its own -- section by section, over everything -- in this suite's runner and
+in every one of its runs, never on disk: a plugin instance, an LLM profile or
+model entry an arm runs on, without touching the installation's files. A
+@{tt}./@{utt} template path in it means the suite's directory.
+@{tt}paths@{utt} (the data directory is @{tt}data:@{utt}), @{tt}auth@{utt},
+@{tt}includes@{utt} and @{tt}files@{utt} are refused.
+
+An arm on a subscription CLI (@{tt}claude_code@{utt}, @{tt}antigravity@{utt})
+runs as in the API: its coding_cli instance runs in the run's process, and a
+workdir's gateway serves there on a loopback listener of its own -- the
+CLI's tool calls go to the run's data directory, not the installation's.
 
 @{h2}Setup: the same start for every arm
 

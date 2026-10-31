@@ -79,7 +79,7 @@ def instance(monkeypatch):
         made["server"] = _Instance(answers, cli)
         registry = ToolServerRegistry()
         registry.register("cc", made["server"])
-        monkeypatch.setattr(app_state, "app_registry", registry)
+        monkeypatch.setattr(app_state, "registry", registry)
         return made["server"]
 
     tokens = (current_request_id.set("req-1"), current_run_user.set("ada"), current_run_session.set("sess-1"))
@@ -369,7 +369,7 @@ class TestFallback:
         with pytest.raises(LLMServerError, match="needs 'claude'"):
             await client("claude_code").chat_tools(MESSAGES, [])
         assert (await client("antigravity").chat_tools(MESSAGES, []))["assistant"]["content"] == "the answer"
-        monkeypatch.setattr(app_state, "app_registry", ToolServerRegistry())
+        monkeypatch.setattr(app_state, "registry", ToolServerRegistry())
         with pytest.raises(LLMServerError, match="not running in this process"):
             await client().chat_tools(MESSAGES, [])
 

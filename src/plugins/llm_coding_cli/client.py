@@ -237,7 +237,7 @@ class CodingCliClient(LLMClient):
     def _server(self) -> Any:
         from agent_system import app_state
 
-        registry = app_state.app_registry
+        registry = app_state.registry  # the API's, or agent-run's: the instance runs in this process either way
         try:
             server = registry.get(self.instance) if registry is not None else None
         except KeyError:

@@ -72,7 +72,16 @@ New entries take effect after a restart of the API.
 
 The endpoint is @{tt}/plugins/<instance>/mcp@{utt}, by default
 @{tt}http://127.0.0.1:<port>/plugins/mcp_gateway/mcp@{utt} -- the port the API
-listens on (@{tt}PORT@{utt}, else @{tt}network.port@{utt}). A CLI cannot log in,
+listens on (@{tt}PORT@{utt}, else @{tt}network.port@{utt}).
+
+A process without the app -- @{tt}agent-run@{utt}, a run of an eval suite --
+serves the same route on a listener of its own: on 127.0.0.1 and a free
+port, started when a run there first asks for the gateway's address, ended
+with the plugin or the process. It takes no signal of the process (Ctrl-C
+stays agent-run's). The grants are that process's, so its CLIs must reach
+its gateway, not the API's: @{tt}address()@{utt} below names the one to dial.
+
+A CLI cannot log in,
 so @{tt}config/security.yaml@{utt} opens this one route in both auth layers
 (@{tt}endpoint_security@{utt} and @{tt}plugin_security@{utt}); the route itself
 answers 401 to any request without the bearer token of a live grant, before
@@ -88,13 +97,15 @@ stands alone.
 @node grants "Grants: issue and revoke"
 @{h1}Grants: issue and revoke
 
-A grant lives in the memory of the API process and is found by the sha256 of
-its token; the token itself is kept nowhere. Only code in that process can
-issue one -- a worker process cannot hand a grant to the gateway.
+A grant lives in the memory of the process that issues it and is found by
+the sha256 of its token; the token itself is kept nowhere. Only code in that
+process can issue one, and only that process's gateway knows it -- the API's
+route, or the listener of its own where no app serves one.
 
 @{code python}
-from plugins.mcp_gateway.grants import issue, revoke
+from plugins.mcp_gateway.grants import address, issue, revoke
 
+url = await address("mcp_gateway")   # where the CLI dials; starts the own listener where no app serves it
 token = issue("ada", ["my_store_read", "my_store_search_*"],
               request_id="run-4711",
               pinned={"my_store/*": {"project_id": 12}},
@@ -155,9 +166,10 @@ write a tool that does both through one parameter.
 @{tt}issue@{utt} raises @{tt}ValueError@{utt} for an argument that cannot
 hold (empty account, tools or request id; a lifetime of 0 or less; a
 pinned runtime parameter; a path that is none, an empty list of values) and
-@{tt}LookupError@{utt} when the gateway does not serve in this process (not
-enabled, or a process whose app does not mount its route: agent-cli, a
-worker -- a CLI handed a token there would reach no gateway that knows it).
+@{tt}LookupError@{utt} when the gateway does not serve in this process: not
+enabled, or a process without the app where nobody asked
+@{tt}address()@{utt} first (it is what starts the own listener). @{tt}address@{utt}
+raises @{tt}LookupError@{utt} for an instance not enabled here, or one stopped.
 @{tt}revoke@{utt} returns False when there was nothing to revoke.
 A revoked grant stops a call of it that is still running -- the tool's task
 is cancelled, the hooks see the cancellation token -- and its token answers
@@ -227,9 +239,19 @@ or history. What the CLI keeps of the answers is the CLI's.
 @node gaps "Known gaps"
 @{h1}Known gaps
 
-@{bullet}One process. Grants live in the API process's memory; a caller in
-another process cannot issue one the gateway knows (it is refused there),
-and a restart ends every grant.
+@{bullet}One process per grant. Grants live in the memory of the process that
+issued them, and only that process's gateway knows them: a CLI started by
+agent-run reaches agent-run's own listener, never the API's route. A restart
+ends every grant.
+@{bullet}The own listener answers on loopback only. A CLI on another machine
+reaches a gateway only through the API's route. The API itself never listens
+on its own: a run there before the app mounted the route is refused.
+@{bullet}The own listener serves while its process's loop runs. In
+@{tt}agent-cli chat@{utt} that is only during a turn: a CLI run that outlives
+its turn (coding_cli's @{tt}run_task@{utt} answering "still going") gets the
+answers to its tool calls in the next turn, or runs into its own MCP timeout.
+The tools themselves run on that loop, so a listener of its own thread would
+wait the same.
 @{bullet}One instance. @{tt}config/security.yaml@{utt} opens the route of
 @{tt}mcp_gateway@{utt} only; a second instance answers every request with
 401 until its route is opened there as well.

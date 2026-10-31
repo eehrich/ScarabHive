@@ -302,7 +302,10 @@ operator vouches that its tools and allowed values only read. confined (needs a
 bindings to what the run writes anyway -- its own file -- where a page could
 steer no more than the answer. Either way the vouch is the operator's, as a page the run reads could steer them. Plan mode gets no
 grant.
-@{bullet}A gateway that does not serve in this process answers "not started:
+@{bullet}The run dials the gateway of this process: under the API's port in
+the API, on the gateway's own loopback listener in a process without the app
+(agent-run, an eval run), started for the first run that asks.
+@{bullet}A gateway that is not enabled in this process answers "not started:
 mcp gateway ..." -- a caller can fall back on another way.
 
 Measured with Claude Code (haiku) and agy 1.4.8 (Gemini 3.8 Flash) against an

@@ -32,8 +32,12 @@ if TYPE_CHECKING:
     from .services.session_service import SessionService
     from .tools.base import ToolServerRegistry
 
-#: The registry the API's routes look agents and tool servers up in.
+#: The registry the API's routes look agents and tool servers up in. Set only by the API: a plugin reads it as
+#: the sign that it runs there (stategraph's schedules start then).
 app_registry: Optional["ToolServerRegistry"] = None
+#: The registry this process builds its agents in -- the API's, or a command line's (agent-run, agent-cli). For a
+#: plugin that looks up a sibling server wherever it runs.
+registry: Optional["ToolServerRegistry"] = None
 #: The ToolServerIntegration the lifespan initialized (tools.integration prefers it).
 tool_integration: Any = None
 config_service: Optional["ConfigService"] = None
@@ -70,5 +74,5 @@ LEGACY_APP_NAMES = {
 
 def reset() -> None:
     """Forget every service (between tests: the next ``build_app`` sets them anew)."""
-    for name in LEGACY_APP_NAMES.values():
+    for name in (*LEGACY_APP_NAMES.values(), "registry"):
         globals()[name] = None
