@@ -865,3 +865,32 @@ def test_a_run_keeps_its_arms_expected_models_for_the_report(tmp_path, monkeypat
     """)
     run_id = runner.run_suite(path)
     assert store.read_meta(run_id)["expected_models"] == {"base": _expect("a", a=("m-1", None))}
+
+
+def test_check_arms_passes_every_suite_in_the_repository():
+    """Every suite the repository carries can run against the shipped configuration: its arms' and its judge's
+    overlays merged over their agents, with the suite's own config layer -- what tests/config's scan of
+    agent_config blocks leaves to this check, an overlay being no agent_config of its own (`key: null` removes an
+    inherited key)."""
+    import yaml
+    from plugins.agent_eval.suite import load_suite
+
+    root = Path(runner.__file__).resolve().parents[2]       # src/
+    found, refused = [], []
+    for path in sorted(root.rglob("*.yaml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - not YAML this test reads
+            continue
+        if not (isinstance(data, dict) and isinstance(data.get("tasks"), list) and isinstance(data.get("agent"), str)):
+            continue
+        found.append(path)
+        try:
+            suite = load_suite(path)
+            with runner.layered(suite):
+                runner.check_arms(suite)
+                runner.check_judge(suite, runner.expected_models(suite))
+        except Exception as e:  # noqa: BLE001 - named with its file
+            refused.append(f"{path.relative_to(root)}: {e}")
+    assert any(p.parent.name == "hello" for p in found), "the scan found not even the shipped hello suite"
+    assert not refused, "\n".join(refused)

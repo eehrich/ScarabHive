@@ -1026,6 +1026,26 @@ def root_log_handlers_keep_their_levels():
 
 
 @pytest.fixture(autouse=True)
+def no_launch_dir_carried_between_tests():
+    """Every test starts in the "never entered" state paths.py starts in, where it stood.
+
+    `enter_project` remembers where the process began and moves it into the project; an entry point run in process
+    (a CLI main(), an eval run's child) writes that global for the REST of the session. Every later test that stands
+    in its own tmp_path then resolves "." -- a file tool's allowed directory, a user path -- against the directory
+    the first run began in: the shipped file_ops instances "reached" none of a later test's files.
+    """
+    from agent_system import paths
+
+    before, here = paths._launch_dir, os.getcwd()
+    paths._launch_dir = None
+    try:
+        yield
+    finally:
+        paths._launch_dir = before
+        os.chdir(here)
+
+
+@pytest.fixture(autouse=True)
 def reset_global_state():
     """Reset all global state before and after each test."""
     # Reset BEFORE test runs

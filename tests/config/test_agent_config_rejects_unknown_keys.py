@@ -66,6 +66,13 @@ class TestUnknownKeysAreRejected:
                     data = yaml.safe_load(text)
                 except Exception:
                     continue
+                if isinstance(data, dict) and isinstance(data.get("tasks"), list) and isinstance(
+                        data.get("agent"), str):
+                    # An eval suite: its agent_config blocks are overlays, merged over an agent before they are
+                    # validated (`key: null` removes an inherited one there) -- agent_eval's check_arms judges
+                    # them merged, before a suite runs.
+                    declaring.discard(path)
+                    continue
 
                 def walk(node):
                     nonlocal scanned
