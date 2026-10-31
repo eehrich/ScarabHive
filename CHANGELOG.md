@@ -91,6 +91,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- coding_cli: an agy task estimated over 55k tokens is not started (`max_task_tokens`, lower only). agy hands its
+  model some 60k tokens of a task and silently cuts the middle out of a longer one; refused, the caller falls back.
+  Claude Code has no such bound.
+- Coding CLIs as an LLM: a continued sub-agent goes on with its CLI conversation. The runs a later call may resume are
+  kept per session (not per agent run), so the next turn of a continued sub-agent sends only its new message,
+  not the whole conversation again; the CLI's own last answer is not sent back, and a run coding_cli will not
+  resume starts afresh instead of moving the chain on.
 - The Evals panel: a run's head and three figures (agent runs that counted of planned, passed, cost per run), arms,
   tasks and single runs in tabs that stay chosen as the run reloads, a running run's progress in the list.
 

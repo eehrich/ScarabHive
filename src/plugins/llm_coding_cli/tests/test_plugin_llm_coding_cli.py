@@ -16,6 +16,7 @@ from agent_system.core.request_context import current_run_session, current_run_u
 from agent_system.llm.models import LLMQuotaExhaustedError, LLMServerError
 from agent_system.tools.base import ToolServer, ToolServerRegistry
 from agent_system.tools.status import current_request_id
+from plugins.llm_coding_cli import client as client_module
 from plugins.llm_coding_cli.client import CodingCliClient, render
 
 
@@ -61,6 +62,12 @@ class _Instance(ToolServer):
         self.calls.append(("cancel_run", {k: v for k, v in params.items() if k != "_status"}))
         self.stopped = True
         return {"status": "success", "run_id": params["run_id"], "state": "cancelled"}
+
+
+@pytest.fixture(autouse=True)
+def no_conversations(monkeypatch):
+    """The runs a session may go on with live in the module: each test starts without any."""
+    monkeypatch.setattr(client_module, "_conversations", type(client_module._conversations)())
 
 
 @pytest.fixture
@@ -133,7 +140,8 @@ class TestCalls:
         assert (await llm.chat_tools(more, []))["assistant"]["content"] == "second"
         resumed = server.calls[1][1]
         assert resumed["resume"] == "r1"
-        assert resumed["task"] == render(more[2:]) and "You write." not in resumed["task"]
+        # Its own answer is the CLI's last turn already: only what came after it.
+        assert resumed["task"] == render(more[3:]) and "You write." not in resumed["task"]
 
     @pytest.mark.parametrize("second", [
         [{"role": "system", "content": "Summarize."}, {"role": "user", "content": "Tool result B."}],   # a hook's call
@@ -149,17 +157,109 @@ class TestCalls:
         fresh = server.calls[1][1]
         assert "resume" not in fresh and fresh["task"] == render(second)
 
-    async def test_another_agent_run_starts_a_run_of_its_own(self, instance):
-        server = instance(done(), done())
-        llm = client()
-        await llm.chat_tools(MESSAGES, [])
+    async def test_a_continued_session_resumes_its_run_with_a_client_of_its_own(self, instance):
+        """A sub-agent continued: a new agent run (request id) of the same session, built anew -- the CLI's
+        conversation goes on, with only the new message."""
+        server = instance(done(), done("again"))
+        await client().chat_tools(MESSAGES, [])
         more = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
-        token = current_request_id.set("req-2")
+        token = current_request_id.set("sub_cont_2")
         try:
-            await llm.chat_tools(more, [])     # would go on from req-1's run, were runs not kept per agent run
+            assert (await client().chat_tools(more, []))["assistant"]["content"] == "again"
         finally:
             current_request_id.reset(token)
+        assert (server.calls[1][1]["resume"], server.calls[1][1]["task"]) == ("r1", render(more[3:]))
+
+    @pytest.mark.parametrize("context", [current_run_session, current_run_user], ids=["session", "user"])
+    async def test_another_session_or_user_starts_a_run_of_its_own(self, instance, context):
+        server = instance(done(), done())
+        await client().chat_tools(MESSAGES, [])
+        more = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        token = context.set("other")
+        try:
+            await client().chat_tools(more, [])
+        finally:
+            context.reset(token)
         assert "resume" not in server.calls[1][1]
+
+    async def test_a_hooks_call_in_between_leaves_the_agent_its_run(self, instance):
+        server = instance(done(), done("summary", run_id="r2"), done("again", run_id="r3"))
+        await client().chat_tools(MESSAGES, [])
+        await client().chat_tools([{"role": "system", "content": "Summarize."}, {"role": "user", "content": "X"}], [])
+        more = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        await client().chat_tools(more, [])
+        assert [p.get("resume") for _, p in server.calls] == [None, None, "r1"]
+
+    async def test_the_longest_conversation_it_goes_on_from_is_resumed(self, instance):
+        server = instance(done(), done("second", run_id="r2"), done("third", run_id="r3"))
+        await client().chat_tools(MESSAGES, [])
+        two = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        await client().chat_tools(two, [])
+        three = two + [{"role": "assistant", "content": "second"}, {"role": "user", "content": "Again."}]
+        await client().chat_tools(three, [])
+        assert [(p.get("resume"), p["task"]) for _, p in server.calls[1:]] == [
+            ("r1", render(two[3:])), ("r2", render(three[5:]))]
+
+    @pytest.mark.parametrize("refusal", ["resume: another run works in that worktree",
+                                         "pin: a resume keeps run r1's -- {}",
+                                         "not started: the worktree carries .agents/mcp_config.json -- agy would",
+                                         "not started: run r1 holds no usable session id"])
+    async def test_a_run_that_cannot_be_resumed_is_started_fresh_not_given_up(self, instance, refusal):
+        from agent_system.core.request_context import current_tool_bindings
+
+        bindings = {"files/*_write": {"path": "out.md"}}
+        server = instance(done(), {"status": "error", "error": refusal}, done("fresh", run_id="r2"))
+        token = current_tool_bindings.set(bindings)
+        try:
+            await client().chat_tools(MESSAGES, [])
+            more = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+            assert (await client().chat_tools(more, []))["assistant"]["content"] == "fresh"
+        finally:
+            current_tool_bindings.reset(token)
+        assert [p.get("resume") for _, p in server.calls] == [None, "r1", None]
+        assert (server.calls[2][1]["task"], server.calls[2][1]["pin"]) == (render(more), bindings)
+
+    async def test_a_run_another_has_gone_on_from_is_not_resumed_again(self, instance):
+        """r2 went on from r1: the CLI's conversation holds r2's turns. A history that matches r1's but not r2's --
+        compacted after the first call -- would get them twice in r1's conversation: it starts afresh."""
+        server = instance(done(), done("second", run_id="r2"), done("third", run_id="r3"))
+        await client().chat_tools(MESSAGES, [])
+        two = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        await client().chat_tools(two, [])
+        compacted = MESSAGES + [{"role": "user", "content": "Summary of what came after."}]
+        await client().chat_tools(compacted, [])
+        assert [p.get("resume") for _, p in server.calls] == [None, "r1", None]
+
+    @pytest.mark.parametrize("ending", [{"status": "success", "run_id": "r2", "state": "failed", "turns": 3},
+                                        done("", run_id="r2")], ids=["failed", "no_answer"])
+    async def test_a_resumed_run_that_failed_is_not_resumed_from_again(self, instance, ending):
+        """It went on, so the CLI's conversation holds its turns -- whether it answered or not."""
+        server = instance(done(), ending, done("third", run_id="r3"))
+        await client().chat_tools(MESSAGES, [])
+        two = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        with pytest.raises(LLMServerError):
+            await client().chat_tools(two, [])
+        await client().chat_tools(two, [])
+        assert [p.get("resume") for _, p in server.calls] == [None, "r1", None]
+
+    async def test_a_resume_held_up_for_another_reason_is_not_started_fresh(self, instance):
+        """Busy, or the budget: a fresh run would be held up the same way -- the chain moves on."""
+        server = instance(done(), {"status": "error", "error": "not started: 1 run(s) still going (r9) -- wait"},
+                          done("third", run_id="r3"))
+        await client().chat_tools(MESSAGES, [])
+        two = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        with pytest.raises(LLMServerError):
+            await client().chat_tools(two, [])
+        await client().chat_tools(two, [])        # refused before it started: r1 is still the one to go on with
+        assert [p.get("resume") for _, p in server.calls] == [None, "r1", "r1"]
+
+    async def test_an_answer_of_another_link_goes_with_the_resumed_task(self, instance):
+        """Only the run's own answer is the CLI's last turn: one another link of the chain gave is news to it."""
+        server = instance(done(), done("again", run_id="r2"))
+        await client().chat_tools(MESSAGES, [])
+        more = MESSAGES + [{"role": "assistant", "content": "the API's answer"}, {"role": "user", "content": "Go."}]
+        await client().chat_tools(more, [])
+        assert (server.calls[1][1]["resume"], server.calls[1][1]["task"]) == ("r1", render(more[2:]))
 
 
 class TestFallback:
@@ -322,6 +422,64 @@ class TestDebuggerNotices:
         assert (ok["model"], ok["usage"]["cost"], ok["error"], ok["routing"]["selected"]) == (
             "opus-x", 0.0, None, "claude_code:cc")
         assert "not started: busy" in failed["error"]
+
+    async def test_a_refused_resume_and_the_fresh_run_are_two_requests(self, instance):
+        instance(done(), {"status": "error", "error": "resume: another run works in that worktree"},
+                 done("fresh", run_id="r2"))
+        seen = []
+
+        async def pre(info):
+            seen.append(("pre", info))
+
+        async def post(info):
+            seen.append(("post", info))
+
+        await client().chat_tools(MESSAGES, [])
+        llm = client()
+        llm._on_pre_llm_request, llm._on_post_llm_response = pre, post
+        more = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        await llm.chat_tools(more, [])
+        assert [kind for kind, _ in seen] == ["pre", "post", "pre", "post"]
+        assert seen[0][1]["payload"]["resume"] == "r1" and "resume refused" in seen[1][1]["error"]
+        assert seen[2][1]["payload"]["task"] == render(more) and "resume" not in seen[2][1]["payload"]
+        assert seen[3][1]["error"] is None
+
+    async def test_a_cancel_in_the_refused_resumes_notice_answers_it_once(self, instance):
+        instance(done(), {"status": "error", "error": "resume: another run works in that worktree"})
+        seen = []
+
+        async def pre(info):
+            seen.append(("pre", info))
+
+        async def post(info):
+            seen.append(("post", info))
+            raise asyncio.CancelledError
+
+        await client().chat_tools(MESSAGES, [])
+        llm = client()
+        llm._on_pre_llm_request, llm._on_post_llm_response = pre, post
+        more = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        with pytest.raises(asyncio.CancelledError):
+            await llm.chat_tools(more, [])
+        assert [kind for kind, _ in seen] == ["pre", "post"]
+
+    async def test_a_fresh_run_that_fails_after_a_refused_resume_is_answered_once(self, instance):
+        instance(done(), {"status": "error", "error": "resume: another run works in that worktree"},
+                 {"status": "error", "error": "not started: busy"})
+        seen = []
+
+        async def note(kind, info):
+            seen.append((kind, info))
+
+        await client().chat_tools(MESSAGES, [])
+        llm = client()
+        llm._on_pre_llm_request = lambda info: note("pre", info)
+        llm._on_post_llm_response = lambda info: note("post", info)
+        more = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        with pytest.raises(LLMServerError):
+            await llm.chat_tools(more, [])
+        assert [kind for kind, _ in seen] == ["pre", "post", "pre", "post"]
+        assert "not started: busy" in seen[3][1]["error"]
 
 
 def test_render_keeps_order_roles_and_says_what_it_cannot_pass_on():

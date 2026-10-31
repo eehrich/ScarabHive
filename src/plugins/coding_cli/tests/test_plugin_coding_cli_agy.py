@@ -274,3 +274,56 @@ async def test_an_instances_env_reaches_an_agy_run_but_no_claude_login(repo, log
     sent = log()
     assert result["state"] == "done" and "AGY_PROBE" in sent["env"] and "CLAUDE_CODE_OAUTH_TOKEN" not in sent["env"]
     assert Path(sent["home"]).name == "admin", "the run's home is the plugin's, not env's"
+
+
+def _sized(note, tokens):
+    """A task that, behind *note*, estimates at exactly *tokens* (3.3 characters a token, rounded down)."""
+    from agent_system.llm.token_utils import estimate_content_tokens
+
+    task = "WRITE b.txt hello\n"
+    task +="x" * (int(tokens * 3.3 + 2) - len(note) - len(task))
+    assert estimate_content_tokens(note + task) == tokens, "fixture: the task is not of the size asked"
+    return task
+
+
+async def test_an_agy_task_it_would_cut_is_not_started(repo, log, data_root):  # noqa: F811
+    """agy hands its model some 60k tokens of a task and cuts the middle out of a longer one, silently: a task
+    estimated over the bound -- the note it reads first included -- is refused before anything is made; one at the
+    bound runs."""
+    server = make_agy(repo, max_task_chars=1_000_000, max_task_tokens=2_000)
+    branches = git(repo, "branch", "--list", "coding_cli/*")     # the module's repository: other tests' runs
+    refused, status = await call(server, "run_task", task=_sized(cli.agy_note(), 2_001))
+    assert refused["error"].startswith("task: about 2001 tokens, agy takes at most 2000 whole"), refused
+    assert status.closing[0][0] == "error" and not (data_root / "worktrees").exists()
+    assert git(repo, "branch", "--list", "coding_cli/*") == branches
+    ran, _ = await call(server, "run_task", task=_sized(cli.agy_note(), 2_000))
+    assert ran["state"] == "done", ran
+
+
+async def test_the_bound_counts_the_note_of_the_runs_gateway(repo, log):  # noqa: F811
+    """With a gateway the note names its tools: longer, and counted. Plan mode gets no gateway, so the short one."""
+    from test_plugin_coding_cli_gateway import GATEWAY, PIN, with_gateway
+
+    server = make_agy(repo, max_task_chars=1_000_000, max_task_tokens=2_000,
+                      workdirs={"repo": {**with_gateway(repo, read_only=True)["repo"], "web": True}})
+    task = _sized(cli.agy_note(), 2_000)        # fits behind the short note only
+    refused, _ = await call(server, "run_task", task=task, pin=PIN)
+    long_note = cli.agy_note(GATEWAY["tools"])
+    from agent_system.llm.token_utils import estimate_content_tokens
+    assert refused["error"].startswith(f"task: about {estimate_content_tokens(long_note + task)} tokens"), refused
+    planned, _ = await call(server, "run_task", task=task, mode="plan", pin=PIN)
+    assert planned["state"] == "done", planned
+
+
+def test_an_instance_may_lower_the_agy_bound_never_raise_it(repo):
+    assert [make_agy(repo, max_task_tokens=v).max_task_tokens for v in (None, 10, 2_000, 10**9)] == [
+        55_000, 1_000, 2_000, 55_000]
+
+
+async def test_claude_code_takes_a_task_agy_would_refuse(repo, log):  # noqa: F811
+    from test_plugin_coding_cli_server import make_server
+
+    server = make_server(repo, max_task_chars=1_000_000, max_task_tokens=1_000)
+    assert server.max_task_tokens is None
+    result, _ = await call(server, "run_task", task="WRITE b.txt hello\n" + "x" * 300_000)
+    assert result["state"] == "done", result

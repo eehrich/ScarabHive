@@ -67,6 +67,12 @@ MAX_TASK_CHARS_CAP = 1_000_000
 # escaped quote counts up to four times): the rest of the line stays far below
 # Windows' 32,767 characters.
 MAX_SCHEMA_CHARS = 20_000
+#: The most tokens an agy task may have, estimated as agent_system's token_utils does. agy hands its model only
+#: some 60k tokens of a task and cuts the MIDDLE out of a longer one, silently -- the run answers, without what
+#: stood there (measured on a server: 241 of 697 runs of one caller over 200 kB, their first model input capped near
+#: 60k; the estimate puts 150-200 kB at 46-59k, agy counted the same). A longer task is refused: its caller falls
+#: back. An instance may set a lower bound (max_task_tokens), never a higher one. Claude Code takes the whole task.
+AGY_MAX_TASK_TOKENS = 55_000
 CAP_RESULT = 12_000
 MAX_RESULT_CHARS_CAP = 200_000
 CAP_STDERR = 600
@@ -397,6 +403,8 @@ class CodingCliServer(SchemaBasedToolServer):
         self.max_parallel = int(_bounded(getattr(server_config, "max_parallel", None), 1, 1, 8) or 1)
         self.max_task_chars = int(_bounded(getattr(server_config, "max_task_chars", None), MAX_TASK_CHARS, 1_000,
                                            MAX_TASK_CHARS_CAP) or MAX_TASK_CHARS)
+        self.max_task_tokens = int(_bounded(getattr(server_config, "max_task_tokens", None), AGY_MAX_TASK_TOKENS,
+                                            1_000, AGY_MAX_TASK_TOKENS) or AGY_MAX_TASK_TOKENS) if self.agy else None
         self.max_output_chars = int(_bounded(getattr(server_config, "max_output_chars", None), CAP_RESULT, 1_000,
                                              100_000) or CAP_RESULT)
         # The final report's bound: a caller that takes it as the answer itself (an LLM provider) needs more.
@@ -773,6 +781,16 @@ class CodingCliServer(SchemaBasedToolServer):
         if problem:
             return await self._fail(status, f"resume: {problem}, which run {prior['run_id']} did not -- start a new "
                                             "run" if prior else problem)
+        if self.agy:
+            from agent_system.llm.token_utils import estimate_content_tokens
+
+            # As agy reads it: the note before the task included (_start).
+            tokens = estimate_content_tokens(cli.agy_note(gateway["tools"] if gateway and mode != "plan" else None)
+                                             + task)
+            if tokens > self.max_task_tokens:
+                return await self._fail(status, f"task: about {tokens} tokens, agy takes at most "
+                                                f"{self.max_task_tokens} whole (it cuts the middle out of a longer "
+                                                "one) -- send a shorter task, or run it on another link")
         # As asked; _start holds it to the instance's, what its operator allows a run. None: the instance's.
         asked_run_s = 60 * limit if limit is not None else None
         # The given one or the one a resume inherits, before anything is made.

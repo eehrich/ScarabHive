@@ -8,8 +8,8 @@ workdir (the [MCP gateway](../mcp_gateway/README.md)), and its final answer come
 - **Providers** `claude_code` and `antigravity`. A model entry names the coding_cli instance as `model`; the
   instance decides the CLI, model, effort, subscription threshold and the tools. The provider has to match the
   instance's `cli`.
-- **One run per agent run**: a second model call in the same agent run resumes that CLI run with the messages added
-  since.
+- **One CLI conversation per session**: a later model call of the same session -- in the same agent run, or the next
+  turn of a continued sub-agent -- resumes that CLI run with the messages added since.
 - **Fallback**: the subscription's limit blocks the link until it resets, every other failure (instance busy or
   missing, a failed run, no answer) moves the chain on at once -- with a log line naming why. An agy run that
   failed on its login before its first turn starts once more first.

@@ -2,9 +2,10 @@
 
 The agent runs as always; its model call goes to a coding_cli instance instead of an API. The CLI gets the
 conversation as one task, runs its own tool loop -- the tools of the instance's workdir, through the MCP gateway --
-and its final answer comes back as the assistant message, without tool calls. A second call in the same agent run
-(a nudge, a format correction) resumes that CLI run with the messages added since. Whatever keeps the CLI from
-answering raises an error the chain moves on at: the next link answers instead.
+and its final answer comes back as the assistant message, without tool calls. A later call of the same session --
+a nudge or format correction in the same agent run, the next turn of a continued sub-agent -- resumes that CLI run
+with the messages added since. Whatever keeps the CLI from answering raises an error the chain moves on at: the
+next link answers instead.
 """
 from __future__ import annotations
 
@@ -22,8 +23,15 @@ logger = logging.getLogger(__name__)
 
 #: provider name -> the coding_cli `cli` it must find on the instance.
 CLI_OF = {"claude_code": "claude", "antigravity": "antigravity"}
-#: The CLI runs of the agent runs still going: one agent run's calls continue one CLI run.
-MAX_REMEMBERED_RUNS = 256
+#: The CLI runs a later call of their session may go on with: (instance, user, session) -> its last runs, newest
+#: last, each (run id, how many messages it was given, their fingerprint, the fingerprint of its answer). In this
+#: process, not one client's: a continued sub-agent is built anew, with clients of its own. Several per session: a
+#: hook's own call in between (another conversation) must not cost the agent's its run.
+_conversations: "OrderedDict[tuple[str, str, str], list[tuple[str, int, str, str]]]" = OrderedDict()
+MAX_REMEMBERED_SESSIONS = 256
+#: What a run costs on the subscription, as the usage store counts it.
+USAGE = {"cost": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+RUNS_PER_SESSION = 8
 WAIT_S = 600
 #: How long an agy run that found its login expired waits before it starts once more, and how long no run is
 #: started again after the second one failed the same way too: a login that is gone costs no wait per call.
@@ -79,6 +87,20 @@ def _fingerprint(messages: list[Any]) -> str:
     return hashlib.sha256(render(messages).encode("utf-8", "replace")).hexdigest()
 
 
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def _refused_resume(answer: Any) -> bool:
+    """coding_cli refused to go on with the run it was asked to resume (run_task's "resume: ..." errors, and other
+    bindings than the run's)."""
+    error = str(answer.get("error") or "") if isinstance(answer, dict) and answer.get("status") == "error" else ""
+    return (error.startswith(("resume:", "pin: a resume keeps"))
+            # its worktree, as _start finds it: a file agy would run left in it, a record without its session
+            or error.startswith("not started:") and ("the worktree carries" in error
+                                                     or "holds no usable session id" in error))
+
+
 def _content(value: Any) -> Any:
     """coding_cli hands the CLI's words over as {"untrusted": true, "content": ...}: here they are the answer."""
     return value.get("content") if isinstance(value, dict) and value.get("untrusted") else value
@@ -92,8 +114,6 @@ class CodingCliClient(LLMClient):
         self.base_url = f"coding_cli:{instance}"
         self.context_window = context_window
         self.capabilities = capabilities
-        #: request id -> (run id, how many messages it was given, their fingerprint)
-        self._runs: "OrderedDict[str, tuple[str, int, str]]" = OrderedDict()
 
     def supports_streaming(self) -> bool:
         return False
@@ -110,28 +130,33 @@ class CodingCliClient(LLMClient):
             # The CLI's tool calls belong to the agent's session (a store's owner); there is none to give them.
             raise self._fail("no agent run around the call (request, user and session are needed)")
         server = self._server()
-        args = {"task": render(messages)}
-        prior = self._runs.get(request_id)
-        if prior and _fingerprint(messages[:prior[1]]) == prior[2]:
-            added = render(messages[prior[1]:])
-            if added.strip():
-                # The same conversation, grown: the run goes on with what was added. Anything else -- a history
-                # compacted since, another caller of this client in the same agent run (a hook's own call) --
-                # starts a run of its own, or the CLI would answer another conversation.
-                args = {"task": added, "resume": prior[0]}
+        fresh = {"task": render(messages)}
+        args = self._going_on(messages, (self.instance, user, session)) or fresh
         bindings = current_tool_bindings.get()
         if bindings:
             # The agent run's tool bindings hold the CLI's tool calls too (coding_cli hands them to its grant); a
             # run without sends no pin at all, which a workdir without pins expects.
             args["pin"] = bindings
+        key = (self.instance, user, session)
         started = time.monotonic()
-        await self._notify_pre_request({"provider": self.provider, "model": self.instance, "url": self.base_url,
-                                        "payload": args, "is_streaming": False,
-                                        "timestamp_ms": int(time.time() * 1000)})
-        answer, error = None, None
+        await self._pre(args)
+        answer, error, posted = None, None, False
         try:
             try:
                 answer = await self._run(server, args, user, session, request_id, cancellation_token)
+                if "resume" in args and _refused_resume(answer):
+                    # Its run cannot go on (its worktree gone, another run in it): the whole conversation, fresh --
+                    # a request of its own for whoever reads the notices, the refused one answered first.
+                    logger.info("%s %s: run %s cannot be resumed (%s), starting a fresh one", self.provider,
+                                self.instance, args["resume"], answer.get("error"))
+                    posted = True
+                    await self._post(answer, f"resume refused: {answer.get('error')}", started)
+                    args = {**args, **fresh}
+                    args.pop("resume")
+                    started = time.monotonic()
+                    await self._pre(args)
+                    posted = False
+                    answer = await self._run(server, args, user, session, request_id, cancellation_token)
                 login = (self.instance, user)
                 if self._login_raced(answer, login):
                     # agy renews its login itself; measured, one run ended before its first turn on "authentication
@@ -158,22 +183,56 @@ class CodingCliClient(LLMClient):
             error = exc
             raise
         finally:
-            usage = {"cost": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            await self._notify_post_response({
-                "provider": self.provider,
-                "model": (answer.get("model") if isinstance(answer, dict) else None) or self.instance,
-                "url": self.base_url, "is_streaming": False, "duration_ms": int((time.monotonic() - started) * 1000),
-                "timestamp_ms": int(time.time() * 1000), "response_data": answer, "usage": usage,
-                "finish_reason": None if error else "stop",
-                "error": f"{type(error).__name__}: {error}" if error is not None else None,
-                "routing": {"selected": f"{self.provider}:{self.instance}"}})
-        self._runs[request_id] = (answer["run_id"], len(messages), _fingerprint(messages))
-        self._runs.move_to_end(request_id)
-        while len(self._runs) > MAX_REMEMBERED_RUNS:
-            self._runs.popitem(last=False)
+            if not posted:  # a cancel in the refused one's notice: that request is answered already
+                await self._post(answer, f"{type(error).__name__}: {error}" if error is not None else None, started)
+            if "resume" in args and not (isinstance(answer, dict) and answer.get("status") == "error"):
+                # The run it resumed went on, ended well or not (a cancel, a failed or cut run): the CLI's
+                # conversation holds the new turns, one that went on from the old run's history would get them twice.
+                # Only a refusal before the start (coding_cli's error answer) leaves it as it was.
+                kept = [r for r in _conversations.get(key, []) if r[0] != args["resume"]]
+                if kept:
+                    _conversations[key] = kept
+                else:
+                    _conversations.pop(key, None)
+        runs = [r for r in _conversations.pop(key, []) if r[0] != answer["run_id"]]
+        _conversations[key] = (runs + [(answer["run_id"], len(messages), _fingerprint(messages),
+                                        _digest(text))])[-RUNS_PER_SESSION:]
+        while len(_conversations) > MAX_REMEMBERED_SESSIONS:
+            _conversations.popitem(last=False)
         return {"assistant": {"role": "assistant", "content": text,
                               "served_by": f"{self.provider}:{self.instance}"},
-                "usage": usage, "finish_reason": "stop"}
+                "usage": dict(USAGE), "finish_reason": "stop"}
+
+    async def _pre(self, args: dict) -> None:
+        await self._notify_pre_request({"provider": self.provider, "model": self.instance, "url": self.base_url,
+                                        "payload": args, "is_streaming": False,
+                                        "timestamp_ms": int(time.time() * 1000)})
+
+    async def _post(self, answer: Any, error: str | None, started: float) -> None:
+        await self._notify_post_response({
+            "provider": self.provider,
+            "model": (answer.get("model") if isinstance(answer, dict) else None) or self.instance,
+            "url": self.base_url, "is_streaming": False, "duration_ms": int((time.monotonic() - started) * 1000),
+            "timestamp_ms": int(time.time() * 1000), "response_data": answer, "usage": dict(USAGE),
+            "finish_reason": None if error else "stop", "error": error,
+            "routing": {"selected": f"{self.provider}:{self.instance}"}})
+
+    @staticmethod
+    def _going_on(messages: list[Any], key: tuple[str, str, str]) -> dict | None:
+        """The task that resumes a run of this session which these messages go on from -- the longest such
+        conversation --, or None: a history compacted since, another conversation (a hook's own call), nothing new
+        start a run of their own, or the CLI would answer another conversation."""
+        for run_id, count, fingerprint, answered in sorted(_conversations.get(key, []), key=lambda r: -r[1]):
+            if count >= len(messages) or _fingerprint(messages[:count]) != fingerprint:
+                continue
+            added = messages[count:]
+            # Its own answer, as the agent keeps it, is the CLI's last turn already.
+            if (_field(added[0], "role") == "assistant" and not _field(added[0], "tool_calls")
+                    and _digest(_text(_field(added[0], "content"))) == answered):
+                added = added[1:]
+            task = render(added)
+            return {"task": task, "resume": run_id} if task.strip() else None
+        return None
 
     def _server(self) -> Any:
         from agent_system import app_state

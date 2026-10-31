@@ -84,11 +84,16 @@ false@{utt}, the account, the session and the request id (the run's grant
 and status are filed under it). While the run goes on,
 @{tt}<instance>_get_run@{utt} waits for it, 600 seconds at a time, with
 @{tt}stop_if_cancelled@{utt}.
-@{bullet}A later call of the same agent run (a nudge, a format correction)
-resumes that run with only the messages added since -- when the conversation
-it gets is the one it gave before, grown. A history compacted in between,
-another caller of the same profile in the same agent run (a hook's own model
-call), or nothing new starts a run of its own. Another agent run does too.
+@{bullet}A later call of the same session -- a nudge or a format correction
+in the same agent run, the next turn of a continued sub-agent (a new agent run,
+built anew) -- resumes the run it goes on from with only the messages added
+since: when the conversation it gets is one it gave before, grown (the longest
+such one). The CLI's own answer, as the agent kept it, is not sent again. A
+history compacted in between, another conversation (a hook's own model call),
+another user or session, or nothing new starts a run of its own; so does a run
+coding_cli will not resume (its worktree busy, other bindings) -- with the whole
+conversation, not a move down the chain. The runs a session may go on with are
+kept in this process: after a restart its next call starts afresh.
 @{bullet}Cancelling the agent cancels the wait, and coding_cli stops a run
 whose waiting caller is cancelled.
 @{bullet}The answer: the run's final text as the assistant message, no tool
