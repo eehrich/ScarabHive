@@ -490,11 +490,12 @@ class TestUsage:
         # Claude Code: input_tokens is only what neither came from nor went into the cache
         ({"input_tokens": 18, "cache_creation_input_tokens": 661, "cache_read_input_tokens": 5963,
           "output_tokens": 291}, 18 + 661 + 5963, 5963, 661, 291),
-        # agy: the cache reads are inside input_tokens
-        ({"input_tokens": 103136, "output_tokens": 21, "thinking_tokens": 0, "cache_read_tokens": 49105,
-          "total_tokens": 103157}, 103136, 49105, 0, 21),
-        # agy with thinking beside the output: its total holds them
-        ({"input_tokens": 1000, "output_tokens": 20, "thinking_tokens": 300, "total_tokens": 1320}, 1000, 0, 0, 320),
+        # agy, as measured on a server: the cache reads beside input_tokens (here five times it), the thinking
+        # inside output_tokens (total_tokens = input + output)
+        ({"input_tokens": 94119, "output_tokens": 5423, "thinking_tokens": 0, "cache_read_tokens": 483751,
+          "total_tokens": 99542}, 94119 + 483751, 483751, 0, 5423),
+        ({"input_tokens": 158036, "output_tokens": 14179, "thinking_tokens": 12166, "cache_read_tokens": 432979,
+          "total_tokens": 172215}, 158036 + 432979, 432979, 0, 14179),
         (None, 0, 0, 0, 0)], ids=["claude_code", "agy", "agy_thinking", "none"])
     async def test_the_runs_tokens_and_cache_are_counted_at_no_cost(self, instance, raw, prompt, cached, written,
                                                                      completion):

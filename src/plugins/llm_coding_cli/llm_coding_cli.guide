@@ -103,7 +103,8 @@ the cache's reads and writes among them, and the output, summed by the CLI
 over its own model calls -- one run is one call, however many turns the CLI
 took inside it. Claude Code's counts are read as Anthropic's API names them
 (its @{tt}input_tokens@{utt} holds only what neither came from nor went into
-the cache); agy has its cache reads inside its input. Being a sum, they are
+the cache); agy counts its cache reads beside its input as well
+(@{tt}cache_read_tokens@{utt}), its thinking inside its output. Being a sum, they are
 not how full the agent's context is: the usage says
 @{tt}reflects_context: false@{utt}, the usage store keeps the call as one
 without a conversation (in its totals and cache share, never as the context

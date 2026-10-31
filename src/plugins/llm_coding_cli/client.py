@@ -95,22 +95,22 @@ def _digest(text: str) -> str:
 
 def _usage(answer: Any) -> dict:
     """The run's tokens in the usage store's terms, the cache's among them: prompt tokens with the cached reads and
-    writes inside, at no cost -- the subscription bills no call. Claude Code names its counts as Anthropic's API
-    does (the normalizer adds the cache back into the prompt), agy holds its cache reads inside input_tokens and
-    calls them cache_read_tokens."""
+    writes inside, at no cost -- the subscription bills no call. Both CLIs count the cache BESIDE their input:
+    Claude Code as Anthropic's API names it (the normalizer adds it back), agy as cache_read_tokens (measured on a
+    server: reads up to nine times its input_tokens, total_tokens = input_tokens + output_tokens)."""
     from agent_system.llm.pricing import normalize_usage
 
     raw = answer.get("usage") if isinstance(answer, dict) else None
     if not isinstance(raw, dict) or not raw:
         return dict(USAGE)
     call = normalize_usage(raw)
-    cached = call.cached_tokens or int(raw.get("cache_read_tokens") or 0)
-    # agy names thinking_tokens beside output_tokens; whether they are inside it is not measured (0 in every run
-    # seen), its total_tokens holds them either way.
-    completion = max(call.completion_tokens, int(raw.get("total_tokens") or 0) - call.prompt_tokens)
-    return {**USAGE, "prompt_tokens": call.prompt_tokens, "completion_tokens": completion,
-            "total_tokens": call.prompt_tokens + completion,
-            "prompt_tokens_details": {"cached_tokens": cached, "cache_write_tokens": call.cache_write_tokens}}
+    reads = int(raw.get("cache_read_tokens") or 0)      # agy's, which the normalizer does not know
+    prompt = call.prompt_tokens + reads
+    # agy's output_tokens hold its thinking_tokens: its total_tokens is input + output (measured).
+    return {**USAGE, "prompt_tokens": prompt, "completion_tokens": call.completion_tokens,
+            "total_tokens": prompt + call.completion_tokens,
+            "prompt_tokens_details": {"cached_tokens": call.cached_tokens + reads,
+                                      "cache_write_tokens": call.cache_write_tokens}}
 
 
 def _refused_resume(answer: Any) -> bool:

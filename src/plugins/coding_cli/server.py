@@ -235,7 +235,7 @@ def _schema_ok(schema: Any) -> bool:
 
 def _counts(usage: Any) -> Optional[dict]:
     """The token counts of a run's result as its CLI names them (Claude Code: input_tokens beside
-    cache_read_input_tokens and cache_creation_input_tokens; agy: input_tokens holding cache_read_tokens) --
+    cache_read_input_tokens and cache_creation_input_tokens; agy: input_tokens beside cache_read_tokens) --
     numbers only, what a caller sums."""
     if not isinstance(usage, dict):
         return None

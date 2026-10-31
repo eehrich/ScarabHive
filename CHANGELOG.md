@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Coding CLIs as an LLM: a run's tokens reach the usage store, the cache's reads and writes among them -- coding_cli
   hands the CLI's counts on (`usage` in its answer), the provider reads Claude Code's as Anthropic's API names them
-  and agy's with its cache reads inside the input. The cost stays 0. Summed over the CLI's own model calls, they are
+  and agy's with its cache reads beside the input. The cost stays 0. Summed over the CLI's own model calls, they are
   no context size: a usage with `reflects_context: false` is kept as a call without a conversation -- in the
   totals and the cache share, never as the context reading the context engineer, the summarizer and the context
   bars use, nor in the chat footer's fill.
