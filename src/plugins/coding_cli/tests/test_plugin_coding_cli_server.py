@@ -2152,3 +2152,12 @@ async def test_the_quota_probe_runs_under_the_instances_env(repo, data_root, mon
 def test_an_env_value_no_launch_takes_is_left_out(repo, caplog):
     server = make_server(repo, env={"GOOD": "1", "NUL": "a\0b", "EMPTY": None})
     assert server.env == {"GOOD": "1"} and "left out" in caplog.text
+
+
+async def test_a_runs_answer_carries_its_token_counts_numbers_only(repo, log):
+    """Claude Code's counts as it names them, the cache's among them; what is no number (the service tier, the
+    nested details) stays out."""
+    result, _ = await call(make_server(repo), "run_task", task="WRITE u.txt hello")
+    assert result["state"] == "done", result
+    assert result["usage"] == {"input_tokens": 18, "cache_creation_input_tokens": 661,
+                               "cache_read_input_tokens": 5963, "output_tokens": 291}

@@ -165,8 +165,14 @@ class UsageTracker:
                     cost_is_estimate: bool = False,
                     model: str = "",
                     request_id: str = "",
-                    latency_ms: Optional[float] = None) -> None:
-        """Record a context usage snapshot."""
+                    latency_ms: Optional[float] = None,
+                    reflects_context: bool = True) -> None:
+        """Record a context usage snapshot. ``reflects_context`` False: the counts are not the size of the
+        conversation the call carried -- a coding CLI's run, summed over the CLI's own model calls. Kept as a call
+        without a conversation (context_window 0): it counts in the totals and the cache share, never as how full
+        the context is (get_latest, the context series, the percentage)."""
+        if not reflects_context:
+            context_window = 0
 
         usage_percentage = (total_tokens / context_window * 100) if context_window > 0 else 0
 

@@ -163,6 +163,9 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 model=model,
                 request_id=getattr(context, 'request_id', None) or "",
                 latency_ms=latency_ms,
+                # A client that ran a conversation of its own (a coding CLI) says so: its counts are throughput,
+                # not how full the agent's context is.
+                reflects_context=usage.get("reflects_context") is not False,
             )
 
             return HookResult(success=True, modified=False, context=context)

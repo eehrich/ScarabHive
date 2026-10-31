@@ -29,8 +29,10 @@ CLI_OF = {"claude_code": "claude", "antigravity": "antigravity"}
 #: hook's own call in between (another conversation) must not cost the agent's its run.
 _conversations: "OrderedDict[tuple[str, str, str], list[tuple[str, int, str, str]]]" = OrderedDict()
 MAX_REMEMBERED_SESSIONS = 256
-#: What a run costs on the subscription, as the usage store counts it.
-USAGE = {"cost": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+#: What a call that brought no run's counts reports: nothing, at no cost. Never the size of the agent's context:
+#: the CLI's run is a conversation of its own, its counts summed over its model calls -- the usage store keeps them as
+#: throughput and lets no reader take them for how full the context is.
+USAGE = {"cost": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "reflects_context": False}
 RUNS_PER_SESSION = 8
 WAIT_S = 600
 #: How long an agy run that found its login expired waits before it starts once more, and how long no run is
@@ -89,6 +91,26 @@ def _fingerprint(messages: list[Any]) -> str:
 
 def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def _usage(answer: Any) -> dict:
+    """The run's tokens in the usage store's terms, the cache's among them: prompt tokens with the cached reads and
+    writes inside, at no cost -- the subscription bills no call. Claude Code names its counts as Anthropic's API
+    does (the normalizer adds the cache back into the prompt), agy holds its cache reads inside input_tokens and
+    calls them cache_read_tokens."""
+    from agent_system.llm.pricing import normalize_usage
+
+    raw = answer.get("usage") if isinstance(answer, dict) else None
+    if not isinstance(raw, dict) or not raw:
+        return dict(USAGE)
+    call = normalize_usage(raw)
+    cached = call.cached_tokens or int(raw.get("cache_read_tokens") or 0)
+    # agy names thinking_tokens beside output_tokens; whether they are inside it is not measured (0 in every run
+    # seen), its total_tokens holds them either way.
+    completion = max(call.completion_tokens, int(raw.get("total_tokens") or 0) - call.prompt_tokens)
+    return {**USAGE, "prompt_tokens": call.prompt_tokens, "completion_tokens": completion,
+            "total_tokens": call.prompt_tokens + completion,
+            "prompt_tokens_details": {"cached_tokens": cached, "cache_write_tokens": call.cache_write_tokens}}
 
 
 def _refused_resume(answer: Any) -> bool:
@@ -201,7 +223,7 @@ class CodingCliClient(LLMClient):
             _conversations.popitem(last=False)
         return {"assistant": {"role": "assistant", "content": text,
                               "served_by": f"{self.provider}:{self.instance}"},
-                "usage": dict(USAGE), "finish_reason": "stop"}
+                "usage": _usage(answer), "finish_reason": "stop"}
 
     async def _pre(self, args: dict) -> None:
         await self._notify_pre_request({"provider": self.provider, "model": self.instance, "url": self.base_url,
@@ -213,7 +235,7 @@ class CodingCliClient(LLMClient):
             "provider": self.provider,
             "model": (answer.get("model") if isinstance(answer, dict) else None) or self.instance,
             "url": self.base_url, "is_streaming": False, "duration_ms": int((time.monotonic() - started) * 1000),
-            "timestamp_ms": int(time.time() * 1000), "response_data": answer, "usage": dict(USAGE),
+            "timestamp_ms": int(time.time() * 1000), "response_data": answer, "usage": _usage(answer),
             "finish_reason": None if error else "stop", "error": error,
             "routing": {"selected": f"{self.provider}:{self.instance}"}})
 

@@ -141,6 +141,26 @@ async def test_track_llm_usage_with_cached_tokens(plugin, mock_hook_context):
 
 
 @pytest.mark.asyncio
+async def test_counts_of_a_conversation_of_its_own_are_totals_not_the_context(plugin, mock_hook_context):
+    """A coding CLI's run: its counts are summed over the CLI's own model calls. They count in the totals and the
+    cache share, as a call without a conversation -- never the latest context, never in the context series."""
+    await plugin.hooks_plugin.track_usage(mock_hook_context)            # the conversation's own call: 100 of 8000
+    mock_hook_context.llm_response["usage"] = {
+        "prompt_tokens": 3_950_000, "completion_tokens": 66_000, "total_tokens": 4_016_000, "cost": 0.0,
+        "prompt_tokens_details": {"cached_tokens": 3_800_000, "cache_write_tokens": 150_000},
+        "reflects_context": False}
+    await plugin.hooks_plugin.track_usage(mock_hook_context)
+    latest = plugin.tracker.get_latest(session_id="session-456")
+    assert (latest["prompt_tokens"], latest.get("is_stale")) == (100, None)
+    assert plugin.tracker.get_latest()["prompt_tokens"] == 100
+    totals = plugin.tracker.get_agent_stats()["test-agent-123"]
+    assert (totals["total_calls"], totals["total_prompt_tokens"], totals["total_cached_tokens"]) == (
+        2, 3_950_100, 3_800_000)
+    series = plugin.tracker.get_statistics(session_id="session-456")
+    assert series["usage_percentage"]["max"] < 100, series
+
+
+@pytest.mark.asyncio
 async def test_track_llm_usage_no_response(plugin):
     """Test that hook handles missing LLM response gracefully."""
     context = Mock(spec=HookContext)

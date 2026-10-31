@@ -98,8 +98,18 @@ kept in this process: after a restart its next call starts afresh.
 whose waiting caller is cancelled.
 @{bullet}The answer: the run's final text as the assistant message, no tool
 calls, @{tt}served_by@{utt} @{tt}<provider>:<instance>@{utt}. Usage reports
-cost 0 -- the subscription pays -- and no token counts (the CLI reports
-none through coding_cli). The message debugger sees the call through the
+cost 0 -- the subscription pays -- and the run's tokens: prompt tokens with
+the cache's reads and writes among them, and the output, summed by the CLI
+over its own model calls -- one run is one call, however many turns the CLI
+took inside it. Claude Code's counts are read as Anthropic's API names them
+(its @{tt}input_tokens@{utt} holds only what neither came from nor went into
+the cache); agy has its cache reads inside its input. Being a sum, they are
+not how full the agent's context is: the usage says
+@{tt}reflects_context: false@{utt}, the usage store keeps the call as one
+without a conversation (in its totals and cache share, never as the context
+reading), and the chat's footer shows no fill for it. A run that ended
+without a result (stopped, killed) reports none: its stream carries no
+output count to sum. The message debugger sees the call through the
 same notices as any client: the task as the payload, the run's answer as the
 response, the CLI's model as the model.
 @endnode

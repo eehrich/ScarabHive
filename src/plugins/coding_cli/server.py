@@ -233,6 +233,16 @@ def _schema_ok(schema: Any) -> bool:
         return False
 
 
+def _counts(usage: Any) -> Optional[dict]:
+    """The token counts of a run's result as its CLI names them (Claude Code: input_tokens beside
+    cache_read_input_tokens and cache_creation_input_tokens; agy: input_tokens holding cache_read_tokens) --
+    numbers only, what a caller sums."""
+    if not isinstance(usage, dict):
+        return None
+    counts = {str(k): int(v) for k, v in usage.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    return counts or None
+
+
 def _bounded(value: Any, default: float, low: float, high: float) -> Optional[float]:
     try:
         return max(low, min(float(value if value not in (None, "") else default), high))
@@ -1416,7 +1426,7 @@ class CodingCliServer(SchemaBasedToolServer):
                               subtype=result.get("subtype"), turns=result.get("num_turns"),
                               duration_s=round(float(result.get("duration_ms") or 0) / 1000),
                               denials=[_denial(d) for d in result.get("permission_denials") or []][:20],
-                              cost_usd=result.get("total_cost_usd"))
+                              cost_usd=result.get("total_cost_usd"), usage=_counts(result.get("usage")))
                 output = result.get("structured_output")
                 if output is not None:
                     size = len(json.dumps(output, ensure_ascii=False))
@@ -1446,7 +1456,7 @@ class CodingCliServer(SchemaBasedToolServer):
         # File names, denied paths and git's or Claude Code's messages are the run's words too.
         answer = {"status": "success", **{k: record.get(k) for k in (
             "run_id", "state", "mode", "workdir", "branch", "base", "commit", "worktree", "turns",
-            "duration_s", "abo", "cost_usd", "model")}, "changes": _untrusted(changes),
+            "duration_s", "abo", "cost_usd", "usage", "model")}, "changes": _untrusted(changes),
             "denials": _untrusted(record.get("denials") or [])}
         hidden = record.get("hidden") or []
         if hidden:

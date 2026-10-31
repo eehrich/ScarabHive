@@ -193,6 +193,16 @@ When a plugin that compacts the conversation rewrites it, it marks the
 session's last reading @{i}stale@{ui}: the tokens counted describe a
 conversation that no longer exists. The next call of the conversation
 clears the mark; a call without a context does not.
+
+@{h2}Counts that are no context size
+
+A coding CLI's run (the @{tt}llm_coding_cli@{utt} provider) counts the
+CLI's own model calls together: millions of tokens for a context of a
+hundred thousand. Its usage says @{tt}reflects_context: false@{utt}, and it
+is kept as a call without a conversation -- in the totals, the cache share
+and the cost, never as the session's last reading, in the context series or
+as a share of the window. The readers below take the last call that carried
+the conversation, or their own estimate where there is none.
 @endnode
 
 @node readers "Who reads the figures"

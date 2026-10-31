@@ -422,6 +422,22 @@ class TestTheReportedContextFill:
         assert result["context_window"] == 272000
         assert result["usage"]["prompt_tokens"] == 14000  # cost still sums
 
+    async def test_a_coding_clis_counts_are_no_window_fill(self):
+        """A call a coding CLI answered counts its own model calls together: millions for a 200k window. The
+        footer shows no fill for it rather than 2000 %; its tokens still go into the turn's usage."""
+        cli_usage = {"prompt_tokens": 3_950_000, "completion_tokens": 66_000, "reflects_context": False}
+        agent = self._agent([
+            {"type": "start", "request_id": "r", "session_id": "s"},
+            {"type": "thinking_complete", "assistant": {"tool_calls": None}, "usage": cli_usage},
+            {"type": "final", "summary": "done", "usage": cli_usage},
+            {"type": "end"},
+        ], window=200000)
+        r, _ = _renderer()
+        result = await run_chat_turn(agent, "q", "s", r)
+
+        assert "context_tokens" not in result
+        assert result["usage"]["prompt_tokens"] == 3_950_000
+
     async def test_an_extra_final_call_becomes_the_last_one(self):
         """A final whose usage no thinking_complete reported is a call of its
         own (the max-steps call was one before it became a regular step) —

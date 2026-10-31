@@ -104,7 +104,10 @@ def main():
               "num_turns": turns, "duration_ms": 5002, "result": "failed" if error else f"did: {task.splitlines()[0]}",
               "session_id": session, "total_cost_usd": 0.07, "permission_denials": [
                   {"tool_name": "Write", "tool_use_id": "x", "tool_input": {"file_path": "/elsewhere/outside.txt"}}],
-              "usage": {"input_tokens": 18, "output_tokens": 291}}
+              # As measured (2.x): input_tokens is what neither came from nor went into the cache.
+              "usage": {"input_tokens": 18, "cache_creation_input_tokens": 661, "cache_read_input_tokens": 5963,
+                        "output_tokens": 291, "output_tokens_details": {"thinking_tokens": 0},
+                        "service_tier": "standard"}}
     if "--json-schema" in argv:
         # M-CC-10: the object matching the schema, beside the text result.
         result["structured_output"] = next((json.loads(line[7:]) for line in task.splitlines()

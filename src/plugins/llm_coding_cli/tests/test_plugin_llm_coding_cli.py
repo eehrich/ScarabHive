@@ -482,6 +482,42 @@ class TestDebuggerNotices:
         assert "not started: busy" in seen[3][1]["error"]
 
 
+class TestUsage:
+    """The run's tokens reach the usage store with the cache in them: the tracker reads them through
+    normalize_usage, so that is what each case is read back by."""
+
+    @pytest.mark.parametrize("raw, prompt, cached, written, completion", [
+        # Claude Code: input_tokens is only what neither came from nor went into the cache
+        ({"input_tokens": 18, "cache_creation_input_tokens": 661, "cache_read_input_tokens": 5963,
+          "output_tokens": 291}, 18 + 661 + 5963, 5963, 661, 291),
+        # agy: the cache reads are inside input_tokens
+        ({"input_tokens": 103136, "output_tokens": 21, "thinking_tokens": 0, "cache_read_tokens": 49105,
+          "total_tokens": 103157}, 103136, 49105, 0, 21),
+        # agy with thinking beside the output: its total holds them
+        ({"input_tokens": 1000, "output_tokens": 20, "thinking_tokens": 300, "total_tokens": 1320}, 1000, 0, 0, 320),
+        (None, 0, 0, 0, 0)], ids=["claude_code", "agy", "agy_thinking", "none"])
+    async def test_the_runs_tokens_and_cache_are_counted_at_no_cost(self, instance, raw, prompt, cached, written,
+                                                                     completion):
+        from agent_system.llm.pricing import normalize_usage
+
+        instance(done(**({"usage": raw} if raw else {})))
+        posted = []
+
+        async def post(info):
+            posted.append(info)
+
+        llm = client()
+        llm._on_post_llm_response = post
+        usage = (await llm.chat_tools(MESSAGES, []))["usage"]
+        read = normalize_usage(usage)
+        assert (read.prompt_tokens, read.cached_tokens, read.cache_write_tokens, read.completion_tokens) == (
+            prompt, cached, written, completion)
+        assert read.provider_cost == 0.0 and usage["total_tokens"] == prompt + completion
+        assert posted[0]["usage"] == usage
+        # A sum over the CLI's own model calls: never the size of the agent's context (the usage store's flag)
+        assert usage["reflects_context"] is False
+
+
 def test_render_keeps_order_roles_and_says_what_it_cannot_pass_on():
     text = render([{"role": "system", "content": "Rules."},
                    {"role": "user", "content": [{"type": "text", "text": "Look"}, {"type": "image_url"}]},

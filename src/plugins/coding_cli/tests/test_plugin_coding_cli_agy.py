@@ -41,6 +41,9 @@ async def test_an_agy_run_is_read_like_a_claude_code_run(repo, log):
     # the fake answers with the task's first line: the note every agy run reads before its task
     assert result["result"] == {"untrusted": True, "content": "did: " + cli.agy_note().splitlines()[0]}
     assert result["denials"] == {"untrusted": True, "content": ["RunCommand"]}
+    # The run's sum over its model calls, as agy names it: what a caller counts its tokens and cache by.
+    assert result["usage"] == {"input_tokens": 6865, "output_tokens": 63, "thinking_tokens": 0,
+                               "cache_read_tokens": 4096, "total_tokens": 6928}
     record = server._load(result["run_id"])
     assert record["model"] == "gemini-3.8-flash" and record["claude_session"] and record["cli"] == "antigravity"
     sent = log()

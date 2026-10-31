@@ -68,7 +68,9 @@ def main():
          duration_seconds=1.2, usage={"input_tokens": 6865, "output_tokens": 63})
     result = {"conversation_id": conversation, "status": "ERROR" if error else "SUCCESS",
               "response": "" if error else f"did: {task.splitlines()[0]}", "duration_seconds": 7.47,
-              "num_turns": 1, "usage": {"input_tokens": 6865, "output_tokens": 63, "total_tokens": 6928}}
+              # As measured (1.4.x): the run's sum over its model calls, the cache reads inside input_tokens.
+              "num_turns": 1, "usage": {"input_tokens": 6865, "output_tokens": 63, "thinking_tokens": 0,
+                                        "cache_read_tokens": 4096, "total_tokens": 6928}}
     if error:
         result["error"] = "the model request failed with an unspecified error"
     if denied:

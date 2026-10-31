@@ -182,7 +182,8 @@ async def run_chat_turn(
     # history as the model saw it) plus what it answered. Summing every call
     # would report the turn's throughput instead -- a multi-step turn sends the
     # same history again and again.
-    if last_call_usage is not None:
+    # A client that ran a conversation of its own (a coding CLI) says its counts are none of this one's size.
+    if last_call_usage is not None and last_call_usage.get("reflects_context") is not False:
         call = normalize_usage(last_call_usage)
         result["context_tokens"] = call.prompt_tokens + call.completion_tokens
     # The window of the client the turn ran on: after --llm or /model that is
