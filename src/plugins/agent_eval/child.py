@@ -7,8 +7,8 @@ directory in AGENT_DATA_DIR. It drives agent-run's own main_async, so a run open
 exactly as `agent-run` does. The suite's ``config:`` (``job["config"]``) is this process's configuration layer,
 over the local one. Three of its steps are wrapped: the configuration it loads gets the arm's
 overlays for other agents (``job["agents"]``, before anything is built from it), the agent it builds gets the
-overlays, the task's then the arm's (the reload path, the same one `agent-cli reload` takes), and the finished
-run writes its result
+overlays, the task's then the arm's (the reload path, the same one `agent-cli reload` takes), the run is held to
+the task's tool bindings (``job["tool_bindings"]``), and the finished run writes its result
 -- answer, errors, the model it ran on -- to ``job["result_path"]``. Cost is the runner's to read, from the usage
 store by request id: a run killed at its timeout writes nothing here.
 
@@ -69,7 +69,8 @@ def main(job_path: str) -> None:
             if job.get("fork"):
                 result = await run_fork(built["registry"], job["fork"], request_id, job["session_user"])
             else:
-                result = await run(agent, request, session_id, llm_override, llm_profile_info, request_id=request_id)
+                result = await run(agent, request, session_id, llm_override, llm_profile_info, request_id=request_id,
+                                   tool_bindings=job.get("tool_bindings"))
             return result
         except BaseException as e:
             failure = e

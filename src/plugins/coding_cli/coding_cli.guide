@@ -690,6 +690,13 @@ A workdir that gives its runs MCP servers names them; each must be in
           mcp_servers: [docs_server]
 @{body}
 
+A workdir is a git repository. One in the data directory
+(@{tt}path: data/...@{utt}) that is not there yet is made at the start: an
+empty repository with one empty commit -- the scratch folder a run as an LLM
+works in, and what a data directory of its own (an eval's) starts without. A
+folder that is there is never touched, repository or not, and a missing path
+outside the data directory is skipped as before.
+
 An agent gets the tools with @{tt}+coding_cli/*@{utt} in its
 @{tt}agent_config.tools.allowed@{utt}.
 

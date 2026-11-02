@@ -48,6 +48,7 @@ async def collect_final_result(
     llm_override: Optional[object] = None,
     llm_profile_info_override: Optional[str] = None,
     on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+    tool_bindings: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """
     Collect final result from agent.run_events() into a structured result dict.
@@ -69,6 +70,7 @@ async def collect_final_result(
             for a caller that shows the run while it collects it (POST /run's job,
             agent-cli's stream). What it returns is awaited when it is awaitable:
             agent-cli prints the answer through async output hooks as it arrives.
+        tool_bindings: The run's tool bindings (Agent.run_events). None: none.
 
     Returns:
         Dict containing task, calls, summary, and optionally errors
@@ -112,7 +114,8 @@ async def collect_final_result(
     inside_a_run = bool(current_request_id.get())
     
     try:
-        async for event in agent.run_events(task, request_id=request_id, session_id=session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info_override):
+        async for event in agent.run_events(task, request_id=request_id, session_id=session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info_override,
+                                          **({"tool_bindings": tool_bindings} if tool_bindings else {})):
             if on_event is not None:
                 shown = on_event(event)
                 if inspect.isawaitable(shown):

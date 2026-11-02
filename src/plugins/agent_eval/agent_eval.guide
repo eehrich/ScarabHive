@@ -325,6 +325,25 @@ variables of a templated prompt, say -- goes in the task's
 over the agent's own @{b}before@{ub} the arm's overlay, so the arm still
 decides what it changes.
 
+@{h2}A task's tool_bindings
+
+@{code}
+  - id: beat-phase-3
+    input: "..."
+    tool_bindings: {"story_json/*": {namespace: eval_story}}
+@{body}
+
+In production an agent often runs inside its caller's tool bindings: the
+values its tool calls are held to (a sub-agent manager spawn's
+@{tt}_tool_bindings@{utt}, a machine step's). The task's
+@{tt}tool_bindings@{utt} hold its run to them the same way -- every arm
+alike; a sub-agent it spawns through the sub-agent manager inherits them,
+an agent it calls as a tool starts without (as in production). A coding CLI
+whose workdir pins a binding refuses a run without it. The suite does not
+load with bindings a run cannot take (a framework key such as
+@{tt}_session_id@{utt}, a value that is no string, number or boolean), nor
+on a fork task: a machine refuses bindings.
+
 @{h2}Chains
 
 With @{tt}chain: true@{utt} each arm runs the tasks @{b}in order@{ub}, in

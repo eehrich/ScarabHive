@@ -187,6 +187,9 @@ class Task(BaseModel):
     #: Task material for every arm (template_vars this task's prompt needs, say): merged over the agent's
     #: agent_config BEFORE the arm's overlay, so the arm still decides what it changes.
     agent_config: Dict[str, Any] = Field(default_factory=dict)
+    #: ``{tool pattern: {parameter: value}}`` the run's tool calls are held to, as a caller's bindings hold a
+    #: sub-agent's (the SAM's ``_tool_bindings``): what an agent inherits in production from the run that starts it.
+    tool_bindings: Optional[Dict[str, Dict[str, Any]]] = None
 
     @field_validator("id")
     @classmethod
@@ -199,6 +202,14 @@ class Task(BaseModel):
     def _input_or_fork(self) -> "Task":
         if (self.input is None) == (self.fork is None):
             raise ValueError(f"task {self.id}: needs exactly one of input and fork")
+        if self.tool_bindings is not None:
+            from agent_system.servers.agent.components.tool_bindings import form_problem
+
+            problem = form_problem(self.tool_bindings)
+            if problem:
+                raise ValueError(f"task {self.id}: {problem}")
+            if self.fork is not None:  # a machine refuses bindings: its steps run agents of their own
+                raise ValueError(f"task {self.id}: a fork task takes no tool_bindings")
         return self
 
 

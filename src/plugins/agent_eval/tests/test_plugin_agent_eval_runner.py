@@ -835,6 +835,74 @@ def test_child_records_a_run_that_raised(tmp_path, data_dir, monkeypatch):
     assert result["exception"] == "RuntimeError: provider down", result
 
 
+def test_a_tasks_tool_bindings_hold_the_run_of_its_agent(tmp_path, data_dir, monkeypatch):
+    """A task's tool_bindings go from the suite into the job and from the job into the run: the agent's LLM call
+    runs inside them, as a sub-agent's does inside its caller's (a workdir that pins them refuses a run without)."""
+    from agent_system.core.request_context import current_tool_bindings
+    from agent_system.llm import registry
+    from plugins.agent_eval import child
+
+    bindings = {"zz_store/*": {"namespace": "eval_story"}}
+    suite = runner.load_suite(_suite(tmp_path, f"""
+        name: s
+        agent: file_ops_test_agent
+        repeats: 1
+        tasks:
+          - {{id: t1, input: hi, tool_bindings: {json.dumps(bindings)}, check: {{expect: {{contains: [hi]}}}}}}
+    """))
+    jobs = []
+    monkeypatch.setattr(runner, "_child", lambda suite, job, *args: jobs.append(job) or {})
+    runner._agent_run(suite, "run-1", {"arm": next(iter(suite.arms)), "n": 1}, suite.tasks[0], tmp_path, tmp_path,
+                      data_dir)
+    assert jobs[0]["tool_bindings"] == bindings, jobs
+
+    seen = []
+    fake = type(registry.build_client(type("Cfg", (), {})()))
+    chat = fake.chat
+
+    async def recording(self, messages, cancellation_token=None):
+        seen.append(current_tool_bindings.get())
+        return await chat(self, messages, cancellation_token=cancellation_token)
+    monkeypatch.setattr(fake, "chat", recording)
+    env = runner.child_env(suite, data_dir)
+    for key in set(os.environ) - set(env):
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    result_path = tmp_path / "result.json"
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps({**jobs[0], "session_user": runner.SESSION_USER, "result_path": str(result_path)}),
+                   encoding="utf-8")
+    try:
+        child.main(str(job))
+    except SystemExit as e:
+        assert e.code in (0, 1, None)
+    assert seen, "the run made no LLM call -- this test would be vacuous"
+    assert seen == [bindings] * len(seen), seen
+
+
+@pytest.mark.parametrize("bindings, error", [({"zz_store/*": {"_session_id": "x"}}, "cannot be bound"),
+                                             ({"zz_store/*": {}}, "must map parameters to values"),
+                                             ({"zz_store/*": {"namespace": ["a"]}}, "string, number or boolean")])
+def test_a_task_refuses_tool_bindings_a_run_cannot_take(tmp_path, bindings, error):
+    """The suite does not load: else every run of the task would end on them before its agent saw the task."""
+    with pytest.raises(ValueError, match=error):
+        runner.load_suite(_suite(tmp_path, f"""
+            name: s
+            agent: a
+            tasks:
+              - {{id: t1, input: hi, tool_bindings: {json.dumps(bindings)}, check: {{expect: {{contains: [hi]}}}}}}
+        """))
+
+
+def test_a_fork_task_refuses_tool_bindings():
+    """A machine refuses bindings (its steps run agents of their own): the fork would start and fail every run."""
+    from plugins.agent_eval.suite import Task
+    with pytest.raises(ValueError, match="fork task takes no tool_bindings"):
+        Task.model_validate({"id": "t1", "fork": {"source": "run.json", "at": "draft"},
+                             "tool_bindings": {"zz_store/*": {"namespace": "x"}}, "check": {"judge": True}})
+
+
 def test_cli_baseline_of_an_incomplete_run_still_reports_and_fails(tmp_path, monkeypatch, capsys):
     from plugins.agent_eval.__main__ import main
     monkeypatch.chdir(tmp_path)  # main enters the project directory; this puts it back afterwards

@@ -378,6 +378,7 @@ def _agent_run(suite: Suite, run_id: str, job: Dict[str, Any], task: Task, jdir:
         "agent": arm.agent or suite.agent, "overlays": [task.agent_config, arm.agent_config],
         "agents": arm.agents, "input": task.input if task.fork is None else f"fork at {task.fork.at}",
         "fork": _fork_job(task), "request_id": f"ev-{run_id.replace('-', '')[-12:]}-{job['n']}-{task.id}"[:64],
+        "tool_bindings": task.tool_bindings,
     }, jdir, task.id, workspace, data, suite.timeout_s)
 
 

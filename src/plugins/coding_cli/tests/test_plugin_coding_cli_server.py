@@ -396,6 +396,88 @@ async def test_a_web_workdir_keeps_the_shell_only_where_the_operator_says_so(rep
     assert cli.shell_tool() not in log()["argv"][log()["argv"].index("--tools") + 1].split(","), "plan: never"
 
 
+async def test_a_missing_workdir_in_the_data_directory_is_created_and_runs(tmp_path, monkeypatch, log):
+    """A data directory of its own (an eval's, data: fresh) starts without the scratch repositories a run as an LLM
+    works in: the instance makes one -- empty, one commit to branch from -- and a run goes."""
+    from agent_system.paths import DATA_DIR_ENV
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "d"))
+    scratch = tmp_path / "d" / "story_code"
+    server = make_server(scratch, workdirs={"text": {"path": str(scratch)}})
+    assert list(server.workdirs) == ["text"], "the workdir was not made"
+    assert git(scratch, "rev-list", "--count", "HEAD").strip() == "1" and not git(scratch, "ls-files").strip()
+    result, _ = await call(server, "run_task", task="look", workdir="text", mode="plan")
+    assert result["state"] == "done", result
+
+
+def test_a_workdir_is_made_only_where_nothing_is(tmp_path, monkeypatch, caplog):
+    """A folder that is there, repository or not, is someone's; a path outside the data directory is a repository
+    the operator names -- both skipped as before, nothing written."""
+    from agent_system.paths import DATA_DIR_ENV
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "d"))
+    there = tmp_path / "d" / "notes"
+    there.mkdir(parents=True)
+    (there / "keep.txt").write_text("x", encoding="utf-8")
+    outside = tmp_path / "elsewhere" / "repo"
+    server = make_server(tmp_path, workdirs={"there": {"path": str(there)}, "outside": {"path": str(outside)}})
+    assert server.workdirs == {} and caplog.text.count("a git repository are needed") == 2, caplog.text
+    assert "could not be created" not in caplog.text, "a folder that is there was tried"
+    assert not (there / ".git").exists() and sorted(p.name for p in there.iterdir()) == ["keep.txt"]
+    assert not outside.exists()
+
+
+def test_making_a_workdir_runs_none_of_the_operators_git(tmp_path, monkeypatch):
+    """The operator's git config may hold hooks (core.hooksPath, a template's) and signing: the hooks would run
+    programs in this process, with its keys, and signing fails without a key -- the workdir is made all the same,
+    and no hook ran."""
+    from agent_system.paths import DATA_DIR_ENV
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "d"))
+    marker, hooks, template = tmp_path / "hook_ran", tmp_path / "hooks", tmp_path / "template"
+    for folder in (hooks, template / "hooks"):
+        folder.mkdir(parents=True)
+        for name in ("pre-commit", "post-commit"):
+            hook = folder / name
+            hook.write_text(f"#!/bin/sh\necho ran > '{marker.as_posix()}'\n", encoding="utf-8", newline="\n")
+            os.chmod(hook, 0o755)
+    config = tmp_path / "gitconfig"
+    config.write_text(f"[core]\n\thooksPath = {hooks.as_posix()}\n\tfsmonitor = {(hooks / 'pre-commit').as_posix()}\n"
+                      f"[init]\n\ttemplateDir = {template.as_posix()}\n"
+                      "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = no-such-gpg\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    scratch = tmp_path / "d" / "story_code"
+    server = make_server(scratch, workdirs={"text": {"path": str(scratch)}})
+    assert list(server.workdirs) == ["text"] and not marker.exists()
+    assert not (scratch / ".git" / "hooks").exists(), "the template's hooks were copied in"
+
+
+def test_a_workdir_that_could_not_be_made_is_skipped_and_gone(tmp_path, monkeypatch, caplog):
+    """The commit fails after git wrote its objects (read-only on Windows): the folder goes again and the workdir is
+    skipped -- not registered half made, every run on it failing at the worktree."""
+    from agent_system.paths import DATA_DIR_ENV
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "d"))
+    real = subprocess.run
+
+    def failing_commit(argv, **kwargs):
+        done = real(argv, **kwargs)
+        if "commit" in argv:
+            assert list((scratch / ".git" / "objects").rglob("*")), "fixture: the commit wrote no object"
+            raise subprocess.CalledProcessError(1, argv)
+        return done
+    monkeypatch.setattr(server_module.subprocess, "run", failing_commit)
+    scratch = tmp_path / "d" / "story_code"
+    server = make_server(scratch, workdirs={"text": {"path": str(scratch)}})
+    assert server.workdirs == {} and "could not be created" in caplog.text, caplog.text
+    assert not scratch.exists(), "the half-made folder was left"
+
+    # A folder that cannot be taken away again (a process holding a file in it): its .git is there, the workdir is
+    # still no workdir.
+    def stuck(path, **kwargs):
+        raise PermissionError(13, "in use", str(path))
+    monkeypatch.setattr(server_module.shutil, "rmtree", stuck)
+    server = make_server(scratch, workdirs={"text": {"path": str(scratch)}})
+    assert (scratch / ".git").exists(), "fixture: nothing was left behind"
+    assert server.workdirs == {} and "left half made" in caplog.text, caplog.text
+
+
 def test_a_web_workdir_with_mcp_servers_is_skipped(repo, caplog):
     """A page the run reads could steer the servers' tools, with their tokens."""
     servers = {"remote_mcp": RemoteMCPConfig(url="http://mcp.example:8768/mcp", enabled=True)}

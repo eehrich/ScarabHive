@@ -27,7 +27,10 @@ import logging
 import os
 import re
 import secrets
+import shutil
+import stat
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -302,6 +305,42 @@ def _replace(path: Path, text: str) -> None:
             time.sleep(0.05)
 
 
+def _scratch_repo(path: Path) -> bool:
+    """A workdir in the data directory that is not there yet: an empty repository with one empty commit (a run's
+    worktree branches from it), the shape every such workdir has -- the scratch folder a run as an LLM works in. A
+    data directory of its own (an eval's) starts without them. A folder that is there is left alone, repository or
+    not: its content is someone's. A failed attempt takes the folder it made away again (git's objects are read-only
+    on Windows), and the workdir is skipped as before. False: it tried and failed, whatever is left there."""
+    if path.exists() or not path.is_relative_to(data_path().resolve()):
+        return True
+    try:
+        path.mkdir(parents=True)
+    except OSError as e:  # FileExistsError too: another process (the API beside the worker) makes it -- its own
+        logger.warning("coding_cli: workdir %s could not be created -- %s", path, e)
+        return True
+    # No template, hook, fsmonitor or signing of the operator's git (run._pinned): they would run programs in this
+    # process, with its keys, or wait for a passphrase.
+    git = ["git", "-c", "user.name=coding_cli", "-c", "user.email=coding_cli@localhost", "-c", "commit.gpgsign=false",
+           "-c", f"core.hooksPath={path / '.git' / 'coding_cli-no-hooks'}", "-c", "core.fsmonitor=false",
+           "-C", str(path)]
+    try:
+        for args in (["init", "-q", "--template="], ["commit", "-q", "--allow-empty", "-m", path.name]):
+            subprocess.run([*git, *args], check=True, capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning("coding_cli: workdir %s could not be created -- %s", path, e)
+
+        def writable(remove, name, _exc):
+            os.chmod(name, stat.S_IWRITE)
+            remove(name)
+        try:
+            # onexc from 3.12 on, where onerror is deprecated; the project runs on 3.11 too
+            shutil.rmtree(path, **({"onexc": writable} if sys.version_info >= (3, 12) else {"onerror": writable}))
+        except OSError as left:
+            logger.warning("coding_cli: %s is left half made -- remove it (%s)", path, left)
+        return False
+    return True
+
+
 class CodingCliServer(SchemaBasedToolServer):
     """Claude Code runs. Offered only when the executable and a workdir are there."""
 
@@ -322,7 +361,8 @@ class CodingCliServer(SchemaBasedToolServer):
             entry = entry if isinstance(entry, dict) else {"path": entry}
             path = Path(str(entry.get("path") or ""))
             path = (path if path.is_absolute() else PROJECT_ROOT / path).resolve()
-            if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", str(wname)) or not (path / ".git").exists():
+            plain = re.fullmatch(r"[A-Za-z0-9_-]{1,40}", str(wname))
+            if not plain or not _scratch_repo(path) or not (path / ".git").exists():
                 logger.warning("coding_cli: workdir %r skipped -- a plain name and a git repository are needed", wname)
                 continue
             names = entry.get("mcp_servers") or []

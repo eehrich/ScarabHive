@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Coding CLIs: a workdir in the data directory that is not there yet is made at the start -- an empty repository
+  with one empty commit, the shape of every such scratch workdir. An eval with `data: fresh` (whose data directory
+  starts empty) skipped every such workdir before, and a server needed a `git init` by hand for each. A folder that
+  is there is never touched.
+- Evals: a task's `tool_bindings` (`{tool pattern: {parameter: value}}`) hold its agent's run to them, as a caller's
+  bindings hold a sub-agent's -- an agent that runs bound in production (a coding CLI workdir that pins a store
+  namespace refuses a run without) can be measured. `agent-run`'s `run_agent_request` and `collect_final_result` pass
+  a run's bindings on to `run_events`.
 - Coding CLIs as an LLM: an agy run that ended without an answer on a refused step (a command, say -- agy then ends
   its whole conversation) is resumed once, told that such steps are refused and to go on with its other tools;
   measured for a command, it answers then. A second such end moves the chain on. Both runs' tokens are counted.

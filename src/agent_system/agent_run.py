@@ -115,7 +115,8 @@ async def create_agent(config, registry, agent_name: str, session_service=None):
 
 
 async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_id: str, llm_override=None,
-                            llm_profile_info: str | None = None, request_id: str | None = None) -> dict:
+                            llm_profile_info: str | None = None, request_id: str | None = None,
+                            tool_bindings: dict | None = None) -> dict:
     """Execute a request with the agent and return the result.
 
     Args:
@@ -125,6 +126,7 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
         llm_override: Optional LLM client to override agent's default
         llm_profile_info: Optional profile info string for status display
         request_id: The run's request id (default: a new short id)
+        tool_bindings: The run's tool bindings (Agent.run_events). None: none.
     """
     from .utils.id import short_id
 
@@ -142,7 +144,8 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
             request_id=request_id,
             session_id=session_id,  # Pass session_id for conversation history
             llm_override=llm_override,
-            llm_profile_info_override=llm_profile_info
+            llm_profile_info_override=llm_profile_info,
+            tool_bindings=tool_bindings,
         )
 
         return result
