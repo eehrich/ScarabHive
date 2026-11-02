@@ -1213,6 +1213,46 @@ async def test_the_sweep_takes_over_a_run_whose_owner_left_later(repo, monkeypat
         await api.stop_plugin()
 
 
+async def test_an_ended_run_is_read_once_and_a_running_one_every_time(repo):
+    """Every start and every sweep look for the runs still going, and the ended ones pile up by the thousand."""
+    server = make_server(repo)
+    ended, _ = await call(server, "run_task", task="WRITE b.txt hello")
+    assert server._load(ended["run_id"])["state"] == "done", ended
+    reads = []
+    load = server._load
+    server._load = lambda run_id: reads.append(run_id) or load(run_id)
+    # What a start counts (max_parallel) and what a sweep looks at.
+    assert await server._running() == []
+    await server._sweep()
+    await server._running()
+    assert reads == [ended["run_id"]], reads
+    reads.clear()
+    server._read_ended.clear()
+    going = await unwatched(repo, "SLEEP 30")
+    try:
+        for _ in range(3):
+            assert [r["run_id"] for r in server._unended()] == [going["run_id"]]
+        assert reads.count(ended["run_id"]) == 1 and reads.count(going["run_id"]) == 3
+    finally:
+        server._load = load
+        await call(server, "cancel_run", run_id=going["run_id"])
+        await gone(going["pid"])
+
+
+async def test_a_run_being_finalized_gets_no_new_owner(repo):
+    """A sweep took over the run of a dead owner while another instance was writing its end: the new owner, saved
+    after that end, made the run "running" again."""
+    server = make_server(repo)
+    ended, _ = await call(server, "run_task", task="WRITE b.txt hello")
+    record = server._load(ended["run_id"])
+    assert server._file(record["run_id"], "final").exists(), "fixture: the end was written under its claim"
+    # As the sweep read it, just before the end was saved.
+    record.update(state="running", owner=dead_process(), pid=None)
+    server._save(record)
+    await server._adopt(record)
+    assert server._load(record["run_id"])["owner"]["instance"] == "gone"
+
+
 async def test_a_ring_cut_short_is_rung_again(repo, monkeypatch):
     """A ringer stopped before the end (a restart while the session was held)
     leaves no lease; one that died leaves a lease of a dead holder."""

@@ -386,9 +386,9 @@ def resolve_llm_config_for_agent(
     # in llm.yaml for every combination (model × thinking_level × max_tokens …).
     # Re-validation via LLMModelConfig keeps the type guarantees; identity
     # fields are blocked by the AgentConfig validator. Applies to ALL profiles
-    # resolved through this agent_config (default/advanced/escalation) —
-    # fallback profiles deliberately run without (their call sites do not pass
-    # llm_params through).
+    # resolved through this agent_config (default/advanced/escalation); a
+    # fallback or override profile gets the same through
+    # agent_params_for_profile.
     # The profile-keyed form is reduced to the profile resolved here
     # (merge("*", params[profile])); the flat form applies unchanged.
     llm_params = resolve_llm_params(

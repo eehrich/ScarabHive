@@ -131,6 +131,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Coding CLIs: every run's start and every sweep read and parsed each run record ever made, the start under the lock
+  that serializes starts -- a server that makes hundreds of runs a day would have taken seconds per start within
+  weeks. A record read as ended is now passed by its path within a process (an ended run stays ended; a resume is a
+  run of its own) -- a process that starts reads each one once --, and the sweep finds the wakes left to ring by
+  their files.
+- Coding CLIs: a sweep that took over the run of a dead owner while another instance was writing its end saved the
+  run as "running" again over that end. A run whose end is being written gets no new owner.
 - Evals: a run that fell back to a later profile of an agent's chain counted for the arm as if it had run on the
   arm's model -- the record named only the model the agent was built with. Every run now lists the models each
   agent really called (from the usage store), the run keeps the model each agent an arm names runs on first, and

@@ -464,6 +464,8 @@ class CodingCliServer(SchemaBasedToolServer):
         self._stopped = False
         self._start_lock = asyncio.Lock()
         self._probe_lock = asyncio.Lock()
+        # The paths of records read as ended (_unended).
+        self._read_ended: set[str] = set()
         self._probed_at = 0.0
         self._instance = secrets.token_hex(6)
         self._me = {"pid": os.getpid(), "started": cli.process_start(os.getpid()), "instance": self._instance}
@@ -530,13 +532,13 @@ class CodingCliServer(SchemaBasedToolServer):
             logger.exception("coding_cli: sweeping the runs failed")
 
     async def _sweep(self) -> None:
-        # Every record ever made is read: off the loop.
-        for record in await asyncio.to_thread(self._records):
-            if record.get("state") == "running":
-                if not self._owner_alive(record):
-                    await self._adopt(record)
-            elif self._file(record["run_id"], "wake").exists():
-                self._ring(record["run_id"])
+        for record in await asyncio.to_thread(self._unended):
+            if record.get("state") == "running" and not self._owner_alive(record):
+                await self._adopt(record)
+        # A wake still on disk is one nobody rang to the end; _ring reads whether its run has ended.
+        for wake in await asyncio.to_thread(lambda: list((self._root() / "runs").glob("*.wake"))):
+            if _RUN_ID.fullmatch(wake.stem):
+                self._ring(wake.stem)
 
     async def _adopt(self, record: dict) -> None:
         """Becomes the owner of an orphaned run -- one instance per dead owner."""
@@ -557,11 +559,20 @@ class CodingCliServer(SchemaBasedToolServer):
         claim = f"adopt-{gone}" + (f"-{nonce}" if nonce else "")
         if nonce is None and gone != self._instance and _instance_alive(record.get("owner")):
             return                                # its release was taken back since the sweep looked
-        if (gone != self._instance or nonce is not None) and not _claim(self._file(run_id, claim)):
+        claimed = gone != self._instance or nonce is not None
+        if claimed and not _claim(self._file(run_id, claim)):
             return
         record = self._load(run_id) or record
         if record.get("state") != "running" or ((record.get("owner") or {}).get("instance") or "none") != gone:
             return                                # ended, or somebody took it meanwhile
+        if self._file(run_id, "final").exists():
+            # Being finalized (its claim is taken before the record is read): a new owner saved now would write
+            # "running" over the end it writes. A finalizer that died is taken over there (_finalize) -- by a later
+            # sweep too: the claim is given back, used up it would hold every sweep off.
+            if claimed:
+                self._file(run_id, claim).unlink(missing_ok=True)
+            await self._settle(run_id)
+            return
         record["owner"] = self._me
         self._save(record)
         for stale in (self._root() / "runs").glob(f"{run_id}.released-*"):
@@ -651,6 +662,23 @@ class CodingCliServer(SchemaBasedToolServer):
         records = [self._load(p.stem) for p in folder.glob("*.json")] if folder.is_dir() else []
         return [r for r in records if r and _RUN_ID.fullmatch(str(r.get("run_id")))]
 
+    def _unended(self) -> list[dict]:
+        """The runs not ended yet. An ended run stays ended (a resume is a run of its own), so it is read once and
+        then passed by its path: every start and every sweep read each record ever made, and they pile up by the
+        thousand."""
+        found = []
+        for path in (self._root() / "runs").glob("*.json"):
+            if str(path) in self._read_ended:
+                continue
+            record = self._load(path.stem)
+            if not record or not _RUN_ID.fullmatch(str(record.get("run_id"))):
+                continue
+            if record.get("state") in FINAL_STATES:
+                self._read_ended.add(str(path))
+            else:
+                found.append(record)
+        return found
+
     def _mine(self, record: dict) -> bool:
         """Whether a run is this instance's: every instance of the plugin shares
         the data folder, but its runs, its max_parallel and its tools are its own.
@@ -670,7 +698,7 @@ class CodingCliServer(SchemaBasedToolServer):
         starting. One nobody watches is settled first: it may have ended, or
         be past its time limit."""
         found = []
-        for record in await asyncio.to_thread(self._records):
+        for record in await asyncio.to_thread(self._unended):
             if record.get("state") != "running":
                 continue
             if not self._owner_alive(record):
