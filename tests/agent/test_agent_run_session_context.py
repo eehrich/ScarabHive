@@ -1,4 +1,5 @@
-"""current_run_session: an agent run holds its session in the context while it runs, and lets go of it after.
+"""current_run_session and current_run_agent: an agent run holds its session and itself in the context while it
+runs, and lets go of them after.
 
 A model call that is a run of its own (a coding CLI as an LLM) hands the session to that run's tools; the session
 must be the run's own, not the last one some earlier run left behind.
@@ -15,7 +16,7 @@ from agent_system.config.models import (
     LLMSystemConfig,
     ToolServerConfig,
 )
-from agent_system.core.request_context import current_run_session
+from agent_system.core.request_context import current_run_agent, current_run_session
 from agent_system.servers.agent.server import Agent
 from agent_system.tools.base import ToolServerRegistry
 
@@ -27,12 +28,14 @@ class _Model:
 
     def __init__(self):
         self.sessions: list[Any] = []
+        self.agents: list[Any] = []
 
     def supports_streaming(self):
         return False
 
     async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None, **_):
         self.sessions.append(current_run_session.get())
+        self.agents.append(current_run_agent.get())
         return {"assistant": {"role": "assistant", "content": "done"}}
 
 
@@ -50,20 +53,22 @@ async def test_a_run_holds_its_session_while_the_model_is_asked_and_lets_go_afte
     assert current_run_session.get() is None
     [event async for event in agent.run_events("go", session_id="sess-a")]
     [event async for event in agent.run_events("again", session_id="sess-b")]
-    assert model.sessions == ["sess-a", "sess-b"]
+    assert model.sessions == ["sess-a", "sess-b"] and model.agents == [agent, agent]
     assert current_run_session.get() is None, "a run left its session in the context"
+    assert current_run_agent.get() is None, "a run left itself in the context"
 
 
 async def test_a_run_whose_setup_fails_gives_the_session_back():
     """It fails after setting the session and before it has a context to reset it from: the caller's comes back."""
     agent = _agent()
     agent.llm = None  # the setup stops at "No LLM available"
-    token = current_run_session.set("outer")
+    token, outer = current_run_session.set("outer"), current_run_agent.set("outer agent")
     try:
         [event async for event in agent.run_events("go", session_id="sess-failed")]
-        assert current_run_session.get() == "outer"
+        assert (current_run_session.get(), current_run_agent.get()) == ("outer", "outer agent")
     finally:
         current_run_session.reset(token)
+        current_run_agent.reset(outer)
 
 
 
@@ -72,7 +77,7 @@ async def test_a_run_whose_stream_is_closed_early_gives_the_session_back():
     agent = _agent()
     model = _Model()
     agent.llm = model
-    token = current_run_session.set("outer")
+    token, outer = current_run_session.set("outer"), current_run_agent.set("outer agent")
     try:
         events = agent.run_events("go", session_id="sess-early")
         async for _ in events:
@@ -80,9 +85,10 @@ async def test_a_run_whose_stream_is_closed_early_gives_the_session_back():
                 break
         await events.aclose()
         assert model.sessions == ["sess-early"], "the model was not reached: this test would prove nothing"
-        assert current_run_session.get() == "outer"
+        assert (current_run_session.get(), current_run_agent.get()) == ("outer", "outer agent")
     finally:
         current_run_session.reset(token)
+        current_run_agent.reset(outer)
 
 
 async def test_a_polled_model_call_is_cancelled_when_its_stream_is_closed():
@@ -113,15 +119,16 @@ async def test_a_consumer_that_stops_at_end_without_closing_has_the_session_back
     """The app and agent_service read up to "end" and never close the stream: "end" itself gives it back."""
     agent = _agent()
     agent.llm = _Model()
-    token = current_run_session.set("outer")
+    token, outer = current_run_session.set("outer"), current_run_agent.set("outer agent")
     events = agent.run_events("go", session_id="sess-end")
     try:
         async for event in events:
             if event.get("type") == "end":
                 break
-        assert current_run_session.get() == "outer"
+        assert (current_run_session.get(), current_run_agent.get()) == ("outer", "outer agent")
     finally:
         current_run_session.reset(token)
+        current_run_agent.reset(outer)
         await events.aclose()
 
 

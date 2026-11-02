@@ -131,6 +131,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP gateway: a tool that checks the caller's context in its session's template vars (a book's id) refused every
+  call through the gateway -- the runner that runs the calls knew nothing of the caller's session. A grant now
+  carries the session's template vars as the issuing run has them (`session_vars`); the gateway sets them in its
+  runner before the grant's first call (the session's first grant replacing what is there) and takes them away, with
+  what a run set itself, when the last grant of that session ends; a grant whose vars differ from what the runner
+  holds for the session waits for the live ones. A coding CLI
+  run's grant brings its caller's: the agent whose tool call starts the run, or whose model call the run is (an
+  agent run holds itself in `current_run_agent`, beside `current_run_session`).
 - Coding CLIs: every run's start and every sweep read and parsed each run record ever made, the start under the lock
   that serializes starts -- a server that makes hundreds of runs a day would have taken seconds per start within
   weeks. A record read as ended is now passed by its path within a process (an ended run stays ended; a resume is a

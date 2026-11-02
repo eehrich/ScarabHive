@@ -18,7 +18,7 @@ use it without upward imports (``servers/agent`` previously imported
 from __future__ import annotations
 
 from contextvars import ContextVar
-from typing import Optional
+from typing import Any, Optional
 
 #: The user of the run this code runs in: set where a run begins, next to
 #: current_request_id (Agent, a stategraph run). A call that reaches the hooks
@@ -33,6 +33,9 @@ current_run_user: ContextVar[Optional[str]] = ContextVar("current_run_user", def
 #: the tools the run calls belong to the agent's session, as the agent's own
 #: calls do. None outside an agent run.
 current_run_session: ContextVar[Optional[str]] = ContextVar("current_run_session", default=None)
+#: The agent of that run, set and reset beside current_run_session: such a model call hands the session's
+#: template vars (a book's id) on to the tools its run calls through the gateway (plugins/coding_cli).
+current_run_agent: ContextVar[Optional[Any]] = ContextVar("current_run_agent", default=None)
 #: The tool bindings of the agent run this code runs in ({tool pattern: {parameter: value}},
 #: servers/agent/components/tool_bindings.py), set and reset beside current_run_session -- None for a run
 #: without, so a sub-agent's run never takes over its caller's. The run's tool calls are held to them, and so

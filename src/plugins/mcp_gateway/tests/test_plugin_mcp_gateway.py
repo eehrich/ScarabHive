@@ -92,17 +92,43 @@ class _Store(ToolServer):
         return await self._record("store_any", params)
 
 
+class _Project(ToolServer):
+    """A stand-in for a store that serves one project per session: it reads the session's project from the
+    template vars of the agent that runs the call, as such stores check a call."""
+
+    def __init__(self):
+        super().__init__("project", AgentSystemConfig(), ToolServerConfig(type="project", enabled=True))
+
+    def get_tools(self):
+        parameters = {"type": "object", "properties": {"project_id": {"type": "integer"}}, "required": ["project_id"]}
+        return [{"type": "function", "function": {"name": name, "description": name, "parameters": parameters}}
+                for name in ("project_read", "project_set_context")]
+
+    async def project_read(self, params):
+        expected = params["_agent"]._session_tracker.get_session_template_vars(params["_session_id"]).get("project_id")
+        if expected != params["project_id"]:
+            return {"status": "error", "error": f"project {params['project_id']} is not this session's ({expected})"}
+        return {"status": "ok", "project_id": expected}
+
+    async def project_set_context(self, params):
+        """As a tool that sets its session's context does: on the agent that runs it."""
+        params["_agent"]._session_tracker.set_session_template_vars(params["_session_id"],
+                                                                    {"project_id": params["project_id"]})
+        return {"status": "ok"}
+
+
 def with_runner(monkeypatch):
     """The store, behind a runner allowed every store tool but store_secret, in this process's registry."""
     store = _Store()
     tools_of_runner = ToolServerRegistry()
     tools_of_runner.register("store", store)
+    tools_of_runner.register("project", _Project())
     llm = LLMSystemConfig(models={"m": LLMModelConfig(provider="openai", model="m", api_key="fake")},
                           profiles={"normal": LLMProfile(model_ref="m")}, default_profile="normal")
     runner = Agent("mcp_gateway_runner", AgentSystemConfig(llm_system=llm), ToolServerConfig(
         type="agent", enabled=True, agent_config=AgentConfig(
             max_steps=1, llm_profile="normal",
-            tools=ToolConfig(allowed=["store/*"], blocked=["store/store_secret"]))), tools_of_runner)
+            tools=ToolConfig(allowed=["store/*", "project/*"], blocked=["store/store_secret"]))), tools_of_runner)
     registry = ToolServerRegistry()
     registry.register("mcp_gateway_runner", runner)
     monkeypatch.setattr(app_state, "registry", registry)
@@ -262,6 +288,157 @@ class TestCalls:
         assert failed and "more than the 2000 this gateway hands on" in text
 
 
+class TestSessionVars:
+    """A tool reads its session's template vars (a project, a book) from the agent that runs it -- through the
+    gateway that is the runner, which knows nothing of the issuing run's session."""
+
+    @staticmethod
+    def runner_vars(session_id):
+        return app_state.registry.get("mcp_gateway_runner")._session_tracker.get_session_template_vars(session_id)
+
+    async def test_the_issuing_runs_session_vars_reach_the_tool_and_go_with_the_grant(self, gateway):
+        app, store = gateway
+        token = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 7})
+        assert await call(app, token, "project_read", {"project_id": 7}) == (False, '{"status": "ok", "project_id": 7}')
+        failed, text = await call(app, token, "project_read", {"project_id": 8})
+        assert failed and "project 8 is not this session's (7)" in text
+        assert grants.revoke(token)
+        assert self.runner_vars("sess-1") == {}, "the runner kept the session's vars after its grant ended"
+
+    async def test_without_them_the_tool_finds_no_context(self, gateway):
+        app, _ = gateway
+        token = issue(tools=["project_*"], session_id="sess-1")
+        failed, text = await call(app, token, "project_read", {"project_id": 7})
+        assert failed and "(None)" in text
+
+    async def test_a_context_the_run_sets_itself_holds_for_its_later_calls(self, gateway):
+        app, _ = gateway
+        token = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 7})
+        assert (await call(app, token, "project_set_context", {"project_id": 7}))[0] is False
+        assert (await call(app, token, "project_set_context", {"project_id": 9}))[0] is False
+        assert (await call(app, token, "project_read", {"project_id": 9}))[0] is False, "set again at a later call"
+
+    async def test_they_stay_while_another_grant_of_the_session_holds_them(self, gateway):
+        app, _ = gateway
+        first, second = (issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 7})
+                         for _ in range(2))
+        for token in (first, second):
+            assert (await call(app, token, "project_read", {"project_id": 7}))[0] is False
+        assert grants.revoke(first)
+        assert (await call(app, second, "project_read", {"project_id": 7}))[0] is False
+        grants._grants[grants._digest(second)].expires_at = 0   # expired: the next look ends it
+        assert grants.lookup("mcp_gateway", second) is None
+        assert self.runner_vars("sess-1") == {}
+
+    async def test_a_context_a_run_set_itself_goes_with_its_grant(self, gateway):
+        """Its caller had none to bring: what the run set is left to no later run of the session."""
+        app, _ = gateway
+        token = issue(tools=["project_*"], session_id="sess-1")
+        assert (await call(app, token, "project_set_context", {"project_id": 4}))[0] is False
+        assert self.runner_vars("sess-1") == {"project_id": 4}, "fixture: the run set its context"
+        assert grants.revoke(token)
+        assert self.runner_vars("sess-1") == {}
+
+    async def test_the_first_grant_of_a_session_replaces_what_is_left_there(self, gateway):
+        app, _ = gateway
+        app_state.registry.get("mcp_gateway_runner")._session_tracker.set_session_template_vars(
+            "sess-1", {"project_id": 3, "parent_project_id": 2})
+        token = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 7})
+        assert (await call(app, token, "project_read", {"project_id": 7}))[0] is False
+        assert self.runner_vars("sess-1") == {"project_id": 7}
+
+    async def test_a_run_with_another_context_waits_for_the_one_holding_the_session(self, gateway):
+        app, _ = gateway
+        first = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 7})
+        second = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 8})
+        assert (await call(app, first, "project_read", {"project_id": 7}))[0] is False
+        for _ in range(3):
+            failed, text = await call(app, second, "project_read", {"project_id": 8})
+            assert failed and "works with a different context" in text
+        assert not grants.lookup("mcp_gateway", second)._on_end, "every refused call left a clean-up behind"
+        assert (await call(app, first, "project_read", {"project_id": 7}))[0] is False, "the holder lost its context"
+        assert grants.revoke(first)
+        assert (await call(app, second, "project_read", {"project_id": 8}))[0] is False
+        assert self.runner_vars("sess-1") == {"project_id": 8}
+
+    async def test_a_grant_without_vars_keeps_the_context_and_a_later_one_waits_for_it(self, gateway):
+        app, _ = gateway
+        holder = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 7, "parent_id": 2})
+        plain = issue(tools=["project_*"], session_id="sess-1")
+        later = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 8})
+        for token in (holder, plain):
+            assert (await call(app, token, "project_read", {"project_id": 7}))[0] is False
+        assert grants.revoke(holder)
+        assert self.runner_vars("sess-1") == {"project_id": 7, "parent_id": 2}, "the plain run still works in it"
+        failed, text = await call(app, later, "project_read", {"project_id": 8})
+        assert failed and "works with a different context" in text
+        assert grants.revoke(plain)
+        assert (await call(app, later, "project_read", {"project_id": 8}))[0] is False
+        assert self.runner_vars("sess-1") == {"project_id": 8}, "a context nobody issued"
+
+    async def test_a_context_a_live_run_set_itself_is_not_overwritten(self, gateway):
+        """By a grant of its session with other vars, or with those it started from."""
+        app, _ = gateway
+        plain = issue(tools=["project_*"], session_id="sess-1")
+        assert (await call(app, plain, "project_set_context", {"project_id": 4}))[0] is False
+        other = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 7})
+        assert "works with a different context" in (await call(app, other, "project_read", {"project_id": 7}))[1]
+        assert (await call(app, plain, "project_read", {"project_id": 4}))[0] is False
+        started = issue(tools=["project_*"], session_id="sess-2", session_vars={"project_id": 7})
+        assert (await call(app, started, "project_set_context", {"project_id": 9}))[0] is False
+        same = issue(tools=["project_*"], session_id="sess-2", session_vars={"project_id": 7})
+        assert "works with a different context" in (await call(app, same, "project_read", {"project_id": 7}))[1]
+        assert (await call(app, started, "project_read", {"project_id": 9}))[0] is False
+
+    async def test_the_same_value_as_text_is_the_same_context(self, gateway):
+        app, _ = gateway
+        first = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 7})
+        second = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": "7"})
+        for token in (first, second):
+            assert (await call(app, token, "project_read", {"project_id": 7}))[0] is False
+
+    async def test_a_grant_ending_while_it_is_seeded_leaves_nothing_behind(self, gateway, monkeypatch):
+        """Its end ran before its vars are set: no clean-up would come after them."""
+        app, _ = gateway
+        token = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 7})
+        grant = grants.lookup("mcp_gateway", token)
+        on_end = grants.on_end
+
+        def ending(*args):
+            taken = on_end(*args)
+            grants.revoke(token)
+            return taken
+
+        monkeypatch.setattr(grants, "on_end", ending)
+        problem = app.state.plugin.gateway._seed(grant, app_state.registry.get("mcp_gateway_runner"))
+        assert "revoked or expired" in problem
+        assert self.runner_vars("sess-1") == {} and not app.state.plugin.gateway._holders
+
+    @pytest.mark.parametrize("end", ["revoked", "expired", "gateway stopped"])
+    async def test_a_grant_runs_its_clean_up_once_and_takes_none_after_its_end(self, gateway, end):
+        app, _ = gateway
+        token = issue()
+        grant = grants.lookup("mcp_gateway", token)
+        ran = []
+        assert grants.on_end(grant, lambda: ran.append("first"))
+        if end == "revoked":
+            grants.revoke(token)
+        elif end == "expired":
+            grant.expires_at = 0
+            assert grants.lookup("mcp_gateway", token) is None
+        else:
+            await app.state.plugin.stop_plugin()
+        assert ran == ["first"]
+        assert grants.on_end(grant, lambda: ran.append("late")) is False and ran == ["first"]
+
+    async def test_a_stopped_gateway_takes_them_away(self, gateway):
+        app, _ = gateway
+        token = issue(tools=["project_*"], session_id="sess-1", session_vars={"project_id": 7})
+        assert (await call(app, token, "project_read", {"project_id": 7}))[0] is False
+        await app.state.plugin.stop_plugin()
+        assert self.runner_vars("sess-1") == {}
+
+
 class TestHooks:
     async def test_the_runners_hooks_see_the_call_without_the_pinned_values_and_can_block_it(self, gateway):
         app, store = gateway
@@ -362,7 +539,8 @@ class TestTokens:
         ({"pinned": {"project_id": 1}}, "must map parameters"),
         ({"pinned": {"store_*": {"project_id": [1]}}}, "string, number or boolean"),
         ({"allowed": {"store_*": {"ops[0].op": ["get"]}}}, "no path"),
-        ({"allowed": {"store_*": {"operations[].op": []}}}, "non-empty")])
+        ({"allowed": {"store_*": {"operations[].op": []}}}, "non-empty"),
+        ({"session_vars": ["project_id"]}, "session_vars"), ({"session_vars": {"project_id": 7}}, "session_id")])
     async def test_a_grant_that_cannot_hold_is_refused(self, gateway, kwargs, word):
         with pytest.raises(ValueError, match=word):
             issue(**kwargs)

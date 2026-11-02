@@ -63,6 +63,36 @@ async def test_a_claude_code_run_reaches_its_grant_and_only_while_it_runs(repo, 
         assert token not in path.read_text(encoding="utf-8", errors="replace"), path
 
 
+@pytest.mark.parametrize("how", ["the tool call's agent", "the run's agent", "both"])
+async def test_a_grant_carries_the_template_vars_of_the_callers_session(repo, log, gateway, how):
+    """A tool run through the gateway reads its session's vars (a book's id) from the gateway's runner: the grant
+    brings the caller's. A model call that is a run of its own (llm_coding_cli) has no _agent, its run has; a tool
+    call's own agent comes first (a run of another agent around it is not the caller)."""
+    from types import SimpleNamespace
+
+    from agent_system.core.request_context import current_run_agent
+    from agent_system.servers.agent.components.session_tracking import SessionTracker
+
+    caller = SimpleNamespace(_session_tracker=SessionTracker())
+    caller._session_tracker.set_session_template_vars("s1", {"project_id": 12, "parent_project_id": 11})
+    caller._session_tracker.set_session_template_vars("s2", {"project_id": 99})
+    around = SimpleNamespace(_session_tracker=SessionTracker())
+    around._session_tracker.set_session_template_vars("s1", {"project_id": 5})
+    server = make_server(repo, workdirs=with_gateway(repo), wait_s=0.2)
+    reset = current_run_agent.set({"the run's agent": caller, "both": around}.get(how))
+    try:
+        extra = {} if how == "the run's agent" else {"_agent": caller}
+        started, _ = await call(server, "run_task", task="SLEEP 30", pin=PIN, **extra)
+    finally:
+        current_run_agent.reset(reset)
+    try:
+        env = psutil.Process(server._load(started["run_id"])["pid"]).environ()
+        grant = grants.lookup("mcp_gateway", env["CODING_CLI_MCP_0"].removeprefix("Bearer "))
+        assert grant.session_vars == {"project_id": 12, "parent_project_id": 11}
+    finally:
+        await call(server, "cancel_run", run_id=started["run_id"])
+
+
 @pytest.mark.parametrize("workdir_gateway, pin, said", [
     (True, None, "must fix probe_*: scope_id"),
     (True, {"probe_edit": {"scope_id": 7}}, "must fix probe_*: scope_id"),

@@ -204,9 +204,11 @@ class RunMixin:
         # were is what they are again when this generator ends -- and at "end", its
         # last event: a consumer that stops there (app, agent_service) never closes
         # it, and the garbage collector closes it in another task.
-        from ....core.request_context import current_run_session, current_run_user, current_tool_bindings
+        from ....core.request_context import (current_run_agent, current_run_session, current_run_user,
+                                              current_tool_bindings)
         request_before, user_before = current_request_id.get(), current_run_user.get()
         session_before, bindings_before = current_run_session.get(), current_tool_bindings.get()
+        agent_before = current_run_agent.get()
         # Set here, before anything of the run can call a tool, and to None for a run without: a run started in a
         # copy of this context binds its own (a SAM sub-agent takes these over explicitly, tool_bindings.inherited).
         current_tool_bindings.set(tool_bindings or None)
@@ -233,6 +235,7 @@ class RunMixin:
                         current_request_id.set(request_before)
                         current_run_user.set(user_before)
                         current_run_session.set(session_before)
+                        current_run_agent.set(agent_before)
                         current_tool_bindings.set(bindings_before)
                     yield event
         except GeneratorExit:
@@ -255,6 +258,7 @@ class RunMixin:
             current_request_id.set(request_before)
             current_run_user.set(user_before)
             current_run_session.set(session_before)
+            current_run_agent.set(agent_before)
             current_tool_bindings.set(bindings_before)
 
     async def _run_events(

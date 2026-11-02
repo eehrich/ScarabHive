@@ -341,6 +341,19 @@ def _scratch_repo(path: Path) -> bool:
     return True
 
 
+def _session_vars(agent: Any, session_id: str) -> Optional[dict]:
+    """The template vars of the calling agent's session (a book's id, say): its tools see them through the gateway as
+    they do in the agent's own calls -- the gateway's runner, which runs them, knows nothing of that session. The
+    agent is the tool call's own, or, for a run that is the agent's model call (llm_coding_cli), the run's."""
+    if agent is None:
+        from agent_system.core.request_context import current_run_agent
+        agent = current_run_agent.get()
+    tracker = getattr(agent, "_session_tracker", None)
+    if tracker is None or not session_id:
+        return None
+    return dict(tracker.get_session_template_vars(session_id) or {}) or None
+
+
 class CodingCliServer(SchemaBasedToolServer):
     """Claude Code runs. Offered only when the executable and a workdir are there."""
 
@@ -906,7 +919,8 @@ class CodingCliServer(SchemaBasedToolServer):
             # task at the loop's end does not reach it.
             prepare = asyncio.get_running_loop().run_in_executor(None, functools.partial(
                 self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema, asked_run_s,
-                utilization, pin or None, str(params.get("_request_id") or run_id), gateway_url))
+                utilization, pin or None, str(params.get("_request_id") or run_id), gateway_url,
+                _session_vars(params.get("_agent"), session_id) if gateway_url else None))
             try:
                 try:
                     record = await asyncio.shield(prepare)
@@ -1111,7 +1125,8 @@ class CodingCliServer(SchemaBasedToolServer):
     def _prepare(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict],
                  user_id: str, session_id: str, schema: Optional[dict] = None,
                  asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
-                 pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "") -> dict:
+                 pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "",
+                 session_vars: Optional[dict] = None) -> dict:
         """Worktree, command line and record, then the process (sync, off the loop)."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
         spec = self.workdirs[workdir]
@@ -1125,7 +1140,7 @@ class CodingCliServer(SchemaBasedToolServer):
             if not prior:
                 cli.seed_worktree(spec["path"], worktree, spec.get("seed") or ())
             return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema,
-                               asked_run_s, asked_utilization, pin, request_id or run_id, gateway_url)
+                               asked_run_s, asked_utilization, pin, request_id or run_id, gateway_url, session_vars)
         except BaseException:
             issued = run_id in _GRANTS
             _revoke(run_id)
@@ -1143,7 +1158,8 @@ class CodingCliServer(SchemaBasedToolServer):
     def _start(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict], user_id: str,
                session_id: str, worktree: Path, branch: str, made: cli.Worktree, schema: Optional[dict] = None,
                asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
-               pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "") -> dict:
+               pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "",
+               session_vars: Optional[dict] = None) -> dict:
         resume = prior["claude_session"] if prior else ""
         unsafe = cli.agy_unsafe(worktree) if self.agy else []
         if unsafe:
@@ -1166,6 +1182,7 @@ class CodingCliServer(SchemaBasedToolServer):
                 # or a resume, count their calls apart.
                 token = grants.issue(user_id, gateway["tools"], request_id=f"{request_id or run_id}_{run_id}",
                                      pinned=pin, allowed=gateway["allowed"], session_id=session_id or None,
+                                     session_vars=session_vars,
                                      ttl_s=max_run_s + GRANT_SLACK_S, gateway=gateway["instance"])
             except (LookupError, ValueError) as exc:
                 raise OSError(f"mcp gateway: {exc}") from None

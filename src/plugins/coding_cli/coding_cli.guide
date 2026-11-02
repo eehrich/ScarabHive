@@ -302,6 +302,10 @@ operator vouches that its tools and allowed values only read. confined (needs a
 bindings to what the run writes anyway -- its own file -- where a page could
 steer no more than the answer. Either way the vouch is the operator's, as a page the run reads could steer them. Plan mode gets no
 grant.
+@{bullet}The grant carries the caller's session and its template vars (a
+book's id): the tools see them as in the agent's own calls. The caller is the
+agent whose tool call starts the run, or the agent whose model call the run is
+(a coding CLI as an LLM).
 @{bullet}The run dials the gateway of this process: under the API's port in
 the API, on the gateway's own loopback listener in a process without the app
 (agent-run, an eval run), started for the first run that asks.

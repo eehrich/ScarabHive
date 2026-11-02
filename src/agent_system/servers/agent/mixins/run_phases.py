@@ -118,7 +118,7 @@ class RunPhasesMixin:
         # Whose run this is, for the calls in it that reach the hooks without an
         # agent (a decision, TTS: llm/hook_notify.py) -- also once the request
         # that started a background sub-agent has ended and let go of its tree.
-        from ....core.request_context import current_run_session, current_run_user
+        from ....core.request_context import current_run_agent, current_run_session, current_run_user
         metadata = self._session_tracker.get_session_metadata(session_id) if self._session_tracker else None
         run_user = metadata.get("user_id") if isinstance(metadata, dict) else None
         user_reset_token = current_run_user.set(run_user) if run_user else None
@@ -126,6 +126,7 @@ class RunPhasesMixin:
         # back by run_events (mixins/run.py), the one caller, whatever way the run ends.
         if session_id:
             current_run_session.set(session_id)
+            current_run_agent.set(self)
 
         # Status forwarder is passed in from caller (created before status_scope context managers)
         # This ensures forwarder is subscribed to status_bus before any START events are generated

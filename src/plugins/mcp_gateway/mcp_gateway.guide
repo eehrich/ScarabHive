@@ -125,6 +125,7 @@ request_id | prefix of every call's request id: @{tt}<request_id>_mcp001@{utt}, 
 pinned | the run's tool bindings, @{tt}{tool pattern: {parameter: value}}@{utt} (a pattern as an agent's allowlist writes it -- @{tt}server/tool@{utt}, @{tt}server/*@{utt}, a wildcard -- or the bare tool name): set in every call of a tool the pattern matches; a call with another value is refused
 allowed | @{tt}{tool pattern: {path: [values]}}@{utt}: for the tools the pattern matches, every value at the path must be one of these
 session_id | the session the calls run in (@{tt}_session_id@{utt}); without it the calls have none
+session_vars | that session's template vars as the issuing run has them (a book's or a project's id): set for the session in the runner before the grant's first call -- a tool reads its session's vars from the agent that runs it, and the runner knows nothing of the session. The first grant of a session replaces what is there; when the last one ends, all is taken away, what a run set itself (a tool setting its context, in the runner as well) included. The runner holds one context per session: while a grant is live there, a grant of the session whose vars differ from what the runner holds now -- a run may have changed it -- is refused ("another run of this session works with a different context") until the live ones have ended. Needs @{tt}session_id@{utt}
 ttl_s | seconds the token holds (default 3600)
 gateway | the instance (default @{tt}mcp_gateway@{utt})
 @{body}

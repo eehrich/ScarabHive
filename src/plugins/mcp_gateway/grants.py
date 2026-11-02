@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import hashlib
+import logging
 import math
 import secrets
 import threading
@@ -30,6 +31,7 @@ _listeners: dict[str, Callable[[], Awaitable[None]]] = {}
 _grants: dict[str, "Grant"] = {}
 _lock = threading.Lock()
 _MISSING = object()
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,7 +46,13 @@ class Grant:
     expires_at: float
     key: str                        # names the grant in logs, never the token
     cancel: CancellationToken = field(repr=False)
+    #: The template vars of the issuing run's session (a book's id): the gateway sets them for session_id in its
+    #: runner, whose tools read them there, until the grant ends.
+    session_vars: dict[str, Any] = field(default_factory=dict, repr=False)
     calls: int = 0
+    ended: bool = False
+    seeded: bool = False            # its session_vars set in the gateway's runner (gateway.py)
+    _on_end: list[Callable[[], None]] = field(default_factory=list, repr=False)
     #: The loop its calls wait in (set by the first call): a revoke from another thread wakes it there.
     loop: Optional[asyncio.AbstractEventLoop] = field(default=None, repr=False)
 
@@ -65,7 +73,7 @@ def _check_path(path: Any) -> None:
 
 def issue(user_id: str, tools: list[str], *, request_id: str, pinned: Optional[dict[str, Any]] = None,
           allowed: Optional[dict[str, dict[str, list[Any]]]] = None, session_id: Optional[str] = None,
-          ttl_s: float = 3600.0, gateway: str = "mcp_gateway") -> str:
+          session_vars: Optional[dict[str, Any]] = None, ttl_s: float = 3600.0, gateway: str = "mcp_gateway") -> str:
     """A token for one run. ValueError for an argument that cannot hold, LookupError when ``gateway`` does not serve
     (not enabled, or not started in this process)."""
     if not isinstance(user_id, str) or not user_id.strip():
@@ -90,12 +98,16 @@ def issue(user_id: str, tools: list[str], *, request_id: str, pinned: Optional[d
                 raise ValueError(f"allowed: {pattern} {path}: a non-empty list of values")
     if session_id is not None and (not isinstance(session_id, str) or not session_id):
         raise ValueError("session_id: a session id, or None")
+    if session_vars is not None and not isinstance(session_vars, dict):
+        raise ValueError("session_vars: the session's template vars, or None")
+    if session_vars and session_id is None:
+        raise ValueError("session_vars: they are a session's -- give its session_id")
     token = secrets.token_urlsafe(32)
     digest = _digest(token)
     grant = Grant(gateway=gateway, user_id=user_id, tools=tuple(tools), request_id=request_id, pinned=pinned,
                   allowed={p: {path: list(v) for path, v in rules.items()} for p, rules in allowed.items()},
                   session_id=session_id, expires_at=time.monotonic() + ttl_s, key=digest[:12],
-                  cancel=CancellationToken(request_id))
+                  cancel=CancellationToken(request_id), session_vars=dict(session_vars or {}))
     with _lock:  # under the lock that a stop takes: a grant cannot slip in beside a stopping gateway
         if gateway not in _serving:
             raise LookupError(f"mcp gateway {gateway!r} does not serve in this process (plugin not enabled?)")
@@ -108,11 +120,28 @@ def revoke(token: str) -> bool:
     """End a grant: its token answers 401 from now on, a call of it still running is cancelled. False when there
     was none (unknown, revoked or expired before)."""
     with _lock:
-        grant = _grants.pop(_digest(token), None) if isinstance(token, str) else None
+        grant = _ended(_grants.pop(_digest(token), None)) if isinstance(token, str) else None
     if grant is None:
         return False
     _cancel(grant)
     return True
+
+
+def on_end(grant: Grant, callback: Callable[[], None]) -> bool:
+    """``callback`` runs once when ``grant`` ends (revoked, expired, its gateway stopped), in the thread that ends
+    it. False, and not kept, when the grant has ended already."""
+    with _lock:
+        if grant.ended:
+            return False
+        grant._on_end.append(callback)
+        return True
+
+
+def _ended(grant: Optional[Grant]) -> Optional[Grant]:
+    """Marks a grant just taken out of _grants as ended (under _lock): no on_end comes after its callbacks ran."""
+    if grant is not None:
+        grant.ended = True
+    return grant
 
 
 def lookup(gateway: str, token: Optional[str]) -> Optional[Grant]:
@@ -128,12 +157,18 @@ def lookup(gateway: str, token: Optional[str]) -> Optional[Grant]:
 def _sweep() -> None:
     now = time.monotonic()
     for digest in [d for d, g in _grants.items() if g.expires_at <= now]:
-        _cancel(_grants.pop(digest))
+        _cancel(_ended(_grants.pop(digest)))
 
 
 def _cancel(grant: Grant) -> None:
     """Cancel the grant's token in the loop its calls wait in: an asyncio event set from another thread does not
-    wake that loop."""
+    wake that loop. Then what was to happen at its end."""
+    for callback in grant._on_end:
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 -- one failing clean-up must not keep the token alive
+            logger.exception("mcp_gateway: clean-up at the end of grant %s failed", grant.key)
+    grant._on_end.clear()
     loop = grant.loop
     try:
         running: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
@@ -157,7 +192,7 @@ def serve(gateway: str, serving: bool, address: Optional[str] = None) -> None:
             return
         _serving.discard(gateway)
         _addresses.pop(gateway, None)
-        ended = [_grants.pop(d) for d, g in list(_grants.items()) if g.gateway == gateway]
+        ended = [_ended(_grants.pop(d)) for d, g in list(_grants.items()) if g.gateway == gateway]
     for grant in ended:
         _cancel(grant)
 

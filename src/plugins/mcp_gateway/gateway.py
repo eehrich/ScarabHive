@@ -2,7 +2,8 @@
 
 Every call goes through the runner agent's ``dispatch_tool_call``: its allowlist is the ceiling, its
 pre_tool_call/post_tool_call hooks run (``hook_source="mcp_gateway"``), the tool gets the grant's user, session and
-request id like any call of an agent. What a grant may see is what it may call -- one function decides both.
+request id like any call of an agent, and the session's template vars as the issuing run had them (``_seed``).
+What a grant may see is what it may call -- one function decides both.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import copy
 import fnmatch
 import json
 import logging
+import threading
 import time
 from typing import Any, Optional
 
@@ -29,6 +31,9 @@ class Gateway:
         self.name = name
         self.runner_agent = runner_agent
         self.max_result_chars = max_result_chars
+        # (the runner's session tracker, a session) -> the keys of the grants live there.
+        self._holders: dict[tuple[int, str], set[str]] = {}
+        self._seeding = threading.Lock()
 
     def runner(self) -> Any:
         from agent_system import app_state
@@ -100,6 +105,9 @@ class Gateway:
         problem = problem or grants.refusal(grant, name, complete) or _schema_problem(name, parameters, complete)
         if problem:
             return problem, True
+        problem = self._seed(grant, runner)
+        if problem:
+            return f"{name}: {problem}", True
         # The hooks see the call as the model asked for it: the bound values go in after them, in dispatch_tool_call.
         arguments = {key: value for key, value in arguments.items() if key not in bound}
         from agent_system.core.request_context import current_run_user, current_tool_bindings
@@ -147,6 +155,63 @@ class Gateway:
         failed = isinstance(result, dict) and (result.get("status") == "error"
                                                or (result.get("error") and result.get("status") is None))
         return text, bool(failed)
+
+    def _seed(self, grant: Grant, runner: Any) -> Optional[str]:
+        """The issuing run's session vars (a book's id) set for the grant's session in the runner, before its first
+        call: a tool reads its session's vars from the agent that runs it, and the runner knows nothing of that
+        session. The first grant of the session replaces what is there; the last one to end takes all away, what
+        a run set itself (a tool setting its context) included. Why the call cannot run, or None."""
+        tracker = getattr(runner, "_session_tracker", None)
+        if grant.seeded or not grant.session_id or tracker is None:
+            return None
+        holder = (id(tracker), grant.session_id)
+        ended = "the run's token was revoked or expired; the call was stopped."
+        with self._seeding:
+            problem = self._conflict(grant, holder, tracker)
+        if problem:     # no clean-up to ask for: a refused call comes again, and each would leave one
+            return problem
+        # Asked for outside the lock: a grant ends under grants' lock, and its end takes this one.
+        if not grants.on_end(grant, lambda: self._unseed(tracker, holder, grant.key)):
+            return ended
+        with self._seeding:
+            if grant.ended:
+                return ended
+            if grant.seeded:
+                return None
+            # This look decides: a holder may have come since the one above. Its clean-up stays asked for, and
+            # finds nothing.
+            problem = self._conflict(grant, holder, tracker)
+            if problem:
+                return problem
+            if holder not in self._holders:
+                tracker.clear_session_template_vars(grant.session_id)   # left by what is no longer here
+                if grant.session_vars:
+                    tracker.set_session_template_vars(grant.session_id, dict(grant.session_vars))
+            self._holders.setdefault(holder, set()).add(grant.key)
+            grant.seeded = True
+        return None
+
+    def _conflict(self, grant: Grant, holder: tuple[int, str], tracker: Any) -> Optional[str]:
+        """One session in the runner holds one context, and live runs may have changed it: a run whose vars differ
+        from what it holds now cannot go on beside them -- its calls would be judged by their context, or theirs
+        by its. Keys only they set stay in reach of a run that joins them: it is one context."""
+        if grant.session_vars and holder in self._holders:
+            live = tracker.get_session_template_vars(grant.session_id) or {}
+            # As text: template vars are, and 7 and "7" are one project.
+            if any(key not in live or str(live[key]) != str(value) for key, value in grant.session_vars.items()):
+                return ("another run of this session works with a different context (template vars) through the "
+                        "gateway; this run's calls can go through once that run has ended.")
+        return None
+
+    def _unseed(self, tracker: Any, holder: tuple[int, str], key: str) -> None:
+        with self._seeding:
+            keys = self._holders.get(holder)
+            if keys is None or key not in keys:
+                return
+            keys.discard(key)
+            if not keys:
+                del self._holders[holder]
+                tracker.clear_session_template_vars(holder[1])
 
 
 def _schema_problem(name: str, parameters: dict[str, Any], arguments: dict[str, Any]) -> Optional[str]:
