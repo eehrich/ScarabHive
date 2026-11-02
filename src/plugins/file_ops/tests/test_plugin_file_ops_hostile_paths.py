@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
 
 from agent_system.config import AgentSystemConfig, ToolServerConfig
+from agent_system.utils.path_sandbox import is_link
 from plugins.file_ops.server import FileOpsServer
 
 
@@ -56,7 +57,7 @@ def touched(monkeypatch):
     """Every Path call on a path naming evil.example. The spy raises too;
     code that swallows the raise still leaves the call recorded."""
     calls = []
-    for name in ("exists", "is_file", "is_dir", "is_symlink", "is_junction", "resolve", "stat",
+    for name in ("exists", "is_file", "is_dir", "is_symlink", "resolve", "stat",
                  "open", "mkdir", "unlink", "rename", "replace", "read_text", "write_text"):
         original = getattr(Path, name)
 
@@ -66,6 +67,14 @@ def touched(monkeypatch):
                 raise AssertionError(f"{_name} on {self}")
             return _original(self, *args, **kwargs)
         monkeypatch.setattr(Path, name, spy)
+    real_lstat = os.lstat
+
+    def lstat_spy(path, *args, **kwargs):   # what is_link asks
+        if "evil.example" in str(path):
+            calls.append(("lstat", str(path)))
+            raise AssertionError(f"lstat on {path}")
+        return real_lstat(path, *args, **kwargs)
+    monkeypatch.setattr(os, "lstat", lstat_spy)
     return calls
 
 
@@ -138,7 +147,7 @@ async def test_a_recursive_delete_of_a_junction_leaves_the_directory(server, roo
     (root / "lib" / "keep.txt").write_text("keep")
     subprocess.run(["cmd", "/c", "mklink", "/J", str(root / "jn"), str(root / "lib")],
                    capture_output=True, check=False)
-    if not (root / "jn").is_junction():
+    if not is_link(root / "jn"):
         pytest.skip("could not create a junction -- this test measures nothing")
     result = await server.manage({"operation": "delete", "path": str(root / "jn"), "recursive": True})
     assert result["status"] == "success", result
@@ -185,7 +194,7 @@ async def test_a_missing_path_is_not_reported_as_an_unexpected_error(server, roo
 def _junction(link: Path, target: Path) -> None:
     subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
                    capture_output=True, check=False)
-    if not link.is_junction():
+    if not is_link(link):
         pytest.skip("could not create a junction -- this test measures nothing")
 
 
@@ -229,7 +238,7 @@ async def test_a_junction_moves_and_renames_as_a_link(server, root, outside):
     assert result["status"] == "success" and result["type"] == "link", result
     result = await server.manage({"operation": "rename", "path": str(root / "jn2"), "new_name": "jn3"})
     assert result["status"] == "success" and result["type"] == "link", result
-    assert (root / "jn3").is_junction() and (outside / "secret.txt").read_text() == "SECRET"
+    assert is_link(root / "jn3") and (outside / "secret.txt").read_text() == "SECRET"
 
 
 async def test_a_file_still_moves_across_drives(server, root, across_drives):

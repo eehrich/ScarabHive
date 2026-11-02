@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional, Sequence
 
 import aiofiles
 
-from agent_system.utils.path_sandbox import holds_secrets, is_secret
+from agent_system.utils.path_sandbox import holds_secrets, is_link, is_secret
 
 from . import textsearch
 
@@ -32,7 +32,7 @@ def _secrets_refused(*paths: Path) -> Optional[Dict[str, Any]]:
     """The error for a delete, move or rename that would touch a private file
     (config/*.env, data/users.db, data/sessions), else None."""
     for path in paths:
-        if is_secret(path) or (not (path.is_symlink() or path.is_junction()) and holds_secrets(path)):
+        if is_secret(path) or (not is_link(path) and holds_secrets(path)):
             return {
                 "status": "error",
                 "error": f"Access to the installation's private files (secrets, user store, sessions) is refused: {path}",
@@ -570,7 +570,7 @@ class FileOperations:
         try:
             # A link goes, never what it points to: rmtree would refuse a
             # directory link, is_file would follow one to its target.
-            if path.is_symlink() or path.is_junction():
+            if is_link(path):
                 os.unlink(path)
                 return {
                     "status": "success",
@@ -680,7 +680,7 @@ class FileOperations:
             # Create parent directories if needed
             destination.parent.mkdir(parents=True, exist_ok=True)
 
-            link = source.is_symlink() or source.is_junction()
+            link = is_link(source)
             path_type = "link" if link else "file" if source.is_file() else "directory"
 
             if path_type == "file":
@@ -764,7 +764,7 @@ class FileOperations:
                     "new_path": str(new_path)
                 }
 
-            link = path.is_symlink() or path.is_junction()
+            link = is_link(path)
             path_type = "link" if link else "file" if path.is_file() else "directory"
             path.rename(new_path)
 

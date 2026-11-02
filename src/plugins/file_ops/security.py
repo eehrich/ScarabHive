@@ -34,7 +34,7 @@ import re
 from pathlib import Path
 from typing import List
 
-from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
+from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied, is_link
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ class PathValidator:
                 folder = None  # judged below, like any other path
             if folder is not None:
                 entry = folder / named.name
-                if entry.is_symlink() or entry.is_junction():
+                if is_link(entry):
                     return entry
         return self.validate_path(path, must_exist=True, write=True)
 

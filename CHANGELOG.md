@@ -190,6 +190,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- File tools on Python 3.11: delete, move and rename ended in an AttributeError (`Path.is_junction` exists from
+  3.12).
 - Coding CLIs: the subscription guard went by what the last run to end had seen. A run reports the windows near its
   start and only its end stored that, so with many runs at once new ones started on a state minutes old. The report
   is now stored when it arrives. Runs already going when a window fills still go on.

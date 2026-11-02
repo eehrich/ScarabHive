@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Iterable
@@ -89,6 +90,21 @@ SESSIONS_DIR = Path("sessions")
 ARCHIVE_DIR = Path("session_archive")
 DEBUGGER_DIR = Path("message_debugger")
 _DB_COMPANIONS = ("", "-wal", "-shm", "-journal")
+
+
+#: Reparse points that lead elsewhere: a symlink, and a junction -- which ``is_symlink()`` does not report
+#: (``is_junction`` needs Python 3.12).
+_LINK_TAGS = frozenset(getattr(stat, name) for name in ("IO_REPARSE_TAG_SYMLINK", "IO_REPARSE_TAG_MOUNT_POINT")
+                       if hasattr(stat, name))
+
+
+def is_link(path: Path | str) -> bool:
+    """Whether ``path`` itself is a symlink or a junction; False when it is not there."""
+    try:
+        info = os.lstat(path)
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) in _LINK_TAGS
 
 
 def _canonical(path: Path | str) -> str | None:

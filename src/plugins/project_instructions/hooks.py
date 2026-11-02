@@ -42,7 +42,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import stat
 import unicodedata
 from pathlib import Path
 from typing import Any, Optional
@@ -51,7 +50,7 @@ from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.message_roles import DEVELOPER, NOTE_CLOSE, SYSTEM, role_of
 from agent_system.llm.models import ChatMessage
 from agent_system.paths import launch_dir
-from agent_system.utils.path_sandbox import remote_outside
+from agent_system.utils.path_sandbox import is_link, remote_outside
 
 logger = logging.getLogger(__name__)
 
@@ -349,23 +348,9 @@ def _link_may_be_followed(root: Path, link: Path) -> bool:
     step = root
     for part in inside.parts:
         step = step / part
-        if _is_link(step):
+        if is_link(step):
             return False
     return _may_follow(inside)
-
-
-#: Reparse points that lead elsewhere: a symlink, and a junction -- which
-#: ``is_symlink()`` does not report (``is_junction`` needs Python 3.12).
-_LINK_TAGS = frozenset(getattr(stat, name) for name in ("IO_REPARSE_TAG_SYMLINK", "IO_REPARSE_TAG_MOUNT_POINT")
-                       if hasattr(stat, name))
-
-
-def _is_link(path: Path) -> bool:
-    try:
-        info = os.lstat(path)
-    except OSError:
-        return False  # not there: resolve() finds nothing to read either
-    return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) in _LINK_TAGS
 
 
 def _may_follow(target: Path) -> bool:

@@ -143,6 +143,35 @@ def test_the_text_search_walk_skips_a_secret(install):
     assert "notes.md" in found
 
 
+def test_is_link_names_a_symlink_and_a_junction_and_nothing_else(tmp_path):
+    from agent_system.utils.path_sandbox import is_link
+
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+    assert not is_link(folder) and not is_link(tmp_path / "file.txt")
+    assert not is_link(tmp_path / "not_there") and not is_link("nul\0byte")
+    try:
+        (tmp_path / "symlink").symlink_to(folder, target_is_directory=True)
+    except OSError:
+        pass  # Windows without the right to make one
+    else:
+        assert is_link(tmp_path / "symlink") and not is_link(tmp_path / "symlink" / "inside")
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(folder), str(tmp_path / "junction"))
+        assert is_link(tmp_path / "junction")
+
+
+def test_the_code_asks_for_junctions_in_a_way_python_3_11_has():
+    """Path.is_junction exists from 3.12: file_ops deleted, moved and renamed nothing on 3.11."""
+    src = Path(__file__).resolve().parents[2] / "src"
+    used = [str(py) for root in (src / "agent_system", src / "plugins") for py in root.rglob("*.py")
+            if "tests" not in py.parts and ".is_junction()" in py.read_text(encoding="utf-8", errors="replace")]
+    assert not used, used
+
+
 @pytest.mark.parametrize("call", ["delete_file", "delete_dir", "delete_root", "move", "move_in", "rename"])
 def test_file_ops_will_not_delete_move_or_rename_a_secret(install, call):
     from plugins.file_ops.operations import FileOperations
