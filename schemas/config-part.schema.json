@@ -2952,6 +2952,18 @@
           "title": "Enabled",
           "type": "boolean"
         },
+        "enabled_with": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled With"
+        },
         "description": {
           "anyOf": [
             {

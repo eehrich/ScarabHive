@@ -1569,6 +1569,8 @@ An agent instance is a server entry (see the example under
 [Alternative: Configuration-Based Agents](#alternative-configuration-based-agents)):
 
 - **`enabled: true`** — the default is `false`, and it is checked on the entry itself, not inherited.
+- **`enabled_with: <server>`** — on only while that server is, so a plugin's agents follow the plugin's one switch. The
+  entry's own `enabled: false` still holds; a name no server has leaves it off, with a warning.
 - **`metadata.visibility`** — `private` (default: neither tool nor UI), `tool`
   or `both` (callable as a tool by other agents), `ui` or `both` (listed in the UI).
   Display only: it hides an agent, it does not stop anyone who knows its name.

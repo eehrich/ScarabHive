@@ -296,7 +296,7 @@ def discover_plugins(path: Path, taken: dict[str, str] | None = None) -> Dict[st
         out[name] = factory
 
     for p in path.glob("*.py"):
-        if p.name == "__init__.py":
+        if p.name in ("__init__.py", "conftest.py"):
             continue
         if _held_elsewhere(taken, p.stem, root):
             continue
@@ -844,7 +844,9 @@ def warn_unknown_hook_overrides(settings: Any, registry: Any = None) -> List[str
             continue
         agent_hooks = getattr(agent_config, "hooks", None)
         for key in (getattr(agent_hooks, "overrides", None) or {}):
-            if key not in hook_names:
+            # a server that is configured and off: its hook is not there, and nothing is misspelled
+            owner = servers.get(key.rsplit(".", 1)[0])
+            if key not in hook_names and (owner is None or getattr(owner, "enabled", False)):
                 unknown_agent_keys.setdefault(key, []).append(server_name)
     for key, agents in sorted(unknown_agent_keys.items()):
         warnings.append(

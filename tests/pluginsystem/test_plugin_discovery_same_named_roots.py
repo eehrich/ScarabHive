@@ -83,6 +83,16 @@ def test_a_folder_with_no_plugin_in_the_first_root_blocks_nothing(roots):
     assert plugins[f"{PROBE}_elsewhere"].origin == "two"
 
 
+def test_a_roots_conftest_is_no_plugin(tmp_path, monkeypatch):
+    """A root's tests may have a conftest.py beside its plugins: the app must not run it, and it imports pytest."""
+    monkeypatch.setattr(discovery, "discover_entrypoint_plugins", lambda group: {})
+    ran = tmp_path / "conftest_ran"
+    (tmp_path / "conftest.py").write_text(f"open({str(ran)!r}, 'w').close()\n", encoding="utf-8")
+    (tmp_path / "tool.py").write_text("class Tool:\n    pass\n\n\nPLUGIN_FACTORY = Tool\n", encoding="utf-8")
+    found = discovery.discover_plugins(tmp_path)
+    assert "tool" in found and "conftest" not in found and not ran.exists()
+
+
 def test_a_single_file_plugin_both_roots_have_stays_the_first_root_s(roots):
     one, two = roots
     for root, origin in ((one, "one"), (two, "two")):

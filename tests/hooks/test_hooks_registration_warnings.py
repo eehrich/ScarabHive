@@ -109,6 +109,21 @@ async def test_override_keys_that_match_no_hook_are_reported(tmp_path, monkeypat
     assert all("bad_agent" in w for w in warnings if "agent_config" in w), warnings
 
 
+def test_a_hook_of_a_server_that_is_off_is_no_misspelling():
+    from agent_system.config.models import AgentSystemConfig
+
+    def overrides(owner_on):
+        hooks = {"overrides": {"tracker.report": {"enabled": True}, "tracker.reprot": {"enabled": True}, "gone.report": {"enabled": True}}}
+        return AgentSystemConfig(plugins={"servers": {
+            "tracker": {"type": "tracker", "enabled": owner_on},
+            "worker": {"type": "basic_agent", "enabled": True, "agent_config": {"hooks": hooks}}}})
+
+    registry = HookRegistry(default_timeout=30.0)
+    said = lambda settings: sorted(w.split("'")[1] for w in warn_unknown_hook_overrides(settings, registry))  # noqa: E731
+    assert said(overrides(False)) == ["gone.report"], "off: nothing is misspelled; a server nobody has still is"
+    assert said(overrides(True)) == ["gone.report", "tracker.report", "tracker.reprot"], "on: a hook it lacks is said"
+
+
 async def test_an_override_warning_is_logged_once_per_process(monkeypatch, caplog):
     from agent_system.config.models import AgentSystemConfig
     from agent_system.plugins import discovery

@@ -1621,6 +1621,24 @@ def offering_config(tmp_path, **machines):
         "off": ToolServerConfig(type="stategraph", enabled=False, machine_dirs=[str(tmp_path / "other")])}))
 
 
+def test_a_machine_of_a_plugin_that_is_off_offers_no_agent(tmp_path):
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, ToolServerConfig
+    from plugins.stategraph.facade import offered_servers
+
+    machines = tmp_path / "tracker" / "machines"
+    machines.mkdir(parents=True)
+    (machines / "helper.yaml").write_text(OFFERED, encoding="utf-8")
+
+    def offered(**tracker):
+        servers = {"stategraph": ToolServerConfig(type="stategraph", enabled=True, machine_dirs=[str(machines)]), **tracker}
+        return set(offered_servers(AgentSystemConfig(plugins=PluginsConfig(servers=servers))))
+
+    named = offered()
+    assert named, "no server of that name: the folder decides nothing"
+    assert offered(tracker=ToolServerConfig(type="tracker", enabled=False)) == set()
+    assert offered(tracker=ToolServerConfig(type="tracker", enabled=True)) == named
+
+
 def test_a_machine_with_an_agent_block_is_offered_as_the_entry_it_stands_for(tmp_path):
     from plugins.stategraph.facade import offered_servers
 

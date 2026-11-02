@@ -36,6 +36,7 @@ import asyncio
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional, Union
 
 from agent_system.core.cancellation import get_cancellation_manager
@@ -508,6 +509,8 @@ def offered_servers(system_config: Any) -> dict[str, dict[str, Any]]:
         except Exception:  # an entry that does not resolve: the runtime reports it
             continue
         for machine in MachineStore(roots, ()).list():
+            if plugin_is_off(machine.path, servers):
+                continue
             try:  # read as the loader reads it (YAML 1.2, duplicate keys refused), bounded before anything expands
                 text = machine.path.read_text(encoding="utf-8")
                 if not top_level_agent.search(text) and not text.lstrip("\ufeff \t\r\n").startswith("{"):
@@ -522,6 +525,15 @@ def offered_servers(system_config: Any) -> dict[str, dict[str, Any]]:
             name, entry = agent_entry(spec, instance)
             offered.setdefault(name, entry)
     return offered
+
+
+def plugin_is_off(path: Path, servers: dict[str, Any]) -> bool:
+    """Whether a machine file lies in a plugin (``<plugin>/machines/...``) whose server of that name is off: its agent
+    goes with the plugin, as the plugin's other agents do. A folder no server is named after decides nothing."""
+    parts = path.parts
+    folder = next((parts[at - 1] for at in range(len(parts) - 1, 0, -1) if parts[at] == "machines"), "")
+    owner = servers.get(folder)
+    return owner is not None and not owner.enabled
 
 
 def config_problems(server_config: Any) -> list[str]:

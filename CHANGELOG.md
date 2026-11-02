@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bindings hold a sub-agent's -- an agent that runs bound in production (a coding CLI workdir that pins a store
   namespace refuses a run without) can be measured. `agent-run`'s `run_agent_request` and `collect_final_result` pass
   a run's bindings on to `run_events`.
+- A server entry may say `enabled_with: <server>`: it is on only while that server is, so a plugin's agents go on and
+  off with the plugin, by one switch.
 - Released panels: people who are not admins are offered the panels the admins release in the new admin panel
   "User view", in the launcher and the palette; the chat stays the same for everyone. A panel may have a simple and an
   admin view: everyone starts simple, admins switch and keep their choice (`PUT /api/ui/view/mode`). `GET /api/ui/view`,

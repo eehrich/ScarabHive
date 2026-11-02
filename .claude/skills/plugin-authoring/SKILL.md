@@ -93,7 +93,8 @@ Every link must hold; almost every one fails **silently**:
    `src/plugins` and every further `src/plugins_<name>` root).
 2. An entry `plugins: servers: <instance>: {type: <folder name>, enabled: true}` —
    `enabled` defaults to **false** and is checked on the **raw** entry, not the
-   inherited one. The entry may live in any included file (`config.yaml` includes
+   inherited one; `enabled_with: <server>` keeps it off while that server is off, so a
+   plugin's agents follow the plugin's one switch. The entry may live in any included file (`config.yaml` includes
    `plugins.yaml`, `agents*/*.yaml`, `../src/plugins*/*/agents/*.yaml`). A top-level
    `agents:` key is silently ignored; a broken YAML file is skipped entirely.
 3. The agent allows it in `agent_config.tools.allowed`. Empty = nothing allowed.

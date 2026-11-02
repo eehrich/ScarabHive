@@ -8,10 +8,14 @@ resolves is the agent's side of that contract, checked by AgentConfig.
 """
 from __future__ import annotations
 
+import logging
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, ValidationInfo, model_validator
 from typing import Literal, Optional, Dict, List, Any
 
 from .llm import LLMModelConfig
+
+logger = logging.getLogger(__name__)
 
 
 # ===========================
@@ -504,6 +508,7 @@ class ToolServerConfig(BaseModel):
 
     type: str = "basic_agent"   # type of tool-server/agent to use
     enabled: bool = False       # enable or disable this tool-server/agent
+    enabled_with: Optional[str] = None  # the server this one belongs to: on only while that one is
     description: Optional[str] = None  # Human-readable description of this instance
     self_tool_descriptions: Optional[Dict[str, str]] = Field(default_factory=dict)  # Custom descriptions for this server's own tools
     agent_config: Optional[AgentConfig] = None
@@ -515,3 +520,20 @@ class PluginsConfig(BaseModel):
     plugin_dirs: List[str] = Field(default_factory=list)
     default_config: ToolServerConfig = Field(default_factory=ToolServerConfig)
     servers: Dict[str, ToolServerConfig] = Field(default_factory=dict)  # Named tool server configurations
+
+    @model_validator(mode="after")
+    def _follow_the_servers_they_belong_to(self) -> "PluginsConfig":
+        """A server with ``enabled_with`` is on only while the server it names is: a plugin's agents go on and off with
+        the plugin, by its one switch. Its own ``enabled: false`` still holds. Decided here, once, so whatever asks
+        ``enabled`` sees the result. A name no server has leaves it off, and is said."""
+        def on(name: str, seen: tuple[str, ...] = ()) -> bool:
+            server = self.servers.get(name)
+            if server is None or name in seen or not server.enabled:
+                return False
+            return not server.enabled_with or on(server.enabled_with, (*seen, name))
+
+        for name, server in self.servers.items():
+            if server.enabled_with and server.enabled_with not in self.servers:
+                logger.warning("Server '%s' is enabled with '%s', which no server is: it stays off", name, server.enabled_with)
+            server.enabled = on(name)
+        return self
