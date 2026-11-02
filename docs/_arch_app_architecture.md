@@ -52,7 +52,7 @@ the plugins' web routers.
 | `api/debug_endpoints.py` | `/debug/health`; `/debug/memory...` (admin, `AGENT_ENABLE_MEMORY_PROFILING=1`); `/debug/profile...` (admin, `AGENT_ENABLE_PROFILING=1`) |
 | `api/question_routes.py` | `question_router`: the `/answer` and `/pending` routes a plugin mounts when it asks the person (ask_user, tool_approval) |
 | `api/dependencies.py` | `get_agent`, `get_config`, `get_session_manager`, `get_tool_registry` for `Depends` |
-| `ui/routes.py` | `/ui/...`, the panel catalog `/api/ui/catalog`, help |
+| `ui/routes.py` | `/ui/...`, the panel catalog `/api/ui/catalog`, the views `/api/ui/view`, `/api/ui/user-view` (`ui/views.py`), help |
 
 The session, auth and admin routers are included only when `auth.enabled` is
 true. The app's own routers come after them, in the order their routes were

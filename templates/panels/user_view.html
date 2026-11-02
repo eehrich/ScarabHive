@@ -1,0 +1,47 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon, skeleton %}
+{% block title %}User view{% endblock %}
+{% block toolbar %}
+<span class="pk-badge" title="Only admins see and change this">{{ icon('lock', size='sm') }} Admins only</span>
+<button type="button" class="pk-btn pk-btn--primary" id="save" disabled>{{ icon('save', size='sm') }} Save</button>
+{% endblock %}
+{% block content %}
+<div class="pk-callout pk-callout--info">{{ icon('info', size='sm') }} People who are not admins always see the simple
+  view: the panels chosen here and, in the composer, topics instead of agents and models. Admins see everything and can
+  switch to the simple view in their account menu. A view is what is shown, not a right: who may open a panel by its
+  address still may.</div>
+<div id="stale"></div>
+<div class="pk-split uv-split">
+  <div class="pk-stack">
+    <section class="pk-card pk-stack">
+      <div class="pk-card-head"><h3 class="pk-card-title pk-grow">1 · Panels users see</h3><span class="pk-muted" id="panelCount"></span></div>
+      <p class="pk-help">Only panels a user may open are offered. They appear in the launcher, the search and on the start page.</p>
+      <div id="panels">{{ skeleton(6) }}</div>
+    </section>
+    <section class="pk-card pk-stack">
+      <div class="pk-card-head"><h3 class="pk-card-title pk-grow">2 · Topics instead of agents</h3>
+        <button type="button" class="pk-btn pk-btn--sm" id="addTopic">{{ icon('plus', size='sm') }} Add topic</button></div>
+      <p class="pk-help">Users pick a topic and Quick or Thorough. Here you choose the agent behind it and the model profile for each.
+        "Default" is the default agent, "Agent's own" the agent's own profile.</p>
+      <div id="topics"></div>
+    </section>
+    <section class="pk-card pk-stack">
+      <div class="pk-card-head"><h3 class="pk-card-title">3 · Not in the simple view</h3></div>
+      <p class="pk-help">A view is what is shown, not a right: the buttons for these are not there, and the rights stay
+        as they are -- the composer's <code class="pk-mono">/agent</code> and <code class="pk-mono">/think</code> still
+        work. Restarting the server and the admin panels stay refused to anyone who is no admin.</p>
+      <div class="pk-row uv-locked">
+        <span class="pk-badge">{{ icon('lock', size='sm') }} Restart and stop the server</span>
+        <span class="pk-badge">{{ icon('lock', size='sm') }} Choosing agents, model profiles and thinking</span>
+        <span class="pk-badge">{{ icon('lock', size='sm') }} Panels only admins may open (Users, Setup, Logs, …)</span>
+      </div>
+    </section>
+  </div>
+  <aside class="pk-card pk-stack" aria-label="Preview">
+    <div class="pk-card-head"><h3 class="pk-card-title">What users see</h3></div>
+    <div id="preview"></div>
+  </aside>
+</div>
+{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/js/panels/user_view.css">{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/panels/user_view.js"></script>{% endblock %}

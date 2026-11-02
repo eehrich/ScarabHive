@@ -414,3 +414,25 @@ label.question-choice {
 @media (prefers-reduced-motion: reduce) {
   [data-style="apple"] .composer-select:active:not(:disabled) { transform: none; }
 }
+
+/* the simple view (shell/simple.js): topics and Quick or Thorough in place of agent, model and thinking */
+.composer-topics { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; }
+.composer-topic-list { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.composer-topic { height: var(--control-h-sm); padding: 0 var(--space-3); border-radius: 999px; border: 1px solid var(--border-default);
+  background: transparent; font: 500 var(--text-xs)/1 var(--font-ui); color: var(--text-secondary); cursor: pointer; }
+.composer-topic:hover { background: var(--surface-3); color: var(--text-primary); }
+.composer-topic[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-subtle); color: var(--accent-text); }
+.composer-depth { display: inline-flex; padding: 2px; border-radius: var(--radius-md); background: var(--surface-3); }
+.composer-depth button { display: inline-flex; align-items: center; gap: var(--space-1); height: calc(var(--control-h-sm) - 4px);
+  padding: 0 var(--space-2); border: 0; border-radius: var(--radius-sm); background: transparent;
+  font: 500 var(--text-xs)/1 var(--font-ui); color: var(--text-secondary); cursor: pointer; }
+.composer-depth button[aria-pressed="true"] { background: var(--surface-2); color: var(--text-primary); box-shadow: var(--shadow-raised); }
+.composer-topic:focus-visible, .composer-depth button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-welcome-areas { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-2); }
+.chat-welcome-area { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--space-2); align-items: center; padding: var(--space-3);
+  text-align: left; color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg); cursor: pointer; }
+.chat-welcome-area:hover { border-color: var(--border-strong); }
+.chat-welcome-area > .pk-icon { color: var(--accent); }
+.chat-welcome-area span { grid-column: 2; font-size: var(--text-xs); color: var(--text-muted); }
+.chat-welcome-head { margin: var(--space-2) 0 0; font-size: var(--text-sm); color: var(--text-secondary); }

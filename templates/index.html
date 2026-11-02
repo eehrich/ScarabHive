@@ -31,7 +31,7 @@
       <button id="restartServerButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Restart the server: loads plugins, agents and skills anew" aria-label="Restart the server" hidden>{{ icon('rotate-ccw') }}</button>
       <button id="stopServerButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Stop the server" aria-label="Stop the server" hidden>{{ icon('power') }}</button>
       <button id="helpButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Help: the ScarabHive manual">{{ icon('circle-help') }}</button>
-      <button id="userButton" type="button" class="app-avatar" popovertarget="userMenu" title="Account"><span id="userInitials"></span></button>
+      <button id="userButton" type="button" class="app-avatar" popovertarget="userMenu" title="Account"><span id="viewLabel" class="app-view-label" hidden>Simple</span><span id="userInitials"></span></button>
     </div>
   </header>
 
@@ -94,6 +94,7 @@
 
   <div id="userMenu" class="pk-menu" popover>
     <div class="pk-menu-label" id="userMenuName"></div>
+    <div id="viewMenu"></div>
     <div class="app-theme-choice" role="group" aria-label="Theme">
       <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" data-theme-choice="light" aria-pressed="false">{{ icon('sun', size='sm') }} Light</button>
       <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" data-theme-choice="dark" aria-pressed="false">{{ icon('moon', size='sm') }} Dark</button>

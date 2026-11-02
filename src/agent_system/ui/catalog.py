@@ -102,6 +102,10 @@ def core_panels(*, audit_enabled: bool, profiling_enabled: bool,
               "Every standard control in every state -- the reference for panel authors",
               ["components", "design", "tokens"], window={"width": 1000, "height": 720}),
     ]
+    panels.append(Panel("user_view", "User view", "/ui/panels/user_view", "users", "admin",
+                        "What people who are not admins see: the panels they get and the topics they ask about",
+                        ["simple", "mode", "view", "users", "topics", "workspace"], roles=["admin"],
+                        window={"width": 980, "height": 720}))
     if audit_enabled:
         panels.append(Panel("security_audit", "Security Audit", "/ui/panels/security_audit", "shield", "admin",
                             "Every request with who sent it and what it was answered",

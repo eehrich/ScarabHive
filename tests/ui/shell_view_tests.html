@@ -1,0 +1,142 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>The shell in the simple and the admin view</title>
+<style>body { margin: 0; } iframe { width: 1280px; height: 800px; border: 0; }</style></head>
+<body>
+<iframe id="shell" title="shell"></iframe>
+<script type="module">
+  // The real shell (index.html) against the shell tests' stub app; /__stub/view sets what GET /api/ui/view answers.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 15000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(40);
+    }
+  }
+  const frame = document.getElementById('shell');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const all = (selector) => [...doc().querySelectorAll(selector)];
+  const go = () => new Promise((resolve) => { frame.onload = resolve; frame.src = '/'; });
+  const setView = (view) => fetch('/__stub/view', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(view) });
+  const TOPICS = [{ id: 'tax', label: 'Tax question', hint: 'e.g. "What is due?"', agent: 'writer', quick: '', deep: 'think' }];
+  // opened again until it lists something: opened before the catalogue arrived, it would stay empty
+  const launcherIds = async () => {
+    const ids = await until('the launcher', () => {
+      if ($('#launcher').matches(':popover-open')) $('#launcher').hidePopover();
+      $('#launcherButton').click();
+      const items = all('#launcherList [data-panel]');
+      return items.length && items.map((el) => el.dataset.panel);
+    });
+    $('#launcher').hidePopover();
+    return ids;
+  };
+
+  await setView({ role: 'user', mode: 'simple', can_switch: false, panels: ['help', 'settings'], topics: TOPICS });
+  await go();
+
+  await check('a user gets the simple view: their panels, topics in the composer, no agent or model choice', async () => {
+    await until('the topics', () => $('[data-topics] [data-topic="tax"]'));
+    const ids = await launcherIds();
+    return ids.join() === 'help,settings' && $('#agentPicker').hidden && $('#modelPicker').hidden && $('#thinkButton').hidden
+      && doc().documentElement.dataset.uiMode === 'simple' && !$('#viewLabel').hidden
+      && frame.contentWindow.selectorModule.getCurrentAgent() === 'writer' && $('#task').placeholder.includes('What is due?');
+  });
+
+  await check('the start page shows their areas, and a tile opens the panel', async () => {
+    const tiles = await until('the areas', () => all('#chatWelcome [data-area]').length && all('#chatWelcome [data-area]'));
+    tiles.find((tile) => tile.dataset.area === 'help').click();
+    await until('the panel', () => $('#dock .app-dock-tabs [data-key]') || all('.app-dock-tabs .dock-tab').length);
+    return tiles.map((tile) => tile.dataset.area).join() === 'help,settings';
+  });
+
+  await check('the palette lists no agents and only their panels', async () => {
+    $('#paletteButton').click();
+    const input = await until('the palette', () => $('#paletteInput'));
+    input.value = 'writer';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(150);
+    const agents = all('#paletteList .palette-item').filter((item) => item.textContent.includes('Use this agent') || item.textContent.includes('Writes books'));
+    input.value = 'system';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(150);
+    const system = all('#paletteList .palette-item').some((item) => item.textContent.includes('Status with its reasons'));
+    $('#palette').close();
+    return agents.length === 0 && !system;
+  });
+
+  await check('the account menu tells a user who chose their view, and has no System', async () => {
+    const menu = $('#viewMenu');
+    return menu.textContent.includes('put together by your admins') && !menu.querySelector('[data-view-mode]')
+      && $('#userMenu [data-open-panel="system"]').hidden;
+  });
+
+  await check('a loaded session keeps the words of the simple view in the composer', async () => {
+    const win = frame.contentWindow;
+    await fetch('/__stub/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session_id: 's-simple', title: 'Asked before', has_children: false, agent_name: 'writer' }) });
+    await win.sessionManager.loadSessions();
+    await win.sessionManager.loadSession('s-simple');
+    await until('the session', () => win.chatModule.getCurrentSessionId() === 's-simple');
+    const words = $('#task').placeholder;
+    await win.sessionManager.newConversation();
+    return words.includes('What is due?');
+  });
+
+  await check('a first message on its way counts as a session: another topic starts a new chat', async () => {
+    const win = frame.contentWindow;
+    let news = 0;
+    const counted = () => { news += 1; };
+    win.addEventListener('session:new', counted);
+    const running = win.chatModule.hasActiveRequest;
+    win.chatModule.hasActiveRequest = () => true;
+    $('[data-topic="tax"]').click();
+    win.chatModule.hasActiveRequest = running;
+    $('[data-topic="tax"]').click();
+    win.removeEventListener('session:new', counted);
+    return news === 1;
+  });
+
+  await check('/agent in the simple view: the new chat runs on the agent named, the bar says so', async () => {
+    const selector = frame.contentWindow.selectorModule;
+    $('#task').value = '/agent assistant';
+    $('#f').requestSubmit();
+    await until('the bar on that agent', () => $('[data-topic-other]')?.textContent === 'assistant');
+    await sleep(200);
+    const stayed = selector.getCurrentAgent() === 'assistant';
+    $('[data-topic="tax"]').click();
+    return stayed && selector.getCurrentAgent() === 'writer' && !$('[data-topic-other]');
+  });
+
+  await setView({ role: 'admin', mode: 'admin', can_switch: true, panels: null, topics: TOPICS });
+  await go();
+
+  await check('an admin sees everything as before, and may switch to the simple view', async () => {
+    await until('the agents', () => frame.contentWindow.selectorModule?.agents().length);
+    const ids = await launcherIds();
+    return ids.length > 2 && !$('#agentPicker').hidden && !$('[data-topics]') && $('#viewLabel').hidden
+      && $('#viewMenu [data-view-mode="admin"]').getAttribute('aria-pressed') === 'true'
+      && $('#viewMenu [data-open-panel="user_view"]') !== null && !$('#userMenu [data-open-panel="system"]').hidden;
+  });
+
+  await check('a switch to the simple view is told to the server', async () => {
+    const before = await (await fetch('/__stub/view')).json();
+    $('#viewMenu [data-view-mode="simple"]').click();
+    await until('reloaded in the simple view', () => doc()?.documentElement?.dataset.uiMode === 'simple');
+    const put = await (await fetch('/__stub/view-puts')).json();
+    return before.mode === 'admin' && put.join() === 'simple';
+  });
+
+  await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
+</script>
+</body>
+</html>

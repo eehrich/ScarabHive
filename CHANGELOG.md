@@ -29,13 +29,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bindings hold a sub-agent's -- an agent that runs bound in production (a coding CLI workdir that pins a store
   namespace refuses a run without) can be measured. `agent-run`'s `run_agent_request` and `collect_final_result` pass
   a run's bindings on to `run_events`.
+- A simple and an admin view of the shell: people who are not admins see
+  the panels the admins chose (launcher, palette, start page tiles) and, in
+  the composer, topics in plain words with Quick or Thorough instead of the
+  agent, model profile and thinking choice. Admins see everything and switch
+  to the simple view in the account menu; the new admin panel "User view"
+  sets the panels and the topics (agent, profile for Quick and Thorough).
+  `GET /api/ui/view`, `PUT /api/ui/view/mode`, `GET/PUT /api/ui/user-view`,
+  `data/ui/views.json`. A view is what is shown, not a right.
 - AI tasks of a panel (`agent_system/plugins/agent_tasks.py`, `static/kit/ai-tasks.js`): a plugin names the work an
   agent may take on, an admin chooses per task whether an agent does it and which one, and a person starts it from
   the panel. The run goes through `/run` as that person, so every gate applies; the panel follows it in a side sheet
   (what the agent says and calls, its result) and a person answers the agent there. One run per session at a time.
 - Run events (`agent_system/run_events.py`, `docs/run_events.md`): every agent run a panel starts says what it does --
   its state, its step in plain words, a sign of life every few seconds -- kept in `data/run_events/run_events.db` and
-  streamed (`GET /api/agent-runs/stream`, Server-Sent Events) to the shell and the panels; one stream per browser tab.
+  streamed (`GET /api/agent-runs/stream`, Server-Sent Events) to the shell and the panels; one stream for every
+  page of the origin (a SharedWorker, `static/kit/run-events-worker.js`; without one, one per tab), opened anew when
+  another account signs in.
   A run whose process ended (a restart, a crash) is ended as failed when the next process opens the store, so none
   stays at work for good. Heartbeats are sent, not kept.
 - The agents at work in the shell's head: a pill counts the runs, says what the newest one does and warns when one

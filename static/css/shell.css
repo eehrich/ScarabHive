@@ -386,3 +386,14 @@ body.app {
 @media (max-width: 960px) {
   [data-style="apple"] .app-window { border-radius: 0; }
 }
+
+/* the simple view (simple.js): the avatar says so, the account menu switches, the composer asks by topic */
+.app-avatar:has(.app-view-label:not([hidden])) { width: auto; padding: 0 var(--space-2); border-radius: 14px; gap: var(--space-1); }
+.app-view-label { font-weight: 500; color: var(--text-secondary); }
+.app-view-menu { display: grid; gap: var(--space-1); padding: var(--space-1) var(--space-2) var(--space-2); max-width: 260px; }
+.app-view-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 2px; border-radius: var(--radius-md); background: var(--surface-3); }
+.app-view-switch button { height: var(--control-h-sm); border: 0; border-radius: var(--radius-sm); background: transparent;
+  font: 500 var(--text-sm)/1 var(--font-ui); color: var(--text-secondary); cursor: pointer; }
+.app-view-switch button[aria-pressed="true"] { background: var(--surface-2); color: var(--text-primary); box-shadow: var(--shadow-raised); }
+.app-view-note { font-size: var(--text-xs); color: var(--text-muted); }
+.app-view-menu .pk-menu-label { padding: 0; }

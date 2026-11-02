@@ -95,11 +95,20 @@ Each person reads their own runs (auth off: everyone is `local`).
 | A question of the agent, in the sheet | The question, its options (radio, or checkboxes where several fit), a field for own words, how long it waits; "Answer" posts to `answer_url`. What is picked and typed survives the redraws. The badge reads "has a question". | `static/kit/ai-tasks.js` (`questionView`) |
 | The shell's pill | "1 needs you" beside the agents at work; a click leads to the run that needs the person first. A bell beside it asks once to allow notifications; then a run that comes to need its person (or ends) while they look elsewhere is told as a system notification. | `static/js/shell/agent_runs.js` |
 
-Both follow the stream through `static/kit/run-events.js`: one `EventSource`
-per browser tab, the shell's, which the panels framed in it share (a browser
-allows about six connections per host); a panel that joins gets the runs as
-they stand, the last one to let go closes it, and one the browser gave up for
-good is opened anew. The browser reconnects and sends `Last-Event-ID` by itself. The sheet keeps
+Both follow the stream through `static/kit/run-events.js`: ONE `EventSource`
+for every page of the origin, held by the SharedWorker
+`static/kit/run-events-worker.js` -- the shell, its panel frames and a panel
+in a tab of its own. A stream holds one of the browser's six HTTP/1.1
+connections per host for good: with one per page, the shell and five panels
+left none, and a panel opened in a new tab got its page but no data. Without a
+SharedWorker the panels framed in a tab share the shell's stream. A page that
+joins gets the runs as they stand (`GET /api/agent-runs`), the last one to let
+go closes it, one the browser gave up for good is opened anew, and a page the
+back/forward cache brings back follows again. The stream is the account's that
+opened it: the worker asks `/auth/me` before it lets a page in, and when
+someone else is signed in now (a log-out in one tab while another stays open)
+it opens the stream anew -- one account's runs never reach the next. The
+browser reconnects and sends `Last-Event-ID` by itself. The sheet keeps
 asking its plugin as before, so it works without the stream too; the stream
 makes a step appear the moment it is said and tells an end at once. The
 running time is written into its place every second and never redraws the

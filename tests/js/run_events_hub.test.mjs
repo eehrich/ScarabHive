@@ -78,4 +78,45 @@ fire(topHandlers, 'pageshow', { persisted: true });   // and back
 sources.at(-1).say({ run_id: 'r9', type: 'run.step' });
 assert.equal(seen.shell.at(-1), 'r9', 'a page the back/forward cache brings back follows again');
 again.close();
+// A SharedWorker whose script does not load tells only the object nobody kept: the page falls back to the tab's stream.
+const workers = [];
+globalThis.SharedWorker = class {
+  constructor(url) { this.url = url; this.port = { start() {}, postMessage() {}, close() { this.closed = true; } }; workers.push(this); }
+};
+const before = sources.length;
+const viaBrokenWorker = [];
+const followed = followRuns({ onEvent: (e) => viaBrokenWorker.push(e.run_id) });
+assert.equal(workers.length, 1, 'a SharedWorker goes first');
+assert.equal(sources.length, before, 'with a worker the page opens no stream of its own');
+workers[0].onerror({});
+assert.equal(workers[0].port.closed, true, 'the broken one is let go');
+sources.at(-1).say({ run_id: 'r10', type: 'run.step' });
+assert.deepEqual(viaBrokenWorker, ['r10'], 'its script did not load: the page follows the stream of the tab after all');
+followed.close();
+
+// A script that fails to load after the page let go: nobody is left to follow.
+const quiet = [];
+const closedFirst = followRuns({ onEvent: (e) => quiet.push(e.run_id) });
+closedFirst.close();
+const afterClose = sources.length;
+workers.at(-1).onerror({});
+assert.equal(sources.length, afterClose, 'a closed handle opens no stream');
+sources.at(-1).say({ run_id: 'r-after-close', type: 'run.step' });
+assert.deepEqual(quiet, [], 'and joins none: it hears nothing');
+const hidden = [];
+const hiddenFirst = followRuns({ onEvent: (e) => hidden.push(e.run_id) });
+const hiddenWorker = workers.at(-1);
+fire(topHandlers, 'pagehide', { persisted: true });
+hiddenWorker.onerror({});
+assert.equal(sources.length, afterClose, 'nor does a page gone into the back/forward cache');
+sources.at(-1).say({ run_id: 'r-hidden', type: 'run.step' });
+assert.deepEqual(hidden, [], 'it hears nothing while it is away');
+fire(topHandlers, 'pageshow', { persisted: true });
+assert.equal(sources.length, afterClose, 'back again it takes a worker, and only that');
+assert.equal(workers.at(-1) !== hiddenWorker, true);
+workers.at(-1).onerror({});
+sources.at(-1).say({ run_id: 'r11', type: 'run.step' });
+assert.deepEqual(hidden, ['r11'], 'its script failing too, the tab\'s stream, one delivery');
+hiddenFirst.close();
+delete globalThis.SharedWorker;
 console.log('run events hub: ok');

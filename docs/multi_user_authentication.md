@@ -961,8 +961,26 @@ web_ui:
 
 Plugins contribute panels to the web UI. The shell loads the panel catalogue from `GET /api/ui/catalog`: the core panels plus the `web_ui.panel` block of every registered web plugin, filtered by the viewer's role. The launcher, the command palette and the context links in the chat all read this list.
 
-- **Account Menu**: the avatar in the header opens a menu with the user's name and role, Settings, System and Log out
+- **Account Menu**: the avatar in the header opens a menu with the user's name and role, the view (below), Settings, System (admin view only) and Log out
 - **Role-Based Filtering**: a plugin panel is listed for the roles that may open its endpoint -- the same rules in `config/security.yaml` (included by `config/config.yaml`) that guard the plugin's routes decide, app-wide `auth.endpoint_security` and `auth.plugin_security` together, so an admin-only route (like the `endpoint_rules` entry for `/plugins/user_management/*`) is an admin-only panel. With authentication disabled the viewer counts as admin and sees every panel
+
+### Simple and admin view
+
+The role decides what someone may do; the view decides what they see of it (`ui/views.py`, `static/js/shell/simple.js`).
+
+- **Admins** see everything -- every panel, the agent, model profile and thinking choice, the server buttons -- and switch
+  to the **simple view** in the account menu to see what their users see (`PUT /api/ui/view/mode`, kept per admin).
+- **Every other role** always sees the simple view: the panels the admins chose (launcher, palette, the start page's
+  tiles), and in the composer **topics** in plain words with **Quick** or **Thorough** in place of the agent, model and
+  thinking choice. A topic names the agent behind it and the model profile for each depth; Thorough also asks for the
+  thinking level `high`.
+- **What the simple view shows** is set by admins in the **User view** panel (`/ui/panels/user_view`,
+  `GET/PUT /api/ui/user-view`): only panels a user may open are offered. Until someone chooses, the to-dos, help and
+  settings are shown, as far as they are installed. Kept in `data/ui/views.json`.
+- `GET /api/ui/view` answers the viewer's view: `{role, mode, can_switch, panels, topics}` (`panels: null` = everything).
+- A view is what is shown, not a right: a user may still open a panel their role admits by its address, the composer's
+  `/agent` and `/think` still work, and an agent's role gate (`min_role`) holds as before: a topic on an agent the
+  viewer may not run is not told to them. Without authentication the owner is an admin.
 
 ### Authentication Flow in Web UI
 

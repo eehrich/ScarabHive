@@ -7,6 +7,7 @@ import { Palette } from './palette.js';
 import { Picker } from './picker.js';
 import { ServerControls } from './server.js';
 import { AgentRunsPill } from './agent_runs.js';
+import { FULL_VIEW, TopicBar, loadView, shownCatalog, shownPanels, simpleWelcome, switchView, viewMenu } from './simple.js';
 
 const SESSIONS_OPEN_KEY = 'scarabhive.sessionsOpen';
 const SESSIONS_WIDTH_KEY = 'scarabhive.sessionsWidth';
@@ -21,6 +22,8 @@ const narrow = () => getComputedStyle($('sessionsPane')).position === 'fixed';
 let catalog = { categories: [], panels: [], failed: false };
 let activeSession = null;
 let user = null;
+/** What this viewer sees: the admin view (everything) or the simple one (simple.js) */
+let view = { ...FULL_VIEW };
 
 // ------------------------------------------------------------------ auth
 
@@ -46,6 +49,12 @@ function showUser() {
   $('userInitials').textContent = name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
   $('userMenuName').textContent = user ? `${name} · ${user.role}` : name;
   $('logoutButton').hidden = !user;
+  $('viewLabel').hidden = view.mode !== 'simple';
+  $('userButton').title = view.mode === 'simple' ? 'Account · simple view' : 'Account';
+  render($('viewMenu'), viewMenu(view));
+  // the system's status is the admins' business: the simple view leaves it out of the menu
+  const system = $('userMenu').querySelector('[data-open-panel="system"]');
+  if (system) system.hidden = view.mode === 'simple';
 }
 
 // ----------------------------------------------------------------- theme
@@ -88,6 +97,10 @@ function showWelcome(sessions) {
   const chat = $('chat');
   if (chat.children.length && !(chat.children.length === 1 && $('chatWelcome'))) return;
   const recent = sessions.slice(0, 6);
+  if (view.mode === 'simple') {
+    render(chat, simpleWelcome(shownPanels(catalog, view), recent));
+    return;
+  }
   render(chat, html`
     <section class="chat-welcome" id="chatWelcome">
       <div class="chat-welcome-brand">
@@ -251,18 +264,19 @@ function paletteEntries(sessions) {
     ...THEMES.map((theme) => ({ group: 'Actions', icon: THEME_ICONS[theme], label: `Theme: ${theme}`, keywords: ['appearance'], run: () => applyTheme(theme) })),
     ...STYLES.map((style) => ({ group: 'Actions', icon: 'layers', label: `Style: ${style}`, keywords: ['appearance', 'look', 'design'], run: () => applyStyle(style) })),
   ];
-  if (user?.role === 'admin') {
+  if (user?.role === 'admin' && view.mode === 'admin') {
     entries.push({ group: 'Actions', icon: 'rotate-ccw', label: 'Restart server', hint: 'Loads plugins, agents and skills anew',
       keywords: ['reload', 'plugins', 'agents', 'skills'], run: () => server.restart() });
     entries.push({ group: 'Actions', icon: 'power', label: 'Stop server', keywords: ['shutdown', 'quit'], run: () => server.stop() });
   }
   if (user) entries.push({ group: 'Actions', icon: 'log-out', label: 'Log out', run: logout });
   const groups = new Set();
-  catalog.panels.forEach((p) => {
+  const listed = shownPanels(catalog, view);
+  listed.forEach((p) => {
     // Instances of one plugin: listed once, the pick among them comes with typing.
     if (p.group && !groups.has(p.group)) {
       groups.add(p.group);
-      const count = catalog.panels.filter((other) => other.group === p.group).length;
+      const count = listed.filter((other) => other.group === p.group).length;
       entries.push({ group: 'Panels', icon: p.icon, label: p.group, hint: `${count} instances`, refine: p.group });
     }
     entries.push({
@@ -270,7 +284,8 @@ function paletteEntries(sessions) {
       instance: Boolean(p.group), run: () => launcher.open(p.id),
     });
   });
-  window.selectorModule.agents().forEach((agent) => entries.push({
+  // the simple view chooses agents by topic, in the composer
+  if (view.mode === 'admin') window.selectorModule.agents().forEach((agent) => entries.push({
     group: 'Agents', icon: 'workflow', label: agent.name, hint: agent.description || 'Use this agent',
     keywords: ['agent', agent.category, ...(agent.tags || [])].filter(Boolean),
     run: () => window.selectorModule.setAgent(agent.name),
@@ -295,6 +310,8 @@ let launcher;
 
 async function start() {
   user = await whoAmI();
+  view = await loadView(user);
+  document.documentElement.dataset.uiMode = view.mode;
   showUser();
 
   workspace = new Workspace({
@@ -319,7 +336,8 @@ async function start() {
     onListChange: (list) => { if ($('chatWelcome')) showWelcome(list); },
   });
   window.sessionManager = sessions;  // the chat and unmigrated plugin panels call it
-  launcher = new Launcher({ catalog: () => catalog, open: (id, options) => workspace.open(id, options) });
+  // the launcher lists what the view shows; the workspace knows every panel the viewer may open (a link, a restore)
+  launcher = new Launcher({ catalog: () => shownCatalog(catalog, view), open: (id, options) => workspace.open(id, options) });
   const palette = new Palette(() => paletteEntries(sessions));
 
   let stored = null;
@@ -355,6 +373,11 @@ async function start() {
     // a theme picked shows at once; the menu stays open, its choice marked
     const choice = event.target.closest('[data-theme-choice]');
     if (choice) return applyTheme(choice.dataset.themeChoice);
+    const mode = event.target.closest('[data-view-mode]');
+    if (mode && mode.getAttribute('aria-pressed') !== 'true') {
+      switchView(mode.dataset.viewMode).catch(() => { /* api() has said why */ });
+      return;
+    }
     const button = event.target.closest('[data-open-panel]');
     if (!button) return;
     $('userMenu').hidePopover();
@@ -365,7 +388,7 @@ async function start() {
     stopButton: $('stopServerButton'), restartButton: $('restartServerButton'), state: $('connectionState'),
     onBusy: (busy) => { serverBusy = busy; },
   });
-  server.show(user?.role === 'admin');  // without authentication there are no admin routes, and no buttons
+  server.show(user?.role === 'admin' && view.mode === 'admin');  // without authentication there are no admin routes, and no buttons
   // the agents at work, on every tab: a click opens the panel that started the newest one
   new AgentRunsPill({
     button: $('agentRunsPill'),
@@ -402,6 +425,11 @@ async function start() {
       sessions.loadSession(card.dataset.session);
       return;
     }
+    const area = event.target.closest('[data-area]');
+    if (area) {
+      launcher.open(area.dataset.area);
+      return;
+    }
     const requestId = event.target.closest('.message-request-id');
     if (requestId) contextMenu(requestId, 'request', { request_id: requestId.querySelector('span')?.textContent || '' });
   });
@@ -416,6 +444,15 @@ async function start() {
   const reattached = window.chatModule.init(selectors);
 
   await Promise.all([loadCatalog(), sessions.loadSessions(), pollHealth(), selectors, reattached]);
+  if ($('chatWelcome')) showWelcome(sessions.sessions);  // the areas need the catalogue
+  const topics = view.mode === 'simple'
+    ? new TopicBar({ bar: document.querySelector('.composer-bar'), setWords: (words) => window.chatModule.setComposerWords(words),
+        selector: window.selectorModule, topics: view.topics,
+        // a first message on its way is a session too, only not named yet
+        sessions: { active: () => Boolean(sessions.getCurrentSessionId()) || window.chatModule.hasActiveRequest(),
+          startNew: () => sessions.newConversation() } })
+    : null;
+  topics?.mount();
   workspace.restore();
   await sessions.restore();
   await openFromLink(sessions);

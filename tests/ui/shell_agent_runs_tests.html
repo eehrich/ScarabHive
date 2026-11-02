@@ -36,6 +36,7 @@
     static permission = 'default'; static async requestPermission() { Notification.permission = 'granted'; return 'granted'; } close() {} };
   let looking = true;
   document.hasFocus = () => looking;
+  window.SharedWorker = undefined;  // the stream of the page itself, which this stub stands in for
   window.EventSource = class { constructor(url) { this.url = url; window.stream = this; } close() { this.closed = true; } };
   let seq = 0;
   const say = (data) => window.stream.onmessage({ data: JSON.stringify(data) });

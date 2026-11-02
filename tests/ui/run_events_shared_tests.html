@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>run-events.js: the pages of the origin share one stream</title>
+</head>
+<body>
+<div id="frames"></div>
+<script type="module">
+  // followRuns() in this page and in eight frames, as the shell and its panels do, against a stream that counts how
+  // many are open (test_run_events_shared.py). The browser keeps six connections per host; one stream for all of them
+  // leaves the rest for the requests of a panel opened in a new tab.
+  import { followRuns } from '/static/kit/run-events.js';
+
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+  const stub = async (path, init) => (await fetch(path, init)).json();
+
+  /** A follower: what it was told, in a frame of its own or in this page. */
+  const followers = [];
+  const own = { snapshots: [], events: [] };
+  own.stream = followRuns({ onSnapshot: (runs) => own.snapshots.push(runs), onEvent: (event) => own.events.push(event) });
+  followers.push(own);
+  const FRAMES = 8;
+  const addFrame = () => {
+    const frame = document.createElement('iframe');
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');   // as the shell's panel frames
+    frame.srcdoc = `<script type="module">
+      import { followRuns } from '/static/kit/run-events.js';
+      window.told = { snapshots: [], events: [] };
+      window.stream = followRuns({ onSnapshot: (runs) => told.snapshots.push(runs), onEvent: (event) => told.events.push(event) });
+    <\/script>`;
+    document.getElementById('frames').appendChild(frame);
+    const follower = { get told() { return frame.contentWindow.told; }, frame };
+    followers.push(follower);
+    return follower;
+  };
+  for (let i = 0; i < FRAMES; i += 1) addFrame();
+  const toldOf = (f) => (f === own ? own : f.told);
+
+  await check('every page gets the runs as they stand, through one stream', async () => {
+    await until('a snapshot in every page', () => followers.every((f) => toldOf(f)?.snapshots.length >= 1));
+    const counts = await stub('/__stub/streams');
+    const runs = followers.map((f) => toldOf(f).snapshots.at(-1).map((r) => r.run_id).join());
+    return counts.max === 1 && counts.open === 1 && runs.every((ids) => ids === 'r1');
+  });
+
+  await check('an event reaches every page once', async () => {
+    await stub('/__stub/say', { method: 'POST' });
+    await until('the event in every page', () => followers.every((f) => toldOf(f).events.length >= 1));
+    await sleep(200);
+    return followers.every((f) => toldOf(f).events.length === 1 && toldOf(f).events[0].type === 'run.step');
+  });
+
+  await check('requests of the origin are not kept waiting by the streams', async () => {
+    const answers = await Promise.all([...Array(12)].map(() => stub('/__stub/streams')));
+    return answers.length === 12;
+  });
+
+  await check("a page of another account gets a stream of its own, never the last account's", async () => {
+    // the worker outlives a log-out in one tab while another stays open: the next account must not read on
+    const before = (await stub('/__stub/streams')).opened;
+    await stub('/__stub/login?user=alice', { method: 'POST' });
+    const alice = addFrame();
+    await until('the runs of alice', () => alice.told?.snapshots.at(-1)?.[0]?.run_id === 'r-alice');
+    const again = addFrame();   // the same account again: the stream it has
+    await until('a snapshot in the second page', () => again.told?.snapshots.length >= 1);
+    const sameStream = (await stub('/__stub/streams')).opened === before + 1;
+    await stub('/__stub/login?user=bob', { method: 'POST' });
+    const bob = addFrame();
+    await until('the runs of bob', () => bob.told?.snapshots.at(-1)?.[0]?.run_id === 'r-bob');
+    await stub('/__stub/say', { method: 'POST' });
+    await until('the event in the page of bob', () => bob.told.events.length >= 1);
+    await sleep(200);
+    const counts = await stub('/__stub/streams');
+    const bobSaw = [...bob.told.snapshots.flat().map((r) => r.run_id), ...bob.told.events.map((e) => e.who)];
+    // every page is told the new account's runs: the cookie the browser holds is bob's for every tab now
+    const ownTold = own.snapshots.at(-1)?.[0]?.run_id === 'r-bob';
+    return sameStream && counts.opened === before + 2 && counts.open === 1
+      && bobSaw.every((one) => one === 'r-bob' || one === 'bob') && ownTold;
+  });
+
+  await check('the stream ends when the last page stops following', async () => {
+    own.stream.close();
+    followers.slice(1).forEach((f) => f.frame.contentWindow.stream.close());
+    await until('no stream open', async () => (await stub('/__stub/streams')).open === 0);
+    return true;
+  });
+
+  await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
+</script>
+</body>
+</html>

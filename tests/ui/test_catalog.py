@@ -173,7 +173,7 @@ def test_a_role_restricted_panel_is_hidden_from_other_roles():
     as_user = {p["id"] for p in build_catalog("user", core, [users])["panels"]}
 
     assert {"users", "security_audit"} <= as_admin
-    assert as_admin - as_user == {"users", "security_audit"}
+    assert as_admin - as_user == {"users", "security_audit", "user_view"}
 
 
 def test_instances_of_one_plugin_are_told_apart_and_grouped():

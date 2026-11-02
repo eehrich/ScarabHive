@@ -1,5 +1,6 @@
 // What the agent runs say while they work (agent_system/run_events.py, docs/run_events.md): one stream of Server-Sent
-// Events for the tab, and the words to show a run's state in. Used by the panels' "Agent runs" sheet (ai-tasks.js)
+// Events for every page of the origin (run-events-worker.js; without a SharedWorker one per tab), and the words to show
+// a run's state in. Used by the panels' "Agent runs" sheet (ai-tasks.js)
 // and by the shell's status pill.
 //   GET /api/agent-runs/stream  -> first {type: "runs.snapshot", runs: [...]}, then each event, its SSE id the event_id
 // The browser reconnects by itself and sends Last-Event-ID; the server reads on from there.
@@ -63,11 +64,50 @@ export function isLong(run, now = Date.now()) {
   return !Number.isNaN(start) && ACTIVE.has(run.state) && now - start > LIVE.longMs;
 }
 
-/** The tab's one stream: the shell and every panel in it (frames of the same origin) share the top window's
- * connection. A browser allows about six connections per host and an open stream holds one for good -- a stream per
- * panel used them up, and every request after waited.
- * ponytail: one per tab, not per browser; several tabs of the app still hold one each (a SharedWorker would share
- * them, if that many tabs are ever usual). */
+/** A message of the stream to one listener. */
+function deliver(listener, text) {
+  let data;
+  try { data = JSON.parse(text); } catch { return; }
+  if (data.type === 'runs.snapshot') listener.onSnapshot?.(data.runs || []);
+  else if (data.run_id) listener.onEvent?.(data);
+}
+
+//: The worker's address: raise the number when what it and run-events.js say to each other changes -- a running
+//: SharedWorker keeps its old code while any tab is open, and a new address gets a new one.
+const WORKER = '/static/kit/run-events-worker.js?v=1';
+
+/** The origin's one stream, held by the SharedWorker run-events-worker.js for every page and frame of every tab: a
+ * browser allows about six connections per host and an open stream holds one for good -- a stream per page used them
+ * up, and a panel opened in a new tab got its page but none of its data. Null where there is no SharedWorker;
+ * `broken` is called when its script does not load. */
+function viaWorker(listener, broken) {
+  if (typeof SharedWorker === 'undefined') return null;
+  let worker;
+  try {
+    worker = new SharedWorker(WORKER, { name: 'run-events' });
+  } catch {
+    return null;  // not allowed here (a sandboxed frame, say): the tab's stream
+  }
+  worker.onerror = broken;
+  const { port } = worker;
+  port.onmessage = ({ data: message }) => {
+    if (message?.kind === 'data') deliver(listener, message.data);
+    else if (message?.kind === 'state') listener.onState?.(message.state);
+  };
+  port.start();
+  let open = true;
+  return {
+    close() {  // twice is once: pagehide, then the panel's own close
+      if (!open) return;
+      open = false;
+      port.postMessage({ kind: 'close' });
+      port.close();
+    },
+  };
+}
+
+/** Without a SharedWorker, the tab's one stream: the shell and every panel in it (frames of the same origin) share the
+ * top window's connection. */
 function streamHub() {
   let top = window;
   try {
@@ -90,12 +130,7 @@ function makeHub(win) {
     source = new win.EventSource('/api/agent-runs/stream');
     source.onopen = () => each((listener) => listener.onState?.('open'));
     source.onerror = () => each((listener) => listener.onState?.('lost'));
-    source.onmessage = (message) => {
-      let data;
-      try { data = JSON.parse(message.data); } catch { return; }
-      if (data.type === 'runs.snapshot') each((listener) => listener.onSnapshot?.(data.runs || []));
-      else if (data.run_id) each((listener) => listener.onEvent?.(data));
-    };
+    source.onmessage = (message) => each((listener) => deliver(listener, message.data));
   };
   return {
     add(listener) {
@@ -122,21 +157,36 @@ function makeHub(win) {
   };
 }
 
-/** Follow the stream: `onSnapshot(runs)` once per (re)connect without a known last event (and once on joining the
- * tab's open stream), `onEvent(event)` for each event, `onState('open'|'lost')`. Answers a handle whose close() lets
- * go of it, or null where there is no EventSource. */
+/** Follow the stream: `onSnapshot(runs)` once per (re)connect without a known last event (and once on joining a
+ * stream already open), `onEvent(event)` for each event, `onState('open'|'lost')`. Answers a handle whose close() lets
+ * go of it, or null where there is no stream (neither a SharedWorker nor an EventSource). */
 export function followRuns({ onSnapshot, onEvent, onState } = {}) {
-  if (typeof EventSource === 'undefined') return null;
   const listener = { onSnapshot, onEvent, onState };
-  let handle = streamHub().add(listener);
+  const tabStream = () => (typeof EventSource === 'undefined' ? null : streamHub().add(listener));
+  let handle = null;
+  let following = true;   // a script that fails to load after the page let go must not open a stream for nobody
+  const follow = () => viaWorker(listener, () => {
+    if (!following) return;
+    handle?.close();
+    handle = tabStream();
+  }) || tabStream();
+  handle = follow();
+  if (!handle) return null;
   // a page that goes lets go of the stream it shares; one the back/forward cache brings back follows again
-  const hide = () => handle.close();
-  const show = (event) => { if (event.persisted) handle = streamHub().add(listener); };
+  const hide = () => {
+    following = false;
+    handle?.close();
+  };
+  const show = (event) => {
+    if (!event.persisted) return;
+    following = true;
+    handle = follow();
+  };
   window.addEventListener('pagehide', hide);
   window.addEventListener('pageshow', show);
   return {
     close() {
-      handle.close();
+      hide();
       window.removeEventListener('pagehide', hide);
       window.removeEventListener('pageshow', show);
     },

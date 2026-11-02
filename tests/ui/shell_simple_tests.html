@@ -1,0 +1,218 @@
+<!doctype html>
+<html class="pk-root" data-theme="light" lang="en">
+<head><meta charset="utf-8"><title>simple.js: the simple view of the shell</title>
+<link rel="stylesheet" href="/static/kit/kit.css"><link rel="stylesheet" href="/static/css/chat.css"><link rel="stylesheet" href="/static/css/shell.css"></head>
+<body>
+<form class="composer"><textarea id="task" placeholder="Message the agent…"></textarea>
+  <div class="composer-bar"><button id="agentPicker" type="button">Agent</button><button id="modelPicker" type="button">Model</button>
+    <button id="thinkButton" type="button">Thinking</button><span class="pk-grow"></span></div></form>
+<div id="menu"></div><div id="welcome"></div>
+<script type="module">
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const realFetch = window.fetch.bind(window);
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const server = { view: null, put: [] };
+  window.fetch = async (path, init = {}) => {
+    const url = String(path);
+    if (url === '/api/ui/view') return server.view ? json(server.view) : json({ detail: 'Not Found' }, 404);
+    if (url === '/api/ui/view/mode' && init.method === 'PUT') { server.put.push(JSON.parse(init.body)); return json({ mode: 'x' }); }
+    return json({ detail: `not stubbed: ${url}` }, 404);
+  };
+  localStorage.clear();
+  const pk = await import('/static/kit/panel-kit.js');
+  const simple = await import('/static/js/shell/simple.js');
+
+  // the chat's selector as a stand-in: what the topic bar asks of it, and what it set
+  const calls = [];
+  let choice = { override: null, params: {} };
+  let agent = 'default';
+  const announce = (kind) => window.dispatchEvent(new CustomEvent('selector:change', { detail: { kind } }));
+  const selector = {
+    hasAgent: (name) => ['tax_advisor', 'default'].includes(name),
+    defaultAgent: () => 'default',
+    thinkingLevels: () => ['none', 'low', 'medium', 'high'],
+    setAgent: (name) => { calls.push(`agent:${name}`); agent = name; announce('agent'); },
+    getCurrentAgent: () => agent,
+    choice: () => choice,
+    setChoice: (next) => { calls.push(`choice:${next.override || '-'}:${next.params.thinking_level || '-'}`); choice = next; announce('profile'); },
+  };
+  const TOPICS = [
+    { id: 'tax', label: 'Tax question', hint: 'e.g. "What is due?"', agent: 'tax_advisor', quick: '', deep: 'think' },
+    { id: 'gone', label: 'Gone agent', hint: '', agent: 'no_such_agent', quick: '', deep: '' },
+    { id: 'text', label: 'Write a text', hint: '', agent: '', quick: 'chat', deep: 'think' },
+  ];
+  const catalog = { categories: [], panels: [
+    { id: 'help', title: 'Help', icon: 'circle-help', description: 'The manual' },
+    { id: 'tracker', title: 'Tracker', icon: 'shield', description: 'All open' },
+    { id: 'logs', title: 'Logs', icon: 'bug', description: 'Debug' },
+  ] };
+  let bar;
+  const setWords = (words) => { document.getElementById('task').placeholder = words; };
+
+  await check('without the view route the shell shows everything, as before there were views', async () => {
+    const view = await simple.loadView();
+    return view.mode === 'admin' && view.panels === null && simple.shownPanels(catalog, view).length === 3;
+  });
+
+  await check('when the server cannot say, an admin sees everything and anyone else the simple view', async () => {
+    const anon = await simple.loadView(null);
+    const admin = await simple.loadView({ role: 'admin' });
+    const user = await simple.loadView({ role: 'user' });
+    pk.render(document.getElementById('menu'), simple.viewMenu(admin));
+    const quietMenu = document.getElementById('menu').textContent.trim() === '';
+    return anon.mode === 'admin' && admin.mode === 'admin' && quietMenu
+      && user.mode === 'simple' && user.role === 'user' && !user.can_switch && user.panels === null && user.topics.length === 0;
+  });
+
+  await check('the simple view lists its panels in the order chosen, leaving out what the catalogue lacks', async () => {
+    server.view = { role: 'user', mode: 'simple', can_switch: false, panels: ['tracker', 'missing', 'help'], topics: TOPICS };
+    const view = await simple.loadView();
+    const shown = simple.shownCatalog(catalog, view);
+    return shown.panels.map((p) => p.id).join() === 'tracker,help' && catalog.panels.length === 3;
+  });
+
+  await check('in the composer, topics and Quick or Thorough take the place of agent, model and thinking', async () => {
+    bar = new simple.TopicBar({ bar: document.querySelector('.composer-bar'), setWords, selector, topics: TOPICS });
+    bar.mount();
+    const hidden = ['agentPicker', 'modelPicker', 'thinkButton'].every((id) => document.getElementById(id).hidden);
+    const labels = [...document.querySelectorAll('[data-topic]')].map((b) => b.textContent.trim());
+    return hidden && labels.join() === 'Tax question,Write a text' && document.querySelector('[data-topic="tax"]').getAttribute('aria-pressed') === 'true'
+      && agent === 'tax_advisor' && choice.override === null && !choice.params.thinking_level
+      && document.getElementById('task').placeholder.includes('What is due?');
+  });
+
+  await check('a topic picks its agent and profile quietly: the old choice is cleared before the agent changes', async () => {
+    calls.length = 0;
+    document.querySelector('[data-topic="text"]').click();
+    return calls.join(' ') === 'choice:-:- agent:default choice:chat:-' && document.querySelector('[data-topic="text"]').getAttribute('aria-pressed') === 'true'
+      && document.getElementById('task').placeholder === 'Ask in your own words…';
+  });
+
+  await check('Thorough takes the thorough profile and asks for more thinking; Quick goes back', async () => {
+    document.querySelector('[data-depth="deep"]').click();
+    const deep = choice.override === 'think' && choice.params.thinking_level === 'high';
+    document.querySelector('[data-depth="quick"]').click();
+    return deep && choice.override === 'chat' && !choice.params.thinking_level;
+  });
+
+  await check('the topic and depth chosen are there again on the next visit', async () => {
+    document.querySelector('[data-depth="deep"]').click();
+    document.querySelector('.composer-topics').remove();
+    const again = new simple.TopicBar({ bar: document.querySelector('.composer-bar'), setWords, selector, topics: TOPICS });
+    again.mount();
+    return document.querySelector('[data-topic="text"]').getAttribute('aria-pressed') === 'true'
+      && document.querySelector('[data-depth="deep"]').getAttribute('aria-pressed') === 'true' && choice.override === 'think';
+  });
+
+  await check('a loaded session is followed: the bar shows its agent and sets nothing, the next new chat the topic picked', async () => {
+    let active = true;
+    let newChats = 0;
+    document.querySelector('.composer-topics').remove();
+    agent = 'somebody_else';   // the session shown before the bar is there, with its own choice
+    choice = { override: 'own', params: { thinking_level: 'low' } };
+    calls.length = 0;
+    const sessions = { active: () => active, startNew: () => { newChats += 1; } };
+    const followed = new simple.TopicBar({ bar: document.querySelector('.composer-bar'), setWords, selector, topics: TOPICS, sessions });
+    followed.mount();   // on 'text', Thorough, from the check before
+    const kept = calls.length === 0 && agent === 'somebody_else' && choice.override === 'own'
+      && document.querySelector('[data-topic-other]').textContent === 'somebody_else';
+    const announceAgent = () => announce('agent');
+    const pressed = () => [...document.querySelectorAll('[data-topic][aria-pressed="true"]')].map((b) => b.dataset.topic).join();
+
+    calls.length = 0;
+    agent = 'tax_advisor';   // a session of that agent is restored
+    choice = { override: null, params: {} };
+    announceAgent();
+    const onItsTopic = pressed() === 'tax' && calls.length === 0
+      && document.querySelector('[data-depth="quick"]').getAttribute('aria-pressed') === 'true';
+
+    agent = 'somebody_else';   // no topic names this one
+    announceAgent();
+    const named = pressed() === '' && document.querySelector('[data-topic-other]').textContent === 'somebody_else' && calls.length === 0;
+
+    agent = 'tax_advisor';
+    announceAgent();
+    document.querySelector('[data-topic="tax"]').click();   // in the session: a new chat, the session keeps its agent
+    const moved = calls.some((call) => call.startsWith('agent:'));
+    const asked = newChats === 1 && !moved;
+
+    document.querySelector('[data-depth="deep"]').click();   // the depth stays in the session, on the agent it has
+    const deepInSession = !calls.some((call) => call.startsWith('agent:')) && choice.override === 'think' && agent === 'tax_advisor';
+
+    active = false;
+    window.dispatchEvent(new CustomEvent('session:new', { detail: { chosen: true } }));
+    const newChat = agent === 'tax_advisor' && pressed() === 'tax' && !document.querySelector('[data-topic-other]');
+    document.querySelector('[data-topic="text"]').click();
+    const picked = agent === 'default' && pressed() === 'text' && newChats === 1;
+    document.querySelector('[data-depth="deep"]').click();   // as the next check starts
+    return kept && onItsTopic && named && asked && deepInSession && newChat && picked;
+  });
+
+  await check('a new chat /agent asks for stays on that agent; the next one is the topic picked again', async () => {
+    const pressedTopic = () => document.querySelector('[data-topic][aria-pressed="true"]')?.dataset.topic;
+    agent = 'tax_advisor';
+    calls.length = 0;
+    window.dispatchEvent(new CustomEvent('session:new', { detail: { chosen: true, agentChosen: true } }));
+    const stayed = agent === 'tax_advisor' && calls.length === 0 && pressedTopic() === 'tax';
+    document.querySelector('[data-depth="deep"]').click();   // nor does the depth take it away
+    const keptOnDepth = agent === 'tax_advisor' && !calls.some((call) => call.startsWith('agent:'));
+    window.dispatchEvent(new CustomEvent('session:new', { detail: { chosen: true } }));
+    return stayed && keptOnDepth && agent === 'default' && pressedTopic() === 'text';
+  });
+
+  await check('what /think, /model and a rewind change, the depth buttons show', async () => {
+    const deepPressed = () => document.querySelector('[data-depth="deep"]').getAttribute('aria-pressed') === 'true';
+    document.querySelector('[data-depth="quick"]').click();
+    const quick = !deepPressed();
+    selector.setChoice({ override: null, params: { thinking_level: 'high' } });
+    const asked = deepPressed();
+    selector.setChoice({ override: 'think', params: {} });
+    const named = deepPressed();
+    selector.setChoice({ override: null, params: { thinking_level: 'low' } });
+    const back = !deepPressed();
+    document.querySelector('[data-depth="deep"]').click();   // as the next check starts
+    return quick && asked && named && back;
+  });
+
+  await check('Thorough holds with the storage full: the new chat goes on what was pressed', async () => {
+    document.querySelector('[data-depth="quick"]').click();
+    const realSet = Storage.prototype.setItem;
+    Storage.prototype.setItem = () => { throw new Error('full'); };
+    try {
+      document.querySelector('[data-depth="deep"]').click();
+      window.dispatchEvent(new CustomEvent('session:new', { detail: { chosen: true } }));
+    } finally { Storage.prototype.setItem = realSet; }
+    return choice.override === 'think' && choice.params.thinking_level === 'high'
+      && document.querySelector('[data-depth="deep"]').getAttribute('aria-pressed') === 'true';
+  });
+
+  await check('an admin switches the view in the account menu; a user is told who chose theirs', async () => {
+    pk.render(document.getElementById('menu'), simple.viewMenu({ mode: 'simple', can_switch: true }));
+    const menu = document.getElementById('menu');
+    const admin = menu.querySelector('[data-view-mode="simple"]').getAttribute('aria-pressed') === 'true'
+      && menu.querySelector('[data-open-panel="user_view"]') !== null && menu.textContent.includes('What your users see');
+    pk.render(menu, simple.viewMenu({ mode: 'simple', can_switch: false }));
+    const user = !menu.querySelector('[data-view-mode]') && !menu.querySelector('[data-open-panel]') && menu.textContent.includes('put together by your admins');
+    return admin && user;
+  });
+
+  await check('switching tells the server the view chosen, then loads the page again', async () => {
+    let reloaded = 0;
+    await simple.switchView('admin', () => { reloaded += 1; });
+    return server.put.length === 1 && server.put[0].mode === 'admin' && reloaded === 1;
+  });
+
+  await check('the start page shows the areas as tiles and the recent conversations', async () => {
+    pk.render(document.getElementById('welcome'), simple.simpleWelcome(simple.shownPanels(catalog, { panels: ['tracker', 'help'] }),
+      [{ session_id: 's1', title: 'Gateway', updated_at: '2026-11-01T10:00:00Z' }]));
+    const areas = [...document.querySelectorAll('[data-area]')].map((a) => a.dataset.area);
+    return document.querySelector('h1').textContent === 'What would you like to do?' && areas.join() === 'tracker,help'
+      && document.querySelector('[data-area="tracker"]').textContent.includes('All open') && document.querySelector('[data-session="s1"]') !== null;
+  });
+
+  await realFetch('/__results', { method: 'POST', body: JSON.stringify(results) });
+</script></body></html>
