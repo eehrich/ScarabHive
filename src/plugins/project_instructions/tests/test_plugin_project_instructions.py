@@ -37,6 +37,22 @@ HOOK = f"{INSTANCE}.inject_project_instructions"
 WITHDRAW = f"{INSTANCE}.withdraw_project_instructions"
 
 
+def _symlinks_allowed() -> bool:
+    """Whether this process may make a symlink: Windows grants it only with Developer Mode or as admin."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as folder:
+        try:
+            (Path(folder) / "link").symlink_to(Path(folder) / "target")
+        except OSError:
+            return False
+    return True
+
+
+NEEDS_SYMLINKS = pytest.mark.skipif(not _symlinks_allowed(),
+                                    reason="symlinks not permitted here -- these tests measure nothing")
+
+
 # ----------------------------------------------------------------------
 # The rig
 # ----------------------------------------------------------------------
@@ -402,6 +418,7 @@ async def test_a_cut_inside_a_character_adds_no_character(registered, project):
     assert "\ufffd" not in note
 
 
+@NEEDS_SYMLINKS
 async def test_a_symlink_out_of_the_project_is_not_read(registered, project, tmp_path):
     """The file tools would refuse a file outside their roots; the hook must
     not become the way around them."""
@@ -421,6 +438,7 @@ async def test_a_symlink_out_of_the_project_is_not_read(registered, project, tmp
 
 
 @pytest.mark.parametrize("target", [".env", ".git/config", "notes/secret.txt", ".private/notes.md"])
+@NEEDS_SYMLINKS
 async def test_a_symlink_inside_the_project_reads_only_a_visible_markdown_file(registered, project, target):
     """Git stores symlinks: a cloned repository can ship AGENTS.md -> .env,
     and the keys would reach the provider on every call, the session file
@@ -437,6 +455,7 @@ async def test_a_symlink_inside_the_project_reads_only_a_visible_markdown_file(r
     assert not any("the secret" in text for _role, text, *_ in model.requests[0])
 
 
+@NEEDS_SYMLINKS
 async def test_a_symlink_to_the_projects_claude_md_is_followed(registered, project):
     """AGENTS.md -> CLAUDE.md is the common way to keep one file for both."""
     (project / "docs").mkdir()
@@ -470,6 +489,7 @@ def resolved(project, monkeypatch) -> list[str]:
 
 
 @pytest.mark.parametrize("through", ["file link", "directory link"])
+@NEEDS_SYMLINKS
 async def test_a_link_to_a_host_is_refused_before_anything_opens_it(registered, project, resolved, through):
     """A cloned repository can ship AGENTS.md -> \\\\host\\share\\x.md, or a
     directory link to a share with AGENTS.md pointing into it. The link is
@@ -500,6 +520,7 @@ def _short_name(path: Path) -> Optional[str]:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="8.3 names are a Windows thing")
+@NEEDS_SYMLINKS
 async def test_a_short_name_does_not_hide_a_dot_folder(registered, project):
     """SECRET~1 is .secret: the link text passes the dot rule, the file it
     names does not."""
@@ -518,6 +539,7 @@ async def test_a_short_name_does_not_hide_a_dot_folder(registered, project):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="junctions are a Windows thing")
+@NEEDS_SYMLINKS
 async def test_a_junction_on_the_way_counts_as_a_link(registered, project):
     import subprocess
 

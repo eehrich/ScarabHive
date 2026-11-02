@@ -1,10 +1,12 @@
 // ScarabHive shell entry: wires header, sessions, chat, panels, launcher and palette.
-import { api, ApiError, html, render, icon, placeMenu, setTheme, currentTheme, THEMES, showToast } from '/static/kit/panel-kit.js';
+import { api, ApiError, html, render, icon, placeMenu, setTheme, currentTheme, THEMES, setStyle, currentStyle, STYLES, showToast } from '/static/kit/panel-kit.js';
 import { Workspace } from './workspace.js';
 import { SessionManager } from './sessions.js';
 import { Launcher } from './launcher.js';
 import { Palette } from './palette.js';
 import { Picker } from './picker.js';
+import { ServerControls } from './server.js';
+import { AgentRunsPill } from './agent_runs.js';
 
 const SESSIONS_OPEN_KEY = 'scarabhive.sessionsOpen';
 const SESSIONS_WIDTH_KEY = 'scarabhive.sessionsWidth';
@@ -61,6 +63,11 @@ function applyTheme(theme) {
   setTheme(theme);
   markTheme(theme);
   workspace.broadcast('pk:theme', { theme });
+}
+
+function applyStyle(style) {
+  setStyle(style);
+  workspace.broadcast('pk:style', { style });
 }
 
 // -------------------------------------------------------------- sessions
@@ -152,7 +159,12 @@ function closeSheet() {
 
 // ---------------------------------------------------------------- status
 
+/** Set while a restart is watched: the status bar is that watch's to write until the server is back. */
+let serverBusy = false;
+let server;
+
 async function pollHealth() {
+  if (serverBusy) return;
   const state = $('connectionState');
   try {
     const health = await api('/health', { quiet: true });
@@ -237,7 +249,13 @@ function paletteEntries(sessions) {
     { group: 'Actions', icon: 'panel-left', label: 'Toggle sessions', hint: 'Ctrl B', run: () => setSessionsOpen(!sessionsOpen()) },
     { group: 'Actions', icon: 'panel-right', label: 'Toggle panels', hint: 'Ctrl Alt B', run: () => workspace.toggleDock() },
     ...THEMES.map((theme) => ({ group: 'Actions', icon: THEME_ICONS[theme], label: `Theme: ${theme}`, keywords: ['appearance'], run: () => applyTheme(theme) })),
+    ...STYLES.map((style) => ({ group: 'Actions', icon: 'layers', label: `Style: ${style}`, keywords: ['appearance', 'look', 'design'], run: () => applyStyle(style) })),
   ];
+  if (user?.role === 'admin') {
+    entries.push({ group: 'Actions', icon: 'rotate-ccw', label: 'Restart server', hint: 'Loads plugins, agents and skills anew',
+      keywords: ['reload', 'plugins', 'agents', 'skills'], run: () => server.restart() });
+    entries.push({ group: 'Actions', icon: 'power', label: 'Stop server', keywords: ['shutdown', 'quit'], run: () => server.stop() });
+  }
   if (user) entries.push({ group: 'Actions', icon: 'log-out', label: 'Log out', run: logout });
   const groups = new Set();
   catalog.panels.forEach((p) => {
@@ -282,8 +300,10 @@ async function start() {
   workspace = new Workspace({
     catalog: () => catalog,
     theme: currentTheme,
+    style: currentStyle,
     session: () => activeSession,
     onSetTheme: applyTheme,
+    onSetStyle: applyStyle,
     onOpenSession: (id) => sessions.loadSession(id),  // declared below, called only once the shell runs
     // one layout per account: whoever signs in next in this browser gets their own
     layoutKey: user ? `scarabhive.layout.v1:${user.username}` : 'scarabhive.layout.v1',
@@ -341,6 +361,21 @@ async function start() {
     launcher.open(button.dataset.openPanel);
   });
   $('logoutButton').addEventListener('click', logout);
+  server = new ServerControls({
+    stopButton: $('stopServerButton'), restartButton: $('restartServerButton'), state: $('connectionState'),
+    onBusy: (busy) => { serverBusy = busy; },
+  });
+  server.show(user?.role === 'admin');  // without authentication there are no admin routes, and no buttons
+  // the agents at work, on every tab: a click opens the panel that started the newest one
+  new AgentRunsPill({
+    button: $('agentRunsPill'),
+    bell: $('agentRunsBell'),
+    onOpen: (run) => {
+      const panel = run.source && workspace.panelAt(`/plugins/${run.source}/`);
+      if (panel) workspace.open(panel.id);
+      else showToast(document, `${run.agent || 'The agent'} was started outside a panel; follow it in its session`, 'info');
+    },
+  }).start();
 
   document.addEventListener('keydown', (event) => {
     const mod = event.ctrlKey || event.metaKey;
@@ -403,9 +438,7 @@ async function openFromLink(sessions) {
   let page = null;
   try { page = new URL(wanted, window.location.origin); } catch { /* no address at all: it names no panel either */ }
   const path = page && page.pathname + page.search;
-  const panel = page?.origin === window.location.origin && catalog.panels
-    .filter((p) => path === p.url || path.startsWith(p.url.endsWith('/') ? p.url : `${p.url}/`) || path.startsWith(`${p.url}?`))
-    .sort((a, b) => b.url.length - a.url.length)[0];
+  const panel = page?.origin === window.location.origin && workspace.panelAt(path);
   if (!panel) {
     showToast(document, 'The link names no panel of this ScarabHive', 'warn');
     return;

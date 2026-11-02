@@ -13,6 +13,61 @@
 <div class="pk-empty">{{ icon(icon_name) }}<div class="pk-empty-title">{{ title }}</div>{% if text %}<div>{{ text }}</div>{% endif %}</div>
 {%- endmacro %}
 
+{#- Tabs that are other panels: [{title, url, current}]; a click opens that panel beside this one (data-pk-panel),
+    the current one is marked. Nothing for no links. #}
+{% macro panel_nav(links, label="Panels") -%}
+{% if links %}<nav class="pk-tabs pk-page-nav" aria-label="{{ label }}">
+{%- for link in links %}<a class="pk-tab" href="{{ link.url }}"{% if link.current %} aria-current="page"{% else %} data-pk-panel{% endif %}>{{ link.title }}</a>{% endfor -%}
+</nav>{% endif %}
+{%- endmacro %}
+
+{#- A panel's help: a toolbar button that opens a dialog (data-pk-open) with what the panel is for and what a person
+    does there. help = {title, intro?, sections: [{title, purpose, todo: [..]}], notes?: [..]}; nothing for none.
+    The words of the button and headings are passed in the panel's language. #}
+{% macro panel_help(help, label="Help", todo_label="What you do", notes_label="In general", close_label="Close") -%}
+{% if help and (help.sections or help.notes) %}<button type="button" class="pk-btn" data-pk-open="pkHelp" title="{{ help.title }}">{{ icon('circle-help', size='sm') }} {{ label }}</button>
+<dialog class="pk-dialog pk-dialog--wide" id="pkHelp" aria-labelledby="pkHelpTitle">
+  <form method="dialog">
+    <div class="pk-dialog-head"><h2 class="pk-dialog-title" id="pkHelpTitle">{{ help.title }}</h2></div>
+    <div class="pk-dialog-body pk-stack">
+      {% if help.intro %}<p class="pk-muted">{{ help.intro }}</p>{% endif %}
+      {% for section in help.sections %}<section class="pk-stack" data-help-section>
+        {% if help.sections | length > 1 %}<h3 class="pk-card-title">{{ section.title }}</h3>{% endif %}
+        <p>{{ section.purpose }}</p>
+        {% if section.todo %}<div><strong>{{ todo_label }}</strong><ul>{% for item in section.todo %}<li>{{ item }}</li>{% endfor %}</ul></div>{% endif %}
+      </section>{% endfor %}
+      {% if help.notes %}<div><strong>{{ notes_label }}</strong><ul class="pk-muted">{% for note in help.notes %}<li>{{ note }}</li>{% endfor %}</ul></div>{% endif %}
+    </div>
+    <div class="pk-dialog-actions"><button type="submit" class="pk-btn pk-btn--primary" value="">{{ close_label }}</button></div>
+  </form>
+</dialog>{% endif %}
+{%- endmacro %}
+
+{#- One figure of a .pk-stats row; the JS twin is stat() in panel-kit.js. key: data-stat and data-key; hint: the
+    title; tone: ok, warn, danger, info on the value; sub: a line beneath. pressed (true/false) makes it a toggle
+    button (aria-pressed), onClickable a plain button. #}
+{% macro stat(label, value, key="", sub="", hint="", tone="", pressed=none, onClickable=false) -%}
+{%- set button = onClickable or pressed is not none -%}
+{%- set inner -%}<div class="pk-stat-label">{{ label }}</div><div class="pk-stat-value{% if tone %} pk-text--{{ tone }}{% endif %}">{{ value }}</div>{% if sub or sub == 0 %}<div class="pk-stat-sub">{{ sub }}</div>{% endif %}{%- endset -%}
+{%- set named %}{% if key %} data-stat="{{ key }}" data-key="{{ key }}"{% endif %}{% if hint %} title="{{ hint }}"{% endif %}{% endset -%}
+{% if button %}<button type="button" class="pk-stat"{{ named }}{% if pressed is not none %} aria-pressed="{{ 'true' if pressed else 'false' }}"{% endif %}>{{ inner }}</button>
+{%- else %}<div class="pk-stat"{{ named }}>{{ inner }}</div>{% endif %}
+{%- endmacro %}
+
+{#- The steps of a process (.pk-steps): items = [{label, sub?, state}], state done, current, warn or ahead (the
+    default); the current one is marked aria-current="step". dots=true: only dots (an onboarding's progress), the
+    labels kept for screen readers. label names the list. #}
+{#- A step's state as a screen reader hears it: the tick, the "!" and the dots are drawn by CSS (the current step
+    has aria-current). In ``lang``, the page's <html lang>. #}
+{% set STEP_WORDS = {"en": {"done": "done", "warn": "needs attention", "ahead": "not yet"},
+                     "de": {"done": "erledigt", "warn": "braucht Aufmerksamkeit", "ahead": "noch offen"}} %}
+{% macro steps(items, label="", dots=false, lang="en") -%}
+{%- set words = STEP_WORDS.get(lang[:2] | lower, STEP_WORDS["en"]) -%}
+<ol class="pk-steps{% if dots %} pk-steps--dots{% endif %}"{% if label %} aria-label="{{ label }}"{% endif %}>
+{%- for step in items %}{% set state = step.state or "ahead" %}<li class="pk-step" data-state="{{ state }}"{% if state == "current" %} aria-current="step"{% endif %}><span class="pk-step-label">{{ step.label }}{% if state in words %}<span class="pk-sr-only"> ({{ words[state] }})</span>{% endif %}</span>{% if step.sub %}<span class="pk-step-sub">{{ step.sub }}</span>{% endif %}</li>{% endfor -%}
+</ol>
+{%- endmacro %}
+
 {#- Placeholder lines while something loads; the JS twin is skeleton(). #}
 {% macro skeleton(lines=3) -%}
 <div class="pk-stack">{% for _ in range(lines) %}<span class="pk-skeleton"></span>{% endfor %}</div>

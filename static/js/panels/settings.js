@@ -1,11 +1,16 @@
 // Settings panel: appearance, chat, profile, password.
-import { api, ApiError, toast, setTheme, currentTheme, onThemeChange, announcePreferences } from '/static/kit/panel-kit.js';
+import { api, ApiError, toast, setTheme, currentTheme, onThemeChange, setStyle, currentStyle, onStyleChange, announcePreferences } from '/static/kit/panel-kit.js';
 
 const $ = (id) => document.getElementById(id);
 const themeRadios = [...document.querySelectorAll('input[name="theme"]')];
+const styleRadios = [...document.querySelectorAll('input[name="style"]')];
 
 function showTheme(theme) {
   themeRadios.forEach((radio) => { radio.checked = radio.value === theme; });
+}
+
+function showStyle(style) {
+  styleRadios.forEach((radio) => { radio.checked = radio.value === style; });
 }
 
 themeRadios.forEach((radio) => radio.addEventListener('change', () => setTheme(radio.value)));
@@ -22,6 +27,9 @@ function askForPasswordIfNewEmail() {
   if (!changed) $('emailPassword').value = '';
 }
 $('email').addEventListener('input', askForPasswordIfNewEmail);
+styleRadios.forEach((radio) => radio.addEventListener('change', () => setStyle(radio.value)));
+showStyle(currentStyle());
+onStyleChange(showStyle);  // switched from the shell's palette while this panel is open
 
 async function loadProfile() {
   let me;

@@ -7,6 +7,7 @@ entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["tool-server"]
 category = "tools"
 requires = { agent_system = ">=0.6.0" }
+plugins = ["mcp_client", "mcp_gateway"]
 
 # psutil is a core dependency.
 dependencies = []

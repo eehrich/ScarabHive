@@ -28,7 +28,7 @@ ICONS = sorted({
     # actions
     "refresh-cw", "play", "square", "paperclip", "send-horizontal", "plus",
     "trash-2", "pencil", "copy", "check", "download", "upload", "filter",
-    "arrow-up", "arrow-down", "rotate-ccw", "save", "eye", "eye-off", "link",
+    "arrow-up", "arrow-down", "rotate-ccw", "save", "eye", "eye-off", "link", "power",
     # debugger (stategraph)
     "pause", "step-forward", "circle-dot", "crosshair",
     # editing (stategraph's graph bar, agent_editor's locked tools)
@@ -54,6 +54,8 @@ ICONS = sorted({
     # business: what a company's groups of work are about (law, money, customers, the office)
     "scale", "landmark", "receipt", "handshake", "megaphone", "calculator", "building-2", "piggy-bank", "euro",
     "presentation",
+    # the agents at work: notifications when one needs its person
+    "bell",
 })
 
 _BODY = re.compile(r"<svg[^>]*>(.*)</svg>", re.DOTALL)

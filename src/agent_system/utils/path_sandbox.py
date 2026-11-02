@@ -70,9 +70,110 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Iterable
 
-from agent_system.paths import data_path, resolve_data_path
+from agent_system.paths import PROJECT_ROOT, data_path, resolve_data_path
 
 logger = logging.getLogger(__name__)
+
+#: The installation's private files. No plugin path reaches them, whatever the
+#: roots allow -- a root on the repository (".") or above it would otherwise
+#: hand them out:
+#:   config/*.env               the secrets (local.env, secrets.env)
+#:   data/users.db              the user store (password hashes), with its -wal/-shm/-journal
+#:                              -- or wherever auth keeps it
+#:   data/sessions/             every user's conversations (AGENT_SESSION_STORAGE_PATH when set)
+#:   data/session_archive/      the same, archived (beside the sessions)
+#:   data/message_debugger/     every LLM request and answer of every user
+SECRETS_DIR = PROJECT_ROOT / "config"
+USERS_DB = Path("users.db")
+SESSIONS_DIR = Path("sessions")
+ARCHIVE_DIR = Path("session_archive")
+DEBUGGER_DIR = Path("message_debugger")
+_DB_COMPANIONS = ("", "-wal", "-shm", "-journal")
+
+
+def _canonical(path: Path | str) -> str | None:
+    try:
+        return os.path.normcase(str(Path(path).resolve()))
+    except (OSError, ValueError):
+        return None
+
+
+def _within(path: str, folder: str) -> bool:
+    try:
+        return os.path.commonpath([path, folder]) == folder
+    except ValueError:  # another drive
+        return False
+
+
+def private_places() -> tuple[Path, Path, tuple[Path, ...]]:
+    """(secrets directory, user store, the private directories) -- read at each
+    call: the data directory, the session store and the user store's place are
+    configurable. A message_debugger db_path set outside its folder is not known
+    here (its config lives with the plugin)."""
+    data = PROJECT_ROOT / data_path()
+    sessions = Path(os.getenv("AGENT_SESSION_STORAGE_PATH") or data / SESSIONS_DIR)
+    users_db = data / USERS_DB
+    from agent_system.auth import database  # the auth package is imported lazily throughout the tools
+
+    if database._db is not None:  # the user store this process opened (auth's db_path)
+        users_db = Path(database._db.db_path)
+    folders = (sessions, sessions.parent / ARCHIVE_DIR, data / SESSIONS_DIR, data / ARCHIVE_DIR, data / DEBUGGER_DIR)
+    return SECRETS_DIR, users_db, tuple(dict.fromkeys(folders))
+
+
+def _private_places() -> tuple[str, str, tuple[str, ...]]:
+    """private_places, canonical."""
+    secrets, users_db, folders = private_places()
+    return (_canonical(secrets) or "", _canonical(users_db) or "",
+            tuple(c for c in (_canonical(f) for f in folders) if c))
+
+
+def private_folders() -> tuple[str, ...]:
+    """The private directories (private_places), canonical: read once for a whole listing, compared with
+    os.path.normcase of a path that is canonical already."""
+    return _private_places()[2]
+
+
+def might_be_private(name: str) -> bool:
+    """A cheap test on one name of a directory walk: only these can be private,
+    so only these are resolved (is_secret)."""
+    name = name.lower()
+    if ".env" in name or name.startswith(USERS_DB.name) or name in (SESSIONS_DIR.name, ARCHIVE_DIR.name, DEBUGGER_DIR.name):
+        return True
+    from agent_system.auth import database  # a user store auth keeps under a name of its own
+
+    return database._db is not None and name.startswith(Path(database._db.db_path).name.lower())
+
+
+def is_secret(path: Path | str) -> bool:
+    """Whether ``path`` is one of the installation's private files (above) or
+    lies in one of the private directories.
+
+    Judged on the canonical path, so a symlink, ``..`` or an 8.3 short name
+    pointing at one counts. Windows opens ``local.env.``, ``local.env `` and
+    ``local.env::$DATA`` as local.env: trailing dots and spaces and a stream
+    suffix are dropped before the name is read.
+    """
+    full = _canonical(path)
+    if full is None:
+        return False
+    parent, name = os.path.split(full)
+    name = name.split(":", 1)[0].rstrip(" .")
+    secrets, users_db, folders = _private_places()
+    cleaned = os.path.join(parent, name)
+    return ((parent == secrets and name.endswith(".env"))
+            or any(cleaned == users_db + suffix for suffix in _DB_COMPANIONS)
+            or any(_within(cleaned, folder) for folder in folders))
+
+
+def holds_secrets(directory: Path | str) -> bool:
+    """Whether deleting, moving or copying ``directory`` would take a private
+    file along: it is one of their directories or an ancestor of one."""
+    full = _canonical(directory)
+    if full is None:
+        return False
+    secrets, users_db, folders = _private_places()
+    return any(_within(place, full) for place in (secrets, os.path.dirname(users_db), *folders))
 
 
 def remote_outside(path: str, base: Path, roots: Iterable[Path]) -> bool:
@@ -198,15 +299,19 @@ class PathSandbox:
 
         if not self._inside(full):
             behind = self._behind_an_imagined_root(Path(path))
-            if behind is not None and not write:
-                logger.info("PathSandbox read %r from the base, as %s", path, behind)
-                return behind
-            logger.warning("PathSandbox rejected out-of-root path: %r", path)
-            # The read of the same path went through: say how to write it.
-            hint = f". Write it as {self._as_named(behind)}" if behind is not None else ""
-            raise PathSandboxDenied(
-                f"Path is outside the allowed directories: {path}. "
-                f"Allowed: {self.describe_roots()}{hint}")
+            if behind is None or write:
+                logger.warning("PathSandbox rejected out-of-root path: %r", path)
+                # The read of the same path went through: say how to write it.
+                hint = f". Write it as {self._as_named(behind)}" if behind is not None else ""
+                raise PathSandboxDenied(
+                    f"Path is outside the allowed directories: {path}. "
+                    f"Allowed: {self.describe_roots()}{hint}")
+            logger.info("PathSandbox read %r from the base, as %s", path, behind)
+            full = behind  # read from the base: still never a private file
+
+        if is_secret(full):
+            logger.warning("PathSandbox rejected a private file: %r", path)
+            raise PathSandboxDenied(f"Access to the installation's private files (secrets, user store, sessions) is refused: {path}")
 
         return full
 

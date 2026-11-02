@@ -18,7 +18,9 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, '..', '..', 'static', 'js', 'chat_module.js'), 'utf8');
+// LF: the bounds of a function are found by '\n  }\n', and a Windows checkout (core.autocrlf) has CRLF
+const SOURCE = fs.readFileSync(path.join(__dirname, '..', '..', 'static', 'js', 'chat_module.js'), 'utf8')
+  .replace(/\r\n/g, '\n');
 
 /** The text of `function <name>(...) { ... }` at the module's own indent. */
 function functionSource(name) {

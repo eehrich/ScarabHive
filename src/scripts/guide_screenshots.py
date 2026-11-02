@@ -1,8 +1,9 @@
 """Screenshots of plugin panels for their guides -- from the panel test's stub app, never from real data.
 
 A plugin's panel test builds an app with the real plugin router and seeded data; this script serves that app with
-uvicorn, points a headless Chromium at the panel and writes the picture to ``src/plugins/<plugin>/docs/``, where a
-guide shows it with ``@{image docs/<name>.png}``.
+uvicorn, points a headless Chromium at the panel and writes the picture to the plugin's ``docs/`` folder, where a
+guide shows it with ``@{image docs/<name>.png}``. A further plugin root (src/plugins_<name>) names the shots of its
+plugins in a ``guide_shots.py`` of its own (a SHOTS of the same shape).
 
     .venv/Scripts/python.exe src/scripts/guide_screenshots.py todo
 """
@@ -183,7 +184,6 @@ SHOTS = {
         document.querySelector('[data-tab="list"]').click();"""),
         ("map.png", "plugins.sub_agent_manager.tests.sam_panel_shot", "panel_app",
          "/plugins/sub_agent_manager/?session_id=s-1", (1000, 520))],
-    # not a plugin: the README's picture of the whole shell, written to docs/images/
     "readme": [("shell.png", "scripts.readme_showcase", "showcase_app",
                 "/?panel=/plugins/context_usage_tracker/?session_id=5f2c8a41", (1440, 1000))],
 }
@@ -261,12 +261,27 @@ def serve(app):
         sock.close()
 
 
+def all_shots() -> dict:
+    """SHOTS and those of every further plugin root's guide_shots.py."""
+    shots = dict(SHOTS)
+    for extra in sorted((REPO / "src").glob("plugins_*/guide_shots.py")):
+        shots.update(importlib.import_module(f"{extra.parent.name}.guide_shots").SHOTS)
+    return shots
+
+
+def plugin_dir(plugin: str) -> Path:
+    """The plugin's folder, in whichever plugin root holds it."""
+    found = sorted((REPO / "src").glob(f"plugins*/{plugin}/plugin.toml"))
+    return found[0].parent if found else REPO / "src" / "plugins" / plugin
+
+
 def main(plugins: list[str]) -> None:
     browser = find_browser()
     if browser is None:
         raise SystemExit("no Chromium-based browser installed")
-    for plugin in plugins or SHOTS:
-        for name, module, factory, page, size, *extra in SHOTS[plugin]:
+    shots = all_shots()
+    for plugin in plugins or shots:
+        for name, module, factory, page, size, *extra in shots[plugin]:
             extra = {"script": extra[0]} if extra and isinstance(extra[0], str) else (extra[0] if extra else {})
             # a plugin may keep its database open until the process ends: its folder is left then
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data:
@@ -287,7 +302,7 @@ def main(plugins: list[str]) -> None:
                     with urllib.request.urlopen(url, timeout=30) as answer:
                         if answer.status != 200:
                             raise SystemExit(f"{url} answered {answer.status}")
-                    docs = REPO / "docs" / "images" if plugin == "readme" else REPO / "src" / "plugins" / plugin / "docs"
+                    docs = REPO / "docs" / "images" if plugin == "readme" else plugin_dir(plugin) / "docs"
                     out = docs / name
                     out.parent.mkdir(exist_ok=True)
                     shoot(browser, url, out, size)

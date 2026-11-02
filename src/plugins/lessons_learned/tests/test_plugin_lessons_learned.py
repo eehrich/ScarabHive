@@ -1219,10 +1219,13 @@ class TestWithoutAnEmbeddingModel:
     def no_model(self, monkeypatch):
         from agent_system.utils.vector_store import embeddings
 
-        def missing():
+        def missing(*_model_name):
             raise RuntimeError("no embedding model")
 
+        # Both ways to the model: chromadb's queries go through get_embedding_model, the sqlite-vec
+        # backend (Windows without hnswlib) loads it by name through _load_embedding_model.
         monkeypatch.setattr(embeddings, "get_embedding_model", missing)
+        monkeypatch.setattr(embeddings, "_load_embedding_model", missing)
 
     async def test_the_duplicate_check_says_it_did_not_run(self, server, no_model):
         result = await server.check_duplicate("a", "Title", "Content")
@@ -1399,10 +1402,13 @@ class TestTheIndexHeals:
     def break_model(monkeypatch):
         from agent_system.utils.vector_store import embeddings
 
-        def missing():
+        def missing(*_model_name):
             raise RuntimeError("no embedding model")
 
+        # Both ways to the model: chromadb's queries go through get_embedding_model, the sqlite-vec
+        # backend (Windows without hnswlib) loads it by name through _load_embedding_model.
         monkeypatch.setattr(embeddings, "get_embedding_model", missing)
+        monkeypatch.setattr(embeddings, "_load_embedding_model", missing)
 
     async def test_a_lesson_stored_without_the_model_is_found_once_it_is_back(self, server, monkeypatch):
         self.break_model(monkeypatch)

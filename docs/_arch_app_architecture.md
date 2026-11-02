@@ -21,6 +21,7 @@ the plugins' web routers.
 | Feature | Where |
 |---------|-------|
 | Agent runs, answered as JSON or streamed as SSE | `POST /run` (`api/run_routes.py`), `GET`/`POST /events` (`api/event_routes.py`) |
+| What the panels' agent runs say while they work: state, step, heartbeat | `GET /api/agent-runs`, `/api/agent-runs/stream` (SSE), `/api/agent-runs/{run_id}/events` (`api/run_event_routes.py`), [Run events](run_events.md) |
 | Markdown answers, drawn by the web chat and agent-cli | [Multi-format output](multi_format_output.md) |
 | Authentication: JWT (header or cookie) and per-user API keys | `auth/`, `api/auth_endpoints.py` |
 | Per-user sessions | `services/session_manager.py`, `services/session_service.py` |

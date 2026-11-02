@@ -11,7 +11,7 @@
 const framed = window.parent !== window;
 const host = framed ? window.parent : null;
 let inShell = false;
-const listeners = { session: new Set(), theme: new Set() };
+const listeners = { session: new Set(), theme: new Set(), style: new Set() };
 const pending = new Map();
 let nextId = 1;
 
@@ -275,6 +275,10 @@ export async function api(path, { method = 'GET', json, body, headers = {}, quie
     // Built inside the try: a bad header value or a cyclic body is a failure
     // like any other, not an escape past the toast and the cleanup.
     const init = { method, headers: new Headers(headers), credentials: 'same-origin', signal: controller.signal };
+    // the page's language, so a server can answer (and refuse) in it
+    if (!init.headers.has('Accept-Language') && document.documentElement.lang) {
+      init.headers.set('Accept-Language', document.documentElement.lang);
+    }
     if (json !== undefined) {
       if (!init.headers.has('Content-Type')) init.headers.set('Content-Type', 'application/json');
       init.body = JSON.stringify(json);
@@ -342,12 +346,16 @@ window.addEventListener('message', (event) => {
     case 'pk:init':
       inShell = true;
       applyTheme(message.theme);
+      applyStyle(message.style);
       setVisible(message.visible);
       setSession(message.session);
       flushOutbox();
       break;
     case 'pk:theme':
       applyTheme(message.theme);
+      break;
+    case 'pk:style':
+      applyStyle(message.style);
       break;
     case 'pk:session':
       setSession(message.session);
@@ -368,6 +376,12 @@ function applyTheme(theme) {
   listeners.theme.forEach((fn) => fn(theme));
 }
 
+function applyStyle(style) {
+  if (!STYLES.includes(style) || style === document.documentElement.dataset.style) return;
+  document.documentElement.dataset.style = style;
+  listeners.style.forEach((fn) => fn(style));
+}
+
 // Timers that skipped a tick while the panel was out of sight: coming back into view
 // catches each up once. Without it a panel brought back showed what it knew when it
 // went away, until its next tick -- up to a minute for a slow one --, and a click on
@@ -378,12 +392,16 @@ function visibleAgain() {
   if (isVisible()) whenVisibleAgain.forEach((catchUp) => catchUp());
 }
 
-document.addEventListener('visibilitychange', visibleAgain);
+document.addEventListener('visibilitychange', () => {
+  visibleAgain();
+  syncCountdowns();
+});
 
 function setVisible(value) {
   const was = visible;
   visible = value !== false;
   if (!was && visible) visibleAgain();
+  syncCountdowns();
 }
 
 // What a panel says about itself before the handshake -- typically right at
@@ -451,6 +469,12 @@ export function onThemeChange(fn) {
   return () => listeners.theme.delete(fn);
 }
 
+/** Called with the new style when the viewer switches it, here or anywhere in the shell. */
+export function onStyleChange(fn) {
+  listeners.style.add(fn);
+  return () => listeners.style.delete(fn);
+}
+
 const systemDark = matchMedia('(prefers-color-scheme: dark)');
 systemDark.addEventListener('change', () => {
   if (currentTheme() === 'system') listeners.theme.forEach((fn) => fn('system'));
@@ -495,6 +519,11 @@ const WORDS = {
     openInShell: 'Open in ScarabHive', openInShellTitle: 'Open ScarabHive with this panel docked beside the chat',
     statuses: { pending: 'Pending', running: 'Running', success: 'Succeeded', failed: 'Failed', canceled: 'Canceled',
       skipped: 'Skipped', manual: 'Manual', waiting: 'Waiting', paused: 'Paused' },
+    due: { overdue: 'overdue', due: 'due' },
+    countdownLeft: (clock) => `${clock} left`, countdownOver: (clock) => `overdue by ${clock}`,
+    countdownDays: (days, hours) => `${days} days ${hours} h`,
+    folders: { title: 'Choose a folder', choose: 'Choose', up: 'Up one level', top: 'The allowed folders',
+      list: 'Folders', empty: 'No folders in here', truncated: (count) => `Only the first ${count} folders are shown` },
   },
   de: {
     notice: 'Hinweis', confirm: 'Bestätigen', input: 'Eingabe', cancel: 'Abbrechen',
@@ -513,9 +542,28 @@ const WORDS = {
     openInShell: 'In ScarabHive öffnen', openInShellTitle: 'ScarabHive öffnen, dieses Panel neben dem Chat',
     statuses: { pending: 'Ausstehend', running: 'Läuft', success: 'Erfolgreich', failed: 'Fehlgeschlagen',
       canceled: 'Abgebrochen', skipped: 'Übersprungen', manual: 'Manuell', waiting: 'Wartet', paused: 'Angehalten' },
+    due: { overdue: 'überfällig', due: 'fällig' },
+    countdownLeft: (clock) => `noch ${clock}`, countdownOver: (clock) => `seit ${clock} überfällig`,
+    countdownDays: (days, hours) => `${days} Tage ${hours} Std`,
+    folders: { title: 'Ordner wählen', choose: 'Wählen', up: 'Eine Ebene höher', top: 'Die erlaubten Ordner',
+      list: 'Ordner', empty: 'Hier sind keine Ordner', truncated: (count) => `Nur die ersten ${count} Ordner sind zu sehen` },
   },
 };
 const word = (key) => (WORDS[document.documentElement.lang.slice(0, 2).toLowerCase()] || WORDS.en)[key];
+
+// Severity, one vocabulary for every panel: the stored value stays English (CVSS, OSV and CSAF name it so), the word
+// follows the page's language, and the badge's tone and mark rise with it -- critical filled, so it is not read as high.
+const SEVERITY_WORDS = {
+  en: { critical: 'critical', high: 'high', medium: 'medium', low: 'low', info: 'info', unknown: 'unknown' },
+  de: { critical: 'kritisch', high: 'hoch', medium: 'mittel', low: 'niedrig', info: 'Info', unknown: 'unbekannt' },
+};
+const SEVERITY_TONE = { critical: 'pk-badge--danger pk-badge--strong', high: 'pk-badge--danger', medium: 'pk-badge--warn', low: 'pk-badge--info' };
+export const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info', 'unknown'];
+export const severityWord = (level) =>
+  (SEVERITY_WORDS[document.documentElement.lang.slice(0, 2).toLowerCase()] || SEVERITY_WORDS.en)[level] || String(level ?? '');
+/** A badge for a severity; `after` follows the word inside it (a CVSS score, a count). */
+export const severityBadge = (level, { after = '' } = {}) =>
+  html`<span class="pk-badge ${SEVERITY_TONE[level] || ''}" data-severity="${level}">${severityWord(level)}${after}</span>`;
 
 export function alert(message, { title = word('notice') } = {}) {
   return dialog({ title, message, actions: [{ label: 'OK', value: true, primary: true }] });
@@ -545,14 +593,31 @@ export function toast(message, { kind = 'info' } = {}) {
 }
 
 /** Shared by the shell and by a panel outside it: the same markup either way. */
-export function showToast(doc, message, kind = 'info') {
+/*
+ * The toasts' live region, made when the page starts and open from then on (empty it is transparent and lets clicks
+ * through): a screen reader announces what is added to a live region that is already there, often not what arrives
+ * together with the region itself.
+ */
+function toastRegion(doc) {
   let region = doc.querySelector('.pk-toasts');
   if (!region) {
     region = doc.createElement('div');
     region.className = 'pk-toasts';
     region.setAttribute('role', 'status');
     region.setAttribute('aria-live', 'polite');
+    region.setAttribute('popover', 'manual');  // in the top layer: a modal dialog and its backdrop do not hide it
     doc.body.appendChild(region);
+  }
+  if (region.showPopover && !region.matches(':popover-open')) region.showPopover();
+  return region;
+}
+
+export function showToast(doc, message, kind = 'info') {
+  const region = toastRegion(doc);
+  if (region.showPopover) {
+    // shown again: the top layer stacks by order, so a dialog opened since would cover it
+    region.hidePopover();
+    region.showPopover();
   }
   const icons = { ok: 'circle-check', warn: 'triangle-alert', error: 'circle-alert', info: 'info' };
   const known = Object.hasOwn(icons, kind) ? kind : 'info';
@@ -674,6 +739,22 @@ export function setTheme(theme) {
   tell('pk:set-theme', { theme });
 }
 
+/** The looks the kit draws in: classic (dense, Inter) and apple (system font, translucent materials, springs). */
+export const STYLES = ['classic', 'apple', 'petrol'];
+
+/** The viewer's style choice: remembered in the cookie the server paints with, applied everywhere -- as setTheme. */
+export function setStyle(style) {
+  if (!STYLES.includes(style)) throw new Error(`unknown style ${style}`);
+  document.cookie = `ui_style=${style}; path=/; max-age=31536000; samesite=lax`;
+  applyStyle(style);
+  tell('pk:set-style', { style });
+}
+
+export function currentStyle() {
+  const style = document.documentElement.dataset.style;
+  return STYLES.includes(style) ? style : 'classic';
+}
+
 /** Tell the shell the viewer's preferences changed (saved already): the chat shows things their way at once. */
 export function announcePreferences(preferences) { tell('pk:preferences', { preferences }); }
 
@@ -693,6 +774,17 @@ export function setTitle(text) { tell('pk:title', { text }); document.title = te
 export function openSession(sessionId) {
   if (!framed) return false;
   tell('pk:open-session', { session_id: String(sessionId) });
+  return true;
+}
+
+/**
+ * Open another panel beside this one: the shell opens the catalogue panel the path lies under (the longest URL
+ * wins) at that page, where this panel is -- or brings it to the front. False where there is no shell (a panel in
+ * a browser tab of its own); a link then simply follows. A link marked data-pk-panel does this by itself.
+ */
+export function openPanel(path) {
+  if (!framed) return false;
+  tell('pk:open-panel', { path: String(path) });
   return true;
 }
 
@@ -955,32 +1047,250 @@ const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const STORED_TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
 const STEPS = [['second', 60], ['minute', 60], ['hour', 24], ['day', Infinity]];
 
+// Dates and times in figures only, with the full year: the same in every language, in the viewer's order.
+const DAY = { year: 'numeric', month: '2-digit', day: '2-digit' };
+const CLOCK = { hour: '2-digit', minute: '2-digit' };
+
+/** Where dates and times are formatted: the viewer's region (the browser's language, e.g. de-DE gives
+ * 30.10.2026, 11:00), whatever language the page speaks -- the formats are figures, no words to mix. */
+export const dateLocale = () => navigator.languages?.[0] || navigator.language || document.documentElement.lang || undefined;
+
 /**
- * A stored timestamp in the viewer's time and language. The databases write UTC without a zone
+ * A stored timestamp in the viewer's time and date format. The databases write UTC without a zone
  * ("2026-09-16 19:21:29"), so a value without one is read as UTC; a date alone stays that date.
- * relative: "vor 5 Minuten" instead of the time.
+ * relative: "vor 5 Minuten" instead of the time, in the page's language. time: the clock alone ("22:50:38").
  */
-export function localTime(value, { relative = false, seconds = false } = {}) {
+export function localTime(value, { relative = false, seconds = false, time = false } = {}) {
   if (value === null || value === undefined || value === '') return '';
   const text = String(value).trim();
-  const lang = document.documentElement.lang || undefined;
   if (DATE_ONLY.test(text)) {
     const [year, month, day] = text.split('-').map(Number);
-    return new Date(year, month - 1, day).toLocaleDateString(lang, { dateStyle: 'short' });
+    return new Date(year, month - 1, day).toLocaleDateString(dateLocale(), DAY);
   }
   if (!STORED_TIME.test(text)) return text;  // "12" or "2026" are no stored times
   const date = new Date(instant(text));
   if (Number.isNaN(date.getTime())) return text;
-  if (!relative) return date.toLocaleString(lang, { dateStyle: 'short', timeStyle: seconds ? 'medium' : 'short' });
-  const format = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
-  let amount = (date.getTime() - Date.now()) / 1000;
+  // time: the clock alone, for times of the same hour (the steps of a run)
+  if (time) return date.toLocaleTimeString(dateLocale(), { ...CLOCK, ...(seconds ? { second: '2-digit' } : {}) });
+  if (!relative) return date.toLocaleString(dateLocale(), { ...DAY, ...CLOCK, ...(seconds ? { second: '2-digit' } : {}) });
+  return relativeText(date.getTime() - Date.now());
+}
+
+/** A span of time from now (milliseconds, negative: past) in words of the page's language: "in 3 days", "vor 5 Minuten". */
+function relativeText(ms) {
+  const format = new Intl.RelativeTimeFormat(document.documentElement.lang || undefined, { numeric: 'auto' });
+  let amount = ms / 1000;
   if (Math.abs(amount) < 60) return format.format(0, 'second');  // "now" for the whole first minute: no redraw each tick
   for (const [unit, size] of STEPS) {
     const rounded = Math.round(amount);
     if (Math.abs(rounded) < size) return format.format(rounded, unit);  // 59.6 minutes are an hour, not "60 minutes"
     amount /= size;
   }
-  return text;
+  return '';  // not reached: the last step has no end
+}
+
+// ------------------------------------------------------- figures and deadlines
+
+/**
+ * One figure of a .pk-stats row: its label, its value, an optional sub-line (text or html``). key names it: data-stat
+ * (what a test or a click handler finds it by) and data-key (a redraw gives a focused one its focus back). hint is
+ * its title, tone colours the value (ok, warn, danger, info). A figure that leads to what it counts is a button:
+ * pressed (true or false) makes it a toggle -- aria-pressed, the list it filters is shown --, onClickable a plain one.
+ */
+export function stat(label, value, { key = '', sub = '', hint = '', tone = '', pressed, onClickable = false } = {}) {
+  const named = html`${key ? html` data-stat="${key}" data-key="${key}"` : ''}${hint ? html` title="${hint}"` : ''}`;
+  const body = html`<div class="pk-stat-label">${label}</div><div class="pk-stat-value${tone ? ` pk-text--${tone}` : ''}">${value}</div>${
+    sub || sub === 0 ? html`<div class="pk-stat-sub">${sub}</div>` : ''}`;
+  if (pressed === undefined && !onClickable) return html`<div class="pk-stat"${named}>${body}</div>`;
+  return html`<button type="button" class="pk-stat"${named}${pressed === undefined ? '' : html` aria-pressed="${String(Boolean(pressed))}"`}>${body}</button>`;
+}
+
+/** A point in time from a stored time (no zone: UTC), a date (due by its end, local time), a Date or milliseconds. */
+function dueInstant(value) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  const text = String(value ?? '').trim();
+  if (DATE_ONLY.test(text)) {
+    const [year, month, day] = text.split('-').map(Number);
+    return new Date(year, month - 1, day, 23, 59, 59, 999).getTime();
+  }
+  return text ? instant(text) : NaN;
+}
+
+/**
+ * When something is due, as a .pk-badge: overdue (danger, "overdue 3 days ago"), due within `soon` (warn, a week by
+ * default) or later (neutral) -- the time to it in the page's language, the moment itself as its title, the state in
+ * data-due (overdue, soon, later). `at` as dueInstant() reads it; nothing for none. `now` fixes the clock (tests, a
+ * list drawn against one moment); `words` puts a panel's own {overdue, due} in place of the kit's.
+ */
+export function dueBadge(at, { soon = 7 * 24 * 3600e3, now = Date.now(), words = {} } = {}) {
+  const when = dueInstant(at);
+  if (Number.isNaN(when)) return html``;
+  const left = when - Number(now);
+  const state = left < 0 ? 'overdue' : left <= soon ? 'soon' : 'later';
+  const say = { ...word('due'), ...words };
+  const moment = typeof at === 'string' ? localTime(at) : new Date(when).toLocaleString(dateLocale(), { ...DAY, ...CLOCK });
+  const tone = state === 'overdue' ? ' pk-badge--danger' : state === 'soon' ? ' pk-badge--warn' : '';
+  return html`<span class="pk-badge${tone}" data-due="${state}" title="${moment}">${
+    state === 'overdue' ? say.overdue : say.due} ${relativeText(left)}</span>`;
+}
+
+/** The time to a moment as a clock: hh:mm:ss under two days, days and hours above -- "02:14:09 left", "noch 3 Tage 04 Std". */
+function countdownText(ms) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const seconds = Math.floor(Math.abs(ms) / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const clock = hours >= 48 ? word('countdownDays')(Math.floor(hours / 24), pad(hours % 24))
+    : `${pad(hours)}:${pad(Math.floor(seconds / 60) % 60)}:${pad(seconds % 60)}`;
+  return (ms < 0 ? word('countdownOver') : word('countdownLeft'))(clock);
+}
+
+/*
+ * <span data-pk-countdown="2026-11-02T18:00:00Z"></span> anywhere in the page: the kit writes the time left into it
+ * (countdownText, in the page's language) every second, and marks it data-pk-overdue once the moment passed -- only
+ * while the panel can be seen. One timer for all of them: it starts with the first such element and stops when the
+ * last one goes or the panel is out of sight (a tab in the background, a closed window); back in sight they are
+ * written at once. A text is only written when it changed, so a redraw around it stays cheap.
+ */
+let countdownTimer = null;
+
+function syncCountdowns() {
+  const clocks = isVisible() ? document.querySelectorAll('[data-pk-countdown]') : [];
+  if (!clocks.length) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+    return;
+  }
+  countdownTimer ??= setInterval(syncCountdowns, 1000);
+  const now = Date.now();
+  clocks.forEach((clock) => {
+    const at = dueInstant(clock.dataset.pkCountdown);
+    if (Number.isNaN(at)) return;
+    const text = countdownText(at - now);
+    if (clock.textContent !== text) clock.textContent = text;
+    clock.toggleAttribute('data-pk-overdue', at < now);
+  });
+}
+
+// ------------------------------------------------------------------ folders
+
+let folderPickers = 0;
+
+/**
+ * A folder on the server, picked in a dialog of the panel's own: it lists `${url}?path=` -- a route of the plugin's
+ * web class on FolderRoutes (agent_system/plugins/folder_routes.py), which answers {path, parent, dirs: [{name,
+ * path}], truncated} -- starting at `start` (empty: the allowed folders). A click selects a folder, a double click
+ * or Enter opens it, the arrow keys move, Backspace and the up button go to the parent. Choose takes the selected
+ * folder, else the one shown. Resolves with its path, or null for Cancel or Escape. A refusal of the server (a 422
+ * with its detail) is said in the dialog; a start that is refused falls back to the allowed folders.
+ */
+export function folderPicker({ url, title = word('folders').title, start = '' } = {}) {
+  const say = word('folders');
+  const id = `pk-folders-${++folderPickers}`;
+  const latest = `${id}:load`;
+  return new Promise((resolve) => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'pk-dialog pk-dialog--wide';
+    dialog.setAttribute('aria-labelledby', `${id}-title`);
+    render(dialog, html`<form method="dialog">
+      <div class="pk-dialog-head"><h2 class="pk-dialog-title" id="${id}-title">${title}</h2></div>
+      <div class="pk-dialog-body pk-stack">
+        <div class="pk-row"><button type="button" class="pk-btn pk-btn--sm pk-btn--icon" data-act="up" title="${say.up}"
+          aria-label="${say.up}" disabled>${icon('arrow-up', { size: 'sm' })}</button>
+          <span class="pk-folders-path pk-grow" aria-live="polite"></span></div>
+        <p class="pk-callout" hidden></p>
+        <ul class="pk-folders-list" role="listbox" tabindex="0" aria-label="${say.list}"></ul>
+        <p class="pk-help" hidden></p>
+      </div>
+      <div class="pk-dialog-actions"><button type="button" class="pk-btn" data-act="cancel">${word('cancel')}</button>
+        <button type="button" class="pk-btn pk-btn--primary" data-act="choose" disabled>${say.choose}</button></div>
+    </form>`);
+    const part = (selector) => dialog.querySelector(selector);
+    const list = part('[role="listbox"]');
+    const up = part('[data-act="up"]');
+    const choose = part('[data-act="choose"]');
+    let shown = null;  // the server's answer drawn now
+    let selected = -1;
+    let result = null;
+
+    const select = (index) => {
+      selected = index;
+      list.querySelectorAll('[role="option"]').forEach((option, i) => option.setAttribute('aria-selected', String(i === index)));
+      const option = list.querySelector(`[data-index="${index}"]`);
+      if (option) {
+        list.setAttribute('aria-activedescendant', option.id);
+        keepInSight(list, option);
+      } else {
+        list.removeAttribute('aria-activedescendant');
+      }
+      choose.disabled = !(option || shown?.path);
+    };
+    const draw = (answer) => {
+      shown = answer;
+      part('.pk-folders-path').textContent = answer.path || say.top;
+      up.disabled = !answer.path;
+      render(list, answer.dirs.map((dir, index) => html`<li role="option" id="${id}-${index}" data-index="${index}"
+        aria-selected="false">${icon('folder', { size: 'sm' })}<span>${dir.name}</span></li>`));
+      const note = part('.pk-help');
+      note.textContent = !answer.dirs.length ? say.empty : answer.truncated ? say.truncated(answer.dirs.length) : '';
+      note.hidden = !note.textContent;
+      list.scrollTop = 0;
+      select(-1);
+    };
+    const load = async (path, { fallback = false } = {}) => {
+      try {
+        const answer = await api(`${url}?path=${encodeURIComponent(path)}`, { quiet: true, latest });
+        if (!fallback) notice(part('.pk-callout'), '');
+        draw({ path: '', parent: null, truncated: false, ...answer, dirs: answer.dirs || [] });
+      } catch (error) {
+        if (isAborted(error)) return;
+        notice(part('.pk-callout'), error instanceof ApiError && typeof error.detail === 'string' ? error.detail : describe(error));
+        if (!shown && path) load('', { fallback: true });  // a stale start: the allowed folders, the refusal kept in sight
+      }
+    };
+    const open = (index) => {
+      const dir = shown?.dirs[index];
+      if (dir) load(dir.path);
+    };
+
+    up.addEventListener('click', () => { if (shown?.path) load(shown.parent ?? ''); });
+    part('[data-act="cancel"]').addEventListener('click', () => dialog.close());
+    choose.addEventListener('click', () => {
+      result = selected >= 0 ? shown.dirs[selected].path : shown?.path || null;
+      dialog.close();
+    });
+    list.addEventListener('click', (event) => {
+      const option = event.target.closest('[role="option"]');
+      if (option) select(Number(option.dataset.index));
+    });
+    list.addEventListener('dblclick', (event) => {
+      const option = event.target.closest('[role="option"]');
+      if (option) open(Number(option.dataset.index));
+    });
+    list.addEventListener('keydown', (event) => {
+      const count = shown?.dirs.length || 0;
+      const moves = { ArrowDown: selected + 1, ArrowUp: selected - 1, Home: 0, End: count - 1 };
+      if (event.key in moves) {
+        event.preventDefault();
+        if (count) select(Math.min(Math.max(moves[event.key], 0), count - 1));
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        open(selected);
+      } else if (event.key === 'Backspace') {
+        event.preventDefault();
+        up.click();
+      }
+    });
+    dialog.addEventListener('close', () => {
+      abandon(latest);
+      dialog.remove();
+      resolve(result);
+    });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    list.focus();
+    load(String(start || ''));
+  });
 }
 
 /** The filled-in fields of a form as query parameters; empty ones are left out. */
@@ -1038,9 +1348,10 @@ export function notice(element, text, { kind = 'danger' } = {}) {
   element.hidden = !text;
 }
 
-/** The empty state: an icon, a title and, if given, a line of explanation. */
-export function emptyState(iconName, title, text = '') {
-  return html`<div class="pk-empty">${icon(iconName)}<div class="pk-empty-title">${title}</div>${text && html`<div>${text}</div>`}</div>`;
+/** Nothing to show, and what to do about it: `action` is the way out -- a button that does the next step
+ * (Carbon and PatternFly ask an empty state for the step that resolves it, not only the reason). */
+export function emptyState(iconName, title, text = '', action = '') {
+  return html`<div class="pk-empty">${icon(iconName)}<div class="pk-empty-title">${title}</div>${text && html`<div>${text}</div>`}${action && html`<div class="pk-empty-action">${action}</div>`}</div>`;
 }
 
 /** Placeholder lines while something loads. */
@@ -2065,8 +2376,39 @@ export function initShellLink(root = document) {
   });
 }
 
+// A panel's action in a dialog: <button data-pk-open="addDialog"> opens <dialog id="addDialog">, its first field in
+// focus; [data-pk-close] in it closes it. The action is a button in sight, not a fold to find (NN/g on accordions).
+document.addEventListener('click', (event) => {
+  const opener = event.target.closest?.('[data-pk-open]');
+  if (opener) {
+    const dialog = document.getElementById(opener.dataset.pkOpen);
+    if (dialog?.showModal && !dialog.open) {
+      dialog.showModal();
+      dialog.querySelector('input:not([type=hidden]), select, textarea')?.focus();
+    }
+    return;
+  }
+  const closer = event.target.closest?.('dialog [data-pk-close]');
+  if (closer) closer.closest('dialog').close();
+});
+
+/** Close the dialog an element is in (a form sent from it), if it is in one. */
+export function closeDialogOf(element) {
+  const dialog = element?.closest?.('dialog');
+  if (dialog?.open) dialog.close();
+}
+
+// <a href="/plugins/x/" data-pk-panel>: in the shell the panel opens beside this one; in a tab the link follows
+document.addEventListener('click', (event) => {
+  const link = event.target.closest?.('a[data-pk-panel][href]');
+  if (!link || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey
+    || event.altKey) return;
+  if (openPanel(new URL(link.href, location.href).href)) event.preventDefault();
+});
+
 function start() {
   initShellLink();
+  toastRegion(document);
   initTabs();
   // a row of page links (a nav of a.pk-tab) scrolls as tabs do, its current page in sight
   document.querySelectorAll('.pk-tabs:not([data-pk-tabs])').forEach((row) => {
@@ -2081,6 +2423,10 @@ function start() {
   sizeTables(document);
   keyRows(document);
   document.querySelectorAll('.pk-page-body').forEach((body) => bodySize.observe(body));
+  // countdowns ([data-pk-countdown]) come and go with every redraw: the timer follows them
+  new MutationObserver(syncCountdowns).observe(document.documentElement,
+    { childList: true, subtree: true, attributes: true, attributeFilter: ['data-pk-countdown'] });
+  syncCountdowns();
   if (framed) post('pk:ready');
 }
 

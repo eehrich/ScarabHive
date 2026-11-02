@@ -14,6 +14,12 @@ reads it as their next message; written to a run above it (a sub-agent asks,
 the person writes to the conversation they watch), the sub-agent is told to
 finish with what it has, so the run above can read the message.
 
+A run a panel started (``plugins/agent_tasks.py``) has no chat row anyone reads, but a person follows it in the
+panel's "Agent runs" sheet and the shell's pill, through its run events. There the question goes out as
+``run.needs_input`` with the question, its options and this plugin's answer route; the sheet answers it there. It
+waits up to ``panel_ask_timeout`` (the person may be in another tab or away from the desk), and ``run.answered``
+puts the run back to work, whatever the outcome.
+
 Nobody to ask -- a run no person watches (openai_api, agent-run, a one-shot
 agent-cli, a JSON /run, a job, a writer dispatch, an async sub-agent whose
 caller's stream ended) --
@@ -29,7 +35,9 @@ import math
 from typing import Any, Callable, Dict, Mapping, Optional
 
 from agent_system.core.request_context import get_request_user
-from agent_system.core.run_questions import CANCELLED, GONE, TIMEOUT, is_read, put_to_person, status_line
+from agent_system.core.run_questions import (CANCELLED, GONE, TIMEOUT, is_read, put_to_person, status_line,
+                                             wait_for_answer)
+from agent_system.run_events import reporter_for
 from agent_system.servers.agent.components.session_tracking import message_waits_for
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
@@ -43,6 +51,8 @@ META_KEY = "ask_user"
 DEFAULT_ASK_TIMEOUT = 300.0
 DEFAULT_REASK_SECONDS = 20.0
 DEFAULT_GONE_AFTER_SECONDS = 15.0
+#: A panel run's question waits this long: its person follows the run in the panel, maybe from another tab.
+DEFAULT_PANEL_ASK_TIMEOUT = 1800.0
 
 #: The person wrote into the call's own run instead of answering.
 WROTE = "wrote"
@@ -117,6 +127,10 @@ def _written_to(request_id: str) -> Optional[Callable[[], Optional[str]]]:
     return written
 
 
+async def _nothing() -> None:
+    """A panel run's question is not put again: the run's view carries it as long as it waits."""
+
+
 def _summary(answer: UserAnswer) -> str:
     """The answer in a few words, for the row's last line."""
     parts = [", ".join(answer.choices)] if answer.choices else []
@@ -135,6 +149,7 @@ class AskUserServer(SchemaBasedToolServer):
         self.ask_timeout = _seconds(config, "ask_timeout", DEFAULT_ASK_TIMEOUT)
         self.reask_seconds = _seconds(config, "reask_seconds", DEFAULT_REASK_SECONDS)
         self.gone_after_seconds = _seconds(config, "gone_after_seconds", DEFAULT_GONE_AFTER_SECONDS)
+        self.panel_ask_timeout = _seconds(config, "panel_ask_timeout", DEFAULT_PANEL_ASK_TIMEOUT)
         self.broker = AskUserBroker()
 
     @property
@@ -167,6 +182,9 @@ class AskUserServer(SchemaBasedToolServer):
         if getattr(token, "is_cancelled", False):
             return {"error": f"Tool '{self.name}' was cancelled.", "cancelled": True,
                     "forced": bool(getattr(token, "is_forced", False))}
+        reporter = reporter_for(str(params.get("_session_id") or ""))
+        if not is_read(request_id, self.gone_after_seconds) and reporter is not None and not reporter.ended:
+            return await self._ask_in_panel(params, status, token, request_id, reporter, text, options, multi_select)
         if not is_read(request_id, self.gone_after_seconds):
             if status is not None:
                 await status.error(status_line(f"not asked, nobody watches this run: {text}"))
@@ -188,8 +206,33 @@ class AskUserServer(SchemaBasedToolServer):
         finally:
             self.broker.close(question)
 
-    async def _settle(self, scope: Any, outcome: Any, token: Any) -> Dict[str, Any]:
-        """The row's last line and the tool result, per outcome."""
+    async def _ask_in_panel(self, params: Dict[str, Any], status: Any, token: Any, request_id: str, reporter: Any,
+                            text: str, options: Any, multi_select: bool) -> Dict[str, Any]:
+        """Ask the person who follows a panel run: the question as ``run.needs_input``, answered in the panel."""
+        question = self.broker.open_question(
+            UserQuestion, owner=_owner(params, request_id), session_id=str(params.get("_session_id") or ""),
+            request_id=request_id, agent_name=str(params.get("_agent_name") or ""),
+            timeout=self.panel_ask_timeout, question=text, options=options, multi_select=multi_select)
+        outcome: Any = CANCELLED   # what stays when the wait itself is cut off
+        try:
+            # inside: whatever fails from here on, the question is closed and the run back at work
+            await status.progress(status_line(f"Question, in the panel: {text}"))
+            await reporter.needs_input(text, question_id=question.id, answer_url=self.answer_url, options=options,
+                                       multi_select=multi_select, wait_s=self.panel_ask_timeout)
+            outcome = await wait_for_answer(
+                question, token, wait=self.panel_ask_timeout, reask_seconds=self.panel_ask_timeout,
+                reask=_nothing, read=lambda: not reporter.ended)
+        finally:
+            self.broker.close(question)
+            if isinstance(outcome, UserAnswer):
+                await reporter.answered(outcome.answered_by or "")
+            else:
+                await reporter.answered(outcome={CANCELLED: "cancelled", GONE: "gone"}.get(outcome, "timeout"))
+        return await self._settle(status, outcome, token, waited=self.panel_ask_timeout)
+
+    async def _settle(self, scope: Any, outcome: Any, token: Any, waited: Optional[float] = None) -> Dict[str, Any]:
+        """The row's last line and the tool result, per outcome (``waited``: how long the question waited)."""
+        waited = self.ask_timeout if waited is None else waited
         if isinstance(outcome, UserAnswer):
             await scope.end(status_line(f"answered by {outcome.answered_by or 'the user'}: {_summary(outcome)}"))
             return {"status": "success", "choices": list(outcome.choices), "text": outcome.text}
@@ -209,8 +252,8 @@ class AskUserServer(SchemaBasedToolServer):
             return {"status": "error", "error": GONE_TEXT, "reason": "gone"}
         if outcome != TIMEOUT:   # pragma: no cover - wait_for_answer returns nothing else
             logger.error("ask_user: unexpected outcome %r", outcome)
-        await scope.error(status_line(f"no answer within {self.ask_timeout:g} s"))
+        await scope.error(status_line(f"no answer within {waited:g} s"))
         return {"status": "error", "reason": "timeout",
-                "error": (f"No answer came within {self.ask_timeout:g} seconds. Do not ask the same "
+                "error": (f"No answer came within {waited:g} seconds. Do not ask the same "
                           "question again right away: decide yourself, go on, and say in your reply "
                           "what you assumed -- the user can correct it.")}

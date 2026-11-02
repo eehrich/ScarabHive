@@ -12,4 +12,5 @@ type = ["tool-server"]
 category = "tools"
 tags = ["scripting", "orchestration", "workflow"]
 requires = { agent_system = ">=0.6.0" }
+plugins = ["script_interpreter"]
 dependencies = ["jsonschema>=4.21"]

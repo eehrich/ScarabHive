@@ -256,6 +256,92 @@ plugins:
               node_id: "7"
               field: inputs.seed
 
+        # Text to speech without a reference voice. Needs the MOSS-TTS custom
+        # node in ComfyUI (node types MOSSLoadModel, MOSSSpeak,
+        # MOSSEstimateTokens); it downloads its model on first use.
+        - id: tts_moss_speaker
+          name: "MOSS-TTS Speaker (text to speech)"
+          description: "Speak a text with MOSS-TTS and save it as FLAC. No reference voice needed; the instruction describes the speaker."
+          category: tts
+          workflow_file: MOSS-TTS-Speaker-API.json
+          parameters:
+            - name: text
+              type: string
+              required: true
+              description: "The text to speak"
+              node_id: "3"
+              field: inputs.value
+            - name: language
+              type: string
+              default: "German"
+              description: "Language of the text, e.g. German, English"
+              node_id: "2"
+              field: inputs.language
+            - name: instruction
+              type: string
+              default: "calm, friendly teacher explaining to beginners"
+              description: "How the speaker sounds"
+              node_id: "2"
+              field: inputs.instruction
+            - name: words_per_minute
+              type: integer
+              default: 150
+              description: "Speaking rate the length estimate assumes (120-180)"
+              node_id: "7"
+              field: inputs.words_per_minute
+            - name: seed
+              type: integer
+              default: 42
+              description: "Seed; the same seed keeps the same voice across scenes"
+              node_id: "6"
+              field: inputs.value
+
+        # Text to speech in the voice of a reference recording. Same custom
+        # node as tts_moss_speaker. reference_audio is a file name in
+        # ComfyUI's input folder (10-20 seconds of the voice).
+        - id: tts_moss_clone
+          name: "MOSS-TTS Voice Clone (text to speech in a reference voice)"
+          description: "Speak a text in the voice of a reference recording with MOSS-TTS and save it as FLAC. The same reference gives the same voice for every text."
+          category: tts
+          workflow_file: MOSS-TTS-Clone-API.json
+          parameters:
+            - name: text
+              type: string
+              required: true
+              description: "The text to speak"
+              node_id: "4"
+              field: inputs.value
+            - name: reference_audio
+              type: string
+              required: true
+              description: "File name of the voice recording in ComfyUI's input folder (10-20 s)"
+              node_id: "3"
+              field: inputs.audio
+            - name: language
+              type: string
+              default: "German"
+              description: "Language of the text, e.g. German, English"
+              node_id: "2"
+              field: inputs.language
+            - name: instruction
+              type: string
+              default: "calm and friendly"
+              description: "How the voice speaks (style, not identity), e.g. 'warm and slow'"
+              node_id: "2"
+              field: inputs.instruction
+            - name: words_per_minute
+              type: integer
+              default: 150
+              description: "Speaking rate the length estimate assumes (120-180)"
+              node_id: "10"
+              field: inputs.words_per_minute
+            - name: seed
+              type: integer
+              default: 43
+              description: "Seed; the same seed and text give the same recording"
+              node_id: "5"
+              field: inputs.value
+
         - id: sdxl_txt2img
           name: "Stable Diffusion XL Text-to-Image"
           description: "High-quality image generation using SDXL base model. Requires sd_xl_base_1.0.safetensors checkpoint."
@@ -1214,6 +1300,7 @@ plugins:
         ask_timeout: 300          # seconds a question waits; the only limit on the wait
         reask_seconds: 20
         gone_after_seconds: 15
+        panel_ask_timeout: 1800   # seconds a question of a panel's AI task waits in the "Agent runs" sheet
 
 
     terminal:
@@ -1250,6 +1337,13 @@ plugins:
         # $(...), quote counting) are deliberately not part of it.
         # dangerous_patterns:
         #   - "shutdown\\s"
+        # config/*.env by name or as a wildcard: a hand brake, not a boundary
+        # (a shell reaches the files by other spellings; Windows has no
+        # process sandbox backend). The file tools refuse them for real.
+        dangerous_patterns:
+          - "(?i)(local|secrets)\\.env"
+          - "(?i)config[\\\\/]+\\*"
+          - "(?i)\\*\\.env"
 
       # Resource limits
       limits:

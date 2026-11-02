@@ -132,6 +132,10 @@ window bar carries it there; the toolbar stays. Further blocks: `head`, `lang`
 (`de` for a German panel).
 
 Icons in the template: `{{ icon('refresh-cw') }}`, `{{ icon('bug', size='sm', label='Bug') }}`.
+A figure: `{{ stat('Open', 12, key='open', sub='3 new', pressed=false) }}`; a process's steps:
+`{{ steps([{'label': 'Plan', 'state': 'done'}, {'label': 'Build', 'sub': '2 open', 'state': 'current'}], label='Phases') }}`
+(`dots=true` for dots only; `lang` = the page's language, for the hidden words a screen reader hears for done,
+warn and ahead) — the twins of `stat()` and `.pk-steps`.
 A run's or job's status: `{{ status('running', label=true, pill=true, lang='de') }}` (`from "kit/macros.html" import
 status`; `lang` as the page's `<html lang>`, so it reads like the script's `status()`).
 
@@ -143,14 +147,20 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 
 | Export | What for |
 |---|---|
-| `api(path, {method, json, body, headers, quiet, raw, latest})` | every server call. Cookie auth, JSON in and out, errors as `ApiError(status, detail)` **plus a toast** (unless `quiet: true`), aborted when the panel goes. Whoever reacts themselves (404 → empty state) takes `quiet` and catches. **`latest: 'name'`** aborts the previous call of the same name — an overtaken answer can never be drawn; the aborted one throws an `AbortError` without a toast, recognisable with `isAborted(error)`. That replaces every hand-made sequence counter. |
+| `api(path, {method, json, body, headers, quiet, raw, latest})` | every server call. Cookie auth, JSON in and out, errors as `ApiError(status, detail)` **plus a toast** (unless `quiet: true`), aborted when the panel goes. Whoever reacts themselves (404 → empty state) takes `quiet` and catches. **`latest: 'name'`** aborts the previous call of the same name — an overtaken answer can never be drawn; the aborted one throws an `AbortError` without a toast, recognisable with `isAborted(error)`. That replaces every hand-made sequence counter. Sends the page's `<html lang>` as `Accept-Language` (unless `headers` names one), so a server can refuse in the page's language. |
 | `abandon(name)` | drop the running `latest` call of this name, for instance when the user clears what it would fill. |
 | `pluginBase(import.meta.url)` | the plugin's address for a script from its `static/` folder (`/plugins/<name>`). |
 | `errorText(error)` | the text the toast would show ("404: Not Found") — for a page that shows the error itself. |
 | `update(el, content)` | `render`, but only when the markup changed (returns whether it drew). An unchanged answer leaves scroll, focus, selection and open `<details>` alone. Draw an element either with `update` or with `render`. |
 | `notice(el, text, {kind})` | a message in place as a `.pk-callout` (`danger` by default, `warn`, `info`, `ok`); an empty text hides it. For "Refresh failed, shown is the state of …". |
-| `emptyState(icon, title, text)`, `skeleton(lines)` | empty state and loading placeholder; in templates the macros `empty()` and `skeleton()` from `kit/macros.html`. |
-| `localTime(ts, {relative, seconds})` | a stored timestamp in local time and the page's language. Values without a zone (that is how all our databases write them) count as UTC; `relative` gives "5 minutes ago". |
+| `emptyState(icon, title, text, action)`, `skeleton(lines)` | empty state and loading placeholder; in templates the macros `empty()` and `skeleton()` from `kit/macros.html`. `action`: the button that does the next step -- an empty state says what to do, not only why it is empty. |
+| `button[data-pk-open="id"]`, `[data-pk-close]`, `closeDialogOf(el)` | an action in a `<dialog class="pk-dialog" id>` (head, body, actions): the button opens it, its first field in focus; `data-pk-close` in it closes it; `closeDialogOf(form)` after a successful send. Put a page's actions on buttons, not in a `<details>` fold. |
+| `localTime(ts, {relative, seconds, time})` | a stored timestamp or date (`2026-10-30`) in local time, in figures in the viewer's date format (`dateLocale()`: the browser's language, so 30.10.2026, 11:00 in a German browser). Values without a zone (that is how all our databases write them) count as UTC; `relative` gives "5 minutes ago" in the page's language, `time` the clock alone (times within one run). Show every date through it, never the stored text. |
+| `severityBadge(level, {after})`, `severityWord(level)`, `SEVERITIES` | a severity (critical, high, medium, low, info, unknown -- stored in English) as a badge or a word in the page's language. Critical is a filled badge so it is not read as high. Use these, not a map of your own. |
+| `stat(label, value, {key, sub, hint, tone, pressed, onClickable})` | one figure of a `.pk-stats` row (in templates the `stat()` macro): `key` → `data-stat` and `data-key`, `sub` a line beneath, `hint` the title, `tone` (`ok/warn/danger/info`) colours the value. `pressed` (true/false) makes it a toggle button with `aria-pressed` (the list it filters), `onClickable` a plain button. No `stat` helper of your own. |
+| `dueBadge(at, {soon, now, words})` | a deadline as a badge: overdue (danger, "overdue 3 days ago"), due within `soon` (warn, default a week), later (neutral), in the page's language; `data-due` says which, the title the moment. `at`: a stored time (no zone = UTC), a date (due by its end), a `Date` or ms; `now` fixes the clock; `words: {overdue, due}` for words of your own. |
+| `[data-pk-countdown="<ISO>"]` | anywhere in the page: the kit writes the time left into it every second ("02:14:09 left", days above two days; `data-pk-overdue` once past) — **only while the panel is visible**, on one timer that stops when none is left. No `setInterval` of your own for it. |
+| `folderPicker({url, title, start})` | a server folder picked in the kit's own dialog → its path or `null` (Cancel, Escape). Lists `${url}?path=` — the plugin's web class inherits `FolderRoutes` (`agent_system/plugins/folder_routes.py`), provides `folder_roots()` (a `PathSandbox` or the roots) and names `GET /dirs → get_dirs` in `schema.yaml`; admins only, hidden, private and linked-out folders are left out, a refusal (422) shows in the dialog in the page's language. Arrow keys, Enter opens, Backspace goes up; Choose takes the selected folder, else the one shown. No picker dialog in the template. |
 | `formQuery(form)`, `setQuery(params)` | filter form → query (empty fields drop out); write the query into the URL (`replaceState`) and tell the shell. |
 | `withBusy(controls, fn)` | `fn` one at a time: the buttons are locked, a double click starts nothing. Afterwards **all** are free again — whoever has lock states of their own sets them again after `withBusy`. A button that a redraw replaces meanwhile is no longer the locked one: rows a tick redraws remember their lock themselves (a set of ids the markup reads, for instance). |
 | `copyText(text)` | to the clipboard, with a toast. |
@@ -180,8 +190,10 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 | `placeMenu(menu, box, {matchWidth})` | position a menu of your own (`matchWidth`: as wide as the field it belongs to — suggestion lists). A `.pk-menu[popover]` with an `id` opened through `popovertarget` is placed by the kit itself. |
 | `setTitle(text)`, `navigate(path)` | title in the tab, remember the path in the panel (opened on restore and counted as the panel's own path: unlike a context link the launcher does not reset it; without an argument the path the page shows right now). |
 | `openSession(id)` | open a session in the chat (the shell switches there, on a narrow screen the panel steps aside). `false` where there is no chat — in a browser tab of its own; the panel then says itself what to do. |
+| `openPanel(path)` | open another panel beside this one: the shell opens the catalogue panel the path lies under (the longest URL wins) at that page, where this panel is, or brings it to the front; a toast when the viewer has no such panel. `false` in a browser tab of its own. A link `<a href="/plugins/x/" data-pk-panel>` does it by itself and simply follows in a tab. |
 | `setDirty(bool)` | report unsaved input: while `true`, the shell asks before closing, detaching or docking, or a link that reloads the panel, and the browser tab of its own before leaving. After saving or discarding, `setDirty(false)`. |
 | `setTheme(theme)`, `currentTheme()`, `onThemeChange(fn)`, `THEMES` | theme choice and change (settings, kit page); `onThemeChange` also reports a change from the shell and, with `system`, a change of the system colours. |
+| `setStyle(style)`, `currentStyle()`, `onStyleChange(fn)`, `STYLES` | the look, independent of the theme (`classic`, `apple`, `petrol`; cookie `ui_style`, `<html data-style>`): as the theme functions. |
 | `announcePreferences(preferences)` | tell the shell that settings are stored on the account (after the PUT to `/auth/me/preferences`); the chat shows them right away. |
 
 **The pattern of a loader** — the newest answer wins, what did not change
@@ -299,13 +311,22 @@ per panel path across reloads, in localStorage under `pk.cols:<pathname>`
   wraps instead of shrinking them to their icons; the page head puts its
   toolbar on a line of its own on a phone.
 
+**AI tasks and agent runs** — a panel whose work an agent may take on:
+`initAiTasks(base, host, {onChange})` from `/static/kit/ai-tasks.js` puts the
+"AI" button in the toolbar and the "Agent runs" sheet on the page; the plugin's
+web class inherits `AiTaskRoutes` (`agent_system/plugins/agent_tasks.py`, its
+routes named in `schema.yaml`). What a run does live comes from
+`/static/kit/run-events.js` (`followRuns`: one stream per tab, shared with the
+shell); the events and states are in `docs/run_events.md`.
+
 ## 4. Look
 
 - **Components** instead of your own: `pk-btn` (`--primary`, `--danger`,
   `--ghost`, `--icon`, `--sm`), `pk-input`/`pk-select`/`pk-textarea`/`pk-check`/`pk-switch`
   in `pk-field` and `pk-form`, `pk-tabs`, `pk-dialog` (`--wide`; `--resizable` with a `pk-field--grow` that takes
   the room, size kept per panel), `pk-drop` (`--over`) for a file drop target, `pk-menu`, `pk-table` in
-  `pk-table-wrap`, `pk-card`, `pk-stats`/`pk-stat`, `pk-badge`, `pk-dot`,
+  `pk-table-wrap`, `pk-card`, `pk-stats`/`pk-stat` (a `<button class="pk-stat">` when a click leads to what it counts), `pk-badge` (`--ok/--warn/--danger/--info` carry
+  their tone's mark by themselves -- status is never colour alone; `--danger --strong` filled for the gravest), `pk-dot`,
   `pk-empty`, `pk-skeleton`, `pk-spinner`, `pk-progress` (`--ok/--warn/--danger`),
   `pk-code`, `pk-kv`, `pk-json`, `pk-callout` (`--danger/--warn/--info/--ok`),
   `pk-details` (on a `<details>`), `pk-prose` (reading text; `pk-prose--breaks`
@@ -318,7 +339,17 @@ per panel path across reloads, in localStorage under `pk.cols:<pathname>`
   and goes); layout with
   `pk-stack`, `pk-row`, `pk-grow`, `pk-toolbar`, `pk-filters` (filter row
   above a list; a bare `pk-select` in it is as wide as its choices), `pk-split` (list on the left, detail on the right, the detail
-  stays put), `pk-sidebar-layout` with `pk-sidebar` (sidebar next to the main
+  stays put; 2:3, `--list-wide` 3:2, `--even` 1:1; a `pk-table-wrap` in it scrolls sideways in its column — no
+  `overflow-x` of your own), `pk-section-title` (the small uppercase heading over a group),
+  `pk-form--cols` (two columns, one when narrow; `pk-field--wide` spans both),
+  `pk-steps`/`pk-step` (an `<ol>`; `data-state="done|current|warn|ahead"`, `aria-current="step"` on the current;
+  `pk-step-label`, `pk-step-sub`; `pk-steps--dots` for an onboarding; the `steps()` macro),
+  `pk-list-item` (a two-line entry to choose, on a button or `pk-btn`: `pk-list-item-name`, `pk-list-item-sub`,
+  `aria-current="true"`), `pk-legend` with `pk-swatch[data-tone="ok|warn|danger|info|accent|muted"]`,
+  `pk-code--lines` (a `.pk-code-line` per line, number from `data-line` or counted; `--hit/--add/--del/--hunk`),
+  `pk-tree` (nested `<ul>` of `<details>`/`<summary>`), `pk-segmented` (a radiogroup of `<label>`s with radios),
+  `pk-choice` (an option card: a `<label>` around its radio or checkbox),
+  `pk-sidebar-layout` with `pk-sidebar` (sidebar next to the main
   area: width draggable at the corner, the kit remembers the width per panel,
   stacked when narrow — **every sidebar takes this one**, none of your own),
   a panel's pages as `<nav class="pk-tabs">` with `<a class="pk-tab"
@@ -358,13 +389,14 @@ functions above.
 | Direction | `type` | Content |
 |---|---|---|
 | panel → shell | `pk:ready` | on load |
-| shell → panel | `pk:init` | `theme`, `visible`, `session` — only then does the panel count as "in the shell" |
-| shell → panel | `pk:theme` / `pk:session` / `pk:visibility` | `theme` / `session` / `visible` |
+| shell → panel | `pk:init` | `theme`, `style`, `visible`, `session` — only then does the panel count as "in the shell" |
+| shell → panel | `pk:theme` / `pk:style` / `pk:session` / `pk:visibility` | `theme` / `style` / `session` / `visible` |
 | panel → shell | `pk:dialog` → `pk:dialog-result` | `id`, `dialog: {title, message, actions, input}` → `id`, `value` |
 | panel → shell | `pk:toast` | `message`, `kind` |
-| panel → shell | `pk:title` / `pk:navigate` / `pk:set-theme` | `text` / `path` / `theme` |
+| panel → shell | `pk:title` / `pk:navigate` / `pk:set-theme` / `pk:set-style` | `text` / `path` / `theme` / `style` |
 | panel → shell | `pk:dirty` | `dirty` (unsaved input; a new page in the panel counts as clean) |
 | panel → shell | `pk:open-session` | `session_id` (the chat loads this session; `openSession`) |
+| panel → shell | `pk:open-panel` | `path` (a panel page's address; the shell opens that panel there; `openPanel`, `a[data-pk-panel]`) |
 | panel → shell | `pk:scope` | `scope` (`'session'`/`'all'`, from `<pk-session all>` when choosing and when loading with `?session_scope=all`; a tab the shell opens starts in the same scope) |
 | panel → shell | `pk:preferences` | `preferences` (already stored; the shell fires `preferences:changed` for the chat) |
 

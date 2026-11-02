@@ -6,10 +6,10 @@ it. This builds every enabled file_ops-type server of the shipped config --
 inheritance resolved -- in a directory standing in for the checkout, and asks
 its own path validator.
 
-The coder harness is the one deliberate exception: it works on this
-repository itself, and src/plugins/coder/agents/tools.yaml says so and how to
-take it back. It is named here, so any other instance that reaches these
-paths -- and a narrowed coder_fs that no longer does -- turns this red.
+The coder harness holds "." on purpose (src/plugins/coder/agents/tools.yaml),
+so containment does not keep these out of it: the sandbox refuses them by name
+(path_sandbox.is_secret), and no instance reaches one. Any other instance that
+holds the checkout turns this red.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from agent_system.config.models import AgentSystemConfig
 
 PRIVATE = ("config/secrets.env", "config/local.env", "data/users.db", "data/sessions/alice/s1.json")
 
-#: The coder harness's read-write and read-only file access include "." on purpose.
+#: Instances whose roots contain the checkout (the coder harness, on purpose): the refusal keeps them out.
 REPOSITORY_WIDE = {"coder_fs", "coder_fs_ro"}
 
 
@@ -33,20 +33,29 @@ def _enabled_file_ops_instances(monkeypatch):
     return {name: cfg for name, cfg in resolved.items() if cfg is not None and cfg.type == "file_ops"}
 
 
-def test_only_the_coder_harness_reaches_secrets_or_users(monkeypatch, tmp_path):
+def test_no_file_ops_instance_reaches_secrets_or_users(monkeypatch, tmp_path):
+    from agent_system.utils import path_sandbox
     from plugins.file_ops.security import SecurityError
     from plugins.file_ops.server import FileOpsServer
 
     instances = _enabled_file_ops_instances(monkeypatch)
     assert "file_ops" in instances, sorted(instances)
     monkeypatch.chdir(tmp_path)  # the checkout the server would run in
-    reached = []
+    monkeypatch.setattr(path_sandbox, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(path_sandbox, "SECRETS_DIR", tmp_path / "config")
+    reached, wide = [], set()
     for name, cfg in instances.items():
         validator = FileOpsServer(name, AgentSystemConfig(), cfg).validator
+        try:
+            validator.validate_path("src/module.py")
+            wide.add(name)
+        except SecurityError:
+            pass
         for path in PRIVATE:
             try:
                 validator.validate_path(path)
             except SecurityError:
                 continue
             reached.append(name)
-    assert set(reached) == REPOSITORY_WIDE, sorted(set(reached))
+    assert wide >= REPOSITORY_WIDE, sorted(wide)  # else this proves nothing about the refusal
+    assert not reached, sorted(set(reached))

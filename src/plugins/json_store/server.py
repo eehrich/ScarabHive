@@ -255,7 +255,7 @@ class JsonStoreServer(SchemaBasedToolServer):
             # surrogatepass: names come from parsed LLM JSON, which can carry
             # lone surrogates — hashing must never raise on them.
             digest = hashlib.sha1(
-                raw.encode("utf-8", "surrogatepass")).hexdigest()[:10]
+                raw.encode("utf-8", "surrogatepass"), usedforsecurity=False).hexdigest()[:10]
             s = f"{s.strip('._-')[:48].lower() or 'x'}~{digest}"
         return s
 

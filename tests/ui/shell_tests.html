@@ -4379,7 +4379,7 @@
     const marked = $$('#userMenu [data-theme-choice]').map((b) => `${b.dataset.themeChoice}=${b.getAttribute('aria-pressed')}`).join(' ');
     const stays = $('#userMenu').matches(':popover-open');
     $('#userMenu').hidePopover();
-    return order === 'launcherButton dockToggle app-header-divider helpButton userButton'
+    return order === 'launcherButton dockToggle app-header-divider agentRunsPill agentRunsBell restartServerButton stopServerButton helpButton userButton'
       && marked === 'light=true dark=false system=false' && stays
       && doc().documentElement.dataset.theme === 'light' && doc().cookie.includes('ui_theme=light')
       && probeFrame().contentDocument.documentElement.dataset.theme === 'light';
@@ -4391,6 +4391,36 @@
     // without accounts there is nowhere to keep the chat settings, so none are offered
     await until('no chat settings', () => panel.getElementById('chatPreferences').hidden);
     return !panel.querySelector('input[name="theme"][value="system"]').checked;
+  });
+
+  await check('a style chosen in the settings panel reaches the shell and every panel', async () => {
+    const panel = panelFrame('/ui/panels/settings').contentDocument;
+    const classic = panel.querySelector('input[name="style"][value="classic"]').checked;
+    panel.querySelector('input[name="style"][value="apple"]').click();
+    await until('pk:style at the probe', () => received('pk:style').at(-1)?.style === 'apple');
+    const reached = doc().documentElement.dataset.style === 'apple' && doc().cookie.includes('ui_style=apple')
+      && probeFrame().contentDocument.documentElement.dataset.style === 'apple';
+    panel.querySelector('input[name="style"][value="classic"]').click();
+    await until('classic again', () => doc().documentElement.dataset.style === 'classic');
+    return classic && reached;
+  });
+
+  await check('a panel opens another panel beside it, by a call or a data-pk-panel link', async () => {
+    const systemTab = () => $$('.dock-tab').find((t) => t.textContent.includes('System'));
+    need(!systemTab(), 'System is not open yet');
+    const panel = probeFrame().contentDocument;
+    const link = Object.assign(panel.createElement('a'), { href: '/ui/panels/system', textContent: 'System' });
+    link.dataset.pkPanel = '';
+    panel.body.append(link);
+    link.click();
+    await until('the System tab', () => systemTab());
+    const stayed = probeFrame().contentWindow.location.pathname.endsWith('shell_probe_panel.html');
+    link.remove();
+    const toasts = () => $$('.pk-toast').filter((t) => t.textContent.includes('not available')).length;
+    const before = toasts();
+    const called = probe().pk.openPanel('/nowhere/at/all');
+    await until('the toast', () => toasts() > before);
+    return need(stayed, 'the link did not follow in the probe') && called === true;
   });
 
   await check('the palette finds a panel and opens it', async () => {

@@ -1537,6 +1537,13 @@ def _render_svg_to_image(svg_str: str, target_size: tuple[int, int] | None) -> I
     _check_svg_rasters(root)
     _cut_svg_path_errors(root)
     drawing = SvgRenderer(source, font_map=_svg_font_map()).render(root)  # type: ignore[arg-type]
+    # svglib 2 converts SVG pixels to points (svglib.svglib.PX_TO_PT, 1 px = 0.75 pt); renderPM draws a point
+    # as a pixel (72 dpi), so a 60x20 SVG came out 45x15. Back to one unit per pixel, as svglib 1 drew it.
+    import svglib.svglib as _svglib  # type: ignore
+    px_per_pt = 1.0 / getattr(_svglib, "PX_TO_PT", 1.0)
+    if px_per_pt != 1.0:
+        drawing.width, drawing.height = drawing.width * px_per_pt, drawing.height * px_per_pt
+        drawing.scale(px_per_pt, px_per_pt)
     if target_size:
         tw, th = target_size
         sx = tw / drawing.width if drawing.width else 1.0

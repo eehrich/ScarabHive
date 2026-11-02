@@ -374,3 +374,43 @@ label.question-choice {
   background: var(--surface-1); border-left: 2px solid var(--border-default);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
+
+/* ------------------------------------------------------------ style: apple */
+/* <html data-style="apple"> (kit.css): the viewer's messages in the accent, the composer a floating sheet of the
+   thin material, its pickers pills and Run a round button that answers the press. Tokens only, as above. */
+
+[data-style="apple"] .msg { line-height: 1.55; }
+[data-style="apple"] .msg.user:not(.continuation-msg) {
+  padding: 10px var(--space-4);
+  color: var(--text-on-accent); background: var(--accent);
+  border-radius: 20px 20px 6px 20px;
+}
+[data-style="apple"] .msg.user:not(.continuation-msg) a { color: inherit; text-decoration: underline; }
+[data-style="apple"] .msg.user.continuation-msg { border-radius: 20px 20px 6px 20px; }
+
+[data-style="apple"] .container-header { border-radius: var(--radius-sm); }
+[data-style="apple"] :is(.note-text, .container-body > pre, .step-thinking > pre) { border-radius: var(--radius-md); border-left-width: 0; background: var(--surface-3); }
+
+[data-style="apple"] .composer {
+  border-color: var(--border-subtle); border-radius: 22px;
+  background: var(--material-thin);
+  -webkit-backdrop-filter: var(--material-blur); backdrop-filter: var(--material-blur);
+  box-shadow: var(--shadow-overlay);
+}
+[data-style="apple"] .composer:focus-within { border-color: var(--focus-ring); box-shadow: 0 0 0 4px var(--accent-subtle), var(--shadow-overlay); }
+[data-style="apple"] #task { padding: var(--space-3) var(--space-4) var(--space-1); letter-spacing: -0.01em; }
+[data-style="apple"] .composer-bar { padding: var(--space-1) var(--space-2) var(--space-2) var(--space-3); gap: var(--space-2); }
+[data-style="apple"] .composer-select {
+  height: 30px; padding: 0 var(--space-2) 0 var(--space-3); border-radius: 999px;
+  font-size: var(--text-sm); background: var(--surface-3);
+  transition: background var(--duration-fast), transform var(--duration-fast) ease-out;
+}
+[data-style="apple"] .composer-select:active:not(:disabled) { transform: scale(0.96); }
+[data-style="apple"] :is(.run-btn, .stop-btn) { width: 36px; height: 36px; border-radius: 50%; }
+
+@media (prefers-reduced-transparency: reduce) {
+  [data-style="apple"] .composer { background: var(--surface-2); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-style="apple"] .composer-select:active:not(:disabled) { transform: none; }
+}

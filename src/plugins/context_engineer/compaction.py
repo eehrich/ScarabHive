@@ -1347,7 +1347,7 @@ class LayeredCompactionStrategy:
         file_path = item.get("path", "")
         if file_path:
             normalized = os.path.normpath(file_path)
-            return hashlib.md5(normalized.encode()).hexdigest()[:16]
+            return hashlib.md5(normalized.encode(), usedforsecurity=False).hexdigest()[:16]
 
         try:
             raw_bytes, _, _ = extract_inline_media(item)
@@ -1361,7 +1361,7 @@ class LayeredCompactionStrategy:
             return None
 
         if raw_bytes:
-            return hashlib.md5(raw_bytes).hexdigest()[:16]
+            return hashlib.md5(raw_bytes, usedforsecurity=False).hexdigest()[:16]
 
         return None
 

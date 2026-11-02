@@ -24,18 +24,22 @@ export class Workspace {
    * @param {object} deps
    * @param {() => object} deps.catalog  returns the catalogue ({panels: [...]})
    * @param {() => string} deps.theme    current theme
+   * @param {() => string} deps.style    current style (classic, apple)
    * @param {() => object|null} deps.session  active session {id, title}
    * @param {(theme: string) => void} deps.onSetTheme
+   * @param {(style: string) => void} deps.onSetStyle
    * @param {(sessionId: string) => void} [deps.onOpenSession]  a panel asks the chat to show a session
    * @param {string} deps.layoutKey  where this browser keeps the layout
    * @param {() => boolean} deps.narrow  a narrow screen: panels cover the chat, one at a time
    * @param {() => void} deps.onShow  a panel came to the front
    */
-  constructor({ catalog, theme, session, onSetTheme, onOpenSession, layoutKey, narrow, onShow }) {
+  constructor({ catalog, theme, style, session, onSetTheme, onSetStyle, onOpenSession, layoutKey, narrow, onShow }) {
     this.catalog = catalog;
     this.theme = theme;
+    this.style = style || (() => 'classic');
     this.session = session;
     this.onSetTheme = onSetTheme;
+    this.onSetStyle = onSetStyle || (() => {});
     this.onOpenSession = onOpenSession || (() => {});
     this.layoutKey = layoutKey;
     this.narrow = narrow;
@@ -98,6 +102,27 @@ export class Workspace {
 
   panel(panelId) {
     return this.catalog().panels.find((p) => p.id === panelId) || null;
+  }
+
+  /** The catalogue panel a page's path (pathname and query) lies under, the longest URL winning; else null. */
+  panelAt(path) {
+    return this.catalog().panels
+      .filter((p) => path === p.url || path.startsWith(p.url.endsWith('/') ? p.url : `${p.url}/`) || path.startsWith(`${p.url}?`))
+      .sort((a, b) => b.url.length - a.url.length)[0] || null;
+  }
+
+  /** A panel asked for another (pk:open-panel): opened at that page where the asking one is, or to the front. */
+  openLinked(item, address) {
+    let page = null;
+    try { page = new URL(address, window.location.origin); } catch { /* no address at all: it names no panel either */ }
+    const path = page?.origin === window.location.origin ? page.pathname + page.search : '';
+    const panel = path && this.panelAt(path);
+    if (!panel) {
+      showToast(document, 'That panel is not available here', 'warn');
+      return;
+    }
+    // its own URL: the panel comes as it is, a page it went to by itself kept
+    this.open(panel.id, { path: path === panel.url ? '' : path, place: item.place });
   }
 
   /** The Help panel on the manual: to the front where it shows the manual already (a page of it, a search -- the
@@ -629,7 +654,7 @@ export class Workspace {
       case 'pk:ready':
         item.dirty = false;  // a page the panel went to itself starts with nothing unsaved
         item.scope = 'session';  // and shows the chat's session, whatever the page before chose
-        this.post(item, 'pk:init', { theme: this.theme(), visible: this.shown(item), session: this.session() });
+        this.post(item, 'pk:init', { theme: this.theme(), style: this.style(), visible: this.shown(item), session: this.session() });
         break;
       case 'pk:dialog': {
         const value = await showDialog(document, message.dialog || {});
@@ -668,10 +693,16 @@ export class Workspace {
       case 'pk:set-theme':
         this.onSetTheme(String(message.theme));
         break;
+      case 'pk:set-style':
+        this.onSetStyle(String(message.style));
+        break;
       case 'pk:open-session':
         if (!message.session_id) break;
         if (this.narrow()) this.stepAside();  // the panels cover the chat there: step back so it shows
         this.onOpenSession(String(message.session_id));
+        break;
+      case 'pk:open-panel':
+        this.openLinked(item, String(message.path || ''));
         break;
       case 'pk:preferences':
         // Saved on the account by the panel; the chat lives in this document.

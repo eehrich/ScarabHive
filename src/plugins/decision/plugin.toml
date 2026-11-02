@@ -7,4 +7,5 @@ entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["tool-server"]
 category = "tools"
 requires = { agent_system = ">=0.6.0" }
+plugins = ["llm_decisions"]
 dependencies = []

@@ -23,6 +23,7 @@ def results():
 
 
 EXPECTED = [
+    "the toast region is there and open before the first toast, a live region a screen reader already knows",
     "scrollerOf finds the box that scrolls an element up and down, else the page",
     "keepInSight brings an item into sight in a list that scrolls up and down, and in the page itself",
     "on a phone a table lays out as cards, each value under its column, and nothing scrolls sideways",
@@ -65,15 +66,19 @@ EXPECTED = [
     "the kit speaks the language the page declares",
     "api with latest abandons the older call of that name, quietly",
     "an abandoned call stays abandoned while its body is still being read",
+    "a call asks in the language of the page, unless the caller names one",
     "pluginBase finds the plugin above its static folder",
     "update draws only a changed answer",
-    "localTime reads a stored time as UTC, in the page language",
+    "localTime reads a stored time as UTC, in the viewer’s date format; relative in the page language",
     "formQuery leaves empty fields out, setQuery writes the URL without a reload",
     "withBusy disables its controls while it runs and ignores a second call",
     "placeMenu can match the width of its anchor, and leaves a menu its own width otherwise",
     "copyText copies and says so, a refusal is an error toast",
+    "a toast is shown above an open modal dialog and its backdrop",
     "notice shows a callout of its kind and hides it again",
     "emptyState and skeleton draw kit components",
+    "a status badge carries the mark of its tone, never its colour alone; one with an icon of its own keeps only that",
+    "severityBadge speaks the page language and sets critical apart from high",
     "pk-pager steps inside its pages and says where it is",
     "a data-pk-select row is chosen by click and Enter, not through its controls",
     "selectTab shows the named tab without a click",
@@ -112,6 +117,10 @@ EXPECTED = [
     "a required cell refuses empty, an unchanged odd value is not handed on, a hidden cell is skipped by Tab",
     "a save rejected while its cell is open again leaves the open input alone; two tables keep their keys apart",
     "a cell left by a mouse press draws after the click, so the click lands on what was under the pointer",
+    "stat draws a figure with its label, value, sub-line and tone, a button only to click or toggle, and escapes what it shows",
+    "dueBadge says overdue, soon or later against a fixed clock, a date is due by its end, in the page language",
+    "a countdown ticks every second only while the panel is in sight, on one timer that stops when the last one goes",
+    "folderPicker lists folders, moves and opens with the keys, goes up, says a refusal in the dialog, and resolves the choice or null",
 ]
 
 

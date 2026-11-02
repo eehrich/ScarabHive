@@ -14,4 +14,5 @@ provides = ["openai"]
 provides_batch = ["openai"]
 default_base_url = { openai = "https://api.openai.com/v1" }
 requires = { agent_system = ">=0.6.0" }
+plugins = ["llm_common"]
 dependencies = ["openai>=1.37.0"]

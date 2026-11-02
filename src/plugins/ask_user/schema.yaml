@@ -56,3 +56,11 @@ config:
       A run nobody has read this long (the tab was closed and not reopened) is
       not asked any more; a waiting question stops. Counted from the moment
       the last reader left, so a reload is allowed for.
+  panel_ask_timeout:
+    type: number
+    default: 1800
+    description: >
+      Seconds a question waits in a run a panel started (an AI task): its
+      person follows the run in the panel's "Agent runs" sheet, maybe from
+      another tab, so the question waits there as run.needs_input, not on a
+      chat row. Unanswered, the call returns the same error as ask_timeout's.

@@ -58,7 +58,7 @@ class ToolCallRecord:
         # Create stable hash of arguments
         # Sort keys for consistent hashing
         args_hash = hashlib.md5(
-            json.dumps(arguments, sort_keys=True, default=str).encode()
+            json.dumps(arguments, sort_keys=True, default=str).encode(), usedforsecurity=False
         ).hexdigest()[:12]
         
         return cls(

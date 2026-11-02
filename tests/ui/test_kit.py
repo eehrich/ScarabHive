@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from agent_system.ui.resources import STATIC_DIR, TEMPLATES_DIR, sprite_icons, ui_templates
+from agent_system.ui.resources import STATIC_DIR, STYLES, TEMPLATES_DIR, sprite_icons, ui_templates
 from agent_system.ui.routes import router
 
 REPO = Path(__file__).resolve().parents[2]
@@ -36,6 +36,64 @@ def test_the_page_paints_in_the_viewers_theme(client, cookie, expected):
 
     assert response.status_code == 200
     assert f'data-theme="{expected}"' in response.text
+
+
+@pytest.mark.parametrize("cookie, expected", [
+    ("classic", "classic"), ("apple", "apple"), ("petrol", "petrol"), ("neon", "classic"), (None, "classic"),
+])
+def test_the_page_paints_in_the_viewers_style(client, cookie, expected):
+    """The style is set by the server as the theme is: a frame never flashes the other look."""
+    if cookie:
+        client.cookies.set("ui_style", cookie)
+
+    response = client.get("/ui/kit")
+
+    assert response.status_code == 200
+    assert f'data-style="{expected}"' in response.text
+
+
+def _style_tokens(style: str) -> dict[str, tuple[str, str]]:
+    """The colour tokens a style paints with, as (light, dark): classic's from :root, a style's own over them."""
+    css = (KIT / "kit.css").read_text(encoding="utf-8")
+
+    def block(selector: str) -> str:
+        match = re.search(re.escape(selector) + r"\s*\{(.*?)\n\}", css, re.S)
+        assert match, f"kit.css has no block {selector}"
+        return match.group(1)
+
+    def pairs(text: str) -> dict[str, tuple[str, str]]:
+        return {name: (light, dark) for name, light, dark in
+                re.findall(r"(--[\w-]+):\s*light-dark\((#[0-9a-fA-F]{6}),\s*(#[0-9a-fA-F]{6})\)", text)}
+
+    tokens = pairs(block(":root"))
+    if style != "classic":
+        tokens.update(pairs(block(f':root[data-style="{style}"]')))
+    return tokens
+
+
+def _contrast(a: str, b: str) -> float:
+    def luminance(colour: str) -> float:
+        channels = [int(colour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+    high, low = sorted((luminance(a), luminance(b)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_every_style_reads_at_wcag_aa_in_light_and_dark(style):
+    """Text at 4.5:1 or more (WCAG 2.1 AA) on the surfaces it sits on, in both themes: muted text on the grounds,
+    white on the accent, accent text on cards, the strong badge's text on danger."""
+    tokens = _style_tokens(style)
+    white = ("#ffffff", "#ffffff")
+    pairs = [("--text-primary", "--surface-0"), ("--text-secondary", "--surface-2"),
+             *(("--text-muted", f"--surface-{n}") for n in (0, 1, 2)),
+             ("--accent-text", "--surface-2"), (white, "--accent"), ("--danger-strong-fg", "--danger")]
+    for fore, back in pairs:
+        for theme in (0, 1):
+            fg = fore[theme] if isinstance(fore, tuple) else tokens[fore][theme]
+            ratio = _contrast(fg, tokens[back][theme])
+            assert ratio >= 4.5, f"{style} {'dark' if theme else 'light'}: {fore} on {back} is {ratio:.2f}:1"
 
 
 def test_the_kit_page_shows_every_icon_in_the_sprite(client):
@@ -99,7 +157,8 @@ def _kit_users():
 
 
 _ICON_CALL = re.compile(r"\b(?:icon|kitIcon)\(([^()]*)\)")
-_ICON_NAME = re.compile(r"""(?<!size: )(?<!label: )(?<!size=)(?<!label=)['"]([a-z][\w-]*)['"]""")
+# an operand of a comparison (`mode === 'person' ? 'user' : 'brain'`) is a value, not an icon
+_ICON_NAME = re.compile(r"""(?<!size: )(?<!label: )(?<!size=)(?<!label=)(?<!== )(?<!==)['"]([a-z][\w-]*)['"]""")
 # the empty state names its icon first (emptyState() in JS, the empty() macro); the rest is text
 _EMPTY_CALL = re.compile(r"""\b(?:emptyState|empty)\(\s*['"]([a-z][\w-]*)['"]""")
 
@@ -121,6 +180,8 @@ def test_every_icon_named_in_code_exists_in_the_sprite():
     assert {"x", "play", "shield"} <= set(referenced), "fixture: literal, ternary or sprite references went unseen"
     probe = "emptyState('only-in-an-empty-state', 'Titel', 'text')"
     assert _icon_names(probe) == ["only-in-an-empty-state"], "fixture: an empty state's icon went unseen"
+    compared = "icon(mode === 'person' ? 'user' : 'brain')"
+    assert _icon_names(compared) == ["user", "brain"], "fixture: a compared value was taken for an icon"
 
     unknown = {name: where for name, where in referenced.items() if name not in names}
 
@@ -227,3 +288,16 @@ def test_the_status_macro_and_its_script_twin_draw_the_same_set():
                 for name, markup in markups.items()} == words[lang], lang
     assert set(icons.values()) <= set(sprite_icons())
     assert f"icons.svg#{icons['pending']}" in str(macros.status("no-such-state")), "an unknown name draws as pending"
+
+
+def test_the_steps_macro_says_each_state_in_words_not_only_in_its_drawing():
+    """done, warn and ahead are a tick, a "!" and a ring of CSS; a screen reader hears them from hidden text."""
+    macros = ui_templates().env.get_template("kit/macros.html").module
+    items = [{"label": "Plan", "state": "done"}, {"label": "Build", "state": "current"},
+             {"label": "Test", "state": "warn"}, {"label": "Ship"}]
+    drawn = str(macros.steps(items, lang="de-DE"))
+    for said in ("Plan<span class=\"pk-sr-only\"> (erledigt)", "Test<span class=\"pk-sr-only\"> (braucht Aufmerksamkeit)",
+                 "Ship<span class=\"pk-sr-only\"> (noch offen)"):
+        assert said in drawn, drawn
+    assert 'aria-current="step"><span class="pk-step-label">Build</span>' in drawn, "the current one has aria-current"
+    assert "(done)" in str(macros.steps(items)) and "(done)" in str(macros.steps(items, lang="fr"))

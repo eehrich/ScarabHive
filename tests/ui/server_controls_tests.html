@@ -1,0 +1,124 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Server controls tests</title>
+  <style>body { margin: 0; } iframe { width: 800px; height: 500px; border: 0; }</style>
+</head>
+<body>
+<iframe id="page" title="page"></iframe>
+<script type="module">
+  // The real script on a probe page, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('page');
+  const win = () => frame.contentWindow;
+  const $ = (selector) => frame.contentDocument.querySelector(selector);
+  let loads = 0;
+  frame.addEventListener('load', () => { loads += 1; });
+  let visits = 0;
+  const go = async (role) => {
+    const visit = ++visits;  // each visit its own address: the page before must not pass for this one
+    frame.src = `/tests/ui/server_controls_probe.html?role=${role}&visit=${visit}`;
+    await until('the probe page', () => win().loaded && win().location.search.endsWith(`visit=${visit}`));
+  };
+  const question = () => $('dialog.pk-dialog[open]');
+  const answer = async (label) => {
+    const dialog = await until('the question', question);
+    const text = dialog.textContent;
+    [...dialog.querySelectorAll('button')].find((button) => button.textContent.trim() === label).click();
+    await until('the question gone', () => !question());
+    return text;
+  };
+  const asked = async () => (await (await fetch('/__stub/asked')).json()).join();
+  const state = () => $('#connectionState').textContent.trim();
+  const toasts = () => [...frame.contentDocument.querySelectorAll('.pk-toasts *')].map((el) => el.textContent).join(' ');
+  const cookie = (value) => { document.cookie = value ? `stub_server=${value}; path=/` : 'stub_server=; path=/; max-age=0'; };
+  cookie('');
+
+  await check('the buttons are there for an admin only', async () => {
+    await go('user');
+    const hidden = $('#stopServerButton').hidden && $('#restartServerButton').hidden
+      && getComputedStyle($('#stopServerButton')).display === 'none';
+    await go('admin');
+    return hidden && !$('#stopServerButton').hidden && !$('#restartServerButton').hidden;
+  });
+
+  await check('stopping asks first and names the running requests: cancelled, nothing is asked of the server', async () => {
+    $('#stopServerButton').click();
+    const text = await answer('Cancel');
+    await sleep(200);
+    return text.includes('2 requests are running and end with it.') && text.includes('Stop the ScarabHive server?')
+      && await asked() === '' && !$('#stopServerButton').disabled && state() === '';
+  });
+
+  await check('a refusal of the server is shown and the buttons work again', async () => {
+    cookie('refuses');
+    try {
+      $('#restartServerButton').click();
+      await answer('Restart server');
+      await until('the refusal', () => toasts().includes('This server was not started by agent-api'));
+      await until('the buttons back', () => !$('#restartServerButton').disabled && !$('#stopServerButton').disabled);
+      return await asked() === '' && win().busy.join() === 'true,false';
+    } finally {
+      cookie('');
+    }
+  });
+
+  await check('restarting waits for the server to go and come back, then loads the page anew', async () => {
+    await go('admin');
+    const before = loads;
+    $('#restartServerButton').click();
+    const text = await answer('Restart server');
+    await until('the wait', () => state() === 'Restarting');
+    const waiting = $('#restartServerButton').disabled && $('#stopServerButton').disabled && loads === before;
+    await until('the page loaded anew', () => loads > before && win().loaded, 15000);
+    return text.includes('Plugins, agents and skills are loaded anew') && waiting && await asked() === 'restart';
+  });
+
+  await check('a server back before it was seen down counts as restarted by its uptime', async () => {
+    cookie('instant');
+    try {
+      await go('admin');
+      const before = loads;
+      $('#restartServerButton').click();
+      await answer('Restart server');
+      await until('the page loaded anew', () => loads > before && win().loaded, 15000);
+      return await asked() === 'restart,restart';
+    } finally {
+      cookie('');
+    }
+  });
+
+  await check('confirmed, stop asks the server and leaves the buttons off', async () => {
+    await go('admin');
+    $('#stopServerButton').click();
+    await answer('Stop server');
+    await until('the server asked', async () => (await asked()).endsWith('stop'));
+    await until('the state', () => state() === 'Stopping');
+    // the page's own health poll takes over again: this script no longer holds the status item
+    return $('#stopServerButton').disabled && $('#restartServerButton').disabled && win().busy.join() === 'true,false'
+      && toasts().includes('The server is stopping');
+  });
+
+  cookie('');
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

@@ -44,3 +44,11 @@ def test_the_usage_tracker_keeps_its_database_in_the_directory_of_the_run():
     plugin = PLUGIN_FACTORY("context_usage_tracker", None, _server("context_usage_tracker"))
     assert plugin.tracker.db_path.name == "usage.db", plugin.tracker.db_path
     _in_the_directory_of_the_run(plugin.tracker.db_path, "context_usage_tracker.json")
+
+
+def test_the_run_events_keep_their_database_in_the_directory_of_the_run():
+    from agent_system import run_events
+
+    # the store opens it on first use, by the data_path the module bound at import
+    opened = run_events.data_path("run_events", "run_events.db")
+    _in_the_directory_of_the_run(opened, "run_events")

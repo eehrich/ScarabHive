@@ -59,7 +59,7 @@ def tool_session_id(caller_session_id: str, agent_name: str) -> str:
     import re
 
     name = re.sub(r"[^A-Za-z0-9_-]", "-", agent_name)[:40] or "agent"
-    digest = hashlib.sha1(f"{caller_session_id}\0{agent_name}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(f"{caller_session_id}\0{agent_name}".encode("utf-8"), usedforsecurity=False).hexdigest()
     session_id = f"{caller_session_id}--{name}-{digest[:8]}"
     if len(session_id) <= TOOL_SESSION_ID_MAX:
         return session_id

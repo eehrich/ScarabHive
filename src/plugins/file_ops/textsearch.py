@@ -58,6 +58,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
+from agent_system.utils.path_sandbox import is_secret, might_be_private
+
 logger = logging.getLogger(__name__)
 
 #: Never worth descending into for a code search. Pruned by the walker.
@@ -436,6 +438,8 @@ def walk_files(
                                 stack.extend(
                                     (sub, sub) for sub in _outermost_below(path, protected))
                             continue
+                        if might_be_private(name) and is_secret(path):
+                            continue  # config/*.env, data/users.db, data/sessions: never read or listed
                         if is_dir:
                             if on_directory is not None:
                                 on_directory(path)

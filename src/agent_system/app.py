@@ -32,6 +32,7 @@ from .api import (
     hook_routes,
     page_routes,
     run_control_routes,
+    run_event_routes,
     run_routes,
     tool_routes,
 )
@@ -752,6 +753,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     app.include_router(tool_routes.router)
     app.include_router(chat_routes.router)
     app.include_router(hook_routes.router)
+    app.include_router(run_event_routes.router)
     app.include_router(page_routes.favicon_router)
 
     # Last, so outermost: a remote client meets it before any other layer.
@@ -765,7 +767,7 @@ def run() -> None:
     """Run the FastAPI server with proper configuration."""
     from . import own_console
     if own_console.needed():  # Windows: off the terminal's console first, or a stuck one freezes the server
-        raise SystemExit(own_console.relaunch("agent_system.app:run", []))
+        raise SystemExit(own_console.relaunch_restarting("agent_system.app:run", []))
 
     # Set UTF-8 environment for Windows compatibility
     os.environ.setdefault('PYTHONUTF8', '1')
@@ -791,6 +793,8 @@ def run() -> None:
     logger = logging.getLogger(__name__)
     logger.info("Starting FastAPI server on %s:%s", host, port)
 
+    from .services import lifecycle
+    lifecycle.mark_managed()  # started here: an admin's "restart" ends in finish() below, which starts it anew
     uvicorn.run(
         app_obj,
         host=host,
@@ -801,6 +805,7 @@ def run() -> None:
         use_colors=False,
         log_config=None  # Disable uvicorn's logging config to preserve our setup
     )
+    lifecycle.finish()
 
 
 if __name__ == "__main__":

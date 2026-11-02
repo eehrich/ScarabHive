@@ -11,6 +11,7 @@ type = ["tool-server", "hooks", "web"]
 category = "automation"
 tags = ["workflow", "state-machine", "statechart", "orchestration", "debugger"]
 requires = { agent_system = ">=0.7.0" }
+plugins = ["agent_editor", "sub_agent_manager"]
 # Every third-party import is declared here, even when another plugin already
 # pulls it in (tests/pluginsystem/test_plugin_deps_declared.py).
 dependencies = ["ruamel.yaml>=0.18", "networkx>=3.0", "jsonschema>=4.21"]

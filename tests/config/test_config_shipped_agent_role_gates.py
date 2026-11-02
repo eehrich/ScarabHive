@@ -176,15 +176,20 @@ def test_the_file_detector_by_directory(default_file_dirs, server, flagged):
 
 
 def _private_agents() -> set[str]:
-    """Every server a plugin root besides src/plugins declares in its agent files."""
+    """Every server only a plugin root besides src/plugins declares in its agent files; one the public configuration
+    declares as well (a further root only overriding it) is not one of them."""
     import yaml
 
-    names = set()
-    for root in SRC.glob("plugins_*"):
-        for path in root.rglob("agents/*.yaml"):
+    def declared(paths) -> set[str]:
+        names = set()
+        for path in paths:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             names.update(((data.get("plugins") or {}).get("servers") or {}).keys())
-    return names
+        return names
+
+    further = declared(p for root in SRC.glob("plugins_*") for p in root.rglob("agents/*.yaml"))
+    public = declared([*(SRC / "plugins").rglob("agents/*.yaml"), *CONFIG.rglob("*.yaml")])
+    return further - public
 
 
 def test_every_agent_granted_a_shell_or_the_checkout_is_admin_only(shipped, default_file_dirs):

@@ -16,4 +16,5 @@ author = "AgentSystem"
 type = ["llm-provider"]
 provides_decisions = ["openrouter_decisions", "systemone_decisions", "ollama_decisions"]
 requires = { agent_system = ">=0.6.0" }
+plugins = ["llm_common"]
 dependencies = []

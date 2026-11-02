@@ -4,11 +4,20 @@
 {% block content %}
 <section class="pk-card pk-stack">
   <div class="pk-card-head"><h3 class="pk-card-title">Appearance</h3></div>
-  <div class="pk-row" role="radiogroup" aria-label="Theme">
-    <label class="pk-radio"><input type="radio" name="theme" value="system"> {{ icon('monitor') }} System</label>
-    <label class="pk-radio"><input type="radio" name="theme" value="light"> {{ icon('sun') }} Light</label>
-    <label class="pk-radio"><input type="radio" name="theme" value="dark"> {{ icon('moon') }} Dark</label>
-  </div>
+  <div class="pk-field"><span class="pk-label">Theme</span>
+    <div class="pk-row" role="radiogroup" aria-label="Theme">
+      <label class="pk-radio"><input type="radio" name="theme" value="system"> {{ icon('monitor') }} System</label>
+      <label class="pk-radio"><input type="radio" name="theme" value="light"> {{ icon('sun') }} Light</label>
+      <label class="pk-radio"><input type="radio" name="theme" value="dark"> {{ icon('moon') }} Dark</label>
+    </div></div>
+  <div class="pk-field"><span class="pk-label">Style</span>
+    <div class="pk-row" role="radiogroup" aria-label="Style">
+      <label class="pk-radio"><input type="radio" name="style" value="classic"> Classic</label>
+      <label class="pk-radio"><input type="radio" name="style" value="apple"> Apple</label>
+      <label class="pk-radio"><input type="radio" name="style" value="petrol"> Petrol</label>
+    </div>
+    <span class="pk-help">Apple: system font, translucent bars, larger rounded controls and spring motion.
+      Petrol: flat and calm -- cool greys, a petrol accent, lines instead of shadows.</span></div>
 </section>
 
 <div id="noAccounts" class="pk-empty" hidden>{{ icon('user') }}<div class="pk-empty-title">No accounts</div>

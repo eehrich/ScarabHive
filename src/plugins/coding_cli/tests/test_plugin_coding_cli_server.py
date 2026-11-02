@@ -374,7 +374,8 @@ async def test_a_web_workdir_searches_and_reads_the_web_and_no_other_does(repo, 
     argv = log()["argv"]
     # never the shell: a page can steer the model, and a file it wrote and an allowed command would run it
     assert argv[argv.index("--tools") + 1].split(",")[-2:] == ["WebSearch", "WebFetch"], argv
-    assert argv[argv.index("--allowedTools") + 1:argv.index("--tools")] == ["WebSearch", "WebFetch"], argv
+    assert argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")] == ["WebSearch", "WebFetch"], argv
+    assert argv[argv.index("--disallowedTools") + 1:argv.index("--tools")] == cli.secret_rules(), argv
     await call(server, "run_task", task="look", workdir="repo", mode=mode)
     argv = log()["argv"]
     assert "Web" not in argv[argv.index("--tools") + 1] and "WebSearch" not in argv, argv
@@ -2079,7 +2080,7 @@ async def test_a_tool_the_servers_entry_blocks_stays_refused(repo, log):
     argv = log()["argv"]
     assert argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")] == ["mcp__remote_mcp"]
     assert argv[argv.index("--disallowedTools") + 1:argv.index("--tools")] == [
-        "mcp__remote_mcp__delete_project", "mcp__remote_mcp__odd_name_x"]
+        "mcp__remote_mcp__delete_project", "mcp__remote_mcp__odd_name_x", *cli.secret_rules()]
 
 
 class BrokenStatus(Status):

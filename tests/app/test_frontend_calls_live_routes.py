@@ -80,7 +80,28 @@ def _route_paths() -> set[str]:
     app = build_app()
     # app.routes holds an included router as one entry (fastapi 0.13x on): its routes come from the schema, the
     # entries themselves for what the schema leaves out (the static mount, routes not in it)
-    return {path for _method, path in http_routes(app)} | {getattr(route, "path", "") for route in app.routes}
+    return ({path for _method, path in http_routes(app)} | {getattr(route, "path", "") for route in app.routes}
+            | _plugin_route_paths(REPO_ROOT))
+
+
+def _plugin_route_paths(root: Path) -> set[str]:
+    """The routes a plugin's schema.yaml declares (web_ui.endpoints), under the prefix schema_router mounts them at
+    (/plugins/<name>). build_app() leaves them out: plugins mount when the server starts, and one panel calls
+    another's (a plugin may send its runs' events to stategraph's /api/runs/{run_id}/events)."""
+    import yaml
+
+    from agent_system.utils import yaml_io
+
+    paths = set()
+    for schema in root.glob("src/plugins*/*/schema.yaml"):
+        try:
+            data = yaml_io.safe_load(schema.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:  # Jinja-templated: rendered only by its plugin
+            continue
+        for endpoint in (data.get("web_ui") or {}).get("endpoints") or []:
+            if isinstance(endpoint, dict) and isinstance(endpoint.get("path"), str):
+                paths.add(f"/plugins/{schema.parent.name}{endpoint['path']}")
+    return paths
 
 
 def _matches(called: str, route: str) -> bool:
@@ -120,6 +141,8 @@ def test_every_path_the_frontend_asks_for_is_a_route_of_this_app(routes):
     files = _js_files(REPO_ROOT)
     assert len(called) >= 8, f"the scan found only {sorted(called)} -- it went blind"
     assert len(routes) >= 20, f"the app registered only {len(routes)} routes"
+    # 244 plugin routes of 30 schemas, measured 2026-10-30
+    assert len(_plugin_route_paths(REPO_ROOT)) >= 100, "the plugins' schemas gave hardly any routes"
     # Separately, because the plugin panels contribute no path at all today:
     # without this, dropping them from JS_ROOTS would change nothing visible.
     panels = [f for f in files if "plugins" in f.parts]

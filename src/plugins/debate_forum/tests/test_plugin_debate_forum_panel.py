@@ -58,7 +58,8 @@ def seed(db) -> None:
     db.post_message(titles, "Sven", "author", 1, "Title one.")
     db.conclude_channel(titles, VERDICT, "**B** wins")
     evil = db.create_channel("<img src=x onerror=parent.__xss=1>", "<i>topic</i>", group_id=markup)["channel_id"]
-    db.post_message(evil, "<u>name</u>", "<s>role</s>", 1, "<script>parent.__xss=2</script><img src=x onerror=parent.__xss=3> text")
+    # quoted: Markdown 3.11.2 takes an unquoted value with "=" for text, not a tag, and the sanitiser would never see it
+    db.post_message(evil, "<u>name</u>", "<s>role</s>", 1, '<script>parent.__xss=2</script><img src=x onerror="parent.__xss=3"> text')
     old = db.create_channel("old-debate", "Long gone")["channel_id"]
     db.archive_channel(old)
 

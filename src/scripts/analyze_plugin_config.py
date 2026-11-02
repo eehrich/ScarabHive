@@ -224,11 +224,11 @@ class ConfigExtractor:
            (value_str.startswith("'") and value_str.endswith("'")):
             return value_str[1:-1]
 
-        # Lists (simple)
+        # Lists (simple): literals only -- the text comes from the files analysed, and eval would run it
         if value_str.startswith('[') and value_str.endswith(']'):
             try:
-                return eval(value_str)
-            except Exception:
+                return ast.literal_eval(value_str)
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
                 pass
 
         # Keep as string if can't parse

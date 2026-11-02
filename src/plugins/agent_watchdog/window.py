@@ -75,7 +75,7 @@ def _call_ids(msg: Any) -> List[Any]:
 def _fingerprint(arguments: Any) -> str:
     raw = arguments if isinstance(arguments, str) else json.dumps(
         arguments, sort_keys=True, default=str)
-    digest = hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:8]
+    digest = hashlib.sha1(raw.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:8]
     return f"{digest} ({len(raw)} chars)"
 
 

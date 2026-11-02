@@ -73,6 +73,19 @@ def plugin_optional_pip_dependencies(plugin_dir: Path) -> list[str]:
     return _manifest_specs(plugin_dir, "optional_dependencies")
 
 
+def plugin_requirements(metadata: dict[str, Any]) -> list[str]:
+    """The other plugins a plugin imports from: ``plugins = [...]`` in its
+    manifest, by folder name. They have to be installed beside it, enabled or
+    not -- ``llm_common`` is a library and never runs. Checked against the
+    imports by tests/pluginsystem/test_plugin_deps_declared.py and against
+    the installed plugins when the runtime starts.
+    """
+    names = metadata.get("plugins") if isinstance(metadata, dict) else None
+    if isinstance(names, list):
+        return [str(n).strip() for n in names if str(n).strip()]
+    return []
+
+
 def _manifest_specs(plugin_dir: Path, key: str) -> list[str]:
     toml_path = plugin_dir / MANIFEST_TOML
     if not (toml_path.exists() and tomllib is not None):

@@ -76,6 +76,45 @@ async def reload_config_endpoint(
     return ReloadConfigResponse(status="ok", report=report)
 
 
+class ServerLifecycleResponse(BaseModel):
+    """The server is on its way down."""
+    status: Literal["stopping", "restarting"]
+    running_requests: int
+
+
+async def _end_server(action: Literal["stop", "restart"], current_user: User) -> ServerLifecycleResponse:
+    import asyncio
+
+    from agent_system.services import lifecycle
+
+    try:
+        running = (await list_active_sessions(admin_user=current_user)).total
+    except Exception:  # the count is for the answer only: it must not keep the server up
+        running = 0
+    try:
+        lifecycle.request(action, asyncio.get_running_loop())
+    except (lifecycle.AlreadyPending, lifecycle.RestartUnavailable) as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    logger.warning("Admin '%s' asked the server to %s (%d request(s) running)",
+                   getattr(current_user, "username", "?"), action, running)
+    return ServerLifecycleResponse(status="stopping" if action == "stop" else "restarting", running_requests=running)
+
+
+@router.post("/server/stop", response_model=ServerLifecycleResponse)
+async def stop_server(current_user: User = Depends(require_admin)) -> ServerLifecycleResponse:
+    """End the server process, as Ctrl+C in its terminal does. It stays down until someone starts it again --
+    unless a supervisor does (Docker's ``restart: unless-stopped``, a service manager)."""
+    return await _end_server("stop", current_user)
+
+
+@router.post("/server/restart", response_model=ServerLifecycleResponse)
+async def restart_server(current_user: User = Depends(require_admin)) -> ServerLifecycleResponse:
+    """Stop the server and start it again: new and changed plugins, agents, skills and code are loaded as on
+    any start. Running requests end with it; sessions stay. 409 where nothing would start it again (a server
+    not started by agent-api)."""
+    return await _end_server("restart", current_user)
+
+
 class ConfigReloadUnavailable(RuntimeError):
     """The app keeps no config service to reload from."""
 

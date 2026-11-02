@@ -112,6 +112,13 @@
         "type": "string"
       }
     },
+    "plugins": {
+      "type": "array",
+      "description": "The other plugins whose modules this plugin imports (checked by tests/pluginsystem/test_plugin_deps_declared.py and at start)",
+      "items": {
+        "type": "string"
+      }
+    },
     "optional_dependencies": {
       "type": "array",
       "description": "Python package dependencies whose install may fail without breaking the install (requirements/optional.txt, installed best effort by the install scripts)",

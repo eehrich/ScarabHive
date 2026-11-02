@@ -180,10 +180,9 @@ def test_plugins_info_of_an_unknown_plugin_exits_1(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["error"] == "plugin not found"
 
 
-def test_reload_without_a_server_exits_1(monkeypatch, capsys):
+def test_reload_without_a_server_exits_1(monkeypatch, capsys, refused_url):
     monkeypatch.setattr(cli, "load_settings", lambda path=None: AgentSystemConfig())
-    # Port 9 (discard) is closed on a normal machine: the connect is refused at once
-    monkeypatch.setattr("sys.argv", ["agent-cli", "reload", "--url", "http://127.0.0.1:9", "--timeout", "5"])
+    monkeypatch.setattr("sys.argv", ["agent-cli", "reload", "--url", refused_url, "--timeout", "5"])
     with pytest.raises(SystemExit) as exit_info:
         cli.main()
     assert exit_info.value.code == 1

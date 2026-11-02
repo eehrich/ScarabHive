@@ -256,7 +256,7 @@ opening it again brings it to the front.
 
 @{table}
 Part | What is there
-Header | the sessions toggle; the title of the open session (opens it in the Session panel); the search field (the command palette, Ctrl+K); on the right first the work area -- the panel starter (panels by category, with a search, pins and the recently opened) and the dock toggle (Ctrl+Alt+B) --, then the app -- the help button (this manual) and, last, the user menu (the theme: light, dark or system; @{b}Settings@{ub}, @{b}System@{ub}, @{b}Log out@{ub})
+Header | the sessions toggle; the title of the open session (opens it in the Session panel); the search field (the command palette, Ctrl+K); on the right first the work area -- the panel starter (panels by category, with a search, pins and the recently opened) and the dock toggle (Ctrl+Alt+B) --, then the app -- for admins the buttons to restart and to stop the server, the help button (this manual) and, last, the user menu (the theme: light, dark or system; @{b}Settings@{ub}, @{b}System@{ub}, @{b}Log out@{ub})
 Sessions, left | your sessions, with their sub-agent sessions: on top your folders, below the sessions in none; both grouped by day -- Today, Yesterday and This week open, each month before folded (what you open or close stays so). A folder files the sessions of the agent groups it claims by itself; a plugin brings its own (the writer: Writer, the video machines: Video), and you can change or delete those like your own; move a session by dragging it onto a folder or with its folder button, out again onto the list below. The folder button above the list makes a folder: a name, an icon, the groups it files; its pencil changes or deletes it (its sessions stay). @{b}New@{ub}, rename, delete; a marker on sessions -- and closed folders -- that are running right now. Ctrl+B hides it; its edge can be dragged
 Chat, middle | the conversation; while the agent works, a progress line per tool call, which ends in the tool's result line
 Message box | the text field; under it the @{b}Agent@{ub}, @{b}Model profile@{ub} and @{b}Thinking@{ub} buttons, attach, send, and @{b}Stop@{ub} while a run is going
@@ -731,6 +731,36 @@ a reload happens only when someone asks for it.
 unless @{tt}--url@{utt} or @{tt}AGENT_SERVER_URL@{utt} says otherwise, and
 authenticates with @{tt}--api-key@{utt} or @{tt}AGENT_ADMIN_API_KEY@{utt} /
 @{tt}AGENT_API_KEY@{utt} (the API key of an admin).
+
+@{h2}Restart and stop from the browser
+
+An admin has two buttons in the header, and the same two actions under
+Ctrl+K:
+
+@{bullet}@{b}Restart the server@{ub} (@{tt}POST /admin/server/restart@{utt})
+stops the server and starts it again: new and changed plugins, agents,
+skills and code are loaded as on any start. The page waits and loads
+itself anew when the server answers again.
+@{bullet}@{b}Stop the server@{ub} (@{tt}POST /admin/server/stop@{utt}) ends
+it, as Ctrl+C in its terminal does. It stays down until it is started
+again on its machine.
+
+Both ask first and say how many requests are running: those end with the
+server, sessions stay. The server gets 10 seconds to finish by itself and
+is then hurried; a connection that stays open (a run's stream) makes a
+stop take up to 20 seconds.
+
+@{bullet}A restart needs a server started with @{tt}agent-api@{utt}: on
+Windows its launcher starts it again, elsewhere the process replaces
+itself. A server started another way ("uvicorn
+agent_system.app:build_app") answers 409 and is restarted by whoever
+started it.
+@{bullet}Under a supervisor that restarts whatever ends -- Docker's
+@{tt}restart: unless-stopped@{utt} of the shipped docker-compose.yml, a
+service manager -- a stop comes back as a restart. Stop the container or
+the service there.
+@{bullet}Without authentication there are no admin routes, and so no
+buttons.
 
 @{h2}Health
 

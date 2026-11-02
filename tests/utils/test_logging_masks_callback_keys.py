@@ -57,9 +57,14 @@ def _access_line(tmp_path, path):
     access.disabled = False
     access.setLevel(logging.INFO)
     access.addHandler(own)
+    # At INFO, as uvicorn's own log config sets it. setup_logging(enabled=False) leaves the level alone, so in
+    # a full run the level an earlier test left (WARNING) dropped the line and the assertion read ''.
+    level = access.level
+    access.setLevel(logging.INFO)
     try:
         access.info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:50000", "POST", path, "1.1", 404)
     finally:
+        access.setLevel(level)
         access.removeHandler(own)
         own.close()
         access.disabled = kept[0]

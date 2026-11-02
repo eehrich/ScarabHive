@@ -117,7 +117,7 @@ class _Index:
                 documents = None
                 if key is None:  # generated (the plugin list): no file to stamp, its text is the key
                     documents = [_document(node.title, node_text(guide, node)) for _, node in nodes]
-                    key = "sha1:" + hashlib.sha1("\0".join(documents).encode("utf-8")).hexdigest()
+                    key = "sha1:" + hashlib.sha1("\0".join(documents).encode("utf-8"), usedforsecurity=False).hexdigest()
                 known = self.guides.get(guide.id)
                 # the names too: a stamp that did not move (a copy keeping its mtime) must not serve rows
                 # of nodes the guide no longer has -- a KeyError on every search, kept on disk

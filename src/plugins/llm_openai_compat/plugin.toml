@@ -22,4 +22,5 @@ provides_tts = ["openai_speech"]
 # tests/llm/test_llm_openrouter_routing_default.py.
 default_base_url = { openai_httpx = "https://api.openai.com/v1", openai_responses = "https://openrouter.ai/api/v1" }
 requires = { agent_system = ">=0.6.0" }
+plugins = ["llm_common"]
 dependencies = []

@@ -9,15 +9,28 @@ backend runs. Without chromadb the embedding model runs on sentence-transformers
 
 import json
 import logging
+import re
 import sqlite3
 import struct
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import VectorBackend, VectorStoreError
-from .embeddings import EMBEDDING_DIM, _load_embedding_model
+from . import embeddings as _embeddings
+from .embeddings import EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
+
+#: What a collection name may hold: it becomes part of the table names (vec_<name>, meta_<name>), which SQL
+#: cannot take as parameters. A name with anything else never made a valid table name anyway.
+_COLLECTION_NAME = re.compile(r"[A-Za-z0-9_]+")
+
+
+def _checked(collection: str) -> str:
+    """``collection`` when it is safe to format into a table name; else VectorStoreError."""
+    if not isinstance(collection, str) or not _COLLECTION_NAME.fullmatch(collection):
+        raise VectorStoreError(f"sqlite-vec: collection name {collection!r} must be letters, digits and _ only")
+    return collection
 
 
 class SqliteVecBackend(VectorBackend):
@@ -30,7 +43,7 @@ class SqliteVecBackend(VectorBackend):
         self.embedding_model_name = embedding_model_name
         # sqlite-vec state
         self._conn: Optional[sqlite3.Connection] = None
-        self._model = None
+        self._model_logged = False
 
     def close(self) -> None:
         """Close the connection."""
@@ -197,6 +210,7 @@ class SqliteVecBackend(VectorBackend):
     def delete_collection(self, name: str) -> None:
         """Delete an entire collection."""
         try:
+            _checked(name)
             conn = self._get_conn()
             conn.execute(f"DROP TABLE IF EXISTS vec_{name}")
             # The metadata table must go too -- leaving it made list_ids
@@ -215,8 +229,8 @@ class SqliteVecBackend(VectorBackend):
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND (name LIKE 'vec_%' OR name LIKE 'meta_%')"
         ).fetchall()
-        for (table_name,) in tables:
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        for (table_name,) in tables:  # names from the file itself, quoted as identifiers all the same
+            conn.execute('DROP TABLE IF EXISTS "{}"'.format(table_name.replace('"', '""')))
         conn.commit()
         logger.info("sqlite-vec reset complete")
 
@@ -246,11 +260,16 @@ class SqliteVecBackend(VectorBackend):
         No stand-in when it cannot load: the vectors of another model -- or of
         a hash, as there used to be -- would be stored for good and rank every
         later query by noise. The ImportError says what to install.
+
+        Asked on every call, through the module, not kept on the instance:
+        _load_embedding_model caches per model already (a dict lookup), and a
+        copy here -- or a reference imported by name -- was a second way to the
+        model that whatever replaces the loader in embeddings never reached.
         """
-        if self._model is None:
-            self._model = _load_embedding_model(self.embedding_model_name)
+        if not self._model_logged:
             logger.info(f"Using embedding model: {self.embedding_model_name}")
-        return self._model
+            self._model_logged = True
+        return _embeddings._load_embedding_model(self.embedding_model_name)
 
     def _compute_embedding(self, text: str) -> List[float]:
         """Compute embedding for text."""
@@ -263,7 +282,8 @@ class SqliteVecBackend(VectorBackend):
         return struct.pack(f'{len(embedding)}f', *embedding)
     
     def _ensure_table(self, collection: str) -> None:
-        """Ensure sqlite-vec virtual table exists."""
+        """Ensure sqlite-vec virtual table exists; every method that formats ``collection`` in comes here first."""
+        _checked(collection)
         conn = self._get_conn()
         
         # Create vec0 virtual table

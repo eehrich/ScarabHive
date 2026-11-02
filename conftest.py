@@ -137,6 +137,7 @@ atexit.register(_remove_capture_dir)  # registered first: runs after the stores 
 _CAPTURE_STORES = frozenset({
     "message_debugger",  # turns and raw requests: message_debugger/debugger.db
     "context_usage_tracker.json",  # the tracker keeps its database beside the stem: context_usage_tracker/usage.db
+    "run_events",  # what every panel run says while it works: run_events/run_events.db (agent_system.run_events)
 })
 
 
@@ -403,6 +404,22 @@ def set_test_server_port():
     yield port
 
     # No teardown required; environment variable will be discarded after tests
+
+
+@pytest.fixture
+def refused_url() -> str:
+    """http://127.0.0.1:<port> where nothing listens, so a connect is refused at once.
+
+    Port 9 is no such port: Windows' "Simple TCP/IP Services" (TCPSVCS) run the
+    discard service there, which accepts every connection and never answers --
+    a client waiting for a reply hangs until its read timeout. A port the OS
+    just handed out and took back is free.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return f"http://127.0.0.1:{port}"
 
 
 class WokeForReal(BaseException):

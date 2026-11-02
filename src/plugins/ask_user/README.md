@@ -7,7 +7,10 @@ chat under the run, with up to four options and a field for an answer in the
 person's own words -- or in `agent-cli chat`, numbered, answered by the next
 line typed. A run nobody watches -- the API, agent-run, a one-shot agent-cli,
 a job, a closed tab -- is never asked: the tool answers at once, and the model
-decides itself and says what it assumed.
+decides itself and says what it assumed. A panel's AI task is the exception:
+its person follows the run in the panel's "Agent runs" sheet, so the question
+waits there (`run.needs_input`, up to `panel_ask_timeout`, 30 minutes) and is
+answered through the same route (see `docs/run_events.md`).
 
 - **Tool:** `ask_user` (named like the instance) -- a question, optionally
   2 to 4 options and `multi_select`; the answer is the result.

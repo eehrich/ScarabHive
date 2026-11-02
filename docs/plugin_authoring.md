@@ -460,6 +460,12 @@ dependencies = ["requests>=2.25.0", "beautifulsoup4>=4.9.0"]
   breaking the install — typically one that builds from source on some
   platforms (`image_compose`: `reportlab[pycairo]`). The code imports them
   lazily and answers with the fix when they are missing.
+- **`plugins`**: the other plugins this one imports from, by folder name
+  (a plugin that reads another's store: `["<other>"]`). They must be installed beside it;
+  enabled is not required (`llm_common` is a library and never runs). The
+  runtime lists a named plugin that is not installed among its start-up
+  problems, and `tests/pluginsystem/test_plugin_deps_declared.py` keeps the
+  list equal to the plugin's imports, in both directions.
 
 ### How plugin dependencies reach the install
 

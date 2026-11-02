@@ -58,6 +58,7 @@ category = "tools"
 requires = { agent_system = ">=0.6.0" }  # required by the validator
 dependencies = []                        # pip specs only
 optional_dependencies = []               # pip specs an install may lack (requirements/optional.txt)
+plugins = []                             # other plugins this one imports from, by folder name
 ```
 
 ```python
@@ -79,6 +80,10 @@ PLUGIN_FACTORY = MyServer   # called as (name, system_config, server_config)
   `optional_dependencies`: `requirements/optional.txt`, installed best effort by
   the install scripts, not by `pip install -e .`. The code imports it lazily and
   answers with the fix when it is missing.
+- Importing from another plugin (`from plugins.<other>.<module> import ...`):
+  name it in `plugins = [...]`. A test keeps the list equal to the imports
+  (`test_every_import_of_another_plugin_is_declared_in_plugins`); the runtime
+  reports a named plugin that is not installed as a start-up problem.
 
 ## Activation chain — when does an agent see the tool?
 

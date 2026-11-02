@@ -155,6 +155,7 @@ the web chat, an anonymous visitor with authentication on | no
 agent-cli chat, its status shown in colour, typed into a terminal | yes, in the terminal
 agent-cli chat with @{tt}--no-status@{utt}, without colour (@{tt}--color never@{utt} or @{tt}text@{utt}, @{tt}NO_COLOR@{utt}, @{tt}TERM=dumb@{utt}), or with input that is not a terminal | no
 the tab was closed for gone_after_seconds | no; a waiting question stops
+a panel's AI task (plugins/agent_tasks.py), whose person follows it in the panel | yes, in the panel's "Agent runs" sheet: the run waits as needs_input up to panel_ask_timeout
 agent-run, a one-shot agent-cli, a run woken in a process of its own (@{tt}--woken@{utt}), the OpenAI-compatible API, a JSON @{tt}/run@{utt}, a job | no
 an async sub-agent after the run above it ended | no
 a call from a tool_script script, a state machine or a slash command | never -- see @{" Sub-agents and scripts " link subruns}
@@ -365,6 +366,7 @@ ask_user:
     ask_timeout: 300          # seconds a question waits; the only limit on the wait
     reask_seconds: 20
     gone_after_seconds: 15
+    panel_ask_timeout: 1800   # seconds a question of a panel's AI task waits in the "Agent runs" sheet
 @{body}
 
 An agent gets the tool through its allowlist:
@@ -395,6 +397,7 @@ Key | Default | Meaning
 ask_timeout | 300 | seconds a question waits for an answer
 reask_seconds | 20 | a waiting question is sent again this often, so a reloaded page shows it again
 gone_after_seconds | 15 | a run nobody has read this long is not asked; a waiting question stops
+panel_ask_timeout | 1800 | seconds a question of a panel's AI task waits in the panel's "Agent runs" sheet
 @{body}
 
 @{h2}The routes

@@ -38,6 +38,8 @@ _UTF8 = 65001
 _SYNCHRONIZE, _INFINITE, _WAIT_TIMEOUT = 0x00100000, 0xFFFFFFFF, 0x102
 _KILL_ON_JOB_CLOSE, _BREAKAWAY_OK, _ASSIGN_PROCESS = 0x2000, 0x0800, 0x0001
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+#: The server's exit code for "start me again" (services/lifecycle.py): the launcher does, see relaunch_restarting.
+RESTART_EXIT_CODE = 75
 _serving = False
 _terminal = False
 
@@ -45,6 +47,11 @@ _terminal = False
 def needed() -> bool:
     """Whether a server about to start belongs on a console of its own first."""
     return os.name == "nt" and not _serving
+
+
+def serving() -> bool:
+    """For the server: whether a launcher started it on a console of its own -- and so can start it again."""
+    return _serving
 
 
 def output_reaches_a_terminal() -> bool:
@@ -55,9 +62,18 @@ def output_reaches_a_terminal() -> bool:
 def api() -> None:
     """agent-api: off to a console of its own before the app is even imported -- the launcher stays small."""
     if needed():
-        sys.exit(relaunch("agent_system.app:run", []))
+        sys.exit(relaunch_restarting("agent_system.app:run", []))
     from agent_system.app import run
     run()
+
+
+def relaunch_restarting(target: str, args: list[str]) -> int:
+    """relaunch(), again for as long as the server asks to be started anew (it exits with RESTART_EXIT_CODE)."""
+    while True:
+        code = relaunch(target, args)
+        if code != RESTART_EXIT_CODE:
+            return code
+        print("own_console: the server asked for a restart, starting it again", flush=True)
 
 
 def popen_outliving(*args, creationflags: int = 0, **kwargs) -> subprocess.Popen:

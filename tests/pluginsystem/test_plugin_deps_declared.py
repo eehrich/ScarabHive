@@ -284,11 +284,18 @@ def test_plugin_modules_use_no_parent_relative_imports():
     its plugins reach a shared package of that root through `from ..<shared>`,
     and discovery pre-registers that module for them. The guard used to sit on the LLM providers' own root; they
     live under src/plugins now, and the rule was never about them in
-    particular."""
+    particular.
+
+    A folder with its own pytest.ini is a project of its own that a plugin carries as an example (sample
+    code a seed script copies into a project's repository): it is never imported as part of the plugins
+    package, and its tests import their siblings relatively from that folder as root -- not looked at."""
     root = REPO_ROOT / "src" / "plugins"
+    standalone = [ini.parent for ini in root.rglob("pytest.ini")]
     offenders = []
     scanned = 0
     for py in root.rglob("*.py"):
+        if any(project in py.parents for project in standalone):
+            continue
         scanned += 1
         tree = ast.parse(py.read_text(encoding="utf-8-sig", errors="replace"))
         for node in ast.walk(tree):
@@ -301,3 +308,53 @@ def test_plugin_modules_use_no_parent_relative_imports():
         "parent-relative imports inside src/plugins resolve against the "
         "plugins package, not agent_system — make them absolute:\n  "
         + "\n  ".join(offenders))
+
+
+def _plugin_imports(plugin_dir: Path, plugins: dict[str, set[str]]) -> set[str]:
+    """The other plugins this plugin imports from, in any plugin root (``plugins.<name>``, ``plugins_x.<name>``,
+    ``src.plugins.<name>``; ``plugins``: root -> its plugins); tests and test suites excluded, as for the pip scan."""
+    found = set()
+    for py in plugin_dir.rglob("*.py"):
+        if "tests" in py.parts or "test_suite" in py.parts:
+            continue
+        for node in ast.walk(ast.parse(py.read_text(encoding="utf-8-sig", errors="replace"))):
+            mods = []
+            if isinstance(node, ast.Import):
+                mods = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                mods = [node.module]
+            for mod in mods:
+                parts = mod.split(".")
+                if parts[0] == "src":
+                    parts = parts[1:]
+                if len(parts) > 1 and parts[1] in plugins.get(parts[0], ()):
+                    found.add(parts[1])
+    found.discard(plugin_dir.name)
+    return found
+
+
+def test_every_import_of_another_plugin_is_declared_in_plugins():
+    """A plugin that imports another names it in ``plugins = [...]`` of its plugin.toml, and names nothing it does not
+    import. A plugin that read another's store with nothing saying so failed at the first import when shipped alone or
+    with the other left out of an install -- a lazy import only when the feature ran. The
+    runtime reports a declared plugin that is not installed when it starts (Runtime._check_required_plugins)."""
+    from agent_system.plugins.plugin_manifest import plugin_requirements
+
+    offenders = []
+    edges = 0
+    roots = {d.parent for d in _plugin_dirs()}
+    plugins = {root.name: {d.name for d in root.iterdir() if (d / "plugin.toml").is_file()} for root in roots}
+    for root in sorted(roots):
+        for name in sorted(plugins[root.name]):
+            plugin_dir = root / name
+            meta = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8")).get("plugin", {})
+            declared = set(plugin_requirements(meta))
+            imported = _plugin_imports(plugin_dir, plugins)
+            edges += len(imported)
+            for missing in sorted(imported - declared):
+                offenders.append(f"{root.name}/{name}: imports plugin {missing!r}, not in its plugins = [...]")
+            for stale in sorted(declared - imported):
+                offenders.append(f"{root.name}/{name}: declares plugin {stale!r} in plugins = [...] but imports nothing "
+                                 f"from it")
+    assert edges >= 15, f"only {edges} imports between plugins found — the scan went blind"
+    assert not offenders, "plugin.toml `plugins` out of step with the imports:\n  " + "\n  ".join(offenders)

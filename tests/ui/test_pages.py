@@ -19,4 +19,4 @@ async def test_the_page_renders_with_its_entry_point(path, entry):
 
     assert page.status_code == 200
     assert entry in page.text
-    assert '<html lang="en" class="pk-root" data-theme="system">' in page.text
+    assert '<html lang="en" class="pk-root" data-theme="system" data-style="classic">' in page.text

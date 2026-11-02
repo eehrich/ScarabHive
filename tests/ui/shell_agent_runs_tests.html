@@ -1,0 +1,188 @@
+<!doctype html>
+<html class="pk-root" data-theme="dark" lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>agent_runs.js: the agents at work in the head of the shell</title>
+  <link rel="stylesheet" href="/static/kit/kit.css">
+  <link rel="stylesheet" href="/static/css/shell.css">
+</head>
+<body>
+<header class="app-header"><div class="app-header-actions">
+  <button id="agentRunsPill" type="button" class="pk-btn pk-btn--ghost pk-btn--sm app-runs" hidden></button>
+  <button id="agentRunsBell" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" hidden>bell</button>
+</div></header>
+<script type="module">
+  // The pill against a stand-in stream: each check says what the server would stream and watches the head.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 4000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(20);
+    }
+  }
+
+  // notifications as a stand-in: what the pill would show, and whether the person is away
+  const notes = [];
+  window.Notification = class { constructor(title, options) { notes.push({ title, ...options }); }
+    static permission = 'default'; static async requestPermission() { Notification.permission = 'granted'; return 'granted'; } close() {} };
+  let looking = true;
+  document.hasFocus = () => looking;
+  window.EventSource = class { constructor(url) { this.url = url; window.stream = this; } close() { this.closed = true; } };
+  let seq = 0;
+  const say = (data) => window.stream.onmessage({ data: JSON.stringify(data) });
+  const event = (fields) => say({ event_id: `e${++seq}`, seq, ts: new Date().toISOString(), payload: null, touching: [], ...fields });
+
+  const live = await import('/static/kit/run-events.js');
+  const { AgentRunsPill, PILL } = await import('/static/js/shell/agent_runs.js');
+  PILL.checkMs = 50;
+  PILL.lang = 'en';
+  const opened = [];
+  const button = document.getElementById('agentRunsPill');
+  const bell = document.getElementById('agentRunsBell');
+  const pill = new AgentRunsPill({ button, bell, onOpen: (run) => opened.push(run) });
+  pill.start();
+
+  await check('the stream it follows is the run events of the person', async () => window.stream.url === '/api/agent-runs/stream');
+
+  await check('while no agent works the pill stays out of the way', async () => {
+    say({ type: 'runs.snapshot', runs: [{ run_id: 'old', agent: 'inventory_agent', state: 'done', started: '2026-10-31T10:00:00Z' }] });
+    await sleep(60);
+    return button.hidden;
+  });
+
+  await check('an agent at work shows with what it does now, in plain words', async () => {
+    event({ run_id: 'r1', type: 'run.started', state: 'working', agent: 'code_analyst', source: 'code_audit',
+      subject: { title: 'Code analysis' }, step: null });
+    await until('the pill', () => !button.hidden);
+    event({ run_id: 'r1', type: 'run.step', state: 'working', agent: 'code_analyst', source: 'code_audit',
+      subject: { title: 'Code analysis' }, step: { index: 1, total: null, key: 'read', label: 'Reading the findings', labels: { de: 'Liest die Befunde' } } });
+    const step = await until('the step', () => button.querySelector('[data-runs-step]'));
+    return button.textContent.includes('1 agent at work') && step.textContent === 'Reading the findings'
+      && button.title.includes('code_analyst · Code analysis: Reading the findings')
+      && button.querySelector('.ai-live-dot:not(.ai-live-dot--quiet)') !== null;
+  });
+
+  await check('the step is told in the reader\'s language where the agent names it so', async () => {
+    PILL.lang = 'de';
+    pill.draw();
+    const german = button.querySelector('[data-runs-step]').textContent === 'Liest die Befunde'
+      && button.title.includes('Liest die Befunde') && button.textContent.includes('1 agent at work');
+    PILL.lang = 'en';
+    pill.draw();
+    return german && button.querySelector('[data-runs-step]').textContent === 'Reading the findings';
+  });
+
+  await check('a second agent counts, the one heard of last leads', async () => {
+    event({ run_id: 'r2', type: 'run.step', state: 'working', agent: 'inventory_agent', source: 'inventory_scan',
+      subject: { title: 'Inventory' }, step: { index: 1, total: 3, key: 'build', label: 'Reading the build files' } });
+    await until('two', () => button.dataset.runsWorking === '2');
+    return button.textContent.includes('2 agents at work') && button.querySelector('[data-runs-step]').textContent === 'Reading the build files';
+  });
+
+  await check('a click opens the panel that started the leading run', async () => {
+    button.click();
+    return opened.length === 1 && opened[0].run_id === 'r2' && opened[0].source === 'inventory_scan';
+  });
+
+  await check('an agent that went quiet is marked, and a sign of life takes the mark back', async () => {
+    live.LIVE.silentMs = 200;
+    const badge = await until('the quiet mark', () => button.querySelector('[data-runs-quiet]'));
+    const marked = badge.textContent === '2 quiet' && button.querySelector('.ai-live-dot--quiet') !== null
+      && button.title.includes('no sign of life for 30 s');
+    live.LIVE.silentMs = 60000;
+    event({ run_id: 'r1', type: 'run.heartbeat', state: 'working', agent: 'code_analyst', step: null });
+    event({ run_id: 'r2', type: 'run.heartbeat', state: 'working', agent: 'inventory_agent', step: null });
+    await until('the mark gone', () => !button.querySelector('[data-runs-quiet]'));
+    return marked;
+  });
+
+  await check('the bell asks once to allow notifications, and goes', async () => {
+    const offered = !bell.hidden;
+    bell.click();
+    await until('allowed', () => Notification.permission === 'granted' && bell.hidden);
+    return offered;
+  });
+
+  await check('a run done leaves the pill; one that failed stays as needing the person until seen', async () => {
+    event({ run_id: 'r2', type: 'run.done', state: 'done', needs_you: false, agent: 'inventory_agent', step: null });
+    await until('one at work', () => button.dataset.runsWorking === '1');
+    event({ run_id: 'r1', type: 'run.failed', state: 'failed', needs_you: true, agent: 'code_analyst', source: 'code_audit', step: null });
+    const needs = await until('needs you', () => button.querySelector('[data-runs-needs]'));
+    const shown = !button.hidden && button.dataset.runsWorking === '0' && needs.textContent.includes('1 needs you')
+      && button.title.includes('code_analyst · Code analysis: needs you');
+    event({ run_id: 'r1', type: 'run.acknowledged', state: 'failed', needs_you: false, agent: 'code_analyst', step: null });
+    await until('none left', () => button.hidden);
+    return shown;
+  });
+
+  await check('a result to check comes first: a click leads to it, before the runs at work', async () => {
+    event({ run_id: 'r4', type: 'run.step', state: 'working', agent: 'coder', source: 'process_board', subject: { title: 'Ticket' },
+      step: { index: 1, total: null, key: 'x', label: 'Changing files' } });
+    event({ run_id: 'r5', type: 'run.review_ready', state: 'review', needs_you: true, agent: 'tracker_assessor', source: 'issue_tracker',
+      subject: { title: 'Review' }, step: null, payload: { summary: '3 proposed', check_in: 'Bewertung' } });
+    await until('both', () => button.querySelector('[data-runs-needs]') && button.dataset.runsWorking === '1');
+    opened.length = 0;
+    button.click();
+    return opened[0]?.run_id === 'r5' && button.textContent.includes('1 agent at work') && button.title.includes('done, please check');
+  });
+
+  await check('while the person looks elsewhere, a run that needs them is told as a notification', async () => {
+    notes.length = 0;
+    looking = false;
+    event({ run_id: 'r4', type: 'run.failed', state: 'failed', needs_you: true, agent: 'coder', source: 'process_board', subject: { title: 'Ticket' }, step: null });
+    event({ run_id: 'r6', type: 'run.started', state: 'working', agent: 'x', subject: { title: 'y' }, step: null });
+    event({ run_id: 'r6', type: 'run.review_ready', state: 'review', needs_you: true, agent: 'x', subject: { title: 'y' }, step: null });
+    await until('two notes', () => notes.length === 2);
+    looking = true;
+    event({ run_id: 'r7', type: 'run.started', state: 'working', agent: 'z', subject: { title: 'w' }, step: null });
+    event({ run_id: 'r7', type: 'run.done', state: 'done', needs_you: false, agent: 'z', subject: { title: 'w' }, step: null });
+    await sleep(60);
+    return notes[0].title === 'coder · Ticket' && notes[0].body.includes('needs you') && notes[0].tag === 'r4'
+      && notes[1].body.includes('please check') && notes.length === 2;
+  });
+
+  await check('a run that ends leaves the pill, and with the last one the pill goes', async () => {
+    for (const id of ['r4', 'r5', 'r6']) event({ run_id: id, type: 'run.acknowledged', state: 'failed', needs_you: false, agent: 'x', step: null });
+    await until('none left', () => button.hidden);
+    return true;
+  });
+
+  await check('an agent that asks its person is counted as needing them, named so, and told while they look elsewhere', async () => {
+    notes.length = 0;
+    looking = false;
+    event({ run_id: 'r8', type: 'run.started', state: 'working', agent: 'classifier_agent', subject: { title: 'Classify' }, step: null });
+    event({ run_id: 'r8', type: 'run.needs_input', state: 'needs_input', needs_you: true, agent: 'classifier_agent', subject: { title: 'Classify' },
+      step: null, payload: { question: 'Is it reachable from the internet?', options: ['Yes', 'No'], question_id: 'q1', answer_url: '/plugins/ask_user/answer' } });
+    await until('the note', () => notes.length === 1);
+    looking = true;
+    const told = notes[0].body === 'Has a question for you: Is it reachable from the internet?' && notes[0].tag === 'r8'
+      && button.title.includes('classifier_agent · Classify: has a question') && button.querySelector('[data-runs-needs]') !== null;
+    event({ run_id: 'r8', type: 'run.answered', state: 'working', needs_you: false, agent: 'classifier_agent', subject: { title: 'Classify' }, step: null });
+    await until('at work again', () => !button.querySelector('[data-runs-needs]'));
+    event({ run_id: 'r8', type: 'run.done', state: 'done', needs_you: false, agent: 'classifier_agent', subject: { title: 'Classify' }, step: null });
+    await until('gone', () => button.hidden);
+    return told;
+  });
+
+  await check('a run silent at a reconnect is marked at once', async () => {
+    say({ type: 'runs.snapshot', runs: [{ run_id: 'r3', agent: 'code_analyst', source: 'code_audit', title: 'Assess',
+      state: 'working', started: '2026-10-31T10:00:00Z', step_label: 'Recording an assessment', step_index: 4, step_total: null,
+      step_labels: {}, silent: true }] });
+    await until('the pill', () => !button.hidden && button.querySelector('[data-runs-quiet]'));
+    return button.querySelector('[data-runs-step]').textContent === 'Recording an assessment';
+  });
+
+  pill.stop();
+  await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
+</script>
+</body>
+</html>

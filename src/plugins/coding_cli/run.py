@@ -28,6 +28,7 @@ from agent_system import own_console
 from agent_system.config.settings import _secrets_file_entries
 from agent_system.core.session_presence import alive
 from agent_system.utils import yaml_io
+from agent_system.utils import path_sandbox
 
 # Planning reads; editing also writes. --tools is always explicit: under
 # --restricted the list still held Artifact, SendMessage, PushNotification and
@@ -85,6 +86,21 @@ def shell_tool() -> str:
     return "PowerShell" if os.name == "nt" else "Bash"
 
 
+def secret_rules() -> list[str]:
+    """Deny rules for the installation's private files (path_sandbox.private_places: config/*.env, the user store,
+    the sessions and their archive, the message debugger's store):
+    a worktree holds no copy (they are git-ignored), but the read tools reach outside it. Claude
+    Code writes an absolute path as //<path>, a Windows drive as /c/ (its permission docs); Read
+    covers the read tools, Edit the writing ones."""
+    def spelled(path: Path) -> str:
+        text = path.resolve().as_posix()
+        return f"/{text[0].lower()}{text[2:]}" if re.match(r"^[A-Za-z]:/", text) else text
+
+    secrets, users_db, folders = path_sandbox.private_places()
+    patterns = [f"{spelled(secrets)}/*.env", f"{spelled(users_db)}*", *(f"{spelled(folder)}/**" for folder in folders)]
+    return [f"{tool}(/{pattern})" for pattern in patterns for tool in ("Read", "Edit")]
+
+
 def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_commands: Iterable[str] = (),
                   mcp_servers: Optional[Mapping[str, Iterable[str]]] = None, model: str = "", resume: str = "",
                   rules: Optional[Path] = None, json_schema: Optional[dict] = None, web: bool = False,
@@ -112,7 +128,8 @@ def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_comman
     # replaced by _ (its MCP docs) -- so the name is one value, too.
     denied = [*(f"{shell}({c}:*)" for c in DENIED_COMMANDS if commands),
               *(f"mcp__{s}__{re.sub(r'[^A-Za-z0-9_-]', '_', str(t))}"
-                for s, blocked in servers.items() for t in blocked)]
+                for s, blocked in servers.items() for t in blocked),
+              *secret_rules()]
     # Variadic: each value list runs to the next flag, and one always follows.
     if allowed:
         cmd += ["--allowedTools", *allowed]

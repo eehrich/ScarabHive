@@ -1792,6 +1792,8 @@ EXPECTED = [
     'a session moves into a folder by its menu and by dragging, and out again; the dialog renames, decorates and deletes a folder',
     'a theme picked in the account menu reaches every panel, the menu stays open with it marked, and the header keeps the work area before the app with the account last',
     'an open settings panel shows the theme chosen in the account menu',
+    'a style chosen in the settings panel reaches the shell and every panel',
+    'a panel opens another panel beside it, by a call or a data-pk-panel link',
     'the palette finds a panel and opens it',
     'Ctrl+K in the open palette starts its search afresh',
     'the palette does not open over an open question',

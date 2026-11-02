@@ -9,7 +9,7 @@
   The theme comes from the viewer's cookie, so the frame paints in the right
   colours before any script runs. -#}
 <!doctype html>
-<html lang="{% block lang %}en{% endblock %}" class="pk-root" data-theme="{{ ui_theme(request) }}">
+<html lang="{% block lang %}en{% endblock %}" class="pk-root" data-theme="{{ ui_theme(request) }}" data-style="{{ ui_style(request) }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -26,6 +26,8 @@
     <h1 class="pk-page-title">{{ self.title() }}</h1>
     <div class="pk-toolbar">{% block toolbar %}{% endblock %}</div>
   </header>
+  {#- A row of links to sibling panels under the header: {% block nav %}{{ panel_nav(tabs) }}{% endblock %} #}
+  {% block nav %}{% endblock %}
   <main class="pk-page-body">{% block content %}{% endblock %}</main>
   {% block scripts %}{% endblock %}
 </body>

@@ -349,6 +349,18 @@ class TestVectorStoreMetadata:
             gc.collect()
             tmpdir_obj.cleanup()
 
+    @pytest.mark.parametrize("name", ["x; DROP TABLE meta_a", "a-b", "a.b", "", "a b", 'a"'])
+    def test_sqlite_vec_refuses_a_collection_name_it_would_format_into_sql(self, name):
+        """A collection name becomes part of the table names (vec_<name>): one that is not letters, digits
+        and _ is refused before the database is opened, not formatted into the statement."""
+        from agent_system.utils.vector_store import VectorStoreError
+        from agent_system.utils.vector_store.sqlite_vec import SqliteVecBackend, _checked
+
+        backend = SqliteVecBackend(Path("unused"), "unused")
+        with pytest.raises(VectorStoreError, match="letters, digits and _"):
+            backend.count(name)
+        assert _checked("lessons_coder_2") == "lessons_coder_2"
+
     def test_list_entries_without_metadata_yields_an_empty_dict(self, store):
         """An entry stored without metadata must not break the caller's lookup."""
         store.add(
@@ -454,6 +466,12 @@ class TestCloseReleasesChromaSystem:
     229 leaked clients / 460 tokio threads and pushed the API into the 1024
     descriptor limit, where every X-API-Key lookup failed with a 401.
     """
+
+    @pytest.fixture(autouse=True)
+    def _chroma_backend(self):
+        # the stores here have a chroma client to hand back; Windows without hnswlib runs sqlite-vec instead
+        if get_vector_backend() != "chromadb":
+            pytest.skip("the chromadb backend is not in use here")
 
     class _FakeChromaClient:
         def __init__(self, raises: bool = False):

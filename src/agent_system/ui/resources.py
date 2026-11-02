@@ -11,6 +11,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 THEMES = ("dark", "light", "system")
 THEME_COOKIE = "ui_theme"
+STYLES = ("classic", "apple", "petrol")
+STYLE_COOKIE = "ui_style"
 
 
 def find_resource_dir(name: str) -> Path:
@@ -78,6 +80,12 @@ def ui_theme(request: Request) -> str:
     return theme if theme in THEMES else "system"
 
 
+def ui_style(request: Request) -> str:
+    """The look the viewer chose (cookie set by the shell), or ``classic``."""
+    style = request.cookies.get(STYLE_COOKIE)
+    return style if style in STYLES else "classic"
+
+
 def ui_templates(*directories: str | Path) -> Jinja2Templates:
     """Jinja2Templates that reach the kit.
 
@@ -88,4 +96,5 @@ def ui_templates(*directories: str | Path) -> Jinja2Templates:
     search = [str(d) for d in directories] + [str(TEMPLATES_DIR)]
     templates = Jinja2Templates(directory=search)
     templates.env.globals["ui_theme"] = ui_theme
+    templates.env.globals["ui_style"] = ui_style
     return templates

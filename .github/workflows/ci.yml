@@ -106,9 +106,11 @@ jobs:
             requirements/optional.txt
             pyproject.toml
       # pycairo (reportlab[pycairo], requirements/optional.txt) has no Linux
-      # wheels and is compiled.
+      # wheels and is compiled. The runner's packages.microsoft.com source is
+      # not needed for that and fails apt-get update whenever it answers 403.
       - name: System packages
         run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libcairo2-dev pkg-config
       - name: Install

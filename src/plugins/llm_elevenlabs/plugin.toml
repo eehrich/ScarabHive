@@ -11,3 +11,4 @@ provides_tts = ["elevenlabs"]
 
 requires = { agent_system = ">=0.6.0" }
 dependencies = []
+plugins = ["llm_common"]

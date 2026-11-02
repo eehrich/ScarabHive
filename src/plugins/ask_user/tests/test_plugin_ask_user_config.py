@@ -32,13 +32,18 @@ def config():
 
 
 def _private_agents():
-    """Every server a plugin root besides src/plugins declares in its agent files."""
-    names = set()
-    for root in (ROOT / "src").glob("plugins_*"):
-        for path in root.rglob("agents/*.yaml"):
+    """Every server only a plugin root besides src/plugins declares in its agent files; one the public configuration
+    declares as well (a further root only overriding it) is not one of them."""
+    def declared(paths) -> set:
+        names = set()
+        for path in paths:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             names.update(((data.get("plugins") or {}).get("servers") or {}).keys())
-    return names
+        return names
+
+    further = declared(p for root in (ROOT / "src").glob("plugins_*") for p in root.rglob("agents/*.yaml"))
+    public = declared([*(ROOT / "src" / "plugins").rglob("agents/*.yaml"), *(ROOT / "config").rglob("*.yaml")])
+    return further - public
 
 
 def _may_ask(cfg) -> bool:
@@ -68,9 +73,9 @@ def test_only_the_chosen_chat_agents_may_ask(config):
         if cfg is not None and getattr(cfg, "agent_config", None) is not None and _may_ask(cfg):
             asking[name] = cfg
 
-    assert set(asking) == ASKING
+    # a further root chooses its own (an agent a person follows in a panel run asks there); the rule below holds them too
+    assert set(asking) - private == ASKING
     for name, cfg in asking.items():
-        assert name not in private, f"{name}, an agent of a further plugin root, may ask"
         visibility = getattr(cfg.metadata, "visibility", None) if cfg.metadata else None
         assert visibility in ("ui", "both"), f"{name} is no agent a person chats with ({visibility})"
 

@@ -14,3 +14,4 @@ type = ["tool-server"]
 category = "automation"
 tags = ["agent", "workflow", "state-machine", "facade"]
 requires = { agent_system = ">=0.7.0" }
+plugins = ["stategraph"]

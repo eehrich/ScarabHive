@@ -8,3 +8,4 @@ type = ["web"]
 category = "tools"
 requires = { agent_system = ">=0.7.0" }
 dependencies = []
+plugins = ["stategraph"]

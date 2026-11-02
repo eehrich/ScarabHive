@@ -63,7 +63,7 @@ class PluginCache:
     def _get_cache_key(self, key: str) -> str:
         """Generate a safe filename from cache key."""
         # Use MD5 hash to ensure safe filenames
-        key_hash = hashlib.md5(key.encode('utf-8')).hexdigest()
+        key_hash = hashlib.md5(key.encode('utf-8'), usedforsecurity=False).hexdigest()
         return f"{key_hash}.json"
     
     def _get_cache_file(self, key: str) -> Path:

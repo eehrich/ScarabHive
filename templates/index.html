@@ -1,6 +1,6 @@
 {% from "kit/macros.html" import icon, logo %}
 <!doctype html>
-<html lang="en" class="pk-root" data-theme="{{ ui_theme(request) }}">
+<html lang="en" class="pk-root" data-theme="{{ ui_theme(request) }}" data-style="{{ ui_style(request) }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -26,6 +26,10 @@
       <button id="dockToggle" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" aria-controls="dock" aria-expanded="false" title="Show or hide the panel area (Ctrl+Alt+B)" disabled>{{ icon('panel-right') }}</button>
       <span class="app-header-divider" aria-hidden="true"></span>
       <!-- the app: its manual, the account last -->
+      <button id="agentRunsPill" type="button" class="pk-btn pk-btn--ghost pk-btn--sm app-runs" aria-live="polite" hidden></button>
+      <button id="agentRunsBell" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Tell me when an agent needs me, also while I look elsewhere" aria-label="Allow notifications about the agents" hidden>{{ icon('bell') }}</button>
+      <button id="restartServerButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Restart the server: loads plugins, agents and skills anew" aria-label="Restart the server" hidden>{{ icon('rotate-ccw') }}</button>
+      <button id="stopServerButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Stop the server" aria-label="Stop the server" hidden>{{ icon('power') }}</button>
       <button id="helpButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Help: the ScarabHive manual">{{ icon('circle-help') }}</button>
       <button id="userButton" type="button" class="app-avatar" popovertarget="userMenu" title="Account"><span id="userInitials"></span></button>
     </div>

@@ -1,0 +1,388 @@
+<!doctype html>
+<html class="pk-root" data-theme="dark" lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>ai-tasks.js: following an agent run in the panel</title>
+  <link rel="stylesheet" href="/static/kit/kit.css">
+</head>
+<body>
+<header class="pk-page-header"><h1>Testpanel</h1><div class="pk-toolbar"><button type="button" id="other">Andere Arbeit</button></div></header>
+<main><div id="work"></div><input id="field" aria-label="Feld"></main>
+<section id="otherTab" hidden><div id="ai"></div></section>   <!-- as in a panel: the host sits in a tab not shown -->
+<script type="module">
+  // ai-tasks.js against a stand-in plugin: window.fetch answers the AI routes from `server` below, so each check sets
+  // what the plugin says and watches the side sheet follow.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 5000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(20);
+    }
+  }
+
+  const TASK = { id: 'assess', title: 'Bewerten', what: 'Schlägt eine Bewertung vor.', agent: 'assessor',
+    default_agent: 'assessor', mode: 'ai', target: 'finding', batch: false };
+  const server = { runs: [], details: {}, started: 0, replies: [], events: {}, cancelled: [], acked: [], answers: [] };
+  const realFetch = window.fetch.bind(window);   // the results still go to the test server
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  window.fetch = async (path, init = {}) => {
+    const url = String(path);
+    if (url === '/agents') return json({ agents: ['assessor'] });
+    if (url === '/p/ai') return json({ tasks: [TASK], person_only: [] });
+    if (url === '/p/ai/assess/run' && init.method === 'POST') {
+      server.started += 1;
+      const id = `s${server.started}`;
+      server.runs.unshift({ session_id: id, agent: 'assessor', title: `Bewerten ${JSON.parse(init.body).target}`, state: 'running',
+        error: '', started: '2026-10-30T10:00:00+00:00', ended: null });
+      server.details[id] = { steps: [], answer: '' };
+      return json({ session_id: id, agent: 'assessor', state: 'running' });
+    }
+    if (url === '/p/ai/runs') return json({ runs: server.runs });
+    const reply = url.match(/^\/p\/ai\/runs\/(\w+)\/reply$/);
+    if (reply && init.method === 'POST') {
+      const { text } = JSON.parse(init.body);
+      server.replies.push({ id: reply[1], text });
+      Object.assign(server.runs.find((r) => r.session_id === reply[1]), { state: 'running', error: '' });
+      server.details[reply[1]].steps.push({ kind: 'reply', text });
+      return json({ session_id: reply[1], agent: 'assessor', state: 'running' });
+    }
+    if (url === '/plugins/ask_user/answer' && init.method === 'POST') {
+      const body = JSON.parse(init.body);
+      if (body.question_id === 'gone') return json({ detail: 'No question waits under this id' }, 404);
+      server.answers.push(body);
+      return json({ status: 'ok', question_id: body.question_id });
+    }
+    const stop = url.match(/^\/api\/agent-runs\/(\w+)\/cancel$/);
+    if (stop && init.method === 'POST') { server.cancelled.push(stop[1]); return json({ status: 'cancelling', run_id: stop[1] }); }
+    const ack = url.match(/^\/api\/agent-runs\/(\w+)\/ack$/);
+    if (ack && init.method === 'POST') {
+      server.acked.push(ack[1]);
+      return json({ run: { run_id: ack[1], state: ack[1] === 's1' ? 'done' : 'failed', needs_you: false, agent: 'assessor', title: 'x', started: '' } });
+    }
+    const timeline = url.match(/^\/api\/agent-runs\/(\w+)\/events$/);
+    if (timeline) return server.events[timeline[1]] ? json({ run: {}, events: server.events[timeline[1]] }) : json({ detail: 'No run' }, 404);
+    const one = url.match(/^\/p\/ai\/runs\/(\w+)$/);
+    if (one) return json({ ...server.runs.find((run) => run.session_id === one[1]), ...server.details[one[1]] });
+    return json({ detail: `not stubbed: ${url}` }, 404);
+  };
+  const run = (id) => server.runs.find((r) => r.session_id === id);
+
+  // the run events' stream (run-events.js) as a stand-in: the checks say what the server would stream
+  window.EventSource = class { constructor(url) { this.url = url; window.stream = this; } close() { this.closed = true; } };
+  let seq = 0;
+  const say = (event) => window.stream.onmessage({ data: JSON.stringify({ event_id: `e${++seq}`, seq, ts: new Date().toISOString(),
+    agent: 'assessor', source: 'p', subject: { title: 'Bewerten VULN-1' }, payload: null, touching: [], ...event }) });
+  const live = await import('/static/kit/run-events.js');
+
+  const pk = await import('/static/kit/panel-kit.js');
+  const ai = await import('/static/kit/ai-tasks.js');
+  ai.POLL.ms = 40;
+  let changed = 0;
+  await ai.initAiTasks('/p', document.getElementById('ai'), { onChange: () => { changed += 1; } });
+  pk.render(document.getElementById('work'), ai.aiButton('assess', 'VULN-1', 'Bewerten'));
+
+  const sheet = () => document.querySelector('dialog.ai-runs');
+  const card = (id) => document.querySelector(`.ai-run[data-run="${id}"]`);
+  const toasts = () => [...document.querySelectorAll('.pk-toast')].map((t) => t.textContent).join(' | ');
+
+  await check('before any run the runs button stays hidden', async () => {
+    await until('the AI button', () => !document.querySelector('[data-ai-open]').hidden);
+    return document.querySelector('[data-ai-runs]').hidden && !sheet().open;
+  });
+
+  await check('the AI choices open visibly and leave the panel usable, even with their host in a hidden tab', async () => {
+    const dialog = document.querySelector('dialog.ai-dialog');
+    document.querySelector('[data-ai-open]').click();
+    const box = dialog.getBoundingClientRect();
+    const seen = dialog.open && box.width > 0 && box.height > 0 && dialog.checkVisibility();
+    dialog.querySelector('[data-ai-close]').click();
+    return seen && !dialog.open;
+  });
+
+  await check('a started agent is followed in a side sheet beside the panel, not in the chat', async () => {
+    document.querySelector('[data-ai-run="assess"]').click();
+    await until('the sheet', () => sheet().open && card('s1'));
+    const state = card('s1').querySelector('[data-run-state]');
+    return !sheet().matches(':modal') && sheet().checkVisibility() && state.dataset.runState === 'running' && state.textContent.includes('läuft')
+      && card('s1').textContent.includes('Der Agent startet') && card('s1').textContent.includes('Bewerten VULN-1')
+      && toasts().includes('assessor gestartet; hier mitlesen');
+  });
+
+  await check('what the agent says and calls appears while it runs, its words as text', async () => {
+    server.details.s1.steps = [
+      { kind: 'task', text: 'Bewerte VULN-1' },
+      { kind: 'text', text: 'Ich lese den Befund <img src=x onerror="window.hacked=1">.' },
+      { kind: 'tool', name: 'tracker_finding', text: '{"id": "VULN-1"}' },
+      { kind: 'result', name: 'tracker_finding', text: '{"status": "success"}' },
+      { kind: 'error', name: 'tracker_assess', text: '{"status": "error", "error": "Begründung fehlt"}' },
+    ];
+    await until('the steps', () => card('s1').querySelectorAll('.ai-step').length === 5);
+    const text = card('s1').querySelector('[data-step="text"]');
+    return text.textContent.includes('<img src=x') && !card('s1').querySelector('img') && !window.hacked
+      && card('s1').querySelector('[data-step="tool"]').textContent.includes('tracker_finding')
+      && card('s1').querySelector('[data-step="error"]').textContent.includes('Begründung fehlt')
+      && card('s1').querySelector('details.ai-step--task') !== null;
+  });
+
+  await check('the panel stays at hand while the sheet is open', async () => {
+    const field = document.getElementById('field');
+    field.focus();
+    field.value = 'weiter';
+    return document.activeElement === field && sheet().open && !sheet().matches(':modal');
+  });
+
+  await check('a run at work shows its step in plain words, in the page language, and how long it has been at it', async () => {
+    const step = { index: 2, total: null, key: 'read', label: 'Reading the findings', labels: { de: 'Liest die Befunde' } };
+    server.events.s1 = [
+      { type: 'run.started', ts: '2026-10-30T10:00:00Z', step: null },
+      { type: 'run.step', ts: '2026-10-30T10:00:05Z', step: { ...step, index: 1, label: 'Looking up the finding', labels: { de: 'Sucht den Befund' } } },
+      { type: 'run.step', ts: '2026-10-30T10:00:20Z', step },
+    ];
+    say({ run_id: 's1', type: 'run.step', state: 'working', step });
+    const line = await until('the step', () => {
+      const found = card('s1').querySelector('[data-run-live] [data-run-step]');
+      return found?.textContent.includes('Liest die Befunde') && found;
+    });
+    const clock = await until('the running time', () => card('s1').querySelector('[data-run-clock]').textContent.trim() && card('s1').querySelector('[data-run-clock]'));
+    return line.textContent.includes('Schritt 2') && line.textContent.includes('Liest die Befunde')
+      && !line.textContent.includes('Reading') && /^seit \d+:\d\d/.test(clock.textContent)
+      && document.querySelector('[data-ai-runs]').title.includes('Liest die Befunde')
+      && document.querySelector('[data-ai-runs] .ai-live-dot') !== null;
+  });
+
+  await check('the running time goes on without redrawing what a person reads', async () => {
+    await until('the timeline drawn', () => card('s1').querySelectorAll('.ai-timeline [data-timeline-step]').length === 2);
+    ai.POLL.ms = 60000;          // no asking now: only the clock may move the time
+    await sleep(120);
+    const task = card('s1').querySelector('details.ai-step--task');
+    task.open = true;
+    const before = card('s1').querySelector('[data-run-clock]').textContent;
+    try {
+      await until('the next second', () => card('s1').querySelector('[data-run-clock]').textContent !== before, 2500);
+      return task.isConnected && task.open;
+    } finally {
+      ai.POLL.ms = 40;
+      await ai.showRun('s1');   // asking goes on
+    }
+  });
+
+  await check('an open run shows its steps as a timeline, the one at work now marked', async () => {
+    const steps = await until('the timeline', () => {
+      const found = card('s1').querySelectorAll('.ai-timeline [data-timeline-step]');
+      return found.length === 2 && found;
+    });
+    return steps[0].textContent.includes('Sucht den Befund') && steps[0].querySelector('use[href$="#check"]') !== null
+      && steps[1].classList.contains('ai-timeline-step--now') && steps[1].textContent.includes('Liest die Befunde')
+      && steps[1].querySelector('.pk-spinner') !== null;
+  });
+
+  await check('a run that went quiet says so, and a sign of life takes it back', async () => {
+    live.LIVE.silentMs = 300;
+    const warned = await until('the warning', () => card('s1').querySelector('[data-run-silent]'), 3000);
+    const quiet = warned.textContent.includes('kein Lebenszeichen') && card('s1').querySelector('.ai-live-dot--quiet') !== null;
+    live.LIVE.silentMs = 60000;
+    say({ run_id: 's1', type: 'run.heartbeat', state: 'working', step: { index: 2, total: null, key: 'read', label: 'Reading the findings', labels: { de: 'Liest die Befunde' } } });
+    await until('the warning gone', () => !card('s1').querySelector('[data-run-silent]'));
+    return quiet;
+  });
+
+  await check('when the run ends the sheet shows its result, a toast says so and the panel redraws', async () => {
+    const before = changed;
+    server.details.s1.answer = 'VULN-1 als betroffen vorgeschlagen.';
+    run('s1').state = 'done';
+    await until('the result', () => card('s1').querySelector('.ai-run-answer'));
+    await until('the redraw', () => changed > before);
+    return card('s1').querySelector('[data-run-state]').dataset.runState === 'done'
+      && card('s1').querySelector('.ai-run-answer').textContent.includes('VULN-1 als betroffen vorgeschlagen.')
+      && toasts().includes('assessor ist fertig: Bewerten VULN-1');
+  });
+
+  await check('a run that fails says why', async () => {
+    document.querySelector('[data-ai-run="assess"]').click();
+    await until('the second run', () => card('s2'));
+    server.details.s2.error = 'No LLM permission';
+    Object.assign(run('s2'), { state: 'refused', error: 'No LLM permission' });
+    await until('the refusal', () => card('s2').querySelector('[data-run-state="refused"]'));
+    await until('its reason', () => card('s2').querySelector('.pk-callout--danger'));
+    return card('s2').textContent.includes('No LLM permission') && card('s2').textContent.includes('abgelehnt')
+      && toasts().includes('assessor: abgelehnt');
+  });
+
+  await check('closed, the sheet comes back with the runs button, which counts the running ones', async () => {
+    sheet().close();
+    document.querySelector('[data-ai-run="assess"]').click();
+    await until('the third run', () => card('s3'));
+    sheet().close();
+    const button = document.querySelector('[data-ai-runs]');
+    await until('the count', () => button.querySelector('[data-runs-running="1"]'));
+    button.click();
+    await until('the sheet again', () => sheet().open);
+    return !button.hidden && document.querySelectorAll('.ai-run').length === 3;
+  });
+
+  await check('a run is opened and closed by its toggle, one at a time', async () => {
+    document.querySelector('[data-run-toggle="s1"]').click();
+    await until('s1 open', () => card('s1').classList.contains('ai-run--open') && card('s1').querySelector('.ai-run-answer'));
+    const one = document.querySelectorAll('.ai-run--open').length === 1;
+    document.querySelector('[data-run-toggle="s1"]').click();
+    await until('s1 closed', () => !card('s1').classList.contains('ai-run--open'));
+    return one && !card('s1').querySelector('.ai-run-detail');
+  });
+
+  await check('a run cut off by a restart says so, and can be answered to go on', async () => {
+    server.runs.push({ session_id: 's0', agent: 'assessor', title: 'Bewerten VULN-0', state: 'interrupted', error: '',
+      started: '2026-10-30T08:00:00+00:00', ended: null });
+    server.details.s0 = { steps: [{ kind: 'task', text: 'Bewerte VULN-0' }], answer: '' };
+    await until('the cut-off run', () => card('s0'));
+    document.querySelector('[data-run-toggle="s0"]').click();
+    await until('its notice', () => card('s0').querySelector('.pk-callout--warn'));
+    return card('s0').querySelector('[data-run-state]').textContent.includes('unterbrochen')
+      && card('s0').querySelector('.pk-callout--warn').textContent.includes('Der Server wurde beendet')
+      && card('s0').querySelector('form[data-run-reply="s0"] textarea') !== null;
+  });
+
+  await check('an answer being typed survives the redraws while another run goes on, and goes on in the same session', async () => {
+    document.querySelector('[data-run-toggle="s1"]').click();
+    const field = () => card('s1').querySelector('form[data-run-reply="s1"] textarea');
+    await until('the answer field', () => field());
+    field().focus();
+    field().value = 'Nimm requests 2.32.0 als Fix.';
+    field().dispatchEvent(new Event('input', { bubbles: true }));
+    run('s3').title = 'Bewerten VULN-1 (neu)';                       // the running run changes: the list is redrawn
+    await until('the redraw', () => card('s3').textContent.includes('(neu)'));
+    const kept = field().value === 'Nimm requests 2.32.0 als Fix.' && document.activeElement === field();
+    card('s1').querySelector('form[data-run-reply="s1"] [name="send"]').click();
+    await until('the answer sent', () => server.replies.length === 1);
+    await until('s1 running again', () => card('s1').querySelector('[data-run-state="running"]'));
+    const sent = server.replies[0].id === 's1' && server.replies[0].text === 'Nimm requests 2.32.0 als Fix.'
+      && !card('s1').querySelector('form[data-run-reply]') && toasts().includes('assessor macht mit deiner Antwort weiter');
+    server.details.s1.steps.push({ kind: 'text', text: 'Übernommen: behoben durch 2.32.0.' });
+    server.details.s1.answer = 'Übernommen: behoben durch 2.32.0.';
+    run('s1').state = 'done';
+    await until('the answer in the run, done', () => card('s1').querySelector('[data-run-state="done"]')
+      && card('s1').querySelector('[data-step="reply"]') && card('s1').querySelector('.ai-run-answer'));
+    return kept && sent && card('s1').querySelector('[data-step="reply"]').textContent.includes('Du:')
+      && card('s1').querySelector('form[data-run-reply="s1"] textarea').value === '';
+  });
+
+  await check('a run at work can be stopped, after a question', async () => {
+    const button = await until('the stop button', () => card('s3').querySelector('[data-run-cancel="s3"]'));
+    button.click();
+    const dialog = await until('the question', () => document.querySelector('dialog.pk-dialog[open]:not(.ai-runs):not(.ai-dialog)'));
+    const asked = dialog.textContent.includes('assessor anhalten?');
+    const yes = [...dialog.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Anhalten');
+    yes.click();
+    await until('the stop sent', () => server.cancelled.includes('s3'));
+    return asked && toasts().includes('assessor wird angehalten');
+  });
+
+  await check('a result to check shows what was changed, what could go wrong and how it was checked, and lets a person ask first', async () => {
+    server.details.s1.answer = 'VULN-1 bewertet.\n### Changed\nVULN-1 als betroffen vorgeschlagen.\n### Could go wrong\nWenig: nur ein Vorschlag.\n### Checked\nGegen das Advisory gelesen.';
+    say({ run_id: 's1', type: 'run.review_ready', state: 'review', needs_you: true, step: null, payload: { summary: 'x', check_in: 'Bewertung' } });
+    if (!card('s1').classList.contains('ai-run--open')) document.querySelector('[data-run-toggle="s1"]').click();
+    const review = await until('the three parts', () => card('s1').querySelector('[data-run-review]'));
+    const part = (key) => review.querySelector(`[data-review-part="${key}"]`).textContent;
+    const shown = part('changedHead').includes('Was wurde geändert?') && part('changedHead').includes('als betroffen vorgeschlagen')
+      && part('riskHead').includes('Was kann schiefgehen?') && part('riskHead').includes('nur ein Vorschlag')
+      && part('checkedHead').includes('Gegen das Advisory') && card('s1').querySelector('.ai-run-answer').textContent.includes('VULN-1 bewertet.')
+      && !card('s1').querySelector('.ai-run-answer').textContent.includes('### Changed');
+    card('s1').querySelector('[data-run-ask="s1"]').click();
+    await until('the question field', () => document.activeElement === card('s1').querySelector('form[data-run-reply="s1"] textarea'));
+    return shown;
+  });
+
+  await check('a result to check says so, where to look, and is settled with "Geprüft"', async () => {
+    say({ run_id: 's1', type: 'run.review_ready', state: 'review', needs_you: true, step: null,
+      payload: { summary: 'VULN-1 bewertet', check_in: 'Bewertung' } });
+    const callout = await until('the check', () => card('s1').querySelector('[data-run-check]'));
+    const badge = card('s1').querySelector('[data-run-needs]');
+    const told = callout.textContent.includes('Fertig -- bitte prüfen') && callout.textContent.includes('„Bewertung“')
+      && badge?.textContent.includes('braucht dich') && document.querySelector('[data-runs-needs="1"]') !== null;
+    callout.querySelector('[data-run-ack="s1"]').click();
+    await until('settled', () => server.acked.includes('s1') && !card('s1').querySelector('[data-run-check]'));
+    return told && toasts().includes('Vermerkt') && !document.querySelector('[data-runs-needs]');
+  });
+
+  await check('a run handed over says so and is settled with "Gesehen"', async () => {
+    say({ run_id: 's2', type: 'run.failed', state: 'failed', needs_you: true, step: null, payload: { reason: 'No LLM permission' } });
+    const callout = await until('the handover', () => card('s2').querySelector('[data-run-handover]'));
+    const told = callout.textContent.includes('An dich übergeben');
+    callout.querySelector('[data-run-ack="s2"]').click();
+    await until('settled', () => server.acked.includes('s2') && !card('s2').querySelector('[data-run-handover]'));
+    return told;
+  });
+
+  const ASKED = { question: 'Ist das Gateway aus dem Internet erreichbar?', options: ['Ja', 'Nein', 'Weiß nicht'], multi_select: false,
+    question_id: 'q1', answer_url: '/plugins/ask_user/answer', wait_s: 1800 };
+
+  await check('a question of the agent is shown with its options, counted as needing you, and kept through heartbeats', async () => {
+    run('s1').state = 'running';
+    // the panel asks for its runs again (toggled closed and open): it knows s1 as running, as a run that asks is
+    for (const n of [1, 2]) document.querySelector('[data-run-toggle="s1"]').click();
+    await until('known as running', () => card('s1').querySelector('[data-run-state="running"]'));
+    say({ run_id: 's1', type: 'run.needs_input', state: 'needs_input', needs_you: true, step: null, payload: ASKED });
+    const form = await until('the question', () => card('s1').querySelector('[data-run-question="s1"]'));
+    const told = form.textContent.includes('assessor hat eine Frage an dich') && form.textContent.includes('Ist das Gateway aus dem Internet erreichbar?')
+      && [...form.querySelectorAll('[name="choice"]')].map((box) => `${box.type}:${box.value}`).join() === 'radio:Ja,radio:Nein,radio:Weiß nicht'
+      && form.textContent.includes('bis zu 30 Min.') && card('s1').querySelector('[data-run-needs]').textContent.includes('hat eine Frage')
+      && document.querySelector('[data-runs-needs="1"]') !== null && !card('s1').querySelector('[data-run-live]');
+    form.querySelector('[value="Nein"]').click();
+    const words = form.querySelector('textarea');
+    words.value = 'nur im Testnetz';
+    words.dispatchEvent(new Event('input', { bubbles: true }));
+    say({ run_id: 's1', type: 'run.heartbeat', state: 'needs_input', needs_you: true, step: null, payload: null });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const again = card('s1').querySelector('[data-run-question="s1"]');
+    return told && again !== null && again.querySelector('[value="Nein"]').checked && again.querySelector('textarea').value === 'nur im Testnetz';
+  });
+
+  await check('the answer goes to the route of the question, and the run is at work again', async () => {
+    card('s1').querySelector('[data-run-question="s1"] [name="send"]').click();
+    await until('the answer', () => server.answers.length === 1);
+    const [sent] = server.answers;
+    say({ run_id: 's1', type: 'run.answered', state: 'working', needs_you: false, step: { index: 2, total: null, label: 'Reading the findings', labels: { de: 'Liest die Befunde' } },
+      payload: { outcome: 'answered', by: 'alice' } });
+    await until('at work again', () => card('s1').querySelector('[data-run-live="s1"]'));
+    return sent.question_id === 'q1' && sent.choices.join() === 'Nein' && sent.text === 'nur im Testnetz'
+      && toasts().includes('assessor macht mit deiner Antwort weiter') && !card('s1').querySelector('[data-run-question]')
+      && !document.querySelector('[data-runs-needs]');
+  });
+
+  await check('an empty answer is not sent, and one that comes too late is told the question no longer waits', async () => {
+    say({ run_id: 's1', type: 'run.needs_input', state: 'needs_input', needs_you: true, step: null,
+      payload: { ...ASKED, question_id: 'gone', options: [], multi_select: false } });
+    const form = await until('the question', () => card('s1').querySelector('[data-question-id="gone"]'));
+    const ownWords = form.textContent.includes('Deine Antwort');
+    form.querySelector('[name="send"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const notSent = server.answers.length === 1 && document.activeElement === form.querySelector('textarea');
+    form.querySelector('textarea').value = 'Ja';
+    form.querySelector('[name="send"]').click();
+    await until('told', () => toasts().includes('Die Frage wartet nicht mehr'));
+    return ownWords && notSent;
+  });
+
+  await check('several options may be picked where the question allows it', async () => {
+    say({ run_id: 's1', type: 'run.needs_input', state: 'needs_input', needs_you: true, step: null,
+      payload: { ...ASKED, question_id: 'q3', options: ['DE', 'AT', 'FR'], multi_select: true } });
+    const form = await until('the question', () => card('s1').querySelector('[data-question-id="q3"]'));
+    form.querySelector('[value="DE"]').click();
+    form.querySelector('[value="FR"]').click();
+    form.querySelector('[name="send"]').click();
+    await until('the answer', () => server.answers.length === 2);
+    return form.querySelector('[value="DE"]').type === 'checkbox' && server.answers[1].choices.join() === 'DE,FR' && server.answers[1].text === '';
+  });
+
+  await realFetch('/__results', { method: 'POST', body: JSON.stringify(results) });
+</script>
+</body>
+</html>

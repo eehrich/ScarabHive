@@ -15,6 +15,8 @@ from typing import Any, Dict, Optional, Sequence
 
 import aiofiles
 
+from agent_system.utils.path_sandbox import holds_secrets, is_secret
+
 from . import textsearch
 
 
@@ -24,6 +26,20 @@ logger = logging.getLogger(__name__)
 #: Bytes of the file's name a temp name keeps (".<name>.<12 hex>.tmp"): at most
 #: 218 bytes, under the 255 a file system allows for one name.
 _TEMP_NAME_KEEP = 200
+
+
+def _secrets_refused(*paths: Path) -> Optional[Dict[str, Any]]:
+    """The error for a delete, move or rename that would touch a private file
+    (config/*.env, data/users.db, data/sessions), else None."""
+    for path in paths:
+        if is_secret(path) or (not (path.is_symlink() or path.is_junction()) and holds_secrets(path)):
+            return {
+                "status": "error",
+                "error": f"Access to the installation's private files (secrets, user store, sessions) is refused: {path}",
+                "error_type": "PermissionError",
+                "path": str(path),
+            }
+    return None
 
 
 def _temp_beside(path: Path) -> Path:
@@ -547,6 +563,10 @@ class FileOperations:
         """
         import shutil
         
+        refused = _secrets_refused(path)
+        if refused:
+            return refused
+
         try:
             # A link goes, never what it points to: rmtree would refuse a
             # directory link, is_file would follow one to its target.
@@ -636,6 +656,10 @@ class FileOperations:
         """
         import shutil
         
+        refused = _secrets_refused(source, destination)
+        if refused:
+            return refused
+
         try:
             if not (source.exists() or source.is_symlink()):  # a dangling link moves too
                 return {
@@ -709,6 +733,10 @@ class FileOperations:
         Returns:
             Dict with status, old_path, new_path, type
         """
+        refused = _secrets_refused(path, path.parent / new_name)
+        if refused:
+            return refused
+
         try:
             if not (path.exists() or path.is_symlink()):  # a dangling link is renamed too
                 return {

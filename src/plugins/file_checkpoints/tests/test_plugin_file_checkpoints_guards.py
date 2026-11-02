@@ -53,6 +53,17 @@ async def make_rig(tmp_path):
         await rig.close()
 
 
+
+def _symlink(target, link) -> None:
+    """os.symlink, or a skip where Windows grants no symlink right (no Developer Mode, no admin):
+    without the link these tests measure nothing."""
+    try:
+        os.symlink(target, link)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("symlinks not permitted here -- this test measures nothing")
+        raise
+
 class TestChangedOutsideTheAgent:
 
     async def test_a_file_edited_since_is_refused_and_nothing_is_touched(self, rig):
@@ -405,7 +416,7 @@ class TestIsolation:
         outside.mkdir()
         (outside / "f.txt").write_text("after")      # what the agent left, so no conflict hides it
         os.rename(work / "d", tmp_path / "d_moved")
-        os.symlink(outside, work / "d")
+        _symlink(outside, work / "d")
 
         report = await rig.rewind(overwrite=True)
 
@@ -428,7 +439,7 @@ class TestIsolation:
         (work / "D" / "l" / "x").write_text("the agent's")
         await rig.turn("one", [delete(work / "D" / "l" / "x")])
         os.rmdir(work / "D" / "l")
-        os.symlink(elsewhere, work / "D" / "l")
+        _symlink(elsewhere, work / "D" / "l")
         await rig.turn("two", [delete(work / "D", recursive=True)])
 
         report = await rig.rewind(checkpoint=1)

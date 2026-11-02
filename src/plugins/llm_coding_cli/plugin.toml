@@ -8,3 +8,4 @@ type = ["llm-provider"]
 provides = ["claude_code", "antigravity"]
 requires = { agent_system = ">=0.7.0" }
 dependencies = []
+plugins = ["llm_common"]

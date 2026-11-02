@@ -49,6 +49,10 @@ body.app {
 /* the account menu's theme row: the three choices side by side, the one in use pressed */
 .app-theme-choice { display: flex; gap: var(--space-1); padding: 0 var(--space-1) var(--space-1); }
 .app-theme-choice > .pk-btn { flex: 1; }
+/* the agents at work (agent_runs.js): the dot breathes while they work; narrow, only the dot and the count stay */
+.app-runs { gap: var(--space-2); max-width: 22rem; min-width: 0; }
+.app-runs-step { color: var(--text-secondary); min-width: 0; max-width: 12rem; }
+@media (max-width: 900px) { .app-runs-step { display: none; } }
 .app-avatar {
   width: 28px; height: 28px; margin-left: var(--space-1); border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
@@ -334,3 +338,51 @@ body.app {
 /* The dock's help button: at the end of its bar, for the tab in front (workspace.js, openHelp) */
 .app-dock-help { align-self: center; margin: 0 var(--space-1) 0 auto; flex: none; }
 .app-dock-help[data-idle] { visibility: hidden; }  /* the tab in front has no guide: nothing to click, the place kept */
+
+/* ------------------------------------------------------------ style: apple */
+/* <html data-style="apple"> (kit.css): the frame as translucent chrome over the ground, the open session filled
+   with the accent, the dock's tabs a segmented row. Tokens only, as above. */
+
+[data-style="apple"] :is(.app-header, .app-status) {
+  background: var(--material-thin);
+  -webkit-backdrop-filter: var(--material-blur); backdrop-filter: var(--material-blur);
+}
+[data-style="apple"] .app-brand span { font-size: var(--text-lg); letter-spacing: -0.022em; }
+[data-style="apple"] .app-search {
+  background: var(--surface-3); border-color: transparent; border-radius: var(--radius-md);
+  transition: background var(--duration-fast), transform var(--duration-fast) ease-out;
+}
+[data-style="apple"] .app-search:hover { border-color: transparent; box-shadow: inset 0 0 0 1px var(--border-default); color: var(--text-secondary); }
+[data-style="apple"] .app-search:active { transform: scale(0.985); }
+[data-style="apple"] .app-search kbd.pk-kbd { background: var(--surface-2); border-color: transparent; }
+
+[data-style="apple"] .sessions-head h2 { font-size: var(--text-xl); font-weight: 700; letter-spacing: -0.02em; color: var(--text-primary); }
+[data-style="apple"] .sessions-group { font-weight: 600; }
+[data-style="apple"] .session-row { min-height: 36px; transition: background var(--duration-fast); }
+[data-style="apple"] .session-item[aria-current="true"] > .session-row { background: var(--accent); color: var(--text-on-accent); }
+[data-style="apple"] .session-item[aria-current="true"] > .session-row :is(.session-meta, .session-agent, .session-expand, .pk-btn) { color: var(--text-on-accent); }
+[data-style="apple"] .session-item[aria-current="true"] > .session-row .pk-btn:hover { background: rgb(255 255 255 / 0.18); }
+[data-style="apple"] .session-running { background: var(--ok); }
+[data-style="apple"] .session-item[aria-current="true"] > .session-row > .session-running { background: var(--text-on-accent); }
+
+[data-style="apple"] .app-dock-bar { padding: var(--space-1); gap: var(--space-1); border-bottom-color: var(--border-subtle); }
+[data-style="apple"] .app-dock-tabs { gap: 2px; padding: 2px; min-height: 32px; background: var(--surface-3); border-radius: var(--radius-md); }
+[data-style="apple"] .dock-tab {
+  border-right: 0; border-radius: calc(var(--radius-md) - 2px);
+  transition: background 200ms var(--ease-spring), box-shadow 200ms var(--ease-spring);
+}
+[data-style="apple"] .dock-tab[aria-selected="true"] { background: var(--surface-2); box-shadow: var(--shadow-raised); }
+
+[data-style="apple"] .app-window { border-color: var(--border-subtle); border-radius: var(--radius-lg); }
+[data-style="apple"] .app-window-bar { -webkit-backdrop-filter: var(--material-blur); backdrop-filter: var(--material-blur); }
+[data-style="apple"] .app-launcher-list .launcher-icon { border-radius: var(--radius-sm); color: var(--accent-text); }
+
+@media (prefers-reduced-transparency: reduce) {
+  [data-style="apple"] :is(.app-header, .app-status) { background: var(--surface-1); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-style="apple"] .app-search:active { transform: none; }
+}
+@media (max-width: 960px) {
+  [data-style="apple"] .app-window { border-radius: 0; }
+}

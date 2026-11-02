@@ -244,6 +244,26 @@ class Runtime:
                 plugin_metadata=getattr(factory, "_plugin_metadata", None),
             )
         self._declare_offered()
+        self._check_required_plugins(dirs)
+
+    def _check_required_plugins(self, dirs: list[Path]) -> None:
+        """A declared server whose plugin imports another plugin (``plugins = [...]`` in its manifest) that is not
+        installed: a problem, said once at start instead of as an ImportError when a lazy import first runs. Only
+        installed is asked, not enabled -- a library like llm_common never runs, and a plugin's client may work without
+        its server. The server is still built: the policy is to log and carry on."""
+        from .plugins.discovery import default_plugin_dirs
+        from .plugins.plugin_manifest import MANIFEST_TOML, plugin_requirements
+
+        installed = set(self._plugins)
+        for root in dirs or default_plugin_dirs():
+            if root.is_dir():
+                installed.update(d.name for d in root.iterdir() if (d / MANIFEST_TOML).is_file())
+        for name, decl in self._decls.items():
+            for needed in plugin_requirements(decl.plugin_metadata or {}):
+                if needed not in installed:
+                    logger.warning("Server '%s' (plugin '%s') needs plugin '%s', which is not installed",
+                                   name, decl.type, needed)
+                    self.problems.append(f"server '{name}': needs plugin '{needed}', which is not installed")
 
     def _declare_offered(self) -> None:
         """The servers plugin types offer beyond the config: a factory with ``offered_servers(config) -> {name:

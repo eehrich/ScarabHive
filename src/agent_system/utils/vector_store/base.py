@@ -26,14 +26,20 @@ def get_vector_backend() -> str:
         
     Note: On Windows, ChromaDB's Rust bindings hang/crash (GitHub issue #5937).
     We use chroma_api_impl="chromadb.api.segment.SegmentAPI" to bypass this.
+    That Python implementation needs hnswlib (chroma-hnswlib), which chromadb
+    does not install (a dev extra of its own) and which has no wheel for every
+    Python (none for 3.14): without it every store failed at its first use, so
+    Windows takes chromadb only where hnswlib imports, and sqlite-vec otherwise.
     """
     global _VECTOR_BACKEND
     if _VECTOR_BACKEND is not None:
         return _VECTOR_BACKEND
-    
+
     # Try ChromaDB first (works on all platforms with SegmentAPI workaround)
     import importlib.util
-    if importlib.util.find_spec("chromadb") is not None:
+    chroma_usable = importlib.util.find_spec("chromadb") is not None and (
+        platform.system() != "Windows" or importlib.util.find_spec("hnswlib") is not None)
+    if chroma_usable:
         _VECTOR_BACKEND = "chromadb"
         if platform.system() == "Windows":
             logger.info("Vector backend: chromadb (SegmentAPI mode for Windows)")
@@ -44,7 +50,10 @@ def get_vector_backend() -> str:
     # Fallback to sqlite-vec
     if importlib.util.find_spec("sqlite_vec") is not None:
         _VECTOR_BACKEND = "sqlite-vec"
-        logger.info("Vector backend: sqlite-vec (fallback)")
+        if importlib.util.find_spec("chromadb") is not None:
+            logger.info("Vector backend: sqlite-vec (chromadb's Windows mode needs hnswlib, which is not installed)")
+        else:
+            logger.info("Vector backend: sqlite-vec (fallback)")
         return _VECTOR_BACKEND
     
     raise RuntimeError(

@@ -1,5 +1,5 @@
 {% extends "kit/panel_base.html" %}
-{% from "kit/macros.html" import icon, logo, empty, skeleton, status %}
+{% from "kit/macros.html" import icon, logo, empty, skeleton, status, stat, steps %}
 {% block title %}UI Kit{% endblock %}
 {% block head %}
 <style>
@@ -22,6 +22,11 @@
   <button type="button" class="pk-btn pk-btn--sm" data-theme-choice="light">{{ icon('sun') }} Light</button>
   <button type="button" class="pk-btn pk-btn--sm" data-theme-choice="dark">{{ icon('moon') }} Dark</button>
   <button type="button" class="pk-btn pk-btn--sm" data-theme-choice="system">{{ icon('monitor') }} System</button>
+</div>
+<div class="pk-row" role="group" aria-label="Style">
+  <button type="button" class="pk-btn pk-btn--sm" data-style-choice="classic">Classic</button>
+  <button type="button" class="pk-btn pk-btn--sm" data-style-choice="apple">Apple</button>
+  <button type="button" class="pk-btn pk-btn--sm" data-style-choice="petrol">Petrol</button>
 </div>
 {% endblock %}
 {% block content %}
@@ -91,6 +96,31 @@
     <div id="kitIconPicker"></div>
     <div class="pk-form-actions"><button type="button" class="pk-btn">Cancel</button><button type="button" class="pk-btn pk-btn--primary">Save</button></div>
   </form>
+  <h3>Two columns, segmented, choices</h3>
+  <form class="pk-form pk-form--cols">
+    <h4 class="pk-section-title">Project</h4>
+    <label class="pk-field"><span class="pk-label">Name</span><input class="pk-input" value="Billing service"></label>
+    <label class="pk-field"><span class="pk-label">Key</span><input class="pk-input pk-input--mono" value="BIL"></label>
+    <label class="pk-field pk-field--wide"><span class="pk-label">Purpose (.pk-field--wide spans both)</span><textarea class="pk-textarea">Sends the monthly invoices.</textarea></label>
+    <div class="pk-field"><span class="pk-label">Who does it</span>
+      <div class="pk-segmented" role="radiogroup" aria-label="Who does it">
+        <label><input type="radio" name="kit-who" value="person" checked> A person</label>
+        <label><input type="radio" name="kit-who" value="agent"> An agent</label>
+        <label><input type="radio" name="kit-who" value="off" disabled> Nobody</label>
+      </div></div>
+    <div class="pk-field"><span class="pk-label">Interval</span>
+      <div class="pk-segmented" role="radiogroup" aria-label="Interval">
+        <label><input type="radio" name="kit-interval" value="day"> Daily</label>
+        <label><input type="radio" name="kit-interval" value="week" checked> Weekly</label>
+      </div></div>
+    <div class="pk-field pk-field--wide"><span class="pk-label">Which release? (.pk-choice)</span>
+      <div class="pk-stack" role="group" aria-label="Which release?" style="gap: var(--space-1)">
+        <label class="pk-choice"><input type="radio" name="kit-release" value="now" checked> Release now</label>
+        <label class="pk-choice"><input type="radio" name="kit-release" value="later"> After the review</label>
+        <label class="pk-choice"><input type="checkbox" name="kit-notify"> Tell the team</label>
+      </div></div>
+    <div class="pk-form-actions"><button type="button" class="pk-btn pk-btn--primary">Save</button></div>
+  </form>
 </section>
 
 <section class="kit-section">
@@ -136,6 +166,15 @@
     <div class="pk-stat"><div class="pk-stat-label">Context used</div><div class="pk-stat-value">62%</div><progress class="pk-progress" value="62" max="100"></progress></div>
     <div class="pk-stat"><div class="pk-stat-label">Cost</div><div class="pk-stat-value">$0.12</div></div>
   </div>
+  <p class="pk-help">stat(label, value, {key, sub, hint, tone, pressed, onClickable}) in panel-kit.js, the stat() macro in templates: a sub-line, a tone, a toggle that filters a list.</p>
+  <div class="pk-stats" id="kitStats"></div>
+  <div class="pk-stats">
+    {{ stat("Open tickets", 12, key="kit-open", sub="3 new today") }}
+    {{ stat("Overdue", 2, key="kit-overdue", tone="danger", pressed=false, hint="Show the overdue ones") }}
+  </div>
+  <div class="pk-row" id="kitDue"></div>
+  <div class="pk-row"><span class="pk-muted">A countdown the kit ticks while the panel is in sight:</span>
+    <span class="pk-mono" id="kitCountdown"></span></div>
   <div class="pk-card">
     <div class="pk-card-head"><h3 class="pk-card-title">Connections</h3><span class="pk-badge pk-badge--accent">3</span></div>
     <div class="pk-stack">
@@ -147,6 +186,7 @@
   <div class="pk-row">
     <span class="pk-badge">neutral</span><span class="pk-badge pk-badge--info">info</span><span class="pk-badge pk-badge--ok">ok</span>
     <span class="pk-badge pk-badge--warn">warn</span><span class="pk-badge pk-badge--danger">danger</span>
+    <span class="pk-badge pk-badge--danger pk-badge--strong">strong</span>
     <span class="pk-spinner" aria-label="Loading"></span>
     <kbd class="pk-kbd">Ctrl K</kbd>
   </div>
@@ -251,6 +291,42 @@ It reads like a getter.</div></div></li>
 </section>
 
 <section class="kit-section">
+  <h2>Steps, lists and trees</h2>
+  <p class="pk-secondary" style="margin:0">The steps of a process (<code class="pk-mono">.pk-steps</code>, the <code class="pk-mono">steps()</code> macro):
+    done carries a tick, warn a "!", the current one is filled and <code class="pk-mono">aria-current="step"</code>.</p>
+  {{ steps([{"label": "Plan", "state": "done"}, {"label": "Design", "sub": "approved", "state": "done"},
+            {"label": "Build", "sub": "2 checks open", "state": "current"}, {"label": "Test", "sub": "sent back", "state": "warn"},
+            {"label": "Release"}], label="Phases") }}
+  <div class="pk-row"><span class="pk-muted">pk-steps--dots, an onboarding's progress:</span>
+    {{ steps([{"label": "Account", "state": "done"}, {"label": "Profile", "state": "current"}, {"label": "Team"}, {"label": "Done"}], label="Setup", dots=true) }}</div>
+  <div class="pk-split pk-split--even">
+    <ul class="pk-stack" style="list-style: none; margin: 0; padding: 0; gap: var(--space-1)" aria-label="Projects">
+      <li><button type="button" class="pk-list-item" aria-current="true"><span class="pk-list-item-name">Billing service</span><span class="pk-list-item-sub">BIL · 4 open · updated today</span></button></li>
+      <li><button type="button" class="pk-list-item"><span class="pk-list-item-name">Customer portal</span><span class="pk-list-item-sub">POR · nothing open</span></button></li>
+      <li><button type="button" class="pk-btn pk-btn--ghost pk-list-item"><span class="pk-list-item-name">Reporting (on a pk-btn)</span><span class="pk-list-item-sub">REP · 1 open</span></button></li>
+    </ul>
+    <ul class="pk-tree" aria-label="Requirements">
+      <li><details open><summary>Security</summary>
+        <ul>
+          <li><details open><summary>Authentication</summary>
+            <ul><li>Passwords are hashed</li><li>Sessions expire after a day</li></ul></details></li>
+          <li>Inputs are validated</li>
+        </ul></details></li>
+      <li><details><summary>Reporting</summary><ul><li>A monthly summary</li></ul></details></li>
+      <li>Accessibility</li>
+    </ul>
+  </div>
+  <ul class="pk-legend" aria-label="Legend">
+    <li><span class="pk-swatch" data-tone="danger"></span>critical, high</li>
+    <li><span class="pk-swatch" data-tone="warn"></span>medium</li>
+    <li><span class="pk-swatch" data-tone="info"></span>low</li>
+    <li><span class="pk-swatch" data-tone="ok"></span>mitigated</li>
+    <li><span class="pk-swatch" data-tone="accent"></span>selected</li>
+    <li><span class="pk-swatch" data-tone="muted"></span>not rated</li>
+  </ul>
+</section>
+
+<section class="kit-section">
   <h2>Detail page</h2>
   <p class="pk-secondary" style="margin:0">One thing's page: <code class="pk-mono">.pk-detail-layout</code> with a header across, the main
     column and a sidebar of facts on the right; narrow, the sidebar goes below.</p>
@@ -288,6 +364,7 @@ It reads like a getter.</div></div></li>
     <button class="pk-btn" data-demo="prompt">Prompt</button>
     <button class="pk-btn" data-demo="toast">Toasts</button>
     <button class="pk-btn" data-demo="resizable">Resizable dialog</button>
+    <button class="pk-btn" data-demo="folders">{{ icon('folder') }} Folder picker</button>
   </div>
   <div class="pk-drop pk-card" id="kitDrop"><p class="pk-muted">.pk-drop: drag a file over this card</p></div>
   <dialog class="pk-dialog pk-dialog--resizable" id="kitResizable" aria-labelledby="kitResizableTitle">
@@ -353,6 +430,19 @@ keeps its line breaks.</div>
       <div class="pk-row"><span class="pk-text--ok">92 good</span><span class="pk-text--warn">61 fair</span><span class="pk-text--danger">34 poor</span><span class="pk-text--info">new</span></div>
     </div>
   </div>
+  <h3 class="pk-section-title">pk-split--list-wide: a wide list scrolls in its column</h3>
+  <div class="pk-split pk-split--list-wide">
+    <div class="pk-table-wrap">
+      <table class="pk-table" data-pk-nocards>
+        <thead><tr><th>Supplier</th><th>Component</th><th>Version</th><th>Licence</th><th>Contact</th><th class="pk-num">Open</th></tr></thead>
+        <tbody>
+          <tr><td>Example Components Ltd.</td><td>parser-core</td><td class="pk-mono">2.31.0</td><td>Apache-2.0</td><td>support@example.com</td><td class="pk-num">2</td></tr>
+          <tr><td>Sample Libraries Inc.</td><td>image-tools</td><td class="pk-mono">10.4.1</td><td>MIT</td><td>security@example.org</td><td class="pk-num">0</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="pk-card"><h3 class="pk-card-title">parser-core</h3><p class="pk-muted">The detail stays in its column.</p></div>
+  </div>
   <div class="pk-card pk-sidebar-layout">
     <nav class="pk-sidebar pk-stack" id="kit-sidebar" aria-label="Example list">
       <label class="pk-search">{{ icon('search') }}<input class="pk-input pk-input--sm" type="search" placeholder="Search" aria-label="Search"></label>
@@ -367,6 +457,9 @@ keeps its line breaks.</div>
 <section class="kit-section">
   <h2>Code, JSON and YAML</h2>
   <pre class="pk-code">POST /events  {"agent_name": "chapter_review", "task": "Check chapter 3"}</pre>
+  <h3>Line numbers and a diff (pk-code--lines)</h3>
+  <pre class="pk-code pk-code--lines"><span class="pk-code-line">def total(items):</span><span class="pk-code-line">    """Sum of the prices, rounded to cents."""</span><span class="pk-code-line pk-code-line--hit">    return round(sum(item.price for item in items), 2)</span><span class="pk-code-line"></span><span class="pk-code-line">print(total([]))  # a long line wraps under its own text, not under the numbers: 0.0 for an empty list of items</span></pre>
+  <pre class="pk-code pk-code--lines"><span class="pk-code-line pk-code-line--hunk">@@ -10,3 +10,3 @@ def total(items):</span><span class="pk-code-line" data-line="10">     """Sum of the prices, rounded to cents."""</span><span class="pk-code-line pk-code-line--del" data-line="">-    return sum(item.price for item in items)</span><span class="pk-code-line pk-code-line--add" data-line="11">+    return round(sum(item.price for item in items), 2)</span><span class="pk-code-line" data-line="12"> </span></pre>
   <div id="kit-json" class="pk-card"></div>
   <pre id="kit-yaml" class="pk-code"></pre>
 </section>
@@ -387,7 +480,48 @@ keeps its line breaks.</div>
 {% block scripts %}
 <script type="module" src="/static/kit/guide.js"></script>
 <script type="module">
-  import { alert, confirm, prompt, toast, jsonView, yamlCode, render, html, setTheme, iconPicker } from '/static/kit/panel-kit.js';
+  import { alert, confirm, prompt, toast, jsonView, yamlCode, render, html, setTheme, setStyle, iconPicker, stat, dueBadge, folderPicker } from '/static/kit/panel-kit.js';
+
+  // stat(): figures drawn by the script; a toggle is a button with aria-pressed
+  const kitStats = document.getElementById('kitStats');
+  let kitFilter = '';
+  const drawStats = () => render(kitStats, html`
+    ${stat('Findings', 42, { key: 'all', sub: '5 since Monday' })}
+    ${stat('Critical', 3, { key: 'critical', tone: 'danger', pressed: kitFilter === 'critical', hint: 'Show only these' })}
+    ${stat('Fixed', 31, { key: 'fixed', tone: 'ok', pressed: kitFilter === 'fixed', hint: 'Show only these' })}
+    ${stat('Reports', 8, { key: 'reports', onClickable: true, hint: 'Opens the reports' })}`);
+  kitStats.addEventListener('click', (event) => {
+    const button = event.target.closest('button.pk-stat[aria-pressed]');
+    if (!button) return;
+    kitFilter = kitFilter === button.dataset.stat ? '' : button.dataset.stat;
+    drawStats();
+  });
+  drawStats();
+  // dueBadge(): overdue, soon, later -- and a countdown the kit ticks itself
+  const day = 24 * 3600e3;
+  render(document.getElementById('kitDue'), html`${dueBadge(new Date(Date.now() - 3 * day))} ${dueBadge(new Date(Date.now() + 2 * day))}
+    ${dueBadge(new Date(Date.now() + 30 * day))}`);
+  document.getElementById('kitCountdown').dataset.pkCountdown = new Date(Date.now() + 2 * 3600e3).toISOString();
+
+  // folderPicker() lists a plugin's /dirs route (FolderRoutes). This page has none: its demo answers from a made-up
+  // tree, by standing in for fetch on that one address only.
+  const demoTree = { '': ['/srv/projects', '/srv/archive'], '/srv/projects': ['alpha', 'beta', 'gamma'],
+    '/srv/projects/alpha': ['docs', 'src'], '/srv/projects/alpha/docs': [], '/srv/projects/alpha/src': [],
+    '/srv/projects/beta': [], '/srv/projects/gamma': [], '/srv/archive': [] };
+  const realFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const address = new URL(String(input), location.href);
+    if (address.pathname !== '/ui/kit/demo-dirs') return realFetch(input, init);
+    const path = address.searchParams.get('path') || '';
+    const children = demoTree[path];
+    const answer = children === undefined
+      ? new Response(JSON.stringify({ detail: `${path} lies outside the allowed folders` }), { status: 422, headers: { 'content-type': 'application/json' } })
+      : new Response(JSON.stringify({
+        path, parent: path ? (demoTree[''].includes(path) ? '' : path.slice(0, path.lastIndexOf('/'))) : null,
+        dirs: children.map((name) => ({ name, path: path ? `${path}/${name}` : name })), truncated: false,
+      }), { headers: { 'content-type': 'application/json' } });
+    return Promise.resolve(answer);
+  };
 
   // data-pk-edit: cells edited in place, each change a celledit event
   const budget = [['rent', 'Rent', '1200', 'fixed'], ['power', 'Power', '80', 'fixed'], ['travel', 'Travel', '300', 'varies']];
@@ -409,6 +543,10 @@ keeps its line breaks.</div>
   document.querySelectorAll('[data-theme-choice]').forEach((button) => {
     button.addEventListener('click', () => setTheme(button.dataset.themeChoice));
   });
+  // setStyle: the same, for the look (classic, apple)
+  document.querySelectorAll('[data-style-choice]').forEach((button) => {
+    button.addEventListener('click', () => setStyle(button.dataset.styleChoice));
+  });
 
   const demos = {
     alert: () => alert('The queue was paused by an operator.'),
@@ -418,6 +556,7 @@ keeps its line breaks.</div>
     toast: () => { toast('Saved'); toast('3 jobs finished', { kind: 'ok' }); toast('Worker is slow', { kind: 'warn' }); toast('Request failed: 502', { kind: 'error' }); },
   };
   demos.resizable = () => document.getElementById('kitResizable').showModal();
+  demos.folders = async () => toast(`Folder: ${await folderPicker({ url: '/ui/kit/demo-dirs', title: 'Choose a project folder' })}`);
   document.querySelectorAll('[data-demo]').forEach((b) => b.addEventListener('click', demos[b.dataset.demo]));
   const drop = document.getElementById('kitDrop');
   drop.addEventListener('dragover', (event) => { event.preventDefault(); drop.classList.add('pk-drop--over'); });

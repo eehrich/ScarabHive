@@ -230,10 +230,10 @@ class TestHandshake:
                    for server in servers)
 
     @pytest.mark.asyncio
-    async def test_unreachable_server_fails_at_start_not_later(self):
+    async def test_unreachable_server_fails_at_start_not_later(self, refused_url):
         """A dead server must raise here, not show up as an empty tool list."""
         conn = ServerConnection(
-            "dead", make_config(transport="streaming", url="http://127.0.0.1:9/mcp"), timeout=5.0,
+            "dead", make_config(transport="streaming", url=f"{refused_url}/mcp"), timeout=5.0,
         )
         with pytest.raises(MCPConnectionError):
             await conn.start()
@@ -273,7 +273,7 @@ class TestHandshake:
                 await conn.stop()
 
     @pytest.mark.asyncio
-    async def test_connect_errors_name_the_actual_cause(self):
+    async def test_connect_errors_name_the_actual_cause(self, refused_url):
         """An operator must learn WHY, not that a task group was unhappy.
 
         The SDK runs its transports in anyio task groups, so a refused
@@ -282,7 +282,7 @@ class TestHandshake:
         Formatting that verbatim threw away the only useful part.
         """
         conn = ServerConnection(
-            "dead", make_config(transport="streaming", url="http://127.0.0.1:9/mcp"), timeout=5.0,
+            "dead", make_config(transport="streaming", url=f"{refused_url}/mcp"), timeout=5.0,
         )
         with pytest.raises(MCPConnectionError) as excinfo:
             await conn.start()
@@ -322,7 +322,7 @@ class TestHandshake:
         assert not leftover, f"tasks left running after stop(): {leftover}"
 
     @pytest.mark.asyncio
-    async def test_ssl_verify_reaches_every_http_transport(self):
+    async def test_ssl_verify_reaches_every_http_transport(self, refused_url):
         """ssl_verify=False must reach httpx on the SSE path too.
 
         The streamable transport got an httpx factory, the SSE one did not, so
@@ -331,8 +331,8 @@ class TestHandshake:
         """
         import httpx2
 
-        for transport, url in (("streaming", "http://127.0.0.1:9/mcp"),
-                               ("sse", "http://127.0.0.1:9/sse")):
+        for transport, url in (("streaming", f"{refused_url}/mcp"),
+                               ("sse", f"{refused_url}/sse")):
             seen = []
             original = httpx2.AsyncClient.__init__
 
@@ -841,12 +841,12 @@ class TestPool:
             await pool.connect("never-heard-of-it")
 
     @pytest.mark.asyncio
-    async def test_one_dead_server_does_not_stop_the_others(self):
+    async def test_one_dead_server_does_not_stop_the_others(self, refused_url):
         """Startup must survive an unreachable server."""
         pool = ExternalServerPool(timeout=5.0)
         pool.configure({
             "probe": make_config(),
-            "dead": make_config(transport="streaming", url="http://127.0.0.1:9/mcp"),
+            "dead": make_config(transport="streaming", url=f"{refused_url}/mcp"),
         })
         try:
             results = await pool.connect_all()

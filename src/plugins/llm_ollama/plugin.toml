@@ -10,4 +10,5 @@ author = "AgentSystem"
 type = ["llm-provider"]
 provides = ["ollama"]
 requires = { agent_system = ">=0.6.0" }
+plugins = ["llm_common"]
 dependencies = []

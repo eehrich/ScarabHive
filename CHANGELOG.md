@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The file tools, the text search and the coding CLIs refuse the installation's private files whatever their roots
+  allow: `config/*.env`, the user store (where auth keeps it), the sessions (`AGENT_SESSION_STORAGE_PATH` when set)
+  and their archive, and the message debugger's store. The terminal's dangerous patterns name the env files.
+- Choosing which agent a panel's AI task runs is for admins: whoever starts the task later runs it under their own
+  rights.
+- `scripts/analyze_plugin_config.py` read list defaults with `eval()`; it uses `ast.literal_eval`. A collection name
+  of the sqlite-vec vector store is checked before it becomes part of a table name. MD5 and SHA-1 used for cache
+  keys and ids say `usedforsecurity=False`.
+- urllib3 `>=2.8.0,<3` (the cap below 2.4.0 is gone).
+
 ### Added
 
 - Coding CLIs: a workdir in the data directory that is not there yet is made at the start -- an empty repository
@@ -17,6 +29,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bindings hold a sub-agent's -- an agent that runs bound in production (a coding CLI workdir that pins a store
   namespace refuses a run without) can be measured. `agent-run`'s `run_agent_request` and `collect_final_result` pass
   a run's bindings on to `run_events`.
+- AI tasks of a panel (`agent_system/plugins/agent_tasks.py`, `static/kit/ai-tasks.js`): a plugin names the work an
+  agent may take on, an admin chooses per task whether an agent does it and which one, and a person starts it from
+  the panel. The run goes through `/run` as that person, so every gate applies; the panel follows it in a side sheet
+  (what the agent says and calls, its result) and a person answers the agent there. One run per session at a time.
+- Run events (`agent_system/run_events.py`, `docs/run_events.md`): every agent run a panel starts says what it does --
+  its state, its step in plain words, a sign of life every few seconds -- kept in `data/run_events/run_events.db` and
+  streamed (`GET /api/agent-runs/stream`, Server-Sent Events) to the shell and the panels; one stream per browser tab.
+  A run whose process ended (a restart, a crash) is ended as failed when the next process opens the store, so none
+  stays at work for good. Heartbeats are sent, not kept.
+- The agents at work in the shell's head: a pill counts the runs, says what the newest one does and warns when one
+  went quiet; a bell allows a system notification when a run needs its person. Runs that need their person (a
+  result to check, a failure, a question) are marked until they are seen (`POST /api/agent-runs/{id}/ack`).
+- An agent in a panel run asks its person in the panel: `ask_user` writes the question as a run event and waits up to
+  `panel_ask_timeout` for the answer from the "Agent runs" sheet. A run that waits can be cancelled.
+- Admins restart and stop the server from the shell's head (`/admin/server/restart`, `/admin/server/stop`): both ask
+  first and name the requests still running.
+- Styles beside the theme: classic, apple and petrol (Settings, the command palette, the kit page); `setStyle`,
+  `currentStyle`, `onStyleChange` in the kit, cookie `ui_style`.
+- Kit: a status badge carries the mark of its tone (status is never colour alone); one severity vocabulary
+  (`severityBadge`, `severityWord`, `SEVERITIES`); `openPanel(path)` and `<a data-pk-panel>` open another panel
+  beside this one.
+- `plugins = [...]` in a plugin's `plugin.toml` names the other plugins it imports from; a test holds it equal to the
+  imports across all plugin roots, and the runtime reports a named plugin that is not installed when it starts.
+- `agent_system/plugins/sqlite_guard.py`: SQLite stores several processes write at once (WAL, `BEGIN IMMEDIATE`) lose
+  no update and do not fail with "database is locked".
+- ComfyUI: MOSS-TTS speaker and clone workflows as tools.
 - Coding CLIs as an LLM: an agy run that ended without an answer on a refused step (a command, say -- agy then ends
   its whole conversation) is resumed once, told that such steps are refused and to go on with its other tools;
   measured for a command, it answers then. A second such end moves the chain on. Both runs' tokens are counted.
@@ -111,6 +149,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ended without an answer, not cancelled -- runs again under that id as the same agent, instead of replaying its
   end (a finished job is kept until the process ends, so a dispatcher's retry only saw the old failure). A running
   job, one that answered and a cancelled one are joined as without it, so a dispatcher may send it every time.
+- Panel kit: `stat()` (and a `stat()` macro) for one figure of a stats row, a toggle when it filters a list;
+  `dueBadge()` for a deadline in the page's language; `[data-pk-countdown]` elements the kit ticks every second
+  while the panel is visible; `folderPicker()`, a dialog of the kit's own that picks a server folder, with
+  `FolderRoutes` (`agent_system/plugins/folder_routes.py`) as its route: admins only, inside the plugin's roots,
+  hidden, private and linked-out folders left out. New classes: `pk-steps` (and a `steps()` macro), `pk-list-item`,
+  `pk-legend`/`pk-swatch`, `pk-code--lines`, `pk-tree`, `pk-segmented`, `pk-choice`, `pk-section-title`,
+  `pk-form--cols`, `pk-split--list-wide`/`--even`; a table in a `pk-split` scrolls sideways in its own column. The
+  AI-task sheet draws its mode switch and an agent's answer options with `pk-segmented` and `pk-choice`.
 
 ### Changed
 

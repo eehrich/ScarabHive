@@ -16,6 +16,7 @@ provides = ["openrouter_sdk"]
 # key-follows-endpoint). Pinned by tests/llm/test_llm_openrouter_routing_default.py.
 default_base_url = { openrouter_sdk = "https://openrouter.ai/api/v1" }
 requires = { agent_system = ">=0.6.0" }
+plugins = ["llm_common", "llm_openai_compat"]
 # The SDK pins pydantic<2.13 — installing it caps the whole application one
 # minor below the current release. That cost is part of what this plugin
 # exists to weigh.

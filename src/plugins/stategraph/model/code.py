@@ -112,7 +112,7 @@ _TOO_DEEP_MESSAGE = "nested too deeply for Python's parser"
 @functools.lru_cache(maxsize=4096)
 def compile_expression(source: str, where: str = "<expression>") -> types.CodeType:
     try:
-        return compile(source.strip(), where, "eval")
+        return compile(source.strip(), where, "eval")  # noqa: S307 -- machine code is trusted (§8.3)
     except SyntaxError as exc:
         raise CodeError(where, f"not a Python expression: {exc.msg} ({source.strip()!r})", cause=exc) from None
     except _TOO_DEEP as exc:
@@ -122,7 +122,7 @@ def compile_expression(source: str, where: str = "<expression>") -> types.CodeTy
 @functools.lru_cache(maxsize=4096)
 def compile_statements(source: str, where: str = "<statements>") -> types.CodeType:
     try:
-        return compile(source, where, "exec")
+        return compile(source, where, "exec")  # noqa: S102 -- machine code is trusted (§8.3)
     except SyntaxError as exc:
         raise CodeError(where, f"not Python statements: {exc.msg} (line {exc.lineno})", cause=exc) from None
     except _TOO_DEEP as exc:

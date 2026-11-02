@@ -29,13 +29,26 @@ READ_ATTEMPTS = 20
 READ_PAUSE_SECONDS = 0.01
 
 
+def _sqlite_path(database: Path) -> str:
+    """The path part of a file: URI SQLite opens, for a local file and a UNC path (a share, a mapped drive) alike.
+
+    pathname2url, not as_uri. A UNC path must become file:////server/share: SQLite reads file://server/... as a
+    host, not as a share, and fails to open it. Python up to 3.13 wrote //// for \\\\server\\share; from 3.14
+    pathname2url writes //server, so the two slashes it no longer writes are added here.
+    """
+    path = str(database.absolute())
+    url = pathname2url(path)
+    if path.startswith("\\\\") and not url.startswith("////"):  # a UNC path; a local one is ///C:/... from 3.14
+        url = "////" + url.lstrip("/")
+    return url
+
+
 def _select(database: Path, table: str, columns: str, session_id: str | None = None) -> tuple | None:
     """The first row of ``SELECT columns`` over a session's store, opened read-only: over every row, or those tagged
     with the session. None while the file or its table is not there yet."""
     if not database.exists():
         return None
-    # pathname2url, not as_uri: a UNC path must become file:////server/share, which SQLite accepts
-    with closing(sqlite3.connect(f"file:{pathname2url(str(database.absolute()))}?mode=ro", uri=True)) as connection:
+    with closing(sqlite3.connect(f"file:{_sqlite_path(database)}?mode=ro", uri=True)) as connection:
         if not connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
             return None  # a store being created: its file is there before its table
         return connection.execute(f"SELECT {columns} FROM {table}" + (" WHERE session_id = ?" if session_id else ""),
