@@ -371,7 +371,11 @@ resets 2026-09-30 14:00". A call may ask for a lower threshold
 (@{tt}max_window_utilization@{utt} of @{" run_task " link run_task}), never a
 higher one.
 
-Only a finished run writes that file, and a refused run never finishes: a
+A run watched by this plugin writes that file as soon as it reports, from near
+its start on, as its usage changes; a report only read later, from a run taken
+over, is old and stays out. A run that ended unwatched names its limit in its
+answer, not to the guard. Runs already going when a window fills are not stopped: the guard
+holds back new ones only. A refused run never reports: a
 stored state that would refuse and is older than five minutes is asked anew
 first -- one turn on haiku without tools, under the login the runs use, at
 most once in five minutes per instance and process, and only for a user

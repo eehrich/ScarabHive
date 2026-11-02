@@ -134,6 +134,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Coding CLIs: the subscription guard went by what the last run to end had seen. A run reports the windows near its
+  start and only its end stored that, so with many runs at once new ones started on a state minutes old. The report
+  is now stored when it arrives. Runs already going when a window fills still go on.
 - MCP gateway: a tool that checks the caller's context in its session's template vars (a book's id) refused every
   call through the gateway -- the runner that runs the calls knew nothing of the caller's session. A grant now
   carries the session's template vars as the issuing run has them (`session_vars`); the gateway sets them in its

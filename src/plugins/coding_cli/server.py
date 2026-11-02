@@ -102,8 +102,8 @@ STALE_LEASE_S = 10
 # How often a started instance looks for runs whose owner is gone and for rings that were lost.
 SWEEP_S = 30
 SAVE_ATTEMPTS = 40
-# Only a finished run writes quota.json, and a refused one never finishes: a window that reset early kept refusing
-# until its old reset (measured: the file far above what the subscription reported, the reset moved). A state that
+# A refused run never reports, and only reports and this question write quota.json: a window that reset early kept
+# refusing until its old reset (measured: the file far above what the subscription reported, the reset moved). A state that
 # would refuse and is older than this is asked anew first (cli.probe_quota), at most once in that time per
 # instance and process.
 QUOTA_FRESH_S = 300
@@ -739,10 +739,18 @@ class CodingCliServer(SchemaBasedToolServer):
         return found
 
     def _quota(self) -> Any:
-        try:
-            return json.loads((self._root() / "quota.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
+        path = self._root() / "quota.json"
+        for attempt in range(SAVE_ATTEMPTS):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except PermissionError:
+                # Windows refuses the read while a report replaces the file: no state would let a run past the guard.
+                if attempt == SAVE_ATTEMPTS - 1:
+                    return None
+                time.sleep(0.05)
+            except (OSError, ValueError):
+                return None
+        return None
 
     def _no_mcp(self) -> Path:
         mcp = self._root() / "no_mcp.json"
@@ -1296,6 +1304,11 @@ class CodingCliServer(SchemaBasedToolServer):
         monitor.add_done_callback(lambda _t: self._monitors.pop(run_id, None))
         return monitor
 
+    async def _store_report(self, events: list[dict]) -> None:
+        rate_limit = cli.outcome(events)["rate_limit"]
+        if rate_limit:
+            await asyncio.to_thread(self._store_quota, rate_limit)
+
     async def _monitor(self, record: dict, proc) -> None:
         """Progress while a tool call waits, the time limit, the end, the ring.
         proc is None for a run another process started: its pid is watched."""
@@ -1304,6 +1317,7 @@ class CodingCliServer(SchemaBasedToolServer):
                  else (lambda: alive(record.get("pid"), record.get("pid_started"))))
         offset, deadline = 0, float(record.get("started_at") or time.time()) + self._limit_s(record)
         stopped, answered = False, None
+        adopted = proc is None      # what it reads first is the run's past
         try:
             while going():
                 await asyncio.sleep(POLL_S)
@@ -1316,6 +1330,14 @@ class CodingCliServer(SchemaBasedToolServer):
                     await self._stop_run(record, f"stopped after the time limit of {limit:.0f} min")
                     deadline, stopped = float("inf"), True
                 found, offset = cli.events_from(self._file(run_id, "jsonl"), offset)
+                # At once, not at the run's end: a run reports from near its start on, as its usage changes, and the
+                # runs started before it ends would go by what was true minutes ago. Stored only as it comes, by
+                # this watch: an old report, stored later, would undo newer ones and look new itself (a refusal it
+                # brings is asked anew only QUOTA_FRESH_S later). So not what an adopting watch reads first, and
+                # not at a run's end (_finalize).
+                if not adopted:
+                    await self._store_report(found)
+                adopted = adopted and not offset    # a read that failed read nothing of the past yet
                 if found and (answered is not None or any(event.get("type") == "result" for event in found)):
                     # Counted from its last word after a result: a CLI that goes on working after it is left to.
                     answered = time.time()
@@ -1338,10 +1360,13 @@ class CodingCliServer(SchemaBasedToolServer):
                 lines = [line for event in found for line in cli.actions(event, root, tools=live is None)]
                 if lines:
                     await listener.progress(lines[-1] if len(lines) == 1 else f"{lines[-1]} (+{len(lines) - 1})")
+            # What the process wrote between the last poll and its exit.
+            found = cli.events_from(self._file(run_id, "jsonl"), offset)[0]
+            if not adopted:
+                await self._store_report(found)
             live = self._live.get(run_id)
             if live is not None:
-                # What the process wrote between the last poll and its exit.
-                await live.feed(cli.events_from(self._file(run_id, "jsonl"), offset)[0])
+                await live.feed(found)
             if await asyncio.to_thread(self._finalize, run_id) is None:
                 # Somebody else ends it: wait for that end, then ring if they did not.
                 for _ in range(int(CLAIM_WAIT_S / 0.5)):
@@ -1495,8 +1520,6 @@ class CodingCliServer(SchemaBasedToolServer):
                 except cli.GitError as exc:
                     notes.append("changes not read")
                     details.append(str(exc))
-            if found["rate_limit"]:
-                self._store_quota(found["rate_limit"])
             if found["session"]:
                 record["claude_session"] = found["session"]
             if isinstance(found["model"], str) and found["model"]:

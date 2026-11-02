@@ -632,6 +632,169 @@ async def test_a_threshold_that_is_no_share_is_refused(repo, value):
     assert result["error"].startswith("max_window_utilization: a share above 0 and at most 1"), result
 
 
+async def test_a_run_going_on_already_holds_back_the_next_start(repo):
+    """A run reports the windows near its start: the runs started before it ends go by that report, not by what the
+    last run to end saw minutes ago."""
+    server = make_server(repo, wait_s=0.2)
+    started, _ = await call(server, "run_task", task="RATE 0.9\nSLEEP 30")
+    try:
+        for _ in range(100):
+            if (server._quota() or {}).get("unifiedWindows"):
+                break
+            await asyncio.sleep(0.1)
+        assert server._load(started["run_id"])["state"] == "running", "fixture: the run has to be going still"
+        refused, _ = await call(server, "run_task", task="x")
+        assert refused["limit"]["window"] == "five_hour", refused
+    finally:
+        await call(server, "cancel_run", run_id=started["run_id"])
+
+
+async def test_a_run_ending_does_not_undo_a_newer_report(repo):
+    """Its monitor stored its report when it came. Stored again at its end, it would go back over what other runs
+    reported meanwhile."""
+    server = make_server(repo, wait_s=0.2)
+    started, _ = await call(server, "run_task", task="RATE 0.3\nSLEEP 3")
+    for _ in range(100):
+        if cli.windows(server._quota()).get("five_hour") == 0.3:
+            break
+        await asyncio.sleep(0.1)
+    assert server._load(started["run_id"])["state"] == "running", "fixture: the report has to come while it runs"
+    server._store_quota({"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0.9}}})
+    await ended(server, started["run_id"])
+    assert server._load(started["run_id"])["state"] == "done"
+    assert cli.windows(server._quota())["five_hour"] == 0.9
+
+
+async def has_reported(server, run_id):
+    for _ in range(100):
+        if "rate_limit_event" in server._file(run_id, "jsonl").read_text(encoding="utf-8"):
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError("fixture: the run did not report")
+
+
+async def test_an_adopting_monitor_does_not_store_the_runs_old_report(repo):
+    """It reads the stream from its start: an old report, stored now, would look new."""
+    record = await unwatched(repo, "RATE 0.9\nSLEEP 30")
+    api = make_server(repo)
+    await has_reported(api, record["run_id"])
+    api._store_quota({"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0.1}}})
+    await api.start_plugin()
+    try:
+        assert record["run_id"] in api._monitors, "fixture: the run was not taken over"
+        await asyncio.sleep(server_module.POLL_S * 3)
+        assert cli.windows(api._quota())["five_hour"] == 0.1
+    finally:
+        await call(api, "cancel_run", run_id=record["run_id"])
+        await gone(record["pid"])
+        await api.stop_plugin()
+
+
+async def test_an_adopting_monitor_stores_what_the_run_reports_from_then_on(repo):
+    record = await unwatched(repo, "SLEEP 3\nREPORT 0.7\nSLEEP 30")
+    api = make_server(repo)
+    api._store_quota({"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0.1}}})
+    await api.start_plugin()
+    try:
+        assert record["run_id"] in api._monitors, "fixture: the run was not taken over"
+        for _ in range(100):
+            if cli.windows(api._quota())["five_hour"] == 0.7:
+                break
+            await asyncio.sleep(0.1)
+        assert cli.windows(api._quota())["five_hour"] == 0.7
+        assert api._load(record["run_id"])["state"] == "running", "the report has to come while it is watched"
+    finally:
+        await call(api, "cancel_run", run_id=record["run_id"])
+        await gone(record["pid"])
+        await api.stop_plugin()
+
+
+async def test_an_adopting_monitor_whose_first_read_failed_still_leaves_the_old_report(repo, monkeypatch):
+    record = await unwatched(repo, "RATE 0.9\nSLEEP 30")
+    api = make_server(repo)
+    await has_reported(api, record["run_id"])
+    api._store_quota({"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0.1}}})
+    events_from, reads = cli.events_from, []
+
+    def failing_first(path, offset):
+        reads.append(offset)
+        return ([], 0) if len(reads) == 1 else events_from(path, offset)
+
+    monkeypatch.setattr(cli, "events_from", failing_first)
+    await api.start_plugin()
+    try:
+        assert record["run_id"] in api._monitors, "fixture: the run was not taken over"
+        for _ in range(100):
+            if len(reads) > 2:
+                break
+            await asyncio.sleep(0.1)
+        assert len(reads) > 2, "fixture: it has to read again"
+        assert cli.windows(api._quota())["five_hour"] == 0.1
+    finally:
+        await call(api, "cancel_run", run_id=record["run_id"])
+        await gone(record["pid"])
+        await api.stop_plugin()
+
+
+@pytest.mark.parametrize("how", ["ends while watched", "had ended already", "ended as its watch began"])
+async def test_the_end_of_a_run_taken_over_does_not_bring_its_old_report_back(repo, how):
+    record = await unwatched(repo, "RATE 0.7\nSLEEP 3")
+    api = make_server(repo)
+    await has_reported(api, record["run_id"])
+    if how != "ends while watched":
+        await gone(record["pid"])
+    api._store_quota({"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0.1}}})
+    try:
+        if how == "ended as its watch began":
+            await api._watch(record, None)
+        else:
+            await api.start_plugin()
+            await ended(api, record["run_id"])
+        assert api._load(record["run_id"])["state"] == "done"
+        assert cli.windows(api._quota())["five_hour"] == 0.1
+    finally:
+        await api.stop_plugin()
+
+
+async def test_a_report_in_the_last_words_of_a_watched_run_is_stored(repo, data_root, monkeypatch):
+    """Between the watch's last read and the exit: its read comes up empty, the process ends meanwhile."""
+    server = make_server(repo)
+    full_window(data_root, used=0.1)
+    events_from, reads = cli.events_from, []
+
+    def nothing_until_it_has_ended(path, offset):
+        reads.append(offset)
+        if len(reads) > 1:
+            return events_from(path, offset)
+        record = server._load(Path(path).stem)
+        for _ in range(200):    # blocks the loop on purpose: nothing else reads meanwhile
+            if not alive(record["pid"], record["pid_started"]):
+                break
+            time.sleep(0.05)
+        return [], offset
+
+    monkeypatch.setattr(cli, "events_from", nothing_until_it_has_ended)
+    result, _ = await call(server, "run_task", task="RATE 0.7")
+    assert result["state"] == "done", result
+    assert cli.windows(server._quota())["five_hour"] == 0.7
+
+
+def test_reading_the_state_waits_out_a_sharing_violation(repo, data_root, monkeypatch):
+    """Windows refuses the read while a report replaces the file; no state would let a run past the guard."""
+    server = make_server(repo)
+    full_window(data_root, used=0.9)
+    read_text, refused = Path.read_text, []
+
+    def refusing(self, *args, **kwargs):
+        if self.name == "quota.json" and len(refused) < 3:
+            refused.append(1)
+            raise PermissionError(13, "sharing violation")
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", refusing)
+    assert cli.windows(server._quota())["five_hour"] == 0.9 and len(refused) == 3
+
+
 async def test_a_resume_keeps_the_threshold_its_run_asked_for(repo, data_root):
     server = make_server(repo)
     first, _ = await call(server, "run_task", task="RATE 0.6", max_window_utilization=0.7)
@@ -701,7 +864,7 @@ def aged(data_root, seconds):
 
 @pytest.mark.parametrize("age, refused", [(server_module.QUOTA_FRESH_S + 60, False), (10, True)])
 async def test_an_old_state_that_refuses_is_asked_anew(repo, data_root, age, refused):
-    """Only a finished run writes quota.json and a refused one never finishes: a window that reset early refused
+    """A refused run never reports: a window that reset early refused
     every run until its old reset. Asked anew (the fake reports 34 % and 51 %), the run starts and the file holds
     the new state; a young state is refused on as it is."""
     full_window(data_root, used=0.91, name="seven_day")

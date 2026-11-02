@@ -6,6 +6,7 @@ The task on stdin is a script, one command per line:
   SLEEP <seconds>       wait
   RATE <utilization>    the five-hour window's utilization in the rate_limit_event
   REJECT                the rate_limit_event says the subscription refuses requests
+  REPORT <utilization>  a further rate_limit_event here: a run reports as its usage changes
   LIMIT                 the subscription stops the run midway, as measured on Claude Code 2.1.295 (2026-10-09): a
                         last rate_limit_event "rejected" and an is_error result, api_error usage_limit_reached
   TORN                  a Write tool call whose line arrives in two halves
@@ -41,12 +42,14 @@ def main():
     emit({"type": "system", "subtype": "init", "session_id": session, "cwd": os.getcwd(),
           "model": "claude-haiku-4-5-20251001", "permissionMode": "acceptEdits", "apiKeySource": "none",
           "tools": argv[argv.index("--tools") + 1].split(",") if "--tools" in argv else []})
-    rate = next((float(line.split()[1]) for line in task.splitlines() if line.startswith("RATE ")), 0.34)
-    emit({"type": "rate_limit_event", "session_id": session, "rate_limit_info": {
-        "status": "rejected" if "REJECT" in task.splitlines() else "allowed",
-        "resetsAt": time.time() + 3600, "rateLimitType": "five_hour",
-        "unifiedWindows": {"five_hour": {"utilization": rate, "resetsAt": time.time() + 3600},
-                           "seven_day": {"utilization": 0.51, "resetsAt": time.time() + 86400}}}})
+    def report(utilization):
+        emit({"type": "rate_limit_event", "session_id": session, "rate_limit_info": {
+            "status": "rejected" if "REJECT" in task.splitlines() else "allowed",
+            "resetsAt": time.time() + 3600, "rateLimitType": "five_hour",
+            "unifiedWindows": {"five_hour": {"utilization": utilization, "resetsAt": time.time() + 3600},
+                               "seven_day": {"utilization": 0.51, "resetsAt": time.time() + 86400}}}})
+
+    report(next((float(line.split()[1]) for line in task.splitlines() if line.startswith("RATE ")), 0.34))
     turns, error = 1, False
     for line in task.splitlines():
         word, _, rest = line.partition(" ")
@@ -72,6 +75,8 @@ def main():
             sys.stdout.flush()
         elif word == "SLEEP":
             time.sleep(float(rest))
+        elif word == "REPORT":
+            report(float(rest))
         elif word == "ERROR":
             error = True
         elif word == "DIE":
