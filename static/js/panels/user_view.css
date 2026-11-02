@@ -3,10 +3,6 @@
 @media (max-width: 760px) { .uv-split { grid-template-columns: minmax(0, 1fr); } }
 .uv-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) 0; border-top: 1px solid var(--border-subtle); }
 .uv-row:first-child { border-top: 0; }
-.uv-topic { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto; gap: var(--space-2); align-items: end;
-  padding: var(--space-2) 0; border-top: 1px solid var(--border-subtle); }
-.uv-topic:first-child { border-top: 0; }
-@media (max-width: 760px) { .uv-topic { grid-template-columns: minmax(0, 1fr); } }
 .uv-preview { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
 .uv-preview li { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-md); background: var(--surface-1); }
 .uv-locked { flex-wrap: wrap; }

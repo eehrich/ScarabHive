@@ -528,6 +528,10 @@ def stub_app() -> FastAPI:
     async def login(request: Request):
         return templates.TemplateResponse(request, "login.html")
 
+    @app.get("/api/ui/view")  # what an admin gets who has not switched (a user: test_shell_view_browser)
+    async def ui_view():
+        return {"role": "admin", "mode": "simple", "can_switch": True, "panels": None}
+
     @app.get("/api/ui/catalog")  # registered before the real router: the stub wins
     async def catalog(request: Request):
         if request.cookies.get("stub_catalog") == "broken":

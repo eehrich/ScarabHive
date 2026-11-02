@@ -1033,7 +1033,7 @@ function drawSubagents() {
     topOfTab($('tab-general'));
   }
   button.hidden = !shown;
-  // the kit's arrow keys step through every [role="tab"]: a hidden button is none
+  // guardYamlTab's arrow keys step through every [role="tab"]: a hidden button is none
   if (shown) button.setAttribute('role', 'tab');
   else button.removeAttribute('role');
   if (!shown) {

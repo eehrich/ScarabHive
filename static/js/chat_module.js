@@ -693,7 +693,7 @@
     // NEW agent, and the save after it writes that agent into its record --
     // exactly the foreign tools and foreign prompt this switch avoids.
     const before = currentSessionId;
-    await window.sessionManager.newConversation({ agentChosen: true });
+    await window.sessionManager.newConversation();
     if (currentSessionId === before && before !== null) {
       addNote(container, 'Agent: ' + wanted +
         '   -- but the session stayed: the next message would run ' + before +
@@ -5128,19 +5128,13 @@
   
   // The composer takes messages unless the session shown is read-only or init is still
   // checking for a run of this tab.
-  let composerWords = 'Message the agent…';
-  // What the empty composer says when it takes a message; while it does not, that is said instead.
-  chatModule.setComposerWords = function(words) {
-    composerWords = words;
-    updateComposer();
-  };
 
   function updateComposer() {
     const enabled = !readOnlyShown && !holding;
     const taskInput = document.getElementById('task');
     taskInput.disabled = !enabled;
     taskInput.placeholder = holding ? 'Checking whether a run of this tab is still going…'
-      : readOnlyShown ? 'This session is read-only' : composerWords;
+      : readOnlyShown ? 'This session is read-only' : 'Message the agent…';
     document.getElementById('runBtn').disabled = !enabled;
     document.getElementById('fileInput').disabled = !enabled;
     document.getElementById('attachButton').disabled = !enabled;

@@ -29,14 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bindings hold a sub-agent's -- an agent that runs bound in production (a coding CLI workdir that pins a store
   namespace refuses a run without) can be measured. `agent-run`'s `run_agent_request` and `collect_final_result` pass
   a run's bindings on to `run_events`.
-- A simple and an admin view of the shell: people who are not admins see
-  the panels the admins chose (launcher, palette, start page tiles) and, in
-  the composer, topics in plain words with Quick or Thorough instead of the
-  agent, model profile and thinking choice. Admins see everything and switch
-  to the simple view in the account menu; the new admin panel "User view"
-  sets the panels and the topics (agent, profile for Quick and Thorough).
-  `GET /api/ui/view`, `PUT /api/ui/view/mode`, `GET/PUT /api/ui/user-view`,
-  `data/ui/views.json`. A view is what is shown, not a right.
+- Released panels: people who are not admins are offered the panels the admins release in the new admin panel
+  "User view", in the launcher and the palette; the chat stays the same for everyone. A panel may have a simple and an
+  admin view: everyone starts simple, admins switch and keep their choice (`PUT /api/ui/view/mode`). `GET /api/ui/view`,
+  `GET/PUT /api/ui/user-view`, `data/ui/views.json`. A release is what is shown, not a right.
 - AI tasks of a panel (`agent_system/plugins/agent_tasks.py`, `static/kit/ai-tasks.js`): a plugin names the work an
   agent may take on, an admin chooses per task whether an agent does it and which one, and a person starts it from
   the panel. The run goes through `/run` as that person, so every gate applies; the panel follows it in a side sheet

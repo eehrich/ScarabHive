@@ -1,6 +1,5 @@
-"""The User view panel in a real browser, against the real UI router: an admin chooses what the simple view shows --
-the panels users get and the topics, each with its agent and its profiles for Quick and Thorough. Authentication is
-off (the owner is an admin); /agents and /llm/profiles answer fixed lists, one agent of the default topics missing."""
+"""The User view panel in a real browser, against the real UI router: an admin releases the panels people who are not
+admins are offered. Authentication is off (the owner is an admin)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -25,14 +24,6 @@ def stub_app(views: Path) -> FastAPI:
     app.state.config = auth(False)
     app.state.ui_views = ViewStore(views)
 
-    @app.get("/agents")
-    async def agents():
-        return {"agents": ["editor", "gated"], "default": "editor"}
-
-    @app.get("/llm/profiles")
-    async def profiles():
-        return {"profiles": [{"name": "default"}, {"name": "fast"}, {"name": "think"}], "default": "default"}
-
     app.include_router(ui_router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/ui", StaticFiles(directory=UI_TESTS), name="ui-tests")
@@ -50,10 +41,9 @@ def results(tmp_path_factory):
 EXPECTED = [
     "it lists the panels a user may open, the default ones on, and says nobody has chosen yet",
     "a switch changes the preview and wakes the save button",
-    "a topic gets its agent and profiles from the lists, and one this server lacks is said so",
-    "a topic is added and named, one removed, never fewer than one nor more than eight",
     "saving keeps it on the server, and the panel opened again shows it",
-    "a refused save says why and keeps what was typed",
+    "panels only admins may open are not offered",
+    "a refused save says why and keeps the choice to correct",
 ]
 
 

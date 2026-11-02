@@ -9,7 +9,7 @@
 <iframe id="panel" title="panel"></iframe>
 <script type="module">
   // The real User view panel against the real UI router (authentication off: the owner is an admin), driven from
-  // outside: same origin, so this page reaches into it.
+  // outside: same origin, so this page reaches into it. It releases panels to users; nothing else.
   const results = {};
   const check = async (name, fn) => {
     try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
@@ -33,8 +33,6 @@
   const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
   const preview = () => all('[data-preview] li').map((li) => li.textContent.trim());
   const toggle = (id) => { const box = $(`[data-panel="${id}"]`); box.click(); };
-  const type = (el, value) => { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); };
-  const choose = (el, value) => { el.value = value; el.dispatchEvent(new Event('change', { bubbles: true })); };
   const toasts = () => all('.pk-toast').map((t) => t.textContent).join(' | ');
 
   await go('/ui/panels/user_view');
@@ -53,47 +51,33 @@
     return preview().join() === 'Session,Settings' && !$('#save').disabled && $('#panelCount').textContent.startsWith('2 of');
   });
 
-  await check('a topic gets its agent and profiles from the lists, and one this server lacks is said so', async () => {
-    await until('the topics', () => all('[data-topic]').length === 4);
-    const first = $('[data-topic="0"]');
-    const agents = [...first.querySelectorAll('[data-field="agent"] option')].map((o) => o.textContent.trim());
-    const profiles = [...first.querySelectorAll('[data-field="deep"] option')].map((o) => o.value);
-    choose(first.querySelector('[data-field="agent"]'), 'editor');
-    choose(first.querySelector('[data-field="quick"]'), 'fast');
-    return agents.includes('Default') && agents.includes('editor') && agents.includes('coder_reviewer -- not available')
-      && profiles.join() === ',default,fast,think';
-  });
-
-  await check('a topic is added and named, one removed, never fewer than one nor more than eight', async () => {
-    {
-      $('#addTopic').click();
-      const added = all('[data-topic]').length === 5;
-      type($('[data-topic="4"] [data-field="label"]'), 'Plan a release');
-      for (let n = 0; n < 5; n += 1) $('#addTopic').click();
-      const capped = all('[data-topic]').length === 8 && $('#addTopic').disabled;
-      for (let n = 7; n > 4; n -= 1) $(`[data-topic="${n}"] [data-remove]`).click();
-      $('[data-topic="1"] [data-remove]').click();
-      return added && capped && all('[data-topic]').length === 4 && $('[data-topic="3"] [data-field="label"]').value === 'Plan a release';
-    }
-  });
-
   await check('saving keeps it on the server, and the panel opened again shows it', async () => {
     $('#save').click();
     await until('saved', () => toasts().includes('Saved'));
     const kept = await (await fetch('/api/ui/user-view')).json();
-    const ok = kept.panels.join() === 'session,settings' && kept.chosen === true && kept.topics[0].agent === 'editor'
-      && kept.topics[0].quick === 'fast' && kept.topics[3].id === 'plan-a-release' && $('#save').disabled;
+    const ok = kept.panels.join() === 'session,settings' && kept.chosen === true && !('topics' in kept) && $('#save').disabled
+      && !$('#topics') && !$('#addTopic');
     await go('/ui/panels/user_view');
     await until('the panels', () => all('[data-panel]').length >= 4);
     return ok && preview().join() === 'Session,Settings' && !$('#stale').textContent.includes('Nobody');
   });
 
-  await check('a refused save says why and keeps what was typed', async () => {
-    await until('the topics', () => all('[data-topic]').length === 4);
-    type($('[data-topic="0"] [data-field="label"]'), '');
+  await check('panels only admins may open are not offered', async () => {
+    const ids = all('[data-panel]').map((box) => box.dataset.panel);
+    return !ids.includes('user_view') && $('.uv-locked').textContent.includes('Restart and stop the server');
+  });
+
+  await check('a refused save says why and keeps the choice to correct', async () => {
+    toggle('help');
+    const win = frame.contentWindow;
+    const real = win.fetch;
+    win.fetch = async () => new Response(JSON.stringify({ detail: 'no such panel for users: gone' }),
+      { status: 422, headers: { 'content-type': 'application/json' } });
     $('#save').click();
-    await until('refused', () => toasts().includes('label of 1 to 40'));
-    return $('[data-topic="0"] [data-field="label"]').value === '' && !$('#save').disabled;
+    await until('refused', () => toasts().includes('no such panel'));
+    win.fetch = real;
+    await until('the button free', () => !$('#save').disabled);
+    return $('[data-panel="help"]').checked && preview().includes('Help');
   });
 
   await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });

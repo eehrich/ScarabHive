@@ -103,8 +103,8 @@ def core_panels(*, audit_enabled: bool, profiling_enabled: bool,
               ["components", "design", "tokens"], window={"width": 1000, "height": 720}),
     ]
     panels.append(Panel("user_view", "User view", "/ui/panels/user_view", "users", "admin",
-                        "What people who are not admins see: the panels they get and the topics they ask about",
-                        ["simple", "mode", "view", "users", "topics", "workspace"], roles=["admin"],
+                        "Which panels people who are not admins are offered",
+                        ["simple", "release", "view", "users", "workspace", "panels"], roles=["admin"],
                         window={"width": 980, "height": 720}))
     if audit_enabled:
         panels.append(Panel("security_audit", "Security Audit", "/ui/panels/security_audit", "shield", "admin",

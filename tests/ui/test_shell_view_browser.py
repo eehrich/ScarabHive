@@ -1,12 +1,12 @@
-"""The shell in a real browser in the two views: a user gets the simple view -- their panels, topics in the composer,
-no agent or model choice, their areas on the start page; an admin sees everything and switches in the account menu.
-The shell tests' stub app, with GET /api/ui/view answered from /__stub/view (shell_view_tests.html)."""
+"""The shell in a real browser: a user is offered the released panels in the launcher and the palette, an admin every
+panel; the chat stays as it is for both. The shell tests' stub app, with GET /api/ui/view answered from /__stub/view
+(shell_view_tests.html)."""
 from __future__ import annotations
 
 from typing import Any
 
 import pytest
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from tests.ui.browser import find_browser, run_app_test_page
 from tests.ui.test_shell_browser import stub_app
@@ -17,7 +17,7 @@ PAGE_TIMEOUT = 120
 
 def view_app():
     app = stub_app()
-    state: dict[str, Any] = {"view": {}, "puts": []}
+    state: dict[str, Any] = {"view": {}, "me": None}
 
     @app.post("/__stub/view")
     async def set_view(request: Request):
@@ -28,22 +28,22 @@ def view_app():
     async def get_view():
         return state["view"]
 
-    @app.get("/__stub/view-puts")
-    async def puts():
-        return state["puts"]
+    @app.post("/__stub/me")
+    async def set_me(request: Request):
+        state["me"] = await request.json()
+        return {}
+
+    @app.get("/auth/me")
+    async def me():
+        if state["me"] is None:
+            raise HTTPException(status_code=404)  # authentication off
+        return state["me"]
 
     @app.get("/api/ui/view")
     async def view():
         return state["view"]
 
-    @app.put("/api/ui/view/mode")
-    async def set_mode(request: Request):
-        mode = (await request.json())["mode"]
-        state["puts"].append(mode)
-        state["view"] = {**state["view"], "mode": mode, "panels": ["help"] if mode == "simple" else None}
-        return {"mode": mode}
-
-    # ahead of the real UI router the stub app includes: these answer, not it
+    # ahead of the stub app's own view route and the real UI router: these answer, not they
     stubbed = app.router.routes[-6:]
     del app.router.routes[-6:]
     app.router.routes[0:0] = stubbed
@@ -58,15 +58,15 @@ def results():
 
 
 EXPECTED = [
-    "a user gets the simple view: their panels, topics in the composer, no agent or model choice",
-    "a loaded session keeps the words of the simple view in the composer",
-    "a first message on its way counts as a session: another topic starts a new chat",
-    "/agent in the simple view: the new chat runs on the agent named, the bar says so",
-    "the start page shows their areas, and a tile opens the panel",
-    "the palette lists no agents and only their panels",
-    "the account menu tells a user who chose their view, and has no System",
-    "an admin sees everything as before, and may switch to the simple view",
-    "a switch to the simple view is told to the server",
+    "when the server cannot say, an admin is offered every panel and anyone else what their role opens",
+    "the released panels come in the order chosen, without what the catalogue lacks",
+    "a user is offered only the released panels in the launcher",
+    "the chat stays as it is: the agent, model and thinking choice, the welcome, no topics",
+    "the palette lists only the released panels, and the agents as before",
+    "the account menu tells a user who released their panels",
+    "an admin is offered every panel and opens the User view from the account menu",
+    "an admin who has not switched keeps the server buttons, the palette's actions and System",
+    "a user gets no server buttons, none of the palette's actions and no System",
 ]
 
 

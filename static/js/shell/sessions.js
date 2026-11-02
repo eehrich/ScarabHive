@@ -846,21 +846,20 @@ export class SessionManager {
   }
 
   /** The new session: nothing still loading may replace it. */
-  startNew({ chosen = true, agentChosen = false } = {}) {
+  startNew({ chosen = true } = {}) {
     this.loading++;
     this.requested = null;
-    this.showNew({ chosen, agentChosen });
+    this.showNew({ chosen });
   }
 
-  /** An empty chat that continues no session -- chosen, or all that is left when the stored one cannot be shown.
-   * agentChosen: it was asked for to run on the agent the selector now has (/agent). */
-  showNew({ chosen = true, agentChosen = false } = {}) {
+  /** An empty chat that continues no session -- chosen, or all that is left when the stored one cannot be shown. */
+  showNew({ chosen = true } = {}) {
     this.setCurrent(null, null);
-    window.dispatchEvent(new CustomEvent('session:new', { detail: { chosen, agentChosen } }));
+    window.dispatchEvent(new CustomEvent('session:new', { detail: { chosen } }));
   }
 
-  async newConversation({ agentChosen = false } = {}) {
-    this.startNew({ agentChosen });
+  async newConversation() {
+    this.startNew();
     this.onShown();
   }
 

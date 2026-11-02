@@ -1750,10 +1750,11 @@ export function initTabs(root = document) {
       });
       list.addEventListener('keydown', (event) => {
         const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
-        const tabs = [...list.querySelectorAll('[role="tab"]')];
+        const tabs = [...list.querySelectorAll('[role="tab"]')].filter((tab) => !tab.hidden);
         const index = tabs.indexOf(event.target.closest('[role="tab"]'));
         if (!step || index < 0) return;
         const next = tabs[(index + step + tabs.length) % tabs.length];
+        if (next === tabs[index]) return;  // the only one shown
         next.focus();
         choose(next);
       });

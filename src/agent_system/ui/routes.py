@@ -5,7 +5,6 @@ import asyncio
 import contextvars
 import inspect
 import logging
-from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -127,27 +126,8 @@ def views_store(request: Request) -> ViewStore:
     return store
 
 
-def _agent_gates() -> dict[str, str]:
-    """The role gate of each listed agent that carries one (metadata.min_role), as GET /agents reads them."""
-    from agent_system.api.agent_routes import _public_agents
-
-    return _public_agents()[1]
-
-
-async def _topics_for(request: Request, topics: list[dict[str, str]]) -> list[dict[str, str]]:
-    """The topics this viewer may use: one on an agent their role may not run is not told, as /agents hides it."""
-    config = request.app.state.config
-    if not config.auth.enabled or not any(topic["agent"] for topic in topics):
-        return topics
-    from agent_system.auth.agent_access import may_run_agent
-
-    gates = await asyncio.to_thread(_agent_gates)
-    who = await viewer_user(request)
-    return [topic for topic in topics if may_run_agent(gates.get(topic["agent"]), who, config.auth)]
-
-
 def _user_panels(request: Request) -> list[str]:
-    """The panels a user may open: what the simple view can show."""
+    """The panels a user may open: what can be released."""
     return [panel["id"] for panel in catalog_for(request, "user")["panels"]]
 
 
@@ -160,24 +140,21 @@ async def _admin(request: Request) -> str:
 
 @router.get("/api/ui/view")
 async def view(request: Request) -> dict[str, Any]:
-    """What this viewer's shell shows: the view (simple or admin), whether they may switch, and in the simple view
-    the panels it lists (``panels``: null = every panel the catalogue gives) and the composer's topics."""
+    """What this viewer is shown: the panels offered (``panels``: null = every panel the catalogue gives, as for
+    admins), and the view of the panels that have two (``mode``: simple or admin; ``can_switch``: admins only)."""
     role, username = await viewer(request)
     store = views_store(request)
     try:
         mode = await asyncio.to_thread(store.mode_of, username) if role == "admin" else "simple"
-        shown = await asyncio.to_thread(store.user_view, _user_panels(request) if role != "admin" else
-                                        [panel["id"] for panel in catalog_for(request, "admin")["panels"]])
+        panels = None if role == "admin" else (await asyncio.to_thread(store.user_view, _user_panels(request)))["panels"]
     except ViewError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"role": role, "mode": mode, "can_switch": role == "admin",
-            "panels": shown["panels"] if mode == "simple" else None,
-            "topics": await _topics_for(request, shown["topics"])}
+    return {"role": role, "mode": mode, "can_switch": role == "admin", "panels": panels}
 
 
 @router.put("/api/ui/view/mode")
 async def set_view_mode(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    """An admin chooses their view: simple (what the others see) or admin."""
+    """An admin chooses the view of the panels that have two: simple (what the others see) or admin."""
     username = await _admin(request)
     try:
         mode = await asyncio.to_thread(views_store(request).set_mode, username, str(body.get("mode") or ""))
@@ -188,33 +165,25 @@ async def set_view_mode(request: Request, body: dict[str, Any] = Body(...)) -> d
 
 @router.get("/api/ui/user-view")
 async def user_view(request: Request) -> dict[str, Any]:
-    """The simple view as the admins set it, with every panel a user may open to choose from."""
+    """The panels released to users, with every panel a user may open to choose from."""
     await _admin(request)
     available = catalog_for(request, "user")["panels"]
     try:
         shown = await asyncio.to_thread(views_store(request).user_view, [panel["id"] for panel in available])
     except ViewError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    from agent_system.auth.agent_access import may_run_agent
-    from agent_system.auth.models import UserRole
-
-    # an agent only admins may run: said beside it in the panel, a topic on it reaches no user
-    gates = await asyncio.to_thread(_agent_gates)
-    a_user = SimpleNamespace(role=UserRole.USER)
     return {**shown, "available": [{key: panel[key] for key in ("id", "title", "description", "icon", "category")}
-                                   for panel in available],
-            "not_for_users": sorted(name for name, gate in gates.items()
-                                    if not may_run_agent(gate, a_user, request.app.state.config.auth))}
+                                   for panel in available]}
 
 
 @router.put("/api/ui/user-view")
 async def set_user_view(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    """An admin sets what the simple view shows: its panels and its topics."""
+    """An admin releases panels to users."""
     username = await _admin(request)
     available = [panel["id"] for panel in catalog_for(request, "user")["panels"]]
     try:
-        return await asyncio.to_thread(views_store(request).set_user_view, body.get("panels"), body.get("topics"),
-                                       available, username or "owner")
+        return await asyncio.to_thread(views_store(request).set_user_view, body.get("panels"), available,
+                                       username or "owner")
     except ViewError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -328,7 +297,7 @@ async def security_audit_panel(request: Request):
 
 @router.get("/ui/panels/user_view", response_class=HTMLResponse)
 async def user_view_panel(request: Request):
-    """The panel where admins set what the simple view shows."""
+    """The panel where admins release panels to users."""
     await _admin(request)
     return templates.TemplateResponse(request, "panels/user_view.html")
 

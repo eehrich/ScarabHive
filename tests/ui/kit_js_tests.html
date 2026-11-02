@@ -207,6 +207,31 @@
       && document.querySelector('[data-tab="b"]').getAttribute('aria-selected') === 'true';
   });
 
+  await check('the arrow keys pass over a hidden tab', () => {
+    const box = document.createElement('div');
+    box.innerHTML = `<div class="pk-tabs" role="tablist" data-pk-tabs>
+      <button class="pk-tab" role="tab" aria-selected="true" aria-controls="h-a" data-tab="a">A</button>
+      <button class="pk-tab" role="tab" aria-selected="false" aria-controls="h-b" data-tab="b" hidden>B</button>
+      <button class="pk-tab" role="tab" aria-selected="false" aria-controls="h-c" data-tab="c">C</button></div>
+      <div id="h-a" role="tabpanel">a</div><div id="h-b" role="tabpanel" hidden>b</div><div id="h-c" role="tabpanel" hidden>c</div>`;
+    document.body.append(box);
+    pk.initTabs(box);
+    const press = (key) => box.querySelector('[aria-selected="true"]').dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    press('ArrowRight');
+    const onward = box.querySelector('[aria-selected="true"]').dataset.tab === 'c' && box.querySelector('#h-b').hidden;
+    press('ArrowRight');
+    const round = box.querySelector('[aria-selected="true"]').dataset.tab === 'a';
+    press('ArrowLeft');
+    const back = box.querySelector('[aria-selected="true"]').dataset.tab === 'c';
+    box.querySelector('[data-tab="a"]').hidden = true;
+    box.querySelector('[data-tab="c"]').hidden = false;
+    let told = 0;
+    box.addEventListener('tabchange', () => { told += 1; });
+    press('ArrowRight');
+    box.remove();
+    return onward && round && back && told === 0;
+  });
+
   await check('tabs are as wide as their text while they fit, give way down to five characters, then the row scrolls; the wheel turns it and a chosen tab comes into sight', async () => {
     await document.fonts.load('500 13px Inter');  // the widths below are Inter's: with a stand-in font they measure that one
     const box = document.createElement('div');

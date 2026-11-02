@@ -39,6 +39,7 @@ EXPECTED = [
     "a prompt resolves with the typed text",
     "dismissing a dialog resolves null",
     "tabs switch their panels",
+    "the arrow keys pass over a hidden tab",
     "tabs are as wide as their text while they fit, give way down to five characters, then the row scrolls; the wheel turns it and a chosen tab comes into sight",
     "a tab row in a column short of room keeps its height",
     "a row of page links scrolls as tabs do: its current page in sight from the start, the wheel turns it",
