@@ -1818,6 +1818,38 @@ async def test_a_broken_escape_ends_the_run_and_reaches_nobody(repo):
 
 # ── instances, and runs whose call never answered ──
 
+async def test_max_parallel_goes_up_to_fifty(repo):
+    """A cap of 8 refused the ninth run, and a caller's chain moved it to its next, paid link."""
+    assert make_server(repo, max_parallel=51).max_parallel == 50
+    server = make_server(repo, max_parallel=9, wait_s=0.2)
+    started = [(await call(server, "run_task", task="SLEEP 30"))[0] for _ in range(9)]
+    try:
+        assert [run.get("state") for run in started] == ["running"] * 9, started
+        refused, _ = await call(server, "run_task", task="x")
+        assert "9 run(s) still going" in refused["error"]
+    finally:
+        for run in started:
+            await call(server, "cancel_run", run_id=run["run_id"])
+
+
+async def test_no_run_starts_below_the_memory_floor(repo, monkeypatch, tmp_path):
+    """max_parallel counts one instance: only this floor keeps the sum of all from killing the API."""
+    server = make_server(repo, max_parallel=2)
+    floor, read = server_module.MIN_AVAILABLE_MEMORY_MB, server_module._available_memory_mb
+    monkeypatch.setattr(server_module, "_available_memory_mb", lambda: floor - 1)
+    refused, _ = await call(server, "run_task", task="x")
+    assert refused["error"].startswith("not started: only"), refused  # what a caller's chain moves on from
+    for available in (floor, None):  # at the floor, and where the system does not say
+        monkeypatch.setattr(server_module, "_available_memory_mb", lambda value=available: value)
+        started, _ = await call(server, "run_task", task="x")
+        assert started["state"] == "done", started
+
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:       20971520 kB\nMemFree:         1024 kB\nMemAvailable:    5242880 kB\n")
+    assert read(str(meminfo)) == 5120  # Available, not Free or Total
+    assert read(str(tmp_path / "gone")) is None
+
+
 async def test_each_instance_counts_and_reaches_only_its_own_runs(repo):
     """All instances share the data folder: a production run (max_parallel 6) took the chat
     instance's only slot, and a chat run one of production's."""

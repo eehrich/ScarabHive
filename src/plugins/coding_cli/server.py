@@ -76,6 +76,10 @@ MAX_SCHEMA_CHARS = 20_000
 #: 60k; the estimate puts 150-200 kB at 46-59k, agy counted the same). A longer task is refused: its caller falls
 #: back. An instance may set a lower bound (max_task_tokens), never a higher one. Claude Code takes the whole task.
 AGY_MAX_TASK_TOKENS = 55_000
+#: Below this much available memory no run starts: max_parallel counts one instance's runs, nothing counts their
+#: sum, and a run holds about 300 MB. Refused like a full instance, so a caller's chain moves on; out of memory,
+#: the kernel would kill the API and every run with it.
+MIN_AVAILABLE_MEMORY_MB = 3_000
 CAP_RESULT = 12_000
 MAX_RESULT_CHARS_CAP = 200_000
 CAP_STDERR = 600
@@ -251,6 +255,18 @@ def _bounded(value: Any, default: float, low: float, high: float) -> Optional[fl
         return max(low, min(float(value if value not in (None, "") else default), high))
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _available_memory_mb(meminfo: str = "/proc/meminfo") -> Optional[int]:
+    """What a new process can still get, in MB; None where the system does not say (no /proc)."""
+    try:
+        with open(meminfo, encoding="ascii") as file:
+            for line in file:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 def _utilization_ok(value: Any) -> bool:
@@ -456,7 +472,7 @@ class CodingCliServer(SchemaBasedToolServer):
         self.wait_s = _bounded(getattr(server_config, "wait_s", None), 300, 0, 3600)
         self.wait_s = 300.0 if self.wait_s is None else self.wait_s
         self.max_run_s = 60 * (_bounded(getattr(server_config, "max_run_minutes", None), 60, 1, 7 * 24 * 60) or 60)
-        self.max_parallel = int(_bounded(getattr(server_config, "max_parallel", None), 1, 1, 8) or 1)
+        self.max_parallel = int(_bounded(getattr(server_config, "max_parallel", None), 1, 1, 50) or 1)
         self.max_task_chars = int(_bounded(getattr(server_config, "max_task_chars", None), MAX_TASK_CHARS, 1_000,
                                            MAX_TASK_CHARS_CAP) or MAX_TASK_CHARS)
         self.max_task_tokens = int(_bounded(getattr(server_config, "max_task_tokens", None), AGY_MAX_TASK_TOKENS,
@@ -908,6 +924,10 @@ class CodingCliServer(SchemaBasedToolServer):
             if len(mine) >= self.max_parallel:
                 return await self._fail(status, f"not started: {len(mine)} run(s) still going ("
                                                 f"{', '.join(r['run_id'] for r in mine)}) -- wait for them or cancel one")
+            available = _available_memory_mb()
+            if available is not None and available < MIN_AVAILABLE_MEMORY_MB:
+                return await self._fail(status, f"not started: only {available} MB of memory available, a run needs "
+                                                f"{MIN_AVAILABLE_MEMORY_MB} MB free -- wait for runs to end")
             if prior and any(r.get("worktree") == prior["worktree"] for r in running):
                 return await self._fail(status, "resume: another run works in that worktree")
             run_id = secrets.token_hex(6)

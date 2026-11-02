@@ -501,6 +501,7 @@ resume: run <id> left no conversation or worktree to continue -- start a new run
 workdir: one of <names> | unknown workdir, or none given with several configured
 not started: <reason> | the subscription guard (then with @{tt}limit@{utt}), a git or start failure
 not started: <n> run(s) still going (<ids>) -- wait for them or cancel one | @{tt}max_parallel@{utt} reached
+not started: only <n> MB of memory available, a run needs <m> MB free -- wait for runs to end | the machine is nearly out of memory, whatever @{tt}max_parallel@{utt} says
 resume: another run works in that worktree | a resume of a run whose worktree is in use
 @{body}
 
@@ -784,7 +785,7 @@ effort | "" | Claude Code's @{tt}--effort@{utt} (low, medium, high, xhigh, max);
 max_window_utilization | 0.8 | no run starts while a window is at or past this share (0.05 to 1)
 wait_s | 300 | how long @{tt}run_task@{utt} waits before answering with a run id (0 to 3600)
 max_run_minutes | 60 | a run still going after this is stopped (1 to 10080, a week)
-max_parallel | 1 | this instance's runs going at the same time, counted over the data folder (1 to 8)
+max_parallel | 1 | this instance's runs going at the same time, counted over the data folder (1 to 50)
 max_task_chars | 20000 | longest task @{tt}run_task@{utt} takes, in characters (1000 to 1000000)
 max_task_tokens | 55000 | agy only: the most tokens an agy task may have, estimated (some 3.3 characters a token), the note before it included (1000 to 55000, lower only). agy hands its model some 60k tokens of a task and cuts the middle out of a longer one without a word -- the run answers, without what stood there; a longer task is refused, and its caller falls back. Claude Code takes the whole task
 max_output_chars | 12000 | longest structured output a run returns, in characters as JSON (1000 to 100000); a longer one is dropped

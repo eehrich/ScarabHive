@@ -114,6 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Coding CLIs: `max_parallel` goes up to 50 (it stopped at 8). A run above an instance's limit does not wait: it
+  is refused, and a caller with a fallback chain moves it to its next link, often a paid one. Since the limit counts
+  one instance only, no run starts below 3 GB of available memory.
 - coding_cli: an agy task estimated over 55k tokens is not started (`max_task_tokens`, lower only). agy hands its
   model some 60k tokens of a task and silently cuts the middle out of a longer one; refused, the caller falls back.
   Claude Code has no such bound.
