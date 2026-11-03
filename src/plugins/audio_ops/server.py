@@ -25,6 +25,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: A number as ffmpeg's silencedetect prints it: also negative (encoder
+#: priming, "silence_start: -0.0013") and with an exponent ("1e-05"). The old
+#: "[\d.]+" skipped those, and the index pairing of starts and ends shifted
+#: every later segment.
+SILENCE_NUMBER = r"(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
+
 # Supported audio formats
 SUPPORTED_FORMATS = {".flac", ".mp3", ".wav"}
 # Temp files export_audio writes next to a destination; list skips them.
@@ -739,11 +745,15 @@ class AudioOpsServer(SchemaBasedToolServer):
                     if status:
                         await status.progress(f"Merged {i+1}/{len(segments)} segments")
             else:
-                # Simple concatenation (faster)
+                # Simple concatenation (faster). In a worker thread: pydub's
+                # `+` copies the growing result per segment, and on the event
+                # loop every session waited for it.
                 from pydub import AudioSegment
-                result = AudioSegment.empty()
-                for segment in segments:
-                    result += segment
+
+                def concatenate():
+                    return sum(segments, AudioSegment.empty())
+
+                result = await asyncio.to_thread(concatenate)
             
             # Export
             await asyncio.to_thread(self._export, result, dest_path, dest_format)
@@ -1428,11 +1438,14 @@ class AudioOpsServer(SchemaBasedToolServer):
             if use_envelope and validated_envelope is not None:
                 if status:
                     await status.progress(f"Mixing with {len(validated_envelope)}-point envelope")
-                mixed_result = self._mix_with_envelope(audio1, audio2, validated_envelope, total_duration_ms)
+                # The mix is CPU work on the whole PCM: off the event loop
+                mixed_result = await asyncio.to_thread(
+                    self._mix_with_envelope, audio1, audio2, validated_envelope, total_duration_ms)
             else:
                 if status:
                     await status.progress(f"Mixing with factor {validated_factor}")
-                mixed_result = self._mix_with_factor(audio1, audio2, validated_factor)
+                mixed_result = await asyncio.to_thread(
+                    self._mix_with_factor, audio1, audio2, validated_factor)
             
             # Export
             await asyncio.to_thread(self._export, mixed_result, dest_path, dest_format)
@@ -1832,7 +1845,7 @@ class AudioOpsServer(SchemaBasedToolServer):
             if use_envelope and validated_envelope is not None:
                 if status:
                     await status.progress(f"Applying {len(validated_envelope)}-point volume envelope")
-                result = self._apply_volume_envelope(audio, validated_envelope)
+                result = await asyncio.to_thread(self._apply_volume_envelope, audio, validated_envelope)
             elif use_gain:
                 if status:
                     await status.progress(f"Applying {validated_gain:+.1f} dB gain")
@@ -2154,14 +2167,14 @@ class AudioOpsServer(SchemaBasedToolServer):
                 )
 
             # Parse silence_start and silence_end from stderr
-            silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
-            silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
-            silence_durations = re.findall(r'silence_duration: ([\d.]+)', result.stderr)
+            silence_starts = re.findall(rf'silence_start: {SILENCE_NUMBER}', result.stderr)
+            silence_ends = re.findall(rf'silence_end: {SILENCE_NUMBER}', result.stderr)
+            silence_durations = re.findall(rf'silence_duration: {SILENCE_NUMBER}', result.stderr)
             
             # Build silence list
             silences = []
             for i, start in enumerate(silence_starts):
-                start_sec = float(start)
+                start_sec = max(0.0, float(start))  # encoder priming: ffmpeg may print -0.0013
                 if i < len(silence_ends):
                     end_sec = float(silence_ends[i])
                     duration = float(silence_durations[i]) if i < len(silence_durations) else (end_sec - start_sec)
@@ -2299,8 +2312,8 @@ class AudioOpsServer(SchemaBasedToolServer):
                 )
 
             # Parse silence segments
-            silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
-            silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
+            silence_starts = re.findall(rf'silence_start: {SILENCE_NUMBER}', result.stderr)
+            silence_ends = re.findall(rf'silence_end: {SILENCE_NUMBER}', result.stderr)
             
             if not silence_starts:
                 # No silences found, just copy file
@@ -2327,7 +2340,7 @@ class AudioOpsServer(SchemaBasedToolServer):
             # Build list of silence segments exceeding max_silence
             silences_to_compress = []
             for i, start in enumerate(silence_starts):
-                start_sec = float(start)
+                start_sec = max(0.0, float(start))  # encoder priming: ffmpeg may print -0.0013
                 if i < len(silence_ends):
                     end_sec = float(silence_ends[i])
                 else:
