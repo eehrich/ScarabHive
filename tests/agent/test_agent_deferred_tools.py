@@ -178,9 +178,19 @@ async def test_the_runs_schemas_carry_what_the_model_is_not_sent():
     """For tool_script: a script may call a deferred tool the model never
     loaded, and needs its parameters."""
     agent = _agent(_Server(), ["kit/kit_deploy"])
-    await _run(agent, _ScriptedLLM(["nothing"]), "s_run_schemas")
-    assert "kit_deploy" not in [t["function"]["name"] for t in agent.get_live_tools_schema("s_run_schemas")]
-    assert "kit_deploy" in [t["function"]["name"] for t in agent.get_run_tool_schemas("s_run_schemas")]
+    seen = {}
+
+    class _Reads(_ScriptedLLM):
+        """Reads the run's schemas while the run has them: once it ended, they are gone."""
+
+        def chat_tools_streaming(self, messages, tools, cancellation_token=None, status_scope=None):
+            seen["live"] = [t["function"]["name"] for t in agent.get_live_tools_schema("s_run_schemas")]
+            seen["run"] = [t["function"]["name"] for t in agent.get_run_tool_schemas("s_run_schemas")]
+            return super().chat_tools_streaming(messages, tools, cancellation_token, status_scope)
+
+    await _run(agent, _Reads(["nothing"]), "s_run_schemas")
+    assert "kit_deploy" not in seen["live"]
+    assert "kit_deploy" in seen["run"]
     # A run without a tracked session answers from the agent's last run.
     assert "kit_deploy" in [t["function"]["name"] for t in agent.get_run_tool_schemas(None)]
 

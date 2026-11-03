@@ -724,6 +724,16 @@ class BackgroundJobManager:
                     }
         return active
 
+    def running_jobs_of(self, session_id: str) -> list[BackgroundJob]:
+        """The jobs still running *session_id*, under either of its names (as ``active_sessions`` reads them).
+
+        Without the lock, a snapshot: for a run's last cleanup, which cannot wait for it. A job's end
+        is its task's end, after its status says so -- what waits for that (``job.task``) sees a job
+        that no reader counts as running any more.
+        """
+        return [job for job in list(self._jobs.values())
+                if job.status == JobStatus.RUNNING and session_id in (job.session_id, job.actual_session_id)]
+
     async def get_all_jobs(self, include_completed: bool = False) -> list[dict[str, Any]]:
         """Get all jobs info.
         

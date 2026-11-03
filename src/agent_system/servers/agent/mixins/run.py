@@ -489,6 +489,9 @@ class RunMixin:
                         checkpoint_loop=checkpoint_loop,
                     )
                 finally:
+                    # The run's live state, once nothing runs the session any more:
+                    # now, or when the background job around this run has ended.
+                    self._release_live_state(session_id)
                     # Session presence: after the save, so input still waiting
                     # wakes the session and the woken run finds the whole
                     # conversation on disk -- and in a finally, because a

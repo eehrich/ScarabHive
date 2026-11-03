@@ -247,8 +247,9 @@ class Agent(
         # live state by session_id instead. Readers (context_engineer /
         # context_summarizer compaction tools, token-estimating hooks) resolve
         # by their own session_id. Bounded by eviction of the session written
-        # least recently (_touch_live_state); a discarded session takes its
-        # entry along (_drop_live_state).
+        # least recently (_touch_live_state); a session's entry goes once its
+        # last run and job have ended (_release_live_state), and a discarded
+        # session takes it along (_drop_live_state).
         self._live_state_by_session: dict[str, dict[str, Any]] = {}
         self._live_state_max_sessions: int = 200
         # Deprecated shared attributes - kept as a last-resort fallback for any

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ....hooks import get_hook_registry, HookContext, HookType
 from ....llm.models import ChatMessage
-from ....llm.message_roles import conversation_messages, is_compaction_system_message  # noqa: F401 - re-exported for plugins
+from ....llm.message_roles import is_compaction_system_message  # noqa: F401 - re-exported for plugins
 from .tool_call_contract import drop_runtime_params, tool_result_is_error
 
 if TYPE_CHECKING:
@@ -70,8 +70,8 @@ def hook_runs_for(hooks_config: Any, hook_name: str, default_enabled: bool) -> b
     return bool(_override_or_default(hooks_config, hook_name, default_enabled))
 
 
-# is_compaction_system_message and conversation_messages live in llm/message_roles.py
-# (importable without the agent server); imported here too, where plugins look for them.
+# is_compaction_system_message lives in llm/message_roles.py (importable without
+# the agent server); imported here too, where plugins look for it.
 
 
 class HookIntegrationManager:
@@ -121,16 +121,13 @@ class HookIntegrationManager:
         return _override_or_default(self._hooks_config, hook_name, default_enabled)
 
     def user_of(self, session_id: str, request_id: str) -> Optional[str]:
-        """Whose call this is: the user the session's run was opened for (the
-        API and agent-cli both record it before the first step), else the user
-        the request was registered under; None when neither names one."""
-        tracker = getattr(self.agent, '_session_tracker', None)
-        metadata = tracker.get_session_metadata(session_id) if tracker is not None and session_id else None
-        user_id = metadata.get('user_id') if isinstance(metadata, dict) else None
-        if user_id:
-            return user_id
-        from ....core.request_context import get_request_user
-        return get_request_user(request_id, default=None) if request_id else None
+        """Whose call this is: the rule the run's tools go by (access.run_user,
+        Agent.tool_user) -- the request's registered owner first, the session's
+        stored user only where none is registered, else None. One rule, so a
+        pre_tool_call hook judges the call for the user the tool then runs as."""
+        from ..mixins.access import run_user
+        return run_user(getattr(self.agent, '_session_tracker', None), session_id=session_id,
+                        request_id=request_id)
 
     def wire_llm_hooks(self, llm_client: Any) -> None:
         """Wire LLM-client-level hooks to the given LLM client.
@@ -284,59 +281,12 @@ class HookIntegrationManager:
             hook_filter=self.is_hook_enabled
         )
         
-        # Return modified messages if hooks changed them
+        # The hooks' list goes back to the step loop, which makes it the run's
+        # ``messages`` (_select_llm_messages): what the run persists at its end.
         if modified_context.messages is not None:
-            result_messages = modified_context.messages
-            
-            # AUTO-SYNC: If hooks modified the messages, automatically update session tracker
-            # This eliminates the need for plugins to call set_compacted_messages() manually.
-            # The session tracker is updated so:
-            # 1. Subsequent hooks in the same pre_llm_call chain see the updated messages
-            # 2. The modified messages are persisted at end of request
-            # 3. Tool execution and other components see the compacted state
-            if result_messages is not messages:  # Identity check - different list means modified
-                self._auto_sync_session_messages(session_id, result_messages)
-            
-            return result_messages
+            return modified_context.messages
         return messages
-    
-    def _auto_sync_session_messages(
-        self, 
-        session_id: str, 
-        messages: List[ChatMessage]
-    ) -> None:
-        """Automatically sync modified messages to session tracker.
-        
-        Called when pre_llm hooks modify the message list. This ensures:
-        - Modified messages are persisted at end of request
-        - Subsequent components see the updated state
-        - Plugins don't need to manually call set_compacted_messages()
-        
-        Args:
-            session_id: Session to update
-            messages: The modified messages (may include system messages)
-        """
-        if not hasattr(self.agent, '_session_tracker') or not self.agent._session_tracker:
-            logger.debug(
-                f"[HookIntegration] No session tracker available, skipping auto-sync "
-                f"for session {session_id}"
-            )
-            return
 
-        # Filter out system messages - session tracker stores conversation only.
-        # System messages are prepended fresh each turn from agent config; the
-        # ones that are actually compacted conversation must survive.
-        conversation_msgs = conversation_messages(messages)
-        
-        # Use set_compacted_messages() which signals to _finalize_request 
-        # that hooks modified the conversation and this version should be persisted
-        self.agent._session_tracker.set_compacted_messages(session_id, conversation_msgs)
-        
-        logger.debug(
-            f"[HookIntegration] Auto-synced {len(conversation_msgs)} messages to session "
-            f"{session_id} (hooks modified conversation)"
-        )
-    
     async def execute_post_llm_hooks(
         self,
         messages: List[ChatMessage],

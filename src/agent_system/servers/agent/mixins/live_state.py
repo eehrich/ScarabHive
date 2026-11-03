@@ -3,12 +3,14 @@
 The agent is one instance shared by every request of the process, so what a run holds while it runs
 is kept per session (Agent.__init__ says why): the message list and tool schemas of the current
 turn, read by compaction tools, token-counting hooks and a viewer that joins a session mid-run.
+It goes once the session's last run and background job have ended (_release_live_state).
 Messages sent to a running request wait in the session tracker and are drained into the
 conversation between steps (docs/mid_run_message_injection.md); a cancel goes to the request
 manager (docs/cancellation_architecture.md).
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ....llm.message_roles import conversation_messages
@@ -16,6 +18,8 @@ from ....llm.models import ChatMessage
 
 if TYPE_CHECKING:
     from ..server import Agent
+
+logger = logging.getLogger(__name__)
 
 
 def _live_field(live_state: Dict[str, Dict[str, Any]], session_id: Optional[str], field: str) -> Any:
@@ -146,9 +150,49 @@ class LiveStateMixin:
 
     def _drop_live_state(self: Agent, session_id: str) -> None:
         """A session dropped from the tracker (SessionTracker.discard_session,
-        which waits for a run that has it) takes its live state along. Not at a
-        run's end: the session load serves it until the run's job is over."""
+        which waits for a run that has it) takes its live state along. At a
+        run's end _release_live_state does it, once nothing runs the session."""
         self._live_state_by_session.pop(session_id, None)
+
+    def _a_request_has(self: Agent, session_id: str) -> bool:
+        """Whether a request of this agent still has *session_id*: one registered
+        for it (waiting for its lock included), or its lock owned by anyone but a
+        write (an append, an /undo: no run)."""
+        tracker = self._session_tracker
+        locked, _owner = tracker.check_session_locked(session_id)
+        if locked and not tracker.held_by_a_writer(session_id):
+            return True
+        return any(tracker.get_session_for_request(rid) == session_id
+                   for rid in self._request_manager.get_active_requests())
+
+    def _release_live_state(self: Agent, session_id: Optional[str]) -> None:
+        """A run of *session_id* is over: its live state goes once the session's last run and job are.
+
+        Not at the run's own end when a background job wraps it: the job runs on
+        past it, and while it does, the session load (api/session_live.py) counts
+        the run as in flight and serves this state with the run's event count. A
+        load that found the job running but the state gone served the turn off
+        disk with no count, and the chat, joining the job, replayed it below: the
+        turn twice. So it waits for the job's task, whose end comes after the
+        job's status says it is over. A newer run of the session keeps it: what
+        is there is that run's, or soon will be.
+        """
+        if not session_id or session_id not in self._live_state_by_session:
+            return
+        try:
+            from ....services.background_job_manager import get_background_job_manager
+            # A task that is done ran no wrapper to say so (cancelled before it
+            # started): no job runs on it, and waiting for it would wait for ever.
+            jobs = [job for job in get_background_job_manager().running_jobs_of(session_id)
+                    if not job.task.done()]
+            if jobs:
+                for job in jobs:
+                    job.task.add_done_callback(lambda _task: self._release_live_state(session_id))
+                return
+            if not self._a_request_has(session_id):
+                self._drop_live_state(session_id)
+        except Exception as e:  # noqa: BLE001 - a run's last cleanup must not fail on it; eviction bounds it
+            logger.debug("Could not release the live state of %s: %s", session_id, e)
 
     def _evict_live_state(self: Agent, keep_session: str) -> None:
         """Bound the per-session live-state dict: least recently written first."""
