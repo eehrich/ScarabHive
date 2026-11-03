@@ -222,3 +222,15 @@ def test_search_an_unreadable_file_uses_up_no_result(tools, monkeypatch):
     assert answer["results"][0]["error"] == "Failed to read file: locked"
     assert answer["results"][1]["line"] == "ERROR in b" and answer["total_matches"] == 1
     assert answer["files_searched"] == 1  # only b.log was read
+
+
+def test_tail_is_capped_and_errors_carry_the_error_status(tools, tmp_path, monkeypatch):
+    """lines=10**7 returned the whole log into the model's context, and an
+    error answered without "status": "error"."""
+    from plugins.log_viewer import tool_server
+
+    monkeypatch.setattr(tool_server, "MAX_TAIL_LINES", 4)
+    answer = tool(tools, "tail", log_file="logs/a.log", lines=10**7)
+    assert answer["returned_lines"] == 4 and answer["total_lines"] == 10
+    assert answer["lines"][-1] == "line 9 ERROR x"
+    assert tool(tools, "tail", log_file="logs/secret.log")["status"] == "error"
