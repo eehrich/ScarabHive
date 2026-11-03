@@ -15,6 +15,8 @@ from typing import Any, TYPE_CHECKING
 
 from agent_system.core.schema_base_mixin import SchemaBaseMixin
 
+from .base import strip_server_prefix
+
 if TYPE_CHECKING:
     pass
 
@@ -127,13 +129,8 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
         if tool_name == self.name:
             return "execute"
 
-        # Strip the "{name}_" prefix if present
-        prefix = f"{self.name}_"
-        if tool_name.startswith(prefix):
-            return tool_name[len(prefix):]
-
-        # Return as-is if no prefix found (unprefixed tool names)
-        return tool_name
+        # Strip the "{name}_" prefix if present; unprefixed names stay as-is
+        return strip_server_prefix(self.name, tool_name)
 
     def _get_available_tool_names(self) -> list[str]:
         """Helper to get list of available tool names for error messages."""

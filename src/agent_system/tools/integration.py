@@ -77,6 +77,8 @@ class ToolServerIntegration:
         if self.initialized:
             return
 
+        # Again after a shutdown, which removed it. Idempotent.
+        capabilities.on_tool_catalog_changed(self._tool_cache.invalidate)
         await self._bootstrap_servers(config)  # Bootstrap agents BEFORE plugin discovery
         await self._discover_and_register_plugins(config)
         await self._register_plugin_hooks(config)
@@ -164,64 +166,10 @@ class ToolServerIntegration:
             logger.debug("All enabled servers already registered, skipping re-registration")
 
     async def _register_plugin_hooks(self, config: AgentSystemConfig) -> None:
-        """Register hooks from plugins."""
-        from ..plugins.discovery import register_plugin_hooks, warn_unknown_hook_overrides
-        from ..hooks import load_hooks_config
-        from ..config.settings import get_tool_server_config
-        
-        # From the config this integration runs on, not from a file path
-        hooks_config = load_hooks_config(config)
+        """Register hooks from plugins, on the hook settings of *config*."""
+        from ..hooks.plugin_registration import register_all_plugin_hooks
 
-        for server_name in self.plugin_registry.list_servers():
-            server = self.plugin_registry.get_server(server_name)
-            
-            if not server or not hasattr(server, 'plugin_schema') or not server.plugin_schema:
-                continue
-            
-            plugin_schema = server.plugin_schema
-            if 'hooks' not in plugin_schema:
-                continue
-            
-            # Get the actual plugin instance (unwrap PluginToolAdapter)
-            plugin_instance = server.plugin_server if hasattr(server, 'plugin_server') else server
-            
-            # For hybrid plugins, get the hooks_plugin attribute
-            if hasattr(plugin_instance, 'hooks_plugin'):
-                plugin_instance = plugin_instance.hooks_plugin
-            
-            # The instance's own hook default lives in its MERGED server
-            # config (raw and merged differ; agents get the merged form).
-            # Guarded: one server whose merge does not validate must not
-            # take down startup -- it registers on the default it was built with.
-            try:
-                server_cfg = get_tool_server_config(server_name, config)
-            except Exception:
-                logger.debug("No merged config for '%s'", server_name, exc_info=True)
-                server_cfg = None
-            # Not in this config: the one the instance was built with (PluginToolRegistry keeps its hook_config).
-            instance_hook_config = (getattr(server_cfg, 'hook_config', None) if server_cfg
-                                    else getattr(server, 'instance_hook_config', None))
-
-            try:
-                registered_hooks = await register_plugin_hooks(
-                    plugin_name=server_name,
-                    plugin_instance=plugin_instance,
-                    metadata=plugin_schema,
-                    hooks_config=hooks_config,
-                    instance_hook_config=instance_hook_config,
-                )
-                if registered_hooks:
-                    logger.debug(
-                        f"Registered {len(registered_hooks)} hook(s) "
-                        f"for plugin '{server_name}': {registered_hooks}"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"Failed to register hooks for plugin '{server_name}': {e}",
-                    exc_info=True
-                )
-
-        warn_unknown_hook_overrides(config)
+        await register_all_plugin_hooks(self.plugin_registry, config)
 
     async def shutdown(self) -> None:
         """Shutdown tool integration.
@@ -231,6 +179,9 @@ class ToolServerIntegration:
         """
         logging.getLogger(__name__).debug("ToolServerIntegration.shutdown() called")
         await self.plugin_registry.shutdown_all()
+        # Each integration adds its own cache's invalidate to a process-wide
+        # list; left there, every integration ever built stays alive in it.
+        capabilities.remove_tool_catalog_listener(self._tool_cache.invalidate)
         # A shut-down integration must not claim to be initialized -- the
         # agent-side setup uses this flag to decide whether a (re-)initialize
         # is needed.

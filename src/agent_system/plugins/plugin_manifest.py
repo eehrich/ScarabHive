@@ -54,6 +54,22 @@ def load_plugin_metadata(plugin_dir: Path) -> dict[str, Any]:
     return {}
 
 
+DEFAULT_ENTRYPOINT = ("plugin", "PLUGIN_FACTORY")
+
+
+def parse_entrypoint(metadata: dict[str, Any]) -> tuple[str, str]:
+    """``(module, factory)`` from the manifest's ``entrypoint = "module:FACTORY"``.
+
+    ``("plugin", "PLUGIN_FACTORY")`` unless the value is a string carrying a
+    colon. Discovery and the catalog both read it this way.
+    """
+    entrypoint = metadata.get("entrypoint") if isinstance(metadata, dict) else None
+    if isinstance(entrypoint, str) and ":" in entrypoint:
+        module, factory = entrypoint.split(":", 1)
+        return module, factory
+    return DEFAULT_ENTRYPOINT
+
+
 def plugin_pip_dependencies(plugin_dir: Path) -> list[str]:
     """A plugin's pip requirements from its ``plugin.toml``; ``[]`` otherwise.
 

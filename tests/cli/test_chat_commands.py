@@ -154,15 +154,23 @@ class TestExpansion:
         assert expand("Fix issue $ARGUMENTS now", "123") == "Fix issue 123 now"
 
     def test_positional_placeholders(self):
-        body = "from $1 to $2"
+        """Zero-based as in Claude Code: $0 is the first argument."""
+        body = "from $0 to $1"
         assert expand(body, "alt neu") == "from alt to neu"
 
     def test_indexed_form(self):
-        assert expand("take $ARGUMENTS[2]", "a b c") == "take b"
+        assert expand("take $ARGUMENTS[1]", "a b c") == "take b"
+
+    def test_indexed_and_short_form_agree(self):
+        assert expand("$ARGUMENTS[0]/$0 $ARGUMENTS[2]/$2", "a b c") == "a/a c/c"
+
+    @pytest.mark.parametrize("body", ["Costs $0.50 a call.", "Max $1,5 Mio."])
+    def test_decimal_amounts_are_not_placeholders(self, body):
+        assert expand(body, "") == body
 
     def test_missing_position_is_empty_not_an_error(self):
         """An optional second argument is legitimate."""
-        assert expand("$1|$2", "nur-eins") == "nur-eins|"
+        assert expand("$0|$1", "nur-eins") == "nur-eins|"
 
     def test_input_is_appended_when_the_skill_declares_no_placeholder(self):
         """Typed input must never vanish silently."""
@@ -197,14 +205,14 @@ class TestExpansion:
         assert out.endswith("ARGUMENTS: pruefe Kapitel 3")
 
     def test_single_digit_placeholders_still_work_next_to_prose(self):
-        assert expand("copy $1 -> $2 (max $500)", "alt neu") == "copy alt -> neu (max $500)"
+        assert expand("copy $0 -> $1 (max $500)", "alt neu") == "copy alt -> neu (max $500)"
 
     def test_windows_paths_survive_positional_substitution(self):
         r"""shlex's POSIX mode ate the backslashes: C:\Users\me -> C:Usersme."""
-        assert expand("Read $1", r"C:\Users\enric\notes.md") == r"Read C:\Users\enric\notes.md"
+        assert expand("Read $0", r"C:\Users\enric\notes.md") == r"Read C:\Users\enric\notes.md"
 
     def test_quoted_group_still_arrives_unquoted(self):
-        assert expand("[$1]", '"zwei woerter" rest') == "[zwei woerter]"
+        assert expand("[$0]", '"zwei woerter" rest') == "[zwei woerter]"
 
     def test_huge_arguments_do_not_go_quadratic(self):
         """shlex is a char-at-a-time state machine; 900 KB blocked the loop.

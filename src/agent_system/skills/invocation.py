@@ -10,8 +10,10 @@ The placeholder rules follow the same convention, because skills are meant to
 be portable between tools:
 
 * ``$ARGUMENTS`` is replaced by everything after the skill name,
-* ``$1``, ``$2`` … and ``$ARGUMENTS[N]`` take a single whitespace-separated
-  argument (quoted groups stay together),
+* ``$ARGUMENTS[N]`` and its shorthand ``$N`` take a single
+  whitespace-separated argument (quoted groups stay together), counted from
+  zero as in Claude Code: ``$0`` / ``$ARGUMENTS[0]`` is the first argument,
+  ``$1`` the second,
 * a skill that declares no placeholder still gets the input, appended as
   ``ARGUMENTS: …`` -- dropping it silently is how a typed instruction
   disappears without a trace.
@@ -32,8 +34,10 @@ from .registry import Skill
 #: skill happens to contain -- "never exceed $100" became "never exceed ",
 #: and ``dc.w $0180,$0F00`` was mangled into nonsense. Skills are prose; a
 #: dollar followed by digits is far more often money or hex than a parameter.
-#: Beyond nine arguments there is still ``$ARGUMENTS[10]``.
-_PLACEHOLDER = re.compile(r"\$ARGUMENTS\[(\d+)\]|\$ARGUMENTS\b|\$([1-9])(?![0-9])")
+#: For the same reason neither a hex word (``$0F00``) nor a decimal amount
+#: (``$0.50``, ``$1,5``) is a placeholder. Beyond ten arguments there is
+#: still ``$ARGUMENTS[10]``.
+_PLACEHOLDER = re.compile(r"\$ARGUMENTS\[(\d+)\]|\$ARGUMENTS\b|\$([0-9])(?!\w|[.,][0-9])")
 
 #: Above this, argument splitting uses plain whitespace instead of shlex.
 #: shlex is a character-at-a-time state machine and goes quadratic on long
@@ -89,10 +93,8 @@ def expand(body: str, arguments: str) -> str:
         index = match.group(1) or match.group(2)
         if index is None:
             return arguments.strip()
-        position = int(index)
-        # $1 is the first argument; $0 is not a thing, so treat it as $1.
-        offset = position - 1 if position > 0 else 0
-        return positional[offset] if offset < len(positional) else ""
+        position = int(index)  # zero-based: $0 is the first argument
+        return positional[position] if position < len(positional) else ""
 
     expanded = _PLACEHOLDER.sub(replace, body)
     if not used and arguments.strip():
