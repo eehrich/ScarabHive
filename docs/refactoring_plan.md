@@ -8,7 +8,7 @@ The review looked at the whole core package, one area at a time (agent and
 core; API; services and auth; LLM and config; plugins, tools, hooks and
 skills; CLI, UI and utils). Every finding was checked against the code
 before it was changed. Part 1 lists what changed with the review, Part 2
-what is still open, ordered by value against risk.
+the second round on the decisions taken, Part 3 what is still open.
 
 ---
 
@@ -112,63 +112,67 @@ colour helpers. `utils/__init__.py` and `plugins/__init__.py` now load lazily
 
 ---
 
-## Part 2 -- Open
+## Part 2 -- Second round (decisions taken)
 
-### 2.1 Bugs and gaps that need a decision
+| # | Item | Outcome |
+|---|---|---|
+| O1 | Archive age read a stale index row | Every `SessionManager` write that sets `updated_at` refreshes the index row (at most once per session per 30 s); the archive keeps preferring the index time |
+| O3 | Hooks and tools resolved the user in opposite orders | One rule, `run_user`: the registered request owner first, session metadata only as fallback |
+| O4 | The capability gate read the default config, not the process's | Built from the live config in `InitializationService`, rebuilt on config reload |
+| O6 | bwrap: missing git metadata could be created in workspace-write | Missing `hooks`, `config`, `config.worktree` get read-only placeholders (tested against real bwrap). **Still open:** a missing `commondir` (main repo and submodules) -- binding `.git` read-only breaks git's lock files, and a permanent `commondir` file in the user's repo was rejected |
+| O8 | `anonymous_access.rate_limit_multiplier` not applied | Applied to requests without credentials while auth and anonymous access are on |
+| O9 | Admin routes relied only on `config/security.yaml` | `/hooks*`, `/tools/*`, `/agents/debug/*`, `GET /admin/config` check the role in the route |
+| O10 | Live state never dropped at run end | Dropped when the session's last run and background job have ended |
+| O11 | Dead auto-sync of hook-modified messages | Removed; a test proves the returned list is what persists |
+| 2.2-1 | Upward imports from `core/` | Session-id helpers in `core/session_ids.py`; `tests/test_import_layering.py` fails on new upward imports from `core/`/`utils/` (six documented exceptions) |
+| 2.2-3 | Private `SessionManager` calls from outside | Public `find_session_owner(_async)`, `session_id_exists`, `rebuild_index`; core and plugins switched |
+| 2.3 | Timestamps, manifest reader, role ranking, user DB path | `utils.timeutil.parse_iso_utc`; `plugin_manifest.read_manifest_table`; `role_rank`/`meets_role` and `user_db_path` everywhere in the core (the API included) |
+
+## Part 3 -- Open
+
+### 3.1 Bugs and gaps
 
 | # | Item | Why open |
 |---|---|---|
-| O1 | Archive age prefers the index row's `updated_at`, which several metadata writers do not update | The index time is preferred on purpose (restored backups have fresh mtimes). Needs: those writers update the index row, or a separate "last conversation change" field. |
-| O2 | An archive pass that extends a zip left from an unfinished pass can leave newer members out of sync | Needs per-member mtime in the zip manifest. |
-| O3 | Hooks and tools resolve the user in opposite orders (`user_of`: session metadata first; `tool_user`: request owner first) | Tests pin the hook order; a policy hook could judge a different user than the tool runs as. Decide one rule. |
-| O4 | `llm/capabilities.py` builds its registry from a bare `load_settings()` (default config path) | Initialise from the live config at bootstrap and on reload (`app.py`, `agent_run.py`, `cli_utils/commands/run.py`, `services/config_reload.py`). |
-| O5 | Sync SQLite on the event loop for every authenticated request | Give the middleware a small dedicated executor; keep the token dependency synchronous (it relies on no await between check and write). |
-| O6 | bwrap cannot keep a *missing* `.git/commondir` / `config.worktree` from being created | An empty placeholder breaks git. Option: refuse workspace-write when the repo lacks them, or bind `.git` read-only and re-bind only `objects`, `refs`, `logs`, `index`, `HEAD`. |
-| O7 | Batch timings are per provider in config but global in the polling loop | Per-provider timing in the loop -- a change in production batch behaviour. |
-| O8 | `anonymous_access.rate_limit_multiplier` is accepted but not applied | Implement or drop from the model. |
-| O9 | Admin-only routes (`/hooks*`, `/tools/*`, `/agents/debug/*`) rely only on `config/security.yaml` | Add an in-route admin check as `debug_endpoints` has. |
-| O10 | Live state is not dropped when a run ends | `GET /api/sessions/{id}` reads it after the run released its lock, until the job ends; drop it when the job ends. |
-| O11 | `HookIntegrationManager._auto_sync_session_messages` never takes effect (its marker is cleared right after the hooks) | Remove together with its ~15 tests and the comment in the context summarizer plugin. |
+| O2 | An archive pass that extends a zip left from an unfinished pass can leave newer members out of sync | Needs per-member mtime in the zip manifest |
+| O5 | Sync SQLite on the event loop for every authenticated request | Give the middleware a small dedicated executor; keep the token dependency synchronous (it relies on no await between check and write) |
+| O6 | bwrap: a missing `.git/commondir` can still be created | See Part 2. Options left: refuse workspace-write for repos without `commondir`, or an overlay filesystem for `.git` |
+| O7 | Batch timings are per provider in config but global in the polling loop | Per-provider timing in the loop -- a change in production batch behaviour |
 
-### 2.2 Structure (recommended order)
+### 3.2 Structure (recommended order)
 
-1. **Push shared constants down** (`EPHEMERAL_SESSION_PREFIX`, `SESSION_ID_PATTERN`,
-   `user_dir_of` → `core/` or `paths.py`) and add an import-layer test that
-   fails on new upward imports from `core/`, `utils/`, `tools/`.
-2. **One identity resolver for requests** (`auth/request_user.py`:
-   `auth_enabled`, `signed_in_user`, `require_admin_user`) replacing the four
-   ways in `api/` and `plugins/agent_tasks.py`; one user id with auth off.
-3. **No private `SessionManager` calls from outside** (`_find_session_owner*`,
-   `_session_id_exists_globally`, `_rebuild_index`): make the ones that are
-   used public.
-4. **`session_writes.py` free of HTTP** (domain errors, mapped in the routes),
-   so the CLI can reuse it; `session_folders.py` → `services/`.
-5. **`utils/` regrouped**: provider wire formats → `llm/`; `tree_hierarchy` →
+1. **One identity resolver for requests** (`auth/request_user.py`:
+   `auth_enabled`, `signed_in_user`, `require_admin_user`; `require_admin_viewer`
+   moves there) replacing the four ways in `api/` and `plugins/agent_tasks.py`;
+   one user id with auth off.
+2. **The six remaining upward imports** listed in `tests/test_import_layering.py`
+   (callbacks instead of imports), and the same test for `tools/`.
+3. **`session_writes.py` free of HTTP** (domain errors, mapped in the routes),
+   so the CLI can reuse it; `session_folders.py` → `services/`;
+   `_validate_session_id` callers (`api/chat_routes.py`, two plugins) onto
+   `core.session_ids.validate_session_id`.
+4. **`utils/` regrouped**: provider wire formats → `llm/`; `tree_hierarchy` →
    `tools/`; profiling → a diagnostics package; `path_sandbox`/`process_sandbox`
    → a sandbox package (`process_sandbox` itself split per backend).
-6. **Agent components behind narrow protocols** instead of back-references
+5. **Agent components behind narrow protocols** instead of back-references
    into the agent's private attributes; `SessionTracker` and
    `AgentRequestManager` stop sharing `_active_requests`.
-7. **Split further large modules**: `llm/cache_key.py` (auto key / breakpoint
+6. **Split further large modules**: `llm/cache_key.py` (auto key / breakpoint
    ladder / Anthropic marking), `llm/models.py` (errors / messages / client
    base), `llm/token_utils.py`, `plugins/discovery.py` (module loading /
    entry points), `ui/amigaguide.py`.
-8. **Fold `agent_run.py` onto the `run.py` step functions** (listing, LLM
+7. **Fold `agent_run.py` onto the `run.py` step functions** (listing, LLM
    override and session open are still duplicated).
-9. **Hook registry performance**: cache the order per hook type; avoid one
+8. **Hook registry performance**: cache the order per hook type; avoid one
    deep copy of the messages per hook.
 
-### 2.3 Remaining duplication
+### 3.3 Remaining duplication
 
-- ISO timestamp parsing
-  (`services/session_archive.py`, `cli_utils/session_archive_cli.py`,
-  `auth/dependencies.py`, two plugins) → `utils/timeutil.parse_iso_utc`.
-- Plugin manifest reading in `llm/registry.py` (now possible to share, since
-  `plugins/__init__` is lazy).
+- ISO timestamp parsing in two plugins → `utils.timeutil.parse_iso_utc`.
 - Hand-rolled atomic writes in `ui/help_index.py` (own retry window) and in
   several plugins.
 - `run_events._cut` (strips trailing spaces before the ellipsis) vs `shorten`.
-- Role ranking via `ROLE_HIERARCHY` in `plugins/web_adapter.py` and
-  `ui/catalog.py`; user DB path in `first_admin.py` and `cli_utils/users.py`.
 - `services/agent_service.py` (unused stub), `agent_injection.inject_dependencies_into_agents`,
   `enforcement.UserContext`: unused in production, still referenced by tests.
+- The lazy capability fallback (processes without bootstrap) still goes
+  through `load_settings()` and its side effects.
