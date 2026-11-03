@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import functools
 import logging
 import time
@@ -29,16 +28,10 @@ if TYPE_CHECKING:
 
 from plugins.sub_agent_manager.manager import CallerMistake, SubAgentLimitReached, SubAgentManager, message_counts
 
+# agent_allowed lives in the core (other plugins use it); re-exported for the old import path.
+from agent_system.auth.agent_access import agent_allowed  # noqa: E402,F401
+
 logger = logging.getLogger(__name__)
-
-
-def agent_allowed(agent_name: str, allowed: List[str], blocked: List[str]) -> bool:
-    """Whether a manager with these lists may spawn the agent: blocked (exact) first, then `*`, exact, fnmatch."""
-    if agent_name in blocked:
-        return False
-    if '*' in allowed or agent_name in allowed:
-        return True
-    return any(fnmatch.fnmatch(agent_name, pattern) for pattern in allowed)
 
 
 #: An aborted run comes back as TEXT ("Error: ..."/"Cancelled: ..."), while

@@ -53,6 +53,7 @@ from typing import Any, TYPE_CHECKING
 
 import psutil
 
+from agent_system.utils.clip import clip_value, file_fingerprint, middle_cut
 from agent_system.utils.params import as_bool
 from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
@@ -502,80 +503,15 @@ class GodotServer(SchemaBasedToolServer):
             script = script[2:]
         return "res://" + script.lstrip("/")
 
-    @staticmethod
-    def _fingerprint(path: Path) -> tuple[int, int] | None:
-        try:
-            st = path.stat()
-        except OSError:
-            return None
-        return st.st_mtime_ns, st.st_size
-
-    @staticmethod
-    def _short(line: str) -> str:
-        """One status row; cut the middle so the reason at the tail survives."""
-        if len(line) <= STATUS_LINE_LIMIT:
-            return line
-        keep = STATUS_LINE_LIMIT - 5
-        return line[: keep // 2] + " … " + line[-(keep - keep // 2):]
+    # The helpers blender shares (agent_system.utils.clip), kept as methods
+    # for the call sites and the tests.
+    _fingerprint = staticmethod(file_fingerprint)
+    _short = staticmethod(middle_cut)
 
     @staticmethod
     def _clip(value: Any) -> tuple[Any, str]:
-        """The value, and a note saying what was dropped ("" = nothing).
-
-        A dict stays a dict: the longest list inside it is halved until the
-        whole fits, then oversized STRING fields are cut -- a screenshot's
-        base64 or a script's stdout inside a result would otherwise pass
-        through untouched with the flag claiming the opposite (measured:
-        ``{"image_base64": 60k chars}`` came back whole). A list is halved
-        and the note carries the count, since a list cannot hold one.
-        """
-        marker = f"…[truncated at {MAX_RESULT_CHARS} characters]"
-        text = value if isinstance(value, str) else json.dumps(value, default=str)
-        if len(text) <= MAX_RESULT_CHARS:
-            return value, ""
-        if isinstance(value, str):
-            return value[:MAX_RESULT_CHARS] + "\n" + marker, f"string cut to {MAX_RESULT_CHARS} characters"
-        if isinstance(value, dict):
-            trimmed = dict(value)
-            notes = []
-            lists = sorted((k for k, v in trimmed.items() if isinstance(v, list)),
-                           key=lambda k: len(trimmed[k]), reverse=True)
-            for key in lists:
-                items = trimmed[key]
-                # Halve rather than pop: `len // 2` without a floor is what
-                # makes this terminate (4 -> 2 -> 1 -> 0).
-                while items and len(json.dumps(trimmed, default=str)) > MAX_RESULT_CHARS:
-                    items = items[: len(items) // 2]
-                    trimmed[key] = items
-                    trimmed[f"{key}_omitted"] = len(value[key]) - len(items)
-                if f"{key}_omitted" in trimmed:
-                    notes.append(f"{key}: {trimmed[f'{key}_omitted']} of {len(value[key])} entries omitted")
-                if len(json.dumps(trimmed, default=str)) <= MAX_RESULT_CHARS:
-                    return trimmed, "; ".join(notes)
-            budget = MAX_RESULT_CHARS // 4
-            for key, item in trimmed.items():
-                if isinstance(item, str) and len(item) > budget:
-                    trimmed[key] = item[:budget] + marker
-                    notes.append(f"{key}: string cut to {budget} characters")
-            # Still over: a nested structure (a scene tree is a dict of
-            # dicts, no list anywhere). Cut the biggest values down to a
-            # truncated JSON string, largest first, until the whole fits.
-            # The type of that one field changes; the alternative is an
-            # unbounded payload behind a flag that says it was bounded.
-            by_size = sorted(trimmed, key=lambda k: len(json.dumps(trimmed[k], default=str)), reverse=True)
-            for key in by_size:
-                if len(json.dumps(trimmed, default=str)) <= MAX_RESULT_CHARS:
-                    break
-                if isinstance(trimmed[key], (dict, list)):
-                    trimmed[key] = json.dumps(trimmed[key], default=str)[:budget] + marker
-                    notes.append(f"{key}: serialised and cut to {budget} characters")
-            return trimmed, "; ".join(notes) or "oversized scalars kept as they are"
-        if isinstance(value, list):
-            items = list(value)
-            while items and len(json.dumps(items, default=str)) > MAX_RESULT_CHARS:
-                items = items[: len(items) // 2]
-            return items, f"{len(value) - len(items)} of {len(value)} entries omitted"
-        return text[:MAX_RESULT_CHARS] + "\n" + marker, f"value cut to {MAX_RESULT_CHARS} characters"
+        """The value, and a note saying what was dropped ("" = nothing): see clip_value."""
+        return clip_value(value, MAX_RESULT_CHARS)
 
     def _clipped(self, key: str, value: Any) -> dict[str, Any]:
         """``{key: clipped value, "truncated": bool[, "truncation": note]}``."""

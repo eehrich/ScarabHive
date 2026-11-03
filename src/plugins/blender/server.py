@@ -35,6 +35,7 @@ import socket
 from pathlib import Path, PureWindowsPath
 from typing import Any, TYPE_CHECKING
 
+from agent_system.utils.clip import clip_value, file_fingerprint, middle_cut
 from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.path_sandbox import remote_outside
@@ -201,70 +202,21 @@ class BlenderServer(SchemaBasedToolServer):
         candidate.parent.mkdir(parents=True, exist_ok=True)
         return candidate
 
-    @staticmethod
-    def _fingerprint(path: Path) -> tuple[int, int] | None:
-        """(mtime_ns, size) if the file is there, else None."""
-        try:
-            st = path.stat()
-        except OSError:
-            return None
-        return st.st_mtime_ns, st.st_size
-
-    @staticmethod
-    def _short(line: str) -> str:
-        """One status row. The bus caps at 140 and an over-long line is cut
-        wherever it happens to land, so the tail — which is where the reason
-        lives — is what gets lost. Cut the middle instead."""
-        if len(line) <= STATUS_LINE_LIMIT:
-            return line
-        keep = STATUS_LINE_LIMIT - 5
-        return line[: keep // 2] + " … " + line[-(keep - keep // 2):]
+    # The helpers godot shares (agent_system.utils.clip), kept as methods
+    # for the call sites and the tests.
+    _fingerprint = staticmethod(file_fingerprint)
+    _short = staticmethod(middle_cut)
 
     @staticmethod
     def _clip(value: Any) -> tuple[Any, bool]:
-        """The value, and whether anything had to be dropped.
+        """The value, and whether anything had to be dropped (see clip_value).
 
-        A dict STAYS a dict. Serialising it to a truncated string would change
-        the type of the same field between calls — an object on a small scene,
-        a string on a large one — and the string would be cut mid-token, so it
-        could not be parsed back either. Measured: the budget is reached at
-        ~190 objects, which is an ordinary scene, not an exotic one.
-
-        For a mapping the oversized part is a list (``objects``), so entries
-        are dropped from the longest one until it fits and a ``…_omitted``
-        count records how many. Strings are cut as before.
+        The shared clip also cuts oversized strings inside a mapping: this
+        copy did not, and a reply carrying a long string field came back
+        whole while ``truncated`` said otherwise.
         """
-        text = value if isinstance(value, str) else json.dumps(value, default=str)
-        if len(text) <= MAX_RESULT_CHARS:
-            return value, False
-
-        if isinstance(value, str):
-            return value[:MAX_RESULT_CHARS] + f"\n…[truncated at {MAX_RESULT_CHARS} characters]", True
-
-        if isinstance(value, dict):
-            trimmed = dict(value)
-            lists = sorted(
-                (k for k, v in trimmed.items() if isinstance(v, list)),
-                key=lambda k: len(trimmed[k]), reverse=True)
-            for key in lists:
-                items = trimmed[key]
-                # Halve rather than pop one at a time: a 4000-entry list would
-                # otherwise re-serialise the whole mapping thousands of times.
-                # `len // 2` without a floor is what makes this terminate --
-                # 4 -> 2 -> 1 -> 0. A `max(1, ...)` floor never reaches empty
-                # and spins forever whenever even one entry does not fit.
-                while items and len(json.dumps(trimmed, default=str)) > MAX_RESULT_CHARS:
-                    items = items[: len(items) // 2]
-                    trimmed[key] = items
-                    trimmed[f"{key}_omitted"] = len(value[key]) - len(items)
-                if len(json.dumps(trimmed, default=str)) <= MAX_RESULT_CHARS:
-                    return trimmed, True
-            # Even with every list emptied the scalars alone are over budget.
-            # Return the mapping anyway: a dict that is too big is still a
-            # dict, and changing the type here is the thing this avoids.
-            return trimmed, True
-
-        return text[:MAX_RESULT_CHARS] + f"\n…[truncated at {MAX_RESULT_CHARS} characters]", True
+        clipped, note = clip_value(value, MAX_RESULT_CHARS)
+        return clipped, bool(note)
 
     # ── tools ───────────────────────────────────────────────────────────
 

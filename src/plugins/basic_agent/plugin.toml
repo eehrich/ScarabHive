@@ -17,3 +17,4 @@ type = ["tool-server"]
 category = "tools"
 tags = ["agent", "execution", "llm", "task", "basic"]
 requires = { python = ">=3.11", agent_system = ">=0.6.0" }
+dependencies = ["anyio>=4.0"]  # the shielded close of a run's events (server.py); Starlette brings it, declared all the same

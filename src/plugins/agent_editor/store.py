@@ -39,7 +39,7 @@ from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.config.settings import _known_plugin_types, config_files, get_tool_server_config, load_settings
 from agent_system.plugins.catalog import PluginCatalog
 from agent_system.utils import yaml_io
-from plugins.sub_agent_manager.server import agent_allowed
+from agent_system.auth.agent_access import agent_allowed
 
 logger = logging.getLogger(__name__)
 
