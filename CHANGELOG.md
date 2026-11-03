@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- image_compose: with no `output_directories` (the default) a write lands only inside the project root and the data
+  directory; an absolute `output_path` or `spec_path` from the model could overwrite any file before. A private file
+  of the installation is refused either way.
+- file_ops: the text search and the semantic index check a symlink's target for a private file, not only the link's
+  name (`notes.md -> config/*.env` was searched).
+- llm_openai_compat: the batch backend sends a model entry's own `api_key` to api.openai.com only when the entry
+  targets OpenAI; a gateway's or OpenRouter's key went there before.
+- debate_forum and agent_eval declare admin in `get_security_config`, so a renamed or second instance keeps the
+  admin rule. The forum has no owner per channel yet: its panel showed every user's direct messages.
+- cognitive_stack, sequential_thinking: a stack or thinking session belongs to the conversation that made it, and
+  idempotency keys are per conversation; a model-chosen id (`"main"`) reached another user's state.
 - The file tools, the text search and the coding CLIs refuse the installation's private files whatever their roots
   allow: `config/*.env`, the user store (where auth keeps it), the sessions (`AGENT_SESSION_STORAGE_PATH` when set)
   and their archive, and the message debugger's store. The terminal's dangerous patterns name the env files.
@@ -168,6 +179,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Shared helpers for plugins, used instead of private copies: `agent_system.utils.params` (`as_bool`, `as_int`,
+  `as_float`, `flag_param`; `bool_param` accepts `on`/`off`), `agent_system.utils.clip`, `agent_system.llm.tls.
+  network_ssl_verify`, `agent_system.auth.agent_access.agent_allowed` (agent_editor and stategraph no longer import
+  the sub-agent manager); `plugins.llm_common` `request_end`, `http_status.retry_after_seconds`, `batch_http`.
+  Review, open defects and the refactoring plan: `docs/plugins_review_and_refactoring_plan.md`.
 - Coding CLIs: `max_parallel` goes up to 50 (it stopped at 8). A run above an instance's limit does not wait: it
   is refused, and a caller with a fallback chain moves it to its next link, often a paid one. Since the limit counts
   one instance only, no run starts below 3 GB of available memory.
@@ -188,6 +204,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Model arguments read with `bool()`: `use_advanced_model: "false"` ran a sub-agent on the premium chain and
+  `blocking: "false"` blocked (sub_agent_manager); the same in decision, godot and duckduckgo_search. debate_forum read
+  any unknown text as true, tavily_search and n8n read `"on"` as false; sqlite_query and agent_watchdog failed to load
+  on a YAML `.inf`; lessons_learned refused `limit: "20.0"`.
+- Gemini: a tool result that is no JSON object (a list, a number) goes in as `{"result": ...}`; every later turn was
+  refused with a 400. The batch converter no longer crashes on an image with `source` and sends it.
+- The Gemini schema sanitizer kept parameters named `format`, `title` or `pattern` inside a merged `anyOf` option.
+- Retry-After: the batch clients read the HTTP-date form (a ValueError hid the 429), the httpx client waits at most
+  60 s however long a server asks.
+- context_summarizer kept `tools_schema` and the cancellation token of the hook context; project_instructions after
+  it lost the tool roots for the rest of the session.
+- lessons_learned books a lesson's application once per request, off the event loop (it was once per LLM step).
+- memory: saves are atomic and one per session at a time; parallel tool calls wrote invalid JSON.
+- basic_agent closes its run when it ends on an error, instead of leaving it to the garbage collector.
+- log_viewer's `tail` returns at most 2000 lines and reads off the event loop; its errors say `status: error`.
+- web_scraper and weather follow `network.ssl_verify`; ssh_control reports a command without exit status as -1, not
+  as success; blender reads replies split inside a multi-byte character; llm_router lists the providers and closes
+  its clients; the context engineer's fallback user message carries `injected_by`.
+- `atomic_write_text` keeps the normal file mode (its temp file made rewritten files 0600); the ssh machine store
+  writes through it instead of a fixed temp name.
 - File tools on Python 3.11: delete, move and rename ended in an AttributeError (`Path.is_junction` exists from
   3.12).
 - Coding CLIs: the subscription guard went by what the last run to end had seen. A run reports the windows near its
