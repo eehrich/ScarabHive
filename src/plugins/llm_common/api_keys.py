@@ -90,6 +90,19 @@ def key_var_for(base_url: str) -> Optional[str]:
     return _LOCAL_KEY_VAR if _is_local(hostname) else None
 
 
+def targets_openai(base_url: Optional[str]) -> bool:
+    """True when ``base_url`` is unset (the OpenAI default) or names api.openai.com.
+
+    For callers that always talk to OpenAI (the Batch API) and must decide
+    whether a model entry's ``api_key`` -- a secret of the entry's endpoint --
+    may be sent there.
+    """
+    if not (base_url or "").strip():
+        return True
+    hostname = (urlparse(base_url).hostname or "").lower()
+    return hostname == "api.openai.com"
+
+
 def _shown(url: str) -> str:
     """The url for an error message: a password in its userinfo is a secret too."""
     parts = urlparse(url)
