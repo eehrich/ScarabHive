@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent_system.llm.tool_pairs import tool_call_owners
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count
 from agent_system.llm.message_roles import opens_a_turn
@@ -787,14 +788,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             else:
                 old_msgs.append((i, msg))
 
-        # Phase 2: Keep tool_calls/tool response pairs together
-        # Build mapping: tool_call_id -> message index with tool_calls
-        tool_call_map: Dict[str, int] = {}
-        for i, msg in enumerate(messages):
-            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
-                for tc in msg.get('tool_calls', []):
-                    if isinstance(tc, dict) and 'id' in tc:
-                        tool_call_map[tc['id']] = i
+        # Phase 2: Keep tool_calls/tool response pairs together. By position
+        # (agent_system.llm.tool_pairs): a tool_call_id -> assistant map is
+        # last-writer-wins, and a repeated id (the Gemini batch client's
+        # call_{name}_{index}) handed an old result to a later assistant --
+        # moved into the recent half, it was a tool result without its call.
+        owners = tool_call_owners(messages)
 
         # Find tool responses and ensure they're in the same category as their tool_calls
         indices_to_move_to_old: set[int] = set()
@@ -802,9 +801,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
         for i, msg in enumerate(messages):
             if msg.get('role') == 'tool':
-                tool_call_id = msg.get('tool_call_id')
-                if tool_call_id and tool_call_id in tool_call_map:
-                    assistant_idx = tool_call_map[tool_call_id]
+                assistant_idx = owners.get(i)
+                if assistant_idx is not None:
 
                     # Check where assistant and tool are categorized
                     assistant_in_old = any(idx == assistant_idx for idx, _ in old_msgs)
@@ -929,13 +927,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         if not messages:
             return []
 
-        # Build mapping: tool_call_id -> assistant message index
-        tool_call_map: Dict[str, int] = {}
-        for i, msg in enumerate(messages):
-            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
-                for tc in msg.get('tool_calls', []):
-                    if isinstance(tc, dict) and 'id' in tc:
-                        tool_call_map[tc['id']] = i
+        # tool message index -> the assistant it answers, by position
+        owners = tool_call_owners(messages)
 
         # Build groups: each group is a list of message indices that must stay together
         # Start with each message in its own group
@@ -944,9 +937,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Merge groups: if a tool response belongs to an assistant, merge their groups
         for i, msg in enumerate(messages):
             if msg.get('role') == 'tool':
-                tool_call_id = msg.get('tool_call_id')
-                if tool_call_id and tool_call_id in tool_call_map:
-                    assistant_idx = tool_call_map[tool_call_id]
+                assistant_idx = owners.get(i)
+                if assistant_idx is not None:
                     # Merge groups: add tool response index to assistant's group
                     groups[assistant_idx].add(i)
                     groups[i] = groups[assistant_idx]  # Point to same group object
