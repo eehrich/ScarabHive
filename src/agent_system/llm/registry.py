@@ -32,6 +32,8 @@ import threading
 from pathlib import Path
 from typing import Callable, Dict, Optional, TYPE_CHECKING, cast
 
+from ..plugins.plugin_manifest import read_manifest_table
+
 if TYPE_CHECKING:
     from agent_system.config.models import LLMModelConfig
     from agent_system.llm.batch.base import BatchProviderClient
@@ -126,29 +128,12 @@ def _plugins_root() -> Path:
 def _read_manifest(plugin_dir: Path) -> Dict:
     """The [plugin] table of one plugin.toml; {} when absent/unreadable.
 
-    Parsed with tomllib directly, NOT via agent_system.plugins.plugin_manifest:
-    importing that submodule executes the plugins package __init__, which
-    pulls the whole tool/Web runtime (fastapi, starlette, ...) — measured at
-    ~0.4s and ~330 modules. Config validation calls into this scan, so it
-    must stay light.
+    plugin_manifest is stdlib-only and the plugins package __init__ resolves
+    its exports lazily, so this import pulls no tool/Web runtime (fastapi,
+    starlette, ...) -- config validation calls into this scan, so it must
+    stay light. A seam of its own so the tests can replace it.
     """
-    import tomllib
-    toml_path = plugin_dir / "plugin.toml"
-    if not toml_path.exists():
-        return {}
-    try:
-        with toml_path.open("rb") as fh:
-            data = tomllib.load(fh)
-    except Exception as e:
-        logger.warning("Failed to parse %s: %s", toml_path, e)
-        return {}
-    meta = data.get("plugin", data)
-    if not isinstance(meta, dict):
-        logger.warning(
-            "%s: [plugin] is a %s, not a table — plugin ignored",
-            toml_path, type(meta).__name__)
-        return {}
-    return meta
+    return read_manifest_table(plugin_dir)
 
 
 def _scan_manifests() -> None:

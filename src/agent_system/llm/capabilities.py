@@ -1,16 +1,22 @@
 """Which inputs a model accepts, and the gate that asks before attaching them.
 
 The capability table is built from the merged configuration; nothing here is
-hardcoded per model.
+hardcoded per model. Bootstrap (InitializationService) builds it from the
+process's LIVE config and a config reload rebuilds it; only a process that
+never bootstrapped (a test, a tool script) falls back to loading the default
+config on first use.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from enum import Enum
 import logging
 from pathlib import Path
 
 from ..config.models import ModelCapabilitiesConfig
+
+if TYPE_CHECKING:
+    from ..config.models import AgentSystemConfig
 
 logger = logging.getLogger(__name__)
 
@@ -48,21 +54,28 @@ class ModelCapabilities(ModelCapabilitiesConfig):
         return bool(getattr(self, capability.value, False))
 
 
-def load_capabilities_from_config(config_path: Optional[str | Path] = None) -> dict[str, ModelCapabilities]:
+def load_capabilities_from_config(
+    config_path: Optional[str | Path] = None, *,
+    config: Optional["AgentSystemConfig"] = None,
+) -> dict[str, ModelCapabilities]:
     """Build the registry from the merged configuration.
 
-    config.yaml is the only file read directly; its includes bring llm.yaml,
+    ``config`` is the already loaded configuration -- the one the process
+    runs on; nothing is read then. Without it the configuration at
+    ``config_path`` (default: the default config path) is loaded: config.yaml
+    is the only file read directly; its includes bring llm.yaml,
     llm_openrouter.yaml and the per-plugin tables — resolved, with `extends`
     already folded in. Reading a single file would miss the other models AND
     every unresolved inheritance.
     """
-    try:
-        from agent_system.config import load_settings
-        config = load_settings(str(config_path)) if config_path else load_settings()
-    except Exception as e:
-        logger.error("Capabilities registry stays empty: the merged "
-                     "configuration could not be loaded (%s)", e)
-        return {}
+    if config is None:
+        try:
+            from agent_system.config import load_settings
+            config = load_settings(str(config_path)) if config_path else load_settings()
+        except Exception as e:
+            logger.error("Capabilities registry stays empty: the merged "
+                         "configuration could not be loaded (%s)", e)
+            return {}
 
     models = getattr(getattr(config, "llm_system", None), "models", None) or {}
     out: dict[str, ModelCapabilities] = {}
@@ -105,9 +118,21 @@ def _inputs_of(caps: "ModelCapabilities") -> tuple[bool, ...]:
     return tuple(bool(getattr(caps, f, False)) for f in _INPUT_FLAGS)
 
 
-def init_capabilities_registry(config_path: Optional[str | Path] = None) -> None:
+def init_capabilities_registry(
+    config_path: Optional[str | Path] = None, *,
+    config: Optional["AgentSystemConfig"] = None,
+) -> None:
+    """(Re)build the process-wide registry.
+
+    Bootstrap and config reload pass the live ``config``. Loading by path
+    is what a process that never bootstrapped gets: the default path is not
+    necessarily the ``--config`` the process was started with, and
+    load_settings() drops the plugin caches on the way.
+    """
     global _capabilities_registry, _registry_loaded
-    _capabilities_registry = load_capabilities_from_config(config_path)
+    _capabilities_registry = (load_capabilities_from_config(config=config)
+                              if config is not None
+                              else load_capabilities_from_config(config_path))
     _registry_loaded = True
 
 
@@ -133,8 +158,9 @@ def ensure_model_supports(model_name: Optional[str], *, images: int = 0,
     """
     if not model_name:
         return None
-    # Once per process, not once per request: load_settings() re-reads every
-    # YAML file and drops the plugin and inheritance caches on the way.
+    # Bootstrap filled it from the live config. Without a bootstrap (tests,
+    # tools): once per process, not once per request -- load_settings()
+    # re-reads every YAML file and drops the plugin and inheritance caches.
     if not _registry_loaded:
         init_capabilities_registry()
     caps = _capabilities_registry.get(model_name)

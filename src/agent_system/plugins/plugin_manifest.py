@@ -40,18 +40,34 @@ def load_plugin_metadata(plugin_dir: Path) -> dict[str, Any]:
     Returns ``{}`` when no manifest exists or it cannot be read -- an
     unreadable manifest is reported as a WARNING, never swallowed.
     """
+    return read_manifest_table(plugin_dir)
+
+
+def read_manifest_table(plugin_dir: Path, table: str = "plugin") -> dict[str, Any]:
+    """One table of a plugin's ``plugin.toml``; ``{}`` when absent/unreadable.
+
+    The whole document stands in for a missing ``table``. A manifest that does
+    not parse, or whose ``table`` is not a table, reads as ``{}`` and is
+    reported as a WARNING. Imports nothing beyond the stdlib: the LLM provider
+    registry scans every manifest from inside config validation.
+    """
     toml_path = plugin_dir / MANIFEST_TOML
-    if toml_path.exists() and tomllib is not None:
-        try:
-            with toml_path.open("rb") as fh:
-                data = tomllib.load(fh)
-            meta = data.get("plugin", data)
-            return meta if isinstance(meta, dict) else {}
-        except Exception as e:
-            # Say so, do not swallow it: a broken manifest that reads as "no
-            # metadata" is how a plugin goes missing without anyone noticing.
-            logger.warning("Failed to parse %s: %s", toml_path, e)
-    return {}
+    if not toml_path.exists() or tomllib is None:
+        return {}
+    try:
+        with toml_path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except Exception as e:
+        # Say so, do not swallow it: a broken manifest that reads as "no
+        # metadata" is how a plugin goes missing without anyone noticing.
+        logger.warning("Failed to parse %s: %s", toml_path, e)
+        return {}
+    meta = data.get(table, data)
+    if not isinstance(meta, dict):
+        logger.warning("%s: [%s] is a %s, not a table — plugin ignored",
+                       toml_path, table, type(meta).__name__)
+        return {}
+    return meta
 
 
 DEFAULT_ENTRYPOINT = ("plugin", "PLUGIN_FACTORY")
