@@ -16,6 +16,7 @@ from typing import Any, TYPE_CHECKING
 
 from fastapi import APIRouter
 
+from agent_system.utils.multimodal_tool_content import attach_problem
 from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.params import bool_param
@@ -1226,7 +1227,9 @@ class ComfyUIServer(SchemaBasedToolServer):
             for file_record in outputs.get(output_type, []):
                 # Use full_path for multimodal encoding (needs actual file system path)
                 full_path = file_record.get("full_path")
-                if full_path:
+                if full_path and (problem := attach_problem(full_path, content_type)):
+                    file_record["not_attached"] = problem  # dropped silently otherwise
+                elif full_path:
                     filename = file_record.get("filename", "")
                     mime_type = self._guess_mime_type(filename, content_type)
                     
@@ -1425,14 +1428,20 @@ class ComfyUIServer(SchemaBasedToolServer):
                 await status.error("No valid media files found to load")
             return {"error": "No valid media files found to load"}
         
+        too_large = [f for f in loaded_files if f.get("not_attached")]
         if status:
-            await status.end(f"Loaded {len(loaded_files)} file(s)")
-        
+            await status.end(f"Loaded {len(loaded_files)} file(s)"
+                             + (f", {len(too_large)} too large to attach" if too_large else ""))
+
+        message = f"Loaded {len(loaded_files)} file(s). You can now analyze the content."
+        if too_large:
+            message += (f" {len(too_large)} of them are too large to attach and are not in front of you: "
+                        + "; ".join(f["not_attached"] for f in too_large))
         result: dict[str, Any] = {
             "status": "success",
             "loaded_files": loaded_files,
             "count": len(loaded_files),
-            "message": f"Loaded {len(loaded_files)} file(s). You can now analyze the content.",
+            "message": message,
         }
         if multimodal:
             result["_multimodal_content"] = multimodal
@@ -1460,12 +1469,18 @@ class ComfyUIServer(SchemaBasedToolServer):
                 logger.warning("Failed to read text file %s: %s", path, e)
                 record["read_error"] = str(e)
         else:
-            multimodal.append({
-                "type": content_type,
-                "path": str(path),
-                "mime_type": self._guess_mime_type(path.name, content_type),
-                "description": f"{description}: {path.name}",
-            })
+            # Over the limit a request carries, the attachment would be dropped
+            # silently -- the answer says so instead of "you can now analyze".
+            problem = attach_problem(path, content_type)
+            if problem:
+                record["not_attached"] = problem
+            else:
+                multimodal.append({
+                    "type": content_type,
+                    "path": str(path),
+                    "mime_type": self._guess_mime_type(path.name, content_type),
+                    "description": f"{description}: {path.name}",
+                })
         loaded_files.append(record)
 
     @staticmethod
