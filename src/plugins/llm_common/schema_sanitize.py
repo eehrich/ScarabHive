@@ -97,9 +97,12 @@ def sanitize_schema_for_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
                 if isinstance(value, list) and len(value) > 0:
                     first_option = value[0]
                     if isinstance(first_option, dict):
-                        for opt_key, opt_val in first_option.items():
-                            if opt_key not in result and opt_key not in unsupported_keywords:
-                                result[opt_key] = sanitize_schema_for_gemini(opt_val)
+                        # Sanitize the option as the schema it is: sanitizing each of
+                        # its VALUES treated a `properties` map's names ("format",
+                        # "title", "pattern") as keywords and dropped those parameters.
+                        for opt_key, opt_val in sanitize_schema_for_gemini(first_option).items():
+                            if opt_key not in result:
+                                result[opt_key] = opt_val
             continue
         elif key == "properties" and isinstance(value, dict):
             # Recursively sanitize each property

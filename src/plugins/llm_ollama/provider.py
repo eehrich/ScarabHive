@@ -34,11 +34,11 @@ def _think(cfg: "LLMModelConfig") -> Any:
 
 
 def build_ollama(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "LLMClient":
+    mode = (cfg.ollama_mode or "openai_compat").lower()
     warn_unwired(cfg, provider="ollama",
-                 wired=("reasoning_details_mode",) if cfg.ollama_mode == "native" else (),
+                 wired=("reasoning_details_mode",) if mode == "native" else (),
                  logger=logger)
 
-    mode = (cfg.ollama_mode or "openai_compat").lower()
     if mode == "native":
         if cfg.thinking_budget:
             logger.warning(

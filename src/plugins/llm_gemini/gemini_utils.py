@@ -17,11 +17,35 @@ import httpx
 
 from plugins.llm_common.request_end import ending_error  # noqa: F401  (re-exported)
 from agent_system.llm.message_roles import DEVELOPER, USER, developer_turn, resolve_rung
+from agent_system.llm.token_utils import extract_text_from_content
 from agent_system.utils.json_utils import repair_json
 
 from plugins.llm_common.schema_sanitize import sanitize_schema_for_gemini
 
 logger = logging.getLogger(__name__)
+
+
+def function_response_body(content: Any) -> Dict[str, Any]:
+    """A tool result as Gemini's ``functionResponse.response``: always an object.
+
+    Gemini takes a Struct there. A tool answering ``[...]``, ``42`` or ``"ok"``
+    as JSON -- or with a list of content parts -- used to go in as is, and every
+    later turn of the session was refused with a 400. Text that is no JSON
+    (a compacted reference like "[Tool:xxx ref:yyy]") and any non-object are
+    wrapped as ``{"result": ...}``.
+    """
+    if content is None:
+        return {}
+    if isinstance(content, str):
+        try:
+            data: Any = json.loads(content)
+        except json.JSONDecodeError:
+            return {"result": content}
+    elif isinstance(content, list):
+        data = extract_text_from_content(content)
+    else:
+        data = content
+    return data if isinstance(data, dict) else {"result": data}
 
 # Gemini API has a 100MB request size limit
 GEMINI_MAX_REQUEST_BYTES = 100 * 1024 * 1024  # 100 MB
@@ -490,15 +514,7 @@ def convert_openai_messages_to_gemini(
             # Tool responses use role="tool" (per Gemini SDK docs)
             tool_name = msg.name or "unknown"
             
-            # Try to parse as JSON, fallback to string content
-            if isinstance(msg.content, str):
-                try:
-                    result_data = json.loads(msg.content)
-                except json.JSONDecodeError:
-                    # Content is not valid JSON (e.g., compacted reference like "[Tool:xxx ref:yyy]")
-                    result_data = {"result": msg.content}
-            else:
-                result_data = msg.content
+            result_data = function_response_body(msg.content)
             
             # Convert our error format to Gemini's expected format
             # Our format: {"error": True, "message": "..."}
