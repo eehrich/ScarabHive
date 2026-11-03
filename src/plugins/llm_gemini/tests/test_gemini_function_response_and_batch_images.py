@@ -55,3 +55,18 @@ def test_batch_data_url_image_still_works():
     contents = _client()._convert_messages_to_contents([{"role": "user", "content": [
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{png}"}}]}])
     assert contents[0].parts[0].inline_data.mime_type == "image/jpeg"
+
+
+def test_batch_parallel_tool_responses_share_one_block():
+    contents = _client()._convert_messages_to_contents([
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": [{"type": "text", "text": "calling"}], "tool_calls": [
+            {"id": "a", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "b", "type": "function", "function": {"name": "g", "arguments": "{}"}}]},
+        {"role": "tool", "name": "f", "tool_call_id": "a", "content": "1"},
+        {"role": "tool", "name": "g", "tool_call_id": "b", "content": "2"},
+    ])
+    assert [c.role for c in contents].count("tool") == 1
+    tool_block = contents[-1]
+    assert [p.function_response.name for p in tool_block.parts] == ["f", "g"]
+    assert contents[1].parts[0].text == "calling"

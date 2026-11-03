@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent_system.llm.message_roles import DEVELOPER, USER, as_note
+from agent_system.llm.token_utils import extract_text_from_content
 from agent_system.utils.json_utils import repair_json
 
 try:
@@ -445,19 +446,28 @@ class GeminiBatchClient(BatchProviderClient):
                                 )
                             ))
                 
-                contents.append(types.Content(
-                    role="tool",  # Gemini 2.0+ uses "tool" role
-                    parts=tool_parts
-                ))
+                # Parallel calls: all their responses in ONE role="tool" block,
+                # as gemini_utils._merge_consecutive_tool_responses does for the
+                # chat clients -- one block each is refused ("number of
+                # function response parts must equal ...").
+                if contents and contents[-1].role == "tool" and contents[-1].parts is not None:
+                    contents[-1].parts.extend(tool_parts)
+                else:
+                    contents.append(types.Content(
+                        role="tool",  # Gemini 2.0+ uses "tool" role
+                        parts=tool_parts
+                    ))
                 continue
             
             # Handle assistant with tool_calls (function call requests)
             if role == "assistant" and msg.get("tool_calls"):
                 parts: List[types.Part] = []
                 
-                # Add text content if present
-                if content:
-                    parts.append(types.Part(text=content))
+                # Add text content if present (a list of parts is its text:
+                # Part(text=[...]) fails validation)
+                text = extract_text_from_content(content) if isinstance(content, list) else content
+                if text:
+                    parts.append(types.Part(text=text))
                 
                 # Add function calls with thought_signature preservation
                 for tc in msg.get("tool_calls", []):
