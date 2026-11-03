@@ -198,6 +198,10 @@ stderr.
 | `attachments.py` | sort attachments by file kind |
 | `agent_runner.py` | what both entry points share: running as the local operator, agent creation for `agent-run`, the woken run's task, the busy-session and cancelled lines |
 | `users.py` | Typer app for `agent-cli users` |
+| `event_loop.py` | the one event loop of an `agent-cli`/`agent-run` process (coroutine steps with sync code between them) and its teardown `shut_down_loop` |
+| `help_viewer.py` | `/help <topic>` in the chat: draws the Help library's nodes in the terminal |
+| `questions.py` | a run's questions (ask_user, tool approval) at `agent-cli chat`: drawn, answered with the next typed line |
+| `session_archive_cli.py` | the session archive from the command line: listing, archiving, restoring (`SessionArchive`) |
 | `commands/hooks.py` | `hooks list` / `hooks inspect`, with the plugins loaded |
 
 `chat/` is cut by responsibility; `chat/__init__.py` re-exports

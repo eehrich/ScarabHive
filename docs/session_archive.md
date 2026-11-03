@@ -94,7 +94,10 @@ only failure here that cannot be undone. A restore takes its ZIP with it; a
 restored tree therefore starts a fresh one.
 
 Every ZIP carries its own `_manifest.json`. If `index.json` is lost, the
-archives are still readable and the index can be rebuilt from them.
+archives are still readable and carry what a rebuild of the index needs.
+No code rebuilds it automatically yet (docs/refactoring_plan.md); an
+unreadable `index.json` is therefore never written over -- see
+`ArchiveStore._edit_manifest_locked`.
 
 The archive lives **next to** `data/sessions/`, not inside it: the
 `SessionManager` treats every subdirectory of `data/sessions/` as a user

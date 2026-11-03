@@ -369,7 +369,7 @@ src/plugins/                 # also every further root src/plugins_<name>/
     └── schema.yaml
 ```
 
-The plugin type name is the **folder name**; the manifest `name` renames nothing. The entrypoint is `module:Factory` with the module file directly in the plugin folder (default `plugin:PLUGIN_FACTORY`). A folder without that module (e.g. `library` plugins) is not a discoverable type. `plugin.yaml` is not read.
+The plugin type name is the **folder name** unless the module sets `PLUGIN_NAME` or its `register()` names the type (`plugins/discovery.py`; `plugins/catalog.py` maps such types back to their folder); the manifest `name` renames nothing. The entrypoint is `module:Factory` with the module file directly in the plugin folder (default `plugin:PLUGIN_FACTORY`). A folder without that module (e.g. `library` plugins) is not a discoverable type. `plugin.yaml` is not read.
 
 **plugin.toml Example:**
 ```toml

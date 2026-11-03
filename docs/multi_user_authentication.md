@@ -193,7 +193,7 @@ auth:
       - "GET /static/*"
       - "GET /login"
       - "POST /auth/login"
-    rate_limit_multiplier: 0.5  # 50% of normal rate limit
+    rate_limit_multiplier: 0.5  # accepted by the config model, NOT applied by RateLimitMiddleware yet
 ```
 
 An entry of `allowed_endpoints` opens the method it names and no other: `"GET /health"` lets a visitor
@@ -461,7 +461,7 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "api_key": "ak_1234567890abcdef",
+  "api_key": "Xq3v...  (secrets.token_urlsafe(32), no prefix)",
   "created_at": "2025-10-10T20:00:00.123456Z",
   "note": "Save this key securely. It will not be shown again."
 }
