@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 
 import pytz
@@ -86,6 +86,43 @@ def _as_utc_if_naive(dt: datetime) -> datetime:
     """A datetime without offset is UTC, as in convert_timezone -- not the
     server's local zone, which `datetime.timestamp()` would assume."""
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def add_business_days(start: date, days: int) -> date:
+    """``start`` moved by ``days`` business days (Mon-Fri), in O(1).
+
+    The day-by-day loop this replaces took seconds on the event loop for
+    days=10**7. Same answers: the first step is walked (from a weekend it lands
+    on a weekday), then every 5 business days from a weekday are 7 calendar
+    days, and the rest (at most 4) is walked again. Raises OverflowError past
+    the calendar's range.
+    """
+    step = 1 if days > 0 else -1
+    remaining = abs(days)
+    current = start
+
+    def walk(count: int) -> None:
+        nonlocal current
+        while count:
+            current += timedelta(days=step)
+            if current.weekday() < 5:
+                count -= 1
+
+    if remaining:
+        walk(1)
+        weeks, rest = divmod(remaining - 1, 5)
+        current += timedelta(days=7 * weeks * step)
+        walk(rest)
+    return current
+
+
+def business_days_between(start: date, end: date) -> int:
+    """Weekdays in ``[start, end)``, in O(1)."""
+    total = (end - start).days
+    weeks, rest = divmod(total, 7)
+    first = start.weekday()
+    return weeks * 5 + sum(1 for k in range(rest) if (first + k) % 7 < 5)
+
 
 
 class DateTimeServer(SchemaBasedToolServer):
@@ -627,19 +664,7 @@ class DateTimeServer(SchemaBasedToolServer):
 
             if add_days is not None and not end_date:
                 # Add business days to start_date
-                current_date = start_dt
-                days_added = 0
-                days_to_add = int(add_days)
-
-                while days_added < abs(days_to_add):
-                    if days_to_add > 0:
-                        current_date += timedelta(days=1)
-                    else:
-                        current_date -= timedelta(days=1)
-
-                    # Skip weekends (Saturday=5, Sunday=6)
-                    if current_date.weekday() < 5:
-                        days_added += 1
+                current_date = add_business_days(start_dt, int(add_days))
 
                 return {
                     "status": "success",
@@ -661,13 +686,7 @@ class DateTimeServer(SchemaBasedToolServer):
                 else:
                     swapped = False
 
-                business_days = 0
-                current_date = start_dt
-
-                while current_date < end_dt:
-                    if current_date.weekday() < 5:  # Monday=0, Friday=4
-                        business_days += 1
-                    current_date += timedelta(days=1)
+                business_days = business_days_between(start_dt, end_dt)
 
                 return {
                     "status": "success",
