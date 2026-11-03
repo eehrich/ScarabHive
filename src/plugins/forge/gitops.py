@@ -23,6 +23,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
+from agent_system.utils.proctree import run_bounded
 
 from .http import ForgeError
 
@@ -111,8 +112,9 @@ def git(path: Optional[Path], *args: str, env: Optional[dict] = None, timeout: f
         ok: tuple[int, ...] = (0,)) -> str:
     cmd = ["git", *_pinned(path), *(["-C", str(path)] if path is not None else []), *args]
     try:
-        done = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+        # The whole tree on a timeout: git-remote-https or a credential helper
+        # outlived a plain subprocess.run kill (and held its pipes on Windows).
+        done = run_bounded(cmd, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         raise GitError(f"git {args[0]} took longer than {timeout:g} s") from None
     except OSError as exc:

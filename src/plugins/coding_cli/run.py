@@ -21,12 +21,11 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
 
-import psutil
 import yaml
 
+from agent_system.utils import proctree as _proctree
 from agent_system import own_console
 from agent_system.config.settings import _secrets_file_entries
-from agent_system.core.session_presence import alive
 from agent_system.utils import yaml_io
 from agent_system.utils import path_sandbox
 
@@ -358,31 +357,10 @@ def launch(cmd: list[str], cwd: Path, env: dict, stdin: Path, stdout: Path, stde
         return own_console.popen_outliving(cmd, cwd=cwd, env=env, stdin=task, stdout=out, stderr=err, **options)
 
 
-def process_start(pid: int) -> float:
-    try:
-        return psutil.Process(pid).create_time()
-    except psutil.Error:
-        return 0.0
-
-
-def kill_tree(pid: Optional[int], started: Optional[float], wait_s: float = 10) -> None:
-    """The run and whatever it started (a shell, a test run), and back only
-    once they are gone: on Windows the kill is asynchronous, and a caller
-    finalizing right after it found the run still alive. The start time keeps
-    a reused pid from being taken for it."""
-    if not pid or not alive(pid, started):
-        return
-    try:
-        root = psutil.Process(pid)
-        procs = [*root.children(recursive=True), root]
-    except psutil.Error:
-        return
-    for proc in procs:
-        try:
-            proc.kill()
-        except psutil.Error:
-            pass
-    psutil.wait_procs(procs, timeout=wait_s)
+# One implementation in the core (agent_system.utils.proctree); the names stay
+# here for the server and the tests.
+process_start = _proctree.process_start
+kill_tree = _proctree.kill_tree
 
 
 def events(path: Path) -> list[dict]:
@@ -610,20 +588,14 @@ def _when(epoch: float) -> str:
 def git(cwd: Path, *args: str, timeout: float = 120, pinned: Sequence[str] = (), stdin: Optional[str] = None,
         ok: tuple[int, ...] = (0,)) -> str:
     try:
-        proc = subprocess.Popen(["git", *pinned, *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+        done = _proctree.run_bounded(["git", *pinned, *args], cwd=cwd, timeout=timeout, input=stdin or "")
     except OSError as exc:
         raise GitError(f"git {args[0]}: {exc}") from exc
-    try:
-        stdout, stderr = proc.communicate(stdin, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         # subprocess.run kills git alone and then waits for its pipes: a filter
         # or hook git started holds them open, and the timeout bounded nothing.
-        kill_tree(proc.pid, process_start(proc.pid))
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            # One git already left behind before the timeout is out of the tree.
-            proc.communicate(timeout=5)
         raise GitError(f"git {args[0]}: timed out after {timeout:g} s") from exc
+    proc, stdout, stderr = done, done.stdout, done.stderr
     if proc.returncode not in ok:
         raise GitError(f"git {args[0]}: {(stderr or stdout).strip()[:300]}")
     return stdout
