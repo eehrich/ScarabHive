@@ -32,7 +32,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 from urllib.parse import unquote, urlsplit
 
-from agent_system.auth.enforcement import ROLE_HIERARCHY
+from agent_system.auth.enforcement import ROLE_HIERARCHY, role_rank
 
 #: Fixed on purpose: a plugin picks one, it does not invent its own.
 CATEGORIES: tuple[tuple[str, str], ...] = (
@@ -222,8 +222,7 @@ def roles_allowed(*policies: tuple[bool, Any]) -> list[str]:
     Ranked like the enforcement ranks them (an unknown role counts as none), so
     the catalogue lists a panel for the roles that pass every layer guarding it.
     """
-    minimum = max((ROLE_HIERARCHY.get(str(min_role).lower(), 0)
-                   for requires_auth, min_role in policies if requires_auth and min_role), default=0)
+    minimum = max((role_rank(min_role) for requires_auth, min_role in policies if requires_auth and min_role), default=0)
     if not minimum:
         return []
     return sorted(role for role, level in ROLE_HIERARCHY.items() if level >= minimum)

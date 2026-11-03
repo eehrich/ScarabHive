@@ -105,12 +105,15 @@ def configure_security_middleware(
         app.add_middleware(SecurityAuditMiddleware, auth_config=auth_config)
         logger.info("Security audit middleware enabled")
 
-    # Rate limiting
+    # Rate limiting. The anonymous share applies while anonymous access is on: otherwise a caller without
+    # credentials reaches only the sign-in and the public routes, and the login page keeps the full limit.
     if rate_limit_enabled:
+        anonymous = auth_config.anonymous_access if auth_config and auth_config.enabled else None
         app.add_middleware(
             RateLimitMiddleware,
             requests_per_minute=requests_per_minute,
             enabled=True,
+            anonymous_multiplier=anonymous.rate_limit_multiplier if anonymous and anonymous.enabled else 1.0,
         )
         logger.info(f"Rate limiting enabled: {requests_per_minute} requests/minute")
     

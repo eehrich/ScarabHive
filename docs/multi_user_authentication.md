@@ -193,7 +193,8 @@ auth:
       - "GET /static/*"
       - "GET /login"
       - "POST /auth/login"
-    rate_limit_multiplier: 0.5  # accepted by the config model, NOT applied by RateLimitMiddleware yet
+    rate_limit_multiplier: 0.5  # while auth and anonymous access are on: requests without credentials
+                                # (no token, cookie or API key) get this share of the per-IP limit, min 1/min
 ```
 
 An entry of `allowed_endpoints` opens the method it names and no other: `"GET /health"` lets a visitor

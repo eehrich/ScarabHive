@@ -1,4 +1,4 @@
-"""Rate limiting per client address."""
+"""Rate limiting per client address; a request that carries no credentials gets a share of the limit."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from collections import defaultdict
 from typing import Dict
 
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+from agent_system.auth.credentials import access_token_cookie, bearer_credentials, first_headers
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,7 @@ class RateLimitMiddleware:
         app: ASGIApp,
         requests_per_minute: int = 60,
         enabled: bool = True,
+        anonymous_multiplier: float = 1.0,
     ):
         """
         Initialize rate limiter.
@@ -33,9 +36,12 @@ class RateLimitMiddleware:
             app: ASGI application
             requests_per_minute: Maximum requests per minute per IP
             enabled: Whether rate limiting is enabled
+            anonymous_multiplier: Share of the limit for a request without credentials
+                (auth.anonymous_access.rate_limit_multiplier); at least one request a minute
         """
         self.app = app
         self.requests_per_minute = requests_per_minute
+        self.anonymous_requests_per_minute = max(1, int(requests_per_minute * anonymous_multiplier))
         self.enabled = enabled
         self.request_counts: Dict[str, list] = defaultdict(list)
         self._last_cleanup = time.time()
@@ -68,8 +74,9 @@ class RateLimitMiddleware:
             for ip in stale_ips:
                 del self.request_counts[ip]
         
-        # Check rate limit
-        if len(self.request_counts[client_ip]) >= self.requests_per_minute:
+        # Check rate limit. One count per address: a caller without credentials is held to its share of it.
+        limit = self.requests_per_minute if _carries_credentials(scope) else self.anonymous_requests_per_minute
+        if len(self.request_counts[client_ip]) >= limit:
             logger.warning(f"Rate limit exceeded for IP: {client_ip}")
             # Send 429 response directly
             await send({
@@ -91,3 +98,11 @@ class RateLimitMiddleware:
         # Process request
         await self.app(scope, receive, send)
 
+
+
+def _carries_credentials(scope: Scope) -> bool:
+    """Whether the request brings a token, a sign-in cookie or an API key -- read as the endpoint security reads
+    them, not checked: this runs outside it, and a lookup per request would be what a flood costs. A made-up
+    one buys the full limit, which is what a signed-in caller has anyway; the endpoint security still refuses it."""
+    headers = first_headers(scope)
+    return bool(bearer_credentials(headers) or access_token_cookie(headers) or headers.get(b"x-api-key", "").strip())

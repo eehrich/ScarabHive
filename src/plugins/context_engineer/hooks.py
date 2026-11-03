@@ -1376,19 +1376,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 + (f", media_event: {result.media_compacted_after_event}" if result.media_compacted_after_event > 0 else "")
             )
             
-            # NOTE: what persists this compaction is the auto-sync in the
-            # HookIntegrationManager, which writes the same slot after we return
-            # with modified=True and filters system messages correctly (keeping
-            # archived_ref types). The explicit set_compacted_messages() call
-            # below is NOT a safety net for that: on this path the loop clears
-            # the marker right after the hook chain (server.py), so no reader
-            # ever sees what we stage here. It is written for the one case the
-            # auto-sync cannot cover -- a hook that changes context.messages IN
-            # PLACE instead of returning a new list; then the auto-sync has
-            # nothing to notice and this call is the only thing that persists.
-            # No hook does that today. Note that the compact TOOL sets the same
-            # marker on its own path (server.py), and THAT one is read -- do not
-            # let this comment talk you out of that one.
+            # NOTE: as a pre_llm_call hook, what persists this compaction is
+            # the list we return with modified=True: it becomes the run's
+            # messages, and the run saves those. The set_compacted_messages()
+            # call below is not read on that path (the loop clears the marker
+            # right after the hook chain). It is for the compact TOOL, which
+            # reaches this code with the agent attached and whose path DOES
+            # read the marker (server.py) -- keep it for that.
             # Only when something changed. The compact tool reaches this with the
             # agent attached, and a staged history makes the agent rebuild its
             # list after the tool as [system prompt] + staged + tool messages —
@@ -1401,10 +1395,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 #
                 # This used to be a hand-written copy of that rule which knew
                 # only about archived_ref, so it dropped the prune breadcrumb.
-                # It survived by accident: the agent's auto-sync runs afterwards
-                # and overwrote the same slot with the correct list. Ordering is
-                # not a guarantee — a hook that mutates context.messages in
-                # place skips that overwrite and this copy wins.
                 from agent_system.servers.agent.components.hook_integration import (
                     is_compaction_system_message,
                 )

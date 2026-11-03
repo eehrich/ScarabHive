@@ -2,15 +2,17 @@
 execution statistics (/hooks/stats/all, /hooks/stats/{hook_name}).
 
 Read from the hook registry (agent_system.hooks) at call time; a failure answers
-200 with ``{"error": ...}``.
+200 with ``{"error": ...}``. Administrators only while auth is on, checked here
+too and not only by the route rules in config/security.yaml.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from agent_system.api.app_context import errors_as_200
+from agent_system.api.debug_endpoints import require_admin_viewer
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin_viewer)])
 
 
 @router.get("/hooks")

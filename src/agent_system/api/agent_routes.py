@@ -2,7 +2,8 @@
 
 GET /agents (the picker: public agents the caller may run, with their details),
 GET /llm/profiles, an agent's tools and allowlist (``/agents/{name}/...``), the
-admin's diagnostics of both (``/agents/debug/{name}/...``) and GET /admin/config.
+admin's diagnostics of both (``/agents/debug/{name}/...``, checked here too and not
+only by config/security.yaml) and GET /admin/config (checked here as well).
 What answers a question about the configuration reads the live one
 (``AppContext.live_config``); the role gate judges by the start config.
 
@@ -19,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from agent_system import app_state
 from agent_system.api.app_context import AppContext, NotAnAgent, app_context, lookup_agent, registry_of
+from agent_system.api.debug_endpoints import require_admin_viewer
 # Module level: inside list_agents it would sit in a try/except that
 # skips the server -- an import cycle would then empty the UI dropdown
 # in silence instead of failing loud at start.
@@ -45,7 +47,7 @@ def _agent_or_error(request: Request, agent_name: str, *, loud: bool = False) ->
         return None, {"error": "agent not found", "agent": agent_name}
 
 
-@router.get("/admin/config")
+@router.get("/admin/config", dependencies=[Depends(require_admin_viewer)])
 def get_config(ctx: AppContext = Depends(app_context)):
     """Return the full system configuration (admin only).
 
@@ -296,7 +298,7 @@ async def get_agent_tools(request: Request, agent_name: str, ctx: AppContext = D
     }
 
 
-@router.get("/agents/debug/{agent_name}/allowed-tools")
+@router.get("/agents/debug/{agent_name}/allowed-tools", dependencies=[Depends(require_admin_viewer)])
 async def get_agent_allowed_tools_debug(request: Request, agent_name: str):
     """Return detailed pattern match diagnostics for an agent's allowed tools.
 
@@ -306,7 +308,7 @@ async def get_agent_allowed_tools_debug(request: Request, agent_name: str):
 
     This shows the complete two-phase filtering process.
 
-    Note: This endpoint is admin-only (requires admin role).
+    Administrators only while auth is on (require_admin_viewer).
     """
     srv, error = _agent_or_error(request, agent_name)
     if error is not None:
@@ -383,7 +385,7 @@ async def get_agent_allowed_tools_debug(request: Request, agent_name: str):
         return {"agent": agent_name, "error": str(e)}
 
 
-@router.get("/agents/debug/{agent_name}/system-prompt")
+@router.get("/agents/debug/{agent_name}/system-prompt", dependencies=[Depends(require_admin_viewer)])
 async def get_agent_system_prompt(request: Request, agent_name: str):
     """Return the currently rendered system & tools prompt for the agent.
 
@@ -392,7 +394,7 @@ async def get_agent_system_prompt(request: Request, agent_name: str):
       - max_steps (minus one for planning budget inside prompt)
       - datetime context (if enabled)
 
-    Note: This endpoint is admin-only (requires admin role).
+    Administrators only while auth is on (require_admin_viewer).
     """
     srv, error = _agent_or_error(request, agent_name, loud=True)
     if error is not None:

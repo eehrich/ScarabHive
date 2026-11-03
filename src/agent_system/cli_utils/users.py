@@ -7,7 +7,6 @@ Provides command-line interface for user management operations.
 from __future__ import annotations
 
 import getpass
-from pathlib import Path
 from typing import Optional
 import logging
 
@@ -17,7 +16,7 @@ from tabulate import tabulate
 
 from agent_system.cli_utils.common import colorize, supports_color
 
-from agent_system.auth.database import setup_database, UserDatabase
+from agent_system.auth.database import setup_database, user_db_path, UserDatabase
 from agent_system.auth.models import UserCreate, UserUpdate, UserRole, validation_reasons
 from agent_system.config.settings import load_settings
 
@@ -40,10 +39,7 @@ def get_configured_db() -> UserDatabase:
     """Get database instance from configuration."""
     try:
         config = load_settings(CONFIG_PATH)
-        # None: UserDatabase's own default, users.db in the data directory
-        db_path = (Path(config.auth.database_path)
-                   if config.auth and config.auth.database_path else None)
-        return setup_database(db_path)
+        return setup_database(user_db_path(config.auth.database_path if config.auth else None))
     except typer.Exit:
         # Deliberate exits (cancel, not-found) must not be re-reported as errors
         raise

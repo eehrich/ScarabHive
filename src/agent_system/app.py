@@ -646,13 +646,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger.info("Multi-user authentication enabled, initializing auth system...")
 
         # Setup auth database and configuration
-        from .auth.database import setup_database
+        from .auth.database import setup_database, user_db_path
         from .auth.middleware import configure_cors, configure_security_middleware
         from .auth.models import UserCreate, UserRole
-        from pathlib import Path as AuthPath
 
-        # Setup database
-        db_path = AuthPath(config.auth.database_path)
+        # Setup database -- at the path every other reader of the store resolves
+        # (user_db_path): Path("") would have made an empty setting ".".
+        db_path = user_db_path(config.auth.database_path)
         db = setup_database(db_path)
         logger.info(f"User database initialized at: {db_path}")
 

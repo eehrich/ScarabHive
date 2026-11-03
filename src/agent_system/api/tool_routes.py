@@ -3,18 +3,21 @@ POST /tools/cache/invalidate.
 
 What ToolServerService and the ToolServerIntegration report, read from
 agent_system.app_state at call time. Like the debug routes, these answer a
-failure with 200 and ``{"error": ...}``.
+failure with 200 and ``{"error": ...}``. Administrators only while auth is on,
+checked here too and not only by the route rules in config/security.yaml; the
+System panel's Servers tab, open to every role, says so when refused.
 """
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from agent_system import app_state
 from agent_system.api.app_context import errors_as_200
+from agent_system.api.debug_endpoints import require_admin_viewer
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin_viewer)])
 logger = logging.getLogger(__name__)
 
 
