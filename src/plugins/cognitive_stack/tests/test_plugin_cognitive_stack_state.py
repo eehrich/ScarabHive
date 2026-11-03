@@ -172,3 +172,29 @@ async def test_two_instances_keep_their_own_blocks():
         messages = await _call(registry, messages)
     blocks = sorted(m.injected_by for m in messages if m.injected_by)
     assert blocks == ["stack_a", "stack_b"]
+
+
+async def test_a_model_chosen_stack_id_does_not_reach_another_conversation():
+    """One server serves every session: "main" pushed by one conversation was
+    readable, poppable and clearable by any other naming "main"."""
+    from unittest.mock import AsyncMock
+
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+    from plugins.cognitive_stack.server import CognitiveStackServer
+
+    server = CognitiveStackServer("cognitive_stack", AgentSystemConfig(),
+                                  ToolServerConfig(type="cognitive_stack", enabled=True))
+    pushed = await server.push_batch({"stack_id": "main", "items": [{"context": "secret plan"}],
+                                      "_session_id": "alice", "_status": AsyncMock()})
+    assert pushed["status"] == "success", pushed
+
+    for op in (server.peek, server.pop_batch, server.list_frames):
+        answer = await op({"stack_id": "main", "_session_id": "bob", "_status": AsyncMock()})
+        assert answer["status"] == "error", (op.__name__, answer)
+        assert "secret plan" not in str(answer)
+    refused = await server.push_batch({"stack_id": "main", "items": [{"context": "x"}],
+                                       "_session_id": "bob", "_status": AsyncMock()})
+    assert refused["status"] == "error"
+
+    own = await server.peek({"stack_id": "main", "_session_id": "alice", "_status": AsyncMock()})
+    assert own["status"] == "success" and "secret plan" in str(own)

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict
 
 from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.path_sandbox import is_secret
 
 from .canvas import DEFAULT_TIMEOUT, CanvasError, find_browser
 from .compositor import (
@@ -52,12 +53,12 @@ class ImageComposeServer(SchemaBasedToolServer):
         aliases_cfg = getattr(server_config, "font_aliases", {}) or {}
         self.font_aliases: dict[str, str] = dict(aliases_cfg) if isinstance(aliases_cfg, dict) else {}
 
-        # Optional write sandbox. Empty (the default) keeps the historical
-        # behaviour -- the composite, its layer directory and the spec land
-        # wherever output_path says, which the writer's cover pipeline relies
-        # on. A non-empty list confines all three to those directories, so an
-        # instance handed to a sub-agent cannot write into another agent's
-        # tree on a model-chosen path.
+        # Write sandbox. A non-empty list confines the composite, its layer
+        # directory and the spec to those directories, so an instance handed
+        # to a sub-agent cannot write into another agent's tree on a
+        # model-chosen path. Empty (the default) confines them to the project
+        # root and the data directory (_write_roots); private files are
+        # refused either way.
         dirs_cfg = getattr(server_config, "output_directories", None) or []
         self.output_directories: list[Path] = [
             (project_root / d).resolve() if not Path(d).is_absolute() else Path(d).resolve()
@@ -300,17 +301,30 @@ class ImageComposeServer(SchemaBasedToolServer):
             raise FileNotFoundError(f"image not found: {full}")
         return full
 
+    def _write_roots(self) -> list[Path]:
+        """Where a write may land: ``output_directories``, else the project
+        root and the data directory.
+
+        "Off" used to mean anywhere: an absolute ``output_path`` or
+        ``spec_path`` from the model overwrote any file the process could
+        write (a shell profile, another installation's files).
+        """
+        if self.output_directories:
+            return self.output_directories
+        return [Path(self.project_root).resolve(), Path(data_path()).resolve()]
+
     def _confine(self, path: Path, what: str) -> Path:
-        """``path`` if it lies inside one of ``output_directories`` (or the
-        sandbox is off); raises CompositionError otherwise, BEFORE anything
-        is created on disk."""
-        if not self.output_directories:
-            return path
+        """``path`` if it lies inside one of the write roots (``_write_roots``)
+        and is none of the installation's private files; raises
+        CompositionError otherwise, BEFORE anything is created on disk."""
         resolved = path.resolve()
-        for root in self.output_directories:
+        if is_secret(resolved):
+            raise CompositionError(f"{what} {path} is a private file of the installation")
+        roots = self._write_roots()
+        for root in roots:
             if resolved == root or root in resolved.parents:
                 return resolved
-        allowed = ", ".join(str(r) for r in self.output_directories)
+        allowed = ", ".join(str(r) for r in roots)
         raise CompositionError(
             f"{what} {path} lies outside the allowed output directories ({allowed})")
 

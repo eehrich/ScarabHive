@@ -398,6 +398,24 @@ class TestReviewRoundThree:
                  textsearch.find_files([first, second], "*.md")["files"]}
         assert names == {"real.md", "link.md"}
 
+    def test_a_harmless_name_linked_to_a_secret_is_not_found(self, tmp_path, monkeypatch):
+        """The private-name check read the LINK's name: notes.md -> secrets/local.env
+        passed, and grep and the semantic index read the secret."""
+        secrets = tmp_path / "secrets"
+        secrets.mkdir()
+        (secrets / "local.env").write_text("API_KEY=x")
+        root = tmp_path / "proj"
+        root.mkdir()
+        try:
+            os.symlink(secrets / "local.env", root / "notes.md")
+        except OSError:
+            pytest.skip("symlinks not permitted here — this test measures nothing")
+        monkeypatch.setattr(textsearch, "is_secret",
+                            lambda path: Path(path).resolve().parent == secrets.resolve())
+        names = {Path(f).name for f in
+                 textsearch.find_files([root, secrets], "*.md")["files"]}
+        assert names == set()
+
     def test_excludes_respect_case(self, tmp_path):
         """**/build/** must not take a Unity/Unreal Build/ source tree."""
         (tmp_path / "Build").mkdir()

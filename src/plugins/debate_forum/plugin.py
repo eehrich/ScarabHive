@@ -94,6 +94,15 @@ class DebateForumHybridPlugin:
     def get_static_assets(self) -> Path:
         return self.web_factory.get_static_assets()
 
+    def get_security_config(self) -> dict:
+        """Admins only, under any instance name. The forum keeps no owner per
+        channel: its API lists, reads, archives and deletes every channel --
+        the direct messages between other users' sessions among them -- and
+        posts under any agent name into a running debate, which the agents
+        then read as input. Until channels carry an owner, that is an admin's
+        view (PluginWebRegistry.effective_policy)."""
+        return {"min_role": "admin"}
+
     # ── Hook Interface (delegate to hooks_plugin) ─────────────
 
     def get_hooks(self):

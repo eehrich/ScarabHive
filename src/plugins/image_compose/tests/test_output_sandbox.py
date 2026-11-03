@@ -3,8 +3,9 @@
 Three things get written by one render call -- the composite, a directory of
 per-layer PNGs, and optionally the spec -- and every one of them takes a
 path the model chose. With ``output_directories`` set, none of the three
-may resolve outside; with it empty (the default), nothing changes for the
-writer's cover pipeline, which writes into data/writer/covers.
+may resolve outside; with it empty (the default), they stay inside the
+project root and the data directory. A private file of the installation is
+refused either way.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ SPEC = {"size": [8, 8], "background": "#ffffff",
 
 
 def make_server(tmp_path: Path, confined: bool):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     """Write paths are project-relative, so the test's project root is
     tmp_path and the sandbox a directory inside it."""
     allowed = tmp_path / "allowed"
@@ -77,9 +79,28 @@ async def test_the_layer_directory_and_the_spec_are_confined_as_well(tmp_path):
 
 
 async def test_without_the_setting_writes_go_wherever_they_are_told(tmp_path):
-    """Counter-check: the default is unrestricted, or the writer's covers
-    would start failing the day this shipped."""
+    """Counter-check: the default still writes anywhere in the project."""
     server, allowed = make_server(tmp_path, confined=False)
     assert server.output_directories == []
     result = await render(server, output_path="elsewhere/free.png")
     assert result["status"] == "success" and (tmp_path / "elsewhere" / "free.png").is_file()
+
+
+async def test_the_default_refuses_a_write_outside_the_project(tmp_path):
+    """An empty list used to mean anywhere: an absolute output_path from the
+    model overwrote any file the process could write."""
+    server, _ = make_server(tmp_path / "project", confined=False)
+    target = tmp_path / "outside.png"
+    result = await render(server, output_path=str(target))
+    assert result["status"] == "error" and "outside" in result["error"], result
+    assert not target.exists()
+
+
+async def test_a_private_file_is_refused_even_inside_the_project(tmp_path, monkeypatch):
+    from plugins.image_compose import server as module
+
+    server, allowed = make_server(tmp_path, confined=True)
+    monkeypatch.setattr(module, "is_secret", lambda path: Path(path).name == "secrets.env")
+    result = await render(server, output_path="allowed/x.png", spec_path="allowed/secrets.env")
+    assert result["status"] == "error" and "private" in result["error"], result
+    assert not (allowed / "secrets.env").exists()

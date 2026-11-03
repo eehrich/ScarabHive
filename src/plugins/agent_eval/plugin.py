@@ -28,5 +28,12 @@ class AgentEvalPlugin(SchemaBasedPluginWebInterface):
         """The panel's script, served under /plugins/<name>/static/."""
         return Path(__file__).parent / "static"
 
+    def get_security_config(self) -> dict:
+        """Admins only, under any instance name: a run's suite checks execute
+        commands and its records carry agent answers. config/security.yaml's
+        rule matches the instance name ``agent_eval`` alone; a renamed or a
+        second instance fell to the default role (PluginWebRegistry.effective_policy)."""
+        return {"min_role": "admin"}
+
 
 PLUGIN_FACTORY = AgentEvalPlugin
