@@ -8,6 +8,7 @@ import time as _time
 
 import httpx
 
+from plugins.llm_common.request_end import ending_error as _ending_error
 from agent_system.utils.id import short_id
 
 from agent_system.llm.message_roles import (
@@ -25,15 +26,6 @@ from plugins.llm_common.model_dialects import (
     reasoning_replay_flags, resolve_reasoning_details_mode,
 )
 from . import ollama_utils
-
-
-def _ending_error(error: BaseException) -> str:
-    """The post_llm_response error text for a request that ended by *error*."""
-    if isinstance(error, asyncio.CancelledError):
-        return str(error) or "cancelled"
-    if isinstance(error, GeneratorExit):
-        return "stream abandoned by the caller"
-    return str(error) or type(error).__name__
 
 
 class OllamaNativeAsyncClient(LLMClient):

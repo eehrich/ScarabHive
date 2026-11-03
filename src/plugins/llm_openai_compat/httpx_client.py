@@ -20,6 +20,8 @@ from dataclasses import dataclass
 import httpx
 import ssl
 
+from plugins.llm_common.request_end import ending_error as _ending_error
+from plugins.llm_common.http_status import retry_after_seconds
 from agent_system.llm.tls import httpx_verify
 
 from agent_system.llm.cache_key import (
@@ -70,14 +72,8 @@ from agent_system.utils.reasoning_artifacts import (
 
 logger = logging.getLogger(__name__)
 
-
-def _ending_error(error: BaseException) -> str:
-    """The post_llm_response error text for a request that ended by *error*."""
-    if isinstance(error, asyncio.CancelledError):
-        return str(error) or "cancelled"
-    if isinstance(error, GeneratorExit):
-        return "stream abandoned by the caller"
-    return str(error) or type(error).__name__
+#: The longest wait a server's Retry-After can ask of one retry.
+MAX_RETRY_AFTER_SECONDS = 60.0
 
 
 def openrouter_routing_info(response_data: dict) -> Optional[dict]:
@@ -2689,15 +2685,10 @@ class HTTPXOpenAIClient(LLMClient):
             raise
 
     def _parse_retry_after(self, retry_after: Optional[str]) -> Optional[float]:
-        """Parse Retry-After header value."""
-        if not retry_after:
-            return None
-
-        try:
-            # Can be seconds or HTTP date, we only handle seconds for simplicity
-            return float(retry_after)
-        except ValueError:
-            return None
+        """Retry-After as seconds (number, duration or HTTP date), at most
+        MAX_RETRY_AFTER_SECONDS: a header of 3600 -- or inf -- must not park
+        the turn; the retries running out hands over to the fallback chain."""
+        return retry_after_seconds(retry_after, cap=MAX_RETRY_AFTER_SECONDS)
 
     def _parse_error_response(self, response: httpx.Response) -> str:
         """Extract error message from HTTP error response."""

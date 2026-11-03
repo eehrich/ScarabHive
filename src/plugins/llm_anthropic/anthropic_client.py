@@ -29,6 +29,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 
+from plugins.llm_common.request_end import ending_error as _ending_error
 from agent_system.llm.message_roles import (
     DEVELOPER, NOTE_CLOSE, NOTE_OPEN, USER, developer_turn, resolve_rung,
 )
@@ -64,15 +65,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_URL = "https://api.anthropic.com"
 #: Longest retry-after (seconds) this client sleeps itself; a longer one goes to the server.
 _MAX_RATE_LIMIT_WAIT = 60.0
-
-
-def _ending_error(error: BaseException) -> str:
-    """The post_llm_response error text for a request that ended by *error*."""
-    if isinstance(error, asyncio.CancelledError):
-        return str(error) or "cancelled"
-    if isinstance(error, GeneratorExit):
-        return "stream abandoned by the caller"
-    return str(error) or type(error).__name__
 
 
 def _error_type(error: BaseException) -> Optional[str]:

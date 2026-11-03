@@ -7,7 +7,6 @@ to Gemini format.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import sys
@@ -16,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
+from plugins.llm_common.request_end import ending_error  # noqa: F401  (re-exported)
 from agent_system.llm.message_roles import DEVELOPER, USER, developer_turn, resolve_rung
 from agent_system.utils.json_utils import repair_json
 
@@ -1333,15 +1333,6 @@ def apply_retry_thinking_config(
     else:
         gen_cfg.pop("thinkingConfig", None)
 
-
-
-def ending_error(error: BaseException) -> str:
-    """The post_llm_response error text for a request that ended by *error*."""
-    if isinstance(error, asyncio.CancelledError):
-        return str(error) or "cancelled"
-    if isinstance(error, GeneratorExit):
-        return "stream abandoned by the caller"
-    return str(error) or type(error).__name__
 
 
 class RequestEnd:

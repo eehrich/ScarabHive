@@ -11,6 +11,7 @@ import time as _time
 import httpx
 from collections.abc import Mapping
 
+from plugins.llm_common.request_end import ending_error as _ending_error
 from agent_system.llm.tls import httpx_verify
 from agent_system.utils.id import short_id
 from agent_system.llm.message_roles import (
@@ -25,15 +26,6 @@ from agent_system.config.models import ModelCapabilitiesConfig
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from plugins.llm_common import cancellation, openai_utils
 from plugins.llm_common.structured_output import chat_completions_response_format
-
-
-def _ending_error(error: BaseException) -> str:
-    """The post_llm_response error text for a request that ended by *error*."""
-    if isinstance(error, asyncio.CancelledError):
-        return str(error) or "cancelled"
-    if isinstance(error, GeneratorExit):
-        return "stream abandoned by the caller"
-    return str(error) or type(error).__name__
 
 
 def _status_of(error: BaseException) -> Optional[int]:
