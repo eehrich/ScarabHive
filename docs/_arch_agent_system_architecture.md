@@ -735,6 +735,8 @@ AGENT_ENABLE_PROFILING=1   # debug/profiling endpoints
 - [External MCP Servers](_arch_external_mcpservers.md) - External MCP servers
 - [Hook System](plugin_hooks.md) - Lifecycle hooks
 - [Tool Execution](tool_execution.md) - Tool execution flow
+- [Architecture Review](_arch_review_core.md) - Assessment of the core package (2026-11)
+- [Refactoring Plan](refactoring_plan.md) - What the review changed and what is open
 
 ### 10.2 Design Documents
 

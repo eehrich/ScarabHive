@@ -50,7 +50,7 @@ The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) pr
    - API key generation, hashing, and verification
    - Configurable token expiration
 
-3. **Authentication Middleware (`src/agent_system/auth/middleware.py`)**
+3. **Authentication Middleware (`src/agent_system/auth/middleware/`: `endpoint_security.py`, `audit.py`, `rate_limit.py`, `headers.py`, `setup.py`)**
    - Rate limiting (60 requests/minute per IP)
    - Security headers (X-Frame-Options, CSP, HSTS, etc.)
    - CORS configuration

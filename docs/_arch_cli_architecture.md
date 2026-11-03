@@ -93,14 +93,19 @@ function per step, each with what it reads and what it hands on.
 3. **Session defaults**: if `--session` is resumed, the agent and
    LLM profile it was started with apply — `--agent`/`--llm` override them
    (`cli_utils/session_defaults.py`).
+   **Session-store commands** (`--list-sessions`, the archive commands) run
+   here and end the process: they need the store, not the runtime or an
+   agent, so a default agent that cannot be built no longer hides them.
+   From the next step on, everything runs inside `try/finally:
+   shut_down_runtime` (idempotent), so every `exit 1` closes stdio children
+   and HTTP sessions too.
 4. **Entry agent**: from the registry or built from the *resolved*
    config (`get_tool_server_config`); the raw entry would carry Pydantic defaults
    instead of inherited values. One factory for all: `servers/agent/entry.py`
    (`entry_agent`) — the API, `/agent` in the chat and `create_and_register_agent`
    (agent-run, audio in a further plugin root) build there. If the name is not an agent → the list
    of agents, exit 1.
-5. `--max-steps` (copy of the `agent_config`, this process only),
-   `--list-sessions` (lists and ends, before the LLM override).
+5. `--max-steps` (copy of the `agent_config`, this process only).
 6. **LLM override** from `--llm`/`--llm-params` — before the attachments, so that
    the capability check sees the model actually used. `--llm-params`
    itself is already validated by the parser (exit 2, before the bootstrap).

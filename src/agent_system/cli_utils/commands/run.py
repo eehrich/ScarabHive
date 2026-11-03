@@ -116,7 +116,7 @@ def bootstrap(config: AgentSystemConfig, vprint: VPrint) -> Bootstrapped:
     logger.info("Bootstrapping servers")
 
     # Store config for lazy batch queue manager initialization
-    # This allows LLMFactory to create the manager when first needed
+    # This allows get_batch_queue_manager() to create the manager when first needed
     from ...llm.factory import set_batch_config
     set_batch_config(config)
 

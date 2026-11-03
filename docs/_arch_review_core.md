@@ -132,8 +132,9 @@ move the shared constant or small function **down** (for example
 
 - Discovery → adapter/registry → integration is a reasonable chain;
   `hooks/` is the cleanest package (no upward imports).
-- `plugins/discovery.py` also does hook *registration*, duplicated almost line
-  for line in `tools/integration.py`.
+- `plugins/discovery.py` also did hook *registration*, duplicated almost line
+  for line in `tools/integration.py` (now one path in
+  `hooks/plugin_registration.py`).
 - `plugins/__init__.py` imports the FastAPI-based adapters eagerly, which is why
   `llm/registry.py` keeps its own `plugin.toml` reader.
 - The hook registry recomputes the topological order and deep-copies the

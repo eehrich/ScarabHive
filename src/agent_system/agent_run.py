@@ -82,7 +82,7 @@ async def initialize_system(config):
 
     try:
         # Store config for lazy batch queue manager initialization
-        # This allows LLMFactory to create the manager when first needed
+        # This allows get_batch_queue_manager() to create the manager when first needed
         set_batch_config(config)
         
         init_service = InitializationService(config)

@@ -43,6 +43,8 @@ import json
 import logging
 from typing import Any, Optional
 
+from ..utils.fields import field_of
+
 logger = logging.getLogger(__name__)
 
 SYSTEM = "system"
@@ -74,11 +76,8 @@ NOTE_OPEN = "<developer_note>"
 NOTE_CLOSE = "</developer_note>"
 
 
-def _field(msg: object, name: str) -> object:
-    """One field of a message, whether it arrives as a dict or a ChatMessage."""
-    if isinstance(msg, dict):
-        return msg.get(name)
-    return getattr(msg, name, None)
+#: One field of a message, whether it arrives as a dict or a ChatMessage.
+_field = field_of
 
 
 def role_of(msg: object) -> str:

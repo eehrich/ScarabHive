@@ -282,7 +282,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     logger.info("═" * 80)
 
     # Store config for lazy batch queue manager initialization
-    # This allows LLMFactory to create the manager on first use
+    # This allows get_batch_queue_manager() to create the manager on first use
     from .llm.factory import set_batch_config
     set_batch_config(config)
 
@@ -539,7 +539,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Bootstrap tool servers and plugin registry using InitializationService
     # This handles bootstrap_servers() and session_service injection
-    # Note: Batch queue manager is created lazily by LLMFactory when first needed
+    # Note: Batch queue manager is created lazily by get_batch_queue_manager() when first needed
     registry = ToolServerRegistry()
     if not app_state.tool_integration or not app_state.tool_integration.servers_bootstrapped:
         # Use InitializationService for consistent bootstrap + injection
