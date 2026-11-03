@@ -124,7 +124,7 @@ test that fails without the fix.
 | Sev. | Plugin | Defect | Proposed fix |
 |---|---|---|---|
 | Medium | ssh_control | asyncssh's `conn.run` still buffers the whole output in memory (the answer is capped now); background `readline()` has no line limit | Read through `create_process` with a byte cap, as terminal does |
-| Medium | comfyui | Synchronous sqlite (`job_tracker`) on the event loop; `with sqlite3.connect()` commits but does not close | `to_thread` + `contextlib.closing` |
+| Medium | comfyui | Synchronous sqlite (`job_tracker`) on the event loop (its connections are closed now) | `asyncio.to_thread` at the call sites |
 | Low | comfyui | Outputs named `{prefix}_{filename}` ignore `subfolder` and overwrite each other | Include the subfolder |
 | Low | sqlite_query | Column count not capped; database path relative to the cwd | Total-character cap; `PROJECT_ROOT` |
 | Low | ssh_control | A kill may be ignored by the remote sshd while the answer says killed | Close the channel after a grace period; report `killed` only once finished |
