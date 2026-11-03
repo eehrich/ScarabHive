@@ -14,6 +14,7 @@ import logging
 import random
 from typing import Any, TYPE_CHECKING
 
+from agent_system.utils.params import as_bool
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.cache import PluginCache
 
@@ -62,7 +63,7 @@ class DuckDuckGoSearchServer(SchemaBasedToolServer):
                     "error": f"max_results must be a whole number from 1 to {MAX_RESULTS}, got {raw!r}"}
 
         key = self._cache_key(query, max_results)
-        if self.cache_enabled and not params.get("ignore_cache", False):
+        if self.cache_enabled and not as_bool(params.get("ignore_cache")):
             cached = await self.cache.get(key)
             if cached is not None:
                 await status.end(f"{len(cached['results'])} results (cached) -- {query[:60]}",

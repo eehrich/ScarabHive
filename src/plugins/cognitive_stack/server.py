@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from agent_system.utils.params import as_int
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.utils.id import short_id
@@ -29,14 +30,10 @@ def _as_whole(value: Any, name: str, default: int) -> int:
     """
     if value is None:
         return default
-    if not isinstance(value, bool):
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            number = None
-        if number is not None and number.is_integer():
-            return int(number)
-    raise ValueError(f"{name} must be a whole number, got {value!r}")
+    number = as_int(value, None)
+    if number is None:
+        raise ValueError(f"{name} must be a whole number, got {value!r}")
+    return number
 
 
 @dataclass

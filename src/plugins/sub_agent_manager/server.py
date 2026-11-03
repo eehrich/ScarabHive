@@ -14,6 +14,7 @@ import anyio
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, List, Optional
 
+from agent_system.utils.params import as_bool
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.core.session_presence import presence_for, wake_blocked, wake_session
@@ -349,7 +350,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         instance guard ``allow_advanced_model``. Suppression is logged (no
         silent override) -- the sub-agent then runs on its normal profile
         chain."""
-        requested = bool(params.get("use_advanced_model", False))
+        requested = as_bool(params.get("use_advanced_model"), False)
         if requested and not self.allow_advanced_model:
             logger.info(
                 "[%s] use_advanced_model requested but suppressed by config "
@@ -879,7 +880,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
             instance_label = params.get("instance_label")
             use_advanced_model = self._create_use_advanced(agent_name, self._effective_use_advanced(params))
-            blocking = params.get("blocking", True)  # NEW: default to blocking behavior
+            blocking = as_bool(params.get("blocking"), True)  # "false" as text is false
             # Note: config_overrides would be used here when Agent.run_events supports them
             # For now, sub-agent uses its default configuration
 
@@ -2103,7 +2104,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             # Whoever reads this ending may run in another process -- a caller woken into a run of its
             # own -- where this entry says nothing. So the stored ending says it is unread, until a
             # reader of the stored state hands it over (`_hand_over`); the bell asks that too.
-            rings = bool(params.get("wake_when_done") and parent_session_id and not ended_by_caller
+            rings = bool(as_bool(params.get("wake_when_done")) and parent_session_id and not ended_by_caller
                          and job is not None)
             written = False
             # A run still going that holds the instance owns what the sub-session's metadata says:

@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from agent_system.utils.params import as_int
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.paths import data_path
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
@@ -97,8 +98,7 @@ def _beyond_tool_schema(params: Dict[str, Any]) -> Optional[str]:
 
 def _limit(params: Dict[str, Any], default: int) -> int:
     """The tool's `limit`, held to the 1 to 100 its schema promises: every row is returned whole."""
-    limit = params.get("limit")
-    return default if limit is None else min(100, max(1, int(limit)))
+    return as_int(params.get("limit"), default, low=1, high=100, name="limit", strict=True)
 
 
 def _tags(value: Any) -> List[str]:

@@ -53,6 +53,7 @@ from typing import Any, TYPE_CHECKING
 
 import psutil
 
+from agent_system.utils.params import as_bool
 from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.path_sandbox import remote_outside
@@ -687,7 +688,7 @@ class GodotServer(SchemaBasedToolServer):
                     encoding="utf-8")
                 created = True
 
-            addon_state = self._install_addon(project, bool(params.get("force")))
+            addon_state = self._install_addon(project, as_bool(params.get("force")))
             enabled = self._enable_plugin(cfg)
 
             # The addon registers its autoload on first editor load, and
@@ -1019,7 +1020,7 @@ class GodotServer(SchemaBasedToolServer):
         try:
             project = self._resolve_project(params.get("project"))
             target = self._resolve_output(params.get("filename") or f"{project.name}_{preset}.export")
-            flag = "--export-debug" if params.get("debug") else "--export-release"
+            flag = "--export-debug" if as_bool(params.get("debug")) else "--export-release"
             before = self._fingerprint(target)
             result = await self._godot_run(
                 ["--headless", "--path", str(project), flag, preset, str(target)])

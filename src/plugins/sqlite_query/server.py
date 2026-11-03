@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agent_system.utils.params import as_int
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.suggest import suggest_path
 
@@ -43,11 +44,8 @@ _PROCESS_PRAGMAS = {"hard_heap_limit", "soft_heap_limit"}
 
 def _positive_int(value: Any, default: int) -> int:
     """A setting that must be a positive whole number; anything else means the default."""
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return default
-    return number if number > 0 else default
+    number = as_int(value, None)
+    return number if number is not None and number > 0 else default
 
 
 def _answer_value(value: Any, max_chars: int) -> Any:

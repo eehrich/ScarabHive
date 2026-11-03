@@ -10,6 +10,7 @@ from typing import Any, TYPE_CHECKING
 
 from agent_system.core.session_presence import presence_for
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.params import as_bool
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
@@ -22,12 +23,12 @@ PRESENCE_OFF = "Session presence is off (session_presence.enabled in config.yaml
 
 
 def _flag(value: Any, default: bool) -> bool:
-    """A boolean argument as models send it: true/false, or "false" and the like as text; null is the default."""
-    if value is None or (isinstance(value, str) and not value.strip()):
-        return default
-    if isinstance(value, str):
-        return value.strip().lower() not in ("false", "0", "no", "off")
-    return bool(value)
+    """A boolean argument as models send it: true/false, or "false" and the like as text.
+
+    null, blank and anything unreadable ("null", a typo) are the default -- never
+    true just for being non-empty text.
+    """
+    return as_bool(value, default)
 
 
 class DebateForumServer(SchemaBasedToolServer):

@@ -12,6 +12,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Union
 
+from agent_system.utils.params import as_bool
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
@@ -199,7 +200,7 @@ class DecisionServer(SchemaBasedToolServer):
         questions_raw = params.get("questions")
         cancellation_token = params.get("_cancellation_token")
         session_id = params.get("_session_id")
-        include_details = bool(params.get("include_details", False))
+        include_details = as_bool(params.get("include_details"), False)
         req_concurrency = params.get("max_concurrency")
 
         items, items_err = self._normalize_items(params)
@@ -437,7 +438,7 @@ class DecisionServer(SchemaBasedToolServer):
         criteria_raw = params.get("criteria")
         cancellation_token = params.get("_cancellation_token")
         session_id = params.get("_session_id")
-        include_details = bool(params.get("include_details", False))
+        include_details = as_bool(params.get("include_details"), False)
         req_concurrency = params.get("max_concurrency")
 
         items, items_err = self._normalize_items(params)
