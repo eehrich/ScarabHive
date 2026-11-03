@@ -81,7 +81,7 @@ def attended_stream_of(request_id: str, grace: float = 0.0) -> Optional[str]:
     from ....services.background_job_manager import get_background_job_manager
     for forwarder in list(_live_forwarders):
         run_id = forwarder.request_id
-        if in_request_tree(request_id, run_id) and run_is_attended(run_id):
+        if run_id and in_request_tree(request_id, run_id) and run_is_attended(run_id):
             unread = get_background_job_manager().unread_for(run_id)
             if unread is None or unread == 0.0 or unread < grace:
                 return run_id
@@ -177,7 +177,7 @@ class StatusEventForwarder:
         # old id while a sub-agent of the old run is still at work, and neither that
         # sub-agent nor anything it starts afterwards is the new run's.
         nearest = max((f for f in _live_forwarders if _is_above(f, request_id)),
-                      key=lambda f: len(f.request_id), default=None)
+                      key=lambda f: len(f.request_id or ""), default=None)
         self.listeners = [*nearest.listeners, nearest] if nearest else []
         self.status_events_to_forward.clear()
         self._open_deltas.clear()

@@ -496,7 +496,7 @@ class ToolExecutionManager:
                         if task in calls.task_tool_info:
                             tc, tool_name, openai_tool_name = calls.task_tool_info[task]
                             cancelled_msg, cancel_events, _ = self._create_cancelled_response(
-                                tc, tool_name, openai_tool_name, calls.request_id)
+                                tc, tool_name, openai_tool_name, calls.request_id or "")
                             calls.indexed_results.append((original_index, cancelled_msg, [], []))
                             calls.events_to_yield.extend(cancel_events)
                     except Exception as e:

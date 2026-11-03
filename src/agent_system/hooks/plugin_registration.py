@@ -46,7 +46,7 @@ async def register_plugin_hooks(
     """
     from . import get_hook_registry, PluginHook, HookType, load_hooks_config
     
-    registered_hooks = []
+    registered_hooks: list[str] = []
     
     # Get metadata from parameter or plugin instance attribute
     if metadata is None:
