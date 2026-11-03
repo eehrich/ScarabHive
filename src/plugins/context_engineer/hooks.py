@@ -939,7 +939,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             strategy.summarize = self._summarizer(context, cfg)
 
             # Get actual or estimated token usage (prefer actual from usage_tracker)
-            current_tokens, reading_is_whole = self._read_tokens(context, messages_as_dicts, strategy)
+            # In a thread: the usage tracker's reading is SQLite with a 10 s busy timeout,
+            # which stalled every session on the event loop.
+            current_tokens, reading_is_whole = await asyncio.to_thread(
+                self._read_tokens, context, messages_as_dicts, strategy)
 
             # A new tool result too big for the window (Pre-Layer T) is stored
             # whatever the thresholds and the hysteresis below say. Those decide
@@ -954,7 +957,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 gate_messages = list(messages_as_dicts)
                 for i in arrivals:
                     gate_messages[i] = {**gate_messages[i], "content": ""}
-                gate_tokens = min(current_tokens, self._read_tokens(context, gate_messages, strategy)[0])
+                gate_tokens = min(current_tokens, (await asyncio.to_thread(
+                    self._read_tokens, context, gate_messages, strategy))[0])
 
             # The hysteresis base follows every measurement, including the calls
             # the threshold gate below turns away: taken only on a call that
@@ -1115,7 +1119,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # _get_session_components (for another session) can't evict and
             # close this session's stores while the compaction is mid-flight
             # on a worker thread (use-after-close).
-            import asyncio
             self._active_compactions.add(session_id)
             try:
                 result = await strategy.compact(
@@ -1213,7 +1216,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # This prevents subsequent hooks (e.g., context_summarizer) from using stale
             # token counts that don't reflect the optimized message list
             if something_compacted:
-                self._invalidate_usage_tracker_session(context, session_id, "context_engineer_compaction")
+                await asyncio.to_thread(  # a SQLite write: off the event loop
+                    self._invalidate_usage_tracker_session, context, session_id, "context_engineer_compaction")
             
             if self.stats_history is not None and something_compacted:
                 self.stats_history.append({

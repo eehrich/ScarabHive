@@ -183,7 +183,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             # Try to get actual prompt tokens from context_usage_tracker (more accurate)
             # If not available, fall back to estimation
-            total_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts)
+            # In a thread: the usage tracker's reading is SQLite on the event loop otherwise
+            total_tokens = await asyncio.to_thread(
+                self._get_actual_or_estimated_tokens, context, messages_as_dicts)
 
             # Skip threshold check if this is a manual trigger
             is_manual_trigger = context.metadata.get('manual_trigger', False) if context.metadata else False
@@ -566,7 +568,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     
                     # Invalidate usage tracker data for this session after successful summarization
                     # This prevents subsequent hooks from using stale token counts
-                    self._invalidate_usage_tracker_session(context, session_id, "context_summarizer")
+                    await asyncio.to_thread(  # a SQLite write: off the event loop
+                        self._invalidate_usage_tracker_session, context, session_id, "context_summarizer")
 
                     # End line survives alone in the WebUI -- carry the numbers.
                     await scope.end(
