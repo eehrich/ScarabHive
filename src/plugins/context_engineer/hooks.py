@@ -48,7 +48,35 @@ from .tool_result_store import ToolResultStore
 logger = logging.getLogger(__name__)
 
 
+def _person_turn_behind_injections(messages: list[dict[str, Any]]) -> int:
+    """Index of the last message behind what plugins appended after it, else -1.
+
+    Skips injected notes (user/developer with ``injected_by``) and an injected
+    tool exchange -- tool_preload appends ``[assistant(injected_by), tool...]``
+    after the person's message, and a walk that stopped at its ``tool`` message
+    never saw the new turn, so ``compact_media_after_user_message`` did not fire
+    on any turn a preload ran.
+    """
+    last = len(messages) - 1
+    while last >= 0:
+        msg = messages[last]
+        if is_injected_note(msg):
+            last -= 1
+            continue
+        if msg.get("role") == "tool":
+            start = last
+            while start >= 0 and messages[start].get("role") == "tool":
+                start -= 1
+            caller = messages[start] if start >= 0 else None
+            if caller is not None and caller.get("role") == "assistant" and caller.get("injected_by"):
+                last = start - 1
+                continue
+        break
+    return last
+
+
 @dataclass
+
 class _HysteresisMark:
     """Where the last run of a rewriting layer left a session.
 
@@ -1002,9 +1030,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # step budget note follows drained input): a note alone is no new
             # turn, and evicting media on it rewrote old messages at the end of
             # every long run.
-            last = len(messages_as_dicts) - 1
-            while last >= 0 and is_injected_note(messages_as_dicts[last]):
-                last -= 1
+            last = _person_turn_behind_injections(messages_as_dicts)
             if last >= 0 and messages_as_dicts[last].get("role") == "user":
                 trigger_event = "user_message"
                 # Note: final_response is detected in post-hooks, not here
