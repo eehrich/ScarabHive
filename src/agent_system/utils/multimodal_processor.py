@@ -73,6 +73,12 @@ def _existing_file(file_path: Path | str, error: type[Exception], kind: str) -> 
     return file_path
 
 
+#: PIL format names that are not the MIME subtype of the file's bytes. A camera
+#: JPEG with a second frame (a depth map, a preview) is "MPO" to PIL, yet its
+#: bytes are a JPEG -- and ``data:image/mpo`` is refused by the providers.
+_PIL_FORMAT_SUBTYPES = {"mpo": "jpeg", "dib": "bmp", "jpeg2000": "jp2"}
+
+
 def validate_image_file(file_path: Path | str) -> tuple[str, tuple[int, int]]:
     """
     Validate that a file is a valid image.
@@ -92,6 +98,7 @@ def validate_image_file(file_path: Path | str) -> tuple[str, tuple[int, int]]:
     try:
         with PILImage.open(file_path) as img:
             img_format = img.format.lower() if img.format else "unknown"
+            img_format = _PIL_FORMAT_SUBTYPES.get(img_format, img_format)
             dimensions = img.size
             return img_format, dimensions
     except Exception as e:

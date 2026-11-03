@@ -229,6 +229,40 @@ class TestBubblewrapGitMetadata:
         for path in expected:
             assert argv.index(path) > workspace_bind, f"{path} bound before the workspace"
 
+    def test_commondir_is_bound_read_only(self, tmp_path):
+        """git follows commondir to another directory for config and hooks:
+        rewriting it redirects them to a git directory the process made."""
+        git = self._repo(tmp_path)
+        (git / "commondir").write_text("..\n")
+        (git / "worktrees" / "wt" / "commondir").write_text("../..\n")
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        assert self._pairs(argv, "--ro-bind") >= {
+            str(git / "commondir"), str(git / "worktrees/wt/commondir")}
+
+    def test_a_missing_hooks_directory_gets_a_read_only_placeholder(self, tmp_path):
+        """Otherwise the process creates .git/hooks and fills it."""
+        git = self._repo(tmp_path)
+        (git / "hooks").rmdir()
+        (git / "modules/libs/sub/hooks").rmdir()
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        for hooks in (git / "hooks", git / "modules/libs/sub/hooks"):
+            i = argv.index(str(hooks))
+            assert argv[i - 1] == "--tmpfs"
+            assert argv[i + 1:i + 3] == ("--remount-ro", str(hooks))
+            assert i > argv.index("--bind")
+        assert not (git / "hooks").exists(), "nothing is created on the host by wrap()"
+
+    def test_an_existing_hooks_directory_gets_no_placeholder(self, tmp_path):
+        self._repo(tmp_path)
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        assert "--tmpfs" not in argv[argv.index("--bind"):]
+
+    def test_the_seatbelt_profile_names_commondir(self):
+        assert "commondir" in ps._SEATBELT_WORKSPACE
+
     def test_the_git_directory_becomes_a_mount_point(self, tmp_path):
         """A mount point cannot be renamed or removed: no prepared directory
         can take the place of .git."""

@@ -15,6 +15,8 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
+from ..utils.text import shorten
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_LIMIT = 20
@@ -38,8 +40,7 @@ def build_archive(session_manager: Any, config: Any) -> Any:
 
 
 def _short(text: str, width: int) -> str:
-    text = (text or "").replace("\n", " ").strip()
-    return text if len(text) <= width else text[: width - 1] + "…"
+    return shorten((text or "").replace("\n", " ").strip(), width)
 
 
 def _day(stamp: str) -> str:

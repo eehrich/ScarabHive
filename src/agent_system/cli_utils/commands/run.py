@@ -2,9 +2,9 @@
 
 The one command that starts the whole system. ``run_agent_command`` takes its
 steps in the order docs/_arch_cli_architecture.md (section 4) describes --
-logging, bootstrap, the session's own defaults, the entry agent, --max-steps,
-the session-store commands, the LLM override, the attachments, the session
-hold and open, the run, the save, the shutdown -- and each step is a function
+logging, bootstrap, the session's own defaults, the session-store commands,
+the runtime, the entry agent, --max-steps, the LLM override, the attachments,
+the session hold and open, the run, the save, the shutdown -- and each step is a function
 of what it needs. They were one function's body, and its closures read twenty
 of its locals; spelled out, a step says what it reads and what it hands on.
 
@@ -38,7 +38,7 @@ from ..session_defaults import (
     load_session_llm_params,
     load_session_settings,
     profile_for_record,
-    usable_session_defaults,
+    session_defaults,
 )
 from ..session_listing import in_chat_selector, newest_of, parse_limit, parse_listing, print_sessions
 from .one_shot import RunControl, print_result, run_one_shot
@@ -151,8 +151,15 @@ def resolve_session_ref(session_manager: Any, session_user: str, typed: Optional
     return typed
 
 
+#: Whether start_runtime ran and shut_down_runtime has not since: the shutdown
+#: runs once, from whichever path ends the run first.
+_runtime_up = False
+
+
 def start_runtime(config: AgentSystemConfig, registry: Any, vprint: VPrint) -> None:
     """The tool integration and the batch system; a failure of either is a warning."""
+    global _runtime_up
+    _runtime_up = True
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
 
@@ -184,7 +191,11 @@ def start_runtime(config: AgentSystemConfig, registry: Any, vprint: VPrint) -> N
 def shut_down_runtime(vprint: VPrint) -> None:
     """Batch system and tool integration, however this run ends. It is up from the
     bootstrap on: returning without this leaks stdio child processes and
-    aiohttp sessions until the interpreter exits."""
+    aiohttp sessions until the interpreter exits. Once: a second call is a no-op."""
+    global _runtime_up
+    if not _runtime_up:
+        return
+    _runtime_up = False
     try:
         run_async(shutdown_batch_system())
         vprint("[cli] batch queue manager shut down")
@@ -658,17 +669,14 @@ def run_agent_command(args: Any, config: AgentSystemConfig,
     args.session_id = resolve_session_ref(
         boot.session_manager, getattr(args, "session_user", "cli_user"),
         getattr(args, "session_id", None))
-    start_runtime(config, boot.registry, vprint)
 
     # What this session was started with, when one is being continued. An
     # explicit --agent/--llm still wins; the stored values only replace the
     # config defaults, which are the wrong answer for a session that was
     # begun with something else.
-    stored_agent, stored_llm = usable_session_defaults(
-        *stored_session_settings(
-            boot.session_manager, getattr(args, "session_user", "cli_user"),
-            getattr(args, "session_id", None)),
-        config)
+    stored_agent, stored_llm = run_async(session_defaults(
+        boot.session_manager, getattr(args, "session_user", "cli_user"),
+        getattr(args, "session_id", None), config))
 
     # Determine CLI agent name from config (can be overridden with --agent)
     entry_name = choose_agent_name(
@@ -676,22 +684,31 @@ def run_agent_command(args: Any, config: AgentSystemConfig,
     if stored_agent and entry_name == stored_agent:
         vprint(f"[cli] continuing session with its own agent: {entry_name}")
 
-    agent = build_entry_agent(entry_name, config, boot, vprint)
-    apply_max_steps(agent, getattr(args, "max_steps", None), vprint)
-
+    # The session-store commands need the store alone -- neither the runtime
+    # nor the agent: a default agent that cannot be built must not hide the
+    # listing, and nothing is started that would have to be shut down.
     if run_session_store_command(args, config, boot, entry_name, vprint):
         return
 
-    llm = choose_llm(
-        requested_profile=getattr(args, "llm_profile_override", None),
-        llm_params_override=llm_params_override, config=config, agent=agent,
-        entry_name=entry_name, stored_agent=stored_agent, stored_llm=stored_llm,
-        session_manager=boot.session_manager,
-        session_user=getattr(args, "session_user", "cli_user"),
-        session_id=getattr(args, "session_id", None), vprint=vprint)
-    task_input, sorted_attachments = build_task_input(args, agent, llm.client, vprint)
+    start_runtime(config, boot.registry, vprint)
+    # Every way out from here shuts the runtime down, a sys.exit(1) included
+    # (an unknown agent, a refused profile or attachment, a busy session).
+    try:
+        agent = build_entry_agent(entry_name, config, boot, vprint)
+        apply_max_steps(agent, getattr(args, "max_steps", None), vprint)
 
-    vprint(f"[cli] running task: {args.task}")
-    logger.info("Running task: %s", args.task)
+        llm = choose_llm(
+            requested_profile=getattr(args, "llm_profile_override", None),
+            llm_params_override=llm_params_override, config=config, agent=agent,
+            entry_name=entry_name, stored_agent=stored_agent, stored_llm=stored_llm,
+            session_manager=boot.session_manager,
+            session_user=getattr(args, "session_user", "cli_user"),
+            session_id=getattr(args, "session_id", None), vprint=vprint)
+        task_input, sorted_attachments = build_task_input(args, agent, llm.client, vprint)
 
-    run_in_session(args, config, boot, agent, entry_name, llm, task_input, sorted_attachments, vprint)
+        vprint(f"[cli] running task: {args.task}")
+        logger.info("Running task: %s", args.task)
+
+        run_in_session(args, config, boot, agent, entry_name, llm, task_input, sorted_attachments, vprint)
+    finally:
+        shut_down_runtime(vprint)

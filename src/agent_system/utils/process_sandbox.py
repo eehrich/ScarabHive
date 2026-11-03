@@ -43,8 +43,11 @@ connects), systemd over D-Bus. That is IPC, and the vocabulary does not claim
 it; the Seatbelt profile closes the macOS channels it can name (see there).
 Nor does it bind an unconfined tool that writes into the workspace and
 follows a symlink a confined process left there. One deferred channel both
-backends do close: the git hooks and config of the workspace's repository,
-which the next unconfined ``git`` would run. What the modes hold is the
+backends close: the git hooks, config and ``commondir`` of the workspace's
+repository, which decide what the next unconfined ``git`` runs. Seatbelt
+refuses them by path, present or not; bubblewrap binds those present at spawn
+read-only and puts a read-only placeholder where ``hooks`` is missing, but it
+cannot keep a missing ``commondir`` from being created (see ``_Bubblewrap``). What the modes hold is the
 process and everything it spawns.
 
 **The default is ``danger-full-access``.** Not because it is right, but
@@ -215,10 +218,11 @@ def _announce(confined: ConfinedCommand, mode: str) -> None:
 # ── git metadata ────────────────────────────────────────────────────────
 
 #: What in a repository's git directory runs code or decides what runs: hooks,
-#: and the config files (core.hooksPath, core.fsmonitor, core.pager, aliases,
-#: filter drivers). A confined process that may write these gets the NEXT
-#: unconfined git to execute its code -- a sandbox escape with a delay.
-_GIT_EXECUTABLE_METADATA = ("hooks", "config", "config.worktree")
+#: the config files (core.hooksPath, core.fsmonitor, core.pager, aliases,
+#: filter drivers) and ``commondir``, which git follows to another directory
+#: for both. A confined process that may write these gets the NEXT unconfined
+#: git to execute its code -- a sandbox escape with a delay.
+_GIT_EXECUTABLE_METADATA = ("hooks", "config", "config.worktree", "commondir")
 
 
 def _git_protected(root: Path) -> list[Path]:
@@ -236,8 +240,9 @@ def _git_protected(root: Path) -> list[Path]:
              if (git / name).exists() or (git / name).is_symlink()]
     worktrees = git / "worktrees"
     if worktrees.is_dir():
-        found += [w / "config.worktree" for w in sorted(worktrees.iterdir())
-                  if (w / "config.worktree").exists()]
+        found += [w / name for w in sorted(worktrees.iterdir())
+                  for name in ("config.worktree", "commondir")
+                  if (w / name).exists()]
     pending = [git / "modules"]
     while pending:
         current = pending.pop()
@@ -253,6 +258,37 @@ def _git_protected(root: Path) -> list[Path]:
             else:  # part of a submodule name with a slash
                 pending.append(child)
     return found
+
+
+def _git_missing_hooks(root: Path) -> list[Path]:
+    """The ``hooks`` directories git would look for below ``root/.git`` but
+    that do not exist -- in the repository's git directory and in every
+    submodule git directory under ``.git/modules``.
+
+    A missing one is as dangerous as a writable one: the confined process
+    creates it and fills it. An empty directory is what ``git init`` leaves
+    there anyway, so a read-only empty one in its place changes nothing for
+    git.
+    """
+    git = root / ".git"
+    if not git.is_dir() or git.is_symlink():
+        return []
+    gitdirs = [git]
+    pending = [git / "modules"]
+    while pending:
+        current = pending.pop()
+        if not current.is_dir() or current.is_symlink():
+            continue
+        for child in sorted(current.iterdir()):
+            if not child.is_dir() or child.is_symlink():
+                continue
+            if (child / "HEAD").exists():
+                gitdirs.append(child)
+                pending.append(child / "modules")
+            else:
+                pending.append(child)
+    return [d / "hooks" for d in gitdirs
+            if not (d / "hooks").exists() and not (d / "hooks").is_symlink()]
 
 
 class _Bubblewrap:
@@ -285,9 +321,18 @@ class _Bubblewrap:
     In workspace-write the workspace's git metadata that runs code is bound
     read-only again on top (see ``_git_protected``), and ``.git`` itself is
     bound onto itself, which makes it a mount point: it cannot be renamed or
-    removed, so no prepared directory can take its place. Only what exists at
-    spawn time is covered: a ``.git`` created later (``git init`` at the root)
-    is not -- Seatbelt refuses that one by path.
+    removed, so no prepared directory can take its place. A missing ``hooks``
+    directory gets an empty read-only tmpfs in its place (bwrap creates the
+    empty mount point directory on the host, which is what ``git init`` leaves
+    there anyway). Otherwise only what exists at spawn time is covered: a
+    missing ``commondir`` -- the usual case outside linked worktrees -- can be
+    created and pointed at a git directory of the process's making, since no
+    placeholder can stand in for it (git refuses an empty one, and the mount
+    point bwrap leaves behind would break the repository for the unconfined
+    git); a missing ``config.worktree`` likewise, which git reads only when
+    the protected config enables ``extensions.worktreeConfig``; and a ``.git``
+    created later (``git init`` at the root). Seatbelt refuses all of them by
+    path.
     """
 
     name = "bubblewrap"
@@ -325,6 +370,8 @@ class _Bubblewrap:
                 wrapped += ["--ro-bind", str(git), str(git)]
             for path in _git_protected(sandbox.workspace_root):
                 wrapped += ["--ro-bind", str(path), str(path)]
+            for path in _git_missing_hooks(sandbox.workspace_root):
+                wrapped += ["--tmpfs", str(path), "--remount-ro", str(path)]
         else:
             wrapped += ["--ro-bind", root, root]
         if cwd is not None:
@@ -404,7 +451,7 @@ _SEATBELT_WORKSPACE = r"""(allow file-write* (subpath (param "WORKSPACE_ROOT")))
     (literal (param "WORKSPACE_GIT"))
     (require-all
         (subpath (param "WORKSPACE_GIT"))
-        (regex #"/\.git/(modules/.+/|worktrees/[^/]+/)?(hooks|config|config\.worktree)(/|$)")))
+        (regex #"/\.git/(modules/.+/|worktrees/[^/]+/)?(hooks|config|config\.worktree|commondir)(/|$)")))
 """
 _SEATBELT_TAIL = r"""(deny file-write-unlink (literal (param "TEMP_DIR")))
 (deny file-ioctl (ioctl-command TIOCSTI))
@@ -453,13 +500,15 @@ class _Seatbelt:
       may not be unlinked here either.
     * The workspace repository's git hooks and config stay read-only, like
       bubblewrap's read-only binds over them: ``.git`` itself may not be
-      created, renamed or removed, nor anything named hooks, config or
-      config.worktree directly below it, below a submodule's git directory
+      created, renamed or removed, nor anything named hooks, config,
+      config.worktree or commondir directly below it, below a submodule's git directory
       in ``.git/modules`` or a worktree's in ``.git/worktrees``. Measured:
       commits, branches and checkouts work; writing the config, a hook, a
       submodule's config, replacing ``.git`` or the config by rename, and
       reaching the config through a hard or symbolic link are refused. So is
-      ``git init`` at the root; nested repositories are not covered (on
+      ``git init`` at the root, and -- not measured, it follows from the
+      rule -- ``git worktree add`` and ``prune``, which write and remove a
+      worktree's commondir; nested repositories are not covered (on
       either backend -- protecting them would forbid ``git clone`` in the
       workspace), nor is a bare repository planted anywhere in it. This
       covers git's own places only: a config that already points hooks or

@@ -18,11 +18,13 @@ nobody to wait and changes nothing.)
 """
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Optional, Sequence
 
 from .llm.message_roles import opens_a_turn
+from .utils.fields import field_of
+from .utils.json_utils import dumps_lenient
+from .utils.text import shorten
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +47,9 @@ CONTEXT_KINDS: tuple[tuple[str, str], ...] = (
 _OPTIONAL_KINDS = ("other", "notes")
 
 
-def _field(message: Any, name: str) -> Any:
-    """*name* of a message, whichever shape it arrived in."""
-    if isinstance(message, dict):
-        return message.get(name)
-    return getattr(message, name, None)
-
-
 def message_role(message: Any) -> str:
     """"user", "assistant", "tool" -- or "?" for something unreadable."""
-    role = _field(message, "role")
+    role = field_of(message, "role")
     return role if isinstance(role, str) else "?"
 
 
@@ -65,21 +60,21 @@ def message_text(message: Any) -> str:
     that a question asked with a picture reads as a question and not as a
     blank line. What goes BACK to a model is the message itself, never this.
     """
-    content = _field(message, "content")
+    content = field_of(message, "content")
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         parts = []
         for item in content:
-            text = _field(item, "text")
-            parts.append(text or f"[{_field(item, 'type') or 'part'}]")
+            text = field_of(item, "text")
+            parts.append(text or f"[{field_of(item, 'type') or 'part'}]")
         return " ".join(p for p in parts if p)
     return "" if content is None else str(content)
 
 
 def tool_calls_of(message: Any) -> list:
     """The tool calls a message carries, or an empty list."""
-    calls = _field(message, "tool_calls")
+    calls = field_of(message, "tool_calls")
     return list(calls) if calls else []
 
 
@@ -95,13 +90,11 @@ def tool_call_summary(call: Any) -> tuple[str, Any]:
 
 def one_line(value: Any, limit: int = 60) -> str:
     """Compact single-line form of a tool argument or result value."""
-    # default=str: a datetime or a Path in a tool result would otherwise
+    # Lenient: a datetime or a Path in a tool result would otherwise
     # raise here, in a formatter whose whole job is to never be the reason
     # something failed.
-    text = (value if isinstance(value, str)
-            else json.dumps(value, ensure_ascii=False, default=str))
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    text = value if isinstance(value, str) else dumps_lenient(value)
+    return shorten(" ".join(text.split()), limit)
 
 
 def last_answer(messages: Sequence[Any]) -> str:
