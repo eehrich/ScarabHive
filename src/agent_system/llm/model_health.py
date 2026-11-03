@@ -18,12 +18,13 @@ waiting on the same model would otherwise walk into the same 429 together.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
+
+from agent_system.utils.id import short_hash
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +65,7 @@ def model_key(client: Any) -> Optional[ModelKey]:
     base_url = getattr(client, "base_url", None) or getattr(client, "_base_url", None)
     endpoint = base_url.rstrip("/") if isinstance(base_url, str) and base_url else type(client).__name__
     api_key = getattr(client, "api_key", None)
-    credential = (hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
-                  if isinstance(api_key, str) and api_key else "")
+    credential = short_hash(api_key, 12) if isinstance(api_key, str) and api_key else ""
     return endpoint, credential, model
 
 

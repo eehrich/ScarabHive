@@ -14,6 +14,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from agent_system.auth.models import User, UserRole, public_user
 from agent_system.auth.database import get_db, UserDatabase
+from agent_system.utils.timeutil import parse_iso_utc
 from agent_system.auth.security import bearer_api_key, decode_access_token, verify_api_key, hash_api_key
 
 
@@ -127,9 +128,7 @@ async def _authenticate(
                 # the old code wrote SQLite synchronously on EVERY request,
                 # which both blocked the event loop and turned last_login
                 # into "time of the latest request".
-                last = user_in_db.last_login
-                if last is not None and last.tzinfo is None:
-                    last = last.replace(tzinfo=timezone.utc)
+                last = parse_iso_utc(user_in_db.last_login)  # naive is UTC
                 if (last is None
                         or (datetime.now(timezone.utc) - last).total_seconds() > 3600):
                     await asyncio.to_thread(db.update_last_login, user_in_db.id)

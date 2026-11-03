@@ -32,7 +32,8 @@ class _Stub:
         # Bind the real methods to this instance
         for name in (
             "_set_live_messages", "_set_live_tools_schema",
-            "_evict_live_state", "get_live_messages", "get_live_tools_schema",
+            "_evict_live_state", "_touch_live_state", "_drop_live_state",
+            "get_live_messages", "get_live_tools_schema",
         ):
             setattr(self, name, getattr(Agent, name).__get__(self))
 
@@ -86,3 +87,27 @@ def test_none_session_id_is_noop_for_store():
     Agent._set_live_messages(a, None, ["x"])
     assert a._live_state_by_session == {}
     assert a._current_messages == ["x"]  # deprecated shared fallback still set
+
+
+def test_eviction_takes_the_session_written_least_recently():
+    # A run writes its live state every step: the session tracked first but still
+    # running must outlive one that was written once, later, and then left.
+    a = _Stub()
+    a._live_state_max_sessions = 2
+    Agent._set_live_messages(a, "running", ["r1"])
+    Agent._set_live_messages(a, "idle", ["i1"])
+    Agent._set_live_messages(a, "running", ["r1", "r2"])
+    Agent._set_live_messages(a, "new", ["n1"])
+    assert Agent.get_live_messages(a, "running") == ["r1", "r2"]
+    assert Agent.get_live_messages(a, "idle") is None
+
+
+def test_a_discarded_session_takes_its_live_state_along():
+    from agent_system.servers.agent.components.session_tracking import SessionTracker
+
+    a = _Stub()
+    tracker = SessionTracker()
+    tracker.on_discard = a._drop_live_state
+    Agent._set_live_messages(a, "eph", ["m"])
+    tracker.discard_session("eph")
+    assert Agent.get_live_messages(a, "eph") is None

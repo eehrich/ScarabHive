@@ -8,10 +8,11 @@ way they use an external server of the mcp_client plugin.
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
 
-from ..tools.base import ToolDef, ToolServerCapability
+from ..tools.base import ToolDef, ToolServerCapability, tool_def_from_function, tool_defs_from_openai
 from . import capabilities
 from .web_adapter import PluginWebInterface, plugin_web_registry
 from .schema_loader import load_schema_from_dir
@@ -64,29 +65,15 @@ class PluginToolAdapter:
         # Handle plugins with get_tools() method (OpenAI function format)
         if hasattr(self.plugin_server, 'get_tools'):
             try:
-                tool_schemas = self.plugin_server.get_tools()
-                for tool_schema in tool_schemas:
-                    if isinstance(tool_schema, dict) and 'function' in tool_schema:
-                        func_def = tool_schema['function']
-                        tool = ToolDef(
-                            name=func_def['name'],
-                            description=func_def.get('description', f'Tool {func_def["name"]}'),
-                            input_schema=func_def.get('parameters', {})
-                        )
-                        tools.append(tool)
+                tools = tool_defs_from_openai(self.plugin_server.get_tools())
             except (NotImplementedError, AttributeError):
                 pass
 
         # Use external schema file if available
         if not tools and self.plugin_schema:
             if 'functions' in self.plugin_schema:
-                for func_def in self.plugin_schema['functions']:
-                    tool = ToolDef(
-                        name=func_def['name'],
-                        description=func_def.get('description', f'Tool {func_def["name"]}'),
-                        input_schema=func_def.get('parameters', {})
-                    )
-                    tools.append(tool)
+                tools = [tool_def_from_function(func_def)
+                         for func_def in self.plugin_schema['functions']]
 
         if not tools and (hasattr(self.plugin_server, 'call')
                           or hasattr(self.plugin_server, 'call_with_status')):
@@ -127,12 +114,24 @@ class PluginToolAdapter:
             raise
 
 
-def _load_plugin_schema(name: str, plugin_server: Any) -> Optional[Dict[str, Any]]:
+def _plugin_dir(factory: Any) -> Optional[Path]:
+    """The directory of the module that defines *factory* (the plugin's folder)."""
+    module = sys.modules.get(getattr(factory, "__module__", None) or "")
+    module_file = getattr(module, "__file__", None)
+    return Path(module_file).resolve().parent if module_file else None
+
+
+def _load_plugin_schema(name: str, plugin_server: Any, factory: Any = None,
+                        plugin_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """The schema of a plugin the registry has just built; None if none is found.
 
     Asked of the server first, then read from ``schema.yaml`` / ``schema.json``
-    in the plugin's directory. register_plugin and register_plugin_simple both
-    load it this way; register_existing_plugin_instance asks the instance only.
+    in the plugin's directory: the folder of the module that defines
+    *factory*, else ``src/plugins/<type>`` / ``plugins/<type>`` below the
+    working directory. The folder is the plugin TYPE's, never the instance
+    name's -- a config agent named ``slovak_tutor`` of type ``basic_agent``
+    has no folder of its own. register_existing_plugin_instance asks the
+    instance only.
     """
     schema = None
     schema_file = None
@@ -148,19 +147,15 @@ def _load_plugin_schema(name: str, plugin_server: Any) -> Optional[Dict[str, Any
 
     # Fallback to file-based loading if server doesn't support schema or failed
     if schema is None:
-        # Try to find schema file in standard locations
-        for plugin_dir in ["src/plugins", "plugins"]:
-            # Standard schema.yaml
-            schema_path = Path(plugin_dir) / name / "schema.yaml"
-            if schema_path.exists():
-                schema_file = schema_path
-                break
-
-            # Standard JSON schema
-            schema_path = Path(plugin_dir) / name / "schema.json"
-            if schema_path.exists():
-                schema_file = schema_path
-                break
+        candidates = []
+        factory_dir = _plugin_dir(factory)
+        if factory_dir is not None:
+            candidates.append(factory_dir)
+        candidates.extend(Path(plugin_dir) / (plugin_type or name)
+                          for plugin_dir in ("src/plugins", "plugins"))
+        schema_file = next((directory / filename for directory in candidates
+                            for filename in ("schema.yaml", "schema.json")
+                            if (directory / filename).exists()), None)
 
         if schema_file:
             try:
@@ -246,106 +241,6 @@ class PluginToolRegistry:
         
         logger.info(f"Registered existing plugin instance {name} in plugin_tool_registry")
     
-    async def register_plugin(self, name: str, config: Optional[Dict[str, Any]] = None, parent_config: Optional[Dict[str, Any]] = None) -> None:
-        """Register a plugin as a tool server"""
-        if name not in self.plugin_factories:
-            raise Exception(f"Unknown plugin: {name}")
-
-        # Check if already registered and log for debugging
-        if name in self.plugin_servers:
-            logger.warning(f"Plugin {name} already registered in tool registry. Re-registering with new config: {config}")
-            # Continue to re-register instead of skipping
-
-        # Create plugin instance with parent config injection
-        factory = self.plugin_factories[name]
-        plugin_config = dict(config or {})  # copy to avoid mutating original
-        # Remove reserved keys coming from mcp.yaml server definitions (e.g., 'type')
-        if 'type' in plugin_config:
-            plugin_config.pop('type', None)
-
-        # Inject parent_llm configuration if available and not already present
-        if parent_config and isinstance(plugin_config, dict) and 'parent_llm' not in plugin_config:
-            parent_llm = {}
-            # Include LLM system configuration
-            if 'llm_system' in parent_config:
-                parent_llm['llm_system'] = parent_config['llm_system']
-            if 'agent_llm_profiles' in parent_config:
-                parent_llm['agent_llm_profiles'] = parent_config['agent_llm_profiles']
-            # Include minimal LLM config for backwards compatibility
-            parent_llm['llm'] = {}
-            if parent_llm:
-                plugin_config['parent_llm'] = parent_llm
-                logger.debug(f"Injected parent_llm configuration into plugin {name}")
-
-        # Ensure generic Agent plugin factories receive a full AgentConfig via parent_agent_config.
-        # bootstrap() already injects this, but the CLI adapter path builds its own instances.
-        try:  # pragma: no cover - defensive
-            if 'parent_agent_config' not in plugin_config and parent_config is not None:
-                try:
-                    from agent_system.config.models import AgentConfig  # local import
-                    if isinstance(parent_config, AgentConfig):
-                        plugin_config['parent_agent_config'] = parent_config
-                    elif isinstance(parent_config, dict):
-                        # Attempt to reconstruct AgentConfig from dict (expects llm_system key)
-                        if 'llm_system' in parent_config:
-                            plugin_config['parent_agent_config'] = AgentConfig.model_validate(parent_config)  # type: ignore[arg-type]
-                except Exception:
-                    logger.debug(f"Could not reconstruct AgentConfig for plugin {name} parent injection")
-        except Exception:
-            pass
-
-        try:
-            logger.info(f"tool registry creating plugin {name} with config: {plugin_config}")
-            # Modern factory signature: (name, system_config, server_config)
-            # Extract or build the required config objects
-            from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
-            
-            # Build system_config from parent_config if available
-            if parent_config and isinstance(parent_config, AgentSystemConfig):
-                system_config = parent_config
-            elif parent_config and isinstance(parent_config, dict):
-                # Try to build AgentSystemConfig from dict
-                try:
-                    system_config = AgentSystemConfig.model_validate(parent_config)
-                except Exception:
-                    # Fallback to minimal config
-                    system_config = AgentSystemConfig()
-            else:
-                system_config = AgentSystemConfig()
-            
-            # Build server_config from plugin_config
-            if isinstance(plugin_config, ToolServerConfig):
-                server_config = plugin_config
-            else:
-                # Build ToolServerConfig from dict
-                agent_config = plugin_config.get('parent_agent_config') or AgentConfig()
-                server_config = ToolServerConfig(
-                    type=name,
-                    enabled=True,
-                    agent_config=agent_config,
-                    **{k: v for k, v in plugin_config.items() if k not in ['parent_agent_config', 'parent_llm']}
-                )
-            
-            # Call factory with modern signature
-            plugin_server = factory(name, system_config, server_config)
-        except Exception as e:
-            logger.error(f"Failed to create plugin {name}: {e}")
-            raise
-
-        # Load schema if available
-        schema = _load_plugin_schema(name, plugin_server)
-
-        # Create tool adapter
-        tool_adapter = PluginToolAdapter(name, plugin_server, schema)
-        self.plugin_servers[name] = tool_adapter
-
-        # Register web capabilities if plugin supports them
-        _register_web_capabilities(name, plugin_server)
-
-        await self.start_plugin(name)
-
-        logger.info(f"Registered plugin {name} as tool server")
-
     async def start_plugin(self, name: str) -> None:
         """Run a plugin's optional ``start_plugin()`` hook, at most once.
 
@@ -353,8 +248,8 @@ class PluginToolRegistry:
         then did nothing, so anything with a real lifecycle -- the external MCP
         client, with its connections -- could not be a plugin at all.
 
-        Idempotent on purpose. Plugins arrive through three different paths
-        (register_plugin, register_plugin_simple, and the synchronous
+        Idempotent on purpose. Plugins arrive through two different paths
+        (register_plugin_simple, and the synchronous
         register_existing_plugin_instance used by bootstrap), and start_all()
         sweeps up afterwards; hooking each path separately would either miss
         one or start a plugin twice.
@@ -523,7 +418,7 @@ class PluginToolRegistry:
                 pass
 
         # Load schema if available
-        schema = _load_plugin_schema(name, plugin_server)
+        schema = _load_plugin_schema(name, plugin_server, factory, plugin_type)
 
         # Create tool adapter
         tool_adapter = PluginToolAdapter(name, plugin_server, schema)

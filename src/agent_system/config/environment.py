@@ -8,12 +8,13 @@ local_layer.py ask it what a restart would see.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import re
 from pathlib import Path
 from typing import Any, Optional
+
+from agent_system.utils.id import short_hash
 
 # The loader's one logger, the name it reported under before it was split into modules: a filter
 # on load_settings.__module__ (the agent editor's quiet_loader) must keep catching all of it.
@@ -38,7 +39,7 @@ def _env_name(name: str) -> str:
 
 def _fingerprint(value: str) -> str:
     # surrogatepass: a variable of undecodable bytes arrives as lone surrogates on POSIX
-    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+    return short_hash(value, 12, "surrogatepass")
 
 
 def _handed_on() -> dict[str, str]:
@@ -218,7 +219,9 @@ def _load_secrets_file(path: Path) -> None:
     logger.info("Loaded %d credential(s) from %s", loaded, path)
 
 
-_ENV_PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
+#: A `${NAME}` the loader expands: upper case, digits and underscores only -- `${lower}` stays as written.
+ENV_PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
+_ENV_PLACEHOLDER = ENV_PLACEHOLDER  # the name settings re-exports and its callers import
 
 
 def expand_env(value: Any, missing: Optional[set[str]] = None, environ: Optional[dict[str, str]] = None) -> Any:
@@ -237,7 +240,7 @@ def expand_env(value: Any, missing: Optional[set[str]] = None, environ: Optional
                     missing.add(name)
                 return ""
             return env[name]
-        return _ENV_PLACEHOLDER.sub(repl, value)
+        return ENV_PLACEHOLDER.sub(repl, value)
     if isinstance(value, dict):
         return {k: expand_env(v, missing, environ) for k, v in value.items()}
     if isinstance(value, list):

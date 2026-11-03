@@ -439,7 +439,8 @@ async def test_an_instance_the_callers_config_does_not_know_keeps_its_hook_defau
     holds."""
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
     from agent_system.hooks.registry import get_hook_registry
-    from agent_system.plugins import discovery, tool_adapter
+    from agent_system.hooks import plugin_registration
+    from agent_system.plugins import tool_adapter
     from agent_system.plugins.tool_adapter import PluginToolRegistry
     from agent_system.tools.integration import ToolServerIntegration
 
@@ -459,8 +460,8 @@ async def test_an_instance_the_callers_config_does_not_know_keeps_its_hook_defau
         await integration._register_plugin_hooks(callers_config)
     else:
         monkeypatch.setattr(tool_adapter, "plugin_tool_registry", tools)
-        monkeypatch.setattr(discovery, "_BOOTSTRAPPED_HOOKS_REGISTERED", False)
-        await discovery.register_bootstrapped_plugin_hooks(callers_config)
+        monkeypatch.setattr(plugin_registration, "_BOOTSTRAPPED_HOOKS_REGISTERED", False)
+        await plugin_registration.register_bootstrapped_plugin_hooks(callers_config)
 
     assert get_hook_registry().get_hook_info('dark_inject.inject')['enabled'] is False
 

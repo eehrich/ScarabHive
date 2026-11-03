@@ -37,6 +37,18 @@ def parse_retry_delay(error_msg: str) -> float | None:
     return None
 
 
+_HTTP_429 = re.compile(r"\b429\b")
+
+
+def _status_code(error: Exception) -> int | None:
+    """The HTTP status an SDK error carries (``status_code``, ``code``, ``response.status_code``), else None."""
+    for value in (getattr(error, "status_code", None), getattr(error, "code", None),
+                  getattr(getattr(error, "response", None), "status_code", None)):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
 def is_rate_limit_error(error: Exception) -> bool:
     """Check if error is a rate limit (429) error.
     
@@ -46,9 +58,14 @@ def is_rate_limit_error(error: Exception) -> bool:
     Returns:
         True if the error indicates rate limiting.
     """
+    status = _status_code(error)
     error_str = str(error).lower()
+    if status == 429:
+        return True
     return (
-        '429' in error_str or
+        # The number only as a word, and only where the error carries no status of its
+        # own: a request id or token count holding the digits "429" is no rate limit
+        (status is None and _HTTP_429.search(error_str) is not None) or
         'rate limit' in error_str or
         'resource_exhausted' in error_str or
         'quota' in error_str or

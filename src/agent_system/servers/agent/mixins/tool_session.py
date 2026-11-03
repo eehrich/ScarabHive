@@ -13,6 +13,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
+from ....core.session_ids import is_ephemeral_session
 from ..refusals import FOREIGN_SESSION, RECURSIVE_CALL, TOOL_SESSION_UNAVAILABLE
 
 if TYPE_CHECKING:
@@ -169,7 +170,6 @@ class ToolSessionMixin:
         """_open_tool_session, one opening of the session at a time."""
         from ....core.request_context import get_request_user
         from ....services.session_manager import SessionPermissionError
-        from ....services.session_service import is_ephemeral_session
 
         tracker = self._session_tracker
         service = getattr(self, "_session_service", None)

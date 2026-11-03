@@ -769,7 +769,7 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
     
     # Mock session manager (used by web endpoint)
     mock_session_manager = MagicMock()
-    mock_session_manager._find_session_owner_async = AsyncMock(return_value="test_user")
+    mock_session_manager.find_session_owner_async = AsyncMock(return_value="test_user")
     mock_session_manager.load_session = AsyncMock(return_value={
         "context_vars": {"workflow_phase": "planning", "book_id": "17"}
     })

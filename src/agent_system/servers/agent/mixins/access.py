@@ -19,6 +19,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def run_user(tracker: Any, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+    """Whose call this is, for a run's tools and its hooks alike: THE one rule (AccessMixin.tool_user).
+
+    The request's registered owner first, the session's stored user only where
+    none is registered, else None -- nobody's, never everybody's. Owner first
+    because the session metadata is shared, mutable state of the session id:
+    every run of it writes there, and the registered owner is this run's.
+    *tracker* is the agent's session tracker (or None).
+    """
+    from ....core.request_context import get_request_user
+
+    owner: Optional[str] = get_request_user(request_id, default=None) if request_id else None
+    if owner is not None:
+        return owner
+    metadata = tracker.get_session_metadata(session_id) if tracker is not None and session_id else None
+    user_id = metadata.get("user_id") if isinstance(metadata, dict) else None
+    return user_id or None
+
+
 def _role_gate_refusal(agent: Agent, caller: Callable[[], Optional[str]]
                        ) -> Optional[tuple[Optional[str], str]]:
     """(who, why the agent's role gate refuses them) for the caller *caller* names, or None.
@@ -139,22 +158,8 @@ class AccessMixin:
         metadata is state of the session id, shared by every run of it, and the
         registered owner is this run's.
         """
-        from ....core.request_context import get_request_user
-
-        user_id: Optional[str] = get_request_user(request_id, default=None) if request_id else None
-        if user_id is not None:
-            logger.debug(f"[TOOL_EXEC] user_id='{user_id}' from the owner of request {request_id}")
-            return user_id
-        tracker = getattr(self, "_session_tracker", None)
-        if not tracker:
-            logger.warning("[TOOL_EXEC] No _session_tracker available")
-            return None
-        session_meta = tracker.get_session_metadata(session_id) if session_id else None
-        if session_meta:
-            user_id = session_meta.get("user_id")
-            logger.debug(f"[TOOL_EXEC] Extracted user_id='{user_id}' from session_metadata for session {session_id}")
-        else:
-            logger.warning(f"[TOOL_EXEC] No session_metadata found for session {session_id}")
+        user_id = run_user(getattr(self, "_session_tracker", None), request_id, session_id)
+        logger.debug(f"[TOOL_EXEC] user_id={user_id!r} for request {request_id} (session {session_id})")
         return user_id
 
     def _refusal_event(self: Agent, request_id: Optional[str], session_id: Optional[str]) -> Optional[dict[str, Any]]:

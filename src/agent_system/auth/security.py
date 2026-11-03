@@ -68,7 +68,8 @@ def create_access_token(
 
     Args:
         data: Payload data to encode
-        expires_delta: Token expiration time delta (default: 30 minutes)
+        expires_delta: Token expiration time delta (default: ACCESS_TOKEN_EXPIRE_MINUTES,
+            7 days until set_jwt_config sets the configured value)
         secret_key: Secret key for signing (default: module SECRET_KEY)
         algorithm: JWT algorithm (default: HS256)
         token_type: Token type ("access" or "refresh")

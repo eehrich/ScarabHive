@@ -169,6 +169,14 @@ class TestPluginToolAdapterWithExternalSchema:
         assert "external" in (tools[0].description or "").lower()
 
 
+async def _register(registry, name, **extra):
+    """Register *name* the way register_from_config does."""
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig
+    await registry.register_plugin_simple(
+        name, AgentSystemConfig(),
+        ToolServerConfig(type=name, enabled=True, agent_config=AgentConfig(), **extra))
+
+
 class TestPluginToolRegistry:
     """Test plugin tool registry"""
 
@@ -192,15 +200,15 @@ class TestPluginToolRegistry:
 
         registry.plugin_factories["test_plugin"] = mock_factory
 
-        await registry.register_plugin("test_plugin", {"param": "value"})
+        await _register(registry, "test_plugin", param="value")
 
         assert "test_plugin" in registry.list_servers()
         assert registry.get_server("test_plugin") is not None
 
     @pytest.mark.asyncio
     async def test_plugins_tool_registry_register_unknown_plugin(self, registry):
-        with pytest.raises(Exception, match="Unknown plugin: unknown"):
-            await registry.register_plugin("unknown")
+        with pytest.raises(Exception, match="Unknown plugin type: unknown"):
+            await _register(registry, "unknown")
 
     @pytest.mark.asyncio
     async def test_plugins_tool_registry_unregister_plugin(self, registry):
@@ -209,7 +217,7 @@ class TestPluginToolRegistry:
             return MockPluginServer(name)
 
         registry.plugin_factories["test_plugin"] = mock_factory
-        await registry.register_plugin("test_plugin")
+        await _register(registry, "test_plugin")
 
         # Unregister
         await registry.unregister_plugin("test_plugin")
@@ -292,7 +300,7 @@ class TestPluginToolRegistry:
             return MockPluginServer(name)
 
         registry.plugin_factories["test_plugin"] = mock_factory
-        await registry.register_plugin("test_plugin")
+        await _register(registry, "test_plugin")
 
         all_tools = await registry.get_all_tools()
 
@@ -308,7 +316,7 @@ class TestPluginToolRegistry:
             return MockPluginServer(name)
 
         registry.plugin_factories["test_plugin"] = mock_factory
-        await registry.register_plugin("test_plugin")
+        await _register(registry, "test_plugin")
 
         result = await registry.call_plugin_tool("test_plugin", "test_tool", {"param": "value"})
 

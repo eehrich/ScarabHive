@@ -190,7 +190,7 @@ class AuthConfig(BaseModel):
 ### 4.2 Enforced Authentication Middleware
 
 ```python
-# In auth/middleware.py
+# In auth/middleware/ (package)
 
 class EnforcedAuthMiddleware:
     """

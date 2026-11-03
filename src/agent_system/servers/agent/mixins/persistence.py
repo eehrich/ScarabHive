@@ -12,6 +12,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, List, Optional
 
+from ....llm.message_roles import conversation_messages
 from ....llm.models import ChatMessage
 
 if TYPE_CHECKING:
@@ -63,7 +64,6 @@ class PersistenceMixin:
         persistence failures must not kill a running request -- it returns
         whether the session file was written instead, for callers that must not
         promise what the disk did not take."""
-        from ..components.hook_integration import is_compaction_system_message
         try:
             # System messages are rebuilt from config each turn and must not be
             # persisted — EXCEPT the ones that are compacted conversation
@@ -73,10 +73,7 @@ class PersistenceMixin:
             # Volatile developer notes are dropped one level down, by
             # set_session_messages: five places write session messages and this
             # is only one of them.
-            conversation_msgs = [
-                msg for msg in messages
-                if msg.role != "system" or is_compaction_system_message(msg)
-            ]
+            conversation_msgs = conversation_messages(messages)
             self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
             logger.debug(f"Persisted session {session_id} ({note}) with {len(conversation_msgs)} messages")
             if to_disk:

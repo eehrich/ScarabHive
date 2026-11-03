@@ -85,6 +85,10 @@ def reload_plugin_configs(fresh_config: Any) -> Dict[str, Any]:
     # A client that did not build is tried again: a key added at runtime changes no spec.
     from agent_system.llm.factory import config_reloaded
     config_reloaded()
+    # The attachment gate answers from the models of the fresh config: a model
+    # added, or given image_input, counts without a restart.
+    from agent_system.llm.capabilities import init_capabilities_registry
+    init_capabilities_registry(config=fresh_config)
 
     # The process-wide registry that holds the LIVE plugin instances. Its
     # adapters expose the underlying plugin as ``.plugin_server``.

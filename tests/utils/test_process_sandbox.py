@@ -229,6 +229,40 @@ class TestBubblewrapGitMetadata:
         for path in expected:
             assert argv.index(path) > workspace_bind, f"{path} bound before the workspace"
 
+    def test_commondir_is_bound_read_only(self, tmp_path):
+        """git follows commondir to another directory for config and hooks:
+        rewriting it redirects them to a git directory the process made."""
+        git = self._repo(tmp_path)
+        (git / "commondir").write_text("..\n")
+        (git / "worktrees" / "wt" / "commondir").write_text("../..\n")
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        assert self._pairs(argv, "--ro-bind") >= {
+            str(git / "commondir"), str(git / "worktrees/wt/commondir")}
+
+    def test_a_missing_hooks_directory_gets_a_read_only_placeholder(self, tmp_path):
+        """Otherwise the process creates .git/hooks and fills it."""
+        git = self._repo(tmp_path)
+        (git / "hooks").rmdir()
+        (git / "modules/libs/sub/hooks").rmdir()
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        for hooks in (git / "hooks", git / "modules/libs/sub/hooks"):
+            i = argv.index(str(hooks))
+            assert argv[i - 1] == "--tmpfs"
+            assert argv[i + 1:i + 3] == ("--remount-ro", str(hooks))
+            assert i > argv.index("--bind")
+        assert not (git / "hooks").exists(), "nothing is created on the host by wrap()"
+
+    def test_an_existing_hooks_directory_gets_no_placeholder(self, tmp_path):
+        self._repo(tmp_path)
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        assert "--tmpfs" not in argv[argv.index("--bind"):]
+
+    def test_the_seatbelt_profile_names_commondir(self):
+        assert "commondir" in ps._SEATBELT_WORKSPACE
+
     def test_the_git_directory_becomes_a_mount_point(self, tmp_path):
         """A mount point cannot be renamed or removed: no prepared directory
         can take the place of .git."""
@@ -264,6 +298,75 @@ class TestBubblewrapGitMetadata:
             ProcessSandbox(mode="read-only", workspace_root=tmp_path), CMD, None).argv
         assert "--bind" not in argv
         assert argv.count("--ro-bind") == 2
+
+
+class TestBubblewrapMissingGitMetadata:
+    """What is missing at spawn time gets a read-only stand-in, each one
+    leaving a trace on the host that changes nothing for git. Run live in
+    ``test_process_sandbox_bwrap_live.py``."""
+
+    @staticmethod
+    def _wrap(root):
+        return ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=root), CMD, None).argv
+
+    @staticmethod
+    def _sources(argv):
+        """{dest: source} of every read-only bind."""
+        head = argv[:argv.index("--")]
+        return {head[i + 2]: head[i + 1] for i, a in enumerate(head) if a == "--ro-bind"}
+
+    def test_missing_config_worktrees_get_an_empty_read_only_file(self, tmp_path):
+        git = TestBubblewrapGitMetadata._repo(tmp_path)
+        (git / "worktrees" / "wt" / "config.worktree").unlink()
+        argv = self._wrap(tmp_path)
+        sources = self._sources(argv)
+        for path in (git / "config.worktree", git / "modules/libs/sub/config.worktree",
+                     git / "worktrees/wt/config.worktree"):
+            source = Path(sources[str(path)])
+            assert source.is_file() and source.stat().st_size == 0
+            assert tmp_path not in source.parents, "the source must lie outside the workspace"
+            assert argv.index(str(path)) > argv.index("--bind")
+            assert not path.exists(), "wrap() itself creates no config file"
+
+    def test_a_missing_config_gets_one_too(self, tmp_path):
+        git = TestBubblewrapGitMetadata._repo(tmp_path)
+        (git / "modules/libs/sub/config").unlink()
+        assert str(git / "modules/libs/sub/config") in self._sources(self._wrap(tmp_path))
+
+    def test_present_config_files_are_bound_onto_themselves(self, tmp_path):
+        git = TestBubblewrapGitMetadata._repo(tmp_path)
+        (git / "config.worktree").write_text("")
+        sources = self._sources(self._wrap(tmp_path))
+        assert sources[str(git / "config.worktree")] == str(git / "config.worktree")
+
+    def test_a_placeholder_inside_the_workspace_is_refused(self, tmp_path, monkeypatch):
+        """There the confined process could write it through the workspace."""
+        TestBubblewrapGitMetadata._repo(tmp_path)
+        inside = tmp_path / "empty"
+        inside.touch()
+        monkeypatch.setattr(ps, "_empty_placeholder", inside)
+        with pytest.raises(SandboxUnavailable, match="inside the workspace"):
+            self._wrap(tmp_path)
+
+    def test_a_vanished_or_written_placeholder_is_made_anew(self, tmp_path, monkeypatch):
+        TestBubblewrapGitMetadata._repo(tmp_path)
+        elsewhere = tmp_path.parent / f"{tmp_path.name}-stale"
+        elsewhere.write_text("[core]\nfsmonitor = evil\n")
+        monkeypatch.setattr(ps, "_empty_placeholder", elsewhere)
+        source = Path(self._sources(self._wrap(tmp_path))[str(tmp_path / ".git/config.worktree")])
+        assert source != elsewhere and source.stat().st_size == 0
+
+    def test_a_missing_commondir_gets_no_stand_in(self, tmp_path):
+        """The documented gap: a bind would leave an empty commondir behind,
+        which breaks git, and a written one changes git's behaviour. Nothing
+        is bound there and nothing is written -- main repository and
+        submodule alike."""
+        git = TestBubblewrapGitMetadata._repo(tmp_path)
+        argv = self._wrap(tmp_path)
+        for commondir in (git / "commondir", git / "modules/libs/sub/commondir"):
+            assert str(commondir) not in argv
+            assert not commondir.exists()
 
 
 class TestConfigIsValidatedAtLoad:

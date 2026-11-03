@@ -91,7 +91,9 @@ async def test_no_task_and_nothing_usable_answers_400(api):
     assert not api.tasks, "a run started with nothing to do"
 
 
-async def test_an_unreadable_file_answers_400_not_500(api):
+async def test_an_unreadable_file_answers_400_not_500(api, monkeypatch):
+    # Past the gate, so the decoding is what answers: the default agent's model may be text-only.
+    monkeypatch.setattr("agent_system.llm.capabilities.ensure_model_supports", lambda *a, **k: None)
     response, body = await _post(api.app, {"files": ("pic.png", b"not an image at all", "image/png")})
 
     assert response.status_code == 400, body

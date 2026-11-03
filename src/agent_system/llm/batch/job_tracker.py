@@ -15,6 +15,7 @@ import asyncio
 import aiofiles
 
 from agent_system.paths import resolve_data_path
+from agent_system.utils.io import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,9 @@ class BatchJobTracker:
                 for provider, job_ids in self._tracked_jobs.items()
                 if job_ids  # Only save non-empty providers
             }
-            async with aiofiles.open(self.tracker_file, 'w') as f:
-                await f.write(json.dumps(data, indent=2))
+            # Atomic: a crash mid-write must not leave a truncated file, which
+            # would drop every tracked job (and cancel_on_startup with it)
+            await asyncio.to_thread(atomic_write_json, self.tracker_file, data)
         except Exception as e:
             logger.error(f"Failed to save tracked jobs: {e}")
     

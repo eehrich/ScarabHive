@@ -100,7 +100,6 @@ class AnswerMixin:
                 # An empty answer is no JSON: not a final one for a structured run.
                 error_msg = self._structured_output_failure(
                     schema_worker.parse_answer(content)[2], corrected=run.format_repaired)
-                run.results.setdefault("errors", []).append(error_msg)
                 yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_INVALID}
                 st.end = StepEnd.RUN
                 return
@@ -197,7 +196,6 @@ class AnswerMixin:
                 event = self._structured_output_unavailable(checked)
                 if log_unavailable:
                     logger.warning("[%s] %s", self.name, event["message"])
-                run.results.setdefault("errors", []).append(event["message"])
                 yield event
                 st.end = StepEnd.RUN
                 return
@@ -221,7 +219,6 @@ class AnswerMixin:
             if not checked.ok:
                 error_msg = self._structured_output_failure(checked.errors, corrected=run.format_repaired)
                 logger.warning("[%s] %s", self.name, error_msg)
-                run.results.setdefault("errors", []).append(error_msg)
                 yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_INVALID}
                 st.end = StepEnd.RUN
                 return
@@ -233,9 +230,8 @@ class AnswerMixin:
         st.end = StepEnd.RUN
 
     def _final_answer(self: Agent, run: LoopState, st: StepState, summary: Any) -> Dict[str, Any]:
-        """The final event of the run, with *summary* in its results and the live state updated."""
+        """The final event of the run, with *summary*, and the live state updated."""
         # Assistant message was already added above before post_llm hooks
-        run.results["summary"] = summary
         # Update tracked messages with final response
         self._set_live_messages(run.session_id, run.messages.copy())
 

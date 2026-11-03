@@ -67,6 +67,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+import sys
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Iterable
@@ -161,6 +162,13 @@ def might_be_private(name: str) -> bool:
     return database._db is not None and name.startswith(Path(database._db.db_path).name.lower())
 
 
+def _folded(path: str) -> str:
+    """``path`` as macOS compares it: APFS and HFS+ are case-insensitive by default, while
+    ``resolve()`` keeps the case that was typed and ``normcase`` leaves it alone there --
+    ``CONFIG/Local.ENV`` opens config/local.env."""
+    return path.casefold() if sys.platform == "darwin" else path
+
+
 def is_secret(path: Path | str) -> bool:
     """Whether ``path`` is one of the installation's private files (above) or
     lies in one of the private directories.
@@ -173,9 +181,10 @@ def is_secret(path: Path | str) -> bool:
     full = _canonical(path)
     if full is None:
         return False
-    parent, name = os.path.split(full)
+    parent, name = os.path.split(_folded(full))
     name = name.split(":", 1)[0].rstrip(" .")
     secrets, users_db, folders = _private_places()
+    secrets, users_db, folders = _folded(secrets), _folded(users_db), tuple(map(_folded, folders))
     cleaned = os.path.join(parent, name)
     return ((parent == secrets and name.endswith(".env"))
             or any(cleaned == users_db + suffix for suffix in _DB_COMPANIONS)
@@ -189,7 +198,8 @@ def holds_secrets(directory: Path | str) -> bool:
     if full is None:
         return False
     secrets, users_db, folders = _private_places()
-    return any(_within(place, full) for place in (secrets, os.path.dirname(users_db), *folders))
+    return any(_within(_folded(place), _folded(full))
+               for place in (secrets, os.path.dirname(users_db), *folders))
 
 
 def remote_outside(path: str, base: Path, roots: Iterable[Path]) -> bool:

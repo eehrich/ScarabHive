@@ -26,7 +26,7 @@ import logging
 from pathlib import Path
 from typing import Iterable
 
-from .plugin_manifest import load_plugin_metadata
+from .plugin_manifest import load_plugin_metadata, parse_entrypoint
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +76,8 @@ class PluginCatalog:
                     if (sub / "plugin.py").exists():
                         needs_import = True  # legacy plugin, name only known after exec
                     continue
-                # Parse the entrypoint exactly as discovery does: the two
-                # defaults hold unless the value carries a colon.
-                module, factory = "plugin", "PLUGIN_FACTORY"
-                entrypoint = metadata.get("entrypoint", "plugin:PLUGIN_FACTORY")
-                if isinstance(entrypoint, str) and ":" in entrypoint:
-                    module, factory = entrypoint.split(":", 1)
+                # Parsed exactly as discovery does
+                module, factory = parse_entrypoint(metadata)
                 entry_file = sub / f"{module}.py"
                 if not entry_file.exists():
                     continue  # library-only plugin; discovery skips it too

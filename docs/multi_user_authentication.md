@@ -50,7 +50,7 @@ The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) pr
    - API key generation, hashing, and verification
    - Configurable token expiration
 
-3. **Authentication Middleware (`src/agent_system/auth/middleware.py`)**
+3. **Authentication Middleware (`src/agent_system/auth/middleware/`: `endpoint_security.py`, `audit.py`, `rate_limit.py`, `headers.py`, `setup.py`)**
    - Rate limiting (60 requests/minute per IP)
    - Security headers (X-Frame-Options, CSP, HSTS, etc.)
    - CORS configuration
@@ -193,7 +193,8 @@ auth:
       - "GET /static/*"
       - "GET /login"
       - "POST /auth/login"
-    rate_limit_multiplier: 0.5  # 50% of normal rate limit
+    rate_limit_multiplier: 0.5  # while auth and anonymous access are on: requests without credentials
+                                # (no token, cookie or API key) get this share of the per-IP limit, min 1/min
 ```
 
 An entry of `allowed_endpoints` opens the method it names and no other: `"GET /health"` lets a visitor
@@ -461,7 +462,7 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "api_key": "ak_1234567890abcdef",
+  "api_key": "Xq3v...  (secrets.token_urlsafe(32), no prefix)",
   "created_at": "2025-10-10T20:00:00.123456Z",
   "note": "Save this key securely. It will not be shown again."
 }

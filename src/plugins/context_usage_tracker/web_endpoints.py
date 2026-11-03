@@ -85,7 +85,7 @@ class ContextUsageWebFactory:
                 sessions._validate_session_id(session_id)  # the owner scan joins the bare id onto every directory
             except ValueError:
                 return []
-            user = await sessions._find_session_owner_async(session_id) or user
+            user = await sessions.find_session_owner_async(session_id) or user
         return await self.tracker.session_tree(sessions, user, session_id)
 
     async def clear_history(self, request: Request,

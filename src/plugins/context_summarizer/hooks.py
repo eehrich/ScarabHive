@@ -544,10 +544,10 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         }
                         self._record(event)
 
-                    # Session persistence is handled automatically by
-                    # HookIntegrationManager when we return HookResult(modified=True)
-                    # below (hook path), and by the summarize tool wrapper via its
-                    # own set_compacted_messages() call (direct-tool path). No
+                    # Session persistence: on the hook path the list returned with
+                    # HookResult(modified=True) below becomes the run's messages,
+                    # which the run persists; the summarize tool wrapper stages its
+                    # own via set_compacted_messages() (direct-tool path). No
                     # explicit persist here: it double-persisted the session (once
                     # explicitly, once automatically) — the tool path even wrote a
                     # different message set (non-system here vs full context there).

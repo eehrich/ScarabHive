@@ -296,7 +296,7 @@ There is no separate plugin registry class. Discovery returns a plain dict `type
 - A plugin dir's name is its package name (`plugins.<name>`). Two plugin dirs with the same name (`src/plugins`, `external/plugins`) share it: a plugin or shared module the first one has is not loaded from the second -- whether the first one's loads or not -- and the second logs a warning: both would be the same module
 - Read `plugin.toml` (`plugins/plugin_manifest.py`)
 - Import the entrypoint module and fetch the factory
-- Register hooks declared in plugin schemas (`register_plugin_hooks`)
+- Register hooks declared in plugin schemas (`register_plugin_hooks`, `hooks/plugin_registration.py`; re-exported from `plugins/discovery.py`)
 
 **Discovery Process (simplified):**
 ```python
@@ -369,7 +369,7 @@ src/plugins/                 # also every further root src/plugins_<name>/
     └── schema.yaml
 ```
 
-The plugin type name is the **folder name**; the manifest `name` renames nothing. The entrypoint is `module:Factory` with the module file directly in the plugin folder (default `plugin:PLUGIN_FACTORY`). A folder without that module (e.g. `library` plugins) is not a discoverable type. `plugin.yaml` is not read.
+The plugin type name is the **folder name** unless the module sets `PLUGIN_NAME` or its `register()` names the type (`plugins/discovery.py`; `plugins/catalog.py` maps such types back to their folder); the manifest `name` renames nothing. The entrypoint is `module:Factory` with the module file directly in the plugin folder (default `plugin:PLUGIN_FACTORY`). A folder without that module (e.g. `library` plugins) is not a discoverable type. `plugin.yaml` is not read.
 
 **plugin.toml Example:**
 ```toml

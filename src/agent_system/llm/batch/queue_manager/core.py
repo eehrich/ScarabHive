@@ -17,7 +17,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
 
 from agent_system.paths import data_path, resolve_data_path
 from ..models import BatchJob, BatchRequest, BatchMetrics
@@ -110,6 +110,8 @@ class _BatchQueueCore:
         
         # Background tasks
         self._submission_tasks: Dict[str, asyncio.Task] = {}
+        # Immediate submissions (queue full): held so they are not collected mid-run
+        self._immediate_submit_tasks: Set[asyncio.Task] = set()
         self._polling_task: Optional[asyncio.Task] = None
         self._running = False
         

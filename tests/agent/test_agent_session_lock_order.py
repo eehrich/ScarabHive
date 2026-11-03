@@ -105,3 +105,31 @@ async def test_a_run_refused_at_the_lock_says_so(agent):
     errors = [event for event in events if event.get("type") == "error"]
     assert [event.get("error_type") for event in errors] == [SESSION_LOCKED], events
     assert events[-1]["type"] == "end"
+
+
+async def test_a_run_cancelled_while_it_waits_for_the_lock_leaves_no_request_behind(agent):
+    """Registered before it asks for the lock: cancelled while it waits (a client that left), the request
+    must not stay registered as active, nor mapped to the session, for the life of the process."""
+    tracker = agent._session_tracker
+    # A writer's lock is waited for, not refused: the run sits in acquire_session_lock.
+    assert await tracker.acquire_session_lock("s1", "a_write", writer=True), "fixture: the lock was not taken"
+
+    async def run() -> None:
+        async for _ in agent.run_events("hello", request_id="r3", session_id="s1", llm_override=AnswersAtOnce()):
+            pass
+
+    task = asyncio.ensure_future(run())
+    try:
+        for _ in range(200):
+            if tracker.get_session_for_request("r3") == "s1":
+                break
+            await asyncio.sleep(0.01)
+        assert tracker.get_session_for_request("r3") == "s1", "fixture: the run never registered"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        await tracker.release_session_lock("s1", "a_write")
+
+    assert "r3" not in agent._request_manager._active_requests, "the cancelled request stayed active"
+    assert tracker.get_session_for_request("r3") is None, "the cancelled request stayed mapped to its session"

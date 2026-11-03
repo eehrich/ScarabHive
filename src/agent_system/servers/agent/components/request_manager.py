@@ -14,6 +14,7 @@ import time
 from typing import Dict, List, Optional, Any
 
 from ....core.cancellation import get_cancellation_manager
+from ....core.request_context import in_request_tree
 
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ class AgentRequestManager:
         # Only check if we have matching tasks for logging
         task_cancelled_count = 0
         for task_id in cancellation_manager._tasks.keys():
-            if task_id == request_id or task_id.startswith(request_id + "_"):
+            if in_request_tree(task_id, request_id):
                 task_cancelled_count += 1
         
         # Also cancel in the agent's internal tracking

@@ -23,6 +23,7 @@ from agent_system.config.models import (
     LLMModelConfig,
     LLMProfile,
     LLMSystemConfig,
+    ModelCapabilitiesConfig,
     ToolServerConfig,
     PluginsConfig,
 )
@@ -124,7 +125,10 @@ def booted(tmp_path, monkeypatch):
     _sent.clear()
     config = AgentSystemConfig(
         llm_system=LLMSystemConfig(
-            models={"m": LLMModelConfig(provider="openai", model="m")},
+            # The model takes every kind: these tests are about how attachments reach the builder,
+            # and the capability gate reads this config (the one the process runs with).
+            models={"m": LLMModelConfig(provider="openai", model="m", capabilities=ModelCapabilitiesConfig(
+                image_input=True, audio_input=True))},
             profiles={"normal": LLMProfile(model_ref="m")},
         ))
     config.plugins = PluginsConfig(servers={

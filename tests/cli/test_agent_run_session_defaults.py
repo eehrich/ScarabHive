@@ -417,6 +417,29 @@ class TestARefusedRunExits1:
         assert failed.value.code == 1
         assert "cannot continue session 's1'" in capsys.readouterr().err
 
+    def test_a_run_without_a_store_warns_of_no_failed_save(self, run_env, monkeypatch, capsys):
+        """The degraded bootstrap without a session to continue still answers; with no store there is
+        nothing to save to, so no "Failed to save session" warning either."""
+        from agent_system.tools.base import ToolServerRegistry
+
+        async def degraded(cfg):
+            return ToolServerRegistry(), None
+
+        monkeypatch.setattr(agent_run, "initialize_system", degraded)
+
+        _run()
+
+        captured = capsys.readouterr()
+        assert "done" in captured.out
+        assert "Failed to save session" not in captured.err
+
+    def test_meta_lines_go_to_stderr(self, run_env, capsys):
+        """stdout carries the result, as in agent-cli: `>out.txt` collects the answer alone."""
+        _run(session_id="s1")
+        captured = capsys.readouterr()
+        assert "Continuing session 's1'" in captured.err
+        assert "Continuing session" not in captured.out
+
 
 def test_a_run_refused_before_it_ran_is_not_saved(run_env, monkeypatch):
     """The agent refused the run before it started (Agent.run_events: its role gate, another user's session,

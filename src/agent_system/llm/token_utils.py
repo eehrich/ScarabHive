@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 from ..paths import resolve_data_path
+from ..utils.fields import field_of
 from .models import ChatMessage
 
 
@@ -299,11 +300,8 @@ def estimate_file_tokens(path: Union[str, Path], file_type: str | None = None) -
     return 0
 
 
-def _field(item: Any, key: str) -> Any:
-    """A key of a dict item, or an attribute of a pydantic one (extras included)."""
-    if isinstance(item, dict):
-        return item.get(key)
-    return getattr(item, key, None)
+#: A key of a dict item, or an attribute of a pydantic one (extras included).
+_field = field_of
 
 
 def inline_payload(item: Any) -> tuple[int, str] | None:

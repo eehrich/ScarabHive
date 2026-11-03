@@ -110,9 +110,15 @@ class TestPluginConfigIntegration:
         assert server.max_wait_seconds == 1800
         assert server.default_update_interval == 2.5
 
+    @staticmethod
+    def _server_config(entry):
+        from agent_system.config.models import ToolServerConfig, AgentConfig
+        return ToolServerConfig(enabled=True, agent_config=AgentConfig(), **entry)
+
     @pytest.mark.asyncio
-    async def test_plugin_registry_forwards_config_correctly(self, sample_config, mock_parent_config):
+    async def test_plugin_registry_forwards_config_correctly(self, sample_config):
         """Test that PluginToolRegistry forwards server config to plugins correctly."""
+        from agent_system.config.models import AgentSystemConfig
         registry = PluginToolRegistry()
 
         # Discover basic_operations plugin
@@ -124,9 +130,9 @@ class TestPluginConfigIntegration:
 
         # Register plugin with custom config
         server_name = "basic_operations"
-        server_config = sample_config["servers"][server_name]
+        server_config = self._server_config(sample_config["servers"][server_name])
 
-        await registry.register_plugin(server_name, server_config, mock_parent_config)
+        await registry.register_plugin_simple(server_name, AgentSystemConfig(), server_config)
 
         # Get the registered server and verify it uses custom config
         tool_adapter = registry.get_server(server_name)
@@ -141,8 +147,9 @@ class TestPluginConfigIntegration:
         assert plugin_server.default_update_interval == 2.5
 
     @pytest.mark.asyncio
-    async def test_plugin_registry_prevents_double_registration(self, sample_config, mock_parent_config):
-        """Test that PluginToolRegistry prevents double registration of the same plugin."""
+    async def test_plugin_registry_prevents_double_registration(self, sample_config):
+        """A second registration of the same server keeps the first instance."""
+        from agent_system.config.models import AgentSystemConfig
         registry = PluginToolRegistry()
 
         # Discover plugins
@@ -150,30 +157,23 @@ class TestPluginConfigIntegration:
         registry.discover_plugins(plugin_dirs)
 
         server_name = "basic_operations"
-        server_config = sample_config["servers"][server_name]
+        server_config = self._server_config(sample_config["servers"][server_name])
 
         # Register plugin first time
-        await registry.register_plugin(server_name, server_config, mock_parent_config)
+        await registry.register_plugin_simple(server_name, AgentSystemConfig(), server_config)
         first_server = registry.get_server(server_name)
-        first_plugin_server = first_server.plugin_server
 
         # Attempt to register again with different config
-        different_config = {
+        different_config = self._server_config({
+            "type": server_name,
             "max_wait_seconds": 7200,  # Different value
             "default_update_interval": 0.5  # Different value
-        }
+        })
 
-        await registry.register_plugin(server_name, different_config, mock_parent_config)
-        second_server = registry.get_server(server_name)
+        await registry.register_plugin_simple(server_name, AgentSystemConfig(), different_config)
 
-        # The registry should handle re-registration gracefully
-        # (Current implementation creates new instances but logs warning)
-        assert isinstance(first_server, type(second_server))
-
-        # Both should be valid plugin server instances
-        assert hasattr(second_server, 'plugin_server')
-        assert second_server.plugin_server is not None
-        assert first_plugin_server.default_update_interval == 2.5  # Original value
+        assert registry.get_server(server_name) is first_server
+        assert first_server.plugin_server.default_update_interval == 2.5  # Original value
 
     @pytest.mark.asyncio
     async def test_wait_tool_respects_server_config(self, sample_config):

@@ -232,7 +232,7 @@ class ContextSummarizerServer(SchemaBasedHookToolServer):
             # We can't modify the request's local messages list directly, so we store
             # the summarized messages in the session tracker. The agent will use these
             # when persisting the session at end of request.
-            # Conversation only, as the hook path hands it over (hook_integration._auto_sync_session_messages): the
+            # Conversation only, as the run persists its own list (message_roles.conversation_messages): the
             # live list opens with the rendered prompts, and staged with them they were stored in the session and
             # sent again, stale, behind the fresh ones on every later turn.
             if result.modified and result.context and result.context.messages:

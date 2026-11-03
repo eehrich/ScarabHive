@@ -17,6 +17,48 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _registered_agents(registry: ToolServerRegistry) -> list[tuple[str, Any]]:
+    """``(name, agent)`` of every Agent in the registry, unwrapped from its PluginToolAdapter.
+
+    Both registry interfaces: ToolServerRegistry (list/get) and PluginToolRegistry
+    (list_servers/get_server); ValueError for anything else. A server that cannot
+    be fetched is left out (logged at debug), as is one that is no Agent.
+    """
+    # Import here to avoid circular dependency
+    from ..servers.agent.server import Agent
+
+    # Detect registry type and use appropriate interface
+    if hasattr(registry, 'list'):
+        # ToolServerRegistry interface
+        server_names = registry.list()
+        get_server_func = registry.get
+        logger.debug("[inject] Using ToolServerRegistry interface (list/get)")
+    elif hasattr(registry, 'list_servers'):
+        # PluginToolRegistry interface
+        server_names = registry.list_servers()
+        get_server_func = registry.get_server
+        logger.debug("[inject] Using PluginToolRegistry interface (list_servers/get_server)")
+    else:
+        raise ValueError(
+            f"Unknown registry type: {type(registry).__name__} - "
+            f"must have list() or list_servers() method"
+        )
+
+    agents = []
+    for server_name in server_names:
+        try:
+            server = get_server_func(server_name)
+        except Exception as e:
+            logger.debug(f"[inject] Could not get '{server_name}' from the registry: {e}")
+            continue
+        # PluginToolRegistry wraps servers in PluginToolAdapter - unwrap if needed
+        actual_server = server.plugin_server if hasattr(server, 'plugin_server') else server
+        # Only Agent instances (not other tool servers)
+        if isinstance(actual_server, Agent):
+            agents.append((server_name, actual_server))
+    return agents
+
+
 def inject_session_service_into_agents(
     registry: ToolServerRegistry,
     session_service: Any,
@@ -44,45 +86,13 @@ def inject_session_service_into_agents(
         >>> count = inject_session_service_into_agents(registry, session_service)
         >>> logger.info(f"Injected session_service into {count} agents")
     """
-    # Import here to avoid circular dependency
-    from ..servers.agent.server import Agent
-    
-    # Detect registry type and use appropriate interface
-    if hasattr(registry, 'list'):
-        # ToolServerRegistry interface
-        server_names = registry.list()
-        get_server_func = registry.get
-        logger.debug("[inject] Using ToolServerRegistry interface (list/get)")
-    elif hasattr(registry, 'list_servers'):
-        # PluginToolRegistry interface
-        server_names = registry.list_servers()
-        get_server_func = registry.get_server
-        logger.debug("[inject] Using PluginToolRegistry interface (list_servers/get_server)")
-    else:
-        raise ValueError(
-            f"Unknown registry type: {type(registry).__name__} - "
-            f"must have list() or list_servers() method"
-        )
-    
     injected_count = 0
-    
-    for server_name in server_names:
+
+    for server_name, agent in _registered_agents(registry):
         try:
-            server = get_server_func(server_name)
-            
-            # PluginToolRegistry wraps servers in PluginToolAdapter - unwrap if needed
-            if hasattr(server, 'plugin_server'):
-                actual_server = server.plugin_server
-            else:
-                actual_server = server
-            
-            # Only inject into Agent instances (not other tool servers)
-            if isinstance(actual_server, Agent):
-                # Inject session_service
-                actual_server._session_service = session_service
-                logger.debug(f"[inject] session_service -> agent '{server_name}'")
-                injected_count += 1
-                
+            agent._session_service = session_service
+            logger.debug(f"[inject] session_service -> agent '{server_name}'")
+            injected_count += 1
         except Exception as e:
             logger.debug(
                 f"[inject] Failed to inject session_service into '{server_name}': {e}"
@@ -128,23 +138,8 @@ def inject_dependencies_into_agents(
         ... )
         >>> # Agents now have _session_service and _custom_service attributes
     """
-    from ..servers.agent.server import Agent
-    
-    # Detect registry type and use appropriate interface
-    if hasattr(registry, 'list'):
-        # ToolServerRegistry interface
-        server_names = registry.list()
-        get_server_func = registry.get
-    elif hasattr(registry, 'list_servers'):
-        # PluginToolRegistry interface
-        server_names = registry.list_servers()
-        get_server_func = registry.get_server
-    else:
-        raise ValueError(
-            f"Unknown registry type: {type(registry).__name__} - "
-            f"must have list() or list_servers() method"
-        )
-    
+    agents = _registered_agents(registry)
+
     results = {}
     
     # Build list of dependencies to inject
@@ -161,20 +156,10 @@ def inject_dependencies_into_agents(
     for dep_name, dep_value in deps_to_inject.items():
         injected_count = 0
         
-        for server_name in server_names:
+        for server_name, agent in agents:
             try:
-                server = get_server_func(server_name)
-                
-                # PluginToolRegistry wraps servers in PluginToolAdapter - unwrap if needed
-                if hasattr(server, 'plugin_server'):
-                    actual_server = server.plugin_server
-                else:
-                    actual_server = server
-                
-                if isinstance(actual_server, Agent):
-                    setattr(actual_server, dep_name, dep_value)
-                    injected_count += 1
-                    
+                setattr(agent, dep_name, dep_value)
+                injected_count += 1
             except Exception as e:
                 logger.debug(
                     f"[inject] Failed to inject {dep_name} into '{server_name}': {e}"

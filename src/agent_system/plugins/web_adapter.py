@@ -296,15 +296,14 @@ class PluginWebRegistry:
         get_security_config). The rules in config match request paths, that is instance names: a
         renamed or a second ssh_control instance fell to the default role, every user's. A type
         that declares a role keeps it under any name; a rule may ask for more, never for less."""
-        from agent_system.auth.enforcement import ROLE_HIERARCHY
+        from agent_system.auth.enforcement import meets_role
 
         policy = enforcer.get_plugin_policy(plugin_name, path, method)
         declared = (self.security_configs.get(plugin_name) or {}).get("min_role")
         if not declared or not (enforcer.auth_config and enforcer.auth_config.enabled):
             return policy
         current = policy.get("min_role")
-        if (policy.get("requires_auth") and current
-                and ROLE_HIERARCHY.get(str(current).lower(), 0) >= ROLE_HIERARCHY.get(str(declared).lower(), 0)):
+        if policy.get("requires_auth") and current and meets_role(current, declared):
             return policy
         return {"requires_auth": True, "min_role": declared,
                 "description": f"{policy.get('description')}; the plugin type requires {declared}"}
