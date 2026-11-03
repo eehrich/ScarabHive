@@ -157,3 +157,37 @@ async def test_a_heal_on_the_last_attempt_still_sends_the_healed_request():
 
     assert result["assistant"]["content"] == "ok"
     assert len(_FakeAsyncClient.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_tool_results_images_follow_the_whole_run_of_parallel_results(monkeypatch):
+    """tool, user, tool: the injected image of a non-last parallel result sat
+    between the tool messages and the API refused the request."""
+    from agent_system.llm.models import MultimodalToolContent
+
+    _FakeAsyncClient.calls = []
+
+    class _Ok(_FakeAsyncClient):
+        async def post(self, url, json=None, **kw):
+            _FakeAsyncClient.calls.append(json)
+            return _FakeResponse(200, OK_BODY)
+
+    client = HTTPXOpenAIClient(
+        model="m", api_key="test-key", base_url="https://api.openai.com/v1",
+        max_retries=0, capabilities=ModelCapabilitiesConfig(tools=True, streaming=False))
+    monkeypatch.setattr(client, "_create_multimodal_injection",
+                        lambda msg: {"role": "user", "content": "IMG"})
+    shot = [MultimodalToolContent(type="image", path="/x.png", mime_type="image/png")]
+    msgs = [
+        ChatMessage(role="user", content="look"),
+        ChatMessage(role="assistant", content="", tool_calls=[
+            {"id": "a", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "b", "type": "function", "function": {"name": "f", "arguments": "{}"}}]),
+        ChatMessage(role="tool", tool_call_id="a", content="1", multimodal_content=shot),
+        ChatMessage(role="tool", tool_call_id="b", content="2"),
+    ]
+    with patch("plugins.llm_openai_compat.httpx_client.httpx.AsyncClient", _Ok):
+        await client.chat_tools(msgs, [])
+
+    roles = [m["role"] for m in _FakeAsyncClient.calls[0]["messages"]]
+    assert roles[-3:] == ["tool", "tool", "user"], roles

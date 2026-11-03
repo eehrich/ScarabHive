@@ -1192,6 +1192,7 @@ class HTTPXOpenAIClient(LLMClient):
         # Run in thread pool to avoid blocking event loop
         def _serialize_messages() -> list:
             result = []
+            injections = openai_utils.ToolRunInjections()
             for msg in messages:
                 if hasattr(msg, 'model_dump'):
                     d = msg.model_dump(exclude_none=True, mode='json')
@@ -1202,21 +1203,22 @@ class HTTPXOpenAIClient(LLMClient):
                         d['content'] = self._filter_audio_from_content(d['content'])
                     # Whitelist only API-accepted fields, sanitize tool_calls
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
-                    result.append(d)
-                    
-                    # Inject multimodal content as synthetic user message after tool response
+                    injections.add(result, d)
+
+                    # A tool result's images follow the run of tool messages as a user message
                     if getattr(msg, 'role', None) == 'tool' and getattr(msg, 'multimodal_content', None):
                         injection = self._create_multimodal_injection(msg)
                         if injection:
-                            result.append(injection)
+                            injections.hold(injection)
                 elif isinstance(msg, dict):
                     d = dict(msg)
                     if 'content' in d:
                         d['content'] = self._filter_audio_from_content(d['content'])
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
-                    result.append(d)
+                    injections.add(result, d)
                 else:
-                    result.append(dict(msg))
+                    injections.add(result, dict(msg))
+            injections.flush(result)
             return result
         
         message_dicts = await asyncio.to_thread(_serialize_messages)
@@ -1787,6 +1789,7 @@ class HTTPXOpenAIClient(LLMClient):
         # Run in thread pool to avoid blocking event loop
         def _serialize_messages() -> list:
             result = []
+            injections = openai_utils.ToolRunInjections()
             for msg in messages:
                 if hasattr(msg, 'model_dump'):
                     d = msg.model_dump(exclude_none=True, mode='json')
@@ -1795,21 +1798,22 @@ class HTTPXOpenAIClient(LLMClient):
                         d['content'] = self._filter_audio_from_content(d['content'])
                     # Whitelist only API-accepted fields, sanitize tool_calls
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
-                    result.append(d)
-                    
-                    # Inject multimodal content as synthetic user message after tool response
+                    injections.add(result, d)
+
+                    # A tool result's images follow the run of tool messages as a user message
                     if getattr(msg, 'role', None) == 'tool' and getattr(msg, 'multimodal_content', None):
                         injection = self._create_multimodal_injection(msg)
                         if injection:
-                            result.append(injection)
+                            injections.hold(injection)
                 elif isinstance(msg, dict):
                     d = dict(msg)
                     if 'content' in d:
                         d['content'] = self._filter_audio_from_content(d['content'])
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
-                    result.append(d)
+                    injections.add(result, d)
                 else:
-                    result.append(dict(msg))
+                    injections.add(result, dict(msg))
+            injections.flush(result)
             return result
         
         message_dicts = await asyncio.to_thread(_serialize_messages)

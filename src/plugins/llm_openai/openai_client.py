@@ -353,6 +353,7 @@ class OpenAIAsyncClient(LLMClient):
         # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
         def _serialize_messages() -> list[dict]:
             result = []
+            injections = openai_utils.ToolRunInjections()
             for m in messages:
                 # Use model_dump() to properly serialize nested Pydantic models
                 d = m.model_dump(exclude_none=True, mode='json')
@@ -368,15 +369,15 @@ class OpenAIAsyncClient(LLMClient):
                     if not d['content']:
                         d['content'] = ""
                 
-                result.append(d)
-                
-                # Inject multimodal content as synthetic user message after tool response
-                # OpenAI doesn't support native multimodal tool responses, so we inject
-                # the content as a user message with a clear prefix
+                injections.add(result, d)
+
+                # OpenAI doesn't support native multimodal tool responses: the
+                # content follows the run of tool messages as a user message
                 if m.role == "tool" and m.multimodal_content:
                     injection = self._create_multimodal_injection(m)
                     if injection:
-                        result.append(injection)
+                        injections.hold(injection)
+            injections.flush(result)
             return self._apply_developer_rung(result)
         
         msgs = await asyncio.to_thread(_serialize_messages)
@@ -576,6 +577,7 @@ class OpenAIAsyncClient(LLMClient):
         # NOTE: model_dump() is CPU-intensive for large messages, run in thread pool
         def _serialize_messages() -> list[dict]:
             result = []
+            injections = openai_utils.ToolRunInjections()
             for m in messages:
                 d = m.model_dump(exclude_none=True, mode='json')
                 # processed separately; the private fields go in _apply_developer_rung
@@ -589,13 +591,14 @@ class OpenAIAsyncClient(LLMClient):
                     if not d['content']:
                         d['content'] = ""
                 
-                result.append(d)
-                
-                # Inject multimodal content as synthetic user message after tool response
+                injections.add(result, d)
+
+                # The content follows the run of tool messages as a user message
                 if m.role == "tool" and m.multimodal_content:
                     injection = self._create_multimodal_injection(m)
                     if injection:
-                        result.append(injection)
+                        injections.hold(injection)
+            injections.flush(result)
             return self._apply_developer_rung(result)
         
         msgs = await asyncio.to_thread(_serialize_messages)

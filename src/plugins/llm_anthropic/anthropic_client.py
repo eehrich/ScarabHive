@@ -394,8 +394,16 @@ class AnthropicAsyncClient(LLMClient):
         converted_messages: List[Dict[str, Any]] = []
         may_replay = reasoning_replay_flags(messages, self.reasoning_details_mode)
 
+        # A tool result's images go in as a user message AFTER the whole run of
+        # tool results: right after its own result, a non-last one of parallel
+        # calls ended up between them ([tool_result, image, tool_result] once
+        # the user turns merge), and tool_result blocks must come first.
+        held_injections: List[Dict[str, Any]] = []
         for index, msg in enumerate(messages):
             role = msg.role
+            if role != "tool" and held_injections:
+                converted_messages.extend(held_injections)
+                held_injections.clear()
 
             # Extract system message(s) - Anthropic only supports a single system param
             if role == "system":
@@ -465,8 +473,8 @@ class AnthropicAsyncClient(LLMClient):
                         msg, supports_vision=supports_vision, model_name=self.model
                     )
                     if injection:
-                        converted_messages.append(injection)
-                
+                        held_injections.append(injection)
+
                 continue
             
             # Handle assistant messages with tool calls
@@ -536,7 +544,8 @@ class AnthropicAsyncClient(LLMClient):
                         "role": anthropic_role,
                         "content": msg.content or ""
                     })
-        
+        converted_messages.extend(held_injections)
+
         # Strip cache breakpoint sentinels (safety net, on the CONVERTED
         # output -- session messages stay untouched): the native Anthropic
         # path uses cache_control (not the OpenAI sentinel breakpoints); a
