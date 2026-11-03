@@ -75,6 +75,10 @@ logger = logging.getLogger(__name__)
 #: The longest wait a server's Retry-After can ask of one retry.
 MAX_RETRY_AFTER_SECONDS = 60.0
 
+#: Self-heals one request may take on top of its attempts: one provider pin
+#: released, two encrypted-reasoning strips, one signature bypass.
+_MAX_HEALS = 4
+
 
 def openrouter_routing_info(response_data: dict) -> Optional[dict]:
     """Which backend actually answered — from ``openrouter_metadata``.
@@ -1341,7 +1345,16 @@ class HTTPXOpenAIClient(LLMClient):
         _enc_retries = 0
         try:
             rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
-            for attempt in range(_effective_max + 1):
+            # A self-heal (provider pin released, encrypted-reasoning strip,
+            # signature bypass) retries the SAME attempt: counted as one, a
+            # heal on the last attempt mutated the request -- and the session's
+            # messages -- and then left the loop untyped. Each heal is bounded
+            # (one pin, two strips, one bypass), so _MAX_HEALS bounds the loop.
+            _heals = 0
+            for _pass in range(_effective_max + 1 + _MAX_HEALS):
+                attempt = _pass - _heals
+                if attempt > _effective_max:
+                    break
                 # Check cancellation before each attempt
                 if cancellation_token and cancellation_token.is_cancelled:
                     raise asyncio.CancelledError("Request cancelled by user")
@@ -1409,6 +1422,7 @@ class HTTPXOpenAIClient(LLMClient):
                                 await self._notify_retry(
                                     "openai_httpx", self.model, url, False,
                                     "404, provider pin released", attempt, self.max_retries + 1)
+                                _heals += 1  # a self-heal retries the same attempt
                                 continue
 
                             # Self-healing: OpenAI encrypted-reasoning 400 (defective
@@ -1441,6 +1455,7 @@ class HTTPXOpenAIClient(LLMClient):
                                             "http-400 encrypted-reasoning strip",
                                             attempt, self.max_retries + 1,
                                         )
+                                        _heals += 1  # a self-heal retries the same attempt
                                         continue
 
                             # Self-healing: Gemini "Corrupted thought signature" can
@@ -1468,6 +1483,7 @@ class HTTPXOpenAIClient(LLMClient):
                                         "http-400 signature bypass",
                                         attempt, self.max_retries + 1,
                                     )
+                                    _heals += 1  # a self-heal retries the same attempt
                                     continue
 
                             logger.error(f"HTTPX non-streaming request failed: {error_msg}")
@@ -1585,6 +1601,7 @@ class HTTPXOpenAIClient(LLMClient):
                                     "body-400 encrypted-reasoning strip",
                                     attempt, self.max_retries + 1,
                                 )
+                                _heals += 1  # a self-heal retries the same attempt
                                 continue
 
                         # Body-level 400: probable Gemini cross-backend thought-signature
@@ -1630,6 +1647,7 @@ class HTTPXOpenAIClient(LLMClient):
                                     "body-400 signature bypass",
                                     attempt, self.max_retries + 1,
                                 )
+                                _heals += 1  # a self-heal retries the same attempt
                                 continue
 
                         # Detect Gemini MALFORMED_FUNCTION_CALL — a transient model error
@@ -1732,8 +1750,14 @@ class HTTPXOpenAIClient(LLMClient):
                             ) from last_exception
                         raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts ({err_label}) url={url}") from last_exception
 
-            # Should never reach here
-            raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts: {last_exception!r}") from last_exception
+            # The attempts ran out on a retry (a retryable answer on the last
+            # one): typed, so the agent's fallback chain moves on -- a plain
+            # Exception is not recognised there.
+            await _report_end(error=f"Request failed after {_effective_max + 1} attempts")
+            raise LLMServerError(
+                f"HTTP request failed after {_effective_max + 1} attempts: {last_exception!r}",
+                provider="httpx", model=self.model,
+            ) from last_exception
         except BaseException as error:
             # Whatever ends the request without a report yet -- a cancel during
             # a retry wait, a caller abandoning the stream (GeneratorExit; awaiting
@@ -1924,7 +1948,16 @@ class HTTPXOpenAIClient(LLMClient):
         _enc_retries = 0
         try:
             rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
-            for attempt in range(_effective_max + 1):
+            # A self-heal (provider pin released, encrypted-reasoning strip,
+            # signature bypass) retries the SAME attempt: counted as one, a
+            # heal on the last attempt mutated the request -- and the session's
+            # messages -- and then left the loop untyped. Each heal is bounded
+            # (one pin, two strips, one bypass), so _MAX_HEALS bounds the loop.
+            _heals = 0
+            for _pass in range(_effective_max + 1 + _MAX_HEALS):
+                attempt = _pass - _heals
+                if attempt > _effective_max:
+                    break
                 # Accumulators for building the complete response. MUST be reset at
                 # the start of every attempt: a stream that drops mid-response
                 # (RemoteProtocolError on a stalled stream is common during long
@@ -2055,6 +2088,7 @@ class HTTPXOpenAIClient(LLMClient):
                                         "openai_httpx", self.model, url, True,
                                         "404, provider pin released (stream)", attempt,
                                         self.max_retries + 1)
+                                    _heals += 1  # a self-heal retries the same attempt
                                     continue
 
                                 # Self-healing: OpenAI encrypted-reasoning 400
@@ -2083,6 +2117,7 @@ class HTTPXOpenAIClient(LLMClient):
                                                 "http-400 encrypted-reasoning strip (stream)",
                                                 attempt, self.max_retries + 1,
                                             )
+                                            _heals += 1  # a self-heal retries the same attempt
                                             continue
 
                                 # Self-healing: Gemini "Corrupted thought signature"
@@ -2109,6 +2144,7 @@ class HTTPXOpenAIClient(LLMClient):
                                             "http-400 signature bypass (stream)",
                                             attempt, self.max_retries + 1,
                                         )
+                                        _heals += 1  # a self-heal retries the same attempt
                                         continue
 
                                 logger.error(f"HTTPX streaming request failed: {error_msg}")
@@ -2536,6 +2572,7 @@ class HTTPXOpenAIClient(LLMClient):
                                 "body-400 signature bypass (stream)",
                                 attempt, self.max_retries + 1,
                             )
+                            _heals += 1  # a self-heal retries the same attempt
                             continue
 
                     # Body-level 400 OpenAI encrypted-reasoning retry for streaming
@@ -2560,6 +2597,7 @@ class HTTPXOpenAIClient(LLMClient):
                                 "body-400 encrypted-reasoning strip (stream)",
                                 attempt, self.max_retries + 1,
                             )
+                            _heals += 1  # a self-heal retries the same attempt
                             continue
 
                     # Body-level upstream 429 retry for streaming (mirrors the
@@ -2673,8 +2711,12 @@ class HTTPXOpenAIClient(LLMClient):
                             f"Network/protocol error: {e}", provider="openai_httpx", model=self.model,
                         ) from e
 
-            # Should never reach here, but just in case
-            raise Exception(f"Request failed after {self.max_retries + 1} attempts") from last_exception
+            # The attempts ran out on a retry: typed, as in the non-streaming path.
+            await _report_end(error=f"Request failed after {_effective_max + 1} attempts")
+            raise LLMServerError(
+                f"Request failed after {_effective_max + 1} attempts: {last_exception!r}",
+                provider="httpx", model=self.model,
+            ) from last_exception
         except BaseException as error:
             # Whatever ends the request without a report yet -- a cancel during
             # a retry wait, a caller abandoning the stream (GeneratorExit; awaiting

@@ -127,3 +127,33 @@ async def test_status400_non_signature_still_raises():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.asyncio
+async def test_a_heal_on_the_last_attempt_still_sends_the_healed_request():
+    """A heal used to cost an attempt: on the last one it patched the request
+    and then left the loop with an untyped Exception the fallback chain does
+    not recognise. With a single attempt the healed retry must still go out."""
+    _FakeAsyncClient.calls = []
+    client = HTTPXOpenAIClient(
+        model="google/gemini-3.5-flash-lite",
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        max_retries=0,
+        rate_limit_max_retries=0,
+        retry_backoff=0.01,
+        capabilities=ModelCapabilitiesConfig(tools=True, streaming=False),
+    )
+    msgs = [
+        ChatMessage(role="user", content="hi"),
+        ChatMessage(role="assistant", content="", tool_calls=[
+            {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}],
+            reasoning_details=[{"type": "reasoning.encrypted",
+                                "format": "google-gemini-v1", "data": "SIG", "index": 0}]),
+        ChatMessage(role="tool", tool_call_id="c1", content="r"),
+    ]
+    with patch("plugins.llm_openai_compat.httpx_client.httpx.AsyncClient", _FakeAsyncClient):
+        result = await client.chat_tools(msgs, [])
+
+    assert result["assistant"]["content"] == "ok"
+    assert len(_FakeAsyncClient.calls) == 2
