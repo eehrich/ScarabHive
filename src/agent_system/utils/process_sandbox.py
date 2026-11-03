@@ -43,12 +43,13 @@ connects), systemd over D-Bus. That is IPC, and the vocabulary does not claim
 it; the Seatbelt profile closes the macOS channels it can name (see there).
 Nor does it bind an unconfined tool that writes into the workspace and
 follows a symlink a confined process left there. One deferred channel both
-backends close: the git hooks, config and ``commondir`` of the workspace's
-repository, which decide what the next unconfined ``git`` runs. Seatbelt
-refuses them by path, present or not; bubblewrap binds those present at spawn
-read-only and puts a read-only placeholder where ``hooks`` is missing, but it
-cannot keep a missing ``commondir`` from being created (see ``_Bubblewrap``). What the modes hold is the
-process and everything it spawns.
+backends close: the git hooks, config files and ``commondir`` of the
+workspace's repository, which decide what the next unconfined ``git`` runs.
+Seatbelt refuses them by path, present or not; bubblewrap binds those present
+at spawn read-only and puts a read-only stand-in where hooks or a config file
+is missing, but a missing ``commondir`` -- in the repository's git directory
+and in every submodule's -- can still be created (see ``_Bubblewrap``).
+What the modes hold is the process and everything it spawns.
 
 **The default is ``danger-full-access``.** Not because it is right, but
 because every existing deployment runs that way today and a stricter default
@@ -63,6 +64,7 @@ another call with a wider mode.
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import shutil
@@ -224,51 +226,21 @@ def _announce(confined: ConfinedCommand, mode: str) -> None:
 #: git to execute its code -- a sandbox escape with a delay.
 _GIT_EXECUTABLE_METADATA = ("hooks", "config", "config.worktree", "commondir")
 
+#: The config files of a git directory. Missing, each gets an EMPTY read-only
+#: placeholder: git reads an empty config exactly like an absent one
+#: (measured, git 2.43).
+_GIT_CONFIG_FILES = ("config", "config.worktree")
 
-def _git_protected(root: Path) -> list[Path]:
-    """The existing paths below ``root/.git`` that must stay read-only.
-
-    The repository's own hooks and config, those of every submodule git
-    directory under ``.git/modules`` (nested submodules included), and the
-    per-worktree ``config.worktree`` files. The walk under ``modules`` stops
-    at each git directory, so it does not wander through objects.
-    """
-    git = root / ".git"
-    if not git.is_dir() or git.is_symlink():
-        return []
-    found = [git / name for name in _GIT_EXECUTABLE_METADATA
-             if (git / name).exists() or (git / name).is_symlink()]
-    worktrees = git / "worktrees"
-    if worktrees.is_dir():
-        found += [w / name for w in sorted(worktrees.iterdir())
-                  for name in ("config.worktree", "commondir")
-                  if (w / name).exists()]
-    pending = [git / "modules"]
-    while pending:
-        current = pending.pop()
-        if not current.is_dir() or current.is_symlink():
-            continue
-        for child in sorted(current.iterdir()):
-            if not child.is_dir() or child.is_symlink():
-                continue
-            if (child / "HEAD").exists():  # a submodule's git directory
-                found += [child / name for name in _GIT_EXECUTABLE_METADATA
-                          if (child / name).exists()]
-                pending.append(child / "modules")
-            else:  # part of a submodule name with a slash
-                pending.append(child)
-    return found
+def _lexists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
 
 
-def _git_missing_hooks(root: Path) -> list[Path]:
-    """The ``hooks`` directories git would look for below ``root/.git`` but
-    that do not exist -- in the repository's git directory and in every
-    submodule git directory under ``.git/modules``.
+def _git_dirs(root: Path) -> list[Path]:
+    """The workspace repository's git directory and every submodule git
+    directory under ``.git/modules`` (nested submodules included).
 
-    A missing one is as dangerous as a writable one: the confined process
-    creates it and fills it. An empty directory is what ``git init`` leaves
-    there anyway, so a read-only empty one in its place changes nothing for
-    git.
+    The walk stops at each git directory, so it does not wander through
+    objects. Empty when ``root/.git`` is not a real directory.
     """
     git = root / ".git"
     if not git.is_dir() or git.is_symlink():
@@ -282,13 +254,94 @@ def _git_missing_hooks(root: Path) -> list[Path]:
         for child in sorted(current.iterdir()):
             if not child.is_dir() or child.is_symlink():
                 continue
-            if (child / "HEAD").exists():
+            if (child / "HEAD").exists():  # a submodule's git directory
                 gitdirs.append(child)
                 pending.append(child / "modules")
-            else:
+            else:  # part of a submodule name with a slash
                 pending.append(child)
-    return [d / "hooks" for d in gitdirs
-            if not (d / "hooks").exists() and not (d / "hooks").is_symlink()]
+    return gitdirs
+
+
+def _git_worktree_dirs(root: Path) -> list[Path]:
+    """The administrative directories of the linked worktrees,
+    ``.git/worktrees/<name>``."""
+    worktrees = root / ".git" / "worktrees"
+    if not worktrees.is_dir() or worktrees.is_symlink():
+        return []
+    return [w for w in sorted(worktrees.iterdir()) if w.is_dir() and not w.is_symlink()]
+
+
+def _git_protected(root: Path) -> list[Path]:
+    """The existing paths below ``root/.git`` that must stay read-only.
+
+    The hooks, config files and ``commondir`` of the repository and of every
+    submodule git directory, and the ``config.worktree`` and ``commondir`` of
+    every linked worktree. A symlink counts as present: binding it follows
+    it, and a dangling one makes bwrap fail -- closed, not open.
+    """
+    found = [d / name for d in _git_dirs(root)
+             for name in _GIT_EXECUTABLE_METADATA if _lexists(d / name)]
+    found += [w / name for w in _git_worktree_dirs(root)
+              for name in ("config.worktree", "commondir") if _lexists(w / name)]
+    return found
+
+
+def _git_missing_hooks(root: Path) -> list[Path]:
+    """The ``hooks`` directories git would look for below ``root/.git`` but
+    that do not exist -- in the repository's git directory and in every
+    submodule git directory under ``.git/modules``.
+
+    A missing one is as dangerous as a writable one: the confined process
+    creates it and fills it. An empty directory is what ``git init`` leaves
+    there anyway, so a read-only empty one in its place changes nothing for
+    git.
+    """
+    return [d / "hooks" for d in _git_dirs(root) if not _lexists(d / "hooks")]
+
+
+def _git_missing_configs(root: Path) -> list[Path]:
+    """The config files git may read below ``root/.git`` that do not exist.
+
+    ``config.worktree`` above all -- git reads it only once the config sets
+    ``extensions.worktreeConfig``, which ``git sparse-checkout`` and ``git
+    worktree`` users turn on later, so a planted one lies in wait for them.
+    """
+    missing = [d / name for d in _git_dirs(root)
+               for name in _GIT_CONFIG_FILES if not _lexists(d / name)]
+    missing += [w / "config.worktree" for w in _git_worktree_dirs(root)
+                if not _lexists(w / "config.worktree")]
+    return missing
+
+
+#: An empty file outside every workspace, bound read-only where a git config
+#: file is missing. Kept for the process's lifetime, re-made if it vanishes.
+_empty_placeholder: Path | None = None
+
+
+def _empty_file(workspace_root: Path) -> Path:
+    """The empty read-only file bound over missing git config files.
+
+    It must not lie inside the workspace: there the confined process could
+    write it through the workspace's writable bind, and every placeholder
+    bound from it would change with it.
+    """
+    global _empty_placeholder
+    path = _empty_placeholder
+    if path is None or not path.is_file() or path.is_symlink() or path.stat().st_size:
+        directory = Path(tempfile.mkdtemp(prefix="scarabhive-sandbox-"))
+        atexit.register(shutil.rmtree, directory, ignore_errors=True)
+        path = directory / "empty"
+        path.touch(mode=0o444)
+        path.chmod(0o444)
+        _empty_placeholder = path
+    resolved = path.resolve()
+    root = workspace_root.resolve()
+    if resolved == root or root in resolved.parents:
+        raise SandboxUnavailable(
+            f"the placeholder for missing git config files, {resolved}, lies "
+            f"inside the workspace {root}, where the confined process could "
+            f"write it; point TMPDIR outside the workspace.")
+    return resolved
 
 
 class _Bubblewrap:
@@ -321,18 +374,49 @@ class _Bubblewrap:
     In workspace-write the workspace's git metadata that runs code is bound
     read-only again on top (see ``_git_protected``), and ``.git`` itself is
     bound onto itself, which makes it a mount point: it cannot be renamed or
-    removed, so no prepared directory can take its place. A missing ``hooks``
-    directory gets an empty read-only tmpfs in its place (bwrap creates the
-    empty mount point directory on the host, which is what ``git init`` leaves
-    there anyway). Otherwise only what exists at spawn time is covered: a
-    missing ``commondir`` -- the usual case outside linked worktrees -- can be
-    created and pointed at a git directory of the process's making, since no
-    placeholder can stand in for it (git refuses an empty one, and the mount
-    point bwrap leaves behind would break the repository for the unconfined
-    git); a missing ``config.worktree`` likewise, which git reads only when
-    the protected config enables ``extensions.worktreeConfig``; and a ``.git``
-    created later (``git init`` at the root). Seatbelt refuses all of them by
-    path.
+    removed, so no prepared directory can take its place. ``.git`` as a whole
+    stays writable, and has to: git creates its lock files right in it
+    (``index.lock``, ``HEAD.lock``, ``packed-refs.lock``, ``ORIG_HEAD``,
+    ``COMMIT_EDITMSG``...) and renames them over ``index``, ``HEAD`` and the
+    rest. Measured with bwrap 0.9.0: with ``.git`` read-only and objects,
+    refs, logs, index and HEAD bound writable again, ``git add`` fails on
+    ``index.lock``; a file bound writable on its own is a mount point, and
+    the rename over it fails ("unable to write new index file").
+
+    So what is missing gets a read-only stand-in instead, each chosen so that
+    the trace it leaves on the host changes nothing for git -- bwrap creates
+    the mount point of every bind on the host and does not remove it
+    (measured), and a bind needs one:
+
+    * a missing ``hooks`` directory: an empty read-only tmpfs. Trace: an
+      empty directory, what ``git init`` leaves there anyway.
+    * a missing ``config`` or ``config.worktree`` (in the repository's, each
+      submodule's and each linked worktree's git directory): an empty file,
+      bound read-only. Trace: an empty file, mode 0444; git reads an empty
+      config like an absent one, and rewrites it by rename when it writes
+      one (measured: ``git config --worktree`` works on it afterwards).
+      ``config.worktree`` is read only once the config enables
+      ``extensions.worktreeConfig`` -- which ``git sparse-checkout`` turns
+      on later, unconfined, so a planted one would wait for it.
+    * a missing ``commondir`` -- the usual case in the repository's and in
+      every submodule's git directory -- gets NOTHING, and stays creatable:
+      the gap that remains. A process can create one pointing at a git
+      directory of its making, with hooks or a config of its choosing, and
+      the next unconfined git in that repository (or submodule) runs them.
+      No stand-in closes it without harm: a bind leaves an EMPTY
+      ``commondir`` behind on the host, which git refuses ("failed to
+      read"), breaking the repository for every git after the command
+      (measured); and a ``commondir`` containing ``.`` written on the host
+      beforehand would stay in the user's repository for good and changes
+      git's behaviour -- with one present, git ignores ``core.worktree`` and
+      ``core.bare`` from the config (measured with git 2.43; every
+      submodule git directory sets ``core.worktree``). Seatbelt refuses it
+      by path.
+
+    Also uncovered: a linked worktree's administrative directory without
+    its ``commondir`` (git cannot use that worktree anyway), and a ``.git``
+    created later (``git init`` at the root). Seatbelt refuses all of them
+    by path.
     """
 
     name = "bubblewrap"
@@ -372,6 +456,11 @@ class _Bubblewrap:
                 wrapped += ["--ro-bind", str(path), str(path)]
             for path in _git_missing_hooks(sandbox.workspace_root):
                 wrapped += ["--tmpfs", str(path), "--remount-ro", str(path)]
+            missing = _git_missing_configs(sandbox.workspace_root)
+            if missing:
+                empty = str(_empty_file(sandbox.workspace_root))
+                for path in missing:
+                    wrapped += ["--ro-bind", empty, str(path)]
         else:
             wrapped += ["--ro-bind", root, root]
         if cwd is not None:
