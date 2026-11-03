@@ -368,9 +368,10 @@ async def run(
             if not temp_path.resolve().is_relative_to(temp_dir_resolved):
                 logger.warning("Skipping upload that escapes temp dir: %r", upload_file.filename)
                 continue
-            with open(temp_path, 'wb') as f:
-                content = await upload_file.read()
-                f.write(content)
+            content = await upload_file.read()
+            # Off the event loop: an upload can be megabytes, and every other
+            # request of this process waits while the loop writes it.
+            await asyncio.to_thread(temp_path.write_bytes, content)
             temp_files.append(temp_path)
 
             # Categorize by file type
@@ -409,20 +410,27 @@ async def run(
             # Track if this is a new session
             was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
-            refused = False  # the run was refused at the agent's session lock
-            # Session presence (core/session_presence/): held before the
-            # run through the save after it; a session this run creates
-            # comes with the start event.
-            refusal, held = await claim_session(
-                selected_agent, actual_session_id, user_id, force)
-            if refusal:
-                yield "event: error\n"
-                yield f"data: {json.dumps({'type': 'error', 'message': refusal}, ensure_ascii=False)}\n\n"
-                return
-
-            # tool_approval may ask the person reading this stream (released below)
-            set_run_attended(request_id, asks_a_person(attended, current_user, ctx.live_config().auth.enabled))
+            # The run was refused at the agent's session lock -- or, until the
+            # claim below is through, never started: nothing to save either way.
+            refused = True
+            held = None
             try:
+                # Session presence (core/session_presence/): held before the
+                # run through the save after it; a session this run creates
+                # comes with the start event. Inside the try: this stream owns
+                # the cleanup (stream_owns_cleanup), so a refused or failed
+                # claim has to pass the finally that removes the uploads and
+                # lets go of the request.
+                refusal, held = await claim_session(
+                    selected_agent, actual_session_id, user_id, force)
+                if refusal:
+                    yield "event: error\n"
+                    yield f"data: {json.dumps({'type': 'error', 'message': refusal}, ensure_ascii=False)}\n\n"
+                    return
+                refused = False
+
+                # tool_approval may ask the person reading this stream (released below)
+                set_run_attended(request_id, asks_a_person(attended, current_user, ctx.live_config().auth.enabled))
                 async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                     event_type = event.get("type")
                     refused = refused or refused_before_the_run(event)

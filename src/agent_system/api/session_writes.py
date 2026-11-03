@@ -13,7 +13,7 @@ commands (chat_routes):
   ``drop_last_exchange_and_persist`` (with the file rewind);
 - what a request reads before it claims the session: ``session_record``,
   ``session_agent_name``, ``session_held``, and the agent whose tracker holds it
-  (``settling_agent``, ``resolve_agent_for_request``).
+  (``settling_agent``, ``session_owner_agent``, ``resolve_agent_for_request``).
 
 They were closures in ``build_app`` and captured nothing of it but the entry
 agent, which ``append_and_persist`` takes as an argument.
@@ -27,7 +27,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, Request
 
 from agent_system import app_state
-from agent_system.api.app_context import chat_agent, registry_of
+from agent_system.api.app_context import chat_agent, registered_agent, registry_of
 from agent_system.core.session_presence import SessionBusy, presence_for
 from agent_system.services.background_job_manager import BackgroundJobManager, get_background_job_manager
 from agent_system.tools.base import ToolServerRegistry
@@ -173,6 +173,24 @@ def settling_agent(request: Request, sid: str) -> Any:
     return None
 
 
+async def session_owner_agent(request: Request, sid: str, user_id: str,
+                              agent_name: Optional[str] = None) -> Any:
+    """The agent whose SessionTracker holds a stored session, or None when no such agent is registered.
+
+    Every agent carries its own tracker, and a conversation of openai_api runs on
+    the agent its model names: written through another agent's tracker, a message
+    or a cut went into a copy no run of the session looks at, and the one that
+    does put it back or saved over it. The agent of a turn settling the session
+    (settling_agent), else the one its record names, else *agent_name*'s -- the
+    entry agent when that is None too: a session without a record yet.
+    """
+    settling = settling_agent(request, sid)
+    if settling is not None:
+        return settling
+    ran_with = await session_agent_name(sid, user_id)
+    return chat_agent(request, ran_with or agent_name)
+
+
 async def session_record(sid: str, user_id: str) -> dict:
     """A stored session as it lies on disk, or {} when there is none.
 
@@ -250,16 +268,12 @@ async def resolve_agent_for_request(
     agent_name = getattr(job, "agent_name", None) or agent_name
     if registry is not None and agent_name and agent_name not in ("default", default_agent.name):
         try:
-            candidate = registry.get(agent_name)
+            return registered_agent(registry, agent_name)
         except Exception:
             logging.getLogger(__name__).warning(
                 "Could not resolve agent '%s' for request %s, using default agent",
                 agent_name, request_id,
             )
-            return default_agent
-        from agent_system.servers.agent.server import Agent as _Agent
-        if isinstance(candidate, _Agent):
-            return candidate
     return default_agent
 
 

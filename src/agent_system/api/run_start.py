@@ -25,7 +25,7 @@ from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
 from agent_system import app_state
-from agent_system.api.app_context import AppContext
+from agent_system.api.app_context import AppContext, NotAnAgent, lookup_agent
 from agent_system.core.session_presence import forget_stop
 from agent_system.services.background_job_manager import get_background_job_manager
 from agent_system.services.session_manager import SessionPermissionError
@@ -154,10 +154,7 @@ def get_agent_with_overrides(ctx: AppContext, agent_name: Optional[str] = None,
     # job-row goes 'failed' with a useful error.
     if agent_name and agent_name != selected_agent.name:
         try:
-            selected_agent = app_state.app_registry.get(agent_name)  # type: ignore[attr-defined]
-            from agent_system.servers.agent.server import Agent as _Agent
-            if not isinstance(selected_agent, _Agent):
-                raise HTTPException(status_code=400, detail=f"'{agent_name}' is not an agent")
+            selected_agent = lookup_agent(ctx.app, agent_name)
             # CRITICAL: Inject app_state.session_service (same as CLI line 1252 and build_app line 354-357)
             # ALWAYS inject, even if attribute exists, to refresh the reference
             selected_agent._session_service = app_state.session_service
@@ -168,10 +165,8 @@ def get_agent_with_overrides(ctx: AppContext, agent_name: Optional[str] = None,
                 agent_name,
             )
             raise _agent_not_found(agent_name)
-        except HTTPException:
-            # The deliberate 400 ("'x' is not an agent") must keep its
-            # status — the generic handler below turned it into a 500.
-            raise
+        except NotAnAgent:
+            raise HTTPException(status_code=400, detail=f"'{agent_name}' is not an agent")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
 

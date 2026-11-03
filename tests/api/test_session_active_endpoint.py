@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from agent_system.api import session_endpoints
+from agent_system.api import session_endpoints, session_live
 from agent_system.api.session_endpoints import list_active_sessions, session_router
 from agent_system.llm.message_roles import DEVELOPER
 from agent_system.llm.models import ChatMessage
@@ -699,7 +699,7 @@ async def test_a_session_in_flight_is_served_from_the_run_not_from_disk(tmp_path
         ChatMessage(role=DEVELOPER, content="Step 9 of 10.", injected_by="agent.step_budget"),
     ])
     jobs, release = await _manager_with([{"request_id": "r-1", "user_id": "ada", "session_id": session_id}])
-    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: jobs)
+    monkeypatch.setattr(session_live, "get_background_job_manager", lambda: jobs)
     try:
         answer = await session_endpoints.get_session(
             session_id, current_user=_User("ada"), session_manager=manager,
@@ -757,7 +757,7 @@ async def test_the_live_answer_says_how_far_the_runs_stream_has_come(tmp_path, m
     manager, session_id = await _saved_session(tmp_path)
     agent = await _agent_running(session_id, "r-1", [ChatMessage(role="user", content="in flight")])
     jobs, release = await _manager_with([{"request_id": "r-1", "user_id": "ada", "session_id": session_id}])
-    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: jobs)
+    monkeypatch.setattr(session_live, "get_background_job_manager", lambda: jobs)
     try:
         jobs._jobs["r-1"].events_emitted = 7
         answer = await session_endpoints.get_session(
@@ -777,7 +777,7 @@ async def test_what_the_run_sends_after_its_messages_were_read_is_not_counted_as
     manager, session_id = await _saved_session(tmp_path)
     agent = await _agent_running(session_id, "r-1", [ChatMessage(role="user", content="in flight")])
     jobs, release = await _manager_with([{"request_id": "r-1", "user_id": "ada", "session_id": session_id}])
-    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: jobs)
+    monkeypatch.setattr(session_live, "get_background_job_manager", lambda: jobs)
 
     def the_run_goes_on(messages):
         jobs._jobs["r-1"].events_emitted = 9
@@ -801,7 +801,7 @@ async def test_a_run_with_no_job_names_no_number(tmp_path, monkeypatch):
     manager, session_id = await _saved_session(tmp_path)
     agent = await _agent_running(session_id, "r-inline", [ChatMessage(role="user", content="in flight")])
     jobs, release = await _manager_with()
-    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: jobs)
+    monkeypatch.setattr(session_live, "get_background_job_manager", lambda: jobs)
     try:
         answer = await session_endpoints.get_session(
             session_id, current_user=_User("ada"), session_manager=manager,
@@ -822,7 +822,7 @@ async def test_the_live_messages_carry_their_token_estimate(tmp_path, monkeypatc
         ChatMessage(role="user", content="a message long enough to estimate something for"),
     ])
     jobs, release = await _manager_with([{"request_id": "r-1", "user_id": "ada", "session_id": session_id}])
-    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: jobs)
+    monkeypatch.setattr(session_live, "get_background_job_manager", lambda: jobs)
     try:
         answer = await session_endpoints.get_session(
             session_id, current_user=_User("ada"), session_manager=manager,
@@ -1127,7 +1127,7 @@ async def test_a_run_that_has_let_go_of_its_lock_is_served_live_while_its_job_ru
     await agent._session_tracker.release_session_lock(session_id, "r-1")   # _finalize_request, before the save
     assert not agent._session_tracker.check_session_locked(session_id)[0], "fixture: the lock is still held"
     jobs, release = await _manager_with([{"request_id": "r-1", "user_id": "ada", "session_id": session_id}])
-    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: jobs)
+    monkeypatch.setattr(session_live, "get_background_job_manager", lambda: jobs)
     try:
         jobs._jobs["r-1"].events_emitted = 12
         jobs._jobs["r-1"].answered = True
@@ -1154,7 +1154,7 @@ async def test_a_job_the_sessions_agent_does_not_run_leaves_its_old_live_state_u
     await agent._session_tracker.release_session_lock(session_id, "r-old")
     jobs, release = await _manager_with([{"request_id": "r-new", "user_id": "ada", "session_id": session_id,
                                            "agent_name": "another_agent"}])
-    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: jobs)
+    monkeypatch.setattr(session_live, "get_background_job_manager", lambda: jobs)
     try:
         jobs._jobs["r-new"].events_emitted = 5
         answer = await session_endpoints.get_session(

@@ -21,6 +21,8 @@ call time from ``agent_system.app_state``, as everywhere else.
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 from typing import Any, Optional
 
@@ -46,9 +48,68 @@ async def parse_json_body(request: Request) -> Any:
         )
 
 
+async def parse_json_object(request: Request) -> dict:
+    """The request's JSON body as an object; no body at all (``null``) reads as {}.
+
+    A JSON array or bare string parses fine but has no ``.get`` -- answered
+    "bad request" here rather than as the AttributeError's 500 in the handler.
+    """
+    body = await parse_json_body(request)
+    if body is not None and not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+    return body or {}
+
+
+def errors_as_200(failed_to: str, *, prefixed: bool = True):
+    """Decorate a route that answers a failure with 200 and ``{"error": ...}`` instead of a 500.
+
+    The tool and hook status routes do: the pages that poll them show the text
+    in place of the data. Logged with its traceback under the route's own module;
+    ``prefixed`` puts "Failed to <failed_to>: " in front of the error's text.
+    """
+    def decorate(route):
+        @functools.wraps(route)
+        async def answered(*args, **kwargs):
+            try:
+                return await route(*args, **kwargs)
+            except Exception as e:
+                logging.getLogger(route.__module__).exception("Failed to %s: %s", failed_to, e)
+                return {"error": f"Failed to {failed_to}: {e}" if prefixed else str(e)}
+        return answered
+    return decorate
+
+
 def registry_of(request: Request) -> Any:
     """The registry the app serving *request* looks agents up in: its own, else the process-wide one."""
     return getattr(request.app.state, "tool_registry", None) or app_state.app_registry
+
+
+class NotAnAgent(LookupError):
+    """The name is registered, but as a tool server: something a run cannot run on."""
+
+
+def registered_agent(registry: Any, name: str) -> Any:
+    """The Agent registered as *name* in *registry*.
+
+    KeyError when nothing is (no registry either), NotAnAgent when what is
+    registered is a tool server; anything else the registry raises passes
+    through -- each caller answers those three cases its own way (404, 400,
+    an error dict, a quiet None).
+    """
+    from agent_system.servers.agent.server import Agent as _Agent
+
+    found = registry.get(name) if registry is not None else None
+    if found is None:
+        raise KeyError(name)
+    if not isinstance(found, _Agent):
+        raise NotAnAgent(name)
+    return found
+
+
+def lookup_agent(source: Any, name: str) -> Any:
+    """registered_agent in the registry of the app serving *source* (a Request, or the app itself)."""
+    app = source.app if isinstance(source, Request) else source
+    return registered_agent(getattr(app.state, "tool_registry", None) or app_state.app_registry, name)
 
 
 def chat_agent(request: Request, agent_name: Optional[str]):
@@ -65,13 +126,11 @@ def chat_agent(request: Request, agent_name: Optional[str]):
     if not agent_name:
         entry = getattr(request.app.state, "agent", None)
         return entry if isinstance(entry, _Agent) else None
-    registry = registry_of(request)
     try:
-        candidate = registry.get(agent_name) if registry is not None else None
+        return lookup_agent(request, agent_name)
     except Exception as e:
-        logging.getLogger(__name__).debug("No agent '%s': %s", agent_name, e)
+        logger.debug("No agent '%s': %s", agent_name, e)
         return None
-    return candidate if isinstance(candidate, _Agent) else None
 
 
 # Helper function for optional user authentication
@@ -259,26 +318,37 @@ class AppContext:
         A run of this process holding the session names its owner first, whichever
         agent it runs on: a session such a run has not saved yet has an owner in no
         other tracker and not on disk -- and an append to it goes to that run.
+
+        The id is checked first (400): the disk lookup joins it into a path, and
+        a name no session can have names nobody's session. A lookup that FAILS
+        refuses (503) rather than reading as "no owner": that read let anybody
+        through whenever the store could not be asked. The disk scan walks every
+        user directory, so it runs off the event loop.
         """
-        from fastapi import HTTPException
+        from agent_system.services.session_paths import validate_session_id
+
         if current_user is None:
             return
+        try:
+            validate_session_id(sid)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"Not a session id: {sid!r}")
         if tracker is None:
             tracker = getattr(self.agent, "_session_tracker", None)
         owner = ((await get_background_job_manager().active_sessions()).get(sid) or {}).get("user_id")
-        # In-memory session metadata next (covers sessions not yet persisted),
-        # then the persisted owner on disk.
         try:
-            meta = tracker.get_session_metadata(sid) if owner is None else None
-            if meta:
-                owner = meta.get("user_id")
+            # In-memory session metadata next (covers sessions not yet persisted),
+            # then the persisted owner on disk.
+            if owner is None and tracker is not None:
+                owner = (tracker.get_session_metadata(sid) or {}).get("user_id")
+            manager = getattr(app_state.session_service, "session_manager", None)
+            if owner is None and manager is not None:
+                owner = await asyncio.to_thread(manager._find_session_owner, sid)
+        except FileNotFoundError:
+            owner = None  # no session store on disk yet: nobody owns anything there
         except Exception:
-            owner = None
-        if owner is None and app_state.session_service and getattr(app_state.session_service, "session_manager", None):
-            try:
-                owner = await app_state.session_service.session_manager._find_session_owner_async(sid)
-            except Exception:
-                owner = None
+            logger.exception("Could not look up the owner of session %s", sid)
+            raise HTTPException(status_code=503, detail="Could not check who owns this session")
         if owner is not None and owner != current_user.username:
             raise HTTPException(status_code=403, detail="You do not have access to this session")
 

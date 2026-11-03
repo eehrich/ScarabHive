@@ -58,21 +58,19 @@ async def agent_runs_stream(request: Request, after: str = Query(default="", max
     who = await user_of(request)
     store, bus = run_event_store(), run_event_bus()
     last = request.headers.get("last-event-id") or after
-    # subscribed before reading the store: an event written in between comes twice, never not at all
-    queue = bus.subscribe()
-    try:
-        cursor = await asyncio.to_thread(store.cursor_of, last) if last else None
-        missed = await asyncio.to_thread(store.since, cursor, who, REPLAY_MAX) if cursor is not None else []
-        snapshot = None if cursor is not None else await asyncio.to_thread(store.runs, who)
-        seen = missed[-1]["cursor"] if missed else (cursor if cursor is not None else
-                                                    await asyncio.to_thread(store.last_cursor))
-    except BaseException:
-        bus.unsubscribe(queue)
-        raise
 
     async def stream() -> AsyncIterator[str]:
-        nonlocal seen
+        # Subscribed here, not in the handler: a response whose body is never
+        # started (the client left first) never runs this generator's finally,
+        # and its queue stayed subscribed, filling, for the life of the process.
+        # And before reading the store: an event written in between comes twice, never not at all.
+        queue = bus.subscribe()
         try:
+            cursor = await asyncio.to_thread(store.cursor_of, last) if last else None
+            missed = await asyncio.to_thread(store.since, cursor, who, REPLAY_MAX) if cursor is not None else []
+            snapshot = None if cursor is not None else await asyncio.to_thread(store.runs, who)
+            seen = missed[-1]["cursor"] if missed else (cursor if cursor is not None else
+                                                        await asyncio.to_thread(store.last_cursor))
             yield "retry: 3000\n\n"
             if snapshot is not None:
                 yield f"data: {json.dumps({'type': 'runs.snapshot', 'runs': snapshot}, ensure_ascii=False)}\n\n"
@@ -102,15 +100,12 @@ async def agent_runs_stream(request: Request, after: str = Query(default="", max
 async def agent_run_events(run_id: str, request: Request,
                            after_seq: int = Query(default=0, ge=0)) -> dict[str, Any]:
     """The events of one of the asking person's runs after ``after_seq``, in order."""
-    who = await user_of(request)
-    store = run_event_store()
-    run = await asyncio.to_thread(store.run, run_id)
-    if run is None or run["who"] != who:
-        raise HTTPException(status_code=404, detail=f"No run {run_id}")
-    return {"run": run, "events": await asyncio.to_thread(store.events, run_id, after_seq)}
+    run = await _own_run(run_id, await user_of(request))
+    return {"run": run, "events": await asyncio.to_thread(run_event_store().events, run_id, after_seq)}
 
 
 async def _own_run(run_id: str, who: str) -> dict[str, Any]:
+    """The run, if it is one of *who*'s; 404 alike for one that is not there and one that is somebody else's."""
     run = await asyncio.to_thread(run_event_store().run, run_id)
     if run is None or run["who"] != who:
         raise HTTPException(status_code=404, detail=f"No run {run_id}")
