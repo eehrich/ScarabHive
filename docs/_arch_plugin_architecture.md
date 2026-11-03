@@ -776,6 +776,9 @@ that missed an edge case the shared version handles.
 | bounding a result or a status line | `agent_system.utils.clip`: `clip_value`, `middle_cut` |
 | TLS for an HTTP client | `agent_system.llm.tls`: `httpx_verify(network_ssl_verify(system_config))` |
 | may this manager spawn that agent | `agent_system.auth.agent_access.agent_allowed` |
+| a subprocess whose timeout must end everything it started | `agent_system.utils.proctree.run_bounded` (`kill_tree`) |
+| which tool results belong to which assistant turn | `agent_system.llm.tool_pairs`: `tool_call_owners`, `tool_call_units` |
+| will an attached file reach the model | `agent_system.utils.multimodal_tool_content.attach_problem` |
 | LLM providers: request end text, Retry-After, batch status, the key for an endpoint | `plugins.llm_common`: `request_end`, `http_status`, `batch_http`, `api_keys` |
 
 ---

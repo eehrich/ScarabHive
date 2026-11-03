@@ -222,6 +222,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - web_scraper and weather follow `network.ssl_verify`; ssh_control reports a command without exit status as -1, not
   as success; blender reads replies split inside a multi-byte character; llm_router lists the providers and closes
   its clients; the context engineer's fallback user message carries `injected_by`.
+- llm_openai_compat: a self-heal (provider pin released, encrypted-reasoning strip, signature bypass) no longer
+  costs an attempt; on the last one it ended the call in an untyped error the fallback chain did not recognise.
+- LLM clients: a tool result's images follow the whole run of parallel tool results (OpenAI refused tool, user, tool;
+  Anthropic needs tool results first). Gemini batch puts parallel tool responses into one block.
+- context_summarizer pairs tool calls by position (`agent_system.llm.tool_pairs`); a repeated tool call id orphaned
+  a result. context_engineer finds the new turn behind tool_preload's injected exchange, and both read the usage
+  tracker off the event loop.
+- todo: a tool saves the collection it changed (an eviction between load and save lost the task and answered
+  `created`). forge and coding_cli end the whole git process tree on a timeout (`agent_system.utils.proctree`).
+- web_scraper: `download_deadline_seconds` (600) bounds a whole download; a 4xx/5xx page carries a warning and is not
+  cached. comfyui names a file too large to attach instead of reporting it loaded.
+- audio_ops mixes off the event loop and reads negative and exponent silencedetect values; ssh_control caps a
+  foreground answer at 30k characters per stream; terminal and godot bound buffered output; datetime counts business
+  days in constant time; ask_user ends a call cancelled before the question with an error line.
 - `atomic_write_text` keeps the normal file mode (its temp file made rewritten files 0600); the ssh machine store
   writes through it instead of a fixed temp name.
 - File tools on Python 3.11: delete, move and rename ended in an AttributeError (`Path.is_junction` exists from

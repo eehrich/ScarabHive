@@ -1,7 +1,7 @@
 # Plugins: architecture assessment, review and refactoring plan
 
 **Scope:** `src/plugins/` (78 plugin folders, about 129,000 lines of production code without tests).
-**Status:** Review done 2026-11; phase 0 (bugs) and the first extractions of phase 1 are merged; the rest is the plan.
+**Status:** Review done 2026-11; the confirmed bugs are fixed but for §2.3, and part of phase 1 is done; the rest is the plan.
 **Related:** [Plugin architecture](_arch_plugin_architecture.md) · [Plugin authoring](plugin_authoring.md) ·
 [Plugin hooks](plugin_hooks.md) · the verified quick reference `.claude/skills/plugin-authoring/`
 
@@ -100,40 +100,43 @@ test that fails without the fix.
 | Low | llm_ollama | `ollama_mode` compared case-sensitively for the unwired warning | Lower-cased first |
 | Low | core `utils/io.atomic_write_text` | `tempfile` made every rewritten file 0600 | Unique temp name with a plain `open` |
 
-### 2.2 Open (confirmed, not yet fixed) -- ordered by severity
+### 2.2 Fixed in the second round
 
-| Sev. | Plugin | Defect (file:line at review time) | Proposed fix |
+| Sev. | Plugin | Defect | Fix |
 |---|---|---|---|
-| High | llm_openai_compat | `httpx_client.py` retry loop: heal `continue`s (encrypted-reasoning, signature bypass, pin release, body-429) consume attempts; a heal on the last attempt mutates the session's messages and exits with an untyped `Exception` the fallback chain does not recognise | `while` loop that does not count heals; typed error after the loop (as `openai_responses_client` does) -- part of P2 split |
-| Med-High | llm_openai_compat, llm_openai, llm_anthropic | A `multimodal_content` injection of a non-last parallel tool result lands between tool results (tool, user, tool): OpenAI 400; Anthropic breaks "tool_result first" | Buffer injections until the run of tool messages ends |
-| Med-High | llm_gemini (batch) | Parallel tool responses not merged into one `Content`; list content for assistant text fails validation | Reuse `gemini_utils` converters (P2) |
-| Med-High | audio_ops | CPU-heavy pydub/numpy work on the event loop (mix, overlay, envelope; `result += segment` quadratic) | `asyncio.to_thread` |
-| Medium | ssh_control | Foreground and background output unbounded in memory and in the answer | Byte cap as in terminal's `_read_capped` |
-| Medium | todo | Lock held only inside load and save, not across read-modify-write; an evicted session's save returns silently while the tool answers `created` | Lock across the mutation; raise instead of return |
-| Medium | forge, coding_cli | `subprocess.run(timeout=)` for git kills only git: children leak on POSIX, `communicate()` can hang on Windows | Shared `run_git` with tree kill (`coding_cli/run.py` has the correct one) |
-| Medium | context_engineer | Trailing-note walk stops at a `tool` message of tool_preload's injected pair: `compact_media_after_user_message` never fires on preload turns | Start below `_arrival_indices` / anchor on `opens_a_turn` |
-| Medium | context_summarizer | Tool calls paired by id, last writer wins; repeated ids (Gemini batch `call_{name}_{index}`) orphan a tool result | Positional pairing (`compaction._tool_call_groups` → core `tool_pairs`) |
-| Medium | web_scraper | `download` has no overall deadline (slow-drip server holds the call until 100 MB) | `asyncio.timeout` around the hop loop |
-| Medium | comfyui | Attachments over the multimodal size limits reported as loaded; synchronous sqlite on the loop; connections not closed | Shared `attach_problem` check; `to_thread` + `closing` |
-| Medium | context_engineer, context_summarizer | `get_latest`/`invalidate_session` of the usage tracker: synchronous SQLite with a 10 s busy timeout on the loop | `asyncio.to_thread` |
-| Low-Med | audio_ops | `_temp_segment_*.wav` never cleaned and listed as user files; silencedetect regex misses negative/exponent values | `TEMP_PREFIX` + cleanup; `-?\d+(\.\d+)?(e[-+]?\d+)?` |
-| Low-Med | web_scraper | 4xx/5xx pages cached as success | Do not cache `>= 400`, add `error` |
-| Low | debate_forum | `_handed_over` grows when `session_end` is skipped | FIFO cap |
-| Low | ask_user | Cancelled path without status end line or `status: error` | Standard error shape |
-| Low | godot | `_drain` keeps all stdout/stderr of a running game | Ring buffer |
-| Low | datetime | Business-day loops day by day (`days=10**7` blocks the loop) | Arithmetic or cap |
+| High | llm_openai_compat | Retry loop: a self-heal (pin release, encrypted-reasoning strip, signature bypass) counted as an attempt; on the last one it patched the request and session and left the loop with an untyped `Exception` | Heals are free passes (bounded, `_MAX_HEALS`); attempts that run out end in `LLMServerError` |
+| Med-High | llm_openai_compat, llm_openai, llm_anthropic | The image injection of a non-last parallel tool result landed between tool results (tool, user, tool): OpenAI 400, Anthropic "tool_result first" | Held until the run of tool messages ends (`openai_utils.ToolRunInjections`) |
+| Med-High | llm_gemini (batch) | Parallel tool responses in separate blocks; list text in a call turn failed validation | One `role=tool` block; text extracted |
+| Med-High | audio_ops | Mix, envelope and concatenation on the event loop | `asyncio.to_thread` |
+| Medium | ssh_control | Foreground answer unbounded | 30k characters per stream, head kept, `truncated` |
+| Medium | todo | An eviction between a tool's load and save dropped the change; the tool answered `created` | The tool hands its changed collection to the save |
+| Medium | forge, coding_cli | `subprocess.run(timeout=)` for git killed git alone | `agent_system.utils.proctree.run_bounded` kills the tree |
+| Medium | context_engineer | Trailing walk stopped at tool_preload's injected tool message | Skips an injected tool exchange |
+| Medium | context_summarizer | Tool calls paired by id, last writer wins | `agent_system.llm.tool_pairs` (positional; context_engineer delegates to it) |
+| Medium | web_scraper | `download` had no overall deadline; 4xx/5xx pages were cached as success | `download_deadline_seconds` (600); error pages carry a warning and are not cached |
+| Medium | comfyui | Attachments over the size limit reported as loaded | `multimodal_tool_content.attach_problem`; such files are `not_attached` and named |
+| Medium | context_engineer, context_summarizer | Usage-tracker SQLite reads and writes on the event loop | `asyncio.to_thread` |
+| Low-Med | audio_ops | Segment pieces listed as user files; silencedetect missed negative/exponent values | `TEMP_PREFIX` name (kept: later requests read them); `SILENCE_NUMBER` |
+| Low | debate_forum, ask_user, godot, datetime, terminal | `_handed_over` unbounded; cancelled exit without end line; `_drain` unbounded; day-by-day loops; 64 KiB buffered lines | FIFO cap; standard error shape; head + tail cap; O(1) arithmetic; 8192-char lines |
+
+### 2.3 Still open
+
+| Sev. | Plugin | Defect | Proposed fix |
+|---|---|---|---|
+| Medium | ssh_control | asyncssh's `conn.run` still buffers the whole output in memory (the answer is capped now); background `readline()` has no line limit | Read through `create_process` with a byte cap, as terminal does |
+| Medium | comfyui | Synchronous sqlite (`job_tracker`) on the event loop; `with sqlite3.connect()` commits but does not close | `to_thread` + `contextlib.closing` |
 | Low | comfyui | Outputs named `{prefix}_{filename}` ignore `subfolder` and overwrite each other | Include the subfolder |
-| Low | terminal | Background buffers: `list.pop(0)`, lines up to 64 KiB × 1000 | `deque(maxlen)` + byte budget |
 | Low | sqlite_query | Column count not capped; database path relative to the cwd | Total-character cap; `PROJECT_ROOT` |
-| Low | openai_api | Admin gate fails open when `app.state.config` is missing (forge, stategraph fail closed) | Fail closed |
+| Low | ssh_control | A kill may be ignored by the remote sshd while the answer says killed | Close the channel after a grace period; report `killed` only once finished |
+| Note | openai_api | `_user` treats a missing `app.state.config` as "auth off". The app always sets it, and the tests use `None` on purpose for "no auth" -- no defect in the running app; worth an explicit flag if the app factory changes | -- |
 
-### 2.3 Environment note
+### 2.4 Environment note
 
-`web_scraper`: three tests (`test_long_text_is_paged_from_the_cached_copy`, `test_links_are_filtered_at_answer_time`,
-`test_every_page_answer_is_scrubbed_errors_and_old_cache_included`) fail on a fresh Linux venv before and after these
-changes (no `links` key: an optional HTML dependency is missing there), and with them two cases of
-`tests/plugins/test_status_end_lines.py::test_web_scraper_cache_hit_reports_the_operations_own_result`. Not caused
-by this work.
+Five tests fail in this sandbox before and after these changes because it has no DNS: the web_scraper SSRF guard
+resolves `example.com`/`example.org` before the cache is read (`test_long_text_is_paged_from_the_cached_copy`,
+`test_links_are_filtered_at_answer_time`, `test_every_page_answer_is_scrubbed_errors_and_old_cache_included`, and two
+cases of `tests/plugins/test_status_end_lines.py::test_web_scraper_cache_hit_reports_the_operations_own_result`).
+Not caused by this work.
 
 ---
 
@@ -155,15 +158,15 @@ small enough to review on its own. Order: shared mechanism first, then its users
 | 1.5 | `llm/tls.network_ssl_verify` | web_scraper, weather | **done** (remaining: comfyui, weather `sources` use `httpx_verify`) |
 | 1.6 | `utils/io`: `atomic_write_bytes`, `retry_sharing_violation`; migrate okf, json_store, coding_cli, agent_editor, agent_eval, file_checkpoints, audio_ops, llm_elevenlabs, context_engineer/atomic_json | 14 | text fixed, ssh migrated |
 | 1.7 | `llm/message_roles`: public `field(msg, name, default)`, `written_by_person`, `last_turn_index`, `append_note_if_changed` | 10 plugins + 6 private core copies | open |
-| 1.8 | `llm/tool_pairs.tool_call_units` (from `compaction._tool_call_groups`) for context_summarizer and message_validator | 3 semantics | open (fixes §2.2 summarizer pairing) |
+| 1.8 | `llm/tool_pairs.tool_call_units` / `tool_call_owners` (from `compaction._tool_call_groups`) | 3 semantics | **done** for context_engineer and context_summarizer (remaining: message_validator) |
 | 1.9 | `llm/token_utils`: `extract_text_from_content(sep, include_files)`; `estimate_request_tokens`; `context_window_for(llm, agent)`; usage-tracker reading as a service, not `get_server('context_usage_tracker')` | 6 + 3 + 3 | open |
 | 1.10 | `llm_common`: `media.parse_data_url`, `sse.iter_sse_data` (bytes, `data:` with or without space), `usage.openai_usage`, `errors.rate_limit_error`/`typed_error`, `timeouts.httpx_timeout_config` (public, for openrouter) | 8 + 4 + 4 + 6 | open (fixes Gemini U+2028 split) |
 | 1.11 | `core/agent_runs.drain_run(...) -> RunOutcome`, always closing the generator shielded; `request_context.request_user_scope` | SAM, stategraph, basic_agent, openai_api | open |
 | 1.12 | `auth`: `require_active_admin(request, auth_off=...)`, `json_object_body(request)` for plugin web handlers | user_management, agent_editor, stategraph, forge, openai_api, setup | open (fixes openai_api fail-open) |
 | 1.13 | `plugins/hybrid.HybridPlugin` replacing the delegating wrappers; `SchemaBasedPluginHook.merged_config()` returning a copy (six hooks mutate `get_config()`'s internal dict today) | 9 + 6 | open |
-| 1.14 | `utils/gitproc.run_git` + `utils/proctree.kill_tree` | forge, coding_cli ×2, terminal | open (fixes §2.2 git leak) |
+| 1.14 | `utils/proctree`: `run_bounded`, `kill_tree`, `process_start` | forge, coding_cli ×2, terminal | **done** for forge and coding_cli (remaining: terminal's asyncio kill, one `run_git`) |
 | 1.15 | `tools/background.BackgroundRegistry` + recorded results | terminal ≈ ssh_control (7 near-identical pieces) | open (brings terminal's output cap to ssh) |
-| 1.16 | `utils/media_types` (one ext → kind/MIME table) and `multimodal_tool_content.attach_problem` | media_ops, audio_ops, comfyui (tables disagree) | open |
+| 1.16 | `utils/media_types` (one ext → kind/MIME table) and `multimodal_tool_content.attach_problem` | media_ops, audio_ops, comfyui (tables disagree) | `attach_problem` **done** (comfyui; remaining: media_ops, audio_ops, the MIME table) |
 | 1.17 | `utils/yaml_roundtrip` | agent_editor/store, stategraph/model/yamledit (already diverged) | open; removes stategraph → agent_editor import |
 
 ### P2 -- Split the god files (module boundaries from the review)
