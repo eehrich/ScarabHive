@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from ....llm.message_roles import conversation_messages
 from ....llm.models import ChatMessage
 
 if TYPE_CHECKING:
@@ -105,7 +106,7 @@ class LiveStateMixin:
         self._current_messages = messages
         if not session_id:
             return
-        entry = self._live_state_by_session.setdefault(session_id, {})
+        entry = self._touch_live_state(session_id)
         entry["messages"] = messages
         self._evict_live_state(session_id)
 
@@ -117,7 +118,7 @@ class LiveStateMixin:
         self._current_held_back_schemas = list(held_back or [])
         if not session_id:
             return
-        entry = self._live_state_by_session.setdefault(session_id, {})
+        entry = self._touch_live_state(session_id)
         entry["tools_schema"] = tools_schema
         entry["held_back_schemas"] = self._current_held_back_schemas
         self._evict_live_state(session_id)
@@ -135,8 +136,22 @@ class LiveStateMixin:
             return list(self._current_tools_schema) + list(self._current_held_back_schemas)
         return list(entry.get("tools_schema") or []) + list(entry.get("held_back_schemas") or [])
 
+    def _touch_live_state(self: Agent, session_id: str) -> Dict[str, Any]:
+        """The session's live-state entry, moved to the end: the dict is kept in
+        order of last write, so eviction takes the session written longest ago
+        (a run writes every step), not the one tracked first."""
+        entry = self._live_state_by_session.pop(session_id, None) or {}
+        self._live_state_by_session[session_id] = entry
+        return entry
+
+    def _drop_live_state(self: Agent, session_id: str) -> None:
+        """A session dropped from the tracker (SessionTracker.discard_session,
+        which waits for a run that has it) takes its live state along. Not at a
+        run's end: the session load serves it until the run's job is over."""
+        self._live_state_by_session.pop(session_id, None)
+
     def _evict_live_state(self: Agent, keep_session: str) -> None:
-        """Bound the per-session live-state dict (simple FIFO eviction)."""
+        """Bound the per-session live-state dict: least recently written first."""
         if len(self._live_state_by_session) <= self._live_state_max_sessions:
             return
         for sid in list(self._live_state_by_session.keys()):
@@ -166,18 +181,14 @@ class LiveStateMixin:
 
         Both rules are the ones persistence uses, not copies of them: a system
         message that IS conversation (an archived_ref, a prune breadcrumb) stays
-        by ``is_compaction_system_message``, and the volatile notes go by
+        by ``conversation_messages``, and the volatile notes go by
         ``is_volatile_note``.
         """
         live = self.get_live_messages(session_id)
         if live is None:
             return None
-        from ..components.hook_integration import is_compaction_system_message
         from ..components.session_tracking import is_volatile_note
-        return [msg for msg in live
-                if not is_volatile_note(msg)
-                and (getattr(msg, "role", None) != "system"
-                     or is_compaction_system_message(msg))]
+        return [msg for msg in conversation_messages(live) if not is_volatile_note(msg)]
 
     def get_live_tools_schema(self: Agent, session_id: Optional[str]) -> Optional[List[Dict[str, Any]]]:
         """Live tool schema for a session, or None if not tracked."""

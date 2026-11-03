@@ -74,6 +74,13 @@ def release_request_user(request_id: str) -> None:
     request_user_map.pop(request_id, None)
 
 
+def in_request_tree(request_id: str, root: str) -> bool:
+    """Whether ``request_id`` is ``root`` or an id derived from it (``<root>_...``):
+    tool calls, sub-agents and agent-as-tool runs carry their run's id as a prefix
+    at a ``_``. An empty root has no tree."""
+    return bool(root) and (request_id == root or request_id.startswith(root + "_"))
+
+
 def release_request_user_tree(request_id: str) -> None:
     """Remove a request id AND all ids derived from it (``<id>_...``).
 
@@ -82,9 +89,7 @@ def release_request_user_tree(request_id: str) -> None:
     one entry per tool call / sub-agent for the process lifetime. Called by
     the app layer at request teardown.
     """
-    request_user_map.pop(request_id, None)
-    prefix = request_id + "_"
-    for rid in [k for k in request_user_map if k.startswith(prefix)]:
+    for rid in [k for k in request_user_map if in_request_tree(k, request_id)]:
         request_user_map.pop(rid, None)
 
 

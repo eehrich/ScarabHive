@@ -211,7 +211,6 @@ class FallbackMixin:
                 model_health.drop_probe(st.current_llm, run.request_id)
                 error_msg = unsupported_message(st.current_llm, response_format)
                 logger.warning("[%s] %s", self.name, error_msg)
-                run.results.setdefault("errors", []).append(error_msg)
                 yield {"type": "error", "message": error_msg,
                        "error_type": STRUCTURED_OUTPUT_UNSUPPORTED}
                 st.end = StepEnd.RUN

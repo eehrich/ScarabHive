@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from .....llm.message_roles import DEVELOPER
 from .....llm.models import ChatMessage
@@ -122,7 +122,8 @@ class StepMixin:
         yield {"type": "thinking", "step": step + 1}
 
         # Before the hooks: the input they hand over needs no wake at the end.
-        self._presence_step(run.session_id, run.request_id)
+        # Off the loop, as at the run's start (_presence_hold may wait on the lock file).
+        await asyncio.to_thread(self._presence_step, run.session_id, run.request_id)
 
     async def _run_pre_llm_hooks(self: Agent, run: LoopState, st: StepState):
         """Phase: the pre-LLM hooks, status events streamed while they run; then the budget note."""
@@ -133,6 +134,7 @@ class StepMixin:
         # emit status messages (currently only context_summarizer).
         # Other hook types (post_llm, session_start, session_end) don't need
         # this pattern as they don't emit status events.
+        hook_task: Optional[asyncio.Task] = None
         try:
             # Create async task for hook execution
             hook_task = asyncio.create_task(
@@ -183,6 +185,12 @@ class StepMixin:
             self._session_tracker.clear_compacted_messages(run.session_id)
         except Exception as e:
             logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
+        finally:
+            # Closed or cancelled while polling (client gone): an orphaned hook
+            # task would run on -- billed -- and could stage messages after the
+            # run's final save.
+            if hook_task is not None and not hook_task.done():
+                hook_task.cancel()
 
         # AFTER the hooks, so the run keeps the last word. Plugins append
         # their blocks in pre_llm_call, and the max-steps request ("answer
@@ -259,6 +267,7 @@ class StepMixin:
         # Execute post-LLM hooks to transform the response
         # NOTE: Using same polling pattern as pre_llm_hooks to support
         # future hooks that may emit status messages during execution.
+        hook_task: Optional[asyncio.Task] = None
         try:
             # Create async task for hook execution
             hook_task = asyncio.create_task(
@@ -312,6 +321,12 @@ class StepMixin:
                     assistant_msg.content_format = st.hook_metadata["content_format"]
         except Exception as e:
             logger.warning(f"Post-LLM hooks failed: {e}", exc_info=True)
+        finally:
+            # Closed or cancelled while polling (client gone): an orphaned hook
+            # task would run on -- billed -- and could stage messages after the
+            # run's final save.
+            if hook_task is not None and not hook_task.done():
+                hook_task.cancel()
 
     async def _show_answer(self: Agent, run: LoopState, st: StepState):
         """Phase: the answer goes out as thinking events, in the format it is delivered in."""
@@ -395,7 +410,6 @@ class StepMixin:
                     "thinking/reasoning level, raise max_tokens, or use a different model."
                 )
                 logger.error(error_msg)
-                run.results.setdefault("errors", []).append(error_msg)
                 yield {"type": "error", "message": error_msg}
                 st.end = StepEnd.RUN
                 return
@@ -426,7 +440,6 @@ class StepMixin:
                 if run.consecutive_empty_responses >= run.max_consecutive_empty + 3:
                     logger.warning(f"Breaking loop: {run.consecutive_empty_responses} consecutive empty responses even after 'Continue' prompts")
                     error_msg = "LLM returned empty responses repeatedly despite continue prompts"
-                    run.results.setdefault("errors", []).append(error_msg)
                     yield {"type": "error", "message": error_msg}
                     st.end = StepEnd.RUN
                     return

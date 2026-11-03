@@ -39,8 +39,9 @@ backend really takes.
 """
 from __future__ import annotations
 
+import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,51 @@ def leading_instructions(messages: list) -> list:
             break
         block.append(msg)
     return block
+
+
+#: System messages that are compacted CONVERSATION, not prompt. The agent's own
+#: system prompt is rebuilt from config on every turn and must not be persisted;
+#: these carry conversation state and would be lost for good.
+#:   archived_ref  - stands where a message moved into the archive
+#:   pruned_notice - the single breadcrumb naming how much left the view. It
+#:                   keeps a running total, so dropping it resets the count
+#:                   every turn and reports only the last round's share.
+_COMPACTION_SYSTEM_TYPES = ("archived_ref", "pruned_notice")
+
+
+def is_compaction_system_message(message: Any) -> bool:
+    """Whether a system message carries compacted conversation and must persist.
+
+    One definition for every place that filters system messages out of the
+    conversation (conversation_messages). Two hand-kept copies of a rule like this drift, and the drift is silent: the
+    message simply stops coming back.
+    """
+    # Both shapes reach this: ChatMessage on the agent paths, plain dicts from
+    # the compaction plugin's own tool path.
+    content = (message.get("content") if isinstance(message, dict)
+               else getattr(message, "content", None))
+    if not isinstance(content, str):
+        return False
+    # Cheap reject before the parse — almost every message is ordinary text.
+    # Deliberately NOT windowed to the first N characters: that would couple
+    # correctness to JSON key order, and a single `sort_keys=True` somewhere
+    # would push "type" past the window and silently drop every breadcrumb.
+    if "_ref" not in content and "_notice" not in content:
+        return False
+    try:
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return (isinstance(parsed, dict)
+            and parsed.get("type") in _COMPACTION_SYSTEM_TYPES)
+
+
+def conversation_messages(messages: list) -> list:
+    """The messages that are conversation: every non-system message, and the
+    system messages that are compacted conversation. What persistence, the
+    pre-LLM auto-sync and a viewer of a live run keep."""
+    return [msg for msg in messages
+            if role_of(msg) != SYSTEM or is_compaction_system_message(msg)]
 
 
 def as_note(text: str) -> str:

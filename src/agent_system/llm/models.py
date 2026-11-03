@@ -328,6 +328,22 @@ class ChatMessage(BaseModel):
         return count
 
 
+def task_text(task: Union[str, ChatMessage]) -> str:
+    """The text of a run's task, for logs and results: the text parts of a
+    message joined, ``[multimodal input]`` for one without any. Not
+    get_text_content: attached file contents do not belong in a log line."""
+    if not isinstance(task, ChatMessage):
+        return task
+    if isinstance(task.content, str):
+        return task.content
+    if isinstance(task.content, list):
+        parts = [getattr(item, "text", "") for item in task.content
+                 if hasattr(item, "type") and getattr(item, "type") == "text"]
+        if parts:
+            return " ".join(parts)
+    return "[multimodal input]"
+
+
 #: What the caller knows about why it abandons a streaming call, set just
 #: before it closes the stream: {"fields": {...}, "reported": False}. The
 #: client's own end report (the abandon) takes the fields and marks it

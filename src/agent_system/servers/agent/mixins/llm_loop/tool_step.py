@@ -89,9 +89,6 @@ class ToolStepMixin:
             async for event in events:
                 yield event
 
-        # Add tool results to the results dictionary
-        run.results["calls"].extend(st.tool_results)
-
         await self._count_all_error_step(run, st)
 
         self._merge_tool_results(run, st)
@@ -215,11 +212,10 @@ class ToolStepMixin:
                         st.end = StepEnd.NEXT_STEP
 
     async def _run_tool_calls(self: Agent, run: LoopState, st: StepState):
-        """Run the step's tool calls, their events streamed as they come; the tool messages and
-        results land on the step."""
+        """Run the step's tool calls, their events streamed as they come; the tool messages
+        land on the step."""
         # Execute all tools using streaming to get real-time status events from sub-agents
         st.tool_messages = []
-        st.tool_results = []
 
         user_id = self.tool_user(run.request_id, run.session_id)
 
@@ -256,7 +252,6 @@ class ToolStepMixin:
                 elif item.get("type") == "complete":
                     # Store final results
                     st.tool_messages = item["messages"]
-                    st.tool_results = item["results"]
 
     async def _count_all_error_step(self: Agent, run: LoopState, st: StepState) -> None:
         """The stuck signal of failing tools: N steps in a row whose calls all failed open an
@@ -367,6 +362,5 @@ class ToolStepMixin:
         # returned. The results stay in the session.
         error_msg = (f"Agent incomplete: max steps ({run.max_steps}) reached; "
                      f"the final call ran tool calls ({ran}) that no step followed.")
-        run.results.setdefault("errors", []).append(error_msg)
         yield {"type": "error", "message": error_msg}
         st.end = StepEnd.RUN

@@ -5,7 +5,7 @@ import inspect
 import uuid
 from typing import Any, Callable, Dict, Optional, Union
 from .server import Agent
-from ...llm.models import ChatMessage
+from ...llm.models import ChatMessage, task_text
 
 
 def extract_summary(result: Dict[str, Any]) -> str:
@@ -90,22 +90,7 @@ async def collect_final_result(
         session_id = f"{EPHEMERAL_SESSION_PREFIX}{uuid.uuid4()}"
 
     # Extract task text for result logging
-    if isinstance(task, ChatMessage):
-        if isinstance(task.content, str):
-            task_text = task.content
-        elif isinstance(task.content, list):
-            # Handle Pydantic models (TextContent, ImageContent)
-            text_parts = []
-            for item in task.content:
-                if hasattr(item, 'type') and item.type == "text":
-                    text_parts.append(getattr(item, 'text', ''))
-            task_text = " ".join(text_parts) if text_parts else "[multimodal input]"
-        else:
-            task_text = "[multimodal input]"
-    else:
-        task_text = task
-    
-    result = {"task": task_text, "calls": []}
+    result = {"task": task_text(task), "calls": []}
     # Inside another run (an agent-as-tool, a plugin calling an agent from its tool
     # call), a Ctrl-C is not this call's: its user started the outer run, and only
     # that run's handler knows it (agent-cli, chat). Asked now -- the nested run
@@ -154,15 +139,15 @@ async def collect_final_result(
                 if refused_before_the_run(event):  # it ran nothing: its caller saves nothing after it
                     result["refused"] = event["error_type"]
     
-    except (KeyboardInterrupt, Exception) as e:
-        # Handle cancellation gracefully
-        import asyncio
-        if isinstance(e, KeyboardInterrupt) and inside_a_run:
+    except KeyboardInterrupt:
+        # A Ctrl-C of this run is its cancel; inside another run it is that run's.
+        if inside_a_run:
             raise
-        if isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
-            result["cancelled"] = True
-        else:
-            result.setdefault("errors", []).append(str(e))
+        result["cancelled"] = True
+    except Exception as e:
+        result.setdefault("errors", []).append(str(e))
+    # asyncio.CancelledError is neither: the task collecting the result is
+    # being cancelled, and that propagates to whoever cancelled it.
     finally:
         # A throwaway session must not outlive its single call, otherwise the
         # tracker accumulates one entry per invocation.
