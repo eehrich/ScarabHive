@@ -31,3 +31,12 @@ def short_id_base36(length: int = 10) -> str:
         n, r = divmod(n, 36)
         out.append(alphabet[r])
     return ''.join(reversed(out)) or '0'
+
+
+def short_hash(text: str, length: int, errors: str = "strict") -> str:
+    """The first *length* hex digits of the SHA-256 of *text*, encoded as UTF-8 with *errors*.
+
+    A fingerprint, not a secret: what a cache key or a log may carry in place of a value.
+    """
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8", errors)).hexdigest()[:length]

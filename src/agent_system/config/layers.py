@@ -38,7 +38,7 @@ def master_path(config_path: Optional[str] = None) -> Path:
 
 def read_master(cfg_path: Path) -> Any:
     """The master config as parsed, {} where it is empty. Raises where it does not read or parse."""
-    return yaml_io.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    return yaml_io.safe_load(read_config_text(cfg_path)) or {}
 
 
 def _include_entries(master: dict) -> list:
@@ -84,7 +84,10 @@ def _expand_includes(master: dict, cfg_path: Path) -> list[str]:
         if '*' in inc or '?' in inc or '[' in inc:
             pattern = inc if Path(inc).is_absolute() else str(cfg_path.parent / inc)
             matched_files = sorted(glob_module.glob(pattern))
-            if matched_files:
+            if Path(inc).is_absolute():
+                # Absolute pattern: its matches stay absolute (they need not lie under the config directory)
+                expanded.extend(matched_files or [inc])
+            elif matched_files:
                 expanded.extend(str(Path(matched).relative_to(cfg_path.parent)) for matched in matched_files)
             else:
                 expanded.append(inc)
@@ -132,11 +135,16 @@ def local_layer(cfg_path: Path) -> dict:
             for key, value in part.items() if value is not None}
 
 
-def local_text(path: Path) -> str:
-    """A file of the local layer as text: UTF-8, with a BOM or without, or UTF-16 with one -- what PowerShell 5.1's
-    `>` writes, which the install guide has the reader do. Raises OSError, or UnicodeDecodeError (a ValueError)."""
+def read_config_text(path: Path) -> str:
+    """A config file as text -- the master, an include, the local layer alike: UTF-8, with a BOM or without, or
+    UTF-16 with one -- what PowerShell 5.1's `>` writes, which the install guide has the reader do. Read through
+    read_config_bytes. Raises OSError, or UnicodeDecodeError (a ValueError)."""
     data = read_config_bytes(path)
     return data.decode(text_encoding(data))
+
+
+#: A file of the local layer as text (the name its callers know): read_config_text.
+local_text = read_config_text
 
 
 def read_config_bytes(path: Path) -> bytes:
@@ -236,7 +244,7 @@ def read_layers(cfg_path: Path) -> dict:
             continue  # a master that still names the local layer: it comes last, below
         if inc_path.exists():
             try:
-                part = yaml_io.safe_load(read_config_bytes(inc_path).decode("utf-8")) or {}
+                part = yaml_io.safe_load(read_config_text(inc_path)) or {}
                 if isinstance(part, dict):
                     # A section with every line commented out sets nothing: a
                     # null `plugins:` failed the whole file in deep_merge.

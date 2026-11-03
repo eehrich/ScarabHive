@@ -179,6 +179,8 @@ class BatchQueueManager(_QueueSubmission, _JobPolling, _JobOutcome):
         # Cancel submission tasks
         for task in self._submission_tasks.values():
             task.cancel()
+        for task in list(self._immediate_submit_tasks):
+            task.cancel()
         
         # Cancel polling task
         if self._polling_task:

@@ -35,6 +35,7 @@ from ruamel.yaml.representer import RoundTripRepresenter
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString, SingleQuotedScalarString
 from ruamel.yaml.tokens import CommentToken
 
+from agent_system.config.environment import ENV_PLACEHOLDER
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.config.settings import _known_plugin_types, config_files, get_tool_server_config, load_settings
 from agent_system.plugins.catalog import PluginCatalog
@@ -49,7 +50,7 @@ PROMPT_SUFFIXES = (".md", ".txt", ".markdown")
 INDENTS = ((2, 4, 2), (2, 2, 0))
 CREATED_HEADER = "Created with the Agent Editor."
 #: The loader's `${NAME}` expansion.
-PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
+PLACEHOLDER = ENV_PLACEHOLDER
 #: The plugin type of the sub-agent manager.
 MANAGER_TYPE = "sub_agent_manager"
 #: Values shorter than this are masked only where they are the whole string.

@@ -28,6 +28,16 @@ from agent_system.config.models import (
     LLMSystemConfig,
 )
 from agent_system.llm.batch import initialization
+from agent_system.llm.batch.job_tracker import set_job_tracker
+
+
+@pytest.fixture(autouse=True)
+def _no_manager_left_behind(monkeypatch):
+    """init_batch_system takes the global manager when there is one: each test starts without."""
+    monkeypatch.setattr(initialization, "_batch_queue_manager", None)
+    monkeypatch.setattr(initialization, "_batch_manager_config", None)
+    yield
+    set_job_tracker(None)
 
 
 def _config(tmp_path, *, with_batch_model=True, **providers):

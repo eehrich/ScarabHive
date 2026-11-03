@@ -16,7 +16,7 @@ test_plugin_llm_clients_full_path.py (via _orig_build_client).
 """
 import pytest
 from agent_system.config.settings import load_settings, get_tool_server_config
-from agent_system.llm.factory import resolve_llm_config_for_agent, LLMFactory
+from agent_system.llm.factory import resolve_llm_config_for_agent, _build_client
 
 
 class TestLLMFactoryIntegration:
@@ -70,8 +70,7 @@ class TestLLMFactoryIntegration:
         assert resolved.spec.context_window
 
         # Create LLM client
-        factory = LLMFactory(system_config, server_config.agent_config)
-        llm_client = factory.create()
+        llm_client = _build_client(system_config, server_config.agent_config, ssl_verify=None)
 
         assert llm_client is not None
 
@@ -99,8 +98,7 @@ class TestLLMFactoryIntegration:
         assert server_config.agent_config is not None  # Should be inherited
 
         # Should be able to create LLM client
-        factory = LLMFactory(system_config, server_config.agent_config)
-        llm_client = factory.create()
+        llm_client = _build_client(system_config, server_config.agent_config, ssl_verify=None)
 
         assert llm_client is not None
 
@@ -119,8 +117,7 @@ class TestLLMFactoryIntegration:
             assert llm_kwargs is not None, server_name
 
             # Should be able to create LLM client
-            factory = LLMFactory(system_config, server_config.agent_config)
-            assert factory.create() is not None, server_name
+            assert _build_client(system_config, server_config.agent_config, ssl_verify=None) is not None, server_name
 
     def test_httpx_timeout_configuration(self, system_config, agent_server):
         """Test that HTTPX timeout configuration is properly resolved."""
