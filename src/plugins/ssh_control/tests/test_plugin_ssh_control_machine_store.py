@@ -157,3 +157,4 @@ def test_a_failed_write_leaves_the_existing_store_intact():
     store = machine_store.store_path('ssh_control_test')
     assert not list(store.parent.glob(f".{store.name}.*.tmp"))
 
+
