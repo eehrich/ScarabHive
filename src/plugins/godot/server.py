@@ -72,6 +72,8 @@ AUTOLOAD_KEY = "MCPGameBridge"
 CHECK_SCRIPT = Path(__file__).parent / "scripts" / "check_scripts.gd"
 
 #: Same budget as the blender plugin: a scene tree or a log dump is unbounded.
+#: The most output one run keeps per stream in memory (see _drain).
+DRAIN_CAP_BYTES = 8 * 1024 * 1024
 MAX_RESULT_CHARS = 60_000
 #: A game screenshot at max_width 900 is ~1 MB of base64; leave room.
 MAX_WS_BYTES = 32 * 1024 * 1024
@@ -1274,11 +1276,25 @@ def _width(value: Any) -> int:
     return max(MIN_SHOT_WIDTH, min(MAX_SHOT_WIDTH, int(value)))
 
 
-def _drain(stream: Any, sink: list[bytes]) -> None:
+def _drain(stream: Any, sink: list[bytes], cap: int = 0) -> None:
     # read1: what is there now, so a pipe that never closes still leaves its
     # output in the sink (a text read(n) holds it until n chars or EOF).
+    # At most `cap` bytes are kept (DRAIN_CAP_BYTES): the first half and the
+    # latest half, the middle dropped once -- a game printing in a loop until
+    # the timeout grew the sink without bound.
+    cap = cap or DRAIN_CAP_BYTES
+    head, size, cut = 0, 0, False
     for chunk in iter(lambda: stream.read1(65536), b""):
         sink.append(chunk)
+        size += len(chunk)
+        if not cut and size <= cap // 2:
+            head = len(sink)
+            continue
+        while size > cap and len(sink) > head + 1:
+            if not cut:
+                sink.insert(head, b"\n... [output cut: too long] ...\n")
+                head, cut = head + 1, True
+            size -= len(sink.pop(head))
 
 
 def _text(chunks: list[bytes]) -> str:
