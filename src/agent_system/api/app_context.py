@@ -343,7 +343,7 @@ class AppContext:
                 owner = (tracker.get_session_metadata(sid) or {}).get("user_id")
             manager = getattr(app_state.session_service, "session_manager", None)
             if owner is None and manager is not None:
-                owner = await asyncio.to_thread(manager._find_session_owner, sid)
+                owner = await asyncio.to_thread(manager.find_session_owner, sid)
         except FileNotFoundError:
             owner = None  # no session store on disk yet: nobody owns anything there
         except Exception:

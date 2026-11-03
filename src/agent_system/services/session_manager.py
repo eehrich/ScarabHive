@@ -38,6 +38,13 @@ logger = logging.getLogger(__name__)
 #: The metadata fields SessionIndex.row carries: an update of one of them is written to the index too.
 _INDEXED_METADATA = frozenset({"message_count", "last_agent_response", "tags", "folder", "category"})
 
+#: How stale a session's index row may get through writes that change only the file's ``updated_at`` (a
+#: sub-agent's status, a context variable removed). The row's time is what the session list sorts by and
+#: what the archive ages a session by, so such a write does reach it -- but a parent whose sub-agents report
+#: one after another would otherwise rewrite the main index (one row per session of the user) for each
+#: report. At most once per this many seconds per session, then; the archive counts in days.
+INDEX_TOUCH_SECONDS = 30.0
+
 
 class SessionNotFoundError(Exception):
     """Raised when a session cannot be found."""
@@ -99,6 +106,10 @@ class SessionManager:
         # Sessions deleted in this process. A run that was still going -- or its request handler, or a checkpoint
         # -- saves its session after the delete; that save must not bring the session back.
         self._deleted: set[str] = set()
+
+        # When this process last wrote a session's index row (time.monotonic()), for the touch-only
+        # writes INDEX_TOUCH_SECONDS spaces out. Pruned to the window as it grows.
+        self._index_written: Dict[str, float] = {}
 
         # The index partitions: read and written as the session files are.
         self._index = SessionIndex(
@@ -210,7 +221,7 @@ class SessionManager:
         """
         return uuid4().hex[:10]
 
-    def _session_id_exists_globally(self, session_id: str) -> bool:
+    def session_id_exists(self, session_id: str) -> bool:
         """Check if a session ID exists for ANY user (global collision check).
         
         Args:
@@ -226,7 +237,7 @@ class SessionManager:
         # Check all user directories for this session ID
         return any(session_files_anywhere(self.storage_path, session_id))
 
-    async def _find_session_owner_async(self, session_id: str) -> Optional[str]:
+    async def find_session_owner_async(self, session_id: str) -> Optional[str]:
         """Find the user_id that owns a session (async version).
 
         Args:
@@ -249,8 +260,8 @@ class SessionManager:
                 return self._owner_by_directory(session_file, e)
         return None
 
-    def _find_session_owner(self, session_id: str) -> Optional[str]:
-        """Find the user_id that owns a session (sync version - use _find_session_owner_async in async contexts).
+    def find_session_owner(self, session_id: str) -> Optional[str]:
+        """Find the user_id that owns a session (sync version - use find_session_owner_async in async contexts).
 
         Args:
             session_id: Session ID to find
@@ -327,7 +338,7 @@ class SessionManager:
         """
         if session_id not in self._deleted:
             return False
-        if self._session_id_exists_globally(session_id):
+        if self.session_id_exists(session_id):
             self._deleted.discard(session_id)
             return False
         return True
@@ -408,7 +419,7 @@ class SessionManager:
         """Async wrapper for reading session file to avoid blocking event loop."""
         return await asyncio.to_thread(self._read_session_file, path)
 
-    async def _rebuild_index(
+    async def rebuild_index(
         self,
         user_id: str,
         parent_session_id: Optional[str] = None,
@@ -419,6 +430,12 @@ class SessionManager:
         could not delete whole.
         """
         return await self._index.rebuild(user_id, parent_session_id)
+
+    # The names these had while they were private; plugins and tests still call them.
+    _session_id_exists_globally = session_id_exists
+    _find_session_owner_async = find_session_owner_async
+    _find_session_owner = find_session_owner
+    _rebuild_index = rebuild_index
 
     async def create_session(
         self,
@@ -462,14 +479,14 @@ class SessionManager:
             if session_id:
                 sid = session_id
                 # Check if this custom ID exists for ANY user (global check)
-                if self._session_id_exists_globally(sid):
+                if self.session_id_exists(sid):
                     raise ValueError(f"Session {sid} already exists")
             else:
                 # Generate new ID with retry on collision
                 max_retries = 10
                 for attempt in range(max_retries):
                     sid = self._generate_session_id()
-                    if not self._session_id_exists_globally(sid):
+                    if not self.session_id_exists(sid):
                         break
                     logger.warning(
                         f"Session ID collision detected: {sid} (attempt {attempt + 1}/{max_retries})"
@@ -703,6 +720,7 @@ class SessionManager:
                 await self._index.update_entry(
                     user_id, session_id, SessionIndex.row(session_data),
                 )
+            self._noted_index_write(session_id)
             
             logger.debug("Saved session %s", session_id)
 
@@ -767,7 +785,29 @@ class SessionManager:
             if reindex:
                 async with self._lock:
                     await self._index.update_entry(user_id, session_id, SessionIndex.row(session_data))
+                self._noted_index_write(session_id)
+            elif touch and self._index_touch_due(session_id):
+                # The file is newer now; its row has to say so, or the list and the archive see an older session.
+                # Best effort: the file is written, and the next save writes the row in full anyway.
+                try:
+                    async with self._lock:
+                        await self._index.update_entry(user_id, session_id, SessionIndex.row(session_data))
+                    self._noted_index_write(session_id)
+                except Exception as e:
+                    logger.warning("Index row of session %s not refreshed: %s", session_id, e)
             return True
+
+    def _index_touch_due(self, session_id: str) -> bool:
+        """Whether a touch-only write of ``session_id`` should refresh its index row (INDEX_TOUCH_SECONDS)."""
+        last = self._index_written.get(session_id)
+        return last is None or time.monotonic() - last >= INDEX_TOUCH_SECONDS
+
+    def _noted_index_write(self, session_id: str) -> None:
+        now = time.monotonic()
+        if len(self._index_written) > 4096:
+            self._index_written = {sid: at for sid, at in self._index_written.items()
+                                   if now - at < INDEX_TOUCH_SECONDS}
+        self._index_written[session_id] = now
 
     async def update_session_metadata(
         self, 
@@ -807,7 +847,8 @@ class SessionManager:
                     session_data["metadata"][key] = value
 
         # A field the index row carries (tags, folder) reaches the list now, not at the session's next save;
-        # the many updates of fields it does not carry (sub_agents, activity) leave the index alone.
+        # an update of fields it does not carry (sub_agents, activity) still moves the row's updated_at
+        # when it touches -- spaced out by INDEX_TOUCH_SECONDS (_mutate).
         await self._mutate(user_id, session_id, merge, touch=touch,
                            reindex=not _INDEXED_METADATA.isdisjoint(metadata_updates))
         logger.debug("Updated metadata for session %s: keys=%s", session_id, list(metadata_updates.keys()))
@@ -991,7 +1032,7 @@ class SessionManager:
             path = self._get_session_path(user_id, session_id)
             if path.exists():
                 raise ValueError(f"Session {session_id} is live -- refusing to overwrite it")
-            if self._session_id_exists_globally(session_id):
+            if self.session_id_exists(session_id):
                 raise ValueError(f"Session {session_id} is live for another user -- refusing a second one")
 
             await self._atomic_write_async(path, session_data)

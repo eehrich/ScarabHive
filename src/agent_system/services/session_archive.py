@@ -53,6 +53,7 @@ from .session_archive_store import (
 )
 from .session_index import MAIN_INDEX, SUBS_PREFIX, SUBS_SUFFIX
 from .session_paths import user_dir_of
+from ..utils.timeutil import parse_iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -110,15 +111,8 @@ class _TreeInUse(Exception):
 
 def _parse_iso(value: Any) -> Optional[float]:
     """Epoch seconds of an ISO timestamp, or None if it is not one."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp()
+    parsed = parse_iso_utc(value) if isinstance(value, str) else None
+    return parsed.timestamp() if parsed is not None else None
 
 
 class SessionArchive:
@@ -615,7 +609,7 @@ class SessionArchive:
             # the partition is the repair path kept for exactly this; it is
             # not cheap, and a failed delete is not common.
             try:
-                await self._session_manager._rebuild_index(user_id, tree.root)
+                await self._session_manager.rebuild_index(user_id, tree.root)
             except Exception as exc:  # noqa: BLE001 - the archive is safe either way
                 logger.warning(
                     "session archive: could not rebuild the index of %s (%s)",
@@ -730,7 +724,7 @@ class SessionArchive:
             if not self._session_manager.belongs_to(user_id, data["session_id"]):
                 # Another user's now (a custom id, their own archive restored first):
                 # reinstate_session refuses it -- asked here, before the tree is half back.
-                if self._session_manager._session_id_exists_globally(data["session_id"]):
+                if self._session_manager.session_id_exists(data["session_id"]):
                     taken.append(data["session_id"])
                 continue
             if await self._is_the_same_session(user_id, data):

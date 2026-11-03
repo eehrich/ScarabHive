@@ -30,7 +30,7 @@ from typing import Any, Optional
 from ...config.models import SessionPresenceConfig
 from ...paths import PROJECT_ROOT, data_path
 from ..request_context import in_request_tree
-from ...services.session_paths import SESSION_ID_PATTERN, user_dir_of
+from ..session_ids import SESSION_ID_PATTERN, user_dir_of
 from .lockfile import _BINARY, _drop, _lock, _open_locked, _read, _unlink, _unlock_and_close, _write
 from .process import _own_start, alive, spawn_wake, wake_depth
 

@@ -529,7 +529,7 @@ async def session_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such file")
     owner = viewer(current_user)
     if not session_manager.belongs_to(owner, session_id):  # an admin looking at another user's session
-        owner = await session_manager._find_session_owner_async(session_id) or owner
+        owner = await session_manager.find_session_owner_async(session_id) or owner
     path = session_files.find(session_files.root_beside(session_manager.storage_path), owner, session_id, name)
     if path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such file")

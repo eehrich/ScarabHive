@@ -38,7 +38,7 @@ class _Store:
     def __init__(self, owner=None, error=None):
         self.owner, self.error, self.asked = owner, error, []
 
-    def _find_session_owner(self, sid):
+    def find_session_owner(self, sid):
         self.asked.append(sid)
         if self.error is not None:
             raise self.error

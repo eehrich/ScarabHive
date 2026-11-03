@@ -12,10 +12,10 @@ process is running, which is the case that matters when a book is going.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Any, Optional
 
 from ..utils.text import shorten
+from ..utils.timeutil import parse_iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +44,8 @@ def _short(text: str, width: int) -> str:
 
 
 def _day(stamp: str) -> str:
-    try:
-        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).strftime("%Y-%m-%d")
-    except ValueError:
-        return "?"
+    parsed = parse_iso_utc(stamp)
+    return parsed.strftime("%Y-%m-%d") if parsed is not None else "?"
 
 
 async def print_archived(archive: Any, user_id: str, limit: int = DEFAULT_LIMIT) -> None:

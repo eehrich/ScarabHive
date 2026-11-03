@@ -5,6 +5,7 @@ import inspect
 import uuid
 from typing import Any, Callable, Dict, Optional, Union
 from .server import Agent
+from ...core.session_ids import EPHEMERAL_SESSION_PREFIX
 from ...llm.models import ChatMessage, task_text
 
 
@@ -85,8 +86,6 @@ async def collect_final_result(
     # shared history", so give each such call its own throwaway session.
     ephemeral_session = session_id is None
     if ephemeral_session:
-        from agent_system.services.session_service import EPHEMERAL_SESSION_PREFIX
-
         session_id = f"{EPHEMERAL_SESSION_PREFIX}{uuid.uuid4()}"
 
     # Extract task text for result logging
