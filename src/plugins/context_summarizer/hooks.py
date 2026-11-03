@@ -6,6 +6,7 @@ reducing context size while preserving key information and decisions.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import itertools
 import logging
 import time
@@ -500,21 +501,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             f"reasoning artifacts on {invalidated} message(s)"
                         )
 
-                    # Create modified context
-                    modified_context = HookContext(
-                        hook_type=context.hook_type,
-                        request_id=context.request_id,
-                        session_id=context.session_id,
-                        agent=context.agent,
-                        agent_name=context.agent_name,
-                        messages=new_messages,
-                        llm_response=context.llm_response,
-                        tool_call=context.tool_call,
-                        tool_result=context.tool_result,
-                        metadata=context.metadata,
-                        step=context.step,
-                        llm=context.llm
-                    )
+                    # Every field of the context but the messages carries on:
+                    # rebuilding it field by field dropped tools_schema and the
+                    # cancellation token, which the registry does not restore,
+                    # and project_instructions then snapshotted no tool roots
+                    # for the rest of the session.
+                    modified_context = dataclasses.replace(context, messages=new_messages)
 
                     logger.info(
                         f"[ContextSummarizer] Summarization complete: "

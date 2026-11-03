@@ -3153,7 +3153,9 @@ class LayeredCompactionStrategy:
                 # Insert a minimal user message at the appropriate position
                 fallback_msg = {
                     "role": "user",
-                    "content": "Continue with the task."
+                    "content": "Continue with the task.",
+                    # Not a person's turn: opens_a_turn, OKF and undo count by this.
+                    "injected_by": "context_engineer",
                 }
                 # Insert after system messages
                 insert_idx = first_non_system_idx
@@ -3193,7 +3195,9 @@ class LayeredCompactionStrategy:
             
             fallback_msg = {
                 "role": "user",
-                "content": "Continue with the task."
+                "content": "Continue with the task.",
+                # Not a person's turn: opens_a_turn, OKF and undo count by this.
+                "injected_by": "context_engineer",
             }
             messages.insert(insert_idx, fallback_msg)
         
