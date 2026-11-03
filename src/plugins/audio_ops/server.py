@@ -1208,7 +1208,11 @@ class AudioOpsServer(SchemaBasedToolServer):
                 effective_storage = self._resolve_storage_path(session_id)
                 effective_storage.mkdir(parents=True, exist_ok=True)
                 tmp = tempfile.NamedTemporaryFile(
-                    prefix=f"_temp_segment_{filepath.stem}_{start_ms}_{end_ms}_",
+                    # TEMP_PREFIX: hidden from list(), which showed every
+                    # segment as a user file. Not deleted: each LLM request
+                    # encodes the attachment from this path again, for as long
+                    # as the session's history names it.
+                    prefix=f"{TEMP_PREFIX}segment_{filepath.stem}_{start_ms}_{end_ms}_",
                     suffix=".wav",
                     dir=str(effective_storage),
                     delete=False,

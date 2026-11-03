@@ -976,7 +976,10 @@ class TestLoadTool:
         
         # Multimodal should point to segment file
         multimodal = result["_multimodal_content"]
-        assert "_temp_segment_" in multimodal[0]["path"]
+        assert ".audio_ops_segment_" in multimodal[0]["path"]
+        # ... and the piece is no user file: list() showed every one
+        listed = await server.list({"_status": mock_status})
+        assert not any("segment" in str(entry) for entry in listed.get("files", [])), listed
     
     @pytest.mark.asyncio
     async def test_load_with_only_start_time(
@@ -2616,7 +2619,7 @@ class TestGuideFindings:
         assert result["error_type"] == "FileTooLarge"
         result = await server.load({"file": sample_wav.name, "start_time": 0, "end_time": 4})
         assert result["error_type"] == "FileTooLarge"
-        assert not list(temp_storage.glob("_temp_segment_*"))
+        assert not list(temp_storage.glob(".audio_ops_segment_*"))
 
     @pytest.mark.asyncio
     async def test_dots_inside_a_name_are_not_traversal(self, server, sample_wav, temp_storage):
