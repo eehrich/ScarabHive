@@ -32,6 +32,7 @@ from typing import Any, TYPE_CHECKING
 import httpx
 from bs4 import BeautifulSoup
 
+from agent_system.llm.tls import network_ssl_verify
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.cache import PluginCache
 from agent_system.utils.params import bool_param
@@ -280,7 +281,8 @@ class WebScraperServer(SchemaBasedToolServer):
 
     def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         super().__init__(name, system_config, server_config)
-        self.ssl_verify = getattr(system_config, "ssl_verify", True)
+        # network.ssl_verify (the setting was read from a key that does not exist)
+        self.ssl_verify = network_ssl_verify(system_config)
         self._proxies: list[str] = list(getattr(server_config, "proxies", None) or [])
 
         # Cookie jars keyed by (session, domain), so one user's login cookies

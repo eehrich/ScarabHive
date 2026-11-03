@@ -129,7 +129,10 @@ class BlenderServer(SchemaBasedToolServer):
                 buf += chunk
                 try:
                     return json.loads(buf.decode("utf-8"))
-                except json.JSONDecodeError:
+                except ValueError:
+                    # JSONDecodeError: not complete yet; UnicodeDecodeError: a
+                    # recv boundary split a multi-byte character (umlauts, CJK
+                    # object names). Both mean: read on.
                     continue
             if not buf:
                 raise BlenderNotReachable(

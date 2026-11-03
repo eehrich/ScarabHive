@@ -23,6 +23,7 @@ import re
 from pydantic import BaseModel, Field, field_serializer, model_validator
 from pydantic import ValidationError as FieldError
 
+from agent_system.utils.io import atomic_write_json
 from agent_system.paths import data_path
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
@@ -170,6 +171,8 @@ class MemoryServer(SchemaBasedHookToolServer):
         # In-memory cache for metadata (session_id -> MemoryCollection)
         # Limited to prevent memory leaks
         self._collections_cache: Dict[str, MemoryCollection] = {}
+        # One save at a time per session (_save_collection); a lock per session id ever saved.
+        self._save_locks: Dict[str, asyncio.Lock] = {}
         self._cache_access_times: Dict[str, float] = {}  # session_id -> last_access_time
         self._max_cache_size = 100  # Maximum cached collections
         self._cache_ttl = 1800.0  # 30 minutes TTL
@@ -325,7 +328,14 @@ class MemoryServer(SchemaBasedHookToolServer):
     # =========================================================================
 
     def _get_metadata_path(self, session_id: str) -> Path:
-        """Get path to JSON metadata file for session"""
+        """Get path to JSON metadata file for session.
+
+        The id names a file: anything but letters, digits, ``_`` and ``-`` is
+        refused here, for every caller (the tool's session_id fallback and the
+        hook did not check it).
+        """
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id or ""):
+            raise StorageError(f"invalid session id for memory storage: {session_id!r}")
         return self.storage_path / f"{session_id}.json"
 
     def has_memories(self, session_id: str) -> bool:
@@ -422,11 +432,17 @@ class MemoryServer(SchemaBasedHookToolServer):
             self._cache_access_times.pop(oldest, None)
             logger.debug(f"MemoryServer: Evicted cache entry {oldest} (LRU)")
 
-    def _save_collection_sync(self, collection: MemoryCollection) -> None:
-        """Save memory collection to JSON - sync version for thread pool."""
+    def _save_collection_sync(self, collection: MemoryCollection, data: Optional[dict] = None) -> None:
+        """Save memory collection to JSON - sync version for thread pool.
+
+        Atomic (temp file, then replace): parallel tool calls of one turn save
+        the same session from two threads, and an open('w') of each truncated
+        the other's file mid-write -- invalid JSON, and every later load failed.
+        ``data`` is the snapshot taken on the event loop; dumping the model in
+        the thread raced the loop's changes to the collection.
+        """
         metadata_path = self._get_metadata_path(collection.session_id)
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(collection.model_dump(), f, indent=2, ensure_ascii=False)
+        atomic_write_json(metadata_path, collection.model_dump(mode="json") if data is None else data)
 
     async def _save_collection(self, collection: MemoryCollection):
         """Save memory collection to JSON metadata file"""
@@ -438,8 +454,14 @@ class MemoryServer(SchemaBasedHookToolServer):
             collection.total_memories = len(collection.memories)
             collection.last_number = highest_number(collection.last_number, collection.memories)
 
-            # Run sync file I/O in thread pool
-            await asyncio.to_thread(self._save_collection_sync, collection)
+            # One save of a session at a time, its snapshot taken on the loop
+            # INSIDE the lock: the write that lands last then also holds the
+            # latest state (two parallel stores each saved, and the earlier
+            # snapshot could land last and drop the other's memory).
+            lock = self._save_locks.setdefault(collection.session_id, asyncio.Lock())
+            async with lock:
+                snapshot = collection.model_dump(mode="json")
+                await asyncio.to_thread(self._save_collection_sync, collection, snapshot)
 
             # Update cache with access time
             self._collections_cache[collection.session_id] = collection

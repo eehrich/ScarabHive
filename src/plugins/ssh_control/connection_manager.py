@@ -373,7 +373,9 @@ class SSHConnectionManager:
                 command=command,
                 stdout=result.stdout,
                 stderr=result.stderr,
-                exit_code=result.exit_status or 0,
+                # None: the channel closed without an exit status (dropped
+                # connection, killed by a signal). That is no success.
+                exit_code=result.exit_status if result.exit_status is not None else -1,
                 duration=duration
             )
             

@@ -65,3 +65,16 @@ def httpx_verify(verify: bool | str | ssl.SSLContext | None = True) -> ssl.SSLCo
     if verify is None:
         verify = True
     return _context(verify)
+
+
+def network_ssl_verify(system_config: object, default: bool = True) -> bool:
+    """``network.ssl_verify`` of a system config, for plugins that make HTTP calls.
+
+    The setting lives under ``network:`` (config/models/system.py); plugins that
+    read ``system_config.ssl_verify`` got their getattr default every time, so
+    ``network.ssl_verify: false`` behind a TLS-inspecting proxy did nothing.
+    ``default`` is the answer for a config without a network section.
+    """
+    network = getattr(system_config, "network", None)
+    value = getattr(network, "ssl_verify", None) if network is not None else None
+    return default if value is None else bool(value)
