@@ -131,7 +131,9 @@ test that fails without the fix.
 
 `web_scraper`: three tests (`test_long_text_is_paged_from_the_cached_copy`, `test_links_are_filtered_at_answer_time`,
 `test_every_page_answer_is_scrubbed_errors_and_old_cache_included`) fail on a fresh Linux venv before and after these
-changes (no `links` key: an optional HTML dependency is missing there). Not caused by this work.
+changes (no `links` key: an optional HTML dependency is missing there), and with them two cases of
+`tests/plugins/test_status_end_lines.py::test_web_scraper_cache_hit_reports_the_operations_own_result`. Not caused
+by this work.
 
 ---
 
