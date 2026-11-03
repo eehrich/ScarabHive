@@ -19,7 +19,7 @@ def mock_session_service():
     service.session_manager.save_session = AsyncMock()
     service.session_manager.update_session_metadata = AsyncMock()  # Required for _link_sub_to_parent
     # Mock _session_id_exists_globally to always return False (ID is available)
-    service.session_manager._session_id_exists_globally = MagicMock(return_value=False)
+    service.session_manager.session_id_exists = MagicMock(return_value=False)
     return service
 
 
