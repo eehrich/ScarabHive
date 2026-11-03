@@ -1,7 +1,9 @@
 """What a ``SessionManager`` keeps of its sessions in memory, and what it has seen of their files.
 
-Two things, each bounded on its own: copies of recently used sessions (an LRU
-with a TTL, so a load need not read the file again), and for each session the
+Two things, each bounded on its own: copies of recently used sessions (a TTL,
+and when full the copy cached longest ago goes first -- by when it was put or
+written, not by when it was last read, so not an LRU; a load need not read the
+file again), and for each session the
 moment this process last had its file as it is -- what
 ``SessionManager.changed_on_disk`` holds the file's mtime against.
 
@@ -62,7 +64,10 @@ class SessionCache:
         self.seen.pop(session_id, None)
 
     def cleanup(self) -> None:
-        """Clean up cache: remove expired entries and apply LRU eviction."""
+        """Clean up cache: remove expired entries, then evict the oldest-cached ones while full.
+
+        Oldest by when a copy was put or written: a hit in ``fresh`` does not renew it, so this is not an LRU.
+        """
         now = time.time()
 
         # Remove expired entries
@@ -76,12 +81,12 @@ class SessionCache:
         if expired:
             logger.debug(f"SessionManager: Cleaned up {len(expired)} expired cache entries")
 
-        # LRU eviction if still over limit
+        # Oldest-cached first if still over limit
         while len(self.entries) >= self.max_size:
             # Find oldest entry
             oldest = min(self.entries.keys(), key=lambda k: self.entries[k][1])
             del self.entries[oldest]
-            logger.debug(f"SessionManager: Evicted cache entry {oldest} (LRU)")
+            logger.debug(f"SessionManager: Evicted cache entry {oldest} (oldest cached)")
 
     def mark_seen(self, session_id: str) -> None:
         """The session's last load went into a tracker: what it read counts as seen (changed_on_disk)."""

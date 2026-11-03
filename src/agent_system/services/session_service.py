@@ -51,14 +51,28 @@ def _trim_to_safe_boundary(messages: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 
 def _msg_to_dict(msg: Any) -> Dict[str, Any]:
-    """Convert a ChatMessage (or compatible) into a JSON-ready dict."""
+    """Convert a ChatMessage (or compatible) into a JSON-ready dict.
+
+    A dict comes back as a copy: the caller adds ``estimated_tokens`` to it, and the tracker's own message is
+    not the place for that.
+    """
     if isinstance(msg, dict):
-        return msg
+        return dict(msg)
     if hasattr(msg, "model_dump"):
         return msg.model_dump(mode="json")
     if hasattr(msg, "dict"):
         return msg.dict()
     return dict(msg)
+
+
+def _merge_runtime_vars(session_data: Dict[str, Any], runtime_vars: Optional[Dict[str, Any]]) -> None:
+    """Merge the run's template_vars into the record's persisted context_vars (added and changed, none removed)."""
+    if runtime_vars:
+        existing = session_data.get("context_vars")
+        if not isinstance(existing, dict):
+            existing = {}
+        existing.update(runtime_vars)
+        session_data["context_vars"] = existing
 
 
 def _estimate_message_tokens(msg_dict: Dict[str, Any]) -> int:
@@ -413,15 +427,7 @@ class SessionService:
             logger.debug(f"[SESSION] Saving session {session_id}, messages count: {len(messages_list)}")
 
             # Convert ChatMessage objects to dicts with token estimation
-            messages_dicts = []
-            for msg in messages_list:
-                if hasattr(msg, 'model_dump'):
-                    msg_dict = msg.model_dump(mode='json')
-                elif hasattr(msg, 'dict'):
-                    msg_dict = msg.dict()
-                else:
-                    msg_dict = dict(msg)
-                messages_dicts.append(msg_dict)
+            messages_dicts = [_msg_to_dict(msg) for msg in messages_list]
             await asyncio.to_thread(_add_estimated_tokens, messages_dicts)
 
             # Explicit title wins; otherwise derive it from the first user message.
@@ -500,12 +506,7 @@ class SessionService:
                 except Exception as tracker_err:
                     logger.debug(f"[SESSION] Could not read runtime template_vars: {tracker_err}")
                     runtime_vars = None
-                if runtime_vars:
-                    existing = session_data.get("context_vars")
-                    if not isinstance(existing, dict):
-                        existing = {}
-                    existing.update(runtime_vars)
-                    session_data["context_vars"] = existing
+                _merge_runtime_vars(session_data, runtime_vars)
 
             if llm_choice is not None:
                 # null, not absent: "nobody picked one" -- a record without the key predates it, and
@@ -661,12 +662,7 @@ class SessionService:
                 session_data["title"] = carried
             elif session_data.get("title") == PLACEHOLDER_TITLE and safe_messages:
                 session_data["title"] = self._extract_session_title(safe_messages)
-            if runtime_vars:
-                existing = session_data.get("context_vars")
-                if not isinstance(existing, dict):
-                    existing = {}
-                existing.update(runtime_vars)
-                session_data["context_vars"] = existing
+            _merge_runtime_vars(session_data, runtime_vars)
 
             await self.session_manager.save_session(session_data)
             self._title_written(agent, session_id, carried)

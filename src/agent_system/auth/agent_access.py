@@ -30,7 +30,6 @@ from __future__ import annotations
 import logging
 import sqlite3
 from contextlib import closing, contextmanager
-from pathlib import Path
 from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
@@ -59,16 +58,6 @@ _UNREADABLE = object()
 ANONYMOUS = "anonymous"
 
 
-def _rank(role: Any) -> int:
-    """The role's rank in ROLE_HIERARCHY; 0 for anything that is not a known role."""
-    from agent_system.auth.enforcement import ROLE_HIERARCHY
-
-    value = getattr(role, "value", role)  # UserRole is a str enum; str() of it is "UserRole.ADMIN"
-    if not isinstance(value, str):
-        return 0
-    return ROLE_HIERARCHY.get(value.strip().lower(), 0)
-
-
 def _role_text(role: Any) -> str:
     value = getattr(role, "value", role)
     return str(value)
@@ -94,8 +83,10 @@ def _stored_account(username: str, auth: Any) -> Any:
             return _UNREADABLE
         return (user.role, bool(user.is_active)) if user is not None else None
 
-    path = Path(getattr(auth, "database_path", None) or "")
-    if not str(path) or not path.is_file():
+    # Resolved as UserDatabase resolves it (database.user_db_path): read raw, a relative
+    # "data/users.db" named the working directory's file, not the data directory's the app opened.
+    path = database.user_db_path(getattr(auth, "database_path", None))
+    if not path.is_file():
         return None
     try:
         uri = f"{path.resolve().as_uri()}?mode=ro"
@@ -149,7 +140,9 @@ def agent_run_denial(min_role: Optional[str], who: Any, auth: Optional[Any], *,
     if auth is None or not getattr(auth, "enabled", False):
         return None
 
-    required = _rank(min_role)
+    from agent_system.auth.enforcement import role_rank
+
+    required = role_rank(min_role)
     if required == 0:
         return f"it requires the role '{_role_text(min_role)}', which is no known role"
     needs = f"it requires the role '{_role_text(min_role)}'"
@@ -184,7 +177,7 @@ def agent_run_denial(min_role: Optional[str], who: Any, auth: Optional[Any], *,
     else:
         return f"{needs} and the caller cannot be identified ({type(who).__name__})"
 
-    if _rank(role) < required:
+    if role_rank(role) < required:
         return f"{needs}; '{name}' has the role '{_role_text(role)}'"
     return None
 

@@ -533,17 +533,7 @@ class BackgroundJobManager:
         # Walk the registry first — that's where sub-agent servers
         # (linear_book, v5b_*, cover_artist, ...) register themselves.
         if self._agent_registry is not None:
-            try:
-                names = self._agent_registry.list()
-            except Exception:  # noqa: BLE001
-                names = []
-            for name in names:
-                try:
-                    srv = self._agent_registry.get(name)
-                except Exception:  # noqa: BLE001
-                    continue
-                if not isinstance(srv, _Agent):
-                    continue
+            for name, srv in self._registered_agents(_Agent):
                 try:
                     active = srv._request_manager.get_active_requests()
                 except Exception:  # noqa: BLE001
@@ -610,24 +600,32 @@ class BackgroundJobManager:
             await self.cancel_job(request_id)
         return sorted(request_ids)
 
+    def _registered_agents(self, agent_class):
+        """``(name, server)`` of every registered server that is an ``agent_class``; a registry that cannot list
+        or a server that cannot be fetched is left out."""
+        if self._agent_registry is None:
+            return
+        try:
+            names = self._agent_registry.list()
+        except Exception:  # noqa: BLE001
+            names = []
+        for name in names:
+            try:
+                server = self._agent_registry.get(name)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(server, agent_class):
+                yield name, server
+
     def _agent_servers(self):
         """The Agent servers of this process: every registered one, then the default agent."""
         try:
             from agent_system.servers.agent.server import Agent as _Agent
         except Exception:  # noqa: BLE001
             _Agent = None  # type: ignore[assignment]
-        if _Agent is not None and self._agent_registry is not None:
-            try:
-                names = self._agent_registry.list()
-            except Exception:  # noqa: BLE001
-                names = []
-            for name in names:
-                try:
-                    server = self._agent_registry.get(name)
-                except Exception:  # noqa: BLE001
-                    continue
-                if isinstance(server, _Agent):
-                    yield server
+        if _Agent is not None:
+            for _name, server in self._registered_agents(_Agent):
+                yield server
         if self._default_agent is not None:
             yield self._default_agent
 

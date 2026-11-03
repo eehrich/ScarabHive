@@ -84,6 +84,28 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return read_json_object(path, what="session archive")
 
 
+def _read_manifest_to_edit(path: Path) -> Dict[str, Any]:
+    """The manifest an edit starts from: ``{}`` only when there is none yet.
+
+    Not ``_read_json``: it answers ``{}`` for a manifest it cannot read as
+    well, and the edit would write that back holding only its own change --
+    the index of every other archived tree gone. Unreadable is refused
+    instead (ArchiveError, nothing written): the file stays as it is for
+    whoever repairs it, and no tree is deleted on the strength of an index
+    that could not be written.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise ArchiveError(f"the archive index {path} cannot be read ({exc}); not changing it") from exc
+    if not isinstance(data, dict):
+        raise ArchiveError(f"the archive index {path} holds no JSON object; not changing it")
+    return data
+
+
 def _write_json_atomic(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, data)
@@ -186,7 +208,7 @@ class ArchiveStore:
                 f"the archive index of {user_id} is held by another process "
                 f"(waited {MANIFEST_LOCK_TIMEOUT:.0f}s)") from exc
         try:
-            manifest = _read_json(path)
+            manifest = _read_manifest_to_edit(path)
             result = change(manifest)
             _write_json_atomic(path, manifest)
             return result

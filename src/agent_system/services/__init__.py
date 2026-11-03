@@ -8,8 +8,8 @@ source of truth for common operations.
 Services:
     - ConfigService: Configuration loading and management (IMPLEMENTED)
     - ToolServerService: tool server operations (IMPLEMENTED)
-    - ToolService: Tool management and filtering (STUB - TODO)
-    - AgentService: Agent execution and session management (STUB - TODO)
+    - ToolService: an external MCP server's tools and its blocked list (IMPLEMENTED)
+    - AgentService: Agent execution and session management (unused by the app; only its tests import it)
     - SessionManager: Persistent session storage management (IMPLEMENTED)
 """
 

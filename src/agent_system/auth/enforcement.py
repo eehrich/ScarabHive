@@ -42,6 +42,31 @@ ROLE_HIERARCHY = {
 }
 
 
+def role_rank(role: Any) -> int:
+    """The role's rank in ROLE_HIERARCHY; 0 for anything that is not a known role.
+
+    Takes a name ("Admin", " user") or a UserRole -- a str enum whose str() is
+    "UserRole.ADMIN", so its value is what is ranked. THE ranking every role
+    check makes (the middleware, the enforcer, the agent gate, the plugin routes).
+    """
+    value = getattr(role, "value", role)
+    if not isinstance(value, str):
+        return 0
+    return ROLE_HIERARCHY.get(value.strip().lower(), 0)
+
+
+def meets_role(role: Any, min_role: Optional[str]) -> bool:
+    """Whether ``role`` is ``min_role`` or above; no ``min_role`` asks for nothing.
+
+    An unknown ``min_role`` ranks 0 and so asks for nothing either, as every
+    check that compared ranks did; the agent gate (agent_access) refuses an
+    unknown required role itself.
+    """
+    if not min_role:
+        return True
+    return role_rank(role) >= role_rank(min_role)
+
+
 #: The methods a rule or an allowed endpoint may name in front of its path.
 _PATTERN_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "*")
 
@@ -99,10 +124,9 @@ def anonymous_meets_role(min_role: Optional[str], default_role: Optional[str], a
     """
     if not min_role:
         return True
-    needed = ROLE_HIERARCHY.get(str(min_role).lower(), 0)
-    if needed <= ROLE_HIERARCHY.get(str(default_role or "user").lower(), 0):
+    if role_rank(min_role) <= role_rank(default_role or "user"):
         return True
-    return ROLE_HIERARCHY.get(str(anonymous_role).lower(), 0) >= needed
+    return meets_role(anonymous_role, min_role)
 
 
 def compile_endpoint_rules(
@@ -327,15 +351,7 @@ class EndpointSecurityEnforcer:
             return
         
         user_role = getattr(user, 'role', 'guest')
-        if isinstance(user_role, str):
-            user_role_value = ROLE_HIERARCHY.get(user_role.lower(), 0)
-        else:
-            # Handle enum
-            user_role_value = ROLE_HIERARCHY.get(str(user_role.value).lower(), 0)
-        
-        required_role_value = ROLE_HIERARCHY.get(min_role.lower(), 0)
-        
-        if user_role_value < required_role_value:
+        if not meets_role(user_role, min_role):
             logger.warning(
                 f"Access denied: user role '{user_role}' < required '{min_role}'"
             )
@@ -447,11 +463,4 @@ def has_role(user: Any, required_role: str) -> bool:
     if user is None:
         return False
     
-    user_role = getattr(user, 'role', 'guest')
-    if hasattr(user_role, 'value'):
-        user_role = user_role.value
-    
-    user_level = ROLE_HIERARCHY.get(str(user_role).lower(), 0)
-    required_level = ROLE_HIERARCHY.get(required_role.lower(), 0)
-    
-    return user_level >= required_level
+    return meets_role(getattr(user, 'role', 'guest'), required_role)
