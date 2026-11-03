@@ -15,18 +15,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 import httpx
 
+from plugins.llm_common.batch_http import DateTimeEncoder, raise_for_batch_status
 from agent_system.llm.tls import httpx_verify
 
 from agent_system.llm.batch.base import BatchProviderClient
 from agent_system.llm.batch.models import BatchJob, BatchStatus, TERMINAL_STATUSES
 from agent_system.llm.batch.job_tracker import get_job_tracker
-from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
 from plugins.llm_common import openai_utils
 
 logger = logging.getLogger(__name__)
@@ -114,13 +113,6 @@ async def _retry_with_backoff(
     raise RuntimeError(f"{operation_name} failed unexpectedly")
 
 
-class _DateTimeEncoder(json.JSONEncoder):
-    """JSON encoder that handles datetime objects."""
-    
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        return super().default(obj)
 
 
 class OpenAIBatchClient(BatchProviderClient):
@@ -180,41 +172,8 @@ class OpenAIBatchClient(BatchProviderClient):
     def _raise_for_status(
         self, response: httpx.Response, operation: str, model: str = "unknown"
     ) -> None:
-        """Raise appropriate error for non-200 responses.
-        
-        Args:
-            response: HTTP response
-            operation: Description of the operation for error message
-            model: Model name for rate limit errors
-            
-        Raises:
-            LLMRateLimitError: On 429 status
-            LLMQuotaExhaustedError: On 429 with quota-related message
-            RuntimeError: On other errors
-        """
-        if response.status_code == 200:
-            return
-            
-        if response.status_code == 429:
-            error_text = response.text.lower()
-            # Check for quota exhaustion vs temporary rate limit
-            if "quota" in error_text or "insufficient" in error_text:
-                raise LLMQuotaExhaustedError(
-                    provider="openai_batch",
-                    model=model,
-                    message=f"{operation}: {response.text}"
-                )
-            # Extract retry-after if available
-            retry_after = response.headers.get("retry-after")
-            retry_seconds = float(retry_after) if retry_after else None
-            raise LLMRateLimitError(
-                provider="openai_batch",
-                model=model,
-                retry_after=retry_seconds,
-                message=f"{operation}: {response.text}"
-            )
-        
-        raise RuntimeError(f"{operation}: {response.status_code} {response.text}")
+        """Raise the typed error for a non-200 response (see raise_for_batch_status)."""
+        raise_for_batch_status(response, operation, provider="openai_batch", model=model)
     
     async def submit_batch(
         self,
@@ -297,7 +256,7 @@ class OpenAIBatchClient(BatchProviderClient):
                 }
                 
                 # Use custom encoder to handle datetime objects
-                f.write(json.dumps(line, cls=_DateTimeEncoder) + "\n")
+                f.write(json.dumps(line, cls=DateTimeEncoder) + "\n")
         
         logger.debug(f"Created input file with {len(requests)} requests: {file_path}")
     

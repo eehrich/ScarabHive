@@ -1398,3 +1398,36 @@ async def test_a_refused_update_changes_nothing(server: TodoServer):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--cov=plugins.todo.server", "--cov-report=html"])
+
+
+def test_a_collection_evicted_before_its_save_is_still_written(server: TodoServer):
+    """Between a tool's load and its save another session's load could evict
+    the collection; the save then returned silently and the tool answered
+    'created' for a task that was never written."""
+    session_id = "evicted_one"
+    collection = TaskCollection(session_id=session_id)
+    server._sessions[session_id] = collection
+    collection.tasks["task_001"] = Task(task_id="task_001", title="keep me")
+    del server._sessions[session_id]  # evicted meanwhile
+
+    server._save_session(session_id, collection)
+
+    saved = json.loads(server._get_storage_path(session_id).read_text(encoding="utf-8"))
+    assert "task_001" in saved["tasks"]
+
+
+
+@pytest.mark.asyncio
+async def test_a_tool_hands_its_collection_to_the_save(server: TodoServer, mock_context, monkeypatch):
+    """The tools pass the collection they changed: an eviction between their
+    load and their save can no longer drop the change."""
+    seen = []
+    real = server._save_session
+
+    def save(session_id, collection=None):
+        seen.append(collection)
+        return real(session_id, collection)
+
+    monkeypatch.setattr(server, "_save_session", save)
+    await server.call("todo", {"operation": "create", "title": "t", "context": mock_context})
+    assert seen and seen[0] is not None and seen[0].tasks

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
+from agent_system.llm.tls import network_ssl_verify
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from . import sources
 
@@ -26,8 +27,8 @@ class WeatherServer(SchemaBasedToolServer):
         """
         super().__init__(name, system_config, server_config)
         
-        # Extract SSL verification setting from system config if available
-        self.ssl_verify = getattr(system_config, 'ssl_verify', True)
+        # network.ssl_verify (the setting was read from a key that does not exist)
+        self.ssl_verify = network_ssl_verify(system_config)
     
     async def forecast(self, params: dict[str, Any]) -> dict[str, Any]:
         """

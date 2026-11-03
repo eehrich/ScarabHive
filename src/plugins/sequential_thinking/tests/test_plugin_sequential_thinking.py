@@ -1725,3 +1725,38 @@ async def test_invalid_total_thoughts_error(server, mock_status):
     assert "total_thoughts must be >= 1" in result["error"]
 
 
+
+
+class TestConversationsDoNotShareThinking:
+    """One server serves every conversation; ids and idempotency keys may be model-chosen."""
+
+    @staticmethod
+    def _server():
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+
+        return SequentialThinkingServer("sequential_thinking", AgentSystemConfig(),
+                                        ToolServerConfig(type="sequential_thinking", enabled=True))
+
+    @staticmethod
+    def _thought(server, conv, **extra):
+        return server.execute({"thought": f"{conv} thinks", "thought_number": 1, "total_thoughts": 2,
+                               "next_thought_needed": True, "_session_id": conv, **extra})
+
+    async def test_a_named_session_is_not_readable_from_another_conversation(self):
+        server = self._server()
+        assert (await self._thought(server, "alice", session_id="plan"))["status"] == "success"
+
+        assert (await self._thought(server, "bob", session_id="plan"))["status"] == "error"
+        summary = await server.get_summary({"session_id": "plan", "_session_id": "bob"})
+        assert summary["status"] == "error" and "alice" not in str(summary)
+        cleared = await server.clear_history({"session_id": "plan", "_session_id": "bob"})
+        assert cleared["status"] == "error"
+        assert (await server.get_summary({"session_id": "plan", "_session_id": "alice"}))["status"] == "success"
+
+    async def test_the_same_idempotency_key_in_two_conversations_records_both(self):
+        server = self._server()
+        first = await self._thought(server, "alice", idempotency_key="step1")
+        second = await self._thought(server, "bob", idempotency_key="step1")
+        assert second["status"] == "success"
+        assert second["event_id"] != first["event_id"]
+        assert "warnings" not in second or "Idempotent" not in str(second["warnings"])

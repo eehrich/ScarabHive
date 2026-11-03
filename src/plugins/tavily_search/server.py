@@ -8,7 +8,7 @@ from typing import Any, TYPE_CHECKING
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.cache import PluginCache
-from agent_system.utils.params import bool_param
+from agent_system.utils.params import flag_param
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -20,10 +20,7 @@ DEFAULT_MAX_CONTENT_CHARS = 20000
 
 def _flag(params: dict[str, Any], key: str) -> bool:
     """A yes/no argument: "false" as text is false, not a true value; anything unusable is no."""
-    try:
-        return bool_param(params, key)
-    except ValueError:
-        return False
+    return flag_param(params, key)
 
 
 def _content_cap(value: Any) -> int:

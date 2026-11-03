@@ -316,3 +316,23 @@ class TestEvictionDuringAStore:
         first = await held
 
         assert (first["memory_id"], second["memory_id"]) == ("mem_002", "mem_003")
+
+
+class TestTheSessionIdNamesAFile:
+    @pytest.mark.parametrize("session_id", ["../outside", "a/b", "x.json", ""])
+    def test_a_session_id_that_is_no_plain_name_is_refused(self, tmp_path, session_id):
+        """The tool's session_id fallback and the hook reached the path unchecked."""
+        from plugins.memory.server import StorageError
+
+        with pytest.raises(StorageError):
+            _server(tmp_path)._get_metadata_path(session_id)
+
+    @pytest.mark.asyncio
+    async def test_a_save_leaves_no_temp_file_and_valid_json(self, tmp_path):
+        import json
+
+        srv = _server(tmp_path)
+        srv._store_memory_in_chroma = AsyncMock()
+        await srv.execute({"operation": "store", "title": "T", "content": "x", "session_id": "s1"})
+        assert not list((tmp_path / "mem").glob("*.tmp")) and not list((tmp_path / "mem").glob(".*.tmp"))
+        assert json.loads((tmp_path / "mem" / "s1.json").read_text(encoding="utf-8"))["memories"]

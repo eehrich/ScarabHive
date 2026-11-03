@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections import OrderedDict
 import json
 import logging
 import math
@@ -17,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from agent_system.utils.params import as_int
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.paths import data_path
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
@@ -33,6 +35,9 @@ if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
+
+#: How many (session, request, lesson) bookings are remembered to book each once.
+_BOOKED_APPLICATIONS_KEPT = 4096
 
 # ==============================================================================
 # Constants
@@ -97,8 +102,7 @@ def _beyond_tool_schema(params: Dict[str, Any]) -> Optional[str]:
 
 def _limit(params: Dict[str, Any], default: int) -> int:
     """The tool's `limit`, held to the 1 to 100 its schema promises: every row is returned whole."""
-    limit = params.get("limit")
-    return default if limit is None else min(100, max(1, int(limit)))
+    return as_int(params.get("limit"), default, low=1, high=100, name="limit", strict=True)
 
 
 def _tags(value: Any) -> List[str]:
@@ -261,6 +265,11 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
     ) -> None:
         super().__init__(name, system_config, server_config)
         self._system_config = system_config
+        # (session, request, lesson) already booked as applied: the hook runs
+        # on every LLM step of a request, and booking each step multiplied
+        # application_count by the step count (750 SQLite writes for a
+        # 50-step run with 15 lessons). Bounded, oldest first out.
+        self._booked_applications: "OrderedDict[tuple, None]" = OrderedDict()
 
         # Resolve paths from server_config (runtime overrides) with sensible defaults
         # Follows pattern from todo/memory plugins: getattr(server_config, key, default)
@@ -1133,21 +1142,28 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         session_id: str,
         agent_name: str,
     ) -> None:
-        """Record that a lesson was applied (injected into prompt)."""
-        conn = self._get_connection()
-        try:
-            now = datetime.now(UTC).isoformat()
-            conn.execute(
-                "INSERT INTO lesson_applications (lesson_id, session_id, agent_name) VALUES (?, ?, ?)",
-                (lesson_id, session_id, agent_name),
-            )
-            conn.execute(
-                "UPDATE lessons SET application_count = application_count + 1, last_applied_at = ?, updated_at = ? WHERE lesson_id = ?",
-                (now, now, lesson_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        """Record that a lesson was applied (injected into prompt).
+
+        In a worker thread: it runs from the pre_llm_call hook, and a busy
+        database would otherwise stall the event loop for every session.
+        """
+        def write() -> None:
+            conn = self._get_connection()
+            try:
+                now = datetime.now(UTC).isoformat()
+                conn.execute(
+                    "INSERT INTO lesson_applications (lesson_id, session_id, agent_name) VALUES (?, ?, ?)",
+                    (lesson_id, session_id, agent_name),
+                )
+                conn.execute(
+                    "UPDATE lessons SET application_count = application_count + 1, last_applied_at = ?, updated_at = ? WHERE lesson_id = ?",
+                    (now, now, lesson_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        await asyncio.to_thread(write)
 
     async def get_active_lessons_for_agent(
         self,
@@ -2064,12 +2080,23 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             # from an earlier call still stands in this conversation, so these
             # lessons ARE in front of the model. Counting only the rewrites
             # would turn "applied" into "changed".
+            # Once per request: the steps of one request are one application.
             session_id = context.session_id
+            request_id = getattr(context, "request_id", None)
             for lesson in lessons:
+                key = (session_id, request_id, lesson["lesson_id"])
+                if request_id is not None and key in self._booked_applications:
+                    continue
                 try:
                     await self.record_application(lesson["lesson_id"], session_id, agent_name)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("lessons_learned: recording the application of %s failed: %s",
+                                   lesson["lesson_id"], e)
+                    continue
+                if request_id is not None:
+                    self._booked_applications[key] = None
+                    while len(self._booked_applications) > _BOOKED_APPLICATIONS_KEPT:
+                        self._booked_applications.popitem(last=False)
 
             if written:
                 logger.info(f"Injected {len(lessons)} lessons for agent '{agent_name}'")

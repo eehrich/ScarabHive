@@ -37,6 +37,7 @@ import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from agent_system.utils.proctree import run_bounded
 from agent_system.core.session_presence import alive, presence_for, wake_blocked, wake_depth, wake_session
 from agent_system.paths import PROJECT_ROOT, data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
@@ -341,7 +342,9 @@ def _scratch_repo(path: Path) -> bool:
            "-C", str(path)]
     try:
         for args in (["init", "-q", "--template="], ["commit", "-q", "--allow-empty", "-m", path.name]):
-            subprocess.run([*git, *args], check=True, capture_output=True, timeout=60)
+            done = run_bounded([*git, *args], timeout=60)  # the whole tree on a timeout
+            if done.returncode:
+                raise subprocess.CalledProcessError(done.returncode, done.args, done.stdout, done.stderr)
     except (OSError, subprocess.SubprocessError) as e:
         logger.warning("coding_cli: workdir %s could not be created -- %s", path, e)
 

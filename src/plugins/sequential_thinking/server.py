@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from agent_system.utils.params import as_int
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.utils.id import short_id
@@ -25,14 +26,10 @@ def _as_whole(value: Any, name: str, default: int | None = None) -> int | None:
     """A whole number from an int, a whole float or its text; else ValueError."""
     if value is None:
         return default
-    if not isinstance(value, bool):
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            number = None
-        if number is not None and number.is_integer():
-            return int(number)
-    raise ValueError(f"{name} must be a whole number, got {value!r}")
+    number = as_int(value, None)
+    if number is None:
+        raise ValueError(f"{name} must be a whole number, got {value!r}")
+    return number
 
 
 def _as_flag(value: Any, default: bool, name: str) -> bool:
@@ -87,6 +84,10 @@ class SessionState:
     branches: dict[str, Branch] = field(default_factory=dict)
     total_thoughts_estimate: int = 1
     actual_thoughts: int = 0
+    # The agent session that created it. One server serves every session and
+    # user, and thinking-session ids may be model-chosen ("plan"): another
+    # conversation naming the same id must not read, extend or clear it.
+    owner: str | None = None
     # Highest number a NEW thought got. A revision keeps the number it
     # revises, so it must not advance this -- actual_thoughts counts it.
     last_number: int = 0
@@ -164,11 +165,25 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             "max_summary_thoughts": self.max_summary_thoughts,
         }
 
+    @staticmethod
+    def _foreign(session: SessionState | None, agent_session_id: str | None) -> bool:
+        """Whether *session* belongs to another conversation than the caller's."""
+        return (session is not None and session.owner is not None
+                and bool(agent_session_id) and session.owner != agent_session_id)
+
+    @staticmethod
+    def _idempotency_slot(agent_session_id: str | None, key: str) -> str:
+        """The cache key of an idempotency key: per conversation. Global, a
+        second conversation using "step1" got the first one's thought back as
+        success and its own thought was never recorded."""
+        return f"{agent_session_id or ''}\x1f{key}"
+
     def _find_session(self, session_id: str | None, agent_session_id: str | None) -> SessionState | None:
         """The session _get_or_create_session would return, if it exists -- without
         creating it, mapping it or refreshing its last_accessed."""
         if session_id:
-            return self._sessions.get(session_id)
+            found = self._sessions.get(session_id)
+            return None if self._foreign(found, agent_session_id) else found
         valid = [self._sessions[sid] for sid in self._agent_session_mapping.get(agent_session_id, [])
                  if sid in self._sessions] if agent_session_id else []
         return max(valid, key=lambda s: s.last_accessed) if valid else None
@@ -209,7 +224,8 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                     session_id=new_id,
                     created_at=datetime.now(),
                     last_accessed=datetime.now(),
-                    max_history_size=self.max_history_size
+                    max_history_size=self.max_history_size,
+                    owner=agent_session_id or None,
                 )
                 self._sessions[new_id] = session
 
@@ -245,7 +261,8 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             session_id=new_id,
             created_at=datetime.now(),
             last_accessed=datetime.now(),
-            max_history_size=self.max_history_size
+            max_history_size=self.max_history_size,
+            owner=agent_session_id or None,
         )
         self._sessions[new_id] = session
 
@@ -411,8 +428,9 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             # over the whole cache or all sessions here.
             for t in dropped_thoughts:
                 key = t.metadata.get("idempotency_key")
-                if key is not None and self._idempotency_cache.get(key) == t.event_id:
-                    del self._idempotency_cache[key]
+                slot = self._idempotency_slot(session.owner, key) if key is not None else None
+                if slot is not None and self._idempotency_cache.get(slot) == t.event_id:
+                    del self._idempotency_cache[slot]
             logger.warning(
                 f"Memory limit reached for session {session.session_id}, "
                 f"removed {excess} oldest thoughts"
@@ -488,8 +506,17 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             agent_session_id = params.get("_session_id")
 
             # Check idempotency: return cached result if key exists
-            if idempotency_key and idempotency_key in self._idempotency_cache:
-                cached_event_id = self._idempotency_cache[idempotency_key]
+            # A foreign explicit session is refused before anything else: the
+            # idempotent replay below must not answer from it either.
+            if session_id and self._foreign(self._sessions.get(session_id), agent_session_id):
+                error_msg = (f"session_id '{session_id}' belongs to another conversation; "
+                             "omit session_id to use this conversation's session")
+                await safe_status_call("error", error_msg)
+                return {"status": "error", "error": error_msg}
+
+            slot = self._idempotency_slot(agent_session_id, idempotency_key) if idempotency_key else None
+            if slot and slot in self._idempotency_cache:
+                cached_event_id = self._idempotency_cache[slot]
                 # The end fired here before, i.e. BEFORE the cached thought was
                 # found. On a miss the code falls through and writes a NEW
                 # thought whose real end is then dropped (StatusScope.ended).
@@ -688,7 +715,8 @@ class SequentialThinkingServer(SchemaBasedToolServer):
 
             # Cache event_id for idempotency (if key provided)
             if idempotency_key:
-                self._idempotency_cache[idempotency_key] = current_thought.event_id
+                self._idempotency_cache[
+                    self._idempotency_slot(agent_session_id, idempotency_key)] = current_thought.event_id
                 current_thought.metadata["idempotency_key"] = idempotency_key
                 logger.debug(f"Cached idempotency_key={idempotency_key[:8]}... → event_id={current_thought.event_id[:8]}...")
 
@@ -765,7 +793,8 @@ class SequentialThinkingServer(SchemaBasedToolServer):
 
             if session_id:
                 # Clear specific session
-                if session_id not in self._sessions:
+                if (session_id not in self._sessions
+                        or self._foreign(self._sessions[session_id], params.get("_session_id"))):
                     await safe_status_call("error", f"Session {session_id} not found")
                     return {
                         "status": "error",
@@ -854,7 +883,8 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                                      self.max_summary_thoughts)
             include_branches = _as_flag(params.get("include_branches"), True, "include_branches")
 
-            if session_id not in self._sessions:
+            if (session_id not in self._sessions
+                    or self._foreign(self._sessions[session_id], params.get("_session_id"))):
                 await safe_status_call("error", f"Session {session_id} not found")
                 return {
                     "status": "error",

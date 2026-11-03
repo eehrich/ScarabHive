@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+
+import anyio
 from typing import Dict, Any, Optional
 
 from agent_system.servers.agent.schema_based import SchemaBasedAgent
@@ -126,7 +128,7 @@ class BasicAgent(SchemaBasedAgent):
             tool_calls = []
             cancelled_event = None
 
-            async for event in self.run_events(
+            events = self.run_events(
                 task,
                 request_id=request_id,
                 session_id=session_id,
@@ -134,56 +136,66 @@ class BasicAgent(SchemaBasedAgent):
                 llm_profile_info_override=llm_profile_info,
                 # An explicit llm_profile wins: then no advanced mapping.
                 use_advanced_model=bool(use_advanced_model) and not llm_profile_name
-            ):
-                event_type = event.get("type")
+            )
+            try:
+                async for event in events:
+                    event_type = event.get("type")
 
-                if event_type == "start":
-                    step_count += 1
-                    if status:
-                        await status.progress("Starting analysis...")
+                    if event_type == "start":
+                        step_count += 1
+                        if status:
+                            await status.progress("Starting analysis...")
 
-                elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
-                    step_count += 1
-                    tool_name = event.get("server", "unknown")
-                    action = event.get("action", "unknown")
-                    if status:
-                        await status.progress(f"Step {step_count} - Using {tool_name} ({action})")
+                    elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
+                        step_count += 1
+                        tool_name = event.get("server", "unknown")
+                        action = event.get("action", "unknown")
+                        if status:
+                            await status.progress(f"Step {step_count} - Using {tool_name} ({action})")
 
-                    # Store tool calls for result summary
-                    filtered_params = {k: v for k, v in event.get("params", {}).items() if not k.startswith('_')}
-                    tool_calls.append({
-                        "tool": tool_name,
-                        "action": action,
-                        "params": filtered_params
-                    })
+                        # Store tool calls for result summary
+                        filtered_params = {k: v for k, v in event.get("params", {}).items() if not k.startswith('_')}
+                        tool_calls.append({
+                            "tool": tool_name,
+                            "action": action,
+                            "params": filtered_params
+                        })
 
-                elif event_type in ("tool_result", "mcp_result"):  # the old name until every deployed side is new (rename 17.09.2026)
-                    tool_name = event.get("server", "unknown")
-                    if status:
-                        await status.progress(f"Processing results from {tool_name}...")
+                    elif event_type in ("tool_result", "mcp_result"):  # the old name until every deployed side is new (rename 17.09.2026)
+                        tool_name = event.get("server", "unknown")
+                        if status:
+                            await status.progress(f"Processing results from {tool_name}...")
 
-                elif event_type == "final":
-                    # This is where the actual result is!
-                    result_text = event.get("summary", "") or event.get("message", "")
-                    if status:
-                        await status.progress("Finalizing results...")
+                    elif event_type == "final":
+                        # This is where the actual result is!
+                        result_text = event.get("summary", "") or event.get("message", "")
+                        if status:
+                            await status.progress("Finalizing results...")
 
-                elif event_type == "error":
-                    error_msg = event.get("message", "Unknown error")
-                    if status:
-                        await status.error(f"Task failed: {error_msg}")
-                    return {
-                        "status": "error",
-                        "error": error_msg,
-                        "request_id": request_id,
-                        # the error's own error_type, whatever the run's error was -- a refusal before the run
-                        # (Agent.run_events: REFUSED_BEFORE_THE_RUN) says which, as Agent.call's answer does
-                        **({"error_type": event["error_type"]} if event.get("error_type") else {}),
-                    }
+                    elif event_type == "error":
+                        error_msg = event.get("message", "Unknown error")
+                        if status:
+                            await status.error(f"Task failed: {error_msg}")
+                        return {
+                            "status": "error",
+                            "error": error_msg,
+                            "request_id": request_id,
+                            # the error's own error_type, whatever the run's error was -- a refusal before the run
+                            # (Agent.run_events: REFUSED_BEFORE_THE_RUN) says which, as Agent.call's answer does
+                            **({"error_type": event["error_type"]} if event.get("error_type") else {}),
+                        }
 
-                elif event_type == "cancelled":
-                    # Read to the end: the run closes its own scope after this event.
-                    cancelled_event = event
+                    elif event_type == "cancelled":
+                        # Read to the end: the run closes its own scope after this event.
+                        cancelled_event = event
+            finally:
+                # Closed here, not left to the garbage collector: the error
+                # branch returns from inside the loop, and a collector-closed
+                # run sits at a yield holding its session's lock, its last save
+                # and session-end hooks run out of context. Shielded, as in the
+                # sub-agent manager, so a pending cancel cannot skip the close.
+                with anyio.CancelScope(shield=True):
+                    await events.aclose()
 
             if cancelled_event is not None:
                 # Without this the run answered "success" with the invented

@@ -769,7 +769,7 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
     def reaching() -> dict[str, str]:
         """Every configured agent that reaches machines, and why: itself, or an agent it can start through a
         SAM it may call -- the whole graph at once, walked back from the ones that reach them themselves."""
-        from plugins.sub_agent_manager.server import agent_allowed
+        from agent_system.auth.agent_access import agent_allowed
 
         names = sorted(name for name in servers if server(name) is not None)
         why = {name: reason for name in names if (reason := own_reason(name))}

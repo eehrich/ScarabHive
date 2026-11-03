@@ -90,7 +90,7 @@ async def test_trimmed_thoughts_take_their_idempotency_keys_with_them():
     sid = (await server.execute({**BASE, "thought": "a", "idempotency_key": "old"}))["session_id"]
     for i in range(3):
         await server.execute({**BASE, "thought": f"n{i}", "session_id": sid})
-    assert "old" not in server._idempotency_cache
+    assert server._idempotency_slot(None, "old") not in server._idempotency_cache
 
 
 @pytest.mark.asyncio
@@ -101,7 +101,7 @@ async def test_an_expired_session_takes_its_idempotency_keys_with_it():
     server._sessions[first["session_id"]].last_accessed -= timedelta(seconds=120)
     await server.execute({**BASE, "thought": "b"})  # runs the TTL cleanup
     assert first["session_id"] not in server._sessions
-    assert "k" not in server._idempotency_cache
+    assert server._idempotency_slot("conv", "k") not in server._idempotency_cache
     assert "conv" not in server._agent_session_mapping
 
 
@@ -253,8 +253,8 @@ async def test_trimming_does_not_sweep_every_session():
     server._forget_removed_state = sweep
     result = await server.execute({**BASE, "thought": "c", "session_id": sid})
     assert result["status"] == "success", result
-    assert "old" not in server._idempotency_cache
-    assert "kept" in server._idempotency_cache
+    assert server._idempotency_slot(None, "old") not in server._idempotency_cache
+    assert server._idempotency_slot(None, "kept") in server._idempotency_cache
 
 
 @pytest.mark.asyncio

@@ -776,3 +776,16 @@ class TestWhoMayAnswer:
             if server.broker.get(question["id"]) is not None:
                 server.broker.answer(question["id"], ["Postgres"], "")
             await asyncio.wait_for(task, 10)
+
+
+async def test_a_run_cancelled_before_the_question_ends_the_call_once_with_an_error():
+    """No end line and no status: error -- the one exit the status rule missed."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    server = _server()
+    status = AsyncMock()
+    token = MagicMock(is_cancelled=True, is_forced=False)
+    answer = await server.execute({"question": "Which one?", "_status": status,
+                                   "_cancellation_token": token, "_session_id": "s"})
+    assert answer["status"] == "error" and answer["cancelled"] is True
+    status.error.assert_awaited_once()

@@ -6,6 +6,7 @@ reducing context size while preserving key information and decisions.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import itertools
 import logging
 import time
@@ -13,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent_system.llm.tool_pairs import tool_call_owners
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count
 from agent_system.llm.message_roles import opens_a_turn
@@ -182,7 +184,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             # Try to get actual prompt tokens from context_usage_tracker (more accurate)
             # If not available, fall back to estimation
-            total_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts)
+            # In a thread: the usage tracker's reading is SQLite on the event loop otherwise
+            total_tokens = await asyncio.to_thread(
+                self._get_actual_or_estimated_tokens, context, messages_as_dicts)
 
             # Skip threshold check if this is a manual trigger
             is_manual_trigger = context.metadata.get('manual_trigger', False) if context.metadata else False
@@ -500,21 +504,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             f"reasoning artifacts on {invalidated} message(s)"
                         )
 
-                    # Create modified context
-                    modified_context = HookContext(
-                        hook_type=context.hook_type,
-                        request_id=context.request_id,
-                        session_id=context.session_id,
-                        agent=context.agent,
-                        agent_name=context.agent_name,
-                        messages=new_messages,
-                        llm_response=context.llm_response,
-                        tool_call=context.tool_call,
-                        tool_result=context.tool_result,
-                        metadata=context.metadata,
-                        step=context.step,
-                        llm=context.llm
-                    )
+                    # Every field of the context but the messages carries on:
+                    # rebuilding it field by field dropped tools_schema and the
+                    # cancellation token, which the registry does not restore,
+                    # and project_instructions then snapshotted no tool roots
+                    # for the rest of the session.
+                    modified_context = dataclasses.replace(context, messages=new_messages)
 
                     logger.info(
                         f"[ContextSummarizer] Summarization complete: "
@@ -574,7 +569,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     
                     # Invalidate usage tracker data for this session after successful summarization
                     # This prevents subsequent hooks from using stale token counts
-                    self._invalidate_usage_tracker_session(context, session_id, "context_summarizer")
+                    await asyncio.to_thread(  # a SQLite write: off the event loop
+                        self._invalidate_usage_tracker_session, context, session_id, "context_summarizer")
 
                     # End line survives alone in the WebUI -- carry the numbers.
                     await scope.end(
@@ -792,14 +788,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             else:
                 old_msgs.append((i, msg))
 
-        # Phase 2: Keep tool_calls/tool response pairs together
-        # Build mapping: tool_call_id -> message index with tool_calls
-        tool_call_map: Dict[str, int] = {}
-        for i, msg in enumerate(messages):
-            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
-                for tc in msg.get('tool_calls', []):
-                    if isinstance(tc, dict) and 'id' in tc:
-                        tool_call_map[tc['id']] = i
+        # Phase 2: Keep tool_calls/tool response pairs together. By position
+        # (agent_system.llm.tool_pairs): a tool_call_id -> assistant map is
+        # last-writer-wins, and a repeated id (the Gemini batch client's
+        # call_{name}_{index}) handed an old result to a later assistant --
+        # moved into the recent half, it was a tool result without its call.
+        owners = tool_call_owners(messages)
 
         # Find tool responses and ensure they're in the same category as their tool_calls
         indices_to_move_to_old: set[int] = set()
@@ -807,9 +801,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
         for i, msg in enumerate(messages):
             if msg.get('role') == 'tool':
-                tool_call_id = msg.get('tool_call_id')
-                if tool_call_id and tool_call_id in tool_call_map:
-                    assistant_idx = tool_call_map[tool_call_id]
+                assistant_idx = owners.get(i)
+                if assistant_idx is not None:
 
                     # Check where assistant and tool are categorized
                     assistant_in_old = any(idx == assistant_idx for idx, _ in old_msgs)
@@ -934,13 +927,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         if not messages:
             return []
 
-        # Build mapping: tool_call_id -> assistant message index
-        tool_call_map: Dict[str, int] = {}
-        for i, msg in enumerate(messages):
-            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
-                for tc in msg.get('tool_calls', []):
-                    if isinstance(tc, dict) and 'id' in tc:
-                        tool_call_map[tc['id']] = i
+        # tool message index -> the assistant it answers, by position
+        owners = tool_call_owners(messages)
 
         # Build groups: each group is a list of message indices that must stay together
         # Start with each message in its own group
@@ -949,9 +937,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Merge groups: if a tool response belongs to an assistant, merge their groups
         for i, msg in enumerate(messages):
             if msg.get('role') == 'tool':
-                tool_call_id = msg.get('tool_call_id')
-                if tool_call_id and tool_call_id in tool_call_map:
-                    assistant_idx = tool_call_map[tool_call_id]
+                assistant_idx = owners.get(i)
+                if assistant_idx is not None:
                     # Merge groups: add tool response index to assistant's group
                     groups[assistant_idx].add(i)
                     groups[i] = groups[assistant_idx]  # Point to same group object

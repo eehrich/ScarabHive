@@ -3133,6 +3133,8 @@ class TestEnsureValidMessageSequence:
         assert any(msg.get("role") == "user" for msg in messages)
         user_msgs = [m for m in messages if m.get("role") == "user"]
         assert len(user_msgs) == 1
+        # ... marked as the plugin's: unmarked, it counted as a turn a person opened
+        assert user_msgs[0].get("injected_by") == "context_engineer"
         assert "Continue" in user_msgs[0]["content"]
     
     def test_adds_fallback_when_only_system_messages(self, strategy):

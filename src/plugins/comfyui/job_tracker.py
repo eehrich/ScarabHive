@@ -5,11 +5,12 @@ Tracks ComfyUI job execution state in SQLite for monitoring and history.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -36,9 +37,24 @@ class ComfyUIJobTracker:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
     
+    @contextlib.contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """One transaction on a connection that is CLOSED afterwards.
+
+        ``with sqlite3.connect(...) as conn`` commits or rolls back but does
+        not close: every call left a connection (and its file handle) to the
+        garbage collector.
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def _init_db(self) -> None:
         """Initialize database schema."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             # Enable WAL so concurrent readers don't block writers.
             # (Busy timeout defaults to 5s via sqlite3.connect(timeout=5.0).)
             try:
@@ -109,7 +125,7 @@ class ComfyUIJobTracker:
             session_id: The agent session that submitted it (the panel's session view), None outside one
             request_id: The request it ran under
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO jobs
@@ -148,7 +164,7 @@ class ComfyUIJobTracker:
         """
         now = datetime.now(timezone.utc).isoformat()
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             if status == "running":
                 conn.execute(
                     # the first report of a run starts its clock; every later status poll says running again
@@ -207,7 +223,7 @@ class ComfyUIJobTracker:
             prompt_id: Job identifier
             outputs: Dict mapping output type to list of file paths
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "UPDATE jobs SET outputs = ? WHERE prompt_id = ?",
                 (json.dumps(outputs), prompt_id)
@@ -223,7 +239,7 @@ class ComfyUIJobTracker:
         Returns:
             Job dict or None if not found
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 "SELECT * FROM jobs WHERE prompt_id = ?",
@@ -243,7 +259,7 @@ class ComfyUIJobTracker:
         Returns:
             Server URL string (e.g. ``http://comfy.example:8188``) or None.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.execute(
                 "SELECT server_url FROM jobs WHERE prompt_id = ?",
                 (prompt_id,),
@@ -261,7 +277,7 @@ class ComfyUIJobTracker:
     def has_jobs(self, sessions: Sequence[str]) -> bool:
         """Whether any job was started in one of ``sessions``."""
         where, args = self._of_sessions(sessions)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             return conn.execute(f"SELECT 1 FROM jobs WHERE 1=1{where} LIMIT 1", args).fetchone() is not None
 
     def get_active_jobs(self, sessions: Sequence[str] | None = None) -> list[dict[str, Any]]:
@@ -271,7 +287,7 @@ class ComfyUIJobTracker:
             List of active job dicts
         """
         where, args = self._of_sessions(sessions)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 f"""
@@ -293,7 +309,7 @@ class ComfyUIJobTracker:
             List of completed job dicts
         """
         where, args = self._of_sessions(sessions)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 f"""
@@ -338,7 +354,7 @@ class ComfyUIJobTracker:
         query += " ORDER BY submitted_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(query, params)
             return [self._row_to_dict(row) for row in cursor.fetchall()]
@@ -350,7 +366,7 @@ class ComfyUIJobTracker:
             Dict with job counts by status
         """
         where, args = self._of_sessions(sessions)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.execute(
                 f"""
                 SELECT status, COUNT(*) as count
@@ -384,7 +400,7 @@ class ComfyUIJobTracker:
         cutoff = datetime.now(timezone.utc).timestamp() - (days * 86400)
         cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat()
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.execute(
                 """
                 DELETE FROM jobs 
@@ -430,7 +446,7 @@ class ComfyUIJobTracker:
                 live_prompt_ids.add(item[1])
         
         # Find stale jobs (queued/running in DB but not in live queue)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.execute(
                 """
                 SELECT prompt_id FROM jobs 

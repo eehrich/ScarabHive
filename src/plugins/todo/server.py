@@ -349,12 +349,16 @@ class TodoServer(SchemaBasedHookToolServer):
         with open(path, "r", encoding="utf-8") as f:
             return bool(json.load(f).get("tasks"))
 
-    def _save_session(self, session_id: str) -> None:
+    def _save_session(self, session_id: str, collection: Optional[TaskCollection] = None) -> None:
         """
         Persist task collection to JSON file.
 
         Args:
             session_id: Session identifier
+            collection: The collection the caller changed. Looked up in the
+                cache otherwise -- and the cache may have evicted it between
+                the caller's load and this save (another session's load), so a
+                tool that mutated a collection hands it in.
 
         Raises:
             StorageError: If file write fails
@@ -362,8 +366,14 @@ class TodoServer(SchemaBasedHookToolServer):
         # Resolve the collection atomically (membership check + fetch) so a
         # concurrent eviction cannot delete it between the two statements.
         with self._cache_lock:
-            collection = self._sessions.get(session_id)
+            if collection is None:
+                collection = self._sessions.get(session_id)
+            elif session_id not in self._sessions:
+                # Evicted meanwhile: the changed copy is the one to keep.
+                self._sessions[session_id] = collection
         if collection is None:
+            # Nothing in memory to write. The tools that change a collection
+            # hand it in above, so this is no lost change.
             logger.warning(f"Cannot save non-existent session {session_id}")
             return
 
@@ -427,14 +437,15 @@ class TodoServer(SchemaBasedHookToolServer):
         async with self._session_locks[session_id]:
             return await asyncio.to_thread(self._load_session, session_id)
 
-    async def _save_session_async(self, session_id: str) -> None:
+    async def _save_session_async(self, session_id: str,
+                                  collection: Optional[TaskCollection] = None) -> None:
         """Async wrapper for _save_session - runs in thread pool with locking."""
         # Get or create lock for this session
         if session_id not in self._session_locks:
             self._session_locks[session_id] = asyncio.Lock()
         
         async with self._session_locks[session_id]:
-            await asyncio.to_thread(self._save_session, session_id)
+            await asyncio.to_thread(self._save_session, session_id, collection)
 
     def _get_storage_path(self, session_id: str) -> Path:
         """Get file path for session storage.
@@ -1117,7 +1128,7 @@ class TodoServer(SchemaBasedHookToolServer):
 
             # Save
             if self._auto_save:
-                await self._save_session_async(session_id)
+                await self._save_session_async(session_id, collection)
 
             # Short status message
             if status:
@@ -1372,7 +1383,7 @@ class TodoServer(SchemaBasedHookToolServer):
 
             # Save
             if self._auto_save:
-                await self._save_session_async(session_id)
+                await self._save_session_async(session_id, collection)
 
             # Calculate is_blocked for response
             is_blocked = self._is_blocked(task, collection)
@@ -1760,7 +1771,7 @@ class TodoServer(SchemaBasedHookToolServer):
 
             # Save
             if self._auto_save:
-                await self._save_session_async(session_id)
+                await self._save_session_async(session_id, collection)
 
             # Short status message
             if status:

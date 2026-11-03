@@ -23,7 +23,7 @@ from pathlib import Path
 
 from agent_system.paths import data_path, resolve_data_path
 
-from .server import encode_into, export_audio
+from .server import SILENCE_NUMBER, encode_into, export_audio
 
 # Global workdir override (set by CLI --workdir)
 _workdir_override: Path | None = None
@@ -706,9 +706,9 @@ async def cmd_detect_silence(args: argparse.Namespace) -> int:
         print(f"Error: ffmpeg silencedetect failed: {result.stderr[-500:]}", file=sys.stderr)
         return 1
     
-    silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
-    silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
-    silence_durations = re.findall(r'silence_duration: ([\d.]+)', result.stderr)
+    silence_starts = re.findall(rf'silence_start: {SILENCE_NUMBER}', result.stderr)
+    silence_ends = re.findall(rf'silence_end: {SILENCE_NUMBER}', result.stderr)
+    silence_durations = re.findall(rf'silence_duration: {SILENCE_NUMBER}', result.stderr)
     
     if not silence_starts:
         print("\nNo silence segments found.")
@@ -796,8 +796,8 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
         print(f"Error: ffmpeg silencedetect failed: {result.stderr[-500:]}", file=sys.stderr)
         return 1
     
-    silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
-    silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
+    silence_starts = re.findall(rf'silence_start: {SILENCE_NUMBER}', result.stderr)
+    silence_ends = re.findall(rf'silence_end: {SILENCE_NUMBER}', result.stderr)
     
     if not silence_starts:
         print("\nNo silences found, copying file as-is...")

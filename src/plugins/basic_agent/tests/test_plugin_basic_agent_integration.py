@@ -139,6 +139,29 @@ class TestBasicAgentIntegration:
         mock_status.error.assert_called()
 
     @pytest.mark.asyncio
+    async def test_an_error_event_closes_the_run_before_the_answer(self):
+        """The error branch returned from inside the loop and left the run to the
+        garbage collector: it sat at a yield holding its session's lock."""
+        agent = PLUGIN_FACTORY("error_agent", self.system_config, self.server_config)
+        closed = []
+
+        async def run_events(*args, **kwargs):
+            try:
+                yield {"type": "start"}
+                yield {"type": "error", "message": "boom"}
+                yield {"type": "end"}
+            finally:
+                closed.append(True)
+
+        agent.run_events = run_events
+
+        result = await agent.call("error_agent_execute_task",
+                                  {"task": "t", "_status": AsyncMock()})
+
+        assert result["status"] == "error"
+        assert closed == [True]
+
+    @pytest.mark.asyncio
     async def test_execute_task_with_exception(self):
         """Test task execution with exception handling."""
         agent = PLUGIN_FACTORY("exception_agent", self.system_config, self.server_config)

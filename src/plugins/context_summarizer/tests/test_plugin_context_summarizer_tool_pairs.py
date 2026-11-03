@@ -215,3 +215,34 @@ async def test_summarization_preserves_tool_structure(summarizer_plugin, mock_ag
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_a_repeated_tool_call_id_pairs_with_its_own_assistant(summarizer_plugin):
+    """Ids repeat across turns (the Gemini batch client mints call_{name}_{index}).
+    Paired by id, the old result went with the later assistant into the recent
+    half while its own assistant was summarised away: an orphaned tool result."""
+    call = [{"id": "call_f_0", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
+    messages = [{"role": "system", "content": "s"}]
+    messages += [{"role": "user", "content": "old turn"},
+                 {"role": "assistant", "content": "", "tool_calls": call},
+                 {"role": "tool", "tool_call_id": "call_f_0", "content": "old result"}]
+    messages += [{"role": "user", "content": f"filler {n}"} for n in range(8)]
+    messages += [{"role": "assistant", "content": "", "tool_calls": call},
+                 {"role": "tool", "tool_call_id": "call_f_0", "content": "new result"}]
+
+    _, recent, old = summarizer_plugin._categorize_messages(messages, preserve_recent=2)
+
+    contents = [m.get("content") for m in recent]
+    assert "old result" not in contents
+    assert "new result" in contents
+
+
+def test_tool_call_owners_are_positional():
+    from agent_system.llm.tool_pairs import tool_call_owners, tool_call_units
+
+    call = [{"id": "x"}]
+    messages = [{"role": "assistant", "tool_calls": call}, {"role": "tool", "tool_call_id": "x"},
+                {"role": "assistant", "tool_calls": call}, {"role": "tool", "tool_call_id": "x"},
+                {"role": "assistant", "tool_calls": [{"type": "function"}]}, {"role": "tool"}]
+    assert tool_call_owners(messages) == {1: 0, 3: 2, 5: 4}
+    assert tool_call_units(messages)[1] == frozenset({0, 1})

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from agent_system.utils.params import as_int
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.utils.id import short_id
@@ -29,14 +30,10 @@ def _as_whole(value: Any, name: str, default: int) -> int:
     """
     if value is None:
         return default
-    if not isinstance(value, bool):
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            number = None
-        if number is not None and number.is_integer():
-            return int(number)
-    raise ValueError(f"{name} must be a whole number, got {value!r}")
+    number = as_int(value, None)
+    if number is None:
+        raise ValueError(f"{name} must be a whole number, got {value!r}")
+    return number
 
 
 @dataclass
@@ -59,6 +56,10 @@ class CognitiveStack:
     last_accessed: datetime
     frames: list[StackFrame] = field(default_factory=list)
     max_depth: int = 20  # Prevent infinite recursion
+    # The agent session that created it. The server is one per process, shared
+    # by every session and user, and stack ids may be model-chosen ("main"):
+    # another session naming the same id must not read, pop or clear it.
+    owner: str | None = None
 
 
 class CognitiveStackServer(SchemaBasedToolServer):
@@ -176,7 +177,8 @@ class CognitiveStackServer(SchemaBasedToolServer):
             stack_id=new_id,
             created_at=datetime.now(),
             last_accessed=datetime.now(),
-            max_depth=self.max_depth
+            max_depth=self.max_depth,
+            owner=agent_session_id or None,
         )
         self._stacks[new_id] = stack
 
@@ -187,6 +189,15 @@ class CognitiveStackServer(SchemaBasedToolServer):
 
         logger.info(f"Created new cognitive stack: {new_id}")
         return stack
+
+    def _owned(self, stack_id: str | None, params: dict[str, Any]) -> bool:
+        """Whether the stack exists and the calling session may use it: its
+        own, or one created without a session (a maintenance/CLI call)."""
+        stack = self._stacks.get(stack_id) if stack_id else None
+        if stack is None:
+            return False
+        caller = params.get("_session_id")
+        return stack.owner is None or not caller or stack.owner == caller
 
     def _resolve_stack_id(self, params: dict[str, Any]) -> str | None:
         """Resolve stack_id from params or _session_id mapping.
@@ -238,7 +249,7 @@ class CognitiveStackServer(SchemaBasedToolServer):
 
             depth = _as_whole(params.get("depth"), "depth", 1)  # 0 or less: all frames
 
-            if stack_id not in self._stacks:
+            if not self._owned(stack_id, params):
                 error_msg = f"Stack {stack_id} not found"
                 if status:
                     await status.error(error_msg)
@@ -301,7 +312,7 @@ class CognitiveStackServer(SchemaBasedToolServer):
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
 
-            if stack_id not in self._stacks:
+            if not self._owned(stack_id, params):
                 error_msg = f"Stack {stack_id} not found"
                 if status:
                     await status.error(error_msg)
@@ -350,7 +361,7 @@ class CognitiveStackServer(SchemaBasedToolServer):
 
             if stack_id:
                 # Clear specific stack
-                if stack_id not in self._stacks:
+                if not self._owned(stack_id, params):
                     error_msg = f"Stack {stack_id} not found"
                     if status:
                         await status.error(error_msg)
@@ -473,6 +484,12 @@ class CognitiveStackServer(SchemaBasedToolServer):
 
             # Check if batch would exceed depth limit (before a refused push
             # can create a stack)
+            if stack_id and stack_id in self._stacks and not self._owned(stack_id, params):
+                error_msg = (f"stack_id '{stack_id}' belongs to another conversation; "
+                             "omit stack_id to use this conversation's stack")
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
             existing = self._stacks.get(stack_id) if stack_id else None
             current = len(existing.frames) if existing else 0
             limit = existing.max_depth if existing else self.max_depth
@@ -555,7 +572,7 @@ class CognitiveStackServer(SchemaBasedToolServer):
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
 
-            if stack_id not in self._stacks:
+            if not self._owned(stack_id, params):
                 error_msg = f"Stack {stack_id} not found"
                 if status:
                     await status.error(error_msg)

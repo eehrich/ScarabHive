@@ -455,7 +455,7 @@ def test_a_workdir_that_could_not_be_made_is_skipped_and_gone(tmp_path, monkeypa
     skipped -- not registered half made, every run on it failing at the worktree."""
     from agent_system.paths import DATA_DIR_ENV
     monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "d"))
-    real = subprocess.run
+    real = server_module.run_bounded
 
     def failing_commit(argv, **kwargs):
         done = real(argv, **kwargs)
@@ -463,7 +463,7 @@ def test_a_workdir_that_could_not_be_made_is_skipped_and_gone(tmp_path, monkeypa
             assert list((scratch / ".git" / "objects").rglob("*")), "fixture: the commit wrote no object"
             raise subprocess.CalledProcessError(1, argv)
         return done
-    monkeypatch.setattr(server_module.subprocess, "run", failing_commit)
+    monkeypatch.setattr(server_module, "run_bounded", failing_commit)
     scratch = tmp_path / "d" / "story_code"
     server = make_server(scratch, workdirs={"text": {"path": str(scratch)}})
     assert server.workdirs == {} and "could not be created" in caplog.text, caplog.text

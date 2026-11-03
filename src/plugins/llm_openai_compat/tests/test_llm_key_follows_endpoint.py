@@ -200,3 +200,31 @@ class TestTheRuleCoversEveryOpenAICompatibleProvider:
 
         client = _build(OPENAI, provider=provider)
         assert client.api_key == "sk-openai-secret"
+
+
+class TestTheBatchKeyIsTheOpenAIKey:
+    """The Batch API lives at api.openai.com only. A model entry's own
+    `api_key` is a secret of ITS endpoint: with base_url on openrouter.ai it is
+    the OpenRouter key, and the batch backend used to send it to OpenAI."""
+
+    def _backend(self, base_url, api_key):
+        from agent_system.config.models import LLMModelConfig
+        from plugins.llm_openai_compat.provider import make_batch_backend
+
+        return make_batch_backend(LLMModelConfig(
+            provider="openai_httpx", model="m", api_key=api_key,
+            base_url=base_url, request_timeout=60))
+
+    def test_a_gateway_key_is_not_sent_to_openai(self, keys):
+        keys()
+        assert self._backend("https://openrouter.ai/api/v1", "sk-or-secret") is None
+
+    def test_a_gateway_entry_uses_the_openai_env_key(self, keys):
+        keys(OPENAI_API_KEY="sk-openai")
+        backend = self._backend("https://openrouter.ai/api/v1", "sk-or-secret")
+        assert backend.api_key == "sk-openai"
+
+    def test_an_openai_entry_keeps_its_own_key(self, keys):
+        keys(OPENAI_API_KEY="sk-env")
+        assert self._backend(OPENAI, "sk-own").api_key == "sk-own"
+        assert self._backend(None, "sk-own").api_key == "sk-own"

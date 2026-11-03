@@ -298,7 +298,7 @@ class TestWeatherServer:
         """Test weather server initialization with config."""
         from agent_system.config.models import ToolServerConfig, AgentConfig
         
-        mock_system_config.ssl_verify = False
+        mock_system_config.network.ssl_verify = False  # the setting lives under network:
         server_config = ToolServerConfig(type="weather", enabled=True, agent_config=AgentConfig())
         server_config.timeout = 30
         server_config.retries = 3
@@ -642,7 +642,7 @@ class TestWeatherPluginFactory:
         from agent_system.config.models import ToolServerConfig, AgentConfig
 
         # Mock system config with ssl_verify=False
-        mock_system_config.ssl_verify = False
+        mock_system_config.network.ssl_verify = False  # the setting lives under network:
         server_config = ToolServerConfig(type="weather", enabled=True, agent_config=AgentConfig())
         server_config.timeout = 60
         

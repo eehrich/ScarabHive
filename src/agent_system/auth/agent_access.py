@@ -27,11 +27,12 @@ inactive account, a user store that cannot be read -- each is "not enough".
 """
 from __future__ import annotations
 
+import fnmatch
 import logging
 import sqlite3
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -223,3 +224,16 @@ def agent_min_role(registry: Any, name: str) -> Optional[str]:
     if isinstance(instance, Agent):
         return getattr(instance, "min_role", None)
     return None
+
+
+def agent_allowed(agent_name: str, allowed: List[str], blocked: List[str]) -> bool:
+    """Whether a manager with these lists may spawn the agent: blocked (exact) first, then `*`, exact, fnmatch.
+
+    The sub-agent manager's rule, used by the agent editor and the state graph
+    too -- here so that using it does not import the whole sub-agent manager.
+    """
+    if agent_name in blocked:
+        return False
+    if '*' in allowed or agent_name in allowed:
+        return True
+    return any(fnmatch.fnmatch(agent_name, pattern) for pattern in allowed)
