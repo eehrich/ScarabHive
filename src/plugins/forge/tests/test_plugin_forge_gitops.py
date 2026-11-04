@@ -273,7 +273,7 @@ def test_a_platform_refusal_names_the_platforms_reason(monkeypatch):
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
         return subprocess.CompletedProcess(cmd, 1, stdout=stdout, stderr=stderr)
 
-    monkeypatch.setattr(gitops.subprocess, "run", run)
+    monkeypatch.setattr(gitops, "run_bounded", run)
     with pytest.raises(gitops.GitError) as caught:
         gitops.push(gitops.Path("."), "http://gl.test/team/app.git", "main", "main", {"X": "1"})
     assert str(caught.value) == ("the platform refused the push to main: GitLab: You are not allowed to push "
@@ -283,7 +283,7 @@ def test_a_platform_refusal_names_the_platforms_reason(monkeypatch):
 def test_a_refused_token_says_so(monkeypatch):
     """git asks for a user name when the platform refuses the header (F-GL9)."""
     stderr = "fatal: could not read Username for 'http://gl.test': terminal prompts disabled\n"
-    monkeypatch.setattr(gitops.subprocess, "run",
+    monkeypatch.setattr(gitops, "run_bounded",
                         lambda *a, **k: subprocess.CompletedProcess(a, 128, stdout="", stderr=stderr))
     with pytest.raises(gitops.GitError, match="refused the token over git"):
         gitops.fetch(gitops.Path("."), "http://gl.test/team/app.git", {"X": "1"})
@@ -291,7 +291,7 @@ def test_a_refused_token_says_so(monkeypatch):
 
 def test_the_header_value_never_reaches_an_error(monkeypatch):
     stderr = "trace: http.extraHeader=Authorization: Basic b2F1dGgyOnNlY3JldA==\nfatal: boom\n"
-    monkeypatch.setattr(gitops.subprocess, "run",
+    monkeypatch.setattr(gitops, "run_bounded",
                         lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr=stderr))
     with pytest.raises(gitops.GitError) as caught:
         gitops.git(gitops.Path("."), "status")

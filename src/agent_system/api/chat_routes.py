@@ -19,16 +19,16 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from agent_system import app_state
-from agent_system.api.app_context import AppContext, app_context, chat_agent, parse_json_body
+from agent_system.api.app_context import AppContext, app_context, chat_agent, parse_json_object
+from agent_system.api.session_http import session_errors_as_http
 from agent_system.api.session_writes import (
     drop_last_exchange_and_persist,
     file_rewinder_or_503,
     held_for_a_write,
     rewind_refusal,
-    session_agent_name,
     session_held,
+    session_owner_agent,
     session_record,
-    settling_agent,
 )
 from agent_system.auth.session_access import viewer
 from agent_system.core.session_presence import presence_for
@@ -41,14 +41,12 @@ router = APIRouter()
 MAX_CHAT_LINE = 100_000
 
 
-async def _json_object(request: Request) -> dict:
-    """The request's JSON body as an object; no body at all reads as {}."""
-    body = await parse_json_body(request)
-    if body is not None and not isinstance(body, dict):
-        # A JSON array or bare string parses fine but has no .get -- answer
-        # "bad request" rather than letting an AttributeError become a 500.
-        raise HTTPException(status_code=400, detail="Body must be a JSON object")
-    return body or {}
+def _refuse_overlong(what: str, text: str) -> None:
+    """413 for a chat line or payload past MAX_CHAT_LINE."""
+    if len(text) > MAX_CHAT_LINE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{what} too long ({len(text)} chars, limit {MAX_CHAT_LINE})")
 
 
 def _skill_registry_for_app(ctx: AppContext):
@@ -149,15 +147,11 @@ async def chat_resolve(request: Request, ctx: AppContext = Depends(app_context))
     from agent_system.plugin_commands import spellings
     from agent_system.skills import invoke
 
-    body = await _json_object(request)
+    body = await parse_json_object(request)
     line = body.get("line") or ""
     if not isinstance(line, str):
         raise HTTPException(status_code=400, detail="'line' must be a string")
-    if len(line) > MAX_CHAT_LINE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Line too long ({len(line)} chars, limit {MAX_CHAT_LINE})",
-        )
+    _refuse_overlong("Line", line)
 
     try:
         registry = _skill_registry_for_app(ctx)
@@ -277,7 +271,7 @@ async def chat_vars_update(request: Request, ctx: AppContext = Depends(app_conte
     from agent_system.chat_commands import apply_vars, parse_vars, store_vars
 
     current_user = await ctx.enforce_endpoint_security(request)
-    body = await _json_object(request)
+    body = await parse_json_object(request)
 
     session_id = str(body.get("session_id") or "").strip()
     if not session_id:
@@ -285,10 +279,7 @@ async def chat_vars_update(request: Request, ctx: AppContext = Depends(app_conte
     payload = body.get("payload") or ""
     if not isinstance(payload, str):
         raise HTTPException(status_code=400, detail="'payload' must be a string")
-    if len(payload) > MAX_CHAT_LINE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Payload too long ({len(payload)} chars, limit {MAX_CHAT_LINE})")
+    _refuse_overlong("Payload", payload)
     tracker = _vars_tracker(request, body.get("agent_name"))
     if tracker is None:
         raise HTTPException(status_code=404, detail="No such agent")
@@ -329,30 +320,27 @@ async def chat_command(request: Request, ctx: AppContext = Depends(app_context))
     from agent_system.plugin_commands import run_plugin_command
 
     current_user = await ctx.enforce_endpoint_security(request)
-    body = await _json_object(request)
+    body = await parse_json_object(request)
 
     name = body.get("name") or ""
     command_payload = body.get("payload") or ""
     if not isinstance(name, str) or not isinstance(command_payload, str):
         raise HTTPException(status_code=400,
                             detail="'name' and 'payload' must be strings")
-    if len(command_payload) > MAX_CHAT_LINE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Payload too long ({len(command_payload)} chars, "
-                   f"limit {MAX_CHAT_LINE})")
-
-    # The command runs ON a session -- compaction rewrites it -- so the
-    # same ownership rule the other session-taking endpoints apply holds
-    # here: without it any authenticated user could hand in a foreign
-    # session id and have a tool act on it.
-    session_id = body.get("session_id")
-    if session_id:
-        await ctx.verify_session_owner(str(session_id), current_user)
+    _refuse_overlong("Payload", command_payload)
 
     agent = chat_agent(request, body.get("agent_name"))
     if agent is None:
         raise HTTPException(status_code=404, detail="no such agent")
+    # The command runs ON a session -- compaction rewrites it -- so the
+    # same ownership rule the other session-taking endpoints apply holds
+    # here: without it any authenticated user could hand in a foreign
+    # session id and have a tool act on it. Checked against THIS agent's
+    # tracker, the one the command acts on (verify_session_owner says why).
+    session_id = body.get("session_id")
+    if session_id:
+        await ctx.verify_session_owner(str(session_id), current_user,
+                                       getattr(agent, "_session_tracker", None))
     # Its tools run with this agent's authorization, so its role gate holds
     # here as it holds for /run -- answered as an agent that does not exist.
     if ctx.gate_refuses(agent, current_user):
@@ -366,7 +354,7 @@ async def chat_command(request: Request, ctx: AppContext = Depends(app_context))
     text = await run_plugin_command(
         agent, match, command_payload,
         session_id=session_id,
-        user_id=getattr(current_user, "username", None))
+        user_id=viewer(current_user))
     return {"name": match.qualified, "text": text}
 
 
@@ -386,10 +374,7 @@ async def _session_agent_for(ctx: AppContext, request: Request, session_id: str,
     on disk, and the default tracker does not know it either -- so that
     check passes for anybody (the IDOR AppContext.verify_session_owner documents).
     """
-    target_agent = settling_agent(request, session_id)
-    if target_agent is None:
-        ran_with = await session_agent_name(session_id, user_id)
-        target_agent = chat_agent(request, ran_with or agent_name)
+    target_agent = await session_owner_agent(request, session_id, user_id, agent_name)
     if target_agent is None:
         raise HTTPException(status_code=404, detail="no such agent")
     await ctx.verify_session_owner(session_id, current_user,
@@ -422,7 +407,7 @@ async def chat_undo(request: Request, force: bool = Query(default=False),
 
     current_user = await ctx.enforce_endpoint_security(request)
     user_id = viewer(current_user)
-    body = await _json_object(request)
+    body = await parse_json_object(request)
 
     session_id = body.get("session_id")
     if not session_id or not isinstance(session_id, str):
@@ -490,9 +475,7 @@ async def chat_rewind(request: Request, force: bool = Query(default=False),
     """
     current_user = await ctx.enforce_endpoint_security(request)
     user_id = viewer(current_user)
-    body = await parse_json_body(request)
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+    body = await parse_json_object(request)
     session_id = body.get("session_id")
     if not session_id or not isinstance(session_id, str):
         raise HTTPException(status_code=400, detail="'session_id' is required")
@@ -583,8 +566,6 @@ async def _chat_record(ctx: AppContext, request: Request, session_id: str) -> di
     record read as "no such session" would send someone looking for a
     session id that is right there in their list.
     """
-    from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-
     current_user = await ctx.enforce_endpoint_security(request)
     user_id = viewer(current_user)
     if not app_state.session_service or not app_state.session_service.session_manager:
@@ -597,12 +578,9 @@ async def _chat_record(ctx: AppContext, request: Request, session_id: str) -> di
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Not a session id: '{session_id}'")
     await ctx.verify_session_owner(session_id, current_user)
-    try:
+    with session_errors_as_http(session_id, not_found=f"No session '{session_id}'",
+                                forbidden=f"Not your session '{session_id}'"):
         return await app_state.session_service.session_manager.load_session(user_id, session_id)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=404, detail=f"No session '{session_id}'")
-    except SessionPermissionError:
-        raise HTTPException(status_code=403, detail=f"Not your session '{session_id}'")
 
 
 @router.get("/chat/transcript")

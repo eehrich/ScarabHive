@@ -126,10 +126,12 @@ class _QueueSubmission(_BatchQueueCore):
                 )
                 # Submit immediately but also ensure a collection task exists for any
                 # new requests that come in during/after this submission
-                asyncio.create_task(
+                task = asyncio.create_task(
                     self._submit_batch(queue_key, provider, model),
                     name=f"batch_immediate_{queue_key}"
                 )
+                self._immediate_submit_tasks.add(task)
+                task.add_done_callback(self._immediate_submit_done)
             
             # Ensure submission task is running for this queue.
             # ALWAYS start a new task if:
@@ -208,6 +210,12 @@ class _QueueSubmission(_BatchQueueCore):
             logger.warning(f"Request {request.request_id} was cancelled, cancelling batch job")
             await self.cancel_request(request.request_id)
             raise
+    
+    def _immediate_submit_done(self, task: asyncio.Task) -> None:
+        """Drop the reference to a finished immediate submission and log its failure."""
+        self._immediate_submit_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(f"Immediate batch submission {task.get_name()} failed", exc_info=task.exception())
     
     async def _collection_window_task(
         self,

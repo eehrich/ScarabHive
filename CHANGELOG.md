@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- file_ops: the text search and the semantic index check a symlink's target for a private file, not only the link's
+  name (`notes.md -> config/*.env` was searched).
+- llm_openai_compat: the batch backend sends a model entry's own `api_key` to api.openai.com only when the entry
+  targets OpenAI; a gateway's or OpenRouter's key went there before.
 - The file tools, the text search and the coding CLIs refuse the installation's private files whatever their roots
   allow: `config/*.env`, the user store (where auth keeps it), the sessions (`AGENT_SESSION_STORAGE_PATH` when set)
   and their archive, and the message debugger's store. The terminal's dangerous patterns name the env files.
@@ -168,6 +172,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Shared helpers for plugins, used instead of private copies: `agent_system.utils.params` (`as_bool`, `as_int`,
+  `as_float`, `flag_param`; `bool_param` accepts `on`/`off`), `agent_system.utils.clip`, `agent_system.llm.tls.
+  network_ssl_verify`, `agent_system.auth.agent_access.agent_allowed` (agent_editor and stategraph no longer import
+  the sub-agent manager); `plugins.llm_common` `request_end`, `http_status.retry_after_seconds`, `batch_http`.
+  Review, open defects and the refactoring plan: `docs/plugins_review_and_refactoring_plan.md`.
 - Coding CLIs: `max_parallel` goes up to 50 (it stopped at 8). A run above an instance's limit does not wait: it
   is refused, and a caller with a fallback chain moves it to its next link, often a paid one. Since the limit counts
   one instance only, no run starts below 3 GB of available memory.
@@ -197,6 +206,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `data-state="danger"`. `selectRow()` takes a list without a table.
 - Panels on the kit: a diff's cut note carries no line number, an unknown status no longer stops a list drawing, a
   batch job being cancelled no longer looks cancelled.
+- `FORCE_COLOR` turns colours on for the CLI's output format, where `agent-cli users` alone read it.
+- A 200 whose body does not parse reaches the fallback chain; before, the run ended there. The Responses client reads
+  `Retry-After` like the chat client (`inf` is no hint, `6m0s` and dates are read).
+- A tool's image follows the whole run of results in Anthropic batches and on Ollama too.
+- `clip_value` meets its limit with many small fields as well: the biggest go, scalars stay, and the note counts them.
+  It cuts by the size in JSON, so a string of escaped characters is cut, not dropped.
+- A provider's `Retry-After` blocks a model for at most a day, on every route.
+- Rate limit: requests without credentials have their share on a count of their own, so signed-in requests of the
+  same address do not push the login page into a 429.
+- Model arguments read with `bool()`: `use_advanced_model: "false"` ran a sub-agent on the premium chain and
+  `blocking: "false"` blocked (sub_agent_manager); the same in decision, godot and duckduckgo_search. debate_forum read
+  any unknown text as true, tavily_search and n8n read `"on"` as false; sqlite_query and agent_watchdog failed to load
+  on a YAML `.inf`; lessons_learned refused `limit: "20.0"`.
+- Gemini: a tool result that is no JSON object (a list, a number) goes in as `{"result": ...}`; every later turn was
+  refused with a 400. The batch converter no longer crashes on an image with `source` and sends it.
+- The Gemini schema sanitizer kept parameters named `format`, `title` or `pattern` inside a merged `anyOf` option.
+- Retry-After: the batch clients read the HTTP-date form (a ValueError hid the 429), the httpx client sleeps at most
+  60 s plus jitter; a longer ask raises at once, carrying the server's value.
+- context_summarizer kept `tools_schema` and the cancellation token of the hook context; project_instructions after
+  it lost the tool roots for the rest of the session.
+- lessons_learned books a lesson's application once per request, off the event loop (it was once per LLM step).
+- memory: saves are atomic and one per session at a time; parallel tool calls wrote invalid JSON.
+- basic_agent closes its run when it ends on an error, instead of leaving it to the garbage collector.
+- log_viewer's `tail` returns at most 2000 lines and reads off the event loop; its errors say `status: error`.
+- web_scraper and weather follow `network.ssl_verify`; blender reads replies split inside a multi-byte character; llm_router lists the providers and closes
+  its clients; the context engineer's fallback user message carries `injected_by`.
+- llm_openai_compat: a self-heal (provider pin released, encrypted-reasoning strip, signature bypass) no longer
+  costs an attempt; on the last one it ended the call in an untyped error the fallback chain did not recognise.
+- LLM clients: a tool result's images follow the whole run of parallel tool results (OpenAI refused tool, user, tool;
+  Anthropic needs tool results first). Gemini batch puts parallel tool responses into one block.
+- context_summarizer pairs tool calls by position (`agent_system.llm.tool_pairs`); a repeated tool call id orphaned
+  a result. context_engineer finds the new turn behind tool_preload's injected exchange, and both read the usage
+  tracker off the event loop.
+- forge and coding_cli end the whole git process tree on a timeout (`agent_system.utils.proctree`).
+- web_scraper: `download_deadline_seconds` (600) bounds a whole download; a 4xx/5xx page carries a warning and is not
+  cached. comfyui names a file too large to attach instead of reporting it loaded.
+- audio_ops mixes off the event loop and reads negative and exponent silencedetect values; ssh_control caps a
+  foreground answer at 30k characters per stream; terminal and godot bound buffered output; datetime counts business
+  days in constant time; ask_user ends a call cancelled before the question with an error line.
 - File tools on Python 3.11: delete, move and rename ended in an AttributeError (`Path.is_junction` exists from
   3.12).
 - Coding CLIs: the subscription guard went by what the last run to end had seen. A run reports the windows near its

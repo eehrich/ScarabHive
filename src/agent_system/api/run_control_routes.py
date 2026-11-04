@@ -14,13 +14,11 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from agent_system import app_state
-from agent_system.api.app_context import AppContext, app_context, chat_agent, parse_json_body
+from agent_system.api.app_context import AppContext, app_context, parse_json_object, registry_of
 from agent_system.api.session_writes import (
     append_and_persist,
     resolve_agent_for_request,
-    session_agent_name,
-    settling_agent,
+    session_owner_agent,
 )
 from agent_system.auth.session_access import viewer
 from agent_system.core.request_context import get_request_user, request_user_map
@@ -185,16 +183,8 @@ async def cancel_request(request_id: str, request: Request, force: bool = Query(
 
 
 async def _session_owner_agent(ctx: AppContext, request: Request, sid: str, user_id: str) -> Any:
-    """The agent whose SessionTracker holds a stored session -- every agent carries its own, and a
-    conversation of openai_api runs on the agent its model names. Written through another agent's tracker, a
-    message was read back into a copy no run of the session looks at, and put back or saved over by the one
-    that does. The agent of a turn settling it (settling_agent), else the one the record names, else the entry
-    agent: a session without a record, or whose agent is gone."""
-    settling = settling_agent(request, sid)
-    if settling is not None:
-        return settling
-    ran_with = await session_agent_name(sid, user_id)
-    return (chat_agent(request, ran_with) if ran_with else None) or ctx.agent
+    """session_owner_agent, else the entry agent: a session whose agent is gone."""
+    return await session_owner_agent(request, sid, user_id) or ctx.agent
 
 
 @router.post("/events/{request_id}/append")
@@ -228,7 +218,7 @@ async def append_event(
     current_user = await ctx.enforce_endpoint_security(request)
     user_id = viewer(current_user)
 
-    body = await parse_json_body(request)
+    body = await parse_json_object(request)
 
     content = body.get('content')
     if not content:
@@ -250,7 +240,7 @@ async def append_event(
     # runs started with agent_name execute on that agent, not on the
     # default agent this endpoint is bound to.
     target_agent = await resolve_agent_for_request(
-        request_id, get_background_job_manager(), app_state.app_registry, ctx.agent
+        request_id, get_background_job_manager(), registry_of(request), ctx.agent
     )
     await _refuse_foreign_request(request_id, current_user)
 
@@ -286,11 +276,20 @@ async def append_event(
 
 
 @router.post("/sessions")
-async def create_session(ctx: AppContext = Depends(app_context)):
-    """Create a new session id for multi-turn conversations."""
+async def create_session(request: Request, ctx: AppContext = Depends(app_context)):
+    """Create a new session id for multi-turn conversations.
+
+    Signed in like its neighbours, and the session is the caller's from the
+    start: an empty session in the entry agent's tracker with no owner passed
+    every ownership check (verify_session_owner) for anybody who learned its id.
+    """
+    current_user = await ctx.enforce_endpoint_security(request)
     sid = short_id()
     # Pre-create empty session in agent using the component API
-    ctx.agent._session_tracker.set_session_messages(sid, [])
+    tracker = ctx.agent._session_tracker
+    tracker.set_session_messages(sid, [])
+    tracker.set_session_metadata(sid, {**(tracker.get_session_metadata(sid) or {}),
+                                       "user_id": viewer(current_user)})
     return {"session_id": sid}
 
 
@@ -310,7 +309,7 @@ async def append_to_session_endpoint(session_id: str, request: Request,
     current_user = await ctx.enforce_endpoint_security(request)
     user_id = viewer(current_user)
 
-    body = await parse_json_body(request)
+    body = await parse_json_object(request)
     try:
         content = body.get('content')
         if not content:

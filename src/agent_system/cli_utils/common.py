@@ -197,7 +197,8 @@ def get_output_format() -> str:
     if mode == "auto":
         if os.environ.get("NO_COLOR") or dumb_terminal():
             return "text"
-        return "ansi" if ansi_capable_stdout() else "text"
+        capable = ansi_capable_stdout()  # first: it is what turns VT processing on in a Windows console
+        return "ansi" if capable or os.environ.get("FORCE_COLOR") else "text"
     
     # Default fallback
     return "text"

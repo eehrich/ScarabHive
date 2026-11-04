@@ -291,7 +291,9 @@ async def _polled_call(
     max_llm_iterations = timeouts.llm_task_max_iterations if timeouts else 864000  # 24h default
     llm_iteration_count = 0
     # Calculate heartbeat interval in iterations (config is in seconds, we poll every 0.1s)
-    heartbeat_interval = int(heartbeat_interval_seconds / 0.1)  # Convert seconds to iterations
+    # 0 or less: no heartbeats. Under 0.1s it rounds to 0 polls, which the
+    # modulo below would divide by: every poll then.
+    heartbeat_interval = max(1, int(heartbeat_interval_seconds / 0.1)) if heartbeat_interval_seconds > 0 else 0
 
     try:
         while not llm_task.done():
@@ -317,7 +319,7 @@ async def _polled_call(
 
             # Send heartbeat event periodically to prevent SSE connection timeout
             # This keeps the connection alive during long LLM calls (30+ seconds)
-            if llm_iteration_count % heartbeat_interval == 0:
+            if heartbeat_interval and llm_iteration_count % heartbeat_interval == 0:
                 yield {
                     "type": "heartbeat",
                     "step": step + 1,

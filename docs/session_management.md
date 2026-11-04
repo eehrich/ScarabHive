@@ -32,7 +32,7 @@ owns two components:
 | Module | Holds |
 |--------|-------|
 | `services/session_index.py` | `SessionIndex`: `index.json` and the `.subs.<parent>.index.json` partitions — every edit under an OS file lock, the rebuild of a lost index, and the reads behind `list_sessions`, `list_root_sessions` and `list_child_sessions` |
-| `services/session_cache.py` | `SessionCache`: recent copies (LRU with TTL) and, per session, when this process last had its file as it is (`changed_on_disk`) |
+| `services/session_cache.py` | `SessionCache`: recent copies (evicted by insertion age, with TTL -- not LRU) and, per session, when this process last had its file as it is (`changed_on_disk`) |
 | `services/session_paths.py` | How a user id and a session id become a path; shared by the manager, its index and the session archive |
 
 ### Session Schema
@@ -297,7 +297,7 @@ Sessions are automatically restored after page refresh via localStorage.
 
 ### Caching
 
-- LRU cache with 5-minute TTL
+- Cache with 5-minute TTL (eviction by insertion age, not LRU)
 - Reduces disk I/O for frequently accessed sessions
 - Cache cleared on manual refresh
 

@@ -41,7 +41,7 @@ class BatchLLMClient(LLMClient, LLMStatusMixin):
     client for streaming requests if fallback_to_sync is enabled.
     
     Usage:
-        # Created by LLMFactory when provider='batch'
+        # Created by the factory (llm.factory) when provider='batch'
         client = BatchLLMClient(
             underlying_client=regular_llm_client,
             queue_manager=global_batch_manager,

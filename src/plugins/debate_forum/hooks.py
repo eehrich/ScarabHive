@@ -32,6 +32,7 @@ var; who runs where and waking idle sessions are core/session_presence/.
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -42,6 +43,9 @@ if TYPE_CHECKING:
     from .database import DebateForumDB
 
 logger = logging.getLogger(__name__)
+
+#: Requests whose handed-over direct messages are remembered (see _handed_over).
+_HANDED_OVER_KEPT = 256
 
 INJECTION_MARKER = "inject_debate_context"
 INJECTION_MARKER_POSTS = "debate_forum_posts"
@@ -62,7 +66,10 @@ class DebateForumHooks(SchemaBasedPluginHook):
         self.tool_prefix = tool_prefix
         # request_id -> the direct messages that request carries, until it ends
         # (mark_direct_messages_delivered)
-        self._handed_over: dict[str, list[int]] = {}
+        # request id -> direct messages handed to it. Emptied by the
+        # session_end hook -- which a run cancelled before it, or an agent
+        # that turned it off, never reaches; so bounded, oldest request first.
+        self._handed_over: OrderedDict[str, list[int]] = OrderedDict()
         # Merge config from plugins.yaml over schema defaults
         if plugin_config:
             self._config.update(plugin_config)
@@ -220,6 +227,9 @@ class DebateForumHooks(SchemaBasedPluginHook):
             # they reached the session. Until then every further step of the
             # same request would read them again, hence the list.
             self._handed_over[context.request_id] = handed + [m["id"] for m in direct]
+            self._handed_over.move_to_end(context.request_id)
+            while len(self._handed_over) > _HANDED_OVER_KEPT:
+                self._handed_over.popitem(last=False)
             logger.info("[DebateForumHook] Delivered %d direct message(s) to session %s",
                         len(direct), context.session_id)
             return HookResult(success=True, modified=True, context=context)

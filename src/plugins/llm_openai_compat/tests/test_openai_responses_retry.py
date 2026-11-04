@@ -138,6 +138,19 @@ class TestRateLimitAndTierDrop:
         # quota - and the whole point of the branch is telling them apart.
         assert type(exc.value) is LLMRateLimitError
 
+    @pytest.mark.parametrize("header,seconds", [("inf", None), ("6m0s", 360.0), ("2", 2.0)])
+    async def test_a_429_reads_retry_after_like_the_chat_client(self, transport, header, seconds):
+        """float() let inf through: "LLM blocked for infs" for every agent, and lost 6m0s."""
+        transport([httpx.Response(429, text="too many", headers={"retry-after": header})])
+        with pytest.raises(LLMRateLimitError) as exc:
+            await _client(service_tier=None).chat_tools(MESSAGES, [])
+        assert exc.value.retry_after == seconds
+
+    async def test_an_unreadable_answer_reaches_the_fallback_chain(self, transport):
+        transport([httpx.Response(200, text='{"outp')] * 3)
+        with pytest.raises(LLMServerError):
+            await _client(service_tier=None).chat_tools(MESSAGES, [])
+
     async def test_an_exhausted_quota_is_told_apart_from_a_rate_limit(self, transport):
         """Different remedy: waiting helps for one, never for the other."""
         transport([httpx.Response(429, text="quota exceeded for this project")])

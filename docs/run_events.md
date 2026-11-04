@@ -9,7 +9,7 @@ reporter, and the places in the panels and the shell that draw them (see
 
 | Piece | Where | Does |
 |-------|-------|------|
-| `RunReporter` | `agent_system/run_events.py` | The one way to write a run's events: `started`, `step`, `heartbeat`, and exactly one end (`done`, `failed`, `cancelled`, `handed_over`). `keep_alive()` sends a heartbeat whenever the run said nothing for 5 s. Never raises into the run. |
+| `RunReporter` | `agent_system/run_events.py` | The one way to write a run's events: `started`, `step`, `heartbeat`, and exactly one end (`done`, `failed`, `cancelled`, `handed_over`, `review_ready`). `keep_alive()` sends a heartbeat whenever the run said nothing for 5 s. Never raises into the run. |
 | `RunEventStore` | `agent_system/run_events.py` | `agent_runs` (each run as it stands) and `agent_run_events` (its timeline) in `data/run_events/run_events.db`. An event is kept before it is sent. The newest 500 runs are kept. |
 | `RunEventBus` | `agent_system/run_events.py` | Hands each event to every open stream. |
 | Panel runs | `agent_system/plugins/agent_tasks.py` | `launch()` reports `started`, keeps the run alive and reports its end from how `/run` answered. Every AI task of every panel gets this without changes. |

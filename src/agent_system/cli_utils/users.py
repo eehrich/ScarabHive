@@ -7,9 +7,6 @@ Provides command-line interface for user management operations.
 from __future__ import annotations
 
 import getpass
-import sys
-import os
-from pathlib import Path
 from typing import Optional
 import logging
 
@@ -17,9 +14,9 @@ import typer
 from pydantic import ValidationError
 from tabulate import tabulate
 
-from agent_system.cli_utils.common import dumb_terminal
+from agent_system.cli_utils.common import colorize, supports_color
 
-from agent_system.auth.database import setup_database, UserDatabase
+from agent_system.auth.database import setup_database, user_db_path, UserDatabase
 from agent_system.auth.models import UserCreate, UserUpdate, UserRole, validation_reasons
 from agent_system.config.settings import load_settings
 
@@ -35,37 +32,6 @@ logger = logging.getLogger(__name__)
 CONFIG_PATH: Optional[str] = None
 
 
-def _supports_color() -> bool:
-    """Check if terminal supports ANSI color codes.
-    
-    Respects NO_COLOR environment variable and checks if stdout is a TTY.
-    """
-    # Respect NO_COLOR standard
-    if os.environ.get("NO_COLOR"):
-        return False
-    
-    # Check if FORCE_COLOR is set (for CI/testing)
-    if os.environ.get("FORCE_COLOR"):
-        return True
-
-    # A terminal that says it is dumb, as the rest of agent-cli has it (common.get_output_format)
-    if dumb_terminal():
-        return False
-
-    # Check if stdout is a TTY
-    try:
-        return sys.stdout.isatty()
-    except Exception:
-        return False
-
-
-def _colorize(text: str, color_code: str) -> str:
-    """Wrap text in ANSI color codes when supported."""
-    if not _supports_color():
-        return text
-    return f"\x1b[{color_code}m{text}\x1b[0m"
-
-
 _validation_message = validation_reasons
 
 
@@ -73,10 +39,7 @@ def get_configured_db() -> UserDatabase:
     """Get database instance from configuration."""
     try:
         config = load_settings(CONFIG_PATH)
-        # None: UserDatabase's own default, users.db in the data directory
-        db_path = (Path(config.auth.database_path)
-                   if config.auth and config.auth.database_path else None)
-        return setup_database(db_path)
+        return setup_database(user_db_path(config.auth.database_path if config.auth else None))
     except typer.Exit:
         # Deliberate exits (cancel, not-found) must not be re-reported as errors
         raise
@@ -106,21 +69,21 @@ def list_users(
         for user in users:
             # Colorize role
             role_text = user.role.value.upper()
-            if _supports_color():
+            if supports_color():
                 if user.role == UserRole.ADMIN:
-                    role_text = _colorize(role_text, "35")  # Magenta for admin
+                    role_text = colorize(role_text, "35")  # Magenta for admin
                 elif user.role == UserRole.USER:
-                    role_text = _colorize(role_text, "36")  # Cyan for user
+                    role_text = colorize(role_text, "36")  # Cyan for user
                 else:
-                    role_text = _colorize(role_text, "37")  # White for guest
+                    role_text = colorize(role_text, "37")  # White for guest
             
             # Colorize active status
             active_text = "YES" if user.is_active else "NO"
-            if _supports_color():
+            if supports_color():
                 if user.is_active:
-                    active_text = _colorize(active_text, "32")  # Green for active
+                    active_text = colorize(active_text, "32")  # Green for active
                 else:
-                    active_text = _colorize(active_text, "31")  # Red for inactive
+                    active_text = colorize(active_text, "31")  # Red for inactive
             
             rows.append([
                 user.id,

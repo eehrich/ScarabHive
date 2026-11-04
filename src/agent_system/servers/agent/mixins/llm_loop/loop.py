@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Optional
 
 from .....llm.models import LLMClient
 from .....llm.structured_output import (
@@ -85,7 +85,7 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
             Dict events: heartbeat, thinking, status, tool_*, final, error, cancelled
 
         Returns:
-            Tuple of (messages, results, step) after loop completion
+            Nothing: the run (_run_events) collects errors and the summary from the events.
         """
         # Determine which LLM to use. Phase 1 already validated availability;
         # this guard keeps the invariant explicit for direct callers (and
@@ -105,9 +105,6 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
         max_steps = context.max_steps
         main_token = context.main_token
 
-        # Initialize results
-        results: Dict[str, Any] = {"task": "", "calls": []}
-
         max_cut_off_notes = int(getattr(self.agent_config, "output_cap_notes", 0) or 0)
 
         # A format nobody checked yet (a caller that built it itself; openai_api prepares its own):
@@ -123,7 +120,6 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
                 error_msg = (f"Structured output: the format could not be checked, the checker is not available: {bad}"
                              if unavailable else f"Structured output: the requested format cannot be used: {bad}")
                 logger.warning("[%s] %s", self.name, error_msg)
-                results.setdefault("errors", []).append(error_msg)
                 yield {"type": "error", "message": error_msg,
                        "error_type": STRUCTURED_OUTPUT_UNAVAILABLE if unavailable else STRUCTURED_OUTPUT_INVALID}
                 return
@@ -134,7 +130,6 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
         if not takes_format(response_format, active_llm):
             error_msg = unsupported_message(active_llm, response_format)
             logger.warning("[%s] %s", self.name, error_msg)
-            results.setdefault("errors", []).append(error_msg)
             yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_UNSUPPORTED}
             return
         # The description as it goes into the history: a note that is there under its marker but
@@ -178,7 +173,6 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
             loop_detector=loop_detector,
             escalator=escalator,
             escalate_error_streak=escalate_error_streak,
-            results=results,
             messages=messages,
             active_llm=active_llm,
             display_profile_info=display_profile_info,
@@ -208,7 +202,6 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
                 async for event in events:
                     yield event
             return
-        results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
         yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
 
     async def _run_step(self: Agent, run: LoopState, st: StepState):

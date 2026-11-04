@@ -11,6 +11,7 @@ import weakref
 from uuid import uuid4
 from typing import List, Dict, Any, Optional
 
+from agent_system.core.session_ids import EPHEMERAL_SESSION_PREFIX, is_ephemeral_session  # noqa: F401  (re-exported)
 from agent_system.services.session_manager import SessionDeletedError, SessionPermissionError, SessionNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -51,14 +52,28 @@ def _trim_to_safe_boundary(messages: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 
 def _msg_to_dict(msg: Any) -> Dict[str, Any]:
-    """Convert a ChatMessage (or compatible) into a JSON-ready dict."""
+    """Convert a ChatMessage (or compatible) into a JSON-ready dict.
+
+    A dict comes back as a copy: the caller adds ``estimated_tokens`` to it, and the tracker's own message is
+    not the place for that.
+    """
     if isinstance(msg, dict):
-        return msg
+        return dict(msg)
     if hasattr(msg, "model_dump"):
         return msg.model_dump(mode="json")
     if hasattr(msg, "dict"):
         return msg.dict()
     return dict(msg)
+
+
+def _merge_runtime_vars(session_data: Dict[str, Any], runtime_vars: Optional[Dict[str, Any]]) -> None:
+    """Merge the run's template_vars into the record's persisted context_vars (added and changed, none removed)."""
+    if runtime_vars:
+        existing = session_data.get("context_vars")
+        if not isinstance(existing, dict):
+            existing = {}
+        existing.update(runtime_vars)
+        session_data["context_vars"] = existing
 
 
 def _estimate_message_tokens(msg_dict: Dict[str, Any]) -> int:
@@ -94,23 +109,13 @@ def _add_estimated_tokens(messages_dicts: List[Dict[str, Any]]) -> None:
             msg_dict["estimated_tokens"] = _estimate_message_tokens(msg_dict)
 
 
-#: A session under this prefix lives for one call, and SessionService never
-#: writes it: a stateless run (``collect_final_result`` without a session id,
-#: the stateless calls of the openai_api plugin) promises to leave nothing
-#: behind, and the agent saves every session it runs at the end of each turn and
-#: by checkpoint. What does reach the disk: the parent record the sub-agent
-#: manager creates through SessionManager when such a run starts sub-agents
-#: (``Coordinator Session``), with their sessions below it.
-EPHEMERAL_SESSION_PREFIX = "ephemeral-"
-
+#: EPHEMERAL_SESSION_PREFIX / is_ephemeral_session (core/session_ids.py, imported
+#: above): a session that lives for one call and is never written, except for the
+#: parent record the sub-agent manager creates when such a run starts sub-agents.
 #: The title of that parent record, made before the run's first save (agent-cli
 #: saves at the end of its run): a placeholder the run's saves replace with the
 #: title a fresh session gets, from its first user message.
 PLACEHOLDER_TITLE = "Coordinator Session"
-
-
-def is_ephemeral_session(session_id: Optional[str]) -> bool:
-    return bool(session_id) and str(session_id).startswith(EPHEMERAL_SESSION_PREFIX)
 
 
 def _runs_below(tracker: Any, session_id: str) -> Optional[str]:
@@ -284,7 +289,7 @@ class SessionService:
         if holding is None or tracker.check_session_locked(session_id) != (True, holding):
             opener = f"open_{uuid4().hex[:12]}"
             if not await tracker.acquire_session_lock(session_id, opener, timeout=5.0, writer=True):
-                owner = await self.session_manager._find_session_owner_async(session_id)
+                owner = await self.session_manager.find_session_owner_async(session_id)
                 if owner is not None and owner != user_id:
                     raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
                 tracker.mark_opened(session_id)
@@ -399,7 +404,7 @@ class SessionService:
 
             # Check if session already exists and find its owner
             # This is critical for sub-agent sessions which may have different user_ids
-            session_owner = await self.session_manager._find_session_owner_async(session_id)
+            session_owner = await self.session_manager.find_session_owner_async(session_id)
             session_exists = session_owner is not None
 
             # No messages: a new session is not created empty, and a stored one this
@@ -413,15 +418,7 @@ class SessionService:
             logger.debug(f"[SESSION] Saving session {session_id}, messages count: {len(messages_list)}")
 
             # Convert ChatMessage objects to dicts with token estimation
-            messages_dicts = []
-            for msg in messages_list:
-                if hasattr(msg, 'model_dump'):
-                    msg_dict = msg.model_dump(mode='json')
-                elif hasattr(msg, 'dict'):
-                    msg_dict = msg.dict()
-                else:
-                    msg_dict = dict(msg)
-                messages_dicts.append(msg_dict)
+            messages_dicts = [_msg_to_dict(msg) for msg in messages_list]
             await asyncio.to_thread(_add_estimated_tokens, messages_dicts)
 
             # Explicit title wins; otherwise derive it from the first user message.
@@ -448,14 +445,14 @@ class SessionService:
                     )
                 except ValueError as create_err:
                     if "already exists" in str(create_err):
-                        # Race condition: _find_session_owner_async missed the file
+                        # Race condition: find_session_owner_async missed the file
                         # but create_session found it. Fall through to update path.
                         logger.debug(
                             f"[SESSION] Session {session_id} exists after all (race), "
                             f"falling back to update path"
                         )
                         actual_user_id = (
-                            await self.session_manager._find_session_owner_async(session_id)
+                            await self.session_manager.find_session_owner_async(session_id)
                             or user_id
                         )
                         session_exists = True
@@ -500,12 +497,7 @@ class SessionService:
                 except Exception as tracker_err:
                     logger.debug(f"[SESSION] Could not read runtime template_vars: {tracker_err}")
                     runtime_vars = None
-                if runtime_vars:
-                    existing = session_data.get("context_vars")
-                    if not isinstance(existing, dict):
-                        existing = {}
-                    existing.update(runtime_vars)
-                    session_data["context_vars"] = existing
+                _merge_runtime_vars(session_data, runtime_vars)
 
             if llm_choice is not None:
                 # null, not absent: "nobody picked one" -- a record without the key predates it, and
@@ -623,7 +615,7 @@ class SessionService:
             carried = self._title_to_write(agent, session_id)
 
             # Find the actual session owner if the session is already on disk
-            session_owner = await self.session_manager._find_session_owner_async(session_id)
+            session_owner = await self.session_manager.find_session_owner_async(session_id)
             actual_user_id = session_owner if session_owner else user_id
 
             if session_owner is None:
@@ -648,7 +640,7 @@ class SessionService:
                     )
                 except ValueError:
                     # Race: session was created in the meantime — fall back to load
-                    session_owner = await self.session_manager._find_session_owner_async(session_id)
+                    session_owner = await self.session_manager.find_session_owner_async(session_id)
                     if not session_owner:
                         return False
                     actual_user_id = session_owner
@@ -661,12 +653,7 @@ class SessionService:
                 session_data["title"] = carried
             elif session_data.get("title") == PLACEHOLDER_TITLE and safe_messages:
                 session_data["title"] = self._extract_session_title(safe_messages)
-            if runtime_vars:
-                existing = session_data.get("context_vars")
-                if not isinstance(existing, dict):
-                    existing = {}
-                existing.update(runtime_vars)
-                session_data["context_vars"] = existing
+            _merge_runtime_vars(session_data, runtime_vars)
 
             await self.session_manager.save_session(session_data)
             self._title_written(agent, session_id, carried)

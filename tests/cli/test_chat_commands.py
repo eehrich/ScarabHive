@@ -201,7 +201,7 @@ class TestExpansion:
 
     def test_windows_paths_survive_positional_substitution(self):
         r"""shlex's POSIX mode ate the backslashes: C:\Users\me -> C:Usersme."""
-        assert expand("Read $1", r"C:\Users\enric\notes.md") == r"Read C:\Users\enric\notes.md"
+        assert expand("Read $1", r"C:\Users\someone\notes.md") == r"Read C:\Users\someone\notes.md"
 
     def test_quoted_group_still_arrives_unquoted(self):
         assert expand("[$1]", '"zwei woerter" rest') == "[zwei woerter]"

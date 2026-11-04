@@ -976,7 +976,10 @@ class TestLoadTool:
         
         # Multimodal should point to segment file
         multimodal = result["_multimodal_content"]
-        assert "_temp_segment_" in multimodal[0]["path"]
+        assert ".audio_ops_segment_" in multimodal[0]["path"]
+        # ... and the piece is no user file: list() showed every one
+        listed = await server.list({"_status": mock_status})
+        assert not any("segment" in str(entry) for entry in listed.get("files", [])), listed
     
     @pytest.mark.asyncio
     async def test_load_with_only_start_time(
@@ -2616,7 +2619,7 @@ class TestGuideFindings:
         assert result["error_type"] == "FileTooLarge"
         result = await server.load({"file": sample_wav.name, "start_time": 0, "end_time": 4})
         assert result["error_type"] == "FileTooLarge"
-        assert not list(temp_storage.glob("_temp_segment_*"))
+        assert not list(temp_storage.glob(".audio_ops_segment_*"))
 
     @pytest.mark.asyncio
     async def test_dots_inside_a_name_are_not_traversal(self, server, sample_wav, temp_storage):
@@ -3037,3 +3040,36 @@ class TestDocAuditFindings:
         assert await cli.cmd_compress_silence(args) == 1
         assert dest.read_bytes() == b"previous take"
         assert sorted(p.name for p in temp_storage.iterdir()) == ["old.wav", sample_wav.name]
+
+
+SILENCE_STDERR = ("silence_start: -0.0013\nsilence_end: 2.5 | silence_duration: 1e-05\n"
+                  "silence_start: 3.25\nsilence_end: 9.0 | silence_duration: 5.75\n")
+
+
+@pytest.mark.asyncio
+async def test_detect_silence_reads_what_ffmpeg_prints(server, sample_wav, mock_status, monkeypatch):
+    """A negative start was skipped, and the index pairing shifted every later segment."""
+    monkeypatch.setattr(server, "_run", lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 0, "", SILENCE_STDERR))
+
+    result = await server.detect_silence({"source_file": sample_wav.name, "_status": mock_status})
+
+    assert result["silences"] == [{"start": 0.0, "end": 2.5, "duration": 1e-05},
+                                  {"start": 3.25, "end": 9.0, "duration": 5.75}]
+
+
+@pytest.mark.asyncio
+async def test_compress_silence_reads_what_ffmpeg_prints(server, sample_wav, mock_status, monkeypatch):
+    commands = []
+
+    def run(cmd, *a, **k):
+        commands.append(" ".join(map(str, cmd)))
+        return subprocess.CompletedProcess(cmd, 0, '{"format": {"duration": "10"}}', SILENCE_STDERR)
+
+    monkeypatch.setattr(server, "_run", run)
+
+    await server.compress_silence({"source_file": sample_wav.name, "dest_file": "out.wav", "max_silence": 1.0,
+                                   "_status": mock_status})
+
+    cut = next(command for command in commands if "filter_complex" in command)
+    assert "atrim=start=0.000:end=0.500" in cut, "the first silence starts at 0, not at -0.0013"
+    assert "atrim=start=2.000:end=3.750" in cut, "the second silence pairs with its own end"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, TYPE_CHECKING
 
@@ -11,6 +13,8 @@ from agent_system.llm.text_sanitizer import sanitize_for_llm
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+
+logger = logging.getLogger(__name__)
 
 
 class LLMRouterServer(SchemaBasedToolServer):
@@ -181,7 +185,10 @@ class LLMRouterServer(SchemaBasedToolServer):
             client = self._make_client(profile=profile)
             _book_as_agentless(client, params.get("_session_id") or "")
 
-            content = await client.chat(messages, cancellation_token=cancellation_token)
+            try:
+                content = await client.chat(messages, cancellation_token=cancellation_token)
+            finally:
+                await _close_client(client)
 
             # The end line repeated the progress line: neither the model
             # that actually served the call nor the response size, although
@@ -264,8 +271,11 @@ class LLMRouterServer(SchemaBasedToolServer):
             # Get available providers from models
             providers_set = set()
             for model_config in models.values():
-                if isinstance(model_config, dict) and 'provider' in model_config:
-                    providers_set.add(model_config['provider'])
+                # LLMModelConfig objects (a dict only in hand-built configs)
+                provider = (model_config.get('provider') if isinstance(model_config, dict)
+                            else getattr(model_config, 'provider', None))
+                if provider:
+                    providers_set.add(provider)
             available_providers = sorted(list(providers_set))
         
         return {
@@ -274,6 +284,19 @@ class LLMRouterServer(SchemaBasedToolServer):
             "available_models": available_models, 
             "available_providers": available_providers
         }
+
+
+async def _close_client(client: Any) -> None:
+    """Close a client built for one call: the SDK clients hold a connection pool."""
+    close = getattr(client, "close", None)
+    if not callable(close):
+        return
+    try:
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+    except Exception as e:  # closing must not turn an answer into an error
+        logger.debug("llm_router: closing the client failed: %s", e)
 
 
 def _book_as_agentless(client: Any, session_id: str) -> None:

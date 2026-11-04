@@ -3,7 +3,7 @@
 In the httpx client the field controls the reasoning_details round trip
 (keep_last default / keep_all for OpenAI reasoning chains / strip).
 These tests pin the complete chain across BOTH factory paths --
-the second path (LLMFactory default client) had initially lost the field
+the second path (the factory's default client) had initially lost the field
 (silent fallback to keep_last despite the config).
 """
 from __future__ import annotations

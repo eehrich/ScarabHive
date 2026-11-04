@@ -20,7 +20,7 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from agent_system import app_state
-from agent_system.api.app_context import AppContext, app_context, parse_json_body
+from agent_system.api.app_context import AppContext, app_context, lookup_agent, parse_json_object
 from agent_system.api.run_start import (
     asks_a_person,
     carry_title,
@@ -180,7 +180,7 @@ async def _handle_events(
         # Try to load the specific agent if it's different from the default
         if existing_job.agent_name and existing_job.agent_name != reconnect_agent.name:
             try:
-                reconnect_agent = app_state.app_registry.get(existing_job.agent_name)  # type: ignore[attr-defined]
+                reconnect_agent = lookup_agent(request, existing_job.agent_name)
             except Exception as e:
                 logger.warning(f"Could not load agent '{existing_job.agent_name}': {e}, using default")
 
@@ -242,8 +242,12 @@ async def _handle_events(
         session_title = None  # it names a session the run creates, not one it continues
 
     async def event_stream():
+        # Every way out before the job exists lets go of the ownership entry
+        # registered above -- before its last yield, which a client that left
+        # never returns from. A job that runs keeps it (the finally below).
         # Check if server is already shutting down
         if app_state.shutdown_event and app_state.shutdown_event.is_set():
+            release_request_user_tree(request_id)
             yield ":server_shutdown\n\n"
             return
 
@@ -256,9 +260,14 @@ async def _handle_events(
         # Session presence (core/session_presence/): held before the job
         # starts through the save after it; a session the job creates comes
         # with the start event.
-        refusal, held = await claim_session(
-            selected_agent, actual_session_id, user_id, force)
+        try:
+            refusal, held = await claim_session(
+                selected_agent, actual_session_id, user_id, force)
+        except BaseException:
+            release_request_user_tree(request_id)
+            raise
         if refusal:
+            release_request_user_tree(request_id)
             yield f"data: {json.dumps({'type': 'error', 'request_id': request_id, 'error': refusal}, ensure_ascii=False)}\n\n"
             return
 
@@ -449,7 +458,7 @@ async def events_post(request: Request, ctx: AppContext = Depends(app_context)):
     This endpoint avoids URL length limits that affect GET /events
     when sending long task texts.
     """
-    body = await parse_json_body(request)
+    body = await parse_json_object(request)
     task = body.get("task")
     if not task:
         raise HTTPException(status_code=400, detail="Missing 'task' in request body")

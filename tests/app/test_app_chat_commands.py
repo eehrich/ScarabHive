@@ -359,9 +359,10 @@ class TestPluginCommands:
         """The command acts ON the session -- compaction rewrites it -- so a
         foreign id must not become a tool's working set. Seeded in the
         in-memory tracker the ownership check reads first, which keeps this
-        test off the real session directory.
+        test off the real session directory -- the tracker of the agent the
+        command runs on, the one it would act on (not the entry agent's).
         """
-        tracker = client.app.state.agent._session_tracker
+        tracker = client.app.state.tool_registry.get(commanded_agent)._session_tracker
         foreign = "parity-probe-not-yours"
         tracker.set_session_metadata(foreign, {"user_id": "somebody_else"})
         try:

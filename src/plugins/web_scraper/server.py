@@ -32,9 +32,10 @@ from typing import Any, TYPE_CHECKING
 import httpx
 from bs4 import BeautifulSoup
 
+from agent_system.llm.tls import network_ssl_verify
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.cache import PluginCache
-from agent_system.utils.params import bool_param
+from agent_system.utils.params import as_float, bool_param
 from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
 
 if TYPE_CHECKING:
@@ -280,7 +281,8 @@ class WebScraperServer(SchemaBasedToolServer):
 
     def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         super().__init__(name, system_config, server_config)
-        self.ssl_verify = getattr(system_config, "ssl_verify", True)
+        # network.ssl_verify (the setting was read from a key that does not exist)
+        self.ssl_verify = network_ssl_verify(system_config)
         self._proxies: list[str] = list(getattr(server_config, "proxies", None) or [])
 
         # Cookie jars keyed by (session, domain), so one user's login cookies
@@ -306,6 +308,8 @@ class WebScraperServer(SchemaBasedToolServer):
         directories = list(getattr(server_config, "allowed_directories", None) or [])
         self.download_sandbox = PathSandbox.from_config(directories, base=Path.cwd()) if directories else None
         self.max_download_mb = float(getattr(server_config, "max_download_mb", 100))
+        # The whole download, every hop (the `timeout` argument bounds one read).
+        self.download_deadline_s = as_float(getattr(server_config, "download_deadline_seconds", None), 600.0, low=1.0)
         # A page is held in memory whole and parsed: without a cap, one URL
         # that streams without end grew the server's memory until it died.
         self.max_page_mb = float(getattr(server_config, "max_page_mb", 10))
@@ -675,7 +679,12 @@ class WebScraperServer(SchemaBasedToolServer):
                     "content_type": content_type,
                     # Parsing a large page takes seconds; not on the event loop.
                     **await asyncio.to_thread(self._extract, html, final_url)}
-            if self.cache_enabled:
+            if code is not None and code >= 400:
+                # The server's error page, not the page asked for: said so,
+                # and not cached -- a 404 or 500 stayed the "page" for the
+                # whole cache lifetime.
+                page["warning"] = f"HTTP {code}: this is the server's error page"
+            elif self.cache_enabled:
                 # 0 (absent, or a value the model made up) means: the
                 # instance's configured lifetime.
                 await self.cache.set(key, page, ttl=int(_number(params, "cache_ttl", 0)) or None)
@@ -693,7 +702,10 @@ class WebScraperServer(SchemaBasedToolServer):
             if max_links > 0:
                 links = links[:max_links]
             await status.end(f"{len(links)} link(s) {where}", meta={"link_count": len(links)})
-            return {"url": url, "final_url": page["final_url"], "status_code": code, "links": links}
+            answer = {"url": url, "final_url": page["final_url"], "status_code": code, "links": links}
+            if page.get("warning"):
+                answer["warning"] = page["warning"]
+            return answer
 
         text = page["text"]
         offset = max(0, int(_number(params, "offset", 0)))
@@ -703,6 +715,8 @@ class WebScraperServer(SchemaBasedToolServer):
         result = {"url": url, "final_url": page["final_url"], "status_code": code,
                   "content_type": page.get("content_type"), "title": page.get("title"),
                   "text": piece, "total_chars": len(text), "truncated": truncated}
+        if page.get("warning"):
+            result["warning"] = page["warning"]
         if _flag(params, "extract_tables") and page.get("tables"):
             result["tables"] = page["tables"]
         if _flag(params, "extract_lists") and page.get("lists"):
@@ -746,8 +760,11 @@ class WebScraperServer(SchemaBasedToolServer):
         created: list[Path] = []
         await status.progress(f"Downloading {url[:80]}")
         try:
-            async with self._client(url, self._user_agent(), _number(params, "timeout", 60),
-                                    params.get("_session_id")) as client:
+            # `timeout` bounds each read; this bounds the whole download -- a
+            # server sending a byte a minute held the call until max_download_mb.
+            async with asyncio.timeout(self.download_deadline_s), \
+                    self._client(url, self._user_agent(), _number(params, "timeout", 60),
+                                 params.get("_session_id")) as client:
                 current = url
                 for hop in range(MAX_HOPS + 1):
                     await self._assert_url_safe(current)
@@ -780,6 +797,10 @@ class WebScraperServer(SchemaBasedToolServer):
         except WebScraperSSRFError as e:
             await status.error(f"Blocked redirect: {e}")
             return {"url": url, "error": f"Blocked URL (SSRF protection): {e}"}
+        except TimeoutError:
+            await status.error(f"over {self.download_deadline_s:g} s -- {url[:60]}")
+            return {"url": url, "error": f"Download took longer than {self.download_deadline_s:g} s "
+                                         f"(download_deadline_seconds)"}
         except (httpx.HTTPError, _TooManyRedirects) as e:
             await status.error(f"Download failed: {type(e).__name__} -- {url[:60]}")
             return {"url": url, "error": f"Download failed: {type(e).__name__}: {e}"}

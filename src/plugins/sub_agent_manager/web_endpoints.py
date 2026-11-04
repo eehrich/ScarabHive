@@ -47,7 +47,7 @@ async def reader(request: Request, current_user: Optional[User], session_id: str
         sessions._validate_session_id(session_id)  # the scan joins the bare id onto every user's directory
     except ValueError:
         return own
-    return await sessions._find_session_owner_async(session_id) or own
+    return await sessions.find_session_owner_async(session_id) or own
 
 
 def hers(sessions, user_id: str, session_id: str) -> bool:

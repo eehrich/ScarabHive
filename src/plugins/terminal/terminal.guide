@@ -165,7 +165,8 @@ foreground), @{tt}is_running@{utt}, @{tt}exit_code@{utt} (null while it
 runs), @{tt}started_at@{utt} and @{tt}finished_at@{utt}. Each stream
 returns at most its last @{tt}max_output_size_kb@{utt} (60 K characters);
 @{tt}truncated: true@{utt} says the start was cut. With
-@{tt}clear_buffer@{utt} the cut part is cleared too.
+@{tt}clear_buffer@{utt} the cut part is cleared too. A buffered line keeps
+at most 8192 characters and then ends in "…[line cut]".
 
 @{h2}Ending it: kill_process
 

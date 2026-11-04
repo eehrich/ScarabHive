@@ -6,6 +6,7 @@ Defines the data models for user authentication and authorization.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal, Optional
@@ -13,6 +14,12 @@ from pydantic import AfterValidator, BaseModel, EmailStr, Field, ConfigDict, Val
 from pydantic_core import PydanticCustomError
 
 PASSWORD_MAX_BYTES = 72  # bcrypt refuses longer passwords
+
+#: What an account name may be made of: what creating and registering one accepts, and so what a
+#: stored account has (UserInDB validates every row it is read from). The middleware holds a token's
+#: name and an account row against the same pattern (USERNAME_RE.fullmatch).
+USERNAME_PATTERN = "^[a-zA-Z0-9_-]+$"
+USERNAME_RE = re.compile(USERNAME_PATTERN)
 
 
 def validation_reasons(error: ValidationError) -> str:
@@ -38,7 +45,7 @@ class UserRole(str, Enum):
 
 class UserBase(BaseModel):
     """Base user schema with common fields."""
-    username: str = Field(..., min_length=3, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+    username: str = Field(..., min_length=3, max_length=50, pattern=USERNAME_PATTERN)
     email: EmailStr
     full_name: Optional[str] = None
     is_active: bool = True
@@ -59,7 +66,7 @@ class UserRegister(BaseModel):
     """
     model_config = {"extra": "forbid"}
 
-    username: str = Field(..., min_length=3, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+    username: str = Field(..., min_length=3, max_length=50, pattern=USERNAME_PATTERN)
     email: EmailStr
     full_name: Optional[str] = None
     password: Password

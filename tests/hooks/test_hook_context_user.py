@@ -1,10 +1,15 @@
 """A hook knows whose call it is: HookContext.user_id.
 
 A plugin that keeps data per user (the message debugger) records it with each
-row; without it every row was nobody's and every user read everybody's. The
-user is the one the session's run was opened for -- the API and agent-cli both
-record it in the session metadata before the first step -- else the one the
-request was registered under, else None: nobody's, never everybody's.
+row; without it every row was nobody's and every user read everybody's.
+
+The user is found by the rule the run's tools go by (Agent.tool_user): the
+request's registered owner first, the session's stored user only where none is
+registered (agent-cli), else None: nobody's, never everybody's. Owner first
+because the session metadata is shared, mutable state of the session id --
+every run of it writes there, so mid-run it may name somebody else -- while the
+registered owner is this run's own. Asked the other way round, a pre_tool_call
+hook judged a call for one user and the tool then ran as another.
 """
 from unittest.mock import AsyncMock, Mock
 
@@ -73,8 +78,8 @@ async def _every_context(manager):
 
 
 @pytest.mark.parametrize("metadata_user, registered_user, expected", [
-    ("alice", "bob", "alice"),   # the session's user, as its run recorded it
-    (None, "bob", "bob"),        # else the user the request was registered under
+    ("alice", "bob", "bob"),     # the request's registered owner, whatever the session's metadata says
+    ("alice", None, "alice"),    # else the session's stored user
     (None, None, None),          # else nobody's
 ])
 async def test_every_context_the_agent_builds_names_the_user(metadata_user, registered_user, expected):
@@ -145,3 +150,20 @@ async def test_a_call_no_agent_wires_names_the_user_of_its_run(monkeypatch, run,
         current_request_id.reset(token)
 
     assert [call.args[1].user_id for call in registry.execute_hooks.call_args_list] == [expected, expected]
+
+
+async def test_a_pre_tool_call_hook_sees_the_user_the_tool_runs_as():
+    """The metadata names another user than the request's owner (another run of
+    the session wrote it): the hook that may block the call and the tool it
+    lets through must agree on whose call it is."""
+    from agent_system.servers.agent.mixins.access import AccessMixin
+
+    manager = _manager("alice", "bob")
+    agent = manager.agent
+    tool_user = AccessMixin.tool_user(agent, "req-1", "sess-1")
+
+    await manager.execute_pre_tool_hooks(tool_call={"name": "x"}, step=1, request_id="req-1", session_id="sess-1")
+    (hook_type, context), _ = manager.registry.execute_hooks.call_args
+
+    assert hook_type is HookType.PRE_TOOL_CALL
+    assert context.user_id == tool_user == "bob"

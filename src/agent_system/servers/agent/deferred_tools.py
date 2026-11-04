@@ -24,6 +24,7 @@ import logging
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+from ...utils.fields import field_of
 from .tool_schema_builder import tool_matches_patterns
 
 logger = logging.getLogger(__name__)
@@ -212,5 +213,4 @@ def _loaded_by(message: Any) -> List[str]:
     return [name for name in loaded if isinstance(name, str)] if isinstance(loaded, list) else []
 
 
-def _field(item: Any, key: str) -> Any:
-    return item.get(key) if isinstance(item, dict) else getattr(item, key, None)
+_field = field_of

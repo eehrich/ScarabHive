@@ -23,14 +23,27 @@ def test_no_color_env_on_a_terminal_that_renders_ansi(monkeypatch, no_color, ter
 
 @pytest.mark.parametrize("term, expected", [("xterm", True), ("dumb", False)])
 def test_users_colour_on_a_terminal_unless_it_is_dumb(monkeypatch, term, expected):
-    """`agent-cli users` decides before --color is read (users._supports_color); a dumb terminal counts there too."""
+    """`agent-cli users` colours by the same rule as the rest of agent-cli (common.supports_color)."""
     from agent_system.cli_utils import users
 
-    monkeypatch.setattr(users.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(common, "ansi_capable_stdout", lambda: True)
+    monkeypatch.setattr(common, "color_mode", "auto")
     monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("TERM", term)
-    assert users._supports_color() is expected
+    assert users.supports_color is common.supports_color
+    assert common.supports_color() is expected
+
+
+@pytest.mark.parametrize("flags, mode", [(["--no-color"], "never"), (["--color", "always"], "always"), ([], "auto")])
+def test_colour_flags_before_users_are_applied(monkeypatch, flags, mode):
+    """`users` returns before the run path reads --color: the flags typed before it were ignored."""
+    seen = {}
+    monkeypatch.setattr(common, "color_mode", "unset")
+    monkeypatch.setattr(cli, "_run_users_cli", lambda args, config: seen.setdefault("mode", common.color_mode))
+    monkeypatch.setattr(cli, "enter_project", lambda: None)
+    monkeypatch.setattr(cli.sys, "argv", ["agent-cli", *flags, "users", "list"])
+    cli._main()
+    assert seen["mode"] == mode
 
 
 @pytest.mark.parametrize("env, expected", [({}, True), ({"NO_COLOR": "1"}, False), ({"TERM": "dumb"}, False)])

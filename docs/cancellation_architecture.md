@@ -80,7 +80,8 @@ When `cancel_request(request_id)` is called:
 
 1. **Global system** cancels all matching tool tokens:
    - Main request: `"req_123"`
-   - Derived tool requests: `"req_123_tool_1"`, `"req_123_tool_2"`, etc.
+   - Derived tool requests: `"<request id>_<step:03d>"` (`ToolExecutionManager`,
+     `components/tool_execution.py`), e.g. `"req_123_001"`, `"req_123_002"`
    - Uses prefix matching for cascading cancellation
 
 2. **Local system** sets the agent's event flag:
@@ -109,11 +110,15 @@ When agent A calls agent B which calls tool C:
 ```
 Request: req_123
 ├─ Agent A: req_123
-├─ Tool call 1: req_123_001
-│  └─ Agent B: req_123_001_sub
-│     └─ Tool call: req_123_001_sub_001
-└─ Tool call 2: req_123_002
+├─ Tool call 1 (step 1): req_123_001
+│  └─ Agent B, called as a tool: runs under the call's own id req_123_001
+│     └─ Its tool call (step 1): req_123_001_001
+└─ Tool call 2 (step 2): req_123_002
 ```
+
+An agent called as a tool does not mint a `_sub` id: it runs under the id the
+calling tool step handed it (`Agent.call`), so the prefix rule
+(`id == root or id.startswith(root + "_")`) reaches it and everything below.
 
 Cancelling `req_123` cancels **all derived requests** automatically.
 

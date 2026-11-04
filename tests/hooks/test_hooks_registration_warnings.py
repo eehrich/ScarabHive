@@ -29,7 +29,7 @@ async def test_a_hook_of_a_type_that_fires_registers_without_a_warning(hook_type
     registry = HookRegistry(default_timeout=30.0)
     metadata = {"hooks": [{"name": "some_hook", "type": hook_type}]}
 
-    with caplog.at_level(logging.WARNING, logger="agent_system.plugins.discovery"):
+    with caplog.at_level(logging.WARNING, logger="agent_system.hooks.plugin_registration"):
         await register_plugin_hooks("test_plugin", MockHookPlugin("test_plugin"), metadata,
                                     registry, HooksConfig())
 
@@ -49,7 +49,7 @@ async def test_an_on_error_that_has_no_effect_is_reported(hook_type, on_error, w
     registry = HookRegistry(default_timeout=30.0)
     metadata = {"hooks": [{"name": "policy", "type": hook_type, "on_error": on_error}]}
 
-    with caplog.at_level(logging.WARNING, logger="agent_system.plugins.discovery"):
+    with caplog.at_level(logging.WARNING, logger="agent_system.hooks.plugin_registration"):
         await register_plugin_hooks("test_plugin", MockHookPlugin("test_plugin"), metadata,
                                     registry, HooksConfig())
 
@@ -126,13 +126,13 @@ def test_a_hook_of_a_server_that_is_off_is_no_misspelling():
 
 async def test_an_override_warning_is_logged_once_per_process(monkeypatch, caplog):
     from agent_system.config.models import AgentSystemConfig
-    from agent_system.plugins import discovery
+    from agent_system.hooks import plugin_registration
 
-    monkeypatch.setattr(discovery, "_REPORTED_OVERRIDE_WARNINGS", set())
+    monkeypatch.setattr(plugin_registration, "_REPORTED_OVERRIDE_WARNINGS", set())
     settings = AgentSystemConfig(hooks={"overrides": {"nowhere.hook": {"enabled": False}}})
     registry = HookRegistry(default_timeout=30.0)
 
-    with caplog.at_level(logging.WARNING, logger="agent_system.plugins.discovery"):
+    with caplog.at_level(logging.WARNING, logger="agent_system.hooks.plugin_registration"):
         first = warn_unknown_hook_overrides(settings, registry)
         second = warn_unknown_hook_overrides(settings, registry)
 

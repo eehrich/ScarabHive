@@ -145,7 +145,7 @@ def test_a_failed_write_leaves_the_existing_store_intact():
         'name': 'Old', 'host': '10.0.0.1', 'username': 'root',
         'auth_method': 'key', 'key_path': '~/.ssh/id_rsa'})
 
-    with patch('plugins.ssh_control.machine_store.os.replace',
+    with patch('agent_system.utils.io.os.replace',
                side_effect=OSError("disk full")):
         with pytest.raises(OSError):
             machine_store.add('ssh_control_test', {
@@ -153,4 +153,8 @@ def test_a_failed_write_leaves_the_existing_store_intact():
                 'auth_method': 'key', 'key_path': '~/.ssh/id_rsa'})
 
     assert [m['name'] for m in machine_store.load('ssh_control_test')] == ['Old']
+    # ... and no temp file of the failed write is left beside the store
+    store = machine_store.store_path('ssh_control_test')
+    assert not list(store.parent.glob(f".{store.name}.*.tmp"))
+
 

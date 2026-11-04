@@ -5,6 +5,7 @@ from agent_system.cli_utils import common
 def test_supports_color_modes(monkeypatch):
     # Ensure NO_COLOR env cleared, and a terminal that is not dumb
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("TERM", "xterm")
     # A Windows console renders ANSI only once VT processing is enabled; that
     # probe needs a real console handle, which pytest's captured stdout is not.
@@ -52,6 +53,7 @@ def test_auto_yields_text_when_the_console_cannot_render_ansi(monkeypatch):
     """
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("TERM", "xterm")
     monkeypatch.setattr(common, "_IS_WINDOWS", True)
     monkeypatch.setattr(common, "_enable_windows_vt", lambda: False)
@@ -98,3 +100,17 @@ def test_input_mode_roundtrip_is_safe_without_console():
     """Under pytest stdin is piped: snapshot yields None (no console handle),
     and restoring that is a no-op end to end."""
     common.restore_console_input_mode(common.snapshot_console_input_mode())
+
+
+def test_force_color_wins_over_a_pipe_but_not_over_no_color(monkeypatch):
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
+    common.set_color_mode("auto")
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    assert common.supports_color() is False
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    assert common.supports_color() is True
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert common.supports_color() is False

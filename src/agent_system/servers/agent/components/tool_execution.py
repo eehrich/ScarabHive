@@ -319,13 +319,8 @@ class ToolExecutionManager:
                     "tool": tool_name,
                     "error": f"Invalid JSON arguments for {tool_name}",
                 })
-                calls.indexed_results.append((pos, ChatMessage(
-                    role="tool",
-                    tool_call_id=call_id,
-                    name=openai_tool_name or "unknown",
-                    content=error_content,
-                    timestamp=datetime.now(timezone.utc),
-                ), [], []))
+                calls.indexed_results.append(
+                    (pos, tool_error_message(call_id, openai_tool_name or "unknown", error_content), [], []))
                 continue
 
             answer = intercept(openai_tool_name, params, step) if intercept is not None else None
@@ -355,13 +350,8 @@ class ToolExecutionManager:
                     "error": f"Unknown tool: '{tool_name}'. The tool does not exist. Please check available tools and try again.",
                     "type": "ToolNotFoundError"
                 })
-                calls.indexed_results.append((pos, ChatMessage(
-                    role="tool",
-                    tool_call_id=call_id,
-                    name=openai_tool_name or "unknown",
-                    content=error_content,
-                    timestamp=datetime.now(timezone.utc)
-                ), [], []))
+                calls.indexed_results.append(
+                    (pos, tool_error_message(call_id, openai_tool_name or "unknown", error_content), [], []))
                 continue
 
             calls.valid_tool_executions.append((tc, tool_name, openai_tool_name, params))
@@ -474,55 +464,56 @@ class ToolExecutionManager:
         # (e.g., sub_agent_manager may run for hours)
         # Tools are cancelled via cancellation_token if request is cancelled by user
         pending = set(tasks)
+        try:
+            while pending:
+                # Wait for any task completion or timeout (50ms polling interval)
+                done, pending = await asyncio.wait(pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED)
 
-        while pending:
-            # Wait for any task completion or timeout (50ms polling interval)
-            done, pending = await asyncio.wait(pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED)
+                # Yield any pending status events from sub-agents
+                # CRITICAL: Use the passed status_forwarder parameter, NOT self._status_forwarder
+                # to avoid race conditions when multiple requests share the same agent instance
+                if calls.status_forwarder:
+                    status_events = calls.status_forwarder.get_pending_events()
+                    for status_event in status_events:
+                        yield {"type": "status", "event": status_event}
 
-            # Yield any pending status events from sub-agents
-            # CRITICAL: Use the passed status_forwarder parameter, NOT self._status_forwarder
-            # to avoid race conditions when multiple requests share the same agent instance
-            if calls.status_forwarder:
-                status_events = calls.status_forwarder.get_pending_events()
-                for status_event in status_events:
-                    yield {"type": "status", "event": status_event}
-
-            # Process completed tasks
-            for task in done:
-                original_index = calls.task_indices.get(task, 999)  # Default high index if not found
-                try:
-                    # task.result() RAISES on failure (asyncio.wait, not
-                    # gather(return_exceptions=True)) -- errors land in the
-                    # except blocks below, which build the error ChatMessage.
-                    tool_message, events, tool_results = task.result()
-                    # Store with original index for later sorting
-                    calls.indexed_results.append((original_index, tool_message, events, tool_results))
-                    calls.events_to_yield.extend(events)
-                    calls.results_to_add.extend(tool_results)
-                except asyncio.CancelledError:
-                    logger.debug("Tool task was cancelled")
-                    # Task was cancelled, this is expected during request cancellation
-                    # Create a cancelled response to avoid orphaned tool_calls
-                    if task in calls.task_tool_info:
-                        tc, tool_name, openai_tool_name = calls.task_tool_info[task]
-                        cancelled_msg = ChatMessage(
-                            role="tool",
-                            tool_call_id=call_id_or(tc, "cancelled-call"),
-                            name=sanitize_for_llm(openai_tool_name),
-                            content=json.dumps({"error": f"Tool '{tool_name}' was cancelled."}),
-                            timestamp=datetime.now(timezone.utc)
-                        )
-                        calls.indexed_results.append((original_index, cancelled_msg, [], []))
-                        calls.events_to_yield.append({"type": "tool_cancelled", "tool": tool_name})
-                except Exception as e:
-                    # CRITICAL: Create error response to avoid orphaned tool_calls
-                    # Without this, the LLM will crash because it expects a tool response for every tool_call
-                    logger.exception("Error processing tool result: %s", e)
-                    if task in calls.task_tool_info:
-                        tc, tool_name, openai_tool_name = calls.task_tool_info[task]
-                        error_msg = execution_failed_message(tc, tool_name, openai_tool_name, e)
-                        calls.indexed_results.append((original_index, error_msg, [], []))
-                        calls.events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": str(e)})
+                # Process completed tasks
+                for task in done:
+                    original_index = calls.task_indices.get(task, 999)  # Default high index if not found
+                    try:
+                        # task.result() RAISES on failure (asyncio.wait, not
+                        # gather(return_exceptions=True)) -- errors land in the
+                        # except blocks below, which build the error ChatMessage.
+                        tool_message, events, tool_results = task.result()
+                        # Store with original index for later sorting
+                        calls.indexed_results.append((original_index, tool_message, events, tool_results))
+                        calls.events_to_yield.extend(events)
+                        calls.results_to_add.extend(tool_results)
+                    except asyncio.CancelledError:
+                        logger.debug("Tool task was cancelled")
+                        # Task was cancelled, this is expected during request cancellation
+                        # Create a cancelled response to avoid orphaned tool_calls
+                        if task in calls.task_tool_info:
+                            tc, tool_name, openai_tool_name = calls.task_tool_info[task]
+                            cancelled_msg, cancel_events, _ = self._create_cancelled_response(
+                                tc, tool_name, openai_tool_name, calls.request_id or "")
+                            calls.indexed_results.append((original_index, cancelled_msg, [], []))
+                            calls.events_to_yield.extend(cancel_events)
+                    except Exception as e:
+                        # CRITICAL: Create error response to avoid orphaned tool_calls
+                        # Without this, the LLM will crash because it expects a tool response for every tool_call
+                        logger.exception("Error processing tool result: %s", e)
+                        if task in calls.task_tool_info:
+                            tc, tool_name, openai_tool_name = calls.task_tool_info[task]
+                            error_msg = execution_failed_message(tc, tool_name, openai_tool_name, e)
+                            calls.indexed_results.append((original_index, error_msg, [], []))
+                            calls.events_to_yield.append({"type": "tool_error", "tool": tool_name, "error": str(e)})
+        finally:
+            # Closed or cancelled before every call ended (the run was stopped
+            # or shut down): nobody collects the rest, and a call left running
+            # -- a sub-agent may run for hours -- would run on unowned.
+            for task in pending:
+                task.cancel()
 
     async def _answer_in_call_order(self, calls: _StepCalls) -> AsyncGenerator[Dict[str, Any], None]:
         """The answers in the order of the calls (calls.tool_messages), each

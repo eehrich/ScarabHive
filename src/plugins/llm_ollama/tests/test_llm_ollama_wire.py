@@ -301,3 +301,21 @@ def test_openai_compat_mode_warns_about_an_unwired_key_once(caplog):
     warnings = [r.getMessage() for r in caplog.records if "reasoning_details_mode" in r.getMessage()]
     assert warnings == ["reasoning_details_mode is not wired for provider=ollama and will be ignored (model=m)."]
     assert type(client).__name__ == "OpenAIAsyncClient"
+
+
+def test_a_tools_image_follows_the_whole_run_of_results(tmp_path):
+    png = tmp_path / "shot.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    client = OllamaNativeAsyncClient(
+        model="m", capabilities=SimpleNamespace(image_input=True, audio_input=False,
+                                                default_api_type=None, developer_role=None))
+
+    wire = client._map_messages([
+        *ASK,
+        ChatMessage(role="tool", tool_call_id="c1", name="shot", content="taken",
+                    multimodal_content=[MultimodalToolContent(type="image", path=str(png), mime_type="image/png")]),
+        ChatMessage(role="tool", tool_call_id="c2", name="other", content="done"),
+        ChatMessage(role="user", content="and now?")])
+
+    assert [m["role"] for m in wire] == ["user", "tool", "tool", "user", "user"]
+    assert wire[3]["images"] and not wire[4].get("images")

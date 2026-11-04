@@ -19,6 +19,13 @@ from .core import _BatchQueueCore
 logger = logging.getLogger(__name__)
 
 
+def _error_message(error: Any) -> str:
+    """The message of a result's error: backends give a string or a ``{"message": ...}`` dict."""
+    if isinstance(error, dict):
+        return str(error.get("message") or error)
+    return str(error)
+
+
 class _JobOutcome(_BatchQueueCore):
     """Mixin of `BatchQueueManager`: results, completion and cancellation of jobs."""
 
@@ -46,7 +53,7 @@ class _JobOutcome(_BatchQueueCore):
             
             # Store result on request
             if result.get("error"):
-                request.error = result.get("error", {}).get("message", "Unknown error")
+                request.error = _error_message(result["error"])
                 job.failed_count += 1
             else:
                 request.response = result.get("response", {})
@@ -140,6 +147,15 @@ class _JobOutcome(_BatchQueueCore):
                             except Exception as e:
                                 # Future might be in invalid state, log and continue
                                 logger.debug(f"Could not set exception on future for {request.request_id}: {e}")
+        else:
+            # A completed job whose results named no entry for a request: its
+            # caller would otherwise wait until its (days-long) timeout.
+            for request in (job.requests or []):
+                future = self._request_futures.pop(request.request_id, None)
+                if future and not future.done():
+                    future.set_exception(RuntimeError(
+                        f"Batch job {job.job_id} completed without a result for request {request.request_id}"
+                    ))
         
         logger.debug(
             f"Batch job {job.job_id} completed with status {job.status.value}, "
@@ -189,12 +205,13 @@ class _JobOutcome(_BatchQueueCore):
             return False
     
     async def cancel_request(self, request_id: str) -> bool:
-        """Cancel a specific request and its associated batch job at the provider.
+        """Cancel a specific request, and its batch job once no one else waits on it.
         
         This is called when a user cancels an agent task. It will:
         1. Remove the request from its queue (if not yet submitted)
-        2. Cancel the batch job at the provider API (if already submitted)
-        3. Notify waiting callers with CancelledError
+        2. Cancel this request's waiting future (CancelledError for its caller)
+        3. Cancel the batch job at the provider API (if already submitted) only
+           when no other request of that job still has a waiting caller
         
         Args:
             request_id: The request ID to cancel
@@ -239,6 +256,23 @@ class _JobOutcome(_BatchQueueCore):
         if job.is_terminal:
             logger.debug(f"Job {job_id} already in terminal state: {job.status}")
             return False
+        
+        # The job may carry other callers' requests: end only this caller's
+        # wait, and cancel the job itself once nobody else is waiting on it
+        future = self._request_futures.pop(request_id, None)
+        if future and not future.done():
+            future.cancel()
+        others_waiting = any(
+            r.request_id != request_id
+            and (f := self._request_futures.get(r.request_id)) is not None
+            and not f.done()
+            for r in (job.requests or [])
+        )
+        if others_waiting:
+            logger.info(
+                f"Request {request_id} cancelled; batch job {job.job_id} kept for its other requests"
+            )
+            return True
         
         # Cancel the job at the provider
         if job.provider_job_id:

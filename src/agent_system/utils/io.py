@@ -2,62 +2,13 @@
 import json
 import logging
 import os
-import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import IO, Any, Callable, Dict, Union
 from uuid import uuid4
 
 
 logger = logging.getLogger(__name__)
-
-
-def atomic_write_text(
-    filepath: Union[str, Path],
-    content: str,
-    encoding: str = "utf-8"
-) -> None:
-    """Write text to a file atomically.
-    
-    Uses a temporary file and rename to ensure atomic writes,
-    preventing corruption if interrupted mid-write.
-    
-    Args:
-        filepath: Target file path.
-        content: Text content to write.
-        encoding: Text encoding (default: utf-8).
-    
-    Raises:
-        OSError: If file write or rename fails.
-    """
-    filepath = Path(filepath)
-    
-    try:
-        # Create temp file in same directory as target
-        with tempfile.NamedTemporaryFile(
-            mode='w',
-            encoding=encoding,
-            dir=filepath.parent,
-            delete=False,
-            suffix='.tmp'
-        ) as tmp:
-            tmp.write(content)
-            tmp_path = Path(tmp.name)
-        
-        # Atomic rename
-        tmp_path.replace(filepath)
-        
-        logger.debug("Atomic write successful: %s", filepath)
-        
-    except Exception as e:
-        logger.exception("Atomic write failed: %s, error=%s", filepath, e)
-        # Cleanup temp file if it exists
-        try:
-            if 'tmp_path' in locals():
-                tmp_path.unlink(missing_ok=True)
-        except Exception as cleanup_error:
-            logger.warning("Failed to cleanup temp file: %s", cleanup_error)
-        raise
 
 
 #: How often a JSON write or read rides out Windows' "being replaced" window
@@ -68,6 +19,35 @@ def atomic_write_text(
 _WRITE_RETRIES = 5
 _READ_RETRIES = 10
 _FIRST_RETRY_DELAY = 0.005
+
+
+def atomic_write_text(
+    filepath: Union[str, Path],
+    content: str,
+    encoding: str = "utf-8",
+    *,
+    mkdir: bool = False,
+    retries: int = _WRITE_RETRIES,
+) -> None:
+    """Write text to a file atomically: a unique temp file beside it, then ``os.replace``.
+
+    The same mechanism as ``atomic_write_json`` (see there: unique temp file,
+    retried OSError, no temp file left behind). The file is created readable
+    by its owner only (0600), as the ``mkstemp`` this used to write through
+    made it -- config/local.env is written here.
+
+    Args:
+        filepath: Target file path.
+        content: Text content to write.
+        encoding: Text encoding (default: utf-8).
+        mkdir: Create the target's missing parent directories first.
+        retries: Attempts before giving up.
+
+    Raises:
+        OSError: If the write or the rename fails.
+    """
+    _atomic_replace(Path(filepath), lambda handle: handle.write(content),
+                    encoding=encoding, mode=0o600, mkdir=mkdir, retries=retries)
 
 
 def atomic_write_json(
@@ -90,13 +70,27 @@ def atomic_write_json(
         OSError: when the write still fails after *retries* attempts, or
             failed for any other reason (the cause is chained).
     """
-    path = Path(path)
+    _atomic_replace(Path(path), lambda handle: json.dump(data, handle, indent=indent, ensure_ascii=False),
+                    encoding="utf-8", mode=0o666, mkdir=False, retries=retries)
+
+
+def _atomic_replace(path: Path, write: Callable[[IO[str]], Any], *, encoding: str, mode: int,
+                    mkdir: bool, retries: int) -> None:
+    """``write`` into a temp file of this write's own beside *path*, then ``os.replace`` it onto *path*.
+
+    *mode* is the new file's permission bits before the umask. An OSError is
+    retried with an exponential backoff, anything else fails at once; either
+    way the temp file is removed and the failure is an OSError naming the file.
+    """
+    if mkdir:
+        path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.parent / f".{path.name}.{uuid4().hex[:8]}.tmp"
     delay = _FIRST_RETRY_DELAY * 2
     for attempt in range(retries):
         try:
-            with open(temp_path, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, indent=indent, ensure_ascii=False)
+            fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), mode)
+            with os.fdopen(fd, "w", encoding=encoding) as handle:
+                write(handle)
             os.replace(temp_path, path)
             return
         except OSError as e:

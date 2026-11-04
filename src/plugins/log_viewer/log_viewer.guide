@@ -150,7 +150,7 @@ itself.
 @node tail "log_viewer_tail"
 @{h1}log_viewer_tail
 
-The newest lines of one log file -- what happened last.
+The newest lines of one log file -- what happened last, at most 2000 a call.
 
 @{h2}Parameters
 

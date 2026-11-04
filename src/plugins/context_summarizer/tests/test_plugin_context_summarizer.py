@@ -369,3 +369,25 @@ async def test_max_messages_per_agent_override(summarizer_plugin, mock_agent, mo
     if not result.modified:
         assert result.metadata.get('reason') != 'below_threshold', \
             "Should not be below_threshold with 15 messages > hook_config max_messages=10"
+
+
+@pytest.mark.asyncio
+async def test_a_summarized_context_keeps_every_other_field(summarizer_plugin, mock_agent, mock_llm):
+    """The summarizer rebuilt HookContext field by field and dropped tools_schema
+    and the cancellation token; the registry restores neither, so the hooks
+    after it (project_instructions reads tools_schema) saw them gone."""
+    summarizer_plugin.trigger_percentage = 0.01
+    tools = [{"type": "function", "function": {"name": "fs_read", "parameters": {}}}]
+    from agent_system.core.cancellation import CancellationToken
+    token = CancellationToken("keep-1")
+    context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL, request_id='keep-1', session_id='session-1',
+        agent=mock_agent, messages=create_test_messages(300), llm=mock_llm,
+        tools_schema=tools, cancellation_token=token, user_id="u1")
+
+    result = await summarizer_plugin.summarize_context(context)
+
+    assert result.modified, "summarization never ran -- the assertions below would be vacuous"
+    assert result.context.tools_schema is tools
+    assert result.context.cancellation_token is token
+    assert result.context.user_id == "u1"

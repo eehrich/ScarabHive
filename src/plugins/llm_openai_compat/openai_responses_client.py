@@ -101,6 +101,7 @@ from .httpx_client import (
     release_provider_pin,
     routing_pinned_to_last_backend,
 )
+from plugins.llm_common.http_status import retry_after_seconds
 from plugins.llm_common.openai_utils import convert_audio_to_input_audio
 from plugins.llm_common.structured_output import responses_text_format
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
@@ -1392,11 +1393,7 @@ class OpenAIResponsesClient(LLMClient):
                                 self._PROVIDER, self.model, url, stream,
                                 "429, pin released", attempt, self.max_retries + 1)
                             continue
-                        retry_after = None
-                        try:
-                            retry_after = float(response.headers.get("retry-after", ""))
-                        except (TypeError, ValueError):
-                            pass
+                        retry_after = retry_after_seconds(response.headers.get("retry-after"))
                         await report_error(url, duration_ms, f"HTTP 429: {body_text[:200]}", stream)
                         if "quota" in body_text.lower() or "exhausted" in body_text.lower():
                             raise LLMQuotaExhaustedError(
@@ -1511,7 +1508,7 @@ class OpenAIResponsesClient(LLMClient):
                     if response_data is None:
                         try:
                             response_data = response.json()
-                        except json.JSONDecodeError:
+                        except json.JSONDecodeError as decode_error:
                             if attempt < self.max_retries:
                                 logger.warning(
                                     f"Responses body JSON decode failed (len={len(body_text)}), "
@@ -1524,7 +1521,11 @@ class OpenAIResponsesClient(LLMClient):
                                 continue
                             await report_error(
                                 url, duration_ms, f"JSON decode failed (len={len(body_text)})", stream)
-                            raise
+                            # Typed: the fallback chain knows no JSONDecodeError
+                            raise LLMServerError(
+                                f"Unreadable answer after {attempt + 1} attempts (len={len(body_text)})",
+                                provider=self._PROVIDER, model=self.model,
+                            ) from decode_error
 
                     # Body-level error inside an HTTP 200 (OpenRouter proxies
                     # upstream errors this way on /responses too). Two cases are

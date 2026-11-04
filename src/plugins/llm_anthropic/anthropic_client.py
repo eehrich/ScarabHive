@@ -29,6 +29,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 
+from plugins.llm_common.request_end import ending_error as _ending_error
 from agent_system.llm.message_roles import (
     DEVELOPER, NOTE_CLOSE, NOTE_OPEN, USER, developer_turn, resolve_rung,
 )
@@ -64,15 +65,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_URL = "https://api.anthropic.com"
 #: Longest retry-after (seconds) this client sleeps itself; a longer one goes to the server.
 _MAX_RATE_LIMIT_WAIT = 60.0
-
-
-def _ending_error(error: BaseException) -> str:
-    """The post_llm_response error text for a request that ended by *error*."""
-    if isinstance(error, asyncio.CancelledError):
-        return str(error) or "cancelled"
-    if isinstance(error, GeneratorExit):
-        return "stream abandoned by the caller"
-    return str(error) or type(error).__name__
 
 
 def _error_type(error: BaseException) -> Optional[str]:
@@ -402,8 +394,16 @@ class AnthropicAsyncClient(LLMClient):
         converted_messages: List[Dict[str, Any]] = []
         may_replay = reasoning_replay_flags(messages, self.reasoning_details_mode)
 
+        # A tool result's images go in as a user message AFTER the whole run of
+        # tool results: right after its own result, a non-last one of parallel
+        # calls ended up between them ([tool_result, image, tool_result] once
+        # the user turns merge), and tool_result blocks must come first.
+        held_injections: List[Dict[str, Any]] = []
         for index, msg in enumerate(messages):
             role = msg.role
+            if role != "tool" and held_injections:
+                converted_messages.extend(held_injections)
+                held_injections.clear()
 
             # Extract system message(s) - Anthropic only supports a single system param
             if role == "system":
@@ -473,8 +473,8 @@ class AnthropicAsyncClient(LLMClient):
                         msg, supports_vision=supports_vision, model_name=self.model
                     )
                     if injection:
-                        converted_messages.append(injection)
-                
+                        held_injections.append(injection)
+
                 continue
             
             # Handle assistant messages with tool calls
@@ -544,7 +544,8 @@ class AnthropicAsyncClient(LLMClient):
                         "role": anthropic_role,
                         "content": msg.content or ""
                     })
-        
+        converted_messages.extend(held_injections)
+
         # Strip cache breakpoint sentinels (safety net, on the CONVERTED
         # output -- session messages stay untouched): the native Anthropic
         # path uses cache_control (not the OpenAI sentinel breakpoints); a

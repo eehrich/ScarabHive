@@ -452,3 +452,21 @@ class TestAnthropicBatchSaysWhyTheAnswerEnded:
         results = anthropic_batch_client._parse_results(jsonl)
 
         assert results[0]["response"]["choices"][0]["finish_reason"] == finish_reason
+
+
+def test_a_tools_image_follows_the_whole_run_of_results(anthropic_batch_client, monkeypatch):
+    """A user turn between the results of parallel calls: tool_result blocks must come first."""
+    from agent_system.utils import multimodal_tool_content
+
+    monkeypatch.setattr(multimodal_tool_content, "create_anthropic_multimodal_injection_from_dict",
+                        lambda *a, **k: {"role": "user", "content": [{"type": "text", "text": "image"}]})
+
+    _, converted = anthropic_batch_client._convert_openai_messages_to_anthropic([
+        {"role": "tool", "tool_call_id": "a", "content": "one", "multimodal_content": [{"type": "image"}]},
+        {"role": "tool", "tool_call_id": "b", "content": "two"},
+        {"role": "assistant", "content": "seen"},
+        {"role": "tool", "tool_call_id": "c", "content": "three", "multimodal_content": [{"type": "image"}]},
+    ])
+
+    kinds = [m["content"][0]["type"] if isinstance(m["content"], list) else m["role"] for m in converted]
+    assert kinds == ["tool_result", "tool_result", "text", "assistant", "tool_result", "text"]

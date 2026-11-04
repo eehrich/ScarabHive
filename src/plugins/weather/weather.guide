@@ -296,8 +296,8 @@ and httpx, which the core already installs. No key, no account.
 
 @{h2}Server settings
 
-There are none. The @{tt}ssl_verify@{utt} in the @{tt}config:@{utt} block
-of @{tt}schema.yaml@{utt} is not read: certificates are always verified.
+There are none. Certificates are verified unless the config sets
+@{tt}network.ssl_verify: false@{utt}.
 
 The plugin keeps nothing on disk and caches nothing; every call asks the
 services again.

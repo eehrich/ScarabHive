@@ -246,7 +246,10 @@ class Agent(
         # for session A reads it, persisting B's conversation into A. Key the
         # live state by session_id instead. Readers (context_engineer /
         # context_summarizer compaction tools, token-estimating hooks) resolve
-        # by their own session_id. Bounded by LRU eviction.
+        # by their own session_id. Bounded by eviction of the session written
+        # least recently (_touch_live_state); a session's entry goes once its
+        # last run and job have ended (_release_live_state), and a discarded
+        # session takes it along (_drop_live_state).
         self._live_state_by_session: dict[str, dict[str, Any]] = {}
         self._live_state_max_sessions: int = 200
         # Deprecated shared attributes - kept as a last-resort fallback for any
@@ -261,6 +264,7 @@ class Agent(
         self._request_manager = AgentRequestManager(self.name)
         # Session tracker shares the same _active_requests dict for coordination
         self._session_tracker = SessionTracker(self._request_manager._active_requests)
+        self._session_tracker.on_discard = self._drop_live_state
         self._session_tracker.agent_name = self.name  # the parent_agent of the sessions its tool calls run on
         # session id -> [the lock one opening of that tool session holds, how many hold or wait] (_opening_of)
         self._tool_session_openings: dict[str, list[Any]] = {}
@@ -559,11 +563,9 @@ class Agent(
             if refusal:
                 return {"status": "error", "agent": self.name, "task": task, "error": refusal["message"],
                         "error_type": refusal["error_type"]}
-            if session_id:
-                refusal = await self._open_tool_session(request_id, caller_session_id, session_id,
-                                                        caller_agent=params.get("_agent_name"), title=str(task))
-                if refusal:
-                    return {"status": "error", "agent": self.name, "task": task, **refusal}
+            session_id, opening_refusal = await self.tool_session(params, request_id)
+            if opening_refusal:
+                return {"status": "error", "agent": self.name, "task": task, **opening_refusal}
 
             # Execute the task using this agent
             logger.info("Agent %s executing task: %s", self.name, task[:100])

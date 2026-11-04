@@ -53,6 +53,7 @@ from .session_archive_store import (
 )
 from .session_index import MAIN_INDEX, SUBS_PREFIX, SUBS_SUFFIX
 from .session_paths import user_dir_of
+from ..utils.timeutil import parse_iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -101,19 +102,17 @@ class _Tree:
     newest: float                # epoch seconds of the most recently touched session
     size: int                    # bytes of the live files
     root_meta: Dict[str, Any]    # index metadata of the root, for the manifest
+    mtimes: Dict[str, float] = field(default_factory=dict)  # each file's mtime when the tree was read
+
+
+class _TreeInUse(Exception):
+    """A tree was taken up again between the busy check and its first delete."""
 
 
 def _parse_iso(value: Any) -> Optional[float]:
     """Epoch seconds of an ISO timestamp, or None if it is not one."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp()
+    parsed = parse_iso_utc(value) if isinstance(value, str) else None
+    return parsed.timestamp() if parsed is not None else None
 
 
 class SessionArchive:
@@ -288,6 +287,7 @@ class SessionArchive:
                 newest=max(age_of(session_id) for session_id in ordered),
                 size=sum(sizes.get(session_id, 0) for session_id in ordered),
                 root_meta=dict(meta.get(root, {})),
+                mtimes={session_id: mtimes[session_id] for session_id in ordered if session_id in mtimes},
             ))
         return trees
 
@@ -420,6 +420,10 @@ class SessionArchive:
             try:
                 archived_bytes, failures = await self._archive_tree(
                     user_id, tree, dry_run=dry_run)
+            except _TreeInUse as exc:
+                logger.info("session archive: %s left alone (%s)", tree.root, exc)
+                report.skipped_busy += 1
+                continue
             except ArchiveBusy as exc:
                 # The index is held by another process. Every tree after this
                 # one would wait the same timeout for the same lock, so the
@@ -542,8 +546,24 @@ class SessionArchive:
         target = self._store.user_dir(user_id) / relative
         entry = self._manifest_entry(user_id, tree, relative)
 
+        existed = target.is_file()
         archived_bytes, session_count = await asyncio.to_thread(
             self._store.write_zip, target, tree.sessions, tree.files, entry)
+        # Asked again, now that the zip is written: the busy check before it is
+        # minutes old on a big tree, and a conversation resumed meanwhile would
+        # be deleted from under its run. A zip this pass created goes again; one
+        # that was there already (an earlier pass that did not finish) stays, as
+        # it would have after a failed delete.
+        try:
+            changed = await self._changed_since_read(user_id, tree)
+        except BaseException:
+            if not existed:
+                target.unlink(missing_ok=True)
+            raise
+        if changed:
+            if not existed:
+                target.unlink(missing_ok=True)
+            raise _TreeInUse(changed)
         entry["bytes"] = archived_bytes
         entry["session_count"] = session_count
 
@@ -589,7 +609,7 @@ class SessionArchive:
             # the partition is the repair path kept for exactly this; it is
             # not cheap, and a failed delete is not common.
             try:
-                await self._session_manager._rebuild_index(user_id, tree.root)
+                await self._session_manager.rebuild_index(user_id, tree.root)
             except Exception as exc:  # noqa: BLE001 - the archive is safe either way
                 logger.warning(
                     "session archive: could not rebuild the index of %s (%s)",
@@ -600,6 +620,29 @@ class SessionArchive:
                 "archive: %s", tree.root, len(failures), failures[:3],
             )
         return archived_bytes, failures
+
+    async def _changed_since_read(self, user_id: str, tree: _Tree) -> Optional[str]:
+        """Why the tree is no longer the one that was read and checked -- in use now, or a file written since --
+        or None. A file gone since counts as nothing: the zip holds whatever is left."""
+        held = await asyncio.to_thread(self._held_in, user_id, tree.sessions)
+        busy = (held | await self._running()).intersection(tree.sessions)
+        if busy:
+            return f"in use now: {sorted(busy)[:3]}"
+
+        def written() -> List[str]:
+            changed = []
+            for session_id, seen in tree.mtimes.items():
+                try:
+                    if tree.files[session_id].stat().st_mtime != seen:
+                        changed.append(session_id)
+                except OSError:
+                    continue
+            return changed
+
+        rewritten = await asyncio.to_thread(written)
+        if rewritten:
+            return f"written since it was read: {rewritten[:3]}"
+        return None
 
     @staticmethod
     def _root_month(tree: _Tree) -> str:
@@ -681,7 +724,7 @@ class SessionArchive:
             if not self._session_manager.belongs_to(user_id, data["session_id"]):
                 # Another user's now (a custom id, their own archive restored first):
                 # reinstate_session refuses it -- asked here, before the tree is half back.
-                if self._session_manager._session_id_exists_globally(data["session_id"]):
+                if self._session_manager.session_id_exists(data["session_id"]):
                     taken.append(data["session_id"])
                 continue
             if await self._is_the_same_session(user_id, data):

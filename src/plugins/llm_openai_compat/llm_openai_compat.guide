@@ -254,7 +254,7 @@ Up to three attempts in all, shared by every kind of retry below.
 
 @{table}
 What happened | What the client does
-HTTP 429 | up to 2 retries; wait: Retry-After seconds, else 60 s x 1.5^attempt, plus 0-50 % jitter; no wait when an OpenRouter pin was released. Then LLMQuotaExhaustedError if the body says "quota" or "exhausted", else LLMRateLimitError
+HTTP 429 | up to 2 retries; wait: Retry-After seconds up to 60 (a longer ask is not waited for: the error goes to the fallback chain at once), else 60 s x 1.5^attempt, plus 0-50 % jitter; no wait when an OpenRouter pin was released. Then LLMQuotaExhaustedError if the body says "quota" or "exhausted", else LLMRateLimitError
 HTTP 5xx | 1 retry after 1 s (none if a pin was released), then LLMServerError
 any other error chunk, or finish reason @{tt}error@{utt}, in a stream | not an answer: retried like a dropped stream, from scratch, then LLMConnectionError
 429 inside an HTTP 200 body (error code 429 or rate-limit wording) | same schedule as a 429, and the retry drops service_tier (flex to standard). Streaming: then LLMRateLimitError; not streaming: an answer carrying upstream_error_429

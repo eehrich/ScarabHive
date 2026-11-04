@@ -9,6 +9,7 @@ envelopes, by relay_run_event (called from Agent.run_events).
 import logging
 from typing import List, Dict, Any, Optional, Set
 
+from ....core.request_context import in_request_tree
 from ....tools.status import status_bus, StatusHandler, StatusEvent
 from ....utils.tree_hierarchy import parse_request_id_hierarchy
 
@@ -80,8 +81,7 @@ def attended_stream_of(request_id: str, grace: float = 0.0) -> Optional[str]:
     from ....services.background_job_manager import get_background_job_manager
     for forwarder in list(_live_forwarders):
         run_id = forwarder.request_id
-        if run_id and (request_id == run_id or request_id.startswith(f"{run_id}_")) \
-                and run_is_attended(run_id):
+        if run_id and in_request_tree(request_id, run_id) and run_is_attended(run_id):
             unread = get_background_job_manager().unread_for(run_id)
             if unread is None or unread == 0.0 or unread < grace:
                 return run_id
@@ -93,8 +93,7 @@ def run_is_live(request_id: str) -> bool:
     does (an async sub-agent outlives the run that started it)."""
     if not request_id:
         return False
-    return any(f.request_id and (f.request_id == request_id or f.request_id.startswith(f"{request_id}_"))
-               for f in list(_live_forwarders))
+    return any(f.request_id and in_request_tree(f.request_id, request_id) for f in list(_live_forwarders))
 
 
 def run_streams(request_id: str) -> bool:
@@ -124,8 +123,7 @@ class DirectStatusHandler(StatusHandler):
         event_request_id = event.request_id
         if not event_request_id:
             return
-        if self.request_id and not (event_request_id == self.request_id or
-                                    event_request_id.startswith(f"{self.request_id}_")):
+        if self.request_id and not in_request_tree(event_request_id, self.request_id):
             return  # Not our event
         
         # Convert to SSE format and append directly
@@ -179,7 +177,7 @@ class StatusEventForwarder:
         # old id while a sub-agent of the old run is still at work, and neither that
         # sub-agent nor anything it starts afterwards is the new run's.
         nearest = max((f for f in _live_forwarders if _is_above(f, request_id)),
-                      key=lambda f: len(f.request_id), default=None)
+                      key=lambda f: len(f.request_id or ""), default=None)
         self.listeners = [*nearest.listeners, nearest] if nearest else []
         self.status_events_to_forward.clear()
         self._open_deltas.clear()

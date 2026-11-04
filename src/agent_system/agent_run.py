@@ -46,6 +46,7 @@ from .cli_utils.common import (
 )
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system
 from .tools.integration import shutdown_tools
+from .utils.json_utils import dumps_lenient
 
 if TYPE_CHECKING:
     from .llm.models import ChatMessage
@@ -63,7 +64,8 @@ def setup_basic_logging(verbose: bool = False) -> None:
     from .utils.logging import LibraryDebugFilter
 
     level = logging.DEBUG if verbose else logging.WARNING
-    handler = logging.StreamHandler(sys.stdout)
+    # stderr: stdout carries the result (docs/_arch_cli_architecture.md, section 4)
+    handler = logging.StreamHandler(sys.stderr)
     handler.addFilter(LibraryDebugFilter())
     logging.basicConfig(
         level=level,
@@ -80,7 +82,7 @@ async def initialize_system(config):
 
     try:
         # Store config for lazy batch queue manager initialization
-        # This allows LLMFactory to create the manager when first needed
+        # This allows get_batch_queue_manager() to create the manager when first needed
         set_batch_config(config)
         
         init_service = InitializationService(config)
@@ -306,10 +308,11 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         if session_exists:
             count = len(agent._session_tracker.get_session_messages(actual_session_id) or [])
             logger.info(f"Loaded session {actual_session_id} with {count} messages")
-            print(f"Continuing session '{actual_session_id}' ({count} messages)")
+            # stderr, as agent-cli's meta lines: stdout carries the result
+            print(f"Continuing session '{actual_session_id}' ({count} messages)", file=sys.stderr)
         elif session_id:
             logger.info(f"Session '{session_id}' not found, creating new session with this ID")
-            print(f"Creating new session '{session_id}'")
+            print(f"Creating new session '{session_id}'", file=sys.stderr)
 
         # Create LLM override if profile specified
         llm_override = None
@@ -380,37 +383,15 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         # Save session after successful request execution (skip if cancelled, or refused before it ran:
         # the agent's role gate, another user's session, another run's lock -- it ran nothing, and a save
         # only rewrote the record with this entry agent and profile, its updated_at moved)
-        if not result.get("cancelled", False) and not result.get("refused"):
-            try:
-                # Use the actual agent name that was requested (from parameter or config.default_agent)
-                # instead of agent.agent_name which may not exist or be "default"
-                agent_name_used = agent_name  # From the argument, the session, or the default
-                llm_profile_used = profile_for_record(
-                    llm_profile, agent.agent_config.default_llm_profile)
-
-                # Save the session
-                success = await session_service.save_session(
-                    agent=agent,
-                    user_id=session_user,
-                    session_id=actual_session_id,
-                    agent_name=agent_name_used,
-                    llm_profile=llm_profile_used,
-                    was_new_session=was_new_session,
-                    title=session_title,
-                    llm_choice=llm_choice,
-                )
-
-                if success:
-                    if session_id:
-                        logger.info(f"Updated session {session_id}")
-                    else:
-                        logger.info(f"Created new session {actual_session_id}")
-                        print(f"\nSession saved: {actual_session_id}")
-                else:
-                    logger.warning("Session save returned False")
-            except Exception as e:
-                logger.error(f"Failed to save session: {e}", exc_info=True)
-                print(f"Warning: Failed to save session: {e}", file=sys.stderr)
+        # No store (the degraded bootstrap): nothing to save to, and nothing failed.
+        if session_service is not None and not result.get("cancelled", False) and not result.get("refused"):
+            # The step agent-cli saves with (cli_utils/commands/run.py).
+            from .cli_utils.commands.run import LLMChoice, save_session_after_run
+            await save_session_after_run(
+                session_service, agent, entry_name=agent_name, session_user=session_user,
+                typed_session_id=session_id, actual_session_id=actual_session_id,
+                was_new_session=was_new_session, title=session_title,
+                llm=LLMChoice(profile=llm_profile, params=llm_params), vprint=lambda line: None)
 
         # Print the result with formatting based on --color setting (skip if cancelled)
         if not result.get("cancelled", False):
@@ -420,9 +401,8 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             if summary:
                 print_agent_response(summary)
             else:
-                import json
-                # default=str: a non-JSON tool value must not fail a finished run.
-                print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+                # lenient: a non-JSON tool value must not fail a finished run.
+                print(dumps_lenient(result, indent=2))
             # Every error of the loop ends the run, as in agent-cli: exit 1, or the caller
             # (publish_pipeline) counts a crashed run as done.
             if result.get("errors"):

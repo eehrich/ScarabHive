@@ -37,6 +37,7 @@ from dataclasses import dataclass, field, fields, replace
 from fnmatch import fnmatchcase
 from typing import Any, Awaitable, Callable, Iterator, NamedTuple
 
+from agent_system.llm.tool_pairs import tool_call_units
 from agent_system.llm.message_roles import is_input, opens_a_turn
 from agent_system.paths import resolve_data_path
 from agent_system.utils.multimodal_tool_content import extract_inline_media
@@ -2696,79 +2697,11 @@ class LayeredCompactionStrategy:
     def _tool_call_groups(
         messages: list[dict[str, Any]],
     ) -> dict[int, frozenset[int]]:
-        """Map each index to the tool-call unit it belongs to.
-
-        An assistant with parallel tool_calls plus ALL of its results is one
-        indivisible unit: half a pair is a 400 from every provider, and the
-        broken list is then persisted and re-sent on every following step.
-        Every layer that moves or removes messages takes its units from here.
-
-        Indices with no tool involvement are absent — callers treat that as a
-        group of one. Groups hold only assistant/tool indices, so a group can
-        never contain a protected system or user message.
-        """
-        # Union-find, NOT one set per assistant. A per-assistant dict is
-        # last-writer-wins, and two assistants that share a tool_call id produce
-        # overlapping units: the second write leaves the first unit's exclusive
-        # members pointing at a stale set, and removing the shared part strands
-        # them. Reproduced with a two-call assistant and a later one-call
-        # assistant reusing an id — the result was a tool message with no
-        # tool_call. Colliding ids are not hypothetical: the Gemini batch client
-        # mints `call_{name}_{index}`, which repeats across assistant turns.
-        parent: dict[int, int] = {}
-
-        def find(x: int) -> int:
-            parent.setdefault(x, x)
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a: int, b: int) -> None:
-            root_a, root_b = find(a), find(b)
-            if root_a != root_b:
-                parent[root_a] = root_b
-
-        # A result belongs to the most recent assistant that issued its id —
-        # by position, not by id alone. Linking every message that shares an id
-        # merged the colliding turns into one unit: Layer 3 then dragged a young
-        # assistant out with an old one and left that assistant's other result
-        # behind as a tool message without its call.
-        issued_by: dict[str, int] = {}
-        for i, msg in enumerate(messages):
-            role = msg.get("role")
-            if role == "tool":
-                owner = issued_by.get(msg.get("tool_call_id") or "")
-                if owner is not None:
-                    union(owner, i)
-                continue
-            if role != "assistant" or not msg.get("tool_calls"):
-                continue
-            find(i)  # an assistant with tool_calls is always its own component
-            ids = [tc.get("id") for tc in msg.get("tool_calls") or []
-                   if isinstance(tc, dict) and tc.get("id")]
-            for tc_id in ids:
-                issued_by[tc_id] = i
-            if not ids:
-                # tool_calls without usable ids: nothing links the results to
-                # this message, so both halves would be free to move apart.
-                # Absorb the contiguous run of tool messages that follows —
-                # the shape every provider emits — instead of splitting a pair.
-                for j in range(i + 1, len(messages)):
-                    if messages[j].get("role") != "tool":
-                        break
-                    union(i, j)
-
-        components: dict[int, set[int]] = {}
-        for index in list(parent):
-            components.setdefault(find(index), set()).add(index)
-
-        groups: dict[int, frozenset[int]] = {}
-        for members in components.values():
-            unit = frozenset(members)
-            for member in members:
-                groups[member] = unit
-        return groups
+        """Map each index to the tool-call unit it belongs to: see
+        agent_system.llm.tool_pairs.tool_call_units (moved there from here,
+        so the summarizer pairs the same way). Every layer that moves or
+        removes messages takes its units from here."""
+        return tool_call_units(messages)
 
     async def _archive_then_remove(
         self,
@@ -3153,7 +3086,9 @@ class LayeredCompactionStrategy:
                 # Insert a minimal user message at the appropriate position
                 fallback_msg = {
                     "role": "user",
-                    "content": "Continue with the task."
+                    "content": "Continue with the task.",
+                    # Not a person's turn: opens_a_turn, OKF and undo count by this.
+                    "injected_by": "context_engineer",
                 }
                 # Insert after system messages
                 insert_idx = first_non_system_idx
@@ -3193,7 +3128,9 @@ class LayeredCompactionStrategy:
             
             fallback_msg = {
                 "role": "user",
-                "content": "Continue with the task."
+                "content": "Continue with the task.",
+                # Not a person's turn: opens_a_turn, OKF and undo count by this.
+                "injected_by": "context_engineer",
             }
             messages.insert(insert_idx, fallback_msg)
         

@@ -32,6 +32,17 @@ logger = logging.getLogger(__name__)
 #: What a recorded result may carry per stream -- enough for the tail of a
 #: build, not the whole log.
 _RECORDED_STREAM_CAP = 30_000
+#: What one foreground answer carries of a stream (terminal's 60 KB, half each).
+_ANSWER_STREAM_CAP = 30_000
+_TRUNCATION_NOTE = ("\n... [OUTPUT TRUNCATED - exceeded size limit. Use filters like "
+                    "'head', 'tail', 'grep' to limit output]")
+
+
+def _capped(text: Any) -> Any:
+    """A stream of a foreground answer, at most _ANSWER_STREAM_CAP characters."""
+    if not isinstance(text, str) or len(text) <= _ANSWER_STREAM_CAP:
+        return text
+    return text[:_ANSWER_STREAM_CAP] + _TRUNCATION_NOTE
 
 
 #: Windows device names (CON, NUL, COM1, ...). Windows 11 treats them as plain
@@ -554,8 +565,10 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 response = {
                     'machine': result.machine,
                     'command': result.command,
-                    'stdout': result.stdout,
-                    'stderr': result.stderr,
+                    # Bounded: `cat big.log` returned megabytes into the
+                    # model's context. The head is kept, as terminal does.
+                    'stdout': _capped(result.stdout),
+                    'stderr': _capped(result.stderr),
                     'exit_code': result.exit_code,
                     'duration': result.duration,
                     # Contract change, deliberate: a caller who passes
@@ -575,6 +588,8 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 # Check exit code if required
                 if check_exit_code and result.exit_code != 0:
                     response['error'] = f"Command failed with exit code {result.exit_code}"
+                if any(len(text or "") > _ANSWER_STREAM_CAP for text in (result.stdout, result.stderr)):
+                    response['truncated'] = True
 
             responses.append(response)
 

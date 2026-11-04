@@ -35,6 +35,7 @@ import os
 import ssl
 
 import httpx
+from pydantic import BaseModel
 
 
 def _trust_is_pinned() -> bool:
@@ -65,3 +66,19 @@ def httpx_verify(verify: bool | str | ssl.SSLContext | None = True) -> ssl.SSLCo
     if verify is None:
         verify = True
     return _context(verify)
+
+
+def network_ssl_verify(system_config: object, default: bool = True) -> bool:
+    """``network.ssl_verify`` of a system config, for plugins that make HTTP calls.
+
+    The setting lives under ``network:`` (config/models/system.py); plugins that
+    read ``system_config.ssl_verify`` got their getattr default every time, so
+    ``network.ssl_verify: false`` behind a TLS-inspecting proxy did nothing.
+    ``default`` is the answer for a config that does not set it: the model always has a
+    network section, and its own default (False) would turn verification off unasked.
+    """
+    network = getattr(system_config, "network", None)
+    value = getattr(network, "ssl_verify", None) if network is not None else None
+    if value is None or (isinstance(network, BaseModel) and "ssl_verify" not in network.model_fields_set):
+        return default
+    return bool(value)

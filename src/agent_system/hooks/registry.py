@@ -13,9 +13,10 @@ import dataclasses
 import inspect
 import logging
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
 
 from .exceptions import CircularDependencyError
+from .ordering import topological_sort
 from .plugin_hook import HookContext, HookResult, HookType, PluginHook
 
 logger = logging.getLogger(__name__)
@@ -157,7 +158,7 @@ class HookRegistry:
         hook_type: HookType,
         context: HookContext,
         timeout: Optional[float] = None,
-        hook_filter: Optional[callable] = None,
+        hook_filter: Optional[Callable[[str, bool], bool]] = None,
         stop_when: Optional[Callable[[HookContext], bool]] = None,
         on_failure: Optional[Callable[[str, Dict[str, Any], HookContext, str], None]] = None,
     ) -> HookContext:
@@ -167,8 +168,11 @@ class HookRegistry:
         Args:
             hook_type: Type of hooks to execute
             context: Hook context to pass to hooks
-            timeout: Optional timeout override (seconds)
-            hook_filter: Optional filter function(hook_name: str) -> bool to skip hooks
+            timeout: Optional timeout (seconds) for every hook of this run;
+                overrides each hook's own timeout
+            hook_filter: Optional filter function(hook_name, default_enabled)
+                -> bool deciding whether a hook runs; if it raises, the
+                hook's default enabled state applies
             stop_when: Optional predicate over the context a successful hook
                 left; true ends the chain there and no later hook runs (a
                 blocked tool call is final -- no later hook may lift it)
@@ -187,8 +191,6 @@ class HookRegistry:
             Context modifications are accumulated across hooks.
             hook_filter allows agent-specific hook filtering (e.g., disabled_hooks)
         """
-        timeout = timeout or self.default_timeout
-
         # Get hooks for this type
         async with self._lock:
             hooks_list = list(self._hooks[hook_type])
@@ -219,33 +221,17 @@ class HookRegistry:
             # Apply agent-specific hook filter if provided
             # Pass default state so filter can make informed decision
             if hook_filter:
-                # Try calling filter with default_enabled parameter (new signature)
-                # Fall back to old signature if filter doesn't accept it
                 try:
-                    sig = inspect.signature(hook_filter)
-                    if len(sig.parameters) >= 2:
-                        # New signature: hook_filter(hook_name, default_enabled)
+                    if len(inspect.signature(hook_filter).parameters) >= 2:
                         should_execute = hook_filter(hook_name, hook_enabled_by_default)
-                    else:
-                        # Old signature: hook_filter(hook_name)
-                        # Filter will handle override logic internally
-                        agent_wants_hook = hook_filter(hook_name)
-
-                        if agent_wants_hook and not hook_enabled_by_default:
-                            logger.debug(f"Enabling hook '{hook_name}' (enabled by agent config override)")
-                            should_execute = True
-                        elif not agent_wants_hook and hook_enabled_by_default:
-                            logger.debug(f"Skipping hook '{hook_name}' (disabled by agent config override)")
-                            should_execute = False
-                        elif not agent_wants_hook:
-                            logger.debug(f"Skipping disabled hook '{hook_name}'")
-                            should_execute = False
-                        else:
-                            should_execute = True
+                    else:  # the older signature, hook_filter(hook_name)
+                        should_execute = bool(hook_filter(hook_name))
                 except Exception as e:
-                    # Fallback: assume new signature and log error
-                    logger.warning(f"Error inspecting hook_filter signature: {e}. Assuming new signature.")
-                    should_execute = hook_filter(hook_name, hook_enabled_by_default)
+                    logger.warning(
+                        f"hook_filter failed for '{hook_name}': {e}; "
+                        f"using its default (enabled={hook_enabled_by_default})"
+                    )
+                    should_execute = hook_enabled_by_default
 
                 if not should_execute:
                     continue
@@ -255,8 +241,9 @@ class HookRegistry:
                     logger.debug(f"Skipping disabled hook '{hook_name}'")
                     continue
 
-            # Use hook-specific timeout if available, otherwise use registry default
-            hook_timeout = metadata.get("timeout", timeout)
+            # An explicit timeout argument wins over the hook's own one
+            hook_timeout = (timeout if timeout is not None
+                            else metadata.get("timeout", self.default_timeout))
 
             try:
                 # Deep copy context for isolation
@@ -408,135 +395,8 @@ class HookRegistry:
         self,
         hooks_list: List[tuple[str, PluginHook, Dict[str, List[str]], Dict[str, Any]]]
     ) -> List[tuple[str, PluginHook, Dict[str, Any]]]:
-        """
-        Sort hooks by dependency order using topological sort.
-
-        Args:
-            hooks_list: List of (name, hook, order_spec, metadata) tuples
-
-        Returns:
-            List of (name, hook, metadata) tuples in execution order
-
-        Raises:
-            CircularDependencyError: If circular dependencies detected
-        """
-        # Build dependency graph
-        # For each hook, track what it must come before and after
-        hooks_map = {name: hook for name, hook, _, _ in hooks_list}
-        order_specs = {name: spec for name, _, spec, _ in hooks_list}
-        metadata_map = {name: meta for name, _, _, meta in hooks_list}
-
-        # Build category map: category -> set of hook names
-        category_map: Dict[str, Set[str]] = defaultdict(set)
-        for hook_name, meta in metadata_map.items():
-            category = meta.get("category")
-            if category:
-                category_map[category].add(hook_name)
-
-        # Build adjacency list (hook -> hooks that must come after it)
-        # and track in-degree (number of dependencies)
-        graph: Dict[str, Set[str]] = defaultdict(set)
-        in_degree: Dict[str, int] = defaultdict(int)
-
-        # Initialize all hooks with 0 in-degree
-        for hook_name in hooks_map:
-            in_degree[hook_name] = 0
-
-        # Add virtual "begin" and "end" nodes for absolute positioning
-        in_degree["begin"] = 0
-        in_degree["end"] = 0
-
-        # Process ordering specifications to build the dependency graph
-        # Edge A->B means "A must execute before B" (B depends on A)
-        # Use a set to track which edges we've already added to avoid duplicates
-        edges_added: Set[tuple[str, str]] = set()
-
-        # Helper function to resolve a reference to actual hook names
-        def resolve_reference(ref: str) -> List[str]:
-            """Resolve a reference to hook name(s). Can be hook name, category, or virtual node."""
-            if ref in hooks_map or ref in ("begin", "end"):
-                return [ref]
-            elif ref in category_map:
-                # Resolve category to all hooks in that category
-                return list(category_map[ref])
-            else:
-                return []
-
-        for hook_name, order_spec in order_specs.items():
-            # "after" relationships: hook comes after these predecessors
-            # If hook says "after: [A]", then A -> hook (A must execute before hook)
-            # "before" relationships: hook comes before these successors
-            # If hook says "before: [B]", then hook -> B (hook must execute before B)
-            # One loop for both clauses: they differ only in the direction of the edge.
-            for clause, opposite in (("after", "before"), ("before", "after")):
-                for reference in order_spec.get(clause, []):
-                    ref_key = str(reference)
-                    resolved_refs = resolve_reference(ref_key)
-
-                    if not resolved_refs:
-                        # Debug level - it's normal for referenced hooks/categories to be disabled
-                        logger.debug(
-                            f"Hook '{hook_name}' references inactive hook/category '{ref_key}' in '{clause}' clause. "
-                            f"Dependency ignored (hook may be disabled)."
-                        )
-                        continue
-
-                    # Add edges for all resolved predecessors / successors
-                    for resolved in resolved_refs:
-                        if clause == "after":
-                            edge = (resolved, hook_name)  # predecessor -> hook_name
-                        else:
-                            edge = (hook_name, resolved)  # hook_name -> successor
-                        # Check for conflicting reverse edge
-                        reverse_edge = (edge[1], edge[0])
-                        if reverse_edge in edges_added:
-                            logger.warning(
-                                f"Hook ordering conflict: '{hook_name}' wants to run {clause} '{resolved}', "
-                                f"but '{hook_name}' is already scheduled {opposite} '{resolved}'. "
-                                f"This may cause circular dependencies."
-                            )
-                        if edge not in edges_added:
-                            first, then = edge
-                            graph[first].add(then)
-                            in_degree[then] += 1
-                            edges_added.add(edge)
-
-        # Kahn's algorithm for topological sort
-        queue = [node for node in in_degree if in_degree[node] == 0]
-        result = []
-        processed_count = 0
-
-        while queue:
-            # Sort queue for deterministic ordering when multiple nodes have no dependencies
-            queue.sort()
-
-            # Process node with no incoming edges
-            current = queue.pop(0)
-            processed_count += 1
-
-            # Skip virtual nodes in output, but include real hooks
-            if current in hooks_map:
-                result.append(current)
-
-            # Reduce in-degree for all successors of current node
-            for successor in graph[current]:
-                in_degree[successor] -= 1
-                if in_degree[successor] == 0:
-                    queue.append(successor)
-
-        # Check for cycles - if we didn't process all nodes (including virtual), there's a cycle
-        total_nodes = len(hooks_map) + 2  # All hooks + "begin" + "end"
-        if processed_count != total_nodes:
-            # Some nodes still have in-degree > 0, indicating a cycle
-            real_hooks = set(hooks_map.keys())
-            processed_hooks = set(result)
-            remaining = real_hooks - processed_hooks
-            raise CircularDependencyError(
-                f"Circular dependency detected in hooks: {sorted(remaining)}"
-            )
-
-        # Return sorted hooks with metadata
-        return [(name, hooks_map[name], metadata_map[name]) for name in result]
+        """Hooks in execution order; see :func:`.ordering.topological_sort`."""
+        return topological_sort(hooks_list)
 
     def _deep_copy_context(self, context: HookContext) -> HookContext:
         """

@@ -292,7 +292,8 @@ was printed, else @{tt}exit <n>@{utt} for a non-zero exit, else
 @{tt}output@{utt} (stdout without the banner, at most 60,000 characters,
 @{tt}truncated@{utt}), @{tt}stderr@{utt} (what no error block took: a
 crash dump, @{tt}printerr()@{utt}). An error's location is the first
-script frame of its backtrace, not the engine's C++ line.
+script frame of its backtrace, not the engine's C++ line. Of a run's output
+at most 8 MB per stream are held, the first and the latest half.
 
 @{code json}
 {"project": "shmup", "scene": "levels/one.tscn", "frames": 120}

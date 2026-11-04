@@ -70,10 +70,23 @@ def hand_over(root: Path, user_id: str, session_id: str, source: Path,
     stem, dot, suffix = wanted.rpartition(".")
     stem, suffix = (stem, f".{suffix}") if dot else (wanted, "")
     target, n = target_dir / wanted, 1
-    while target.exists():
-        n += 1
-        target = target_dir / f"{stem}-{n}{suffix}"
-    shutil.copyfile(source, target)
+    with open(source, "rb") as original:
+        while True:
+            try:
+                # Claimed by creating it ("xb"): an exists() check before the copy let two hand-overs of
+                # one name at once both pick it, and the second overwrote what the first's link shows.
+                copy = open(target, "xb")
+            except FileExistsError:
+                n += 1
+                target = target_dir / f"{stem}-{n}{suffix}"
+                continue
+            break
+        try:
+            with copy:
+                shutil.copyfileobj(original, copy)
+        except BaseException:
+            target.unlink(missing_ok=True)
+            raise
     return url_of(session_id, target.name), target
 
 

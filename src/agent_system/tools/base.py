@@ -33,6 +33,28 @@ class ToolDef:
     input_schema: Dict[str, Any]  # JSON Schema for input validation
 
 
+def tool_def_from_function(func_def: Dict[str, Any]) -> ToolDef:
+    """A ToolDef from the ``function`` part of an OpenAI tool schema."""
+    return ToolDef(
+        name=func_def['name'],
+        description=func_def.get('description', f'Tool {func_def["name"]}'),
+        input_schema=func_def.get('parameters', {}),
+    )
+
+
+def tool_defs_from_openai(tool_schemas: Any) -> List[ToolDef]:
+    """ToolDefs for the ``{"type": "function", "function": {...}}`` entries of
+    *tool_schemas*; entries of any other shape are skipped."""
+    return [tool_def_from_function(schema['function']) for schema in tool_schemas
+            if isinstance(schema, dict) and 'function' in schema]
+
+
+def strip_server_prefix(server_name: str, tool_name: str) -> str:
+    """*tool_name* without a leading ``"<server_name>_"``, else unchanged."""
+    prefix = f"{server_name}_"
+    return tool_name[len(prefix):] if tool_name.startswith(prefix) else tool_name
+
+
 #: One status row's worth of text. The WebUI renders it on a single line
 #: (`.progress-message` is nowrap + ellipsis), so anything past this is
 #: invisible there and pure weight everywhere else.
@@ -173,7 +195,7 @@ class ToolServer(ABC):
 
         # Extract method name from action (remove plugin prefix if present)
         # Example: "writer_path_validate" -> "validate()"
-        method_name = action.replace(f"{self.name}_", "") if action.startswith(f"{self.name}_") else action
+        method_name = strip_server_prefix(self.name, action)
         scope_name = f"{self.name}.{method_name}()"
 
         async with status_scope(status_bus, scope_name, request_id=request_id) as status:
@@ -240,17 +262,8 @@ class ToolServer(ABC):
                 # Apply custom self_tool_descriptions if configured
                 self._apply_custom_tool_descriptions(tool_schemas)
                 
-                tools = []
-                for tool_schema in tool_schemas:
-                    if isinstance(tool_schema, dict) and 'function' in tool_schema:
-                        func_def = tool_schema['function']
-                        tool = ToolDef(
-                            name=func_def['name'],
-                            description=func_def.get('description', f'Tool {func_def["name"]}'),
-                            input_schema=func_def.get('parameters', {})
-                        )
-                        tools.append(tool)
-                
+                tools = tool_defs_from_openai(tool_schemas)
+
                 # Cache the result
                 self._list_tools_cache = tools
                 return tools

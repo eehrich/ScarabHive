@@ -4,8 +4,8 @@ The verified quick reference is the Claude skill `.claude/skills/plugin-authorin
 
 **Document Type:** Software Architecture Document (SAD)
 **Component:** Plugin System & Extensibility
-**Version:** 1.1
-**Last Updated:** 2025-01-15
+**Version:** 1.2
+**Last Updated:** 2026-11-03
 **Status:** Active
 
 ---
@@ -296,7 +296,7 @@ There is no separate plugin registry class. Discovery returns a plain dict `type
 - A plugin dir's name is its package name (`plugins.<name>`). Two plugin dirs with the same name (`src/plugins`, `external/plugins`) share it: a plugin or shared module the first one has is not loaded from the second -- whether the first one's loads or not -- and the second logs a warning: both would be the same module
 - Read `plugin.toml` (`plugins/plugin_manifest.py`)
 - Import the entrypoint module and fetch the factory
-- Register hooks declared in plugin schemas (`register_plugin_hooks`)
+- Register hooks declared in plugin schemas (`register_plugin_hooks`, `hooks/plugin_registration.py`; re-exported from `plugins/discovery.py`)
 
 **Discovery Process (simplified):**
 ```python
@@ -369,7 +369,7 @@ src/plugins/                 # also every further root src/plugins_<name>/
     └── schema.yaml
 ```
 
-The plugin type name is the **folder name**; the manifest `name` renames nothing. The entrypoint is `module:Factory` with the module file directly in the plugin folder (default `plugin:PLUGIN_FACTORY`). A folder without that module (e.g. `library` plugins) is not a discoverable type. `plugin.yaml` is not read.
+The plugin type name is the **folder name** unless the module sets `PLUGIN_NAME` or its `register()` names the type (`plugins/discovery.py`; `plugins/catalog.py` maps such types back to their folder); the manifest `name` renames nothing. The entrypoint is `module:Factory` with the module file directly in the plugin folder (default `plugin:PLUGIN_FACTORY`). A folder without that module (e.g. `library` plugins) is not a discoverable type. `plugin.yaml` is not read.
 
 **plugin.toml Example:**
 ```toml
@@ -715,14 +715,17 @@ Continue Agent Loop
 
 **DO:**
 - ✅ Use minimal base class (don't inherit `ToolServer` if you don't provide tools)
-- ✅ Validate inputs with Pydantic models
-- ✅ Handle errors gracefully (return error results, don't raise)
+- ✅ Validate tool arguments yourself -- the framework does not check them against the schema
+- ✅ Handle errors gracefully: return `{"status": "error", "error": "<what to do>"}`, don't raise
 - ✅ Define tools in `schema.yaml`, metadata in `plugin.toml`
 - ✅ Write unit tests for plugin logic
 - ✅ Use type hints everywhere
 
 **DON'T:**
-- ❌ Depend on other plugins explicitly
+- ❌ Import another plugin's private names (`_x`); import public ones only, and name the plugin in `plugins = [...]`
+  of `plugin.toml` (a test keeps that list equal to the imports)
+- ❌ Re-implement a core helper (§10.4)
+- ❌ Key process-wide state by an id the model chooses without the calling session in the key
 - ❌ Access global state directly
 - ❌ Block async operations (use async/await)
 - ❌ Raise exceptions from hooks (return error results)
@@ -738,6 +741,8 @@ Continue Agent Loop
 - ✅ Document expected context fields
 
 **DON'T:**
+- ❌ Build a new `HookContext` field by field -- the registry restores only `user_id`, `max_steps` and `final_call`,
+  every other field you leave out is gone for the hooks after you. Use `dataclasses.replace(context, messages=...)`
 - ❌ Assume other hooks ran before you (unless using `order`)
 - ❌ Modify context without setting `modified=True` (the changes are discarded; only `HookResult.metadata` is still merged)
 - ❌ Raise exceptions (system catches but wastes resources)
@@ -757,6 +762,25 @@ Continue Agent Loop
 - ❌ Require complex config for simple plugins
 - ❌ Change config structure without migration plan
 
+### 10.4 Shared Helpers
+
+Use these instead of a private copy; the review of the plugins
+([plugins_review_and_refactoring_plan.md](plugins_review_and_refactoring_plan.md)) found most of its bugs in copies
+that missed an edge case the shared version handles.
+
+| Need | Use |
+|---|---|
+| yes/no or number from a tool argument or a setting | `agent_system.utils.params`: `as_bool`, `as_int`, `as_float`, `bool_param`, `flag_param` |
+| a path the model chose, for reading or writing | `agent_system.utils.path_sandbox.PathSandbox`; `is_secret` for anything found by walking |
+| writing a file other readers or processes see | `agent_system.utils.io`: `atomic_write_text`, `atomic_write_json` |
+| bounding a result or a status line | `agent_system.utils.clip`: `clip_value`, `middle_cut` |
+| TLS for an HTTP client | `agent_system.llm.tls`: `httpx_verify(network_ssl_verify(system_config))` |
+| may this manager spawn that agent | `agent_system.auth.agent_access.agent_allowed` |
+| a subprocess whose timeout must end everything it started | `agent_system.utils.proctree.run_bounded` (`kill_tree`) |
+| which tool results belong to which assistant turn | `agent_system.llm.tool_pairs`: `tool_call_owners`, `tool_call_units` |
+| will an attached file reach the model | `agent_system.utils.multimodal_tool_content.attach_problem` |
+| LLM providers: request end text, Retry-After, batch status, the key for an endpoint | `plugins.llm_common`: `request_end`, `http_status`, `batch_http`, `api_keys` |
+
 ---
 
 ## 11. Related Documents
@@ -772,6 +796,7 @@ Continue Agent Loop
 
 - [Plugin Authoring](plugin_authoring.md) - How to create plugins
 - [Plugin Hooks](plugin_hooks.md) - Hook system details
+- [Plugins: review and refactoring plan](plugins_review_and_refactoring_plan.md) - Assessment, open defects, plan
 
 ### 11.3 Design Documents
 
@@ -787,6 +812,7 @@ Continue Agent Loop
 |---------|------|--------|---------|
 | 1.0 | 2025-01-14 | AgentSystem Team | Initial plugin architecture |
 | 1.1 | 2025-01-15 | AgentSystem Team | Unified SAD template, expanded sections |
+| 1.2 | 2026-11-03 | AgentSystem Team | Best practices follow the plugin review; §10.4 shared helpers |
 
 ---
 

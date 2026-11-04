@@ -13,7 +13,6 @@ import json
 import logging
 import typing
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from ..config.models import (
@@ -28,69 +27,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Global batch queue manager - lazy initialized on first use
-_batch_queue_manager: Optional["BatchQueueManager"] = None
-_batch_manager_config: Optional[AgentSystemConfig] = None  # Config for lazy init
-
+# The batch queue manager is ONE global, kept in batch.initialization; these
+# delegate to it (imported late: the batch package is loaded only when used).
 
 def set_batch_queue_manager(manager: Optional["BatchQueueManager"]) -> None:
     """Set the global batch queue manager."""
-    global _batch_queue_manager
-    _batch_queue_manager = manager
-    if manager:
-        logger.info("Batch queue manager registered globally")
+    from .batch import initialization
+    initialization.set_batch_queue_manager(manager)
 
 
 def set_batch_config(config: AgentSystemConfig) -> None:
     """Store config for lazy batch manager initialization."""
-    global _batch_manager_config
-    _batch_manager_config = config
+    from .batch import initialization
+    initialization.set_batch_config(config)
 
 
 def get_batch_queue_manager() -> Optional["BatchQueueManager"]:
     """Get or create the global batch queue manager (lazy init)."""
-    global _batch_queue_manager
-    
-    if _batch_queue_manager is not None:
-        return _batch_queue_manager
-    
-    # Lazy init if we have config
-    if _batch_manager_config is not None:
-        _batch_queue_manager = _create_batch_queue_manager_sync(_batch_manager_config)
-        
-    return _batch_queue_manager
-
-
-def _create_batch_queue_manager_sync(config: AgentSystemConfig) -> Optional["BatchQueueManager"]:
-    """Create batch queue manager synchronously (without starting async tasks)."""
-    if not config.llm_system or not config.llm_system.models:
-        return None
-    
-    # Check for global batch config
-    batch_system_config = config.llm_system.batch
-    if not batch_system_config:
-        return None
-    
-    # Check if any provider is enabled
-    if not any(p.enabled for p in batch_system_config.providers.values()):
-        return None
-    
-    # Check if any model uses batch provider
-    has_batch_model = any(
-        m.provider == "batch" for m in config.llm_system.models.values()
-    )
-    if not has_batch_model:
-        return None
-    
-    from .batch.queue_manager import BatchQueueManager
-    
-    storage_path = Path(batch_system_config.storage_path)
-    manager = BatchQueueManager(
-        batch_system_config=batch_system_config,
-        storage_path=storage_path
-    )
-    logger.info("Batch queue manager created (lazy init)")
-    return manager
+    from .batch import initialization
+    return initialization.get_batch_queue_manager()
 
 
 def agent_params_for_profile(agent_config: Any, llm_profile: str,

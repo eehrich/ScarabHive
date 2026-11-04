@@ -172,6 +172,7 @@ overwrite: true or false | overwrite is neither, e.g. "maybe"
 Blocked URL (SSRF protection) | the URL or a redirect hop is refused
 HTTP <code> | the server answered 400 or above
 Download exceeds max_download_mb | the file is larger than the cap
+Download took longer than | the whole download ran over download_deadline_seconds
 Unsupported content-encoding | the server compressed the file with something other than gzip or deflate; the message names the coding
 Download failed | a network error, a compressed body that does not decode or is cut off, or more than 10 redirects
 Unusable URL | the HTTP client cannot use the URL
@@ -288,7 +289,7 @@ memory only: one user's login never rides along on another user's request.
 The page cache is also per session. It lies on disk (see
 @{" Setting it up " link setup}) and holds the fetched page, text and links,
 for @{tt}cache_ttl@{utt} seconds -- pages fetched with a session's cookies
-included. HTTPS certificates are always verified; the plugin does not read @{tt}network.ssl_verify@{utt}.
+included. HTTPS certificates are verified unless the config sets @{tt}network.ssl_verify: false@{utt}.
 @endnode
 
 @node model "What the model sees"
@@ -396,6 +397,7 @@ agent_config:
 Key | Default | Meaning
 allowed_directories | none | where download may write; none means no download tool
 max_download_mb | 100 | the largest file download saves
+download_deadline_seconds | 600 | the longest one download may take, all hops; the timeout argument bounds each read
 max_page_mb | 10 | the largest page the page tool reads
 cache_ttl | 1800 | seconds a fetched page is kept
 cache_enabled | true | false: every call fetches

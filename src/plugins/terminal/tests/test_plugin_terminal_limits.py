@@ -410,3 +410,22 @@ async def test_an_unknown_stream_is_refused_not_answered_empty():
         assert result["error_type"] == "InvalidStream", result
     finally:
         await server.cleanup()
+
+
+async def test_a_buffered_line_is_cut():
+    """1000 lines of 64 KiB per stream was 64 MB per process, held for a tail nobody reads that far."""
+    import sys
+
+    from plugins.terminal import process_manager as module
+
+    manager = module.ProcessManager()
+    length = module._BUFFERED_LINE_CHARS * 2
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", f"print('x' * {length})",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    process_id = await manager.register_process(process, "print")
+    while manager.processes[process_id]["finished_at"] is None:
+        await asyncio.sleep(0.01)
+
+    line, = manager.processes[process_id]["stdout_buffer"]
+    assert line == "x" * module._BUFFERED_LINE_CHARS + " …[line cut]\n"

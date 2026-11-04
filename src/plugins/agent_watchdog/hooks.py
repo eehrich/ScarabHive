@@ -36,6 +36,7 @@ from pathlib import Path
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
+from agent_system.utils.params import as_int
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.models import ChatMessage
 from agent_system.paths import PROJECT_ROOT, data_path
@@ -67,13 +68,8 @@ _REMEMBERED_RUNS = 32
 
 def _positive_int(raw: Any) -> Optional[int]:
     """``raw`` as an integer >= 1, else None. YAML ``true`` is not a number."""
-    if isinstance(raw, bool):
-        return None
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if value >= 1 else None
+    value = as_int(raw, None)
+    return value if value is not None and value >= 1 else None
 
 
 def _model_of(llm: Any) -> Optional[str]:

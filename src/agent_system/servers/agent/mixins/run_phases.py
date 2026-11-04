@@ -12,17 +12,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ....core.cancellation import get_cancellation_manager, CancellationToken
 from ....utils.json_utils import history_safe_tool_calls
 from ....llm.models import ChatMessage, LLMClient
-from ....llm.text_sanitizer import sanitize_for_llm
 from ....tools.status import (
     StatusScope,
     current_request_id
 )
+from ..components.session_tracking import new_user_message
 from ..components.status_forwarding import StatusEventForwarder
 from ..tool_schema_builder import ToolSchemaBuilder
 from ..deferred_tools import DeferredTools
@@ -212,8 +211,7 @@ class RunPhasesMixin:
 
         # add the new user input as last message
         # Use initial_message if provided (for multimodal input), otherwise create from task
-        opening = initial_message or ChatMessage(
-            role="user", content=sanitize_for_llm(task), timestamp=datetime.now(timezone.utc))
+        opening = initial_message or new_user_message(task)
         # The run's own id on the first message it stores (ChatMessage.request_id): a
         # session read back tells its runs apart by it, and finds a sub-agent's run
         # under the call that started it.

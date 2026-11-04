@@ -35,7 +35,7 @@ the plugins' web routers.
 | Module | Contents |
 |--------|----------|
 | `app.py` | `build_app` (configuration, logging, bootstrap, authentication, middleware, the lifespan, the routers) and `run()` |
-| `api/app_context.py` | `AppContext`, what the app's own routes share (below); `parse_json_body` |
+| `api/app_context.py` | `AppContext`, what the app's own routes share (below); `registry_of`, `lookup_agent`/`registered_agent` (an agent by name in the app's own registry), `parse_json_body`/`parse_json_object`, `errors_as_200` |
 | `api/run_routes.py` | `POST /run` |
 | `api/event_routes.py` | `GET`/`POST /events`, and the reconnect to a running job |
 | `api/run_start.py` | What `/run` and `/events` share around a run: the request id check, the agent and LLM choice (`get_agent_with_overrides`), opening, naming and saving the session |
@@ -46,7 +46,11 @@ the plugins' web routers.
 | `api/page_routes.py` | `/health`, `/`, `/login`, `/status`, `/status/meta`, `/favicon.ico` |
 | `api/tool_routes.py`, `api/hook_routes.py` | `/tools/...`, `/hooks...` |
 | `api/endpoints.py` | `/api/debug/messages`, `/api/debug/context-stats`, `/api/health`, `/api/version` |
-| `api/session_endpoints.py` | `/api/sessions...` -- list, get, update, delete, restore, messages, hierarchy |
+| `api/session_endpoints.py` | `/api/sessions...` -- create, list, `/active`, get, messages, update, delete, restore, files; assembles `session_router` and re-exports the names of the two modules below |
+| `api/session_listing_routes.py` | hierarchy, folders and a session's folder, children, resolve, listing, the descendants' context vars (registered flat on `session_router`, before `/{session_id}`) |
+| `api/session_live.py` | the live-run merge of `GET /api/sessions/{id}` (`serve_live_state`), run progress, sessions running in other processes |
+| `api/session_folders.py` | the per-user folder store behind the folder routes |
+| `api/session_http.py` | `session_errors_as_http`: SessionNotFound → 404, SessionPermission → 403, else 500 |
 | `api/auth_endpoints.py` | `/auth/...` -- login, logout, refresh, me, register, API key, password reset |
 | `api/admin_endpoints.py` | `/admin/...` -- users, active sessions, config reload, system |
 | `api/debug_endpoints.py` | `/debug/health`; `/debug/memory...` (admin, `AGENT_ENABLE_MEMORY_PROFILING=1`); `/debug/profile...` (admin, `AGENT_ENABLE_PROFILING=1`) |
@@ -181,6 +185,8 @@ parse it with `parse_json_body()` (`api/app_context.py`) and answer syntacticall
 **HTTP 400** `{"detail": "Invalid JSON body: could not be parsed"}`; a broken
 multipart body sent to `/run` gets a 400 as well. Routes with a Pydantic body
 model (auth, admin, sessions) answer it with FastAPI's 422.
+Routes that read fields from the body use `parse_json_object()`: valid JSON
+that is not an object (`[]`, `"x"`) is a 400 `Body must be a JSON object`.
 
 **`POST /run`** takes JSON `{task, session_id, agent_name, llm_profile,
 session_title, request_id, force}`, the same as query parameters, or

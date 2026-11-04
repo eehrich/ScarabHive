@@ -539,7 +539,10 @@ A reference resolves only to:
 
 - a **full hook name** (`<server instance name>.<hook name>`),
 - a **category** (all registered hooks with that `category`),
-- `begin` / `end`: virtual nodes at the start/end of each type.
+- `begin` / `end`: virtual nodes at the start/end of each type. Every hook
+  runs after `begin` and before `end` (`hooks/ordering.py`), so the plain
+  forms `after: ["begin"]` / `before: ["end"]` change nothing; `before:
+  ["begin"]` puts a hook first and `after: ["end"]` puts it last.
 
 A short hook name (`after: ["engineer_context"]`) or a reference to a hook
 that is not registered is **silently ignored** (debug log only).

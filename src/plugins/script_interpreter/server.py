@@ -5,8 +5,6 @@ import logging
 import time
 from typing import Any, TYPE_CHECKING
 
-import sys
-from pathlib import Path
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from .executor import ScriptExecutor
@@ -43,10 +41,6 @@ def _variable_text(value: Any) -> str:
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
 
-# Add the project src directory to the path so we can import our modules when running
-# as a script (this is a no-op when package imports are already configured).
-src_path = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(src_path))
 
 logger = logging.getLogger(__name__)
 

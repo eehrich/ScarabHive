@@ -1,32 +1,48 @@
 """
 Session Management API Endpoints
 
-Provides CRUD endpoints for managing user conversation sessions.
+Provides CRUD endpoints for managing user conversation sessions, and assembles
+``session_router``: the list and its organisation are in session_listing_routes,
+what a session is doing right now in session_live.
 """
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from agent_system import app_state
 from agent_system.auth.session_access import viewer
 from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
+from agent_system.api.app_context import NotAnAgent, registered_agent
 from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_tool_registry
-from agent_system.api.session_folders import SessionFolders, declared_folders, read_folders, write_folders
-from agent_system.api.session_writes import resolve_agent_for_request
-from agent_system.cli_utils.session_listing import (
-    in_chat_selector,
-    most_left_out,
-    parse_listing,
-    split_for_chat,
+from agent_system.api.session_http import session_errors_as_http
+from agent_system.api.session_listing_routes import (  # noqa: F401 -- re-exported: the names tests and callers import
+    _DESCENDANT_READS_AT_ONCE,
+    SessionFolderChoice,
+    _agent_groups,
+    _build_descendants_context_vars,
+    _declared,
+    _session_node,
+    list_session_children,
+    list_sessions_hierarchy,
+    list_sessions_for_chat,
+    add_routes as _add_listing_routes,
+    get_session_folders,
+    put_session_folder,
+    put_session_folders,
+    resolve_session,
 )
+from agent_system.api.session_live import (  # noqa: F401 -- re-exported, as above
+    _add_sessions_running_elsewhere,
+    _run_progress,
+    serve_live_state,
+)
+from agent_system.api.session_writes import resolve_agent_for_request
 from agent_system.services.background_job_manager import get_background_job_manager
 
 logger = logging.getLogger(__name__)
@@ -38,166 +54,6 @@ session_router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 #: deep is a scrolling problem before it is a polling one. Cut rather than
 #: refused: a poll is repeated seconds later anyway.
 _ACTIVE_IDS_LIMIT = 200
-
-#: How many files the descendants walk may read at the same time -- session files
-#: and sub-indexes alike. The reads run together because they are waiting on disk,
-#: not working, but a session file can be megabytes and a tree here can have
-#: thousands of nodes: unbounded, one panel's request would decide how much of this
-#: process's memory is parsed JSON, and would fill the shared thread pool that every
-#: session save also queues in.
-_DESCENDANT_READS_AT_ONCE = 16
-
-
-async def _run_progress(request_id: Optional[str]) -> tuple[Optional[int], bool]:
-    """How many events the run behind ``request_id`` has sent so far, and whether it has answered.
-
-    (None, False) for a run with no background job -- a ``/run`` carrying files, a
-    sub-agent's run. Those stream inline and cannot be reconnected to anyway, so
-    there is nothing for the numbers to be used for. Both read at one moment: the
-    answer a client skips past is the one this says was sent.
-    """
-    if not request_id:
-        return None, False
-    try:
-        job = await get_background_job_manager().get_job(request_id)
-    except Exception as err:  # noqa: BLE001 -- a missing job manager is not a failed session load
-        logger.debug("Could not read the event count for %s: %s", request_id, err)
-        return None, False
-    return (job.events_emitted, job.answered) if job is not None else (None, False)
-
-
-async def _build_descendants_context_vars(
-    session_manager,
-    tool_registry,
-    user_id: str,
-    root_session_id: str,
-) -> List[Dict[str, Any]]:
-    """Walk the session hierarchy below ``root_session_id`` and collect
-    context_vars for every descendant.
-
-    Returns a recursive tree structure with one entry per direct child:
-
-        [
-            {
-                "session_id": "sub_v5b_story_designer_6850002",
-                "agent_name": "v5b_story_designer",
-                "context_vars": {...},   # persisted + live-merged from tracker
-                "children": [ ... recursive ... ]
-            },
-            ...
-        ]
-
-    For each session the persisted ``context_vars`` are merged with whatever
-    the agent's session_tracker currently holds, so live updates show up
-    even before the next checkpoint write.
-
-    The topology is walked DOWN from the root, one parent at a time, because a
-    sub-index is exactly one parent's children: ``list_child_sessions`` reads
-    that one file. It used to come from ``list_sessions``, which merges the main
-    index with EVERY per-parent sub-index -- for this user 51 MB across 1303
-    files, about a second, to find the handful of ids below one root. Measured
-    on that store: 978 ms for a root with two descendants, now under 40 ms.
-    """
-    if not session_manager:
-        return []
-
-    seen: set[str] = {root_session_id}
-    reading = asyncio.Semaphore(_DESCENDANT_READS_AT_ONCE)
-
-    async def children_of(parent_id: str) -> List[Dict[str, Any]]:
-        """This parent's children -- one sub-index file, not the whole store.
-
-        ``seen`` is not about the tree, which cannot loop: it is about a stale
-        sub-index naming a session further up. Walking that would not end.
-        """
-        try:
-            async with reading:
-                # Under the same bound as the session files: a sub-index is a file read
-                # too, and the biggest one on the user's store is 943 KB -- bigger than
-                # most session files. Ungated, a node with a thousand children put a
-                # thousand reads into the shared executor in one tick, ahead of whatever
-                # a run was trying to save.
-                listed = await session_manager.list_child_sessions(
-                    user_id, parent_id, annotate_children=False)
-        except Exception as err:  # noqa: BLE001 -- one unreadable branch, not a failed load
-            # Warning, not debug: this is the only thing between the panel and the
-            # truth, and what it hides looks exactly like a session with no children.
-            logger.warning("Could not list the sub-sessions of %s: %s", parent_id, err)
-            return []
-        fresh = []
-        for child in listed:
-            sid = child.get("session_id")
-            if sid and sid not in seen:
-                seen.add(sid)
-                fresh.append(child)
-        return fresh
-
-    async def _load_persisted_vars(sid: str) -> Dict[str, Any]:
-        async with reading:
-            try:
-                data = await session_manager.load_session(user_id, sid)
-                cv = data.get("context_vars")
-                return cv if isinstance(cv, dict) else {}
-            except Exception:
-                return {}
-
-    # Cache tool_registry agent lookups so we don't re-resolve per node
-    agent_cache: Dict[str, Any] = {}
-
-    def _resolve_agent(name: Optional[str]):
-        if not name or not tool_registry:
-            return None
-        if name in agent_cache:
-            return agent_cache[name]
-        try:
-            from agent_system.servers.agent.server import Agent as _Agent
-            resolved = tool_registry.get(name)
-            if isinstance(resolved, _Agent):
-                agent_cache[name] = resolved
-                return resolved
-        except Exception:
-            pass
-        agent_cache[name] = None
-        return None
-
-    def _live_merge_vars(agent: Any, sid: str, persisted: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        merged: Dict[str, Any] = dict(persisted) if isinstance(persisted, dict) else {}
-        if agent is None or not hasattr(agent, "_session_tracker"):
-            return merged
-        try:
-            runtime = agent._session_tracker.get_session_template_vars(sid) or {}
-        except Exception:
-            runtime = {}
-        if runtime:
-            merged.update(runtime)
-        return merged
-
-    async def _walk(parent_id: str) -> List[Dict[str, Any]]:
-        children = await children_of(parent_id)
-        if not children:
-            return []
-        # One node's session file and its own children are independent of its
-        # siblings', and every one of them is a file read that spends its time
-        # waiting. Run them together: a branch then costs its DEPTH in round
-        # trips rather than its size.
-        async def node(child: Dict[str, Any]) -> Dict[str, Any]:
-            # No guard on a missing session_id: children_of only passes on the ones
-            # that have it. The old shape needed the guard, because its children came
-            # from a list filtered on the PARENT id.
-            sid = child["session_id"]
-            agent_name = child.get("agent_name")
-            agent = _resolve_agent(agent_name)
-            persisted, below = await asyncio.gather(_load_persisted_vars(sid), _walk(sid))
-            return {
-                "session_id": sid,
-                "agent_name": agent_name,
-                "context_vars": _live_merge_vars(agent, sid, persisted),
-                "children": below,
-            }
-
-        return list(await asyncio.gather(*(node(c) for c in children)))
-
-    return await _walk(root_session_id)
 
 
 class CreateSessionRequest(BaseModel):
@@ -330,206 +186,9 @@ async def list_sessions(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-def _session_node(s: Dict[str, Any]) -> Dict[str, Any]:
-    """Index metadata -> sidebar node. ``children`` stays empty: descendants are
-    loaded on demand via ``/{session_id}/children``."""
-    profile = s.get("llm_profile")
-    return {
-        "session_id": s.get("session_id"),
-        "user_id": s.get("user_id"),
-        "title": s.get("title"),
-        "agent_name": s.get("agent_name"),
-        "llm_profile": profile[0] if isinstance(profile, list) else profile,
-        "created_at": s.get("created_at"),
-        "updated_at": s.get("updated_at"),
-        "message_count": s.get("message_count", 0),
-        "last_agent_response": s.get("last_agent_response"),
-        "tags": s.get("tags", []),
-        "depth": s.get("depth", 1),
-        "context_vars": s.get("context_vars", {}),
-        "has_children": bool(s.get("has_children")),
-        "children": [],
-        # A sub-session's runs by the request id each opened with (SessionIndex.row).
-        "runs": s.get("runs", []),
-        # The list's folders (api/session_folders.py): the one the viewer chose ("" none, absent: by group), and
-        # the group the session files by -- its starter's stamp, else its agent's (list_sessions_hierarchy).
-        "folder": s.get("folder"),
-        "category": s.get("category"),
-    }
-
-
-def _agent_groups(config: Any, names: set) -> Dict[str, Optional[str]]:
-    """Each agent's group (``metadata.category``) from the merged config; an agent gone from it has none."""
-    from agent_system.config.settings import get_tool_server_config
-    groups: Dict[str, Optional[str]] = {}
-    for name in names:
-        try:
-            cfg = get_tool_server_config(name, config)
-        except Exception:
-            cfg = None
-        groups[name] = cfg.metadata.category if cfg is not None and cfg.metadata else None
-    return groups
-
-
-@session_router.get("/hierarchy", response_model=Dict[str, Any])
-async def list_sessions_hierarchy(
-    request: Request,
-    current_user: Optional[User] = Depends(get_optional_user),
-    session_manager=Depends(get_session_manager),
-):
-    """Top-level sessions for the sidebar — ROOTS only.
-
-    Each root carries ``has_children`` so the UI can render an expand toggle;
-    the sub-sessions themselves are fetched on demand via
-    ``/{session_id}/children``. Previously this returned the fully nested tree,
-    which meant reading every per-parent sub-index and serialising tens of
-    thousands of nodes that stay hidden until a node is expanded.
-    """
-    user_id = viewer(current_user)
-    try:
-        roots = await session_manager.list_root_sessions(user_id)
-        nodes = [_session_node(s) for s in roots]
-        # once per agent, not per session: a config lookup merges the agent's whole inheritance chain
-        unstamped = {node["agent_name"] for node in nodes if not node["category"] and node["agent_name"]}
-        config = getattr(request.app.state, "config", None)
-        if unstamped and config is not None:
-            groups = await run_in_threadpool(_agent_groups, config, unstamped)
-            for node in nodes:
-                node["category"] = node["category"] or groups.get(node["agent_name"])
-        return {
-            "sessions": nodes,
-            "root_count": len(roots),
-        }
-    except Exception as e:
-        logger.exception("Failed to list sessions hierarchy: %s", e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-
-def _declared(request: Request):
-    """The folders the plugins declare ([session_folder] in their plugin.toml), under the configured roots."""
-    config = getattr(request.app.state, "config", None)
-    return declared_folders(config.plugins.plugin_dirs if config is not None and config.plugins else [])
-
-
-@session_router.get("/folders", response_model=SessionFolders)
-async def get_session_folders(
-    request: Request,
-    current_user: Optional[User] = Depends(get_optional_user),
-    session_manager=Depends(get_session_manager),
-):
-    """The viewer's session folders: the ones the plugins declare that they kept, then their own."""
-    return read_folders(session_manager.storage_path, viewer(current_user), _declared(request))
-
-
-@session_router.put("/folders", response_model=SessionFolders)
-async def put_session_folders(
-    request: Request,
-    folders: SessionFolders,
-    current_user: Optional[User] = Depends(get_optional_user),
-    session_manager=Depends(get_session_manager),
-):
-    """Make these the viewer's session folders: names, icons and claimed groups; a declared folder left out is
-    deleted for them. A session in a folder removed falls back to its group's folder, if any claims it."""
-    try:
-        return write_folders(session_manager.storage_path, viewer(current_user), folders, _declared(request))
-    except ValueError as exc:  # more folders of their own than a user may have
-        raise HTTPException(status_code=422, detail=str(exc))
-
-
-class SessionFolderChoice(BaseModel):
-    #: a folder's id; "" out of every folder; null back to the folder its group files it in
-    folder: Optional[str] = None
-
-
-@session_router.put("/{session_id}/folder", response_model=Dict[str, Any])
-async def put_session_folder(
-    request: Request,
-    session_id: str,
-    choice: SessionFolderChoice,
-    current_user: Optional[User] = Depends(get_optional_user),
-    session_manager=Depends(get_session_manager),
-):
-    """Put a session into a folder -- without touching ``updated_at``: moved is not worked in, and the list
-    sorts by it."""
-    from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-
-    user_id = viewer(current_user)
-    shown = read_folders(session_manager.storage_path, user_id, _declared(request)).folders
-    if choice.folder and choice.folder not in {f.id for f in shown}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"No folder {choice.folder!r}")
-    try:
-        await session_manager.update_session_metadata(user_id, session_id, {"folder": choice.folder}, touch=False)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
-    except SessionPermissionError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-    return {"status": "updated", "session_id": session_id, "folder": choice.folder}
-
-
-def _add_sessions_running_elsewhere(wanted: List[str], user_id: str, agent,
-                                    answer: Dict[str, Any]) -> None:
-    """The runs this process cannot see, from the one place that spans processes.
-
-    ``active_sessions()`` is process-internal by its own account -- background
-    jobs and this process's session trackers. A WOKEN run is neither: presence
-    starts it as ``agent-cli run --woken``, a process of its own
-    (``core/session_presence.spawn_wake``). So a session that is working hard
-    right after a wake answers this poll as idle, and the panel has no way to
-    know the turn it is missing exists. That is what "the agent never wakes up"
-    looked like from the outside: measured on session jrbqugnco7, 13 messages
-    on disk, six on screen.
-
-    The lock files are the cross-process truth, and reading them is why they
-    exist. What comes back is deliberately NOT attachable and carries no
-    request id: that run's events never reach this process at all -- its status
-    bus is its own, and ``GET /events`` would not know the id. All a client can
-    do is say so, and read the session again once it is over.
-
-    Asked of the DIRECTORY, not of each id: a lock file exists only while
-    somebody holds the session, so the usual answer costs one ``scandir`` and
-    no file read at all. Per id it would be ``presence.get``, which parses the
-    whole session file to tell an idle session from none -- measured here at
-    0.4 ms over a 92 KB median, so a sidebar poll over its rows would spend
-    tens of milliseconds parsing JSON inside the event loop, for an answer
-    that is almost always "nobody holds anything".
-
-    What that leaves out is a SUB-agent's session: ``list_for_user`` keeps
-    those out, because they are run by the orchestrator that spawned them.
-    In this process that orchestrator is the one above, so such a session is
-    already in ``answer``; one being run from outside would go unmarked.
-
-    Ownership needs no separate check: presence looks in the asking user's own
-    directory, so a session of somebody else is simply not found.
-    """
-    from ..core.session_presence import presence_for
-
-    # No guard on `agent` being None: presence_for(None) is None, which is the
-    # same answer one line further down. A second check would read like it
-    # caught something this one does not.
-    presence = presence_for(getattr(agent, "system_config", None))
-    if presence is None:      # off, or no agent registered: nothing holds anything
-        return
-    # No catch: list_for_user swallows the OSErrors it can meet (an unreadable
-    # directory answers "nobody holds anything") -- one here would never run.
-    held = {s["session_id"]: s for s in presence.list_for_user(user_id)}
-    for session_id in wanted:
-        if session_id in answer:
-            continue          # this process knows it better, and can be followed
-        state = held.get(session_id)
-        if state is None:
-            continue
-        # Held by THIS process, with no job or tracker entry for it: the gaps
-        # between a run's tracker letting go and its presence hold doing so --
-        # the save, the session-end hooks -- and an append being persisted. A
-        # probe of the lock cannot tell that from another process, and reading
-        # it as one refused a delete "because another process works on it".
-        if presence.held_here(session_id, user_id):
-            continue
-        answer[session_id] = {"request_id": None,
-                              "agent_name": state.get("agent") or None,
-                              "attachable": False,
-                              "answered": False,
-                              "elsewhere": True}
+# The list, its folders, a node's children, /resolve and /listing -- ahead of the
+# "/{session_id}" routes below, which would take "hierarchy" or "folders" for an id.
+_add_listing_routes(session_router)
 
 
 @session_router.get("/active", response_model=Dict[str, Any])
@@ -609,84 +268,6 @@ async def list_active_sessions(
     return {"active": answer}
 
 
-@session_router.get("/{session_id}/children", response_model=Dict[str, Any])
-async def list_session_children(
-    session_id: str,
-    current_user: Optional[User] = Depends(get_optional_user),
-    session_manager=Depends(get_session_manager),
-):
-    """Direct sub-sessions of one parent — reads exactly that parent's sub-index."""
-    user_id = viewer(current_user)
-    try:
-        children = await session_manager.list_child_sessions(user_id, session_id)
-        return {"sessions": [_session_node(s) for s in children], "count": len(children)}
-    except ValueError as e:  # invalid session id
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to list children of %s: %s", session_id, e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-
-@session_router.get("/resolve", response_model=Dict[str, Any])
-async def resolve_session(
-    ref: str = "",
-    current_user: Optional[User] = Depends(get_optional_user),
-    session_manager=Depends(get_session_manager),
-):
-    """The id of the session ``ref`` names -- an id, or a session's TITLE.
-
-    Before "/{session_id}", or that route would take "resolve" for an id.
-    The rule itself lives in SessionManager.resolve_session_ref, so the chat
-    in the browser finds a session by the name its person gave it exactly as
-    the terminal does.
-    """
-    user_id = viewer(current_user)
-    others: List[str] = []
-    found = await session_manager.resolve_session_ref(user_id, ref, others=others)
-    if not found:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"no session called {ref!r}")
-    # A title several sessions share was answered with the newest of them;
-    # the others are named so the caller can say that it chose.
-    return {"session_id": found, "others": others}
-
-
-@session_router.get("/listing", response_model=Dict[str, Any])
-async def list_sessions_for_chat(
-    request: Request,
-    count: str = "",
-    agent: str = "",
-    current: str = "",
-    current_user: Optional[User] = Depends(get_optional_user),
-    session_manager=Depends(get_session_manager),
-):
-    """The chat's ``/sessions [count|all]``: top-level sessions, newest first.
-
-    Only those of agents meant for chat -- the rule and the functions are the
-    terminal's (cli_utils.session_listing), so both chats list the same.
-    ``agent`` is the one the chat runs on and ``current`` the session it is
-    in: both stay whatever their agent. The runs left out are counted, with
-    the agent most of them ran on; ``count=all`` lists every one.
-    """
-    limit, everything, complaint = parse_listing(count)
-    if complaint is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"count must be a number or 'all', got {complaint!r}")
-    user_id = viewer(current_user)
-    sessions = await session_manager.list_root_sessions(user_id)
-    shown = None if everything else in_chat_selector(
-        getattr(request.app.state, "runtime", None), keep=(agent,))
-    listable, left_out = split_for_chat(sessions, shown, current or None)
-    listed = listable if limit <= 0 else listable[:limit]
-    most = most_left_out(left_out)
-    return {
-        "sessions": [_session_node(s) for s in listed],
-        "total": len(listable),
-        "left_out": len(left_out),
-        "most_left_out": {"agent": most[0], "count": most[1]} if most else None,
-    }
-
-
 @session_router.get("/{session_id}")
 async def get_session(
     session_id: str,
@@ -715,9 +296,7 @@ async def get_session(
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = viewer(current_user)
 
-    try:
-        from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-
+    with session_errors_as_http(session_id, failed_to="get"):
         session = await session_manager.load_session(user_id, session_id)
 
         # Resolve the session's agent (for the live conversation and its template vars)
@@ -725,95 +304,16 @@ async def get_session(
         session_agent = None
         if session_agent_name and tool_registry:
             try:
-                from agent_system.servers.agent.server import Agent as _Agent
-                resolved = tool_registry.get(session_agent_name)
-                if isinstance(resolved, _Agent):
-                    session_agent = resolved
-                else:
-                    logger.debug(f"Session agent '{session_agent_name}' is not an Agent instance, skipping live lookups")
+                session_agent = registered_agent(tool_registry, session_agent_name)
+            except NotAnAgent:
+                logger.debug(f"Session agent '{session_agent_name}' is not an Agent instance, skipping live lookups")
             except KeyError:
                 logger.debug(f"Session agent '{session_agent_name}' not found in registry, skipping live lookups")
             except Exception as e:
                 logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, skipping live lookups")
 
-        # A session with a run still in flight: hand out what the run has, not
-        # what is on disk. The persisted list ends at the last FINISHED turn --
-        # _finalize_request writes at the end of a request -- so opening such a
-        # session mid-run showed the history up to that point and then the live
-        # stream, with everything in between missing. Same "in-flight means the
-        # tracker holds the truth" rule the context_vars merge below applies,
-        # and gated on the session lock rather than on the live state being
-        # present: that state outlives the run it belongs to.
-        #
-        # The lock alone is too narrow a gate: the run releases it after its final
-        # save but BEFORE its session-end hooks, and its job runs on until those are
-        # done -- an LLM call, for lessons_learned. A load in that window read the
-        # turn off disk with no count of what the run had sent, and the chat,
-        # joining the job, replayed the whole run below it: the turn twice. So a run the tracker maps to this session counts as
-        # in flight while its job runs. Its live state is its conversation: the
-        # session's next run sets its own only once it holds the lock.
         if session_agent is not None and hasattr(session_agent, "_session_tracker"):
-            tracker = session_agent._session_tracker
-            try:
-                is_running, owner_request_id = tracker.check_session_locked(session_id)
-                if is_running and getattr(tracker, "held_by_a_writer", lambda _: False)(session_id):
-                    # An append or /undo holds it for a moment: no run, and whatever live state the
-                    # session has left is a finished run's -- a turn put back since came back with it.
-                    is_running, owner_request_id = False, None
-                if not is_running:
-                    running = (await get_background_job_manager().active_sessions()).get(session_id) or {}
-                    if (running.get("attachable")
-                            and tracker.get_session_for_request(running["request_id"]) == session_id):
-                        is_running, owner_request_id = True, running["request_id"]
-            except Exception as lock_err:
-                logger.debug(f"Could not read the session lock for {session_id}: {lock_err}")
-                is_running, owner_request_id = False, None
-            if is_running:
-                try:
-                    live = session_agent.get_live_conversation(session_id)
-                except Exception as live_err:
-                    logger.debug(f"Could not read live messages for {session_id}: {live_err}")
-                    live = None
-                if live:
-                    from agent_system.services.session_service import _msg_to_dict, _add_estimated_tokens
-                    messages = [_msg_to_dict(m) for m in live]
-                    # How much of the run's stream these messages already account for, so a
-                    # client attaching next can ask the run to skip just that much. Without
-                    # it the reconnect either replays turns the client has (duplicates) or
-                    # drops the buffer whole -- which loses whatever the run emitted between
-                    # this response and the attach, up to and including its final answer.
-                    # Read right after the messages, before the await below: what the run
-                    # sends meanwhile would count as seen without being in them.
-                    # Whether those include its answer goes with them: a client joining past
-                    # the answer is sent nothing that says the run has answered.
-                    events_seen, answered = await _run_progress(owner_request_id)
-                    # The panel sums estimated_tokens and counts how many messages carried
-                    # one; the persisted path adds them, so the live one has to as well or
-                    # the token figure reads 0 for exactly the sessions worth watching.
-                    # Off the loop, as there: the estimator probes media files.
-                    await asyncio.to_thread(_add_estimated_tokens, messages)
-                    session["messages"] = messages
-                    session["live_events_seen"] = events_seen
-                    session["live_run_answered"] = answered
-
-        # Inject live runtime template_vars from the agent's session tracker.
-        # save_session persists context_vars only after messages are committed
-        # (see services/session_service.py). For sessions still in-flight (no
-        # messages saved yet, e.g. a Pipeline run currently in phase 3) the
-        # tracker holds the truth — without this merge the Session Info panel
-        # shows "No context variables set" while the run is active.
-        if session_agent is not None and hasattr(session_agent, "_session_tracker"):
-            try:
-                runtime_vars = session_agent._session_tracker.get_session_template_vars(session_id)
-            except Exception as tracker_err:
-                logger.debug(f"Could not read runtime template_vars for {session_id}: {tracker_err}")
-                runtime_vars = None
-            if runtime_vars:
-                existing = session.get("context_vars")
-                if not isinstance(existing, dict):
-                    existing = {}
-                merged = {**existing, **runtime_vars}
-                session["context_vars"] = merged
+            await serve_live_state(session, session_id, session_agent)
 
         # Build hierarchical descendants tree with their context_vars (live-merged).
         # The Session Info panel uses this so users can see vars set on sub-agent
@@ -834,14 +334,6 @@ async def get_session(
         # The answers as the models wrote them -- Markdown, which the chat draws.
         return session
 
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
-    except SessionPermissionError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-    except Exception as e:
-        logger.exception("Failed to get session %s: %s", session_id, e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
 
 @session_router.get("/{session_id}/messages")
 async def get_session_messages(
@@ -850,18 +342,8 @@ async def get_session_messages(
     session_manager=Depends(get_session_manager),
 ):
     """Get messages from a session (authenticated only) -- the answers as the models wrote them."""
-    try:
-        from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-
+    with session_errors_as_http(session_id, failed_to="load"):
         return await session_manager.load_session(current_user.username, session_id)
-
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
-    except SessionPermissionError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-    except Exception as e:
-        logger.exception("Failed to load session %s: %s", session_id, e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 async def _carry_title_to_run(session_id: str, user_id: str, title: str, registry, default_agent,
@@ -921,9 +403,9 @@ async def update_session(
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = viewer(current_user)
 
-    try:
-        from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
+    from agent_system.services.session_manager import SessionNotFoundError
 
+    with session_errors_as_http(session_id, failed_to="update"):
         # Update title if provided
         if request.title is not None:
             # In turn with the session's saves (SessionService.save_lock): a
@@ -976,14 +458,6 @@ async def update_session(
 
         return {"status": "updated", "session_id": session_id}
 
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
-    except SessionPermissionError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-    except Exception as e:
-        logger.exception("Failed to update session %s: %s", session_id, e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
 
 @session_router.delete("/{session_id}")
 async def delete_session(
@@ -1002,9 +476,7 @@ async def delete_session(
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = viewer(current_user)
 
-    try:
-        from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-
+    with session_errors_as_http(session_id, failed_to="delete"):
         await session_manager.delete_session(
             user_id,
             session_id,
@@ -1017,14 +489,6 @@ async def delete_session(
 
         return {"status": "deleted", "session_id": session_id, "cancelled_requests": cancelled}
 
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
-    except SessionPermissionError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-    except Exception as e:
-        logger.exception("Failed to delete session %s: %s", session_id, e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
 
 @session_router.post("/{session_id}/restore")
 async def restore_session(
@@ -1035,9 +499,7 @@ async def restore_session(
     """Restore a session to the agent for continuation."""
     # session_manager injected via dependency
 
-    try:
-        from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-
+    with session_errors_as_http(session_id, failed_to="restore"):
         session = await session_manager.load_session(current_user.username, session_id)
 
         # Return session data for frontend to use in /events call
@@ -1047,14 +509,6 @@ async def restore_session(
             "message_count": len(session.get("messages", [])),
             "title": session.get("title")
         }
-
-    except SessionNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
-    except SessionPermissionError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-    except Exception as e:
-        logger.exception("Failed to restore session %s: %s", session_id, e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 @session_router.get("/{session_id}/files/{name}")
@@ -1079,7 +533,7 @@ async def session_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such file")
     owner = viewer(current_user)
     if not session_manager.belongs_to(owner, session_id):  # an admin looking at another user's session
-        owner = await session_manager._find_session_owner_async(session_id) or owner
+        owner = await session_manager.find_session_owner_async(session_id) or owner
     path = session_files.find(session_files.root_beside(session_manager.storage_path), owner, session_id, name)
     if path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such file")

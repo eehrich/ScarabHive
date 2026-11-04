@@ -9,6 +9,8 @@ import time
 from typing import Dict, Set, Optional, Callable
 from contextlib import asynccontextmanager
 
+from .request_context import in_request_tree
+
 logger = logging.getLogger(__name__)
 
 
@@ -134,7 +136,7 @@ class CancellationManager:
         self._protected.discard(request_id)
 
     def _is_protected(self, token_id: str) -> bool:
-        return any(token_id == kept or token_id.startswith(kept + "_") for kept in self._protected)
+        return any(in_request_tree(token_id, kept) for kept in self._protected)
 
     def cancel_sub_requests(self, request_id: str) -> int:
         """Cancel the sub-requests of a request (ids ``<request_id>_...``), not the request itself.
@@ -158,7 +160,7 @@ class CancellationManager:
         cancelled_count = 0
         
         for task_id, task in list(self._tasks.items()):
-            if task_id == request_id_prefix or task_id.startswith(request_id_prefix + "_"):
+            if in_request_tree(task_id, request_id_prefix):
                 if not task.done():
                     task.cancel()
                     cancelled_count += 1
@@ -180,15 +182,9 @@ class CancellationManager:
                         token.force()
                         
                         # Force cancel all tasks with this prefix (main and tool-specific)
-                        cancelled_tasks = []
-                        for task_id, task in list(self._tasks.items()):
-                            if (task_id == request_id or task_id.startswith(request_id + "_")) and not task.done():
-                                task.cancel()
-                                cancelled_tasks.append(task_id)
-                        
-                        if cancelled_tasks:
-                            logger.warning("Force cancelled %d task(s) for %s: %s", 
-                                         len(cancelled_tasks), request_id, cancelled_tasks)
+                        cancelled = self.cancel_tasks_by_prefix(request_id)
+                        if cancelled:
+                            logger.warning("Force cancelled %d task(s) for %s", cancelled, request_id)
                 
                 # Check at configured interval
                 await asyncio.sleep(self.monitor_interval)
