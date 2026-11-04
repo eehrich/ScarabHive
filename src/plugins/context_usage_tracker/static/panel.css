@@ -2,7 +2,6 @@
    Tokens only. */
 
 .cu-filter { width: auto; max-width: 16rem; }
-.cu-sub { margin-top: 2px; font-size: var(--text-xs); }
 .cu-chart { position: relative; height: 22rem; padding: var(--space-3); }
 
 .cu-table th, .cu-table td { white-space: nowrap; }

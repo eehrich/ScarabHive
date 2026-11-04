@@ -1561,14 +1561,14 @@ ${note.text}</textarea>
       ${problemList(pinned?.problems)}
     </div>
     <div class="sg-section">
-      <h4 class="sg-section-title">Breakpoints ${live ? html`<span class="pk-badge pk-badge--info">run ${runLabel(live.id)}</span>` : html`<span class="pk-muted">(next run)</span>`}</h4>
+      <h4 class="pk-section-title">Breakpoints ${live ? html`<span class="pk-badge pk-badge--info">run ${runLabel(live.id)}</span>` : html`<span class="pk-muted">(next run)</span>`}</h4>
       ${hooks.length ? html`<div class="pk-row sg-checks">
         ${hooks.map((at) => html`<label class="pk-check"><input type="checkbox" data-breakpoint="${at}" ${points.has(at) ? 'checked' : ''}> ${human(at)}</label>`)}
       </div><div id="bpConditions" class="pk-stack">${conditionFields(state.name)}</div>` : ''}
       ${why ? html`<p class="pk-help">${why}</p>` : ''}
     </div>
     ${state.type === 'state' && !state.composite ? html`<div class="sg-section">
-      <h4 class="sg-section-title">Activity</h4>
+      <h4 class="pk-section-title">Activity</h4>
       <form data-form="activity" class="pk-stack">
         ${state.locked?.includes('do') ? html`<p class="pk-help">${SHARED_HINT}</p>` : ''}
         <div class="sg-fields"><label for="af-kind">Kind</label>
@@ -1581,7 +1581,7 @@ ${note.text}</textarea>
       </form>
     </div>` : ''}
     <div class="sg-section">
-      <h4 class="sg-section-title">Settings</h4>
+      <h4 class="pk-section-title">Settings</h4>
       <form data-form="state-fields" class="pk-stack">
         ${stateFieldNames(state).some((name) => state.locked?.includes(name)) ? html`<p class="pk-help">${SHARED_HINT}</p>` : ''}
         <div class="sg-fields">${stateFieldNames(state).map((name) => field(name, STATE_FIELD_SCHEMA[name], stateValue(state, name), {
@@ -1590,7 +1590,7 @@ ${note.text}</textarea>
       </form>
     </div>
     <div class="sg-section">
-      <h4 class="sg-section-title">Transitions (tried in this order)</h4>
+      <h4 class="pk-section-title">Transitions (tried in this order)</h4>
       ${outgoing.length ? outgoing.map(transitionEditor) : html`<p class="pk-help">None.</p>`}
       ${m.writable ? html`<form class="pk-row sg-inline" data-form="add-transition">
         <select class="pk-select pk-select--sm pk-grow" name="target" aria-label="Target of the new transition">${m.graph.states.map((s) => html`<option value="${s.name}">${s.name}</option>`)}</select>
@@ -1598,7 +1598,7 @@ ${note.text}</textarea>
       </form>` : ''}
     </div>
     <div class="sg-section">
-      <h4 class="sg-section-title">YAML</h4>
+      <h4 class="pk-section-title">YAML</h4>
       <form data-form="set-state" class="pk-stack">
         ${codeBox(fragment, html`<textarea class="pk-textarea pk-input--mono sg-fragment" name="yaml" spellcheck="false" wrap="off"
           aria-label="The state's YAML" ${applies ? '' : 'readonly'}>${fragment}</textarea>`)}
@@ -1668,8 +1668,8 @@ function machineOverview() {
       <div class="sg-fields"><label for="machine-line">Lines</label>
         <select class="pk-select pk-select--sm" id="machine-line" data-line-default title="How the canvas draws the transitions that have no style of their own: kept in the layout, set at once">${lineChoices(lineStyle(m.layout?.line))}</select></div>
     </div>
-    ${m.problems.length ? html`<div class="sg-section"><h4 class="sg-section-title">Problems</h4>${problemButtons(m.problems)}</div>` : ''}
-    <div class="sg-section"><h4 class="sg-section-title">Settings</h4>
+    ${m.problems.length ? html`<div class="sg-section"><h4 class="pk-section-title">Problems</h4>${problemButtons(m.problems)}</div>` : ''}
+    <div class="sg-section"><h4 class="pk-section-title">Settings</h4>
       <form data-form="machine-fields" class="pk-stack">
         <div class="sg-fields">${shown.map(machineField)}</div>
         ${folded.length ? html`<details class="pk-details"><summary>More settings</summary>
@@ -1677,10 +1677,10 @@ function machineOverview() {
         ${g.python ? html`<p class="pk-help">Companion module: <span class="pk-mono">${g.python}</span> (YAML tab)</p>` : ''}
         ${m.writable ? applyButton : ''}
       </form></div>
-    ${Object.keys(g.imports || {}).length ? html`<div class="sg-section"><h4 class="sg-section-title">Imported machines</h4>
+    ${Object.keys(g.imports || {}).length ? html`<div class="sg-section"><h4 class="pk-section-title">Imported machines</h4>
       ${table(Object.entries(g.imports).map(([alias, ref]) => html`<tr><td class="pk-mono">${alias}</td>
         <td><button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-machine="${importedId(ref)}">${ref}</button></td></tr>`), ['Alias', 'Machine'])}</div>` : ''}
-    <div class="sg-section"><h4 class="sg-section-title">As an agent</h4>${agentSection(m)}</div>`;
+    <div class="sg-section"><h4 class="pk-section-title">As an agent</h4>${agentSection(m)}</div>`;
 }
 
 // ------------------------------------------------------------------ inspector forms: fields from the schemas
@@ -3753,12 +3753,12 @@ function drawResult() {
     ? html`<details class="pk-details" open><summary>Output</summary>${resultValue(run.output)}</details>`
     : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No output.' : 'The output comes when the run ends.'}</p>`}
     ${run.spend?.by_state ? html`<details class="pk-details"><summary>Cost by state</summary>${costByState(run.spend.by_state)}</details>` : ''}
-    ${finals.length ? html`<h4 class="sg-section-title">End states</h4><ul class="sg-plain-list">${finals.map((row) => html`<li class="sg-watch">
+    ${finals.length ? html`<h4 class="pk-section-title">End states</h4><ul class="sg-plain-list">${finals.map((row) => html`<li class="sg-watch">
       ${badge(row.data?.frame ? 'submachine' : 'top', row.data?.frame ? 'info' : '')}
       <span class="pk-mono">${row.data?.frame ? `${row.data.machine || row.data.frame} · ` : ''}${row.state}</span>
       ${statusBadge(row.data?.status || 'succeeded')}
       ${row.data?.machine ? showFrameButton(row.data.machine, row.data.frame || '', shown) : ''}</li>`)}</ul>` : ''}
-    <h4 class="sg-section-title">Activities <span class="pk-muted">${activities.length}${S.result?.complete === false ? ', the first ones' : ''}</span></h4>
+    <h4 class="pk-section-title">Activities <span class="pk-muted">${activities.length}${S.result?.complete === false ? ', the first ones' : ''}</span></h4>
     ${activities.length ? html`<div class="sg-results">${activities.map(resultActivity)}</div>`
     : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No activity finished.' : 'None finished yet.'}</p>`}
   </div>`);

@@ -1,5 +1,5 @@
 // Debate Forum: the channels agents debate in, each thread with its rounds, pins and verdict, and a line to post into it.
-import { api, html, render, trusted, icon, jsonView, confirm, toast } from '/static/kit/panel-kit.js';
+import { api, html, render, trusted, icon, jsonView, confirm, toast, notice, emptyState } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -34,8 +34,6 @@ let expanded;
 try { expanded = new Set(JSON.parse(localStorage.getItem(EXPANDED_KEY)) || []); } catch { expanded = new Set(); }
 const keepExpanded = () => { try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expanded])); } catch { /* not kept */ } };
 
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
 const STATUS = { active: ['ok', 'Active'], concluded: ['info', 'Concluded'], archived: ['', 'Archived'] };
 
 function slot(role) {
@@ -166,12 +164,12 @@ function channelButton(channel) {
 function drawChannels() {
   keepingFocus($('channels'), () => {
     if (!listed) {
-      render($('channels'), listError ? empty('circle-alert', 'Channels could not be loaded', listError) : html`<span class="pk-skeleton"></span>`);
+      render($('channels'), listError ? emptyState('circle-alert', 'Channels could not be loaded', listError) : html`<span class="pk-skeleton"></span>`);
       return;
     }
     const { channels, total, filtered, flat } = listed;
     if (!channels.length) {
-      render($('channels'), filtered ? empty('search', 'No channel matches') : empty('messages-square', 'No channels yet', 'Agents open them with create_channel.'));
+      render($('channels'), filtered ? emptyState('search', 'No channel matches') : emptyState('messages-square', 'No channels yet', 'Agents open them with create_channel.'));
       return;
     }
     let body;
@@ -185,14 +183,14 @@ function drawChannels() {
         buckets.get(id).push(channel);
       }
       const newest = (list) => Math.max(...list.map((channel) => channel.id));
-      body = [...buckets].sort((a, b) => newest(b[1]) - newest(a[1])).map(([id, list]) => {
+      body = html`<ul class="pk-tree">${[...buckets].sort((a, b) => newest(b[1]) - newest(a[1])).map(([id, list]) => {
         const name = id ? groups.find((group) => group.id === id)?.name ?? `Group ${id}` : 'Ungrouped';
         list.sort((a, b) => a.id - b.id);  // a debate in the order it was held
-        return html`<details class="df-group" data-group="${id}" ${expanded.has(String(id)) ? trusted('open') : ''}>
+        return html`<li><details class="df-group" data-group="${id}" ${expanded.has(String(id)) ? trusted('open') : ''}>
           <summary data-key="group:${id}" title="${id ? `${name} #${id}` : name}"><span class="pk-grow pk-truncate">${name}</span><span class="pk-tab-count">${list.length}</span></summary>
-          ${list.map(channelButton)}
-        </details>`;
-      });
+          <ul>${list.map((channel) => html`<li>${channelButton(channel)}</li>`)}</ul>
+        </details></li>`;
+      })}</ul>`;
     }
     render($('channels'), [body, total > channels.length
       ? html`<div class="pk-help df-more">The ${channels.length} most recently active of ${total} channels: search or filter for the others.</div>` : '']);
@@ -202,9 +200,9 @@ function drawChannels() {
 function drawThread() {
   const held = thread && thread.channel.id === selected ? thread : null;
   $('open').hidden = !held;
-  if (selected === null) render($('placeholder'), empty('messages-square', 'No channel chosen', 'Choose a channel to read its debate.'));
+  if (selected === null) render($('placeholder'), emptyState('messages-square', 'No channel chosen', 'Choose a channel to read its debate.'));
   else if (held) render($('placeholder'), '');
-  else if (threadError) render($('placeholder'), empty('circle-alert', 'The channel could not be loaded', threadError));
+  else if (threadError) render($('placeholder'), emptyState('circle-alert', 'The channel could not be loaded', threadError));
   else render($('placeholder'), html`<span class="pk-skeleton"></span>`);
   if (!held) return;
   const { channel, messages } = held;
@@ -256,7 +254,7 @@ function drawMessages(channel, messages) {
   });
   const verdict = channel.status === 'concluded' && (channel.verdict_summary_html || channel.verdict_json) ? verdictBox(channel) : '';
   keepingFocus(out, () => {
-    render(out, [messages.length ? posts : empty('messages-square', 'No messages yet', 'The debate has not started.'), verdict]);
+    render(out, [messages.length ? posts : emptyState('messages-square', 'No messages yet', 'The debate has not started.'), verdict]);
     window.Prism?.highlightAllUnder(out);
     readableJson(out);
   });
@@ -424,7 +422,7 @@ async function send(event) {
 function openCreate() {
   openings += 1;
   $('createSubmit').disabled = false;
-  $('createError')?.remove();
+  notice($('createError'), '');
   $('create').showModal();
 }
 
@@ -441,8 +439,7 @@ async function create(event) {
     result = await api(`${BASE}api/channels`, { method: 'POST', json: channel, quiet: true });
   } catch (error) {
     if (asked()) {
-      $('createError')?.remove();
-      $('createForm').querySelector('.pk-dialog-body').insertAdjacentHTML('afterbegin', String(html`<p class="pk-error" id="createError">${error.message}</p>`));
+      notice($('createError'), error.message);
     } else {
       toast(`${channel.name} could not be created: ${error.message}`, { kind: 'error' });
     }

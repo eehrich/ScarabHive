@@ -1,5 +1,5 @@
 // Batch Queues: requests waiting to be batched, the jobs running at the providers and those just finished.
-import { api, html, render, icon } from '/static/kit/panel-kit.js';
+import { api, html, render, emptyState, stat, status } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -7,29 +7,23 @@ const $ = (id) => document.getElementById(id);
 let load = 0;
 let busy = false;
 
+// A job's status in the kit's set, for its icon and tone; its own word stays the label.
 const STATUSES = {
-  pending: { icon: 'clock', kind: '' },
-  submitted: { icon: 'send-horizontal', kind: 'info' },
-  validating: { icon: 'loader-circle', kind: 'info' },
-  in_progress: { icon: 'loader-circle', kind: 'info' },
-  finalizing: { icon: 'loader-circle', kind: 'info' },
-  cancelling: { icon: 'ban', kind: 'warn' },
-  completed: { icon: 'circle-check', kind: 'ok' },
-  failed: { icon: 'circle-x', kind: 'danger' },
-  expired: { icon: 'clock', kind: 'warn' },
-  cancelled: { icon: 'ban', kind: '' },
+  pending: 'pending',
+  submitted: 'running',
+  validating: 'running',
+  in_progress: 'running',
+  finalizing: 'running',
+  cancelling: 'running',  // not over yet: the provider is still at it
+  completed: 'success',
+  failed: 'failed',
+  expired: 'failed',
+  cancelled: 'canceled',
 };
 const FINISHED = ['completed', 'failed', 'expired', 'cancelled'];
 
 const number = (value) => value.toLocaleString();
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-const stat = (key, label, value, more = '') =>
-  html`<div class="pk-stat" data-stat="${key}"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value}</div>${more ? html`<div class="pk-muted bm-more">${more}</div>` : ''}</div>`;
-const badge = (status) => {
-  const { icon: name, kind } = STATUSES[status];
-  return html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${icon(name, { size: 'sm' })} ${status.replace('_', ' ')}</span>`;
-};
+const badge = (name) => status(STATUSES[name] || 'pending', { label: name.replace('_', ' ') });
 
 function duration(seconds) {
   if (seconds === null) return '—';
@@ -64,8 +58,8 @@ async function refresh(event) {
     render($('stats'), '');
     $('updated').textContent = '';
     render($('queues'), error.status === 503
-      ? empty('layers', 'Batch processing is off', error.message)
-      : empty('circle-alert', 'Batch queues could not be loaded', error.message));
+      ? emptyState('layers', 'Batch processing is off', error.message)
+      : emptyState('circle-alert', 'Batch queues could not be loaded', error.message));
     return;
   } finally {
     if (mine === load) busy = false;
@@ -80,11 +74,11 @@ function drawStats(queues, metrics) {
   const running = queues.flatMap((queue) => queue.jobs).filter((job) => !FINISHED.includes(job.status)).length;
   const time = metrics.processing_time;
   render($('stats'), [
-    stat('queues', 'Queues', number(queues.length)),
-    stat('running', 'Jobs running', number(running)),
-    stat('jobs', 'Jobs completed', number(metrics.completed_jobs), `${number(metrics.failed_jobs)} failed`),
-    stat('requests', 'Requests completed', number(metrics.total_completed_requests), `${number(metrics.total_failed_requests)} failed`),
-    stat('time', 'Processing time', duration(time.mean), time.mean === null ? '' : `min ${duration(time.min)} · max ${duration(time.max)}`),
+    stat('Queues', number(queues.length), { key: 'queues' }),
+    stat('Jobs running', number(running), { key: 'running' }),
+    stat('Jobs completed', number(metrics.completed_jobs), { key: 'jobs', sub: `${number(metrics.failed_jobs)} failed` }),
+    stat('Requests completed', number(metrics.total_completed_requests), { key: 'requests', sub: `${number(metrics.total_failed_requests)} failed` }),
+    stat('Processing time', duration(time.mean), { key: 'time', sub: time.mean === null ? '' : `min ${duration(time.min)} · max ${duration(time.max)}` }),
   ]);
 }
 
@@ -124,7 +118,7 @@ function drawQueues({ queues, collection_window_seconds: window }) {
           queue.pending_requests ? pendingRow(queue, window) : '',
         ])}</tbody>
       </table></div>`
-    : empty('layers', 'No batch jobs', 'Nothing is waiting, running or finished in the last three minutes.'));
+    : emptyState('layers', 'No batch jobs', 'Nothing is waiting, running or finished in the last three minutes.'));
 }
 
 // ---------------------------------------------------------------------- wiring

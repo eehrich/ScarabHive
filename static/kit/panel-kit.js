@@ -523,7 +523,7 @@ const WORDS = {
     countdownLeft: (clock) => `${clock} left`, countdownOver: (clock) => `overdue by ${clock}`,
     countdownDays: (days, hours) => `${days} days ${hours} h`,
     folders: { title: 'Choose a folder', choose: 'Choose', up: 'Up one level', top: 'The allowed folders',
-      list: 'Folders', empty: 'No folders in here', truncated: (count) => `Only the first ${count} folders are shown` },
+      list: 'Folders', hint: 'A double click opens a folder.', empty: 'No folders in here', truncated: (count) => `Only the first ${count} folders are shown` },
   },
   de: {
     notice: 'Hinweis', confirm: 'Bestätigen', input: 'Eingabe', cancel: 'Abbrechen',
@@ -546,7 +546,7 @@ const WORDS = {
     countdownLeft: (clock) => `noch ${clock}`, countdownOver: (clock) => `seit ${clock} überfällig`,
     countdownDays: (days, hours) => `${days} Tage ${hours} Std`,
     folders: { title: 'Ordner wählen', choose: 'Wählen', up: 'Eine Ebene höher', top: 'Die erlaubten Ordner',
-      list: 'Ordner', empty: 'Hier sind keine Ordner', truncated: (count) => `Nur die ersten ${count} Ordner sind zu sehen` },
+      list: 'Ordner', hint: 'Ein Doppelklick öffnet einen Ordner.', empty: 'Hier sind keine Ordner', truncated: (count) => `Nur die ersten ${count} Ordner sind zu sehen` },
   },
 };
 const word = (key) => (WORDS[document.documentElement.lang.slice(0, 2).toLowerCase()] || WORDS.en)[key];
@@ -1040,6 +1040,84 @@ export function update(element, content) {
   return true;
 }
 
+const NOT_TYPED_INTO = new Set(['hidden', 'file', 'submit', 'button', 'reset', 'image']);
+
+// Whether a field holds something else than the page drew: the fields themselves know, no flag has to keep up with them.
+function isTyped(field) {
+  if (field.disabled || field.readOnly || NOT_TYPED_INTO.has(field.type)) return false;
+  if (field.type === 'checkbox' || field.type === 'radio') return field.checked !== field.defaultChecked;
+  if (field.validity?.badInput) return true;  // half a date: its value is still empty
+  if (field.tagName === 'SELECT') {
+    // what the browser selects for these options when it draws them: the last marked one, else the first it may
+    const drawn = document.createElement('select');
+    drawn.multiple = field.multiple;
+    drawn.size = field.size;
+    drawn.innerHTML = field.innerHTML;
+    return [...field.options].some((option, index) => option.selected !== drawn.options[index]?.selected);
+  }
+  if (field.tagName === 'TEXTAREA') return field.value !== field.defaultValue;
+  // what the browser makes of the drawn value for this field: an <input> drops line breaks, a date field a wrong date
+  const drawn = field.cloneNode(false);
+  drawn.value = field.defaultValue;
+  return field.value !== drawn.value;
+}
+
+/** The named fields under `root` a person changed: what a redraw would lose and a lock has to ask about. A field in a
+ * <dialog> does not count (a dialog ends with its own Save or Cancel), nor one that is disabled or read-only. */
+export function typedFields(root) {
+  if (!root) return [];
+  return [...root.querySelectorAll('input[name], select[name], textarea[name]')].filter((field) => !field.closest('dialog') && isTyped(field));
+}
+
+const fieldAddress = (field) => `${field.form?.id ? `#${CSS.escape(field.form.id)} ` : ''}[name="${CSS.escape(field.name)}"]${
+  field.type === 'radio' || (field.type === 'checkbox' && field.hasAttribute('value')) ? `[value="${CSS.escape(field.value)}"]` : ''}`;
+const fieldState = (field) => (field.type === 'checkbox' || field.type === 'radio' ? 'checked' : 'value');
+
+/**
+ * update(), and what is typed under `element` stays: in one tick with the draw, so nothing comes between, with the
+ * focus and the caret where they were. A field goes back by its form's id and its name (forms whose names repeat need
+ * an id) and fires `input`, so a field that depends on it follows. `keep: false` when `element` shows another record
+ * now: what is typed belongs to that one. Returns whether it drew.
+ * ponytail: a <select multiple> goes back with one choice, and a table cell open in `element` holds the draw back (it
+ * comes later without the fields): no detail has either; both need their own handling when one does.
+ */
+export function updateKeeping(element, content, { keep = true } = {}) {
+  const typed = keep ? typedFields(element).map((field) => [fieldAddress(field), field[fieldState(field)]]) : [];
+  const active = keep && element.contains(document.activeElement) && document.activeElement.name ? document.activeElement : null;
+  const focus = active && { at: fieldAddress(active), start: active.selectionStart, end: active.selectionEnd };
+  if (!update(element, content)) return false;
+  for (const [at, value] of typed) {
+    const field = element.querySelector(at);
+    if (field && !field.closest('dialog') && !field.disabled && !field.readOnly && field[fieldState(field)] !== value) {
+      field[fieldState(field)] = value;
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+  const back = focus && element.querySelector(focus.at);
+  if (back) {
+    back.focus();
+    if (focus.start !== null && focus.start !== undefined) back.setSelectionRange(focus.start, focus.end);
+  }
+  return true;
+}
+
+/** Call before sending `form`; the function it returns, once the server has it: what was sent counts as drawn, so it is
+ * no longer typed. What is typed in the meantime still is. No form: nothing to do. */
+export function onceSaved(form) {
+  const sent = form ? [...form.elements].filter((field) => field.name && !NOT_TYPED_INTO.has(field.type)).map((field) => [field, field[fieldState(field)]]) : [];
+  return () => {
+    for (const [field, value] of sent) {
+      if (field.tagName === 'SELECT') {
+        const now = field.value;  // marking an option selects it, unless the person has chosen in this select before
+        for (const option of field.options) option.defaultSelected = option.value === value;
+        field.value = now;
+      }
+      else if (fieldState(field) === 'checked') field.defaultChecked = value;
+      else field.defaultValue = value;
+    }
+  };
+}
+
 const WITH_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
 // without a zone a time is UTC, as the databases write it: read as local time, a clock change would turn two round
 const instant = (value) => Date.parse(value.length > 10 && !WITH_ZONE.test(value) ? `${value.replace(' ', 'T')}Z` : value);
@@ -1201,6 +1279,7 @@ export function folderPicker({ url, title = word('folders').title, start = '' } 
         <p class="pk-callout" hidden></p>
         <ul class="pk-folders-list" role="listbox" tabindex="0" aria-label="${say.list}"></ul>
         <p class="pk-help" hidden></p>
+        <p class="pk-muted">${say.hint}</p>
       </div>
       <div class="pk-dialog-actions"><button type="button" class="pk-btn" data-act="cancel">${word('cancel')}</button>
         <button type="button" class="pk-btn pk-btn--primary" data-act="choose" disabled>${say.choose}</button></div>
@@ -1420,8 +1499,8 @@ function keyRows(root) {
 
 export function selectRow(table, id) {
   let found = false;
-  for (const row of table.tBodies[0]?.rows ?? []) {
-    const on = row.dataset.id !== undefined && row.dataset.id === String(id);
+  for (const row of table?.tBodies[0]?.rows ?? []) {  // no table: a list of nothing
+    const on = id != null && row.dataset.id !== undefined && row.dataset.id === String(id);
     row.setAttribute('aria-selected', String(on));
     found ||= on;
   }

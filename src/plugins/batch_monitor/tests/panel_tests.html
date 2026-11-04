@@ -50,7 +50,7 @@
   await check('the panel counts queues, running jobs, finished jobs and requests, and the processing times', async () => {
     await go('/plugins/batch_monitor/');
     await until('the stats', () => statValue('queues') === '4');
-    const more = (key) => stat(key).querySelector('.bm-more')?.textContent;
+    const more = (key) => stat(key).querySelector('.pk-stat-sub')?.textContent;
     // job-new is not submitted yet and job-rec was recovered, but neither is finished: both count as running
     return statValue('running') === '3' && statValue('jobs') === '3' && more('jobs') === '1 failed'
       && statValue('requests') === (1200).toLocaleString() && more('requests') === '7 failed'
@@ -63,10 +63,10 @@
     const run = cells(byKey['job-run']);
     const ran = run[0] === 'openai:gpt-4o' && run[1] === 'job-run' && run[2] === 'in progress' && run[3] === '3 / 5 1 failed'
       && run[4] === '625' && /^2m \d+s$/.test(run[5]) && byKey['job-run'].children[1].title === 'batch_abc'
-      && byKey['job-run'].querySelector('.pk-badge--info') !== null;
+      && byKey['job-run'].querySelector('.pk-status--running') !== null;
     const done = cells(byKey['job-done']);
     const finished = done.join('|') === 'gemini:flash|job-done|completed|40 / 40|1.21M|1m 40s'
-      && byKey['job-done'].querySelector('.pk-badge--ok') !== null;
+      && byKey['job-done'].querySelector('.pk-status--success') !== null;
     const unsubmitted = cells(byKey['job-new']).join('|') === 'openai:gpt-4o|job-new|pending|0 / 1|125|—';
     const waiting = cells(byKey['openai:gpt-4o']).join('|') === 'openai:gpt-4o|—|pending|2 waiting|250|~30s'
       && cells(byKey['anthropic:claude-x']).join('|') === 'anthropic:claude-x|—|pending|1 waiting|1.2K|~30s'
@@ -101,7 +101,7 @@
       now();
       await until('the notice', () => $('#queues').textContent.includes('No batch jobs'));
       return rows().length === 0 && statValue('queues') === '0' && statValue('running') === '0' && statValue('jobs') === '0'
-        && statValue('time') === '—' && !stat('time').querySelector('.bm-more');
+        && statValue('time') === '—' && !stat('time').querySelector('.pk-stat-sub');
     } finally {
       await post('/__stub/on');
       now();

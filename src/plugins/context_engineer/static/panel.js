@@ -1,6 +1,6 @@
 // Context Engineer: the compactions of the session open in the chat (or the one a link names, ?session_id=), with what
 // its stores hold and its core memory facts -- or the compactions of all sessions.
-import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
+import { api, html, render, session, emptyState, stat } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -23,11 +23,6 @@ const number = (value) => Number(value ?? 0).toLocaleString();
 const time = (seconds) => new Date(seconds * 1000).toLocaleString();
 const megabytes = (bytes) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 const media = (event) => (event.media_always_compacted || 0) + (event.media_deduplicated || 0) + (event.media_compacted_after_event || 0);
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-const stat = (key, label, value, sub = '') => html`<div class="pk-stat" data-stat="${key}">
-  <div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value}</div>${sub ? html`<div class="pk-muted ce-sub">${sub}</div>` : ''}
-</div>`;
 const layer = (name) => {
   const [label, kind, title] = LAYERS[name] || [String(name), '', `Layer ${name}`];
   return html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}" title="${title}">${label}</span>`;
@@ -42,7 +37,7 @@ async function refresh(event) {
   if (session.scope === 'session' && !id) {
     busy = false;
     show(null, null);
-    render($('stats'), empty('message-square', 'No session open', 'Open a session in the chat, or show all sessions.'));
+    render($('stats'), emptyState('message-square', 'No session open', 'Open a session in the chat, or show all sessions.'));
     return;
   }
   busy = true;
@@ -56,7 +51,7 @@ async function refresh(event) {
   } catch (error) {
     if (mine === load) {  // nothing of the scope shown before stays, as if it were this one's
       show(null, null);
-      render($('stats'), empty('circle-alert', 'The context engineering could not be loaded', error.message));
+      render($('stats'), emptyState('circle-alert', 'The context engineering could not be loaded', error.message));
     }
     return;
   } finally {
@@ -81,7 +76,7 @@ function show(history, stores) {
     return;
   }
   drawStats(history.stats, stores);
-  render($('events'), history.events.length ? table(history.events) : empty('layers', 'No compaction yet'));
+  render($('events'), history.events.length ? table(history.events) : emptyState('layers', 'No compaction yet'));
   render($('facts'), !stores ? '' : stores.core_memory.facts.length ? facts(stores.core_memory.facts)
     : html`<div class="pk-muted">No facts stored</div>`);
 }
@@ -89,16 +84,16 @@ function show(history, stores) {
 function drawStats(stats, stores) {
   const kinds = stats.media_always_compacted + stats.media_deduplicated + stats.media_compacted_after_event;
   render($('stats'), [
-    stat('events', 'Compactions', number(stats.events)),
-    stat('saved', 'Tokens saved', number(stats.tokens_saved)),
-    stat('reduction', 'Average reduction', stats.average_reduction === null ? '–' : `${stats.average_reduction.toFixed(1)}%`),
-    stat('media', 'Media compacted', number(kinds), kinds
-      ? `${number(stats.media_always_compacted)} window · ${number(stats.media_deduplicated)} duplicates · ${number(stats.media_compacted_after_event)} after events` : ''),
+    stat('Compactions', number(stats.events), { key: 'events' }),
+    stat('Tokens saved', number(stats.tokens_saved), { key: 'saved' }),
+    stat('Average reduction', stats.average_reduction === null ? '–' : `${stats.average_reduction.toFixed(1)}%`, { key: 'reduction' }),
+    stat('Media compacted', number(kinds), { key: 'media', sub: kinds
+      ? `${number(stats.media_always_compacted)} window · ${number(stats.media_deduplicated)} duplicates · ${number(stats.media_compacted_after_event)} after events` : '' }),
     stores && [
-      stat('tool_results', 'Stored tool results', number(stores.tool_results.count), `${number(stores.tool_results.tokens)} tokens`),
-      stat('archived', 'Archived messages', number(stores.archived.count), `${number(stores.archived.tokens)} tokens`),
-      stat('facts', 'Core memory facts', number(stores.core_memory.facts.length),
-        `${number(stores.core_memory.tokens)} / ${number(stores.core_memory.max_tokens)} tokens`),
+      stat('Stored tool results', number(stores.tool_results.count), { key: 'tool_results', sub: `${number(stores.tool_results.tokens)} tokens` }),
+      stat('Archived messages', number(stores.archived.count), { key: 'archived', sub: `${number(stores.archived.tokens)} tokens` }),
+      stat('Core memory facts', number(stores.core_memory.facts.length),
+        { key: 'facts', sub: `${number(stores.core_memory.tokens)} / ${number(stores.core_memory.max_tokens)} tokens` }),
     ],
   ]);
 }

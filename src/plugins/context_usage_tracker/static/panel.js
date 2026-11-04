@@ -1,6 +1,6 @@
 // Context & Cost Usage: tokens, cache and cost per call, agent and model -- for the session open in the chat (or the
 // one a link names, ?session_id=), its sub-agents included, or for all sessions.
-import { api, html, render, icon, trusted, confirm, session, onThemeChange } from '/static/kit/panel-kit.js';
+import { api, html, render, trusted, confirm, session, onThemeChange, emptyState, stat } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -30,13 +30,6 @@ const cost = (usd, estimated) => (usd === null || usd === undefined
 /** A cell the kit sorts by its value rather than by the text it shows; no value sorts last. */
 const cell = (value, shown, cls = 'pk-num') => html`<td class="${cls}" data-sort-value="${value ?? ''}">${shown}</td>`;
 
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-
-const stat = (key, label, value, sub = '') => html`<div class="pk-stat" data-stat="${key}">
-  <div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value}</div>${sub ? html`<div class="pk-muted cu-sub">${sub}</div>` : ''}
-</div>`;
-
 // ----------------------------------------------------------------------- data
 
 async function refresh(event) {
@@ -58,7 +51,7 @@ async function refresh(event) {
     if (mine === load) {  // nothing of the scope shown before stays, as if it were this one's
       usage = { latest: null, agents: {}, statistics: {}, history: [] };
       drawAll({ stats: false });
-      render($('stats'), empty('circle-alert', 'Usage could not be loaded', error.message));
+      render($('stats'), emptyState('circle-alert', 'Usage could not be loaded', error.message));
     }
     return;
   } finally {
@@ -78,7 +71,7 @@ async function refresh(event) {
 function drawNoSession() {
   usage = { latest: null, agents: {}, statistics: {}, history: [] };
   drawAll({ stats: false });
-  render($('stats'), empty('message-square', 'No session open', 'Open a session in the chat, or show all sessions.'));
+  render($('stats'), emptyState('message-square', 'No session open', 'Open a session in the chat, or show all sessions.'));
 }
 
 function drawAll({ stats = true } = {}) {
@@ -99,15 +92,15 @@ function drawStats() {
   const billed = (totals.cost_known_calls || 0) - estimated;
   const latest = usage.latest;
   render($('stats'), [
-    stat('cost', 'Total cost', html`${estimated ? '~' : ''}${cents(totals.cost)}`,
-      calls ? (estimated ? `${billed} billed · ${estimated} estimated` : `${billed} of ${calls} calls billed`) : ''),
-    stat('calls', 'Calls', number(calls), session.scope === 'session' ? 'this session and its sub-agents' : 'all sessions'),
-    stat('output', 'Output tokens', number(totals.completion_tokens), `prompt ${number(totals.prompt_tokens)}`),
-    stat('cached', 'Cached', number(totals.cached_tokens),
-      totals.prompt_tokens ? `${percent(totals.cache_hit_rate)} of the prompt` : ''),
-    stat('writes', 'Cache writes', number(totals.cache_write_tokens)),
-    stat('context', 'Context now', latest ? number(latest.total_tokens) : '–',
-      latest ? `${percent(latest.usage_percentage)} of ${number(latest.context_window)}${latest.is_stale ? ' · stale' : ''}` : ''),
+    stat('Total cost', html`${estimated ? '~' : ''}${cents(totals.cost)}`,
+      { key: 'cost', sub: calls ? (estimated ? `${billed} billed · ${estimated} estimated` : `${billed} of ${calls} calls billed`) : '' }),
+    stat('Calls', number(calls), { key: 'calls', sub: session.scope === 'session' ? 'this session and its sub-agents' : 'all sessions' }),
+    stat('Output tokens', number(totals.completion_tokens), { key: 'output', sub: `prompt ${number(totals.prompt_tokens)}` }),
+    stat('Cached', number(totals.cached_tokens),
+      { key: 'cached', sub: totals.prompt_tokens ? `${percent(totals.cache_hit_rate)} of the prompt` : '' }),
+    stat('Cache writes', number(totals.cache_write_tokens), { key: 'writes' }),
+    stat('Context now', latest ? number(latest.total_tokens) : '–',
+      { key: 'context', sub: latest ? `${percent(latest.usage_percentage)} of ${number(latest.context_window)}${latest.is_stale ? ' · stale' : ''}` : '' }),
   ]);
 }
 
@@ -131,7 +124,7 @@ function fillAgents(select) {
 function drawOverview() {
   const { tokens, usage_percentage: share } = usage.statistics;
   if (!tokens) {
-    render($('overview'), empty('chart-column', 'No calls recorded'));
+    render($('overview'), emptyState('chart-column', 'No calls recorded'));
     return;
   }
   render($('overview'), html`<div class="pk-table-wrap"><table class="pk-table">
@@ -224,7 +217,7 @@ function drawAgents() {
   const rows = Object.values(usage.agents);
   $('agentsCount').textContent = rows.length || '';
   if (!rows.length) {
-    render($('agents'), empty('users', 'No agent activity yet'));
+    render($('agents'), emptyState('users', 'No agent activity yet'));
     return;
   }
   // the most expensive first, until the viewer picks another column
@@ -278,7 +271,7 @@ function drawLlms() {
   const rows = [...models.values()];
   $('llmsCount').textContent = rows.length || '';
   if (!rows.length) {
-    render($('llms'), empty('cpu', 'No LLM calls recorded'));
+    render($('llms'), emptyState('cpu', 'No LLM calls recorded'));
     return;
   }
   const average = (values) => (values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null);
@@ -323,7 +316,7 @@ function drawCalls() {
   $('callsCount').textContent = usage.history.length || '';
   $('callsShown').textContent = matching.length ? `${callRows.length} of ${matching.length}` : '';
   if (!callRows.length) {
-    render($('calls'), empty('history', 'No calls recorded'));
+    render($('calls'), emptyState('history', 'No calls recorded'));
     return;
   }
   const own = session.shown;

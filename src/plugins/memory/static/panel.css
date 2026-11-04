@@ -14,7 +14,6 @@
 .mm-drawer { width: min(640px, 100vw); }
 .mm-drawer .pk-dialog-title { overflow-wrap: anywhere; }
 .mm-keywords { flex-wrap: wrap; }
-.mm-heading { margin: var(--space-4) 0 var(--space-2); font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
 .mm-full {
   padding: var(--space-2) var(--space-3); border-left: 2px solid var(--border-strong); background: var(--surface-1);
   border-radius: var(--radius-sm); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary);

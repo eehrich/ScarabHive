@@ -683,6 +683,8 @@ pk-refresh:has(.pk-refresh-auto[aria-pressed="true"]) .pk-refresh-pick { --btn-b
   text-transform: uppercase; letter-spacing: 0.04em;
 }
 .pk-section-title:first-child { margin-top: 0; }
+/* A count or a name in a title stays as written: a person reads it exactly. */
+.pk-section-title :is(.pk-muted, .pk-mono) { font-weight: 400; text-transform: none; letter-spacing: normal; }
 
 /* a form in two columns, one below the pk-split breakpoint; a pk-field--wide (and the actions, a heading) spans both */
 .pk-form--cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3) var(--space-4); max-width: 960px; }
@@ -797,7 +799,7 @@ table[data-pk-select] > tbody > tr[data-id]:focus-visible { outline: 2px solid v
 /* ------------------------------------------------------------------- steps */
 /* The steps of a process: <ol class="pk-steps"> of <li class="pk-step" data-state> (the steps() macro), each a
    numbered circle, its pk-step-label and an optional pk-step-sub. data-state: done (a tick), current (filled; with
-   aria-current="step"), warn (a "!": held up, sent back), ahead. They wrap when they do not fit. pk-steps--dots: dots
+   aria-current="step"), warn (a "!": held up, sent back), danger (the same, grave: a deadline about to pass), ahead. They wrap when they do not fit. pk-steps--dots: dots
    only, for an onboarding's progress -- the labels stay for screen readers; done is filled, ahead a ring, the
    current one a longer pill. */
 .pk-steps { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0; padding: 0; list-style: none; counter-reset: pk-step; }
@@ -827,6 +829,8 @@ table[data-pk-select] > tbody > tr[data-id]:focus-visible { outline: 2px solid v
 .pk-step:is([data-state="current"], [aria-current="step"])::before { color: var(--text-on-accent); background: var(--accent); }
 .pk-step[data-state="warn"] { color: var(--text-primary); border-color: var(--warn); }
 .pk-step[data-state="warn"]::before { content: "!"; color: var(--warn); background: var(--warn-subtle); }
+.pk-step[data-state="danger"] { color: var(--text-primary); border-color: var(--danger); }
+.pk-step[data-state="danger"]::before { content: "!"; color: var(--danger); background: var(--danger-subtle); }
 .pk-steps--dots { gap: var(--space-1); align-items: center; }
 .pk-steps--dots .pk-step {
   position: relative; display: block; width: 8px; height: 8px; padding: 0; border: 0; border-radius: 4px;
@@ -838,6 +842,7 @@ table[data-pk-select] > tbody > tr[data-id]:focus-visible { outline: 2px solid v
 .pk-steps--dots .pk-step[data-state="done"] { background: var(--accent); box-shadow: none; }
 .pk-steps--dots .pk-step:is([data-state="current"], [aria-current="step"]) { width: 20px; background: var(--accent); box-shadow: none; }
 .pk-steps--dots .pk-step[data-state="warn"] { background: var(--warn); box-shadow: none; }
+.pk-steps--dots .pk-step[data-state="danger"] { background: var(--danger); box-shadow: none; }
 
 /* -------------------------------------------------------------- list items */
 /* An entry of a list to choose from (a project, a machine, an agent): a plain <button> or a pk-btn, in two lines --

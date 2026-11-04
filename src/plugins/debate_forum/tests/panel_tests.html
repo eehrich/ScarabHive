@@ -347,7 +347,7 @@
     await sleep(300);
     const once = (await asked()).creates === creates + 1 && !form.elements.name.value;
     $('#newChannel').click();
-    const fresh = dialog.open && !$('#createError') && !form.elements.name.value;
+    const fresh = dialog.open && $('#createError').hidden && !form.elements.name.value;
     form.elements.name.value = 'late';
     cookie('df_create', 'slowfail');
     try {
@@ -359,7 +359,7 @@
       const freed = !$('#createSubmit').disabled;
       await toasted('error', 'late could not be created: The forum is locked');
       await sleep(100);
-      const alone = dialog.open && form.elements.name.value === 'typed' && !$('#createError');
+      const alone = dialog.open && form.elements.name.value === 'typed' && $('#createError').hidden;
       $('#createCancel').click();
       await until('closed and reset again', () => !dialog.open && !form.elements.name.value);
       cookie('df_create', 'slow');

@@ -11,10 +11,5 @@
 .ll-high { color: var(--ok); }
 .ll-low { color: var(--danger); }
 .ll-actions { white-space: nowrap; text-align: right; }
-.ll-form { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
-.ll-wide { grid-column: 1 / -1; }
 .ll-intro { margin: 0; }
 .ll-details { margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
-@media (max-width: 520px) {
-  .ll-form { grid-template-columns: 1fr; }
-}

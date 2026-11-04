@@ -1,5 +1,5 @@
 // Lessons Learned: the lessons the agents keep, of every agent; edited, searched, consolidated and cleaned up here.
-import { api, html, render, icon, confirm, toast } from '/static/kit/panel-kit.js';
+import { api, html, render, icon, confirm, toast, emptyState, stat } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -27,10 +27,6 @@ let matched = [];
 let previews = 0;
 
 const badge = (kind, content) => html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${content}</span>`;
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-const stat = (key, label, value) =>
-  html`<div class="pk-stat" data-stat="${key}"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value.toLocaleString()}</div></div>`;
 const number = (input) => (Number.isNaN(input.valueAsNumber) ? null : input.valueAsNumber);
 const lessonUrl = (id, rest = '') => `${BASE}lessons/${encodeURIComponent(id)}${rest}`;
 
@@ -58,7 +54,7 @@ async function refresh(event) {
     ]);
   } catch (error) {
     if (mine === load) {  // nothing shown before stays, as if it were the answer to this
-      render($('stats'), empty('circle-alert', 'Lessons could not be loaded', error.message));
+      render($('stats'), emptyState('circle-alert', 'Lessons could not be loaded', error.message));
       render($('lessons'), '');
       $('pager').hidden = true;
     }
@@ -79,14 +75,14 @@ async function refresh(event) {
 }
 
 function drawStats(stats) {
-  const count = (status) => stats.by_status[status] || 0;
+  const count = (status) => (stats.by_status[status] || 0).toLocaleString();
   render($('stats'), [
-    stat('total', 'Lessons', stats.total),
-    stat('active', 'Active', count('active')),
-    stat('draft', 'Draft', count('draft')),
-    stat('inactive', 'Inactive', count('inactive')),
-    stat('archived', 'Archived', count('archived')),
-    stat('agents', 'Agents', stats.agent_count),
+    stat('Lessons', stats.total.toLocaleString(), { key: 'total' }),
+    stat('Active', count('active'), { key: 'active' }),
+    stat('Draft', count('draft'), { key: 'draft' }),
+    stat('Inactive', count('inactive'), { key: 'inactive' }),
+    stat('Archived', count('archived'), { key: 'archived' }),
+    stat('Agents', stats.agent_count.toLocaleString(), { key: 'agents' }),
   ]);
   // what is filtered for stays offered, also once no lesson has it any more
   fill($('agentFilter'), 'Every agent', stats.agents, $('agents'));
@@ -132,7 +128,7 @@ function row(lesson, query) {
 
 function drawLessons(query) {
   if (!lessons.length) {
-    render($('lessons'), empty('graduation-cap', query ? 'No lesson matches the search' : 'No lessons found'));
+    render($('lessons'), emptyState('graduation-cap', query ? 'No lesson matches the search' : 'No lessons found'));
     return;
   }
   // only the lessons found sort here: the list is paged, and sorted by the select, on the server

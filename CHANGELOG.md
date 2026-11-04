@@ -188,6 +188,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The folder picker's route leaves out a folder it has no right to look at instead of answering 500, and a root inside
+  another opens though its name starts with a dot. A plugin can name its setting in the message that no root exists
+  (`folders_setting`). The picker's dialog says that a double click opens a folder.
+- `typedFields()`, `updateKeeping()` and `onceSaved()` in the kit: what a person typed survives a redraw, read from the
+  fields themselves, with the focus and the caret.
+- A title in `pk-section-title` keeps a count or a name in it as written (`pk-muted`, `pk-mono`). `pk-steps` knows
+  `data-state="danger"`. `selectRow()` takes a list without a table.
+- Panels on the kit: a diff's cut note carries no line number, an unknown status no longer stops a list drawing, a
+  batch job being cancelled no longer looks cancelled.
 - File tools on Python 3.11: delete, move and rename ended in an AttributeError (`Path.is_junction` exists from
   3.12).
 - Coding CLIs: the subscription guard went by what the last run to end had seen. A run reports the windows near its

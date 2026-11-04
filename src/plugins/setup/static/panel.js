@@ -88,15 +88,13 @@ function renderAccess(auth, me, writable) {
         environment the API starts with, or in config/local.env where that folder is writable, name it in
         config/local.yaml (<code>auth: secret_key: "\${AUTH_SECRET_KEY}"</code>), then restart the API.</p>`
     : html`<div><button type="button" class="pk-btn pk-btn--sm" id="ownKey">Make an own signing key</button></div>`}
-  ${own ? html`<form id="password" class="pk-form pk-stack" autocomplete="off">
-    <div class="pk-row">
-      <label class="pk-field pk-grow"><span class="pk-label">Current password</span>
-        <input class="pk-input" type="password" name="current" required autocomplete="current-password"></label>
-      <label class="pk-field pk-grow"><span class="pk-label">New password</span>
-        <input class="pk-input" type="password" name="password" required minlength="8" autocomplete="new-password">
-        <span class="pk-help">8 characters or more</span></label>
-    </div>
-    <div><button type="submit" class="pk-btn pk-btn--primary pk-btn--sm">Change the password</button></div>
+  ${own ? html`<form id="password" class="pk-form pk-form--cols" autocomplete="off">
+    <label class="pk-field"><span class="pk-label">Current password</span>
+      <input class="pk-input" type="password" name="current" required autocomplete="current-password"></label>
+    <label class="pk-field"><span class="pk-label">New password</span>
+      <input class="pk-input" type="password" name="password" required minlength="8" autocomplete="new-password">
+      <span class="pk-help">8 characters or more</span></label>
+    <div class="pk-field--wide"><button type="submit" class="pk-btn pk-btn--primary pk-btn--sm">Change the password</button></div>
   </form>` : ''}`);
 }
 

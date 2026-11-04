@@ -1,5 +1,5 @@
 // Logs: the last entries of a configured log file and its rotations, filtered by level and search.
-import { api, html, render, icon, trusted } from '/static/kit/panel-kit.js';
+import { api, html, render, trusted, emptyState } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -16,8 +16,6 @@ let shownQuery = null;
 const levelButtons = () => [...document.querySelectorAll('.lv-levels [data-level]')];
 const pressed = (button) => button.getAttribute('aria-pressed') === 'true';
 const press = (button, on) => button.setAttribute('aria-pressed', String(on));
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
 
 function size(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -61,9 +59,9 @@ async function refresh(event) {
     const existing = logs.filter((log) => log.exists);
     drawFiles(existing.map((log) => log.name));
     const log = existing.find((one) => one.name === $('file').value);
-    if (!log) return clear(empty('file-text', 'No log files', 'None of the configured log files exists yet.'));
+    if (!log) return clear(emptyState('file-text', 'No log files', 'None of the configured log files exists yet.'));
     const levels = levelButtons().filter(pressed).map((button) => button.dataset.level);
-    if (!levels.length) return clear(empty('filter', 'No level chosen', 'Choose at least one level to see entries.'));
+    if (!levels.length) return clear(emptyState('filter', 'No level chosen', 'Choose at least one level to see entries.'));
     const query = new URLSearchParams({ lines: $('lines').value });
     if (levels.length < levelButtons().length) {
       query.set('levels', levels.flatMap((level) => (level === 'error' ? ['error', 'critical'] : [level])).join());
@@ -75,7 +73,7 @@ async function refresh(event) {
   } catch (error) {
     if (mine !== load) return;
     // nothing shown before stays, as if it were current
-    clear(empty('circle-alert', 'The log could not be loaded', error.message));
+    clear(emptyState('circle-alert', 'The log could not be loaded', error.message));
   } finally {
     if (mine === load) busy = false;
   }
@@ -119,7 +117,7 @@ function drawEntries(entries, log, query) {
   const opened = new Set([...box.querySelectorAll('details[open]')].map((details) => details.dataset.key));  // a refresh leaves them open
   render(box, entries.length
     ? entries.map((one) => entry(one, opened))
-    : empty('file-text', 'No entries', query.has('levels') || query.has('search') ? 'Nothing matches the search and levels.' : 'The log is empty.'));
+    : emptyState('file-text', 'No entries', query.has('levels') || query.has('search') ? 'Nothing matches the search and levels.' : 'The log is empty.'));
   box.scrollTop = pressed($('follow')) || key !== shownQuery ? box.scrollHeight : top;
   shownQuery = key;
   const count = `${entries.length.toLocaleString()} ${entries.length === 1 ? 'entry' : 'entries'}`;

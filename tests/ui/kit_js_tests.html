@@ -2133,6 +2133,100 @@
     setTimeout(() => done(false), 8000);
   }));
 
+  await check('typedFields: what the browser draws by itself is not typed; a ticked checkbox goes back by its value', () => {
+    const box = document.createElement('form');
+    const view = (text) => `<p>${text}</p>
+      <select name="marked"><option value="a">A</option><option value="b" selected>B</option></select>
+      <select name="sized" size="2"><option value="a">A</option><option value="b">B</option></select>
+      <input name="pair" type="checkbox" value="one"><input name="pair" type="checkbox" value="two">`;
+    box.innerHTML = view('first');
+    document.body.append(box);
+    try {
+      const clean = pk.typedFields(box).length === 0;
+      box.elements.marked.value = 'a';
+      box.elements.sized.value = 'b';
+      const chosen = pk.typedFields(box).map((field) => field.name).join() === 'marked,sized';
+      box.innerHTML = view('second');
+      box.elements.pair[1].checked = true;
+      pk.updateKeeping(box, pk.trusted(view('third')));
+      const [one, two] = box.elements.pair;
+      return clean && chosen && !one.checked && two.checked && box.textContent.includes('third');
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('updateKeeping: what is typed stays through a redraw, with the focus and the caret; for another record it goes', () => {
+    const box = document.createElement('div');
+    document.body.append(box);
+    const view = (extra = '') => pk.html`<form id="one"><input name="text" value="stored"><textarea name="long">drawn</textarea>
+      <input type="checkbox" name="on"><select name="pick"><option value="a">A</option><option value="b">B</option></select>
+      <input name="wrapped" value="${'two\nlines'}"><input type="date" name="day" value="20261030"><input name="locked" readonly value="x"></form>
+      <dialog><input name="inner" value="y"></dialog><span>${extra}</span>`;
+    const untouched = () => pk.typedFields(box).length === 0;
+    try {
+      pk.update(box, view());
+      const clean = untouched();  // a line break an <input> drops, a date it refuses: not typed
+      const form = box.querySelector('#one');
+      form.elements.text.value = 'typed here';
+      form.elements.text.focus();
+      form.elements.text.setSelectionRange(2, 4);
+      form.elements.on.checked = true;
+      form.elements.pick.value = 'b';
+      box.querySelector('[name="inner"]').value = 'in the dialog';
+      form.elements.locked.value = 'written by a script';
+      const counted = pk.typedFields(box).map((field) => field.name).join() === 'text,on,pick';
+      let told = 0;
+      box.addEventListener('input', () => { told += 1; });
+      const drawn = pk.updateKeeping(box, view('changed'));
+      const now = box.querySelector('#one');
+      const kept = drawn && now !== form && now.elements.text.value === 'typed here' && now.elements.on.checked && now.elements.pick.value === 'b' && told === 3;
+      const caret = document.activeElement === now.elements.text && now.elements.text.selectionStart === 2 && now.elements.text.selectionEnd === 4;
+      const same = pk.updateKeeping(box, view('changed')) === false && now === box.querySelector('#one');
+      const saved = pk.onceSaved(now);
+      now.elements.long.value = 'typed after it was sent';
+      const later = now.elements.text.value;
+      saved();
+      const onlyLater = pk.typedFields(box).map((field) => field.name).join() === 'long' && now.elements.text.defaultValue === later;
+      const sentAgain = pk.onceSaved(now);
+      now.elements.long.value = 'sent';
+      sentAgain();
+      now.elements.long.value = 'typed in the meantime';
+      const stillTyped = pk.typedFields(box).map((field) => field.name).join() === 'long';
+      const pickFresh = document.createElement('select');
+      pickFresh.innerHTML = '<option value="a">A</option><option value="b">B</option>';
+      box.append(pickFresh);
+      const freshSent = pk.onceSaved({ elements: [Object.assign(pickFresh, { name: 'fresh' })] });
+      pickFresh.value = 'b';  // chosen while it is on its way; the browser has marked nothing as chosen by a person
+      freshSent();
+      const choiceStays = pickFresh.value === 'b';
+      pickFresh.remove();
+      pk.updateKeeping(box, view('another record'), { keep: false });
+      const gone = untouched() && box.querySelector('[name="text"]').value === 'stored';
+      return clean && counted && kept && caret && same && onlyLater && stillTyped && choiceStays && gone && pk.typedFields(null).length === 0;
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('selectRow takes a list without a table, and no id marks no row', () => {
+    const table = document.createElement('table');
+    table.innerHTML = '<tbody><tr data-id="null"></tr><tr data-id="a"></tr></tbody>';
+    return pk.selectRow(null, 'a') === false && pk.selectRow(table, null) === false
+      && table.querySelector('[data-id="null"]').getAttribute('aria-selected') === 'false' && pk.selectRow(table, 'a') === true;
+  });
+
+  await check('a section title is upper case; a count or a name in it stays as written', () => {
+    const title = document.createElement('h3');
+    title.className = 'pk-section-title';
+    title.innerHTML = 'Manager <span class="pk-mono">worker_sam</span> <span class="pk-muted">3 of 9</span>';
+    document.body.append(title);
+    const cased = (element) => getComputedStyle(element).textTransform;
+    const right = cased(title) === 'uppercase' && [...title.children].every((part) => cased(part) === 'none');
+    title.remove();
+    return right;
+  });
+
   await check('folderPicker lists folders, moves and opens with the keys, goes up, says a refusal in the dialog, and resolves the choice or null', async () => {
     const realFetch = window.fetch;
     const asked = [];
@@ -2157,6 +2251,7 @@
       const dialog = document.querySelector('dialog.pk-dialog[open]');
       const list = dialog.querySelector('[role="listbox"]');
       const where = () => dialog.querySelector('.pk-folders-path').textContent;
+      const told = dialog.textContent.includes('A double click opens a folder.');
       const callout = dialog.querySelector('.pk-callout');
       const started = asked[0] === '/r' && optionsOf(dialog) === 'a,b' && where() === '/r' && document.activeElement === list
         && dialog.querySelector('.pk-dialog-title').textContent === 'Pick' && !dialog.querySelector('[data-act="choose"]').disabled;
@@ -2209,7 +2304,7 @@
       fallback.querySelector('[data-act="cancel"]').click();
       const staleNone = (await stale) === null;
       const quiet = document.querySelectorAll('.pk-toast').length === before;  // the dialog says it, not a toast
-      return started && moved && refused && opened && wentUp && backspaced && chosen && shownChosen && atTop && none && fellBack && staleNone && quiet;
+      return told && started && moved && refused && opened && wentUp && backspaced && chosen && shownChosen && atTop && none && fellBack && staleNone && quiet;
     } finally {
       window.fetch = realFetch;
       document.querySelectorAll('dialog.pk-dialog').forEach((one) => one.remove());

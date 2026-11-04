@@ -1,6 +1,6 @@
 // ComfyUI: the servers' state, the jobs still to finish with a way to cancel them, and the last ones finished --
 // of the session open in the chat (or the one a link names, ?session_id=) and its sub-agents, or of every session.
-import { api, html, render, icon, confirm, toast, session } from '/static/kit/panel-kit.js';
+import { api, html, render, icon, confirm, toast, session, emptyState, stat, status } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -12,27 +12,14 @@ const cancelling = new Set();
 let load = 0;
 let busy = false;
 
-const STATUSES = {
-  queued: { icon: 'clock', kind: '' },
-  pending: { icon: 'clock', kind: '' },
-  running: { icon: 'loader-circle', kind: 'info' },
-  completed: { icon: 'circle-check', kind: 'ok' },
-  failed: { icon: 'circle-x', kind: 'danger' },
-  cancelled: { icon: 'ban', kind: '' },
-};
+// A job's status in the kit's set, for its icon and tone; its own word stays the label.
+const STATUSES = { queued: 'pending', pending: 'pending', running: 'running', completed: 'success', failed: 'failed', cancelled: 'canceled' };
 const OUTPUTS = { images: 'image', audio: 'music', video: 'clapperboard', text: 'file-text' };
 
 const number = (value) => value.toLocaleString();
 const short = (id) => id.slice(0, 8);
 const when = (stamp) => (stamp ? new Date(stamp).toLocaleString() : '—');
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-const stat = (key, label, value) =>
-  html`<div class="pk-stat" data-stat="${key}"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${number(value)}</div></div>`;
-const badge = (status) => {
-  const { icon: name, kind } = STATUSES[status];
-  return html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${icon(name, { size: 'sm' })} ${status}</span>`;
-};
+const badge = (name) => status(STATUSES[name] || 'pending', { label: name });
 
 function duration(seconds) {
   if (seconds === null) return '—';
@@ -50,7 +37,7 @@ async function refresh(event) {
   const id = session.shown;
   if (!id && session.scope === 'session') {  // following the chat, and no session open there
     busy = false;
-    clear(empty('message-square', 'No session open', 'Open a session in the chat to see its ComfyUI jobs.'));
+    clear(emptyState('message-square', 'No session open', 'Open a session in the chat to see its ComfyUI jobs.'));
     return;
   }
   busy = true;
@@ -59,7 +46,7 @@ async function refresh(event) {
     answer = await api(`${BASE}jobs${id ? `?session_id=${encodeURIComponent(id)}` : ''}`, { quiet: true });
   } catch (error) {
     if (mine !== load) return;  // a later load was started since
-    clear(empty('circle-alert', 'Jobs could not be loaded', error.message));
+    clear(emptyState('circle-alert', 'Jobs could not be loaded', error.message));
     return;
   } finally {
     if (mine === load) busy = false;
@@ -96,11 +83,11 @@ function drawServers() {
 function drawStats() {
   const { stats } = shown;
   render($('stats'), [
-    stat('active', 'Active', stats.queued + stats.pending + stats.running),
-    stat('completed', 'Completed', stats.completed),
-    stat('failed', 'Failed', stats.failed),
-    stat('cancelled', 'Cancelled', stats.cancelled),
-    stat('total', 'Total', stats.total),
+    stat('Active', number(stats.queued + stats.pending + stats.running), { key: 'active' }),
+    stat('Completed', number(stats.completed), { key: 'completed' }),
+    stat('Failed', number(stats.failed), { key: 'failed' }),
+    stat('Cancelled', number(stats.cancelled), { key: 'cancelled' }),
+    stat('Total', number(stats.total), { key: 'total' }),
   ]);
 }
 
@@ -142,16 +129,16 @@ function drawJobs() {
   const focused = document.activeElement?.closest('#jobs button[data-cancel]')?.dataset.cancel;
   render($('jobs'), html`
     <section class="pk-stack" id="active">
-      <h2 class="cu-heading">Active jobs</h2>
+      <h2 class="pk-section-title">Active jobs</h2>
       ${shown.active.length
         ? table('active', [['Job'], ['Workflow'], ['Status'], ['Submitted', false, 'ascending'], ['Time', true], ['']], shown.active.map(activeRow))
-        : empty('workflow', 'No active jobs', 'Nothing is queued or running.')}
+        : emptyState('workflow', 'No active jobs', 'Nothing is queued or running.')}
     </section>
     <section class="pk-stack" id="recent">
-      <h2 class="cu-heading">Recently finished</h2>
+      <h2 class="pk-section-title">Recently finished</h2>
       ${shown.recent.length
         ? table('recent', [['Job'], ['Workflow'], ['Status'], ['Finished', false, 'descending'], ['Duration', true], ['Outputs', true]], shown.recent.map(recentRow))
-        : empty('history', 'No finished jobs yet')}
+        : emptyState('history', 'No finished jobs yet')}
     </section>`);
   if (focused !== undefined) [...$('jobs').querySelectorAll('button[data-cancel]')].find((button) => button.dataset.cancel === focused)?.focus();
 }

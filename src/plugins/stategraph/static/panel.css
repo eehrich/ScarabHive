@@ -67,7 +67,6 @@
 .sg-side-body[hidden] { display: none; }
 .sg-section { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 .sg-section + .sg-section { padding-top: var(--space-3); border-top: 1px solid var(--border-subtle); }
-.sg-section-title { margin: 0; font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .sg-inspect-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .sg-inspect-name { font-size: var(--text-md); font-weight: 600; margin: 0; overflow-wrap: anywhere; }
 .sg-transition { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-0); }

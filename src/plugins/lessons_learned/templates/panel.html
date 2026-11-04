@@ -45,11 +45,11 @@
 <dialog id="editor" class="pk-dialog pk-dialog--wide" aria-labelledby="editorTitle">
   <form id="editorForm">
     <div class="pk-dialog-head"><h2 id="editorTitle" class="pk-dialog-title">New lesson</h2></div>
-    <div class="pk-dialog-body ll-form">
+    <div class="pk-dialog-body pk-form--cols">
       <label class="pk-field"><span class="pk-label">Agent</span><input class="pk-input" name="agent_name" list="agents" required></label>
       <label class="pk-field"><span class="pk-label">Category</span><input class="pk-input" name="category" list="categories" required></label>
-      <label class="pk-field ll-wide"><span class="pk-label">Title</span><input class="pk-input" name="title" maxlength="200" required></label>
-      <label class="pk-field ll-wide"><span class="pk-label">Content</span><textarea class="pk-textarea" name="content" maxlength="2000" rows="5" required></textarea></label>
+      <label class="pk-field pk-field--wide"><span class="pk-label">Title</span><input class="pk-input" name="title" maxlength="200" required></label>
+      <label class="pk-field pk-field--wide"><span class="pk-label">Content</span><textarea class="pk-textarea" name="content" maxlength="2000" rows="5" required></textarea></label>
       <label class="pk-field"><span class="pk-label">Status</span>
         <select class="pk-select" name="status">
           <option value="active">Active</option><option value="draft">Draft</option>
@@ -62,7 +62,7 @@
         </select></label>
       <label class="pk-field"><span class="pk-label">Priority (1–10)</span><input class="pk-input" name="priority" type="number" min="1" max="10" step="any" required></label>
       <label class="pk-field"><span class="pk-label">Confidence (0–1)</span><input class="pk-input" name="confidence" type="number" min="0" max="1" step="any" required></label>
-      <label class="pk-field ll-wide"><span class="pk-label">Tags</span><input class="pk-input" name="tags" placeholder="Comma-separated"></label>
+      <label class="pk-field pk-field--wide"><span class="pk-label">Tags</span><input class="pk-input" name="tags" placeholder="Comma-separated"></label>
     </div>
     <div class="pk-dialog-actions">
       <button type="button" class="pk-btn" data-close>Cancel</button>
@@ -74,16 +74,16 @@
 <dialog id="consolidator" class="pk-dialog pk-dialog--wide" aria-labelledby="consolidatorTitle">
   <form id="consolidateForm">
     <div class="pk-dialog-head"><h2 id="consolidatorTitle" class="pk-dialog-title">Consolidate lessons</h2></div>
-    <div class="pk-dialog-body ll-form">
-      <p class="ll-wide ll-intro">Similar lessons are grouped and judged by an LLM; the best version of a group is kept, the others are deleted.</p>
+    <div class="pk-dialog-body pk-form--cols">
+      <p class="pk-field--wide ll-intro">Similar lessons are grouped and judged by an LLM; the best version of a group is kept, the others are deleted.</p>
       <label class="pk-field"><span class="pk-label">Agent</span><input class="pk-input" name="agent_name" list="agents" placeholder="Every agent"></label>
       <label class="pk-field"><span class="pk-label">Similarity threshold</span><input class="pk-input" name="similarity_threshold" type="number" min="0.5" max="1" step="0.01" placeholder="Plugin default"></label>
-      <label class="pk-check ll-wide"><input type="checkbox" name="dry_run" checked> Dry run: only show what would be merged</label>
-      <div class="ll-wide pk-stack" id="consolidateProgress" hidden>
+      <label class="pk-check pk-field--wide"><input type="checkbox" name="dry_run" checked> Dry run: only show what would be merged</label>
+      <div class="pk-field--wide pk-stack" id="consolidateProgress" hidden>
         <div class="pk-row"><span class="pk-grow" id="consolidatePhase"></span><span class="pk-muted" id="consolidatePercent"></span></div>
         <progress class="pk-progress" id="consolidateBar" value="0" max="100"></progress>
       </div>
-      <div class="ll-wide" id="consolidateResult"></div>
+      <div class="pk-field--wide" id="consolidateResult"></div>
     </div>
     <div class="pk-dialog-actions">
       <button type="button" class="pk-btn" data-close>Close</button>
@@ -95,8 +95,8 @@
 <dialog id="cleaner" class="pk-dialog pk-dialog--wide" aria-labelledby="cleanerTitle">
   <form id="cleanupForm">
     <div class="pk-dialog-head"><h2 id="cleanerTitle" class="pk-dialog-title">Clean up lessons</h2></div>
-    <div class="pk-dialog-body ll-form">
-      <p class="ll-wide ll-intro">Deletes the lessons matching every filter set. Preview them first.</p>
+    <div class="pk-dialog-body pk-form--cols">
+      <p class="pk-field--wide ll-intro">Deletes the lessons matching every filter set. Preview them first.</p>
       <label class="pk-field"><span class="pk-label">Agent</span><input class="pk-input" name="agent_name" list="agents" placeholder="Every agent"></label>
       <label class="pk-field"><span class="pk-label">Status</span>
         <select class="pk-select" name="status">
@@ -106,7 +106,7 @@
       <label class="pk-field"><span class="pk-label">Older than (days)</span><input class="pk-input" name="older_than_days" type="number" min="1" step="1"></label>
       <label class="pk-field"><span class="pk-label">Evidence at most</span><input class="pk-input" name="max_evidence_count" type="number" min="0" step="1"></label>
       <label class="pk-field"><span class="pk-label">Confidence at most</span><input class="pk-input" name="max_confidence" type="number" min="0" max="1" step="0.01"></label>
-      <div class="ll-wide" id="cleanupResult"></div>
+      <div class="pk-field--wide" id="cleanupResult"></div>
     </div>
     <div class="pk-dialog-actions">
       <button type="button" class="pk-btn" data-close>Close</button>

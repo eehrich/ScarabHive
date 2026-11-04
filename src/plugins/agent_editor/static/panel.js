@@ -1,6 +1,6 @@
 // Agent Editor: agent definitions edited in a form and written back into the YAML files they came from.
 import {
-  api, html, render, icon, confirm, dialog, toast, initTabs, selectTab, setDirty, yamlCode, emptyState, skeleton, placeMenu,
+  api, html, render, icon, confirm, dialog, toast, notice, initTabs, selectTab, setDirty, yamlCode, emptyState, skeleton, placeMenu,
   keepInSight, scrollerOf,
 } from '/static/kit/panel-kit.js';
 
@@ -470,9 +470,9 @@ function drawList() {
 
 function listItem(row) {
   const current = !draft && row.name === selected;
-  return html`<li><button type="button" class="pk-btn pk-btn--ghost ae-item" data-name="${row.name}" aria-current="${String(current)}">
+  return html`<li><button type="button" class="pk-list-item" data-name="${row.name}" aria-current="${String(current)}">
     <span class="ae-item-top">
-      <span class="ae-item-name pk-truncate">${row.name}</span>
+      <span class="ae-item-name pk-list-item-name pk-truncate">${row.name}</span>
       ${row.enabled ? '' : badge('', 'off')}
       ${row.state === 'new' ? badge('info', 'new') : ''}
       ${row.restart ? html`<span class="pk-badge pk-badge--warn" title="The running app uses older settings">restart</span>` : ''}
@@ -480,7 +480,7 @@ function listItem(row) {
       ${row.problems?.length ? html`<span class="pk-badge pk-badge--danger" data-problems
         title="${row.problems.join('\n')}">${plural(row.problems.length, 'problem')}</span>` : ''}
     </span>
-    <span class="ae-item-desc pk-muted pk-truncate">${row.description || ''}</span>
+    <span class="pk-list-item-sub pk-truncate">${row.description || ''}</span>
   </button></li>`;
 }
 
@@ -911,7 +911,7 @@ function drawGeneral() {
   render($('tab-general'), html`
     <fieldset class="ae-form" ${disabledIf(readOnly())}>
       <section class="ae-section" aria-labelledby="basicsTitle">
-        <h3 class="ae-section-title" id="basicsTitle">Basics</h3>
+        <h3 class="pk-section-title" id="basicsTitle">Basics</h3>
         <div class="ae-grid">
           ${field(['enabled'], 'Enabled', toggle(['enabled'], 'Starts with the app', false),
             { help: 'Not inherited: without a value of its own the agent stays off.', mark: false })}
@@ -924,7 +924,7 @@ function drawGeneral() {
         ${field(['description'], 'Description', textarea(['description'], { rows: 2 }))}
       </section>
       <section class="ae-section" aria-labelledby="listingTitle">
-        <h3 class="ae-section-title" id="listingTitle">Listing</h3>
+        <h3 class="pk-section-title" id="listingTitle">Listing</h3>
         <div class="ae-grid">
           ${field(['metadata', 'visibility'], 'Visibility', choice(['metadata', 'visibility'],
             visibilities.map((value) => option(value, visibility, VISIBILITY_LABELS[value] ?? value))),
@@ -1042,7 +1042,7 @@ function drawSubagents() {
   }
   render($('tab-subagents'), html`
     <section class="ae-section" aria-labelledby="usesTitle">
-      <h3 class="ae-section-title" id="usesTitle">Managers this agent uses</h3>
+      <h3 class="pk-section-title" id="usesTitle">Managers this agent uses</h3>
       <p class="pk-help">The agent starts sub-agents through the managers it may use: a tool grant, saved with the agent.
         Which agents a manager can start is set in the manager.</p>
       <div id="managerRows"></div>
@@ -1052,13 +1052,13 @@ function drawSubagents() {
             value="${newManagerName}" placeholder="New manager name" aria-label="Name of a new manager">
           <button type="button" class="pk-btn pk-btn--sm" data-create-manager>${icon('plus', { size: 'sm' })} New manager</button>
         </div>
-        <p class="pk-error" id="newManagerError" hidden></p>
+        <p id="newManagerError" hidden></p>
       </fieldset>
     </section>
     <section class="ae-section" id="managerEditor" aria-labelledby="managerTitle" hidden></section>
     <section class="ae-section" aria-labelledby="spawnTitle">
       <div class="pk-row">
-        <h3 class="ae-section-title" id="spawnTitle">Managers that may start this agent</h3>
+        <h3 class="pk-section-title" id="spawnTitle">Managers that may start this agent</h3>
         <span class="pk-badge pk-badge--info" title="Unlike the form, a switch here writes the manager’s file at once">saved at once</span>
       </div>
       <p class="pk-help">A switch changes that manager’s own list, after showing its diff.</p>
@@ -1166,7 +1166,7 @@ function drawManagerEditor() {
   const own = managerEdit.own;
   render(box, html`
     <div class="pk-row">
-      <h3 class="ae-section-title pk-grow" id="managerTitle">Manager ${row.name}</h3>
+      <h3 class="pk-section-title pk-grow" id="managerTitle">Manager <span class="pk-mono">${row.name}</span></h3>
       <span class="pk-badge pk-badge--warn" data-manager-dirty ${managerDirty() ? '' : 'hidden'}>unsaved changes</span>
     </div>
     <p class="pk-help">${row.editable ? html`Written to <span class="pk-mono">${row.file}</span> with its own Save, apart from this agent.`
@@ -1312,8 +1312,7 @@ async function saveManager() {
 }
 
 function newManagerError(text) {
-  $('newManagerError').textContent = text;
-  $('newManagerError').hidden = !text;
+  notice($('newManagerError'), text);
 }
 
 /** A manager of its own for this agent: its file first (after the diff), then the grant in the agent's tools. */
@@ -1356,7 +1355,7 @@ const profileOf = (name) => meta?.profiles?.find((one) => one.name === name);
 function drawModel() {
   render($('tab-model'), html`<fieldset class="ae-form" ${disabledIf(readOnly())}>
     <section class="ae-section" aria-labelledby="modelsTitle">
-      <h3 class="ae-section-title" id="modelsTitle">Models</h3>
+      <h3 class="pk-section-title" id="modelsTitle">Models</h3>
       ${chainField(['agent_config', 'llm_profile'], 'Model chain', 'The first profile answers; the others take over, in order, when it fails.',
     'No profile: the model default “normal” applies.')}
       ${chainField(['agent_config', 'llm_profile_advanced'], 'Advanced chain', 'Used while the agent escalates.',
@@ -1368,7 +1367,7 @@ function drawModel() {
       </div>
     </section>
     <section class="ae-section" aria-labelledby="modelSettingsTitle">
-      <h3 class="ae-section-title" id="modelSettingsTitle">Model settings</h3>
+      <h3 class="pk-section-title" id="modelSettingsTitle">Model settings</h3>
       <div class="ae-grid">
         ${field(['agent_config', 'fallback_recovery_seconds'], 'Fallback recovery (seconds)',
           input(['agent_config', 'fallback_recovery_seconds'], { type: 'number' }), { help: 'How long a failed profile rests before it is tried again.' })}
@@ -1392,11 +1391,11 @@ function drawRun() {
     'auto_unblock_after_steps'].map((key) => RUN('loop_detection', key));
   render($('tab-run'), html`<fieldset class="ae-form" ${disabledIf(readOnly())}>
     <section class="ae-section" aria-labelledby="stepsTitle">
-      <h3 class="ae-section-title" id="stepsTitle">Steps</h3>
+      <h3 class="pk-section-title" id="stepsTitle">Steps</h3>
       <div class="ae-grid">${number(RUN('max_steps'), 'Max steps', 'Steps one run may take; one last call to answer comes on top.', { min: 1 })}</div>
     </section>
     <section class="ae-section" aria-labelledby="escalationTitle">
-      <h3 class="ae-section-title" id="escalationTitle">Escalation</h3>
+      <h3 class="pk-section-title" id="escalationTitle">Escalation</h3>
       <p class="pk-help" id="escalationNote"></p>
       <div class="ae-grid">
         ${field(RUN('auto_escalate_on_stuck'), 'Auto-escalate', toggle(RUN('auto_escalate_on_stuck'), 'Switch to the advanced chain when stuck', false),
@@ -1779,10 +1778,12 @@ function listSection(model) {
     .map((item) => html`<span class="pk-badge ae-chip ae-chip--locked" title="inherited"><span class="pk-mono">${item}</span></span>`);
   return html`<fieldset class="ae-form" ${disabledIf(readOnly())}>
     <div class="pk-stack">
-      <div class="pk-row ae-source" role="radiogroup" aria-label="Where the ${list} list comes from">
+      <div class="pk-row ae-source">
         <span class="pk-label">Source</span>
-        ${MODES.map(([value, label]) => html`<label class="pk-radio"><input type="radio" name="mode-${list}" value="${value}"
-          data-list-mode="${list}" data-key="mode:${list}:${value}" ${mode === value ? 'checked' : ''}> ${label}</label>`)}
+        <div class="pk-segmented" role="radiogroup" aria-label="Where the ${list} list comes from">
+          ${MODES.map(([value, label]) => html`<label><input type="radio" name="mode-${list}" value="${value}"
+            data-list-mode="${list}" data-key="mode:${list}:${value}" ${mode === value ? 'checked' : ''}> ${label}</label>`)}
+        </div>
       </div>
       ${mode === 'mixed' ? html`<p class="pk-error">This list mixes + and ! entries with plain ones, which the loader refuses. Pick a source, or fix it in the YAML tab.</p>`
     : html`<p class="pk-help">${MODE_HELP[mode]}${mode === 'inherited' ? ' Pick another source to change it.' : ''}</p>`}
@@ -1966,14 +1967,16 @@ function drawPrompt() {
   skillKept = null;
   const mode = promptChoice;
   const parentPrompt = Boolean(inherited(SYSTEM_PROMPT));
-  const radio = (value, label) => html`<label class="pk-radio"><input type="radio" name="promptMode" value="${value}"
+  const radio = (value, label) => html`<label><input type="radio" name="promptMode" value="${value}"
     data-prompt-mode data-key="prompt-mode:${value}" ${mode === value ? 'checked' : ''}> ${label}</label>`;
   render($('tab-prompt'), html`<fieldset class="ae-form" ${disabledIf(readOnly())}>
     <section class="ae-section" aria-labelledby="promptTitle">
-      <h3 class="ae-section-title" id="promptTitle">System prompt</h3>
-      <div class="pk-row ae-source" role="radiogroup" aria-label="Where the system prompt comes from">
+      <h3 class="pk-section-title" id="promptTitle">System prompt</h3>
+      <div class="pk-row ae-source">
         <span class="pk-label">Source</span>
-        ${radio('template', 'Template file')}${radio('inline', 'Inline prompt')}
+        <div class="pk-segmented" role="radiogroup" aria-label="Where the system prompt comes from">
+          ${radio('template', 'Template file')}${radio('inline', 'Inline prompt')}
+        </div>
       </div>
       ${mode === 'template' ? html`
         ${parentPrompt ? html`<p class="pk-help">The parent has an inline prompt: an empty one of this agent’s own lets the file apply.</p>` : ''}
@@ -1990,7 +1993,7 @@ function drawPrompt() {
     </section>
   </fieldset>
   <section class="ae-section" aria-labelledby="skillsTitle">
-    <h3 class="ae-section-title" id="skillsTitle">Skills</h3>
+    <h3 class="pk-section-title" id="skillsTitle">Skills</h3>
     <div class="pk-filters">
       <label class="pk-search pk-grow">${icon('search')}<input type="search" class="pk-input pk-input--sm" data-skill-search
         data-key="skill-search" value="${skillQuery}" placeholder="Search skills" aria-label="Search skills"></label>
@@ -2209,7 +2212,7 @@ function drawYaml() {
         plugin settings) are edited here.</span>
       ${codeBox(html`<textarea id="yamlText" class="pk-textarea pk-input--mono ae-yaml-full" rows="24" spellcheck="false" wrap="off"
         data-key="yaml-text"></textarea>`)}
-      <p class="pk-error" id="yamlError" hidden></p>
+      <p id="yamlError" hidden></p>
     </div>
   </fieldset>`);
   if (yamlDraft !== null && yamlProblem) showYamlError(yamlProblem);
@@ -2257,8 +2260,7 @@ function typedYaml(area) {
 
 function showYamlError(text) {
   if (yamlDraft !== null || !text) yamlProblem = text;
-  $('yamlError').textContent = text;
-  $('yamlError').hidden = !text;
+  notice($('yamlError'), text);
   if (text) $('yamlText').setAttribute('aria-invalid', 'true');
   else $('yamlText').removeAttribute('aria-invalid');
 }
@@ -2318,16 +2320,30 @@ function guardYamlTab(event) {
 
 // --------------------------------------------------------------------- actions
 
+/** A file's diff for pk-code--lines, numbered as in the new file: a removed line and the file's names carry no number.
+ * Only what comes before the first hunk is a file's name: inside one, "---" is a removed line that starts with "--". */
+function diffLines(diff) {
+  let next = null;
+  return diff.replace(/\n$/, '').split('\n').map((line) => {
+    if (line.startsWith('@@')) {
+      next = Number(/\+(\d+)/.exec(line)?.[1] ?? 1);
+      return html`<span class="pk-code-line pk-code-line--hunk">${line}</span>`;
+    }
+    if (next === null) return html`<span class="pk-code-line ae-diff-file" data-line="">${line}</span>`;
+    if (line.startsWith('-')) return html`<span class="pk-code-line pk-code-line--del" data-line="">${line}</span>`;
+    if (line.startsWith('\\')) return html`<span class="pk-code-line" data-line="">${line}</span>`;  // "\ No newline at end of file"
+    const number = next;
+    next += 1;
+    return html`<span class="pk-code-line${line.startsWith('+') ? ' pk-code-line--add' : ''}" data-line="${number}">${line}</span>`;
+  });
+}
+
 function showDiff({ title, diff, confirmLabel, danger = false, notes = [] }) {
   const box = $('diffDialog');
   $('diffTitle').textContent = title;
   render($('diffNotes'), notes.map((note) => html`<li>${note}</li>`));
   $('diffNotes').hidden = !notes.length;
-  render($('diffBody'), diff.replace(/\n$/, '').split('\n').map((line) => {
-    const kind = /^(\+\+\+|---)/.test(line) ? 'file' : line.startsWith('@@') ? 'hunk'
-      : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : '';
-    return html`<span class="ae-diff-line${kind ? ` ae-diff-${kind}` : ''}">${line || ' '}</span>`;
-  }));
+  render($('diffBody'), diffLines(diff));
   $('diffWrite').textContent = confirmLabel;
   $('diffWrite').className = `pk-btn ${danger ? 'pk-btn--danger' : 'pk-btn--primary'}`;
   box.returnValue = '';
@@ -2418,7 +2434,7 @@ async function removeAgent() {
 function openCreate(start = 'blank', source = '') {
   const form = $('createForm');
   form.reset();
-  $('createError').hidden = true;
+  notice($('createError'), '');
   const agents = (rows ?? []).filter((row) => row.file);
   render(form.elements.source, agents.map((row) => option(row.name, source)));
   form.elements.start.value = start;
@@ -2433,8 +2449,7 @@ function syncCreate() {
 }
 
 function createError(text) {
-  $('createError').textContent = text;
-  $('createError').hidden = false;
+  notice($('createError'), text);
 }
 
 async function submitCreate(event) {

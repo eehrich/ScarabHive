@@ -30,7 +30,7 @@
   const doc = () => frame.contentDocument;
   const $ = (selector) => doc().querySelector(selector);
   const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
-  const statSub = (key) => $(`#stats [data-stat="${key}"] .cu-sub`)?.textContent;
+  const statSub = (key) => $(`#stats [data-stat="${key}"] .pk-stat-sub`)?.textContent;
   const rows = (id) => [...doc().querySelectorAll(`#${id} tbody tr`)];
   const cells = (row) => [...row.children].map((cell) => cell.textContent.trim());
   const n = (value) => Number(value).toLocaleString();

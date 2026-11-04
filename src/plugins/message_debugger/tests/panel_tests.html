@@ -250,8 +250,12 @@
     });
     const tabSwitch = seen();
     await asked('the turns of one request', () => type('#filterRequest', 'r-bulk-new'));
+    // an answer counted is not drawn yet, and a new filter first draws a placeholder, which has no footer
+    const drawnAfter = (what, previous) => until(what, () => $('#turns .md-footer') && seen() !== previous);
+    await drawnAfter('the turns of one request drawn', tabSwitch);
     const filtered = seen();
     await asked('every bulk turn again', () => type('#filterRequest', ''));  // a new filter starts on the first page
+    await drawnAfter('every bulk turn drawn', filtered);
     const unfiltered = seen();
     $('pk-refresh [data-act="now"]').click();
     await until('the refresh', () => $('#turns .md-footer')?.textContent.includes('50 of 122'));

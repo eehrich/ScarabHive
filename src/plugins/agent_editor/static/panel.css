@@ -37,15 +37,9 @@
 .ae-group > summary > .pk-icon { transition: transform var(--duration-fast); }
 .ae-group[open] > summary > .pk-icon { transform: rotate(90deg); }
 .ae-items { list-style: none; margin: 0; padding: 0; }
-/* a kit ghost button, laid out as a two-line row */
-.ae-item {
-  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 2px;
-  width: 100%; height: auto; padding: var(--space-2); line-height: 1.4; text-align: left; white-space: normal; --btn-fg: var(--text-primary);
-}
 /* the name keeps room for a few letters; badges that do not fit beside it wrap below */
 .ae-item-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); min-width: 0; }
-.ae-item-name { flex: 1 1 6rem; min-width: 0; font-size: var(--text-sm); font-weight: 600; }
-.ae-item-desc { font-size: var(--text-xs); }
+.ae-item-name { flex: 1 1 6rem; }
 
 /* the head */
 .ae-head { display: flex; align-items: flex-start; gap: var(--space-3); flex-wrap: wrap; padding: var(--space-3) var(--space-4) 0; }
@@ -65,7 +59,6 @@
 .ae-plain > legend { padding: 0; margin-bottom: var(--space-2); }
 .ae-section { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 .ae-section:not(:first-child) { padding-top: var(--space-4); border-top: 1px solid var(--border-subtle); }
-.ae-section-title { margin: 0; font-size: var(--text-sm); font-weight: 600; }
 .ae-tab p { margin: 0; }
 .ae-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3) var(--space-4); align-items: start; }
 
@@ -145,10 +138,6 @@ fieldset.ae-skills { display: grid; grid-template-columns: repeat(auto-fit, minm
 .ae-spawn-names { display: inline-block; max-width: 22rem; vertical-align: bottom; }
 .ae-spawn { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
 
-/* the diff: added and removed lines */
-.ae-diff { max-height: 60vh; white-space: pre; }
-.ae-diff-line { display: block; padding: 0 var(--space-1); }
-.ae-diff-add { color: var(--ok); background: var(--ok-subtle); }
-.ae-diff-del { color: var(--danger); background: var(--danger-subtle); }
-.ae-diff-hunk { color: var(--info); }
+/* the diff: the kit's numbered lines, its file names muted */
+.ae-diff { max-height: 60vh; }
 .ae-diff-file { color: var(--text-muted); }

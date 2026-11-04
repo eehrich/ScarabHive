@@ -100,11 +100,11 @@
     await go(`${BASE}/?session_id=s-1`);
     await until('the sub-agents of s-1', () => statValue('total') === '7');
     const counts = statValue('running') === '2' && statValue('idle') === '2' && statValue('interrupted') === '1' && statValue('closed') === '2';
-    const badge = (key) => card(key).querySelector('.pk-card-head .pk-badge').textContent.trim();
-    const running = card('a').dataset.state === 'running' && badge('a') === 'Running' && card('a').querySelector('.pk-badge .pk-spinner')
+    const badge = (key) => card(key).querySelector('.pk-card-head .pk-status').textContent.trim();
+    const running = card('a').dataset.state === 'running' && badge('a') === 'Running' && card('a').querySelector('.pk-status--running')
       && card('a').querySelector('.sa-activity').textContent.trim() === 'Running tool: web_search'
       && card('a').querySelector('.pk-card-head').textContent.includes('research_agent');
-    const interrupted = badge('h') === 'Interrupted' && !card('h').querySelector('.pk-spinner')
+    const interrupted = badge('h') === 'Interrupted' && !card('h').querySelector('.pk-status--running')
       && badge('c') === 'Running' && card('c').querySelector('.sa-activity').textContent.trim() === 'Thinking...';
     await sleep(200);  // an image that loaded would have fired its handler
     const idle = badge('b') === 'Idle' && card('b').querySelector('.sa-task').textContent === MARKUP && !$('#agents img') && window.__xss === undefined
@@ -135,8 +135,8 @@
     setFilter('running');
     const running = shown() === 'a,c';
     setFilter('all');
-    const all = shown() === 'f,a,b,c,h,d,e' && card('d').querySelector('.pk-badge').textContent.trim() === 'Archived'
-      && card('e').querySelector('.pk-badge').textContent.trim() === 'Failed' && !act('d', 'archive') && !act('e', 'archive')
+    const all = shown() === 'f,a,b,c,h,d,e' && card('d').querySelector('.pk-status').textContent.trim() === 'Archived'
+      && card('e').querySelector('.pk-status').textContent.trim() === 'Failed' && !act('d', 'archive') && !act('e', 'archive')
       && act('d', 'transcript');
     setFilter('running');
     for (const key of ['a', 'c']) {  // behind the panel: none running is left

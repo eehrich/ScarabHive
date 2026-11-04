@@ -69,7 +69,7 @@
     await until(`${name} shown`, () => heading() === name && !$('#editor').hidden && $('#tab-general [data-field]'));
   };
   const diff = () => $('#diffDialog');
-  const diffLines = (kind) => all(`#diffBody .ae-diff-${kind}`).map((line) => line.textContent);
+  const diffLines = (kind) => all(`#diffBody .pk-code-line--${kind}`).map((line) => line.textContent);
   const diffShown = () => until('the diff', () => diff().open);
   const writeDiff = async () => { $('#diffWrite').click(); await until('the diff closed', () => !diff().open); };
   const cancelDiff = async () => { $('#diffCancel').click(); await until('the diff closed', () => !diff().open); };
@@ -213,7 +213,7 @@
   });
 
   await check('descriptions from the files are drawn as text, never as markup', async () => {
-    return row('editor').querySelector('.ae-item-desc').textContent === MARKUP
+    return row('editor').querySelector('.pk-list-item-sub').textContent === MARKUP
       && !doc().querySelector('img') && frame.contentWindow.__xss === undefined && window.__xss === undefined;
   });
 
@@ -254,7 +254,7 @@
     await sleep(200);
     const untouched = (await file('config/agents/extra.yaml')).text === before && dirtyShown() && !$('#formLock').disabled;
     await saveAll('scout saved');
-    await until('the list drawn anew', () => row('scout').querySelector('.ae-item-desc').textContent === 'Looks everywhere');
+    await until('the list drawn anew', () => row('scout').querySelector('.pk-list-item-sub').textContent === 'Looks everywhere');
     const after = (await file('config/agents/extra.yaml')).text;
     return clean && marked && shown && untouched && after === before.replace('Looks around', 'Looks everywhere')
       && control(DESCRIPTION).value === 'Looks everywhere';

@@ -1,6 +1,6 @@
 // The Forge panel: the repositories and why one is left out, the policy, the sessions the webhook's news goes to,
 // and what became of each webhook event. Every user's -- the route is for admins; a user sees their own with /forge.
-import { api, copyText, html, icon, localTime, openSession, pluginBase, render, toast } from '/static/kit/panel-kit.js';
+import { api, copyText, html, icon, localTime, openSession, pluginBase, render, stat, toast } from '/static/kit/panel-kit.js';
 
 const BASE = pluginBase(import.meta.url);
 const VIEWER = document.querySelector('[data-viewer]')?.dataset.viewer || '';
@@ -32,12 +32,12 @@ function sessionCell(user, session) {
 
 function draw(s) {
   const hook = s.webhook;
-  render($('stats'), html`
-    <div class="pk-stat"><div class="pk-stat-label">Repositories</div><div class="pk-stat-value">${s.repos.length}</div></div>
-    <div class="pk-stat"><div class="pk-stat-label">Left out</div><div class="pk-stat-value">${s.left_out.length}</div></div>
-    <div class="pk-stat"><div class="pk-stat-label">Sessions at work</div><div class="pk-stat-value">${!hook ? '–' : hook.error ? '?' : s.work.length}</div></div>
-    <div class="pk-stat"><div class="pk-stat-label">Started · woken (1 h)</div><div class="pk-stat-value">${!hook ? 'off' : hook.error ? '?'
-      : `${hook.last_hour.new} · ${hook.last_hour.wake}`}</div></div>`);
+  render($('stats'), [
+    stat('Repositories', s.repos.length),
+    stat('Left out', s.left_out.length),
+    stat('Sessions at work', !hook ? '–' : hook.error ? '?' : s.work.length),
+    stat('Started · woken (1 h)', !hook ? 'off' : hook.error ? '?' : `${hook.last_hour.new} · ${hook.last_hour.wake}`),
+  ]);
 
   render($('repos'), s.repos.length || s.left_out.length ? table(['Name', 'Platform', 'Project', 'Merge', 'CI required', ''], [
     ...s.repos.map((r) => html`<tr><td>${r.name}</td><td>${r.provider} · ${r.host}</td><td class="pk-mono">${r.project}</td>

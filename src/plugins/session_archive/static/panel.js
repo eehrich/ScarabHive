@@ -1,5 +1,5 @@
 // Session Archive: the conversations the sweep put away, and the way back.
-import { api, html, render, icon, confirm, toast } from '/static/kit/panel-kit.js';
+import { api, html, render, icon, confirm, toast, emptyState, stat } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -13,10 +13,6 @@ let busy = false;
 /** Restores and deletes on their way, by session id: their buttons stay off until answered. */
 const pending = new Set();
 
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-const stat = (key, label, value) =>
-  html`<div class="pk-stat" data-stat="${key}"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value}</div></div>`;
 const day = (stamp) => (stamp ? new Date(stamp).toLocaleDateString() : '');
 const mb = (bytes) => `${((bytes || 0) / 1e6).toFixed(1)} MB`;
 const entryUrl = (id) => `${BASE}archived/${encodeURIComponent(id)}`;
@@ -34,7 +30,7 @@ async function refresh(event) {
     if (mine === load) {  // nothing shown before stays, as if it were still so
       archived = null;
       render($('stats'), '');
-      render($('archived'), empty('circle-alert', 'The archive could not be read', error.message));
+      render($('archived'), emptyState('circle-alert', 'The archive could not be read', error.message));
     }
     return;
   } finally {
@@ -54,14 +50,14 @@ function draw() {
   const sessions = archived.reduce((sum, entry) => sum + (entry.session_count || 0), 0);
   const bytes = archived.reduce((sum, entry) => sum + (entry.bytes || 0), 0);
   render($('stats'), [
-    stat('trees', 'Conversations', archived.length),
-    stat('sessions', 'Sessions', sessions),
-    stat('size', 'On disk', mb(bytes)),
-    stat('retention', 'Archived after', retentionDays ? `${retentionDays} days` : '—'),
+    stat('Conversations', archived.length, { key: 'trees' }),
+    stat('Sessions', sessions, { key: 'sessions' }),
+    stat('On disk', mb(bytes), { key: 'size' }),
+    stat('Archived after', retentionDays ? `${retentionDays} days` : '—', { key: 'retention' }),
   ]);
 
   if (!archived.length) {
-    render($('archived'), empty(
+    render($('archived'), emptyState(
       'history', 'Nothing archived yet',
       sweepOff
         // Nothing moves on its own then: saying it would is a promise nobody keeps.

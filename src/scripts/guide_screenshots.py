@@ -79,7 +79,7 @@ SHOTS = {
                                                    await new Promise((done) => setTimeout(done, 50)); } };
         (await until(() => document.querySelector('[data-name="worker"]'))).click();
         await new Promise((done) => setTimeout(done, 800));
-        for (const cell of document.querySelectorAll('.ae-item-desc')) {
+        for (const cell of document.querySelectorAll('.pk-list-item-sub')) {
           if (cell.textContent.includes('<img')) cell.textContent = 'Reviews the changes';
         }"""})],
     "user_management": [("panel.png", "plugins.user_management.tests.test_plugin_user_management_panel", "panel_app",

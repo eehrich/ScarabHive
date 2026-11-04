@@ -59,7 +59,7 @@
     <div class="pk-dialog-body pk-stack">
       <ul class="ae-notes" id="diffNotes" hidden></ul>
       <p class="pk-help">Only these lines change; comments and formatting elsewhere stay as they are.</p>
-      <pre class="pk-code ae-diff" id="diffBody" aria-label="Changes to the file"></pre>
+      <pre class="pk-code pk-code--lines ae-diff" id="diffBody" aria-label="Changes to the file"></pre>
     </div>
     <div class="pk-dialog-actions">
       <button type="submit" class="pk-btn" value="cancel" id="diffCancel">Cancel</button>
@@ -72,7 +72,7 @@
   <form id="createForm">
     <div class="pk-dialog-head"><h2 class="pk-dialog-title" id="createTitle">New agent</h2></div>
     <div class="pk-dialog-body pk-form">
-      <p class="pk-error" id="createError" hidden></p>
+      <p id="createError" hidden></p>
       <label class="pk-field"><span class="pk-label">Name</span>
         <input class="pk-input pk-input--mono" name="name" required pattern="[a-z][a-z0-9_]{1,63}" autocomplete="off"
           aria-describedby="createNameHelp" title="Lower case letters, digits and _, starting with a letter">

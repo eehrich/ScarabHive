@@ -59,8 +59,8 @@
     labels kept for screen readers. label names the list. #}
 {#- A step's state as a screen reader hears it: the tick, the "!" and the dots are drawn by CSS (the current step
     has aria-current). In ``lang``, the page's <html lang>. #}
-{% set STEP_WORDS = {"en": {"done": "done", "warn": "needs attention", "ahead": "not yet"},
-                     "de": {"done": "erledigt", "warn": "braucht Aufmerksamkeit", "ahead": "noch offen"}} %}
+{% set STEP_WORDS = {"en": {"done": "done", "warn": "needs attention", "danger": "needs attention now", "ahead": "not yet"},
+                     "de": {"done": "erledigt", "warn": "braucht Aufmerksamkeit", "danger": "braucht sofort Aufmerksamkeit", "ahead": "noch offen"}} %}
 {% macro steps(items, label="", dots=false, lang="en") -%}
 {%- set words = STEP_WORDS.get(lang[:2] | lower, STEP_WORDS["en"]) -%}
 <ol class="pk-steps{% if dots %} pk-steps--dots{% endif %}"{% if label %} aria-label="{{ label }}"{% endif %}>

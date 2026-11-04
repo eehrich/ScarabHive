@@ -33,7 +33,7 @@
   const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
   const tell = (message) => frame.contentWindow.postMessage(message, location.origin);
   const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
-  const statSub = (key) => $(`#stats [data-stat="${key}"] .ce-sub`)?.textContent;
+  const statSub = (key) => $(`#stats [data-stat="${key}"] .pk-stat-sub`)?.textContent;
   const rows = () => [...doc().querySelectorAll('#events tbody tr')];
   const column = (index) => rows().map((row) => row.cells[index].textContent.trim()).join('|');
   const heads = () => [...doc().querySelectorAll('#events thead th')].map((th) => th.textContent).join();

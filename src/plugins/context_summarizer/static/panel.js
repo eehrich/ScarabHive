@@ -1,6 +1,6 @@
 // Context Summarizer: the summarization runs of the session open in the chat (or the one a link names, ?session_id=),
 // or of all sessions -- applied, rejected or skipped, with the messages a run replaced and the summaries it wrote.
-import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit.js';
+import { api, html, render, confirm, session, emptyState, stat } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -32,11 +32,6 @@ const time = (stamp) => new Date(stamp).toLocaleString();
 const status = (event) => STATUSES[event.status] || { label: event.status, kind: '' };
 const reason = (event) => REASONS[event.reason] || event.reason || '';
 const badge = (event) => html`<span class="pk-badge${status(event).kind ? ` pk-badge--${status(event).kind}` : ''}">${status(event).label}</span>`;
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-const stat = (key, label, value, sub = '') => html`<div class="pk-stat" data-stat="${key}">
-  <div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value}</div>${sub ? html`<div class="pk-muted cs-sub">${sub}</div>` : ''}
-</div>`;
 
 // ------------------------------------------------------------------------ data
 
@@ -47,7 +42,7 @@ async function refresh(event) {
   if (session.scope === 'session' && !id) {
     busy = false;
     show(null);
-    render($('stats'), empty('message-square', 'No session open', 'Open a session in the chat, or show all sessions.'));
+    render($('stats'), emptyState('message-square', 'No session open', 'Open a session in the chat, or show all sessions.'));
     return;
   }
   busy = true;
@@ -57,7 +52,7 @@ async function refresh(event) {
   } catch (error) {
     if (mine === load) {  // nothing of the scope shown before stays, as if it were this one's
       show(null);
-      render($('stats'), empty('circle-alert', 'The history could not be loaded', error.message));
+      render($('stats'), emptyState('circle-alert', 'The history could not be loaded', error.message));
     }
     return;
   } finally {
@@ -70,12 +65,12 @@ async function refresh(event) {
 
 function drawStats(stats) {
   render($('stats'), [
-    stat('events', 'Runs', number(stats.events),
-      stats.events ? `${stats.applied} applied · ${stats.rejected} rejected · ${stats.skipped} skipped` : ''),
-    stat('saved', 'Tokens saved', number(stats.tokens_saved)),
-    stat('summarized', 'Messages summarized', number(stats.messages_summarized)),
-    stat('reduction', 'Average reduction', stats.average_reduction === null ? '–' : percent(stats.average_reduction),
-      stats.applied ? 'of the runs applied' : ''),
+    stat('Runs', number(stats.events),
+      { key: 'events', sub: stats.events ? `${stats.applied} applied · ${stats.rejected} rejected · ${stats.skipped} skipped` : '' }),
+    stat('Tokens saved', number(stats.tokens_saved), { key: 'saved' }),
+    stat('Messages summarized', number(stats.messages_summarized), { key: 'summarized' }),
+    stat('Average reduction', stats.average_reduction === null ? '–' : percent(stats.average_reduction),
+      { key: 'reduction', sub: stats.applied ? 'of the runs applied' : '' }),
   ]);
   $('shown').textContent = events.length < stats.events ? `the newest ${events.length} of ${stats.events} runs` : '';
   $('shown').hidden = !$('shown').textContent;
@@ -90,7 +85,7 @@ function show(list) {
   if (key === drawn) return;  // unchanged: the rows, and the focus on one, stay
   drawn = key;
   const focused = document.activeElement?.closest?.('#events tr[data-id]')?.dataset.id;
-  render($('events'), !list ? '' : !list.length ? empty('scroll-text', 'No summarization yet') : table(list));
+  render($('events'), !list ? '' : !list.length ? emptyState('scroll-text', 'No summarization yet') : table(list));
   if (focused) $('events').querySelector(`tr[data-id="${CSS.escape(focused)}"]`)?.focus();
 }
 
@@ -141,9 +136,9 @@ async function openEvent(id) {
   ].filter(Boolean);
   $('detailTitle').textContent = `${status(event).label} · ${time(event.timestamp)}`;
   render($('detailBody'), html`<dl class="pk-kv">${facts.map(([label, value]) => html`<dt>${label}</dt><dd>${value}</dd>`)}</dl>
-    <h3 class="cs-heading">Summaries <span class="pk-muted">${(event.after_messages || []).length}</span></h3>
+    <h3 class="pk-section-title">Summaries <span class="pk-muted">${(event.after_messages || []).length}</span></h3>
     <div class="pk-stack" data-part="after">${messages(event.after_messages)}</div>
-    <h3 class="cs-heading">Messages summarized <span class="pk-muted">${(event.before_messages || []).length}</span></h3>
+    <h3 class="pk-section-title">Messages summarized <span class="pk-muted">${(event.before_messages || []).length}</span></h3>
     <div class="pk-stack" data-part="before">${messages(event.before_messages)}</div>`);
   $('detailBody').scrollTop = 0;
   opened = id;

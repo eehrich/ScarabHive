@@ -1,5 +1,5 @@
 // Todos: the task list the agents keep for the session open in the chat (or the one a link names, ?session_id=).
-import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit.js';
+import { api, html, render, icon, confirm, session, emptyState, stat } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -11,6 +11,7 @@ let shownFor = null;
 let load = 0;
 let busy = false;
 
+// A stored word, not a run: nothing behind it turns, and a priority is no severity.
 const STATUSES = {
   'not-started': { label: 'Not started', icon: 'square', kind: '' },
   'in-progress': { label: 'In progress', icon: 'loader-circle', kind: 'info' },
@@ -22,10 +23,6 @@ const PRIORITIES = { critical: 'danger', high: 'warn', medium: 'info', low: '' }
 
 const number = (value) => value.toLocaleString();
 const badge = (kind, content) => html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${content}</span>`;
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-const stat = (key, label, value, more = '') =>
-  html`<div class="pk-stat" data-stat="${key}"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value}</div>${more}</div>`;
 
 function ago(stamp) {
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(stamp)) / 1000));
@@ -44,7 +41,7 @@ async function refresh(event) {
   if (!id) {
     busy = false;
     show(null, null);
-    render($('stats'), empty('message-square', 'No session open', "Open a session in the chat to see its agents' tasks."));
+    render($('stats'), emptyState('message-square', 'No session open', "Open a session in the chat to see its agents' tasks."));
     return;
   }
   busy = true;
@@ -54,7 +51,7 @@ async function refresh(event) {
   } catch (error) {
     if (mine === load) {  // nothing of the session shown before stays, as if it were this one's
       show(null, null);
-      render($('stats'), empty('circle-alert', 'Tasks could not be loaded', error.message));
+      render($('stats'), emptyState('circle-alert', 'Tasks could not be loaded', error.message));
     }
     return;
   } finally {
@@ -75,21 +72,21 @@ function drawStats() {
   const count = (status) => tasks.filter((task) => task.status === status).length;
   const done = count('completed');
   render($('stats'), [
-    stat('total', 'Tasks', number(tasks.length)),
-    stat('not-started', 'Not started', number(count('not-started'))),
-    stat('in-progress', 'In progress', number(count('in-progress'))),
-    stat('blocked', 'Blocked', number(count('blocked'))),
-    stat('cancelled', 'Cancelled', number(count('cancelled'))),
-    stat('completed', 'Completed',
+    stat('Tasks', number(tasks.length), { key: 'total' }),
+    stat('Not started', number(count('not-started')), { key: 'not-started' }),
+    stat('In progress', number(count('in-progress')), { key: 'in-progress' }),
+    stat('Blocked', number(count('blocked')), { key: 'blocked' }),
+    stat('Cancelled', number(count('cancelled')), { key: 'cancelled' }),
+    stat('Completed',
       html`${number(done)} <span class="pk-muted td-share">${tasks.length ? Math.round((done / tasks.length) * 100) : 0}%</span>`,
-      html`<progress class="pk-progress" value="${done}" max="${tasks.length || 1}"></progress>`),
+      { key: 'completed', sub: html`<progress class="pk-progress" value="${done}" max="${tasks.length || 1}"></progress>` }),
   ]);
 }
 
 // ----------------------------------------------------------------------- tasks
 
 function taskCard(task) {
-  const status = STATUSES[task.status];
+  const state = STATUSES[task.status] || { label: task.status, icon: 'square', kind: '' };
   const button = (act, name, label, ghost = false) =>
     html`<button type="button" class="pk-btn pk-btn--sm${ghost ? ' pk-btn--ghost' : ''}" data-act="${act}" data-task="${task.task_id}">${icon(name, { size: 'sm' })} ${label}</button>`;
   // not started but waiting on another task: started, the server would block it at once; it completes like a blocked one
@@ -101,7 +98,7 @@ function taskCard(task) {
   ].filter(Boolean);
   return html`<article class="pk-card td-task" data-task="${task.task_id}" data-status="${task.status}">
     <div class="pk-card-head">
-      ${badge(status.kind, html`${icon(status.icon, { size: 'sm' })} ${status.label}`)}
+      ${badge(state.kind, html`${icon(state.icon, { size: 'sm' })} ${state.label}`)}
       ${waiting ? badge('warn', 'waiting') : ''}
       <span class="pk-mono pk-muted">${task.task_id}</span>
       <h3 class="pk-card-title pk-grow">${task.title}</h3>
@@ -135,7 +132,7 @@ function drawTasks() {
   $('shown').textContent = tasks.length ? `${shown.length} of ${tasks.length} tasks` : '';
   render($('tasks'), shown.length
     ? shown.map(taskCard)
-    : empty('list-todo', tasks.length ? 'No task matches the filters' : 'No tasks in this session'));
+    : emptyState('list-todo', tasks.length ? 'No task matches the filters' : 'No tasks in this session'));
 }
 
 // --------------------------------------------------------------------- actions

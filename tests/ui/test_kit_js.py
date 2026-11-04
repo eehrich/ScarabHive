@@ -23,6 +23,10 @@ def results():
 
 
 EXPECTED = [
+    "typedFields: what the browser draws by itself is not typed; a ticked checkbox goes back by its value",
+    "updateKeeping: what is typed stays through a redraw, with the focus and the caret; for another record it goes",
+    "selectRow takes a list without a table, and no id marks no row",
+    "a section title is upper case; a count or a name in it stays as written",
     "the toast region is there and open before the first toast, a live region a screen reader already knows",
     "scrollerOf finds the box that scrolls an element up and down, else the page",
     "keepInSight brings an item into sight in a list that scrolls up and down, and in the page itself",

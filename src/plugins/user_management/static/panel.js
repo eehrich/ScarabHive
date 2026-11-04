@@ -1,5 +1,5 @@
 // Users: the accounts of the auth database -- created, edited, deactivated and deleted by an admin.
-import { api, html, render, icon, confirm, toast } from '/static/kit/panel-kit.js';
+import { api, html, render, icon, confirm, toast, notice, emptyState, stat } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -19,10 +19,6 @@ let editing = null;
 let openings = 0;
 
 const badge = (kind, content) => html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${content}</span>`;
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-const stat = (key, label, value) =>
-  html`<div class="pk-stat" data-stat="${key}"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value}</div></div>`;
 const day = (stamp) => (stamp ? new Date(stamp).toLocaleDateString() : '');
 const userUrl = (id) => `${BASE}users/${encodeURIComponent(id)}`;
 
@@ -39,7 +35,7 @@ async function refresh(event) {
     if (mine === load) {  // nothing shown before stays, as if it were still so
       users = null;
       render($('stats'), '');
-      render($('users'), empty('circle-alert', 'Users could not be loaded', error.message));
+      render($('users'), emptyState('circle-alert', 'Users could not be loaded', error.message));
     }
     return;
   } finally {
@@ -57,9 +53,9 @@ function draw() {
   if (!users) return;
   const active = users.filter((user) => user.is_active);
   render($('stats'), [
-    stat('total', 'Users', users.length),
-    stat('active', 'Active', active.length),
-    stat('admins', 'Active admins', active.filter((user) => user.role === 'admin').length),
+    stat('Users', users.length, { key: 'total' }),
+    stat('Active', active.length, { key: 'active' }),
+    stat('Active admins', active.filter((user) => user.role === 'admin').length, { key: 'admins' }),
   ]);
   const query = $('search').value.trim().toLowerCase();
   const shown = users.filter((user) => !query
@@ -68,7 +64,7 @@ function draw() {
   render($('users'), shown.length ? html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="users">
     <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th aria-sort="descending">Created</th><th>Last login</th><th></th></tr></thead>
     <tbody>${shown.map(row)}</tbody>
-  </table></div>` : empty('users', users.length ? `No user matches “${$('search').value.trim()}”` : 'No users'));
+  </table></div>` : emptyState('users', users.length ? `No user matches “${$('search').value.trim()}”` : 'No users'));
 }
 
 function row(user) {
@@ -141,7 +137,7 @@ function openEditor(user = null) {
   $('editorTitle').textContent = user ? `Edit ${user.username}` : 'New user';
   $('save').textContent = user ? 'Save' : 'Create user';
   $('save').disabled = false;
-  $('editorError').hidden = true;
+  notice($('editorError'), '');
   $('usernameField').hidden = Boolean(user);
   fields.username.disabled = Boolean(user);
   fields.password.required = !user;
@@ -183,8 +179,7 @@ async function save(event) {
   } catch (error) {
     const detail = Array.isArray(error.detail) ? error.detail.map((one) => one.msg).join('; ') : error.message;
     if (asked()) {
-      $('editorError').textContent = detail;
-      $('editorError').hidden = false;
+      notice($('editorError'), detail);
     } else {
       toast(`${name} could not be saved: ${detail}`, { kind: 'error' });
     }

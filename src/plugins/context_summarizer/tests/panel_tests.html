@@ -32,7 +32,7 @@
   const $ = (selector) => doc().querySelector(selector);
   const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
   const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
-  const statSub = (key) => $(`#stats [data-stat="${key}"] .cs-sub`)?.textContent;
+  const statSub = (key) => $(`#stats [data-stat="${key}"] .pk-stat-sub`)?.textContent;
   const rows = () => [...doc().querySelectorAll('#events tbody tr')];
   const ids = () => rows().map((row) => row.dataset.id).join();
   const row = (id) => $(`#events tr[data-id="${id}"]`);

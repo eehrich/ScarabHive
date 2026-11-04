@@ -2,7 +2,7 @@
 // manager instance spawned them -- what each is doing, its transcript, and archiving one. Two views of the same
 // session: the map (the whole tree, sub-agents of sub-agents included) and the list (the level right below the
 // session, with the actions).
-import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit.js';
+import { api, html, render, icon, confirm, session, emptyState, stat, status } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -24,13 +24,14 @@ const archiving = new Set();
 let opened = null;
 let opening = 0;
 
+// kind: the tone of the map's dot; run: the state in the kit's set of run states, for the list's status
 const STATES = {
-  running: { label: 'Running', kind: 'info' },
-  idle: { label: 'Idle', kind: 'ok' },
-  interrupted: { label: 'Interrupted', kind: 'warn' },
-  archived: { label: 'Archived', kind: '' },
-  cancelled: { label: 'Cancelled', kind: '' },
-  failed: { label: 'Failed', kind: 'danger' },
+  running: { label: 'Running', kind: 'info', run: 'running' },
+  idle: { label: 'Idle', kind: 'ok', run: 'success' },
+  interrupted: { label: 'Interrupted', kind: 'warn', run: 'paused' },
+  archived: { label: 'Archived', kind: '', run: 'skipped' },
+  cancelled: { label: 'Cancelled', kind: '', run: 'canceled' },
+  failed: { label: 'Failed', kind: 'danger', run: 'failed' },
 };
 const OPEN = ['running', 'idle', 'interrupted'];
 
@@ -42,10 +43,6 @@ const described = (name) => STATES[name] || { label: name, kind: '' };
 const number = (value) => Number(value ?? 0).toLocaleString();
 const time = (stamp) => (stamp ? new Date(stamp).toLocaleString() : '–');
 const badge = (kind, content) => html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${content}</span>`;
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-const stat = (key, label, value) =>
-  html`<div class="pk-stat" data-stat="${key}"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${number(value)}</div></div>`;
 
 /** The two figures the list and the map both show, empty where the server does not know one: the messages of its
  * transcript as of its last save, and the tokens its last LLM call carried as the provider counted them -- with the
@@ -75,7 +72,7 @@ async function refresh(event) {
   if (!id) {
     busy = false;
     show(null, null, null, null);
-    render($('stats'), empty('message-square', 'No session open', 'Open a session in the chat to see its sub-agents.'));
+    render($('stats'), emptyState('message-square', 'No session open', 'Open a session in the chat to see its sub-agents.'));
     return;
   }
   busy = true;
@@ -97,17 +94,17 @@ async function refresh(event) {
   if (mine !== load) return;  // another session was asked for since
   if (failed) {  // nothing of the session shown before stays, as if it were this one's; the map answered for itself
     show(null, null, null, tree);
-    render($('stats'), empty('circle-alert', 'Sub-agents could not be loaded', failed.message));
+    render($('stats'), emptyState('circle-alert', 'Sub-agents could not be loaded', failed.message));
     return;
   }
   show(answer.instances, answer.phase, id, tree);
   const count = (name) => agents.filter((agent) => state(agent) === name).length;
   render($('stats'), [
-    stat('total', 'Sub-agents', agents.length),
-    stat('running', 'Running', count('running')),
-    stat('idle', 'Idle', count('idle')),
-    stat('interrupted', 'Interrupted', count('interrupted')),
-    stat('closed', 'Failed, cancelled or archived', agents.filter((agent) => !OPEN.includes(state(agent))).length),
+    stat('Sub-agents', number(agents.length), { key: 'total' }),
+    stat('Running', number(count('running')), { key: 'running' }),
+    stat('Idle', number(count('idle')), { key: 'idle' }),
+    stat('Interrupted', number(count('interrupted')), { key: 'interrupted' }),
+    stat('Failed, cancelled or archived', number(agents.filter((agent) => !OPEN.includes(state(agent))).length), { key: 'closed' }),
   ]);
 }
 
@@ -135,13 +132,13 @@ function drawPhase() {
 
 function card(agent) {
   const name = state(agent);
-  const { label, kind } = described(name);
+  const { label, run } = described(name);
   const id = agent.instance_id;
   // what the tool archives from; one archived, cancelled or failed has nothing to archive
   const archivable = agent.status === 'active' || agent.status === 'interrupted';
   return html`<article class="pk-card sa-agent" data-id="${id}" data-state="${name}">
     <div class="pk-card-head">
-      ${badge(kind, html`${name === 'running' ? html`<span class="pk-spinner sa-spinner"></span>` : ''}${label}`)}
+      ${status(run, { label })}
       <h3 class="pk-card-title pk-mono pk-grow sa-id">${id}</h3>
       ${badge('', agent.agent_type)}
     </div>
@@ -168,8 +165,8 @@ function drawAgents() {
   const listed = (agents || []).filter((agent) => filter === 'all'
     || (filter === 'running' ? state(agent) === 'running' : OPEN.includes(state(agent))));
   render($('agents'), !agents ? '' : listed.length ? listed.map(card)
-    : agents.length ? empty('filter', 'No sub-agent matches', `${agents.length} hidden by the filter`)
-      : empty('workflow', 'No sub-agents in this session'));
+    : agents.length ? emptyState('filter', 'No sub-agent matches', `${agents.length} hidden by the filter`)
+      : emptyState('workflow', 'No sub-agents in this session'));
   // only when this frame has the focus: gone to the shell, the frame's activeElement is its body
   if (focused) button(focused.dataset.act, focused.dataset.id)?.focus();
 }
@@ -212,11 +209,11 @@ const branch = (children) => ((children || []).length
 function drawMap() {
   const focused = document.activeElement?.closest?.('#map button[data-id]');  // drawn anew, it keeps the focus
   if (!map) {
-    render($('map'), empty('message-square', 'No session open', 'Open a session in the chat to see its sub-agents.'));
+    render($('map'), emptyState('message-square', 'No session open', 'Open a session in the chat to see its sub-agents.'));
     return;
   }
   if (map.error) {
-    render($('map'), empty('circle-alert', 'The map could not be loaded', map.error));
+    render($('map'), emptyState('circle-alert', 'The map could not be loaded', map.error));
     return;
   }
   const root = map.root;
@@ -272,7 +269,7 @@ function drawTranscript() {
       <dt>Last used</dt><dd>${time(data.last_used)}</dd>
       <dt>Task</dt><dd>${data.task_summary || '–'}</dd>
     </dl>
-    <h3 class="sa-heading">Transcript <span class="pk-muted" data-part="shown">${messages.length < data.message_count
+    <h3 class="pk-section-title">Transcript <span class="pk-muted" data-part="shown">${messages.length < data.message_count
       ? `the last ${number(messages.length)} of ${number(data.message_count)} messages` : `${number(messages.length)} messages`}</span></h3>
     ${start ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="earlier">${icon('arrow-up', { size: 'sm' })} Earlier messages</button>` : ''}
     <div class="pk-stack" data-part="messages">${messages.length ? messages.map(entry) : html`<div class="pk-muted">No messages</div>`}</div>`);

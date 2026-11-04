@@ -53,6 +53,8 @@ class FolderRoutes:
     """The folder picker's route for a web handler class that provides ``folder_roots()``: a PathSandbox, or the
     root directories themselves. The plugin's schema.yaml names it: GET /dirs -> get_dirs."""
 
+    folders_setting = ""  # where the allowed folders are configured, for the message that none of them exists
+
     def folder_roots(self) -> PathSandbox | Iterable[Path | str]:
         raise NotImplementedError("a web class on FolderRoutes says which folders may be listed")
 
@@ -63,10 +65,10 @@ class FolderRoutes:
             if not there:
                 roots = sandbox.describe_roots()
                 raise refusal(request,
-                              f"None of the allowed folders exists ({roots}): create one, or name others in the "
-                              "plugin's configuration",
-                              f"Keiner der erlaubten Ordner existiert ({roots}): einen anlegen oder in der "
-                              "Konfiguration des Plugins andere nennen")
+                              f"None of the allowed folders exists ({roots}): create one, or name others in "
+                              f"{self.folders_setting or 'the plugin configuration'}",
+                              f"Keiner der erlaubten Ordner existiert ({roots}): einen anlegen oder in "
+                              f"{self.folders_setting or 'der Konfiguration des Plugins'} andere nennen")
             return {"path": "", "parent": None, "dirs": [{"name": str(root), "path": str(root)} for root in there],
                     "truncated": False}
         try:
@@ -75,7 +77,9 @@ class FolderRoutes:
             raise refusal(request, str(exc), f"{path} liegt außerhalb der erlaubten Ordner oder ist privat") from exc
         if not folder.is_dir():
             raise refusal(request, f"No such folder: {path}", f"Kein Ordner: {path}")
-        below = next(folder.relative_to(root) for root in sandbox.roots if folder == root or root in folder.parents)
+        # from the innermost root that holds it: a root itself is offered, wherever its name starts with a dot
+        below = min((folder.relative_to(root) for root in sandbox.roots if folder == root or root in folder.parents),
+                    key=lambda part: len(part.parts))
         if any(part.startswith(".") for part in below.parts):  # not listed, so not entered by its path either
             raise refusal(request, f"{path} is a hidden folder", f"{path} ist ein versteckter Ordner")
         try:
@@ -86,9 +90,13 @@ class FolderRoutes:
         dirs = []
         private = private_folders()  # once for the listing: resolving each entry fully cost ten times the walk
         for entry in entries:
-            if entry.name.startswith(".") or not entry.is_dir():
+            try:
+                if entry.name.startswith(".") or not entry.is_dir():
+                    continue
+                link = _is_link(entry)
+            except OSError:  # no right to look at it, a link to itself: not listed
                 continue
-            if _is_link(entry):  # it may lead anywhere: out of the roots, into a private folder
+            if link:  # it may lead anywhere: out of the roots, into a private folder
                 try:
                     sandbox.resolve(entry.path)
                 except PathSandboxDenied:

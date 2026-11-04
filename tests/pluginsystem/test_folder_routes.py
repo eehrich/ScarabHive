@@ -45,6 +45,55 @@ def test_the_top_lists_the_roots_that_exist_only(tmp_path):
                       "truncated": False}
 
 
+def test_a_root_inside_another_opens_though_its_name_starts_with_a_dot(tmp_path):
+    outer = tmp_path / "a"
+    inner = outer / ".x"
+    (inner / "work").mkdir(parents=True)
+
+    answer = client_for([outer, inner]).get("/p/dirs", params={"path": str(inner.resolve())})
+
+    assert answer.status_code == 200 and names(answer.json()) == ["work"]
+
+
+@pytest.mark.parametrize("refused", ["is_dir", "stat"])
+def test_a_folder_it_has_no_right_to_look_at_is_left_out_not_an_error(tmp_path, monkeypatch, refused):
+    (tmp_path / "open").mkdir()
+    real = os.scandir
+
+    class Closed:
+        """A folder as scandir gives it, whose one question or other the file system refuses."""
+        name, path = "closed", str(tmp_path / "closed")
+
+        def is_dir(self):
+            if refused == "is_dir":
+                raise PermissionError(13, "Permission denied", self.path)
+            return True
+
+        def is_symlink(self):
+            return False
+
+        def stat(self, follow_symlinks=True):
+            raise PermissionError(13, "Permission denied", self.path)
+
+    monkeypatch.setattr(folder_routes.os, "scandir", lambda folder: [Closed(), *real(folder)])
+
+    answer = client_for([tmp_path]).get("/p/dirs", params={"path": str(tmp_path.resolve())})
+
+    assert answer.status_code == 200 and names(answer.json()) == ["open"]
+
+
+def test_with_no_root_there_the_refusal_names_the_setting_a_plugin_gives(tmp_path):
+    class Named(Web):
+        folders_setting = "some_plugin.some_setting"
+
+    app = FastAPI()
+    app.get("/p/dirs")(Named([tmp_path / "missing"]).get_dirs)
+
+    answer = TestClient(app).get("/p/dirs")
+
+    assert answer.status_code == 422 and "some_plugin.some_setting" in answer.json()["detail"]
+
+
 def test_with_no_root_there_the_top_is_refused_naming_the_roots(tmp_path):
     client = client_for([tmp_path / "first", tmp_path / "second"])
 

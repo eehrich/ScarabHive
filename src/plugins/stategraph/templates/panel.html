@@ -23,7 +23,7 @@
     <div id="placeholder" class="sg-placeholder pk-stack">{{ empty('workflow', 'No machine open', 'Pick a machine on the left, or create a new one.') }}
       {#- what runs or stopped anywhere, without opening each machine (FEAT-7): a row opens its run with its machine #}
       <section class="pk-stack" aria-label="Runs of every machine">
-        <h3 class="sg-section-title">Runs of every machine</h3>
+        <h3 class="pk-section-title">Runs of every machine</h3>
         <div class="pk-filters">
           <input id="everyRunTags" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="tags: book:95,path:main" aria-label="Only runs with these tags" title="name:value,name:value -- only runs started with all of these tags" autocomplete="off">
           <select id="everyRunStatus" class="pk-select pk-select--sm" aria-label="Runs of this status">
@@ -127,9 +127,9 @@
     <div id="side-debug" class="sg-side-body" role="tabpanel" hidden>
       <div id="dbgRun"></div>
       {#- right under the run: the frames, folded to a line each, are where its submachines are found #}
-      <div class="sg-section" id="framesSection" hidden><h4 class="sg-section-title">Frames <span id="framesCount" class="pk-muted"></span></h4><div id="dbgFrames" class="sg-frames"></div></div>
+      <div class="sg-section" id="framesSection" hidden><h4 class="pk-section-title">Frames <span id="framesCount" class="pk-muted"></span></h4><div id="dbgFrames" class="sg-frames"></div></div>
       <div class="sg-section">
-        <h4 class="sg-section-title">Watch <span id="dbgWatchScope" class="pk-muted"></span></h4>
+        <h4 class="pk-section-title">Watch <span id="dbgWatchScope" class="pk-muted"></span></h4>
         <div id="dbgWatch"></div>
         <form class="pk-row sg-inline" id="watchForm">
           <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="expr" placeholder="len(ctx.issues)" aria-label="Watch expression" autocomplete="off">
@@ -138,11 +138,11 @@
         </form>
       </div>
       <div class="sg-section">
-        <h4 class="sg-section-title">Breakpoints <span id="dbgPointsScope" class="pk-muted"></span></h4>
+        <h4 class="pk-section-title">Breakpoints <span id="dbgPointsScope" class="pk-muted"></span></h4>
         <div id="dbgPoints"></div>
       </div>
       <div class="sg-section" id="evalSection" hidden>
-        <h4 class="sg-section-title">Evaluate</h4>
+        <h4 class="pk-section-title">Evaluate</h4>
         <form class="pk-row sg-inline" id="evalForm">
           <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="expr" placeholder="ctx.draft[:200]" aria-label="Expression" autocomplete="off">
           <button type="submit" class="pk-btn pk-btn--sm">Evaluate</button>
@@ -155,7 +155,7 @@
         </form>
       </div>
       <div class="sg-section" id="eventSection" hidden>
-        <h4 class="sg-section-title">Send event</h4>
+        <h4 class="pk-section-title">Send event</h4>
         <form class="pk-stack" id="eventForm">
           <div class="pk-row sg-inline">
             <select class="pk-select pk-select--sm pk-grow" name="name" aria-label="Event"></select>

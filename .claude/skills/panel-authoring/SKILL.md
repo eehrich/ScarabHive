@@ -151,6 +151,7 @@ import { api, html, render, icon, session } from '/static/kit/panel-kit.js';
 | `abandon(name)` | drop the running `latest` call of this name, for instance when the user clears what it would fill. |
 | `pluginBase(import.meta.url)` | the plugin's address for a script from its `static/` folder (`/plugins/<name>`). |
 | `errorText(error)` | the text the toast would show ("404: Not Found") — for a page that shows the error itself. |
+| `typedFields(root)`, `updateKeeping(el, content, {keep})`, `onceSaved(form)` | a detail a person types into. `typedFields`: the named fields they changed, read from the fields themselves (not those in a `<dialog>`, disabled or read-only) -- no `editing` flag of your own, use `setDirty(typedFields(detail).length > 0)` in its `input` listener. `updateKeeping`: `update`, and what is typed goes back in the same tick as the draw, with focus and caret; `keep: false` when the element shows another record now. `onceSaved(form)` before sending, the function it returns once the server has it: what was sent is no longer typed, what was typed in the meantime still is. Choosing another record, take the old form off the screen at once (`update(detail, skeleton(4))`): nothing can be typed into it or sent for the wrong record. |
 | `update(el, content)` | `render`, but only when the markup changed (returns whether it drew). An unchanged answer leaves scroll, focus, selection and open `<details>` alone. Draw an element either with `update` or with `render`. |
 | `notice(el, text, {kind})` | a message in place as a `.pk-callout` (`danger` by default, `warn`, `info`, `ok`); an empty text hides it. For "Refresh failed, shown is the state of …". |
 | `emptyState(icon, title, text, action)`, `skeleton(lines)` | empty state and loading placeholder; in templates the macros `empty()` and `skeleton()` from `kit/macros.html`. `action`: the button that does the next step -- an empty state says what to do, not only why it is empty. |
@@ -342,7 +343,7 @@ shell); the events and states are in `docs/run_events.md`.
   stays put; 2:3, `--list-wide` 3:2, `--even` 1:1; a `pk-table-wrap` in it scrolls sideways in its column — no
   `overflow-x` of your own), `pk-section-title` (the small uppercase heading over a group),
   `pk-form--cols` (two columns, one when narrow; `pk-field--wide` spans both),
-  `pk-steps`/`pk-step` (an `<ol>`; `data-state="done|current|warn|ahead"`, `aria-current="step"` on the current;
+  `pk-steps`/`pk-step` (an `<ol>`; `data-state="done|current|warn|danger|ahead"`, `aria-current="step"` on the current;
   `pk-step-label`, `pk-step-sub`; `pk-steps--dots` for an onboarding; the `steps()` macro),
   `pk-list-item` (a two-line entry to choose, on a button or `pk-btn`: `pk-list-item-name`, `pk-list-item-sub`,
   `aria-current="true"`), `pk-legend` with `pk-swatch[data-tone="ok|warn|danger|info|accent|muted"]`,

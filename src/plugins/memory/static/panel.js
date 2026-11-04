@@ -1,5 +1,5 @@
 // Memory: the long-term memories the agents keep for the session open in the chat (or the one a link names, ?session_id=).
-import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit.js';
+import { api, html, render, confirm, session, emptyState, stat } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -22,10 +22,6 @@ const percent = (ratio) => `${Math.round(ratio * 100)}%`;
 const time = (stamp) => new Date(stamp).toLocaleString();
 const badge = (kind, content) => html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${content}</span>`;
 const importance = (value) => badge(value >= 8 ? 'warn' : value >= 5 ? 'info' : '', `${value}/10`);
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-const stat = (key, label, value) =>
-  html`<div class="pk-stat" data-stat="${key}"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value}</div></div>`;
 const rows = () => [...$('memories').querySelectorAll('tr[data-memory]')];
 
 // ------------------------------------------------------------------------ data
@@ -39,7 +35,7 @@ async function refresh(event) {
     busy = false;
     show(null, null, '');
     $('searchForm').hidden = true;
-    render($('stats'), empty('message-square', 'No session open', 'Open a session in the chat to see the memories its agents keep.'));
+    render($('stats'), emptyState('message-square', 'No session open', 'Open a session in the chat to see the memories its agents keep.'));
     return;
   }
   $('searchForm').hidden = false;
@@ -59,7 +55,7 @@ async function refresh(event) {
   } catch (error) {
     if (mine === load) {  // nothing of the session or search shown before stays, as if it were this one's
       show(null, null, '');
-      render($('stats'), empty('circle-alert', query ? 'The search failed' : 'Memories could not be loaded', error.message));
+      render($('stats'), emptyState('circle-alert', query ? 'The search failed' : 'Memories could not be loaded', error.message));
     }
     return;
   } finally {
@@ -72,9 +68,9 @@ async function refresh(event) {
 
 function drawStats(stats) {
   render($('stats'), [
-    stat('total', 'Memories', number(stats.total_memories)),
-    stat('importance', 'Average importance', stats.avg_importance === null ? '–' : stats.avg_importance.toFixed(1)),
-    stat('accesses', 'Accesses', number(stats.total_accesses)),
+    stat('Memories', number(stats.total_memories), { key: 'total' }),
+    stat('Average importance', stats.avg_importance === null ? '–' : stats.avg_importance.toFixed(1), { key: 'importance' }),
+    stat('Accesses', number(stats.total_accesses), { key: 'accesses' }),
   ]);
 }
 
@@ -95,7 +91,7 @@ function show(list, sessionId, query, total = 0) {
   const place = focused ? rows().indexOf(focused) : -1;
   render($('memories'), !list ? ''
     : list.length ? table(list, query)
-      : empty('database', query ? 'No memory matches the search' : 'No memories in this session'));
+      : emptyState('database', query ? 'No memory matches the search' : 'No memories in this session'));
   if (focused) focusRow(sameSession ? focused.dataset.memory : null, place);
 }
 
@@ -139,7 +135,7 @@ function openMemory(row) {
         : html`<dt>Match</dt><dd>${percent(memory.similarity)}</dd>`}
       ${memory.keywords.length ? html`<dt>Keywords</dt><dd class="pk-row mm-keywords">${memory.keywords.map((word) => badge('', word))}</dd>` : ''}
     </dl>
-    <h3 class="mm-heading">Content</h3>
+    <h3 class="pk-section-title">Content</h3>
     <div class="mm-full" data-part="content">${memory.content}</div>`);
   $('detailBody').scrollTop = 0;
   if (!$('detail').open) $('detail').showModal();

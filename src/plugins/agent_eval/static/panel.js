@@ -1,7 +1,7 @@
 // Evals: start a suite, read its runs, compare arms and baselines.
 import {
   api, html, update, icon, confirm, toast, emptyState, errorText, isAborted, localTime, selectRow, withBusy,
-  pluginBase, status, initTabs, keepInSight, scrollerOf,
+  pluginBase, stat, status, initTabs, keepInSight, scrollerOf,
 } from '/static/kit/panel-kit.js';
 
 const BASE = pluginBase(import.meta.url);
@@ -22,7 +22,8 @@ const STATUS = { done: 'success', running: 'running', stopped: 'canceled', incom
 const runStatus = (name) => status(STATUS[name] || 'pending', { label: name, pill: true });
 const badge = (text, kind = '') => html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${text}</span>`;
 // pass rate as a tone: all passed, none, or in between
-const tone = (passes, runs) => (!runs ? '' : passes === runs ? 'pk-text--ok' : passes ? 'pk-text--warn' : 'pk-text--danger');
+const toneName = (passes, runs) => (!runs ? '' : passes === runs ? 'ok' : passes ? 'warn' : 'danger');
+const tone = (passes, runs) => (runs ? `pk-text--${toneName(passes, runs)}` : '');
 const planned = (m) => (m.arms?.length || 0) * (m.tasks || 0) * (m.repeats || 0);
 
 // ------------------------------------------------------------------- suites
@@ -154,15 +155,12 @@ function detail(rep) {
       ${m.status === 'running' ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="stop">${icon('square', { size: 'sm' })} Stop</button>` : ''}
     </div>
     <div class="pk-stats">
-      <div class="pk-stat"><div class="pk-stat-label">Runs</div><div class="pk-stat-value">${scored.length} / ${total}</div>
-        ${progress(scored.length, total, m.status)}
-        ${notCounted ? html`<div class="pk-muted">${notCounted} not counted${waiting ? `, ${waiting} waiting for the judge` : ''}</div>` : ''}</div>
-      <div class="pk-stat"><div class="pk-stat-label">Passed</div>
-        <div class="pk-stat-value ${tone(passed, scored.length)}">${passed} / ${scored.length}</div>
-        <div class="pk-muted">${scored.length ? pct(passed / scored.length) : 'none scored yet'}</div></div>
-      <div class="pk-stat"><div class="pk-stat-label">Cost</div><div class="pk-stat-value">${usd(cost)}</div>
-        <div class="pk-muted">${[priced.length && `${usd(cost / priced.length)} per run`,
-          unpriced && `${unpriced} run(s) unknown`].filter(Boolean).join(' · ')}</div></div>
+      ${stat('Runs', `${scored.length} / ${total}`, { sub: html`${progress(scored.length, total, m.status)}
+        ${notCounted ? html`<div>${notCounted} not counted${waiting ? `, ${waiting} waiting for the judge` : ''}</div>` : ''}` })}
+      ${stat('Passed', `${passed} / ${scored.length}`, { tone: toneName(passed, scored.length),
+        sub: scored.length ? pct(passed / scored.length) : 'none scored yet' })}
+      ${stat('Cost', usd(cost), { sub: [priced.length && `${usd(cost / priced.length)} per run`,
+        unpriced && `${unpriced} run(s) unknown`].filter(Boolean).join(' · ') })}
     </div>
     <div class="pk-filters">
       ${comparable ? html`<label class="pk-muted" for="against">Compare against</label>

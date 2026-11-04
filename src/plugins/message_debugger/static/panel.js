@@ -1,7 +1,7 @@
 // Message Debugger: the messages agents send to their LLM (turns) and the raw provider requests behind them.
 // Opened from a chat answer (?request_id=) or a session (?session_id=), both lists start filtered to it; a
 // request takes the calls under it along (tool calls, sub-agents).
-import { api, html, render, icon, jsonView, trusted, alert, confirm, toast } from '/static/kit/panel-kit.js';
+import { api, html, render, icon, jsonView, trusted, alert, confirm, toast, emptyState, stat } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const PAGE = 50;
@@ -70,12 +70,6 @@ function parseJson(text) {
 
 const isTree = (value) => value !== null && typeof value === 'object';
 
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
-
-const stat = (label, value) =>
-  html`<div class="pk-stat"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${value}</div></div>`;
-
 // ---------------------------------------------------------------- statistics
 
 /** A select's choices; a chosen value the statistics no longer name (pruned away) stays chosen. */
@@ -99,7 +93,7 @@ async function loadStats({ auto = false } = {}) {
     const user = $('filterUser').value.trim();
     stats = await api(`${BASE}stats${user ? `?user_id=${encodeURIComponent(user)}` : ''}`, { quiet: true });
   } catch (error) {
-    if (load === statsLoad) render($('stats'), empty('circle-alert', 'Statistics could not be loaded', error.message));
+    if (load === statsLoad) render($('stats'), emptyState('circle-alert', 'Statistics could not be loaded', error.message));
     return;
   } finally {
     if (load === statsLoad) statsBusy = false;
@@ -211,10 +205,10 @@ function draw(tab) {
   $(`${tab}Count`).textContent = number(list.total);
   if (!list.rows.length) {
     render($(tab), filtered(tab)
-      ? empty('filter', 'Nothing matches the filters', 'As of the last refresh.')
+      ? emptyState('filter', 'Nothing matches the filters', 'As of the last refresh.')
       : tab === 'turns'
-        ? empty('history', 'No turns captured yet', 'The messages agents send to their LLM show up here with a refresh.')
-        : empty('history', 'No LLM requests captured yet', 'The raw requests to the LLM providers and their responses show up here with a refresh.'));
+        ? emptyState('history', 'No turns captured yet', 'The messages agents send to their LLM show up here with a refresh.')
+        : emptyState('history', 'No LLM requests captured yet', 'The raw requests to the LLM providers and their responses show up here with a refresh.'));
     return;
   }
   const more = list.rows.length < Math.min(list.total, MOST);
@@ -248,7 +242,7 @@ async function loadList(tab, { more = false, countOnly = false, auto = false, fr
   } catch (error) {
     if (load === list.load && !countOnly) {
       list.drawn = '';
-      render($(tab), empty('circle-alert', 'Could not be loaded', error.message));
+      render($(tab), emptyState('circle-alert', 'Could not be loaded', error.message));
     }
     return;
   } finally {
@@ -415,7 +409,7 @@ async function openDetail(tab, id) {
   } catch (error) {
     if (load === detailLoad) {
       $('detailTitle').textContent = entryName(tab, id);
-      render($('detailBody'), empty('circle-alert', 'Could not be loaded', error.message));
+      render($('detailBody'), emptyState('circle-alert', 'Could not be loaded', error.message));
     }
     return;
   }

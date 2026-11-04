@@ -1,5 +1,5 @@
 // SSH Machines: a terminal per machine -- what the agents and the viewer ran there, and a line to run more.
-import { api, html, render, icon, confirm, toast } from '/static/kit/panel-kit.js';
+import { api, html, render, confirm, toast, notice, emptyState } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -22,8 +22,6 @@ let busy = false;
 let openings = 0;
 
 const current = () => machines?.find((machine) => machine.name === shown) || null;
-const empty = (name, title, text = '') =>
-  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
 
 function state(machine) {
   if (machine.error) return { kind: 'danger', label: 'Unreachable', title: machine.error };
@@ -49,7 +47,7 @@ async function refresh(event) {
     if (mine === load) {  // nothing shown before stays, as if it were still so
       machines = null;
       drawMachines();
-      render($('notice'), empty('circle-alert', 'Machines could not be loaded', error.message));
+      render($('notice'), emptyState('circle-alert', 'Machines could not be loaded', error.message));
     }
     return;
   } finally {
@@ -88,7 +86,7 @@ function drawMachines() {
   const machine = current();
   $('pane').hidden = !machine;
   const focused = document.activeElement?.closest('#tabs [role="tab"]')?.dataset.tab;  // drawn anew, it keeps the focus
-  render($('notice'), machines && !machines.length ? empty('server', 'No machines', 'Add one, or configure them for the plugin.') : '');
+  render($('notice'), machines && !machines.length ? emptyState('server', 'No machines', 'Add one, or configure them for the plugin.') : '');
   render($('tabs'), (machines || []).map((one) => {
     const { kind, label, title } = state(one);
     const selected = one.name === shown;
@@ -190,7 +188,7 @@ function drawAuth() {
 function openAdd() {
   openings += 1;
   $('addSubmit').disabled = false;
-  $('addError').hidden = true;
+  notice($('addError'), '');
   drawAuth();
   $('add').showModal();
 }
@@ -216,8 +214,7 @@ async function add(event) {
     result = await api(`${BASE}api/machines`, { method: 'POST', json: machine, quiet: true });
   } catch (error) {
     if (asked()) {
-      $('addError').textContent = error.message;
-      $('addError').hidden = false;
+      notice($('addError'), error.message);
     } else {
       toast(`${machine.name} could not be added: ${error.message}`, { kind: 'error' });
     }
