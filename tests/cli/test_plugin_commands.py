@@ -769,3 +769,37 @@ class TestTheSubAgentManagerReally:
 
         for command in schema["commands"]:
             assert command["params"]["operation"] in allowed, command["name"]
+
+
+def test_hidden_commands_take_one_log_line_however_many_there_are(caplog):
+    """The list is collected on every help and autocomplete request, for every plugin the agent may not use."""
+    agent = _Agent({f"plugin_{i}": _Plugin({"commands": [{"name": "go", "tool": f"plugin_{i}_go"}]}) for i in range(5)},
+                   allowed=())
+    with caplog.at_level("DEBUG", logger="agent_system.plugin_commands"):
+        assert collect_plugin_commands(agent) == []
+    lines = [r.getMessage() for r in caplog.records if r.name == "agent_system.plugin_commands"]
+    assert len(lines) == 1, lines
+    assert all(f"plugin_{i}:go" in lines[0] for i in range(5)), "a hidden command can still be looked up in the log"
+
+
+def test_a_prefix_walk_logs_no_failure_for_names_that_are_no_server(caplog):
+    from agent_system.servers.agent.components.server_resolution import resolve_longest_prefix, resolve_registry_server
+
+    registry, integration = _Registry({"a_b": object()}), SimpleNamespace(tool_integration=None)
+    with caplog.at_level("DEBUG", logger="agent_system.servers.agent.components.server_resolution"):
+        found, prefix = resolve_longest_prefix(lambda name: resolve_registry_server(registry, integration, name),
+                                               "a_b_c_d")
+    assert (found, prefix) == (registry.get("a_b"), "a_b"), "fixture: the walk found its server"
+    assert not caplog.records, [r.getMessage() for r in caplog.records]
+
+
+def test_a_registry_that_really_fails_is_still_logged(caplog):
+    from agent_system.servers.agent.components.server_resolution import resolve_registry_server
+
+    class Broken:
+        def get(self, name):
+            raise RuntimeError("registry is broken")
+
+    with caplog.at_level("DEBUG", logger="agent_system.servers.agent.components.server_resolution"):
+        assert resolve_registry_server(Broken(), SimpleNamespace(tool_integration=None), "x") is None
+    assert "registry is broken" in caplog.text

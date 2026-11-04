@@ -6,6 +6,7 @@ StateGraphServer and RunStore under tmp_path.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 import pytest
@@ -204,3 +205,31 @@ def test_svc5_an_owner_in_another_pid_namespace_of_this_host_is_never_judged_gon
     # a container that shares the hostname: its pid does not exist here, and it may well run
     assert not owner_gone(f"box/4026532999:{dead.pid}:abc", utc_at(60))
     assert not owner_gone(f"box:{dead.pid}:abc", utc_at(60)), "an owner id without one is no proof either"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="status() is slow on Windows only; elsewhere it finds the zombies")
+def test_owner_gone_judges_without_the_slow_status_on_windows(monkeypatch):
+    import psutil
+    import subprocess
+    import sys
+
+    from plugins.stategraph.engine import runner
+    from plugins.stategraph.service import owner_gone
+
+    monkeypatch.setattr(runner, "host_identity", lambda: "box")
+
+    def forbidden(self):
+        raise AssertionError("status() walks every process of the system")
+    monkeypatch.setattr(psutil.Process, "status", forbidden)
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        assert not owner_gone(f"box:{child.pid}:abc", utc_at(60))
+    finally:
+        child.kill()
+    child.wait()
+    assert owner_gone(f"box:{child.pid}:abc", utc_at(60))
+
+    still_active = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(259)"])  # 259 reads as STILL_ACTIVE
+    still_active.wait()  # its handle is held here, too
+    assert owner_gone(f"box:{still_active.pid}:abc", utc_at(60))

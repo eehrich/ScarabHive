@@ -1289,3 +1289,28 @@ class TestAWakeTheAgentsRoleGateRefuses:
         state, note = gated_world.presence.notify("su", "bob")
 
         assert (state == "woke_session") is woken, (state, note)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="status() is slow on Windows only; elsewhere it finds the zombies")
+def test_alive_tells_processes_apart_without_the_slow_status_on_windows(monkeypatch):
+    from agent_system.core.session_presence import alive
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        started = psutil.Process(child.pid).create_time()
+
+        def forbidden(self):
+            raise AssertionError("status() walks every process of the system, on the event loop")
+        monkeypatch.setattr(psutil.Process, "status", forbidden)
+
+        assert alive(child.pid, started)
+        assert not alive(child.pid, started - 100), "the pid's process is another one by now"
+    finally:
+        child.kill()
+    child.wait()  # ended, while this Popen still holds its handle: the pid may still answer to some calls
+    assert not alive(child.pid, started)
+    assert not alive(child.pid)
+
+    still_active = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(259)"])  # 259 reads as STILL_ACTIVE
+    still_active.wait()  # its handle is held here, too
+    assert not alive(still_active.pid)

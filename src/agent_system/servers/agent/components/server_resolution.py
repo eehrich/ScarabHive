@@ -39,6 +39,8 @@ def resolve_registry_server(registry: Any, tool_integration_manager: Any,
             server = registry.get(server_name)
             if server:
                 return server
+        except KeyError:
+            pass  # no server of that name: what a prefix walk gets on most of its probes, not a failure
         except Exception as e:
             logger.debug(f"Failed to get server '{server_name}' from local registry: {e}")
 

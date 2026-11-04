@@ -83,16 +83,18 @@ def collect_plugin_commands(agent: Any) -> list[PluginCommand]:
         return []
 
     commands: list[PluginCommand] = []
+    hidden: list[str] = []
     for server_name in server_names:
         for raw in _declared_commands(registry, server_name):
             command = _build_command(server_name, raw)
             if command is None:
                 continue
-            denial = _denial(agent, command.tool)
-            if denial is not None:
-                logger.debug("Hiding /%s: %s", command.qualified, denial)
+            if _denial(agent, command.tool) is not None:
+                hidden.append(command.qualified)
                 continue
             commands.append(command)
+    if hidden:  # one line: the list is collected on every help and autocomplete request
+        logger.debug("Hiding %d commands this agent may not run: %s", len(hidden), ", ".join(hidden))
     return sorted(commands, key=lambda c: (c.name, c.plugin))
 
 

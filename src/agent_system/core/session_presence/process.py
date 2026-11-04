@@ -45,7 +45,13 @@ def alive(pid: Optional[int], started: Optional[float] = None) -> bool:
         return False
     try:
         process = psutil.Process(pid)
-        if process.status() == psutil.STATUS_ZOMBIE:
+        # Windows has no zombies, and status() there walks every process of the system (135 ms against 0.1 for pids(),
+        # measured with 725 processes; callers ask from the event loop). What it told beyond zombies: an ended process
+        # whose handle someone holds, and whose exit code happens to read as still active, is not in that list.
+        if os.name == "nt":
+            if pid not in psutil.pids():
+                return False
+        elif process.status() == psutil.STATUS_ZOMBIE:
             return False
         return started is None or abs(process.create_time() - started) < 1.0
     except psutil.NoSuchProcess:

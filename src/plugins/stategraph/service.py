@@ -1584,7 +1584,10 @@ def owner_gone(owner: str, lease_until: Optional[str]) -> bool:
         return False
     try:
         process = psutil.Process(pid)
-        if process.status() == psutil.STATUS_ZOMBIE:
+        if os.name == "nt":     # no zombies there, and status() walks every process of the system (session_presence)
+            if pid not in psutil.pids():
+                return True
+        elif process.status() == psutil.STATUS_ZOMBIE:
             return True
         renewed = _timestamp(lease_until)
         return renewed is not None and process.create_time() > renewed - LEASE_SECONDS + 1.0
