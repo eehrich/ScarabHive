@@ -3,18 +3,23 @@
 The agent is one instance shared by every request of the process, so what a run holds while it runs
 is kept per session (Agent.__init__ says why): the message list and tool schemas of the current
 turn, read by compaction tools, token-counting hooks and a viewer that joins a session mid-run.
+It goes once the session's last run and background job have ended (_release_live_state).
 Messages sent to a running request wait in the session tracker and are drained into the
 conversation between steps (docs/mid_run_message_injection.md); a cancel goes to the request
 manager (docs/cancellation_architecture.md).
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from ....llm.message_roles import conversation_messages
 from ....llm.models import ChatMessage
 
 if TYPE_CHECKING:
     from ..server import Agent
+
+logger = logging.getLogger(__name__)
 
 
 def _live_field(live_state: Dict[str, Dict[str, Any]], session_id: Optional[str], field: str) -> Any:
@@ -105,7 +110,7 @@ class LiveStateMixin:
         self._current_messages = messages
         if not session_id:
             return
-        entry = self._live_state_by_session.setdefault(session_id, {})
+        entry = self._touch_live_state(session_id)
         entry["messages"] = messages
         self._evict_live_state(session_id)
 
@@ -117,7 +122,7 @@ class LiveStateMixin:
         self._current_held_back_schemas = list(held_back or [])
         if not session_id:
             return
-        entry = self._live_state_by_session.setdefault(session_id, {})
+        entry = self._touch_live_state(session_id)
         entry["tools_schema"] = tools_schema
         entry["held_back_schemas"] = self._current_held_back_schemas
         self._evict_live_state(session_id)
@@ -135,8 +140,62 @@ class LiveStateMixin:
             return list(self._current_tools_schema) + list(self._current_held_back_schemas)
         return list(entry.get("tools_schema") or []) + list(entry.get("held_back_schemas") or [])
 
+    def _touch_live_state(self: Agent, session_id: str) -> Dict[str, Any]:
+        """The session's live-state entry, moved to the end: the dict is kept in
+        order of last write, so eviction takes the session written longest ago
+        (a run writes every step), not the one tracked first."""
+        entry = self._live_state_by_session.pop(session_id, None) or {}
+        self._live_state_by_session[session_id] = entry
+        return entry
+
+    def _drop_live_state(self: Agent, session_id: str) -> None:
+        """A session dropped from the tracker (SessionTracker.discard_session,
+        which waits for a run that has it) takes its live state along. At a
+        run's end _release_live_state does it, once nothing runs the session."""
+        self._live_state_by_session.pop(session_id, None)
+
+    def _a_request_has(self: Agent, session_id: str) -> bool:
+        """Whether a request of this agent still has *session_id*: one registered
+        for it (waiting for its lock included), or its lock owned by anyone but a
+        write (an append, an /undo: no run)."""
+        tracker = self._session_tracker
+        locked, _owner = tracker.check_session_locked(session_id)
+        if locked and not tracker.held_by_a_writer(session_id):
+            return True
+        return any(tracker.get_session_for_request(rid) == session_id
+                   for rid in self._request_manager.get_active_requests())
+
+    def _release_live_state(self: Agent, session_id: Optional[str]) -> None:
+        """A run of *session_id* is over: its live state goes once the session's last run and job are.
+
+        Not at the run's own end when a background job wraps it: the job runs on
+        past it, and while it does, the session load (api/session_live.py) counts
+        the run as in flight and serves this state with the run's event count. A
+        load that found the job running but the state gone served the turn off
+        disk with no count, and the chat, joining the job, replayed it below: the
+        turn twice. So it waits for the job's task, whose end comes after the
+        job's status says it is over. A newer run of the session keeps it: what
+        is there is that run's, or soon will be.
+        """
+        if not session_id or session_id not in self._live_state_by_session:
+            return
+        try:
+            from ....services.background_job_manager import get_background_job_manager
+            # A task that is done ran no wrapper to say so (cancelled before it
+            # started): no job runs on it, and waiting for it would wait for ever.
+            jobs = [job for job in get_background_job_manager().running_jobs_of(session_id)
+                    if not job.task.done()]
+            if jobs:
+                for job in jobs:
+                    job.task.add_done_callback(lambda _task: self._release_live_state(session_id))
+                return
+            if not self._a_request_has(session_id):
+                self._drop_live_state(session_id)
+        except Exception as e:  # noqa: BLE001 - a run's last cleanup must not fail on it; eviction bounds it
+            logger.debug("Could not release the live state of %s: %s", session_id, e)
+
     def _evict_live_state(self: Agent, keep_session: str) -> None:
-        """Bound the per-session live-state dict (simple FIFO eviction)."""
+        """Bound the per-session live-state dict: least recently written first."""
         if len(self._live_state_by_session) <= self._live_state_max_sessions:
             return
         for sid in list(self._live_state_by_session.keys()):
@@ -166,18 +225,14 @@ class LiveStateMixin:
 
         Both rules are the ones persistence uses, not copies of them: a system
         message that IS conversation (an archived_ref, a prune breadcrumb) stays
-        by ``is_compaction_system_message``, and the volatile notes go by
+        by ``conversation_messages``, and the volatile notes go by
         ``is_volatile_note``.
         """
         live = self.get_live_messages(session_id)
         if live is None:
             return None
-        from ..components.hook_integration import is_compaction_system_message
         from ..components.session_tracking import is_volatile_note
-        return [msg for msg in live
-                if not is_volatile_note(msg)
-                and (getattr(msg, "role", None) != "system"
-                     or is_compaction_system_message(msg))]
+        return [msg for msg in conversation_messages(live) if not is_volatile_note(msg)]
 
     def get_live_tools_schema(self: Agent, session_id: Optional[str]) -> Optional[List[Dict[str, Any]]]:
         """Live tool schema for a session, or None if not tracked."""

@@ -1171,3 +1171,34 @@ async def test_the_counts_are_of_the_text_the_model_gets(server):
         window, _ = await call(server, "web_scraper_page", url="https://example.com/", max_chars=5)
     assert whole["text"].strip() == "abcdefghijkl" and whole["total_chars"] == len(whole["text"])
     assert window["text"] == whole["text"][:5] and window["total_chars"] == whole["total_chars"]
+
+
+async def test_an_error_page_is_not_cached_and_says_so(server):
+    """A 404 body came back as the page with no hint and stayed cached."""
+    with mock_httpx(html="<html><body><p>Not here</p></body></html>", status_code=404):
+        first, _ = await call(server, "web_scraper_page", url="https://example.com/gone")
+    assert first.get("warning", "").startswith("HTTP 404"), first
+    with mock_httpx(html="<html><body><p>Back again</p></body></html>"):
+        second, _ = await call(server, "web_scraper_page", url="https://example.com/gone")
+    assert "Back again" in second.get("text", "") and "warning" not in second
+
+
+async def test_a_download_has_an_overall_deadline(downloader, tmp_path):
+    """`timeout` bounds one read: a server dripping a byte a minute held the call."""
+    import asyncio as _asyncio
+
+    downloader.download_deadline_s = 0.3
+
+    async def slow_body(request):
+        async def drip():
+            for _ in range(100):
+                await _asyncio.sleep(0.1)
+                yield b"x"
+        return httpx.Response(200, content=drip(), headers={"content-type": "application/octet-stream"})
+
+    transport = httpx.MockTransport(slow_body)
+    with no_ssrf_check(), patch.object(httpx, "AsyncClient",
+                                       lambda *a, **k: _RealAsyncClient(transport=transport)):
+        result, _ = await call(downloader, "web_scraper_download",
+                               url="https://example.com/f.bin", path=str(tmp_path / "dl" / "f.bin"))
+    assert "longer than" in result.get("error", ""), result

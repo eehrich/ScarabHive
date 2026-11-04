@@ -18,18 +18,21 @@ waiting on the same model would otherwise walk into the same 429 together.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from agent_system.utils.id import short_hash
+
 logger = logging.getLogger(__name__)
 
 # The first rate-limit block: long enough for a provider's per-minute window,
 # short enough that a blip costs a minute on the fallback, not an hour. Every
 # further failure without an answer in between doubles it, up to max_pause.
+#: The longest pause a provider's Retry-After can ask: a date far ahead must not block a model for good.
+MAX_RETRY_AFTER_BELIEVED = 86400.0
 FIRST_RATE_LIMIT_PAUSE = 60.0
 
 # How long a probe holds a run-out block for its request. A probe that never
@@ -64,8 +67,7 @@ def model_key(client: Any) -> Optional[ModelKey]:
     base_url = getattr(client, "base_url", None) or getattr(client, "_base_url", None)
     endpoint = base_url.rstrip("/") if isinstance(base_url, str) and base_url else type(client).__name__
     api_key = getattr(client, "api_key", None)
-    credential = (hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
-                  if isinstance(api_key, str) and api_key else "")
+    credential = short_hash(api_key, 12) if isinstance(api_key, str) and api_key else ""
     return endpoint, credential, model
 
 
@@ -139,7 +141,8 @@ class ModelHealth:
         the LLM last answered, up to *max_pause*. rate_limit=False (quota
         exhausted, key or model refused): *max_pause* at once -- that does not
         get better in a minute. A provider's *retry_after* is the lower bound
-        either way. None when the client has no model name to block by.
+        either way, up to MAX_RETRY_AFTER_BELIEVED. None when the client has no
+        model name to block by.
 
         *asked_at* is when the failed call went out (:meth:`now`). A rate limit
         on a call that went out before the running block was set belongs to
@@ -169,7 +172,7 @@ class ModelHealth:
                 pause = previous.pause
             else:
                 pause = min(previous.pause * 2, max_pause)
-            pause = max(pause, retry_after or 0.0)
+            pause = max(pause, min(retry_after or 0.0, MAX_RETRY_AFTER_BELIEVED))
             if pause <= 0:
                 return 0.0                           # a zero cap blocks nothing
             if previous is not None and previous.until >= now + pause:

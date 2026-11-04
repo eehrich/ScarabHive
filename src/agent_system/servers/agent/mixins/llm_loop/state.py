@@ -71,7 +71,6 @@ class LoopState:
     loop_detector: ToolCallLoopDetector
     escalator: StuckEscalator
     escalate_error_streak: int
-    results: Dict[str, Any]
     #: The history the steps work on. Mostly the same list as context.messages; where it is
     #: not, the phases sync the two the way the loop always did.
     messages: List[ChatMessage]
@@ -183,7 +182,6 @@ class StepState:
     content_format: str = "text"
     pending_intervention_msg: Optional[ChatMessage] = None
     tool_messages: list = field(default_factory=list)
-    tool_results: list = field(default_factory=list)
 
     def ended(self) -> bool:
         """Whether a phase ended the step (``end`` is set): no further phase of it runs."""

@@ -29,6 +29,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from agent_system.auth.models import User, UserRole
+from agent_system.core.request_context import in_request_tree
 from agent_system.core.run_questions import NOT_WAITING, AnswerRejected, Question, QuestionBroker
 
 
@@ -108,7 +109,7 @@ def question_router(prefix: str, broker: QuestionBroker, answer_url: str) -> API
             for q in broker.pending()
             if may_answer(enabled, user, q)
             and (session_id is None or session_id in session_chain(q.session_id or ""))
-            and (request_id is None or q.request_id == request_id or q.request_id.startswith(f"{request_id}_"))
+            and (request_id is None or in_request_tree(q.request_id, request_id))
         ]
         return {"count": len(questions), "questions": questions}
 

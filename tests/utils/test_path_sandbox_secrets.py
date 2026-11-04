@@ -225,3 +225,20 @@ def test_a_session_store_and_a_user_store_kept_elsewhere_are_refused(install, tm
     assert is_secret(users) and is_secret(str(users) + "-wal")
     assert path_sandbox.might_be_private("accounts.db")
     assert holds_secrets(tmp_path / "elsewhere") and not holds_secrets(tmp_path / "auth" / "nothing")
+
+
+@pytest.mark.parametrize("spelling", ["CONFIG/local.env", "config/Local.ENV", "Config/LOCAL.env"])
+def test_a_case_variant_is_a_secret_on_macos(install, monkeypatch, spelling):
+    """APFS opens config/Local.ENV as config/local.env, while resolve() keeps the case that was
+    typed and normcase leaves it alone there."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    repo = install.parent
+    assert is_secret(repo / spelling)
+    assert is_secret(repo / "DATA" / "Sessions" / "alice" / "s1.json")
+    assert holds_secrets(repo / "CONFIG")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="os.path.normcase folds case on Windows, whatever sys.platform says")
+def test_a_case_variant_is_another_file_on_linux(install, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert not is_secret(install.parent / "CONFIG" / "local.env")

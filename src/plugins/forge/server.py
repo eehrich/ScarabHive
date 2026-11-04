@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 
 from agent_system.paths import PROJECT_ROOT, data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.params import as_int
 
 from . import gitops
 from .events import Store
@@ -161,10 +162,11 @@ def _number(value: Any) -> Optional[int]:
 
 
 def _bounded(value: Any, default: int, low: int, high: int) -> Optional[int]:
-    try:
-        return max(low, min(int(value if value not in (None, "") else default), high))
-    except (TypeError, ValueError, OverflowError):
-        return None
+    """An integer argument clamped to [low, high]; None when it is no whole number --
+    the framework does not check arguments against the schema."""
+    if value is None or value == "":
+        return max(low, min(default, high))
+    return as_int(value, None, low=low, high=high)
 
 
 def _strings(value: Any) -> Optional[list[str]]:

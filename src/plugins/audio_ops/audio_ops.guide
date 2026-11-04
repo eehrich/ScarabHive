@@ -83,7 +83,7 @@ end_time | seconds; beyond the end it is cut to the file's length
 
 Without a time the file itself is attached. With one, the piece is
 written as a WAV file into the storage folder
-(@{tt}_temp_segment_<name>_<start ms>_<end ms>_<random>.wav@{utt}) and
+(@{tt}.audio_ops_segment_<name>_<start ms>_<end ms>_<random>.wav@{utt}) and
 that is attached. A negative start or an end not after the start is a
 @{tt}ValidationError@{utt}, a start past the end a
 @{tt}TimeRangeError@{utt}.
@@ -309,10 +309,10 @@ out -- the folder that holds all the session folders.
 @{h2}What is left behind
 
 The plugin deletes nothing but its own temp files and a piece @{tt}load@{utt} had to
-refuse. The @{tt}_temp_segment_...wav@{utt} pieces of @{tt}load@{utt}
+refuse. The @{tt}.audio_ops_segment_...wav@{utt} pieces of @{tt}load@{utt}
 stay, because every later request of the run reads them again
-(@{" What the model sees " link model}); @{tt}list@{utt} shows them like
-any other file. Clearing the folder is up to you.
+(@{" What the model sees " link model}); @{tt}list@{utt} does not show
+them. Clearing the folder is up to you.
 
 The writing tools are not recorded by
 @{" file checkpoints " link file_checkpoints/recorded}: a rewind counts

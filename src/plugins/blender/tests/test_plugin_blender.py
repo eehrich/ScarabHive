@@ -533,3 +533,38 @@ async def test_a_blend_export_never_claims_to_be_a_selection(server):
                                    "selected_only": True})
     assert result["status"] == "success", result
     assert line.startswith("whole scene"), line
+
+
+def test_a_reply_split_inside_a_multibyte_character_is_read_whole(tmp_path):
+    """A recv boundary inside "ü" raised UnicodeDecodeError, which the
+    JSONDecodeError handler did not catch: scene replies with umlauts or CJK
+    object names failed at random."""
+    import threading
+    import time
+
+    payload = json.dumps({"status": "success", "result": {"name": "Würfel"}},
+                         ensure_ascii=False).encode()
+    cut = payload.index("ü".encode()) + 1  # between the two bytes of ü
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+
+    def answer():
+        conn, _ = listener.accept()
+        conn.recv(65536)
+        conn.sendall(payload[:cut])
+        time.sleep(0.2)
+        conn.sendall(payload[cut:])
+        conn.close()
+
+    thread = threading.Thread(target=answer, daemon=True)
+    thread.start()
+    config = ToolServerConfig(type="blender", enabled=True, port=listener.getsockname()[1],
+                              output_directory=str(tmp_path), timeout=5, long_timeout=5)
+    server = PLUGIN_FACTORY(name="blender", system_config=AgentSystemConfig(), server_config=config)
+    try:
+        reply = server._send("get_scene_info", {}, 5)
+    finally:
+        thread.join(2)
+        listener.close()
+    assert reply["result"]["name"] == "Würfel"

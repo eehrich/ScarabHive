@@ -131,6 +131,9 @@ def _main() -> None:
         at = orig_args.index("users")
         ns_before, stray = prelim.parse_known_args(orig_args[:at])
         if not stray:  # nothing but global options before it: it is the subcommand
+            # --color/--no-color before `users` count there as everywhere else.
+            _apply_colour_flags(getattr(ns_before, "no_color", False),
+                                getattr(ns_before, "color", "auto"))
             # Resolved here as well: this branch RETURNS, so the --config the
             # run path resolves further down never reaches it, and the same
             # flag would have named two different files.

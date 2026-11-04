@@ -2141,6 +2141,17 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         assert at_the_wake["status"] == "completed" and at_the_wake["result"] == "done", at_the_wake
 
     @pytest.mark.asyncio
+    async def test_a_wake_refused_as_text_wakes_nobody(self, server, monkeypatch):
+        """Models send "false" as text; read as a truth value, it rang."""
+        told = self.presence(monkeypatch)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server, wake_when_done="false")
+        await self.run_to_end(server, agent)
+
+        assert told == []
+
+    @pytest.mark.asyncio
     async def test_a_job_nobody_asked_to_be_woken_for_wakes_nobody(self, server, monkeypatch):
         """The default: the caller stays awake and polls, as every job did before."""
         told = self.presence(monkeypatch)

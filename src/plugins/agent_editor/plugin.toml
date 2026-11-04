@@ -11,7 +11,7 @@ entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["web"]
 category = "infrastructure"
 requires = { agent_system = ">=0.7.0" }
-plugins = ["sub_agent_manager"]
+plugins = []
 # ruamel is this plugin's own: it renders a YAML file keeping comments.
 # starlette is FastAPI's base and arrives with it, but this plugin imports
 # it directly (run_in_threadpool), so it says so rather than relying on a

@@ -42,7 +42,7 @@ async def session_tree(current_user: Optional[User], session_id: str) -> list[st
                 sessions._validate_session_id(session_id)  # the owner scan joins the bare id onto every directory
             except ValueError:  # no session can have it: asked for every tick, so not worth a warning
                 return [session_id]
-            user = await sessions._find_session_owner_async(session_id) or user
+            user = await sessions.find_session_owner_async(session_id) or user
         return await sessions.subtree_ids(user, session_id) or [session_id]
     except Exception:  # the session's own jobs still show
         logger.warning("The sessions below %s could not be read", session_id, exc_info=True)

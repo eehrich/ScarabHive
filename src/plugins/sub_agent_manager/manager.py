@@ -892,7 +892,7 @@ class SubAgentManager:
                 instance_id = f"sub_{agent_type}_{counter:04d}"
 
             # Check if this ID is already taken
-            if not session_manager._session_id_exists_globally(instance_id):
+            if not session_manager.session_id_exists(instance_id):
                 logger.debug(f"Generated unique instance ID: {instance_id} (class counter: {counter})")
                 return instance_id
             else:

@@ -28,7 +28,8 @@ class LLMQuotaExhaustedError(LLMRateLimitError):
 
 
 class LLMServerError(Exception):
-    """Raised when LLM server returns 5xx after all retries are exhausted - triggers fallback."""
+    """Raised when the LLM server answers 5xx, or fails without one (status_code 0: an answer that cannot be read, say), after
+    all retries are exhausted - triggers fallback."""
     def __init__(self, message: str, provider: str = "", model: str = "", status_code: int = 0):
         super().__init__(message)
         self.provider = provider
@@ -326,6 +327,22 @@ class ChatMessage(BaseModel):
                 if content_type in ("image", "image_url"):
                     count += 1
         return count
+
+
+def task_text(task: Union[str, ChatMessage]) -> str:
+    """The text of a run's task, for logs and results: the text parts of a
+    message joined, ``[multimodal input]`` for one without any. Not
+    get_text_content: attached file contents do not belong in a log line."""
+    if not isinstance(task, ChatMessage):
+        return task
+    if isinstance(task.content, str):
+        return task.content
+    if isinstance(task.content, list):
+        parts = [getattr(item, "text", "") for item in task.content
+                 if hasattr(item, "type") and getattr(item, "type") == "text"]
+        if parts:
+            return " ".join(parts)
+    return "[multimodal input]"
 
 
 #: What the caller knows about why it abandons a streaming call, set just

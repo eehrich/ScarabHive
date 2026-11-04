@@ -127,3 +127,67 @@ async def test_status400_non_signature_still_raises():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.asyncio
+async def test_a_heal_on_the_last_attempt_still_sends_the_healed_request():
+    """A heal used to cost an attempt: on the last one it patched the request
+    and then left the loop with an untyped Exception the fallback chain does
+    not recognise. With a single attempt the healed retry must still go out."""
+    _FakeAsyncClient.calls = []
+    client = HTTPXOpenAIClient(
+        model="google/gemini-3.5-flash-lite",
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        max_retries=0,
+        rate_limit_max_retries=0,
+        retry_backoff=0.01,
+        capabilities=ModelCapabilitiesConfig(tools=True, streaming=False),
+    )
+    msgs = [
+        ChatMessage(role="user", content="hi"),
+        ChatMessage(role="assistant", content="", tool_calls=[
+            {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}],
+            reasoning_details=[{"type": "reasoning.encrypted",
+                                "format": "google-gemini-v1", "data": "SIG", "index": 0}]),
+        ChatMessage(role="tool", tool_call_id="c1", content="r"),
+    ]
+    with patch("plugins.llm_openai_compat.httpx_client.httpx.AsyncClient", _FakeAsyncClient):
+        result = await client.chat_tools(msgs, [])
+
+    assert result["assistant"]["content"] == "ok"
+    assert len(_FakeAsyncClient.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_tool_results_images_follow_the_whole_run_of_parallel_results(monkeypatch):
+    """tool, user, tool: the injected image of a non-last parallel result sat
+    between the tool messages and the API refused the request."""
+    from agent_system.llm.models import MultimodalToolContent
+
+    _FakeAsyncClient.calls = []
+
+    class _Ok(_FakeAsyncClient):
+        async def post(self, url, json=None, **kw):
+            _FakeAsyncClient.calls.append(json)
+            return _FakeResponse(200, OK_BODY)
+
+    client = HTTPXOpenAIClient(
+        model="m", api_key="test-key", base_url="https://api.openai.com/v1",
+        max_retries=0, capabilities=ModelCapabilitiesConfig(tools=True, streaming=False))
+    monkeypatch.setattr(client, "_create_multimodal_injection",
+                        lambda msg: {"role": "user", "content": "IMG"})
+    shot = [MultimodalToolContent(type="image", path="/x.png", mime_type="image/png")]
+    msgs = [
+        ChatMessage(role="user", content="look"),
+        ChatMessage(role="assistant", content="", tool_calls=[
+            {"id": "a", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "b", "type": "function", "function": {"name": "f", "arguments": "{}"}}]),
+        ChatMessage(role="tool", tool_call_id="a", content="1", multimodal_content=shot),
+        ChatMessage(role="tool", tool_call_id="b", content="2"),
+    ]
+    with patch("plugins.llm_openai_compat.httpx_client.httpx.AsyncClient", _Ok):
+        await client.chat_tools(msgs, [])
+
+    roles = [m["role"] for m in _FakeAsyncClient.calls[0]["messages"]]
+    assert roles[-3:] == ["tool", "tool", "user"], roles

@@ -59,6 +59,11 @@ class InitializationService:
         self._session_service: Optional[SessionService] = None
         self._runtime = None  # agent_system.runtime.Runtime, created on bootstrap
         self._initialized = False
+        # Every entry point (API, agent-cli, agent-run) builds this service
+        # from the config it loaded -- the one --config named. The attachment
+        # gate reads THAT config's models, not a second load of the default.
+        from ..llm.capabilities import init_capabilities_registry
+        init_capabilities_registry(config=config)
 
     @property
     def session_manager(self) -> SessionManager:

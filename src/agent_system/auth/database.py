@@ -38,6 +38,23 @@ def _refuse_unless_gone(conn: sqlite3.Connection, user_id: int) -> None:
         raise PasswordChangedMeanwhile(f"The password of user ID {user_id} changed meanwhile")
 
 
+def user_db_path(db_path: Optional[str | Path] = None) -> Path:
+    """Where the user store of ``db_path`` (``auth.database_path``) is: a ``data/...`` value -- the
+    configuration's own default among them -- in the data directory, nothing given ``users.db`` there.
+
+    UserDatabase opens this; a reader that must not create the store (agent_access) asks it too, so
+    both read the same file.
+    """
+    return resolve_data_path(db_path) if db_path else data_path("users.db")
+
+
+def _duplicate_message(error: sqlite3.IntegrityError, user: UserCreate) -> str:
+    """The ValueError text of an insert a UNIQUE constraint refused: which of the two was taken."""
+    if "email" in str(error):
+        return f"Email '{user.email}' already exists"
+    return f"Username '{user.username}' already exists"
+
+
 class UserDatabase:
     """User database manager using SQLite."""
 
@@ -50,7 +67,7 @@ class UserDatabase:
                 data directory). A ``data/...`` value -- the configuration's
                 own default among them -- lands in the data directory.
         """
-        self.db_path = resolve_data_path(db_path) if db_path else data_path("users.db")
+        self.db_path = user_db_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
     
@@ -76,6 +93,18 @@ class UserDatabase:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_username ON users(username)
             """)
+            # The column's UNIQUE compares case; a name is one name in any case (create_user). The
+            # check there and its insert are two statements, so two registrations of "Alice" and
+            # "alice" at once both passed it -- this index refuses the second insert.
+            try:
+                cursor.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_username_nocase ON users(username COLLATE NOCASE)
+                """)
+            except sqlite3.IntegrityError:
+                logger.warning(
+                    "User database %s holds usernames that differ only in case; they stay, and "
+                    "until they are renamed or removed a new name is checked only before it is "
+                    "inserted, not by the database", self.db_path)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_email ON users(email)
             """)
@@ -150,20 +179,24 @@ class UserDatabase:
         
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO users (
-                    username, email, full_name, hashed_password,
-                    is_active, role, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                user.username,
-                user.email,
-                user.full_name,
-                hashed_password,
-                user.is_active,
-                user.role.value,
-                created_at
-            ))
+            try:
+                cursor.execute("""
+                    INSERT INTO users (
+                        username, email, full_name, hashed_password,
+                        is_active, role, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    user.username,
+                    user.email,
+                    user.full_name,
+                    hashed_password,
+                    user.is_active,
+                    user.role.value,
+                    created_at
+                ))
+            except sqlite3.IntegrityError as exc:
+                # Taken between the checks above and this insert (another registration at once)
+                raise ValueError(_duplicate_message(exc, user)) from exc
             conn.commit()
             user_id = cursor.lastrowid
         

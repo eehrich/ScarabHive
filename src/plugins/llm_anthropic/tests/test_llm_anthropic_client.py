@@ -801,3 +801,32 @@ class TestAnthropicChatCancellation:
         anthropic_client._client.messages.create = AsyncMock(return_value=MagicMock(content=[block]))
 
         assert await anthropic_client.chat([ChatMessage(role="user", content="hi")]) == "Hello"
+
+
+def test_a_tool_results_images_follow_the_whole_run_of_parallel_results(anthropic_client, monkeypatch):
+    """Right after its own result, a non-last result's image landed between
+    the tool results; merged into one user turn that is
+    [tool_result, image, tool_result], and tool_result blocks must come first."""
+    from agent_system.llm.models import ChatMessage, MultimodalToolContent
+    from agent_system.utils import multimodal_tool_content
+
+    monkeypatch.setattr(multimodal_tool_content, "create_anthropic_multimodal_injection",
+                        lambda msg, **kw: {"role": "user", "content": [{"type": "text", "text": "IMG"}]})
+    shot = [MultimodalToolContent(type="image", path="/x.png", mime_type="image/png")]
+    messages = [
+        ChatMessage(role="user", content="look"),
+        ChatMessage(role="assistant", content="", tool_calls=[
+            {"id": "a", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "b", "type": "function", "function": {"name": "f", "arguments": "{}"}}]),
+        ChatMessage(role="tool", tool_call_id="a", content="1", multimodal_content=shot),
+        ChatMessage(role="tool", tool_call_id="b", content="2"),
+        ChatMessage(role="assistant", content="seen"),
+    ]
+
+    _, converted = anthropic_client._convert_messages(messages)
+
+    flat = [block.get("type") if isinstance(block, dict) else None
+            for m in converted for block in (m["content"] if isinstance(m["content"], list) else [m["content"]])]
+    first_text = flat.index("text")
+    assert flat.count("tool_result") == 2
+    assert max(i for i, t in enumerate(flat) if t == "tool_result") < first_text

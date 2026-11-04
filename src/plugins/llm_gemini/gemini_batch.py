@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent_system.llm.message_roles import DEVELOPER, USER, as_note
+from agent_system.llm.token_utils import extract_text_from_content
 from agent_system.utils.json_utils import repair_json
 
 try:
@@ -44,6 +45,7 @@ from .gemini_utils import (
     extract_available_tool_names,
     extract_usage_from_metadata,
     filter_unavailable_tool_calls_dict,
+    function_response_body,
 )
 from typing import Callable, TypeVar
 
@@ -419,14 +421,7 @@ class GeminiBatchClient(BatchProviderClient):
             if role == "tool":
                 tool_name = msg.get("name") or msg.get("tool_call_id") or "unknown"
                 
-                # Try to parse content as JSON
-                if isinstance(content, str):
-                    try:
-                        result_data = json.loads(content)
-                    except json.JSONDecodeError:
-                        result_data = {"result": content}
-                else:
-                    result_data = content if content else {}
+                result_data = function_response_body(content)
                 
                 # Build parts starting with function response
                 tool_parts: List[types.Part] = [
@@ -451,19 +446,28 @@ class GeminiBatchClient(BatchProviderClient):
                                 )
                             ))
                 
-                contents.append(types.Content(
-                    role="tool",  # Gemini 2.0+ uses "tool" role
-                    parts=tool_parts
-                ))
+                # Parallel calls: all their responses in ONE role="tool" block,
+                # as gemini_utils._merge_consecutive_tool_responses does for the
+                # chat clients -- one block each is refused ("number of
+                # function response parts must equal ...").
+                if contents and contents[-1].role == "tool" and contents[-1].parts is not None:
+                    contents[-1].parts.extend(tool_parts)
+                else:
+                    contents.append(types.Content(
+                        role="tool",  # Gemini 2.0+ uses "tool" role
+                        parts=tool_parts
+                    ))
                 continue
             
             # Handle assistant with tool_calls (function call requests)
             if role == "assistant" and msg.get("tool_calls"):
                 parts: List[types.Part] = []
                 
-                # Add text content if present
-                if content:
-                    parts.append(types.Part(text=content))
+                # Add text content if present (a list of parts is its text:
+                # Part(text=[...]) fails validation)
+                text = extract_text_from_content(content) if isinstance(content, list) else content
+                if text:
+                    parts.append(types.Part(text=text))
                 
                 # Add function calls with thought_signature preservation
                 for tc in msg.get("tool_calls", []):
@@ -546,41 +550,33 @@ class GeminiBatchClient(BatchProviderClient):
                     if item.get("type") == "text":
                         parts.append(types.Part(text=item.get("text", "")))
                     elif item.get("type") in ("image", "image_url"):
-                        # Handle image content
-                        image_url = item.get("image_url", {})
-                        if isinstance(image_url, dict):
-                            url = image_url.get("url", "")
-                        else:
-                            url = image_url
-                        
-                        # DEBUG: Print full traceback if url is not a string
-                        if not isinstance(url, str):
-                            import traceback
-                            logger.error(
-                                "DEBUG: url is not a string!\n"
-                                "  type(url)=%s\n"
-                                "  url=%r\n"
-                                "  item=%r\n"
-                                "  image_url=%r\n"
-                                "  Traceback:\n%s",
-                                type(url).__name__, url, item, image_url,
-                                ''.join(traceback.format_stack())
-                            )
-                        
-                        if url.startswith("data:"):
-                            # Parse data URL
+                        # OpenAI form (image_url: str or {"url": ...}) or
+                        # Anthropic form (source: {type: base64, media_type, data}).
+                        # A dumped ImageContent carries both keys, the unused one None.
+                        image_url = item.get("image_url")
+                        url = image_url.get("url") if isinstance(image_url, dict) else image_url
+                        source = item.get("source") if isinstance(item.get("source"), dict) else {}
+                        mime_type, b64 = None, None
+                        if isinstance(url, str) and url.startswith("data:"):
                             try:
-                                header, data = url.split(",", 1)
+                                header, b64 = url.split(",", 1)
                                 mime_type = header.split(":")[1].split(";")[0]
-                                data_bytes = base64.b64decode(data)
+                            except (ValueError, IndexError):
+                                mime_type, b64 = None, None
+                        elif source.get("type", "base64") == "base64" and source.get("data"):
+                            mime_type, b64 = source.get("media_type") or "image/png", source["data"]
+                        if mime_type and b64:
+                            try:
                                 parts.append(types.Part(
                                     inline_data=types.Blob(
                                         mime_type=mime_type,
-                                        data=data_bytes
+                                        data=base64.b64decode(b64),
                                     )
                                 ))
-                            except (ValueError, IndexError):
-                                pass
+                            except (ValueError, TypeError):
+                                logger.warning("gemini batch: unreadable inline image dropped")
+                        else:
+                            logger.warning("gemini batch: image without inline data dropped (url images are not sent)")
                 
                 if parts:
                     contents.append(types.Content(role=gemini_role, parts=parts))

@@ -711,13 +711,36 @@ class TestInjectHook:
                             ChatMessage(role="user", content="Hello")]
         context.hook_config = {"max_lessons": 10, "min_confidence": 0.3}
 
+        context.request_id = "r1"
         await server.on_pre_llm_call(context)
         after_first = (await server.get_lesson(lesson_id))["application_count"]
+        context.request_id = "r2"
         second = await server.on_pre_llm_call(context)
         after_second = (await server.get_lesson(lesson_id))["application_count"]
 
         assert second.modified is False, "fixture: the block was rewritten"
         assert after_second == after_first + 1
+
+    @pytest.mark.asyncio
+    async def test_the_steps_of_one_request_are_one_application(self, server: LessonsLearnedServer):
+        """The hook runs on every LLM step; booking each one multiplied
+        application_count -- which the confidence machinery reads -- by the step count."""
+        stored = await server.store_lesson(
+            agent_name="test_agent", title="Rule 1", content="Do X",
+            status="active", confidence=0.9, priority=9,
+        )
+        from agent_system.llm.models import ChatMessage
+        context = MagicMock()
+        context.agent_name = "test_agent"
+        context.session_id = "s1"
+        context.request_id = "r1"
+        context.messages = [ChatMessage(role="user", content="Hello")]
+        context.hook_config = {"max_lessons": 10, "min_confidence": 0.3}
+
+        for _ in range(5):
+            await server.on_pre_llm_call(context)
+
+        assert (await server.get_lesson(stored["lesson_id"]))["application_count"] == 1
 
     @pytest.mark.asyncio
     async def test_inject_no_agent_name(self, server: LessonsLearnedServer):

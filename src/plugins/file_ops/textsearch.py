@@ -448,6 +448,10 @@ def walk_files(
                             yield path
                         elif entry.is_symlink() and entry.is_file():
                             target = path.resolve()
+                            # The name check above saw the LINK's name: a
+                            # harmless "notes.txt" may point at config/*.env.
+                            if is_secret(target):
+                                continue
                             if any(target == r or r in target.parents
                                    for r in (root, *allowed)):
                                 yield path

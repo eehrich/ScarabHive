@@ -41,11 +41,11 @@ that costs an afternoon to find.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
 import yaml
+from agent_system.utils.io import atomic_write_text
 from agent_system.paths import data_path
 from agent_system.utils import yaml_io
 
@@ -143,12 +143,10 @@ def _write(instance: str, machines: list[dict[str, Any]]) -> Path:
     """
     path = store_path(instance)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(
-        yaml.safe_dump({"machines": machines}, default_flow_style=False, sort_keys=False),
-        encoding="utf-8",
-    )
-    os.replace(tmp, path)
+    # A temp name per write (the API server and agent-cli both write this
+    # store; a fixed "<name>.tmp" let two writers interleave in one file).
+    atomic_write_text(
+        path, yaml.safe_dump({"machines": machines}, default_flow_style=False, sort_keys=False))
     return path
 
 

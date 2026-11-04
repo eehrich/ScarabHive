@@ -26,8 +26,9 @@ from __future__ import annotations
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
-from starlette.requests import cookie_parser
 from starlette.responses import JSONResponse
+
+from agent_system.auth.credentials import access_token_cookie, bearer_credentials, first_headers
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 #: what a browser sends when the user navigated themselves, or the page is of this origin
@@ -57,13 +58,10 @@ class CrossSiteGuard:
         await self.app(scope, receive, send)
 
     def allowed(self, scope: dict[str, Any]) -> bool:
-        headers: dict[bytes, str] = {}
-        for name, value in scope.get("headers", []):
-            headers.setdefault(name, value.decode("latin-1"))  # the first of a repeated header, as Starlette reads
-        scheme, _, credentials = headers.get(b"authorization", "").partition(" ")
-        if scheme.lower() == "bearer" and credentials.strip():
+        headers = first_headers(scope)  # the first of a repeated header, as Starlette reads
+        if bearer_credentials(headers):
             return True
-        if not cookie_parser(headers.get(b"cookie", "")).get("access_token"):
+        if not access_token_cookie(headers):
             return True
         origin = headers.get(b"origin", "").strip().rstrip("/").lower()
         if origin in self.trusted:

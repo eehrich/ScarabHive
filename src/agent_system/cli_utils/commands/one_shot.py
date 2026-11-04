@@ -22,6 +22,7 @@ import yaml
 from ...core.cancellation import get_cancellation_manager
 from ...llm.models import ChatMessage
 from ...tools.status import status_bus
+from ...utils.json_utils import dumps_lenient
 from ..agent_runner import say_cancelled
 from ..common import colorize, get_phase_color_map, show_answer, supports_color
 from ..event_loop import run_async
@@ -134,11 +135,11 @@ async def stream_run(
         if t in ("tool_call", "mcp_call") and show_tools:
             header = f"TOOL CALL -> server={ev.get('server')} action={ev.get('action')}"
             print(colorize(header, "36") if supports_color() else header)
-            print(json.dumps(ev.get("params") or {}, indent=2, ensure_ascii=False, default=str))
+            print(dumps_lenient(ev.get("params") or {}, indent=2))
         elif t in ("tool_result", "mcp_result") and show_tools:
             header = f"TOOL RESULT <- server={ev.get('server')} action={ev.get('action')}"
             print(colorize(header, "32") if supports_color() else header)
-            print(json.dumps(ev.get("result"), indent=2, ensure_ascii=False, default=str))
+            print(dumps_lenient(ev.get("result"), indent=2))
         elif t == "thinking_delta":
             # Gated on show_status: with --no-status stdout carries the
             # result only (`>out.json` stays clean).
@@ -255,7 +256,7 @@ def _pretty_print_result(res: dict, *, show_tools: bool, verbose: bool, streamed
     if verbose:
         print("")
         print(colorize("Raw result JSON:", "35") if supports_color() else "Raw result JSON:")
-        print(json.dumps(res, indent=2, ensure_ascii=False, default=str))
+        print(dumps_lenient(res, indent=2))
 
 
 def print_result(result: dict, *, raw: bool, show_tools: bool, verbose: bool,
@@ -266,7 +267,7 @@ def print_result(result: dict, *, raw: bool, show_tools: bool, verbose: bool,
     if raw:
         # default=str: a tool value that is not plain JSON (a set, a date) must
         # not turn a finished run into exit 1 at the very last print.
-        print(json.dumps(result, indent=2, ensure_ascii=False, default=str), flush=True)
+        print(dumps_lenient(result, indent=2), flush=True)
     else:
         _pretty_print_result(result, show_tools=show_tools, verbose=verbose,
                              streamed_errors=streamed_errors)

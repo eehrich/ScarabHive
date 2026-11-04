@@ -398,6 +398,7 @@ async def test_an_append_while_a_run_opens_the_session_is_not_read_over(api, mon
     """/run opens the session -- reads it from disk, then puts that into the tracker. An append that wrote and
     saved in between was read over by the stale copy, and the run's save wrote it without the message."""
     from agent_system.servers.agent import result_utils
+    from agent_system.servers.agent.components.session_tracking import SessionTracker
 
     await _stored(api, messages=[{"role": "user", "content": "first question"},
                                  {"role": "assistant", "content": "the answer"}])
@@ -419,9 +420,21 @@ async def test_an_append_while_a_run_opens_the_session_is_not_read_over(api, mon
         running = asyncio.ensure_future(client.post("/run", json={"task": "go", "session_id": "s1"}, timeout=60.0))
         await asyncio.wait_for(reading.wait(), timeout=10.0)
         monkeypatch.setattr(api.manager, "load_session", load)
+        # The append has to reach the lock the opening holds before the opening goes on. Not a fixed wait: the way
+        # there has awaits, and arriving after the opening finds a run that is no request yet: a 409, try again.
+        tracker, parked = SessionTracker, asyncio.Event()
+        acquire = tracker.acquire_session_lock
+
+        async def noting_the_writer(self, session_id, owner, *args, **kwargs):
+            if kwargs.get("writer") and session_id == "s1":
+                parked.set()
+            return await acquire(self, session_id, owner, *args, **kwargs)
+
+        monkeypatch.setattr(tracker, "acquire_session_lock", noting_the_writer)
         appending = asyncio.ensure_future(
             client.post("/sessions/s1/append", json={"content": "follow-up"}, timeout=60.0))
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(parked.wait(), timeout=10.0)
+        await asyncio.sleep(0)  # into the lock's wait
         go_on.set()
         ran, appended = await running, await appending
 

@@ -51,6 +51,29 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_IMAGE_SIZE_MB = 20.0
 DEFAULT_MAX_AUDIO_SIZE_MB = 25.0
 
+def attach_limit_mb(kind: str) -> float:
+    """The largest file of ``kind`` ("image", "audio", "video") an LLM request
+    still carries; a larger attachment is dropped silently at encoding time."""
+    return DEFAULT_MAX_AUDIO_SIZE_MB if kind == "audio" else DEFAULT_MAX_IMAGE_SIZE_MB
+
+
+def attach_problem(path: "Path | str", kind: str) -> Optional[str]:
+    """Why a file would not reach the model as an attachment, or None.
+
+    For tools that attach files: a file above the limit is dropped silently
+    per request, and a tool answering "loaded" for it reports a success the
+    model never sees.
+    """
+    try:
+        size_mb = Path(path).stat().st_size / (1024 * 1024)
+    except OSError as exc:
+        return f"{Path(path).name}: cannot be read ({type(exc).__name__})"
+    limit = attach_limit_mb(kind)
+    if size_mb > limit:
+        return f"{Path(path).name}: {size_mb:.1f} MB is over the {limit:g} MB a request carries for {kind}"
+    return None
+
+
 # OpenAI only supports these audio formats
 OPENAI_SUPPORTED_AUDIO_FORMATS = {"wav", "mp3"}
 OPENAI_AUDIO_CONVERSION_TARGET = "mp3"  # Convert unsupported formats to MP3

@@ -986,3 +986,16 @@ async def test_descriptor_exhaustion_does_not_burn_the_fallback_chain(
     assert any(e.get("type") == "error" for e in events), (
         f"the run ended without an error event; types={[e.get('type') for e in events]}"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_failure_without_a_status_is_not_called_a_server_error_0(system_config_with_profiles, caplog):
+    base = _FailingLLM(LLMServerError("truncated body", model="m-base"), model="m-base")
+    agent = _chain_agent(system_config_with_profiles, base, llm_profile=["gemini", "openai"])
+    agent._create_fallback_llm = {"openai": _ScriptedLLM("taken over", model="m-next")}.get
+
+    with caplog.at_level("WARNING"):
+        await _run(agent)
+
+    assert "Failure without a status from m-base" in caplog.text
+    assert "Server error 0" not in caplog.text

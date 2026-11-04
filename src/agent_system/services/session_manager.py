@@ -1,7 +1,9 @@
 """Session Manager for persistent agent conversation sessions.
 
 Handles creation, loading, saving, and management of user sessions with
-thread-safe file operations and automatic persistence.
+atomic file writes and automatic persistence. Its locks are asyncio locks:
+safe for the tasks of one event loop, not for threads (another process is
+held off by the index's file locks and the atomic writes only).
 
 ``SessionManager`` is the facade: every caller goes through it, and it alone
 decides when a session file is written and under which lock. Two parts with
@@ -17,9 +19,10 @@ import json
 import logging
 import shutil
 import time
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
 from ..paths import data_path
@@ -34,6 +37,13 @@ logger = logging.getLogger(__name__)
 
 #: The metadata fields SessionIndex.row carries: an update of one of them is written to the index too.
 _INDEXED_METADATA = frozenset({"message_count", "last_agent_response", "tags", "folder", "category"})
+
+#: How stale a session's index row may get through writes that change only the file's ``updated_at`` (a
+#: sub-agent's status, a context variable removed). The row's time is what the session list sorts by and
+#: what the archive ages a session by, so such a write does reach it -- but a parent whose sub-agents report
+#: one after another would otherwise rewrite the main index (one row per session of the user) for each
+#: report. At most once per this many seconds per session, then; the archive counts in days.
+INDEX_TOUCH_SECONDS = 30.0
 
 
 class SessionNotFoundError(Exception):
@@ -55,10 +65,10 @@ class SessionManager:
     
     Features:
     - Per-user session isolation via directory structure
-    - Thread-safe file operations with atomic writes
+    - Atomic file writes, serialized per session by asyncio locks (one event loop; not thread-safe)
     - Auto-save on every message
     - Session metadata management
-    - LRU cache for recently accessed sessions
+    - A TTL cache of recently used sessions (``SessionCache``; oldest-cached first when full, not an LRU)
     
     Directory structure:
         data/sessions/{user_id}/{session_id}.json
@@ -87,13 +97,19 @@ class SessionManager:
         self._cache = SessionCache()
         self._lock = asyncio.Lock()
 
-        # Per-session locks to prevent concurrent writes to the same session
-        self._session_locks: Dict[str, asyncio.Lock] = {}
-        self._session_locks_lock = asyncio.Lock()  # Lock for accessing _session_locks dict
+        # Per-session locks to prevent concurrent writes to the same session. Weak values, as
+        # SessionService.save_lock keeps its own: a lock lives while somebody holds or waits on it (each
+        # caller keeps it in a local across its ``async with``), and goes with the last of them -- a dict
+        # kept one per session ever touched, for the life of the process.
+        self._session_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
 
         # Sessions deleted in this process. A run that was still going -- or its request handler, or a checkpoint
         # -- saves its session after the delete; that save must not bring the session back.
         self._deleted: set[str] = set()
+
+        # When this process last wrote a session's index row (time.monotonic()), for the touch-only
+        # writes INDEX_TOUCH_SECONDS spaces out. Pruned to the window as it grows.
+        self._index_written: Dict[str, float] = {}
 
         # The index partitions: read and written as the session files are.
         self._index = SessionIndex(
@@ -113,10 +129,11 @@ class SessionManager:
         Returns:
             asyncio.Lock for this session
         """
-        async with self._session_locks_lock:
-            if session_id not in self._session_locks:
-                self._session_locks[session_id] = asyncio.Lock()
-            return self._session_locks[session_id]
+        # No await between the look-up and the insert: no other task gets between them.
+        lock = self._session_locks.get(session_id)
+        if lock is None:
+            lock = self._session_locks[session_id] = asyncio.Lock()
+        return lock
 
     def _sanitize_user_id(self, user_id: str) -> str:
         """Sanitize user_id to prevent directory traversal (``session_paths.sanitize_user_id``)."""
@@ -204,7 +221,7 @@ class SessionManager:
         """
         return uuid4().hex[:10]
 
-    def _session_id_exists_globally(self, session_id: str) -> bool:
+    def session_id_exists(self, session_id: str) -> bool:
         """Check if a session ID exists for ANY user (global collision check).
         
         Args:
@@ -220,7 +237,7 @@ class SessionManager:
         # Check all user directories for this session ID
         return any(session_files_anywhere(self.storage_path, session_id))
 
-    async def _find_session_owner_async(self, session_id: str) -> Optional[str]:
+    async def find_session_owner_async(self, session_id: str) -> Optional[str]:
         """Find the user_id that owns a session (async version).
 
         Args:
@@ -243,8 +260,8 @@ class SessionManager:
                 return self._owner_by_directory(session_file, e)
         return None
 
-    def _find_session_owner(self, session_id: str) -> Optional[str]:
-        """Find the user_id that owns a session (sync version - use _find_session_owner_async in async contexts).
+    def find_session_owner(self, session_id: str) -> Optional[str]:
+        """Find the user_id that owns a session (sync version - use find_session_owner_async in async contexts).
 
         Args:
             session_id: Session ID to find
@@ -321,7 +338,7 @@ class SessionManager:
         """
         if session_id not in self._deleted:
             return False
-        if self._session_id_exists_globally(session_id):
+        if self.session_id_exists(session_id):
             self._deleted.discard(session_id)
             return False
         return True
@@ -402,7 +419,7 @@ class SessionManager:
         """Async wrapper for reading session file to avoid blocking event loop."""
         return await asyncio.to_thread(self._read_session_file, path)
 
-    async def _rebuild_index(
+    async def rebuild_index(
         self,
         user_id: str,
         parent_session_id: Optional[str] = None,
@@ -413,6 +430,12 @@ class SessionManager:
         could not delete whole.
         """
         return await self._index.rebuild(user_id, parent_session_id)
+
+    # The names these had while they were private; plugins and tests still call them.
+    _session_id_exists_globally = session_id_exists
+    _find_session_owner_async = find_session_owner_async
+    _find_session_owner = find_session_owner
+    _rebuild_index = rebuild_index
 
     async def create_session(
         self,
@@ -456,14 +479,14 @@ class SessionManager:
             if session_id:
                 sid = session_id
                 # Check if this custom ID exists for ANY user (global check)
-                if self._session_id_exists_globally(sid):
+                if self.session_id_exists(sid):
                     raise ValueError(f"Session {sid} already exists")
             else:
                 # Generate new ID with retry on collision
                 max_retries = 10
                 for attempt in range(max_retries):
                     sid = self._generate_session_id()
-                    if not self._session_id_exists_globally(sid):
+                    if not self.session_id_exists(sid):
                         break
                     logger.warning(
                         f"Session ID collision detected: {sid} (attempt {attempt + 1}/{max_retries})"
@@ -697,6 +720,7 @@ class SessionManager:
                 await self._index.update_entry(
                     user_id, session_id, SessionIndex.row(session_data),
                 )
+            self._noted_index_write(session_id)
             
             logger.debug("Saved session %s", session_id)
 
@@ -717,6 +741,73 @@ class SessionManager:
         if session_data["user_id"] != user_id:
             raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
         return session_data
+
+    async def _mutate(
+        self,
+        user_id: str,
+        session_id: str,
+        change: Callable[[Dict[str, Any]], Any],
+        *,
+        touch: bool = True,
+        reindex: bool = False,
+        missing_ok: bool = False,
+    ) -> bool:
+        """Read the session's file, let ``change`` work on it, write it back -- all under the session's lock.
+
+        The one read-modify-write of a session by its owner: a write that landed since a caller loaded its copy
+        is not written over, as it was by a caller that changed its copy and saved the whole record.
+
+        Args:
+            change: works on the record in place; ``False`` from it means nothing changed and nothing is written
+            touch: set ``updated_at``
+            reindex: write the index row too (a field it carries changed)
+            missing_ok: no file yet answers False instead of raising SessionNotFoundError
+
+        Returns:
+            Whether the record was written.
+
+        Raises:
+            SessionNotFoundError: If session doesn't exist (and not ``missing_ok``)
+            SessionPermissionError: If user doesn't own the session
+        """
+        session_lock = await self._get_session_lock(session_id)
+        async with session_lock:
+            path = self._get_session_path(user_id, session_id)
+            if missing_ok and not path.exists():
+                return False
+            session_data = await self._read_to_change(path, user_id, session_id)
+            if change(session_data) is False:
+                return False
+            if touch:
+                session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            await self._write_session_file(path, session_data)
+            self._cache.wrote(session_id, session_data)
+            if reindex:
+                async with self._lock:
+                    await self._index.update_entry(user_id, session_id, SessionIndex.row(session_data))
+                self._noted_index_write(session_id)
+            elif touch and self._index_touch_due(session_id):
+                # The file is newer now; its row has to say so, or the list and the archive see an older session.
+                # Best effort: the file is written, and the next save writes the row in full anyway.
+                try:
+                    async with self._lock:
+                        await self._index.update_entry(user_id, session_id, SessionIndex.row(session_data))
+                    self._noted_index_write(session_id)
+                except Exception as e:
+                    logger.warning("Index row of session %s not refreshed: %s", session_id, e)
+            return True
+
+    def _index_touch_due(self, session_id: str) -> bool:
+        """Whether a touch-only write of ``session_id`` should refresh its index row (INDEX_TOUCH_SECONDS)."""
+        last = self._index_written.get(session_id)
+        return last is None or time.monotonic() - last >= INDEX_TOUCH_SECONDS
+
+    def _noted_index_write(self, session_id: str) -> None:
+        now = time.monotonic()
+        if len(self._index_written) > 4096:
+            self._index_written = {sid: at for sid, at in self._index_written.items()
+                                   if now - at < INDEX_TOUCH_SECONDS}
+        self._index_written[session_id] = now
 
     async def update_session_metadata(
         self, 
@@ -743,37 +834,24 @@ class SessionManager:
             SessionNotFoundError: If session doesn't exist
             SessionPermissionError: If user doesn't own the session
         """
-        session_lock = await self._get_session_lock(session_id)
-        async with session_lock:
-            path = self._get_session_path(user_id, session_id)
-            session_data = await self._read_to_change(path, user_id, session_id)
-
+        def merge(session_data: Dict[str, Any]) -> None:
             # Merge metadata updates (deep merge for nested dicts like sub_agents)
             if "metadata" not in session_data:
                 session_data["metadata"] = {}
-            
+
             for key, value in metadata_updates.items():
                 if isinstance(value, dict) and key in session_data["metadata"] and isinstance(session_data["metadata"][key], dict):
                     # Deep merge for nested dicts
                     session_data["metadata"][key].update(value)
                 else:
                     session_data["metadata"][key] = value
-            
-            if touch:
-                session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-            # Save back
-            await self._write_session_file(path, session_data)
-
-            # Update cache
-            self._cache.wrote(session_id, session_data)
-            # A field the index row carries (tags, folder) reaches the list now, not at the session's next save;
-            # the many updates of fields it does not carry (sub_agents, activity) leave the index alone.
-            if not _INDEXED_METADATA.isdisjoint(metadata_updates):
-                async with self._lock:
-                    await self._index.update_entry(user_id, session_id, SessionIndex.row(session_data))
-
-            logger.debug("Updated metadata for session %s: keys=%s", session_id, list(metadata_updates.keys()))
+        # A field the index row carries (tags, folder) reaches the list now, not at the session's next save;
+        # an update of fields it does not carry (sub_agents, activity) still moves the row's updated_at
+        # when it touches -- spaced out by INDEX_TOUCH_SECONDS (_mutate).
+        await self._mutate(user_id, session_id, merge, touch=touch,
+                           reindex=not _INDEXED_METADATA.isdisjoint(metadata_updates))
+        logger.debug("Updated metadata for session %s: keys=%s", session_id, list(metadata_updates.keys()))
 
     async def set_session_place(self, user_id: str, session_id: str, *, depth: Optional[int] = None,
                                 depth_budget: Optional[int] = None) -> None:
@@ -787,19 +865,13 @@ class SessionManager:
             SessionNotFoundError: If session doesn't exist
             SessionPermissionError: If user doesn't own the session
         """
-        session_lock = await self._get_session_lock(session_id)
-        async with session_lock:
-            path = self._get_session_path(user_id, session_id)
-            session_data = await self._read_to_change(path, user_id, session_id)
+        def place(session_data: Dict[str, Any]) -> None:
             if depth is not None:
                 session_data["depth"] = depth
             if depth_budget is not None:
                 session_data["depth_budget"] = depth_budget
-            session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-            await self._write_session_file(path, session_data)
-            self._cache.wrote(session_id, session_data)
-            async with self._lock:
-                await self._index.update_entry(user_id, session_id, SessionIndex.row(session_data))
+
+        await self._mutate(user_id, session_id, place, reindex=True)
 
     async def drop_session_metadata_entry(self, user_id: str, session_id: str, key: str, entry: str) -> bool:
         """Remove one entry of a dict in a session's metadata (``metadata[key][entry]``), atomically as
@@ -810,17 +882,11 @@ class SessionManager:
             SessionNotFoundError: If session doesn't exist
             SessionPermissionError: If user doesn't own the session
         """
-        session_lock = await self._get_session_lock(session_id)
-        async with session_lock:
-            path = self._get_session_path(user_id, session_id)
-            session_data = await self._read_to_change(path, user_id, session_id)
+        def drop(session_data: Dict[str, Any]) -> bool:
             entries = (session_data.get("metadata") or {}).get(key)
-            if not isinstance(entries, dict) or entries.pop(entry, None) is None:
-                return False
-            session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-            await self._write_session_file(path, session_data)
-            self._cache.wrote(session_id, session_data)
-            return True
+            return isinstance(entries, dict) and entries.pop(entry, None) is not None
+
+        return await self._mutate(user_id, session_id, drop)
 
     async def replace_session_context_vars(
         self,
@@ -846,24 +912,14 @@ class SessionManager:
 
         Raises SessionPermissionError if *user_id* does not own the session.
         """
-        session_lock = await self._get_session_lock(session_id)
-        async with session_lock:
-            path = self._get_session_path(user_id, session_id)
-            if not path.exists():
-                return False
-
-            session_data = await self._read_session_file_async(path)
-            if session_data.get("user_id") != user_id:
-                raise SessionPermissionError(
-                    f"User {user_id} doesn't own session {session_id}")
-
+        def replace(session_data: Dict[str, Any]) -> None:
             session_data["context_vars"] = dict(context_vars)
-            session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-            await self._write_session_file(path, session_data)
-            self._cache.wrote(session_id, session_data)
-            logger.debug("Replaced context_vars for session %s: keys=%s",
-                         session_id, sorted(context_vars))
-            return True
+
+        if not await self._mutate(user_id, session_id, replace, missing_ok=True):
+            return False
+        logger.debug("Replaced context_vars for session %s: keys=%s",
+                     session_id, sorted(context_vars))
+        return True
 
     async def delete_session(self, user_id: str, session_id: str, create_backup: bool = True,
                              keep_files: bool = False) -> None:
@@ -976,7 +1032,7 @@ class SessionManager:
             path = self._get_session_path(user_id, session_id)
             if path.exists():
                 raise ValueError(f"Session {session_id} is live -- refusing to overwrite it")
-            if self._session_id_exists_globally(session_id):
+            if self.session_id_exists(session_id):
                 raise ValueError(f"Session {session_id} is live for another user -- refusing a second one")
 
             await self._atomic_write_async(path, session_data)
@@ -1095,8 +1151,9 @@ class SessionManager:
         return starting[0].get("session_id") if len(starting) == 1 else None
 
     async def rename_session(self, user_id: str, session_id: str, new_title: str) -> None:
-        """Rename a session.
-        
+        """Rename a session -- read, renamed and written back under the session's lock (``_mutate``), so a write
+        that landed since is not written over with an older copy, as a load and a whole-record save could.
+
         Args:
             user_id: User identifier
             session_id: Session identifier
@@ -1106,10 +1163,18 @@ class SessionManager:
             SessionNotFoundError: If session doesn't exist
             SessionPermissionError: If user doesn't own the session
         """
-        session_data = await self.load_session(user_id, session_id)
-        session_data["title"] = new_title
-        await self.save_session(session_data)
-        
+        def rename(session_data: Dict[str, Any]) -> None:
+            session_data["title"] = new_title
+
+        try:
+            await self._mutate(user_id, session_id, rename, reindex=True)
+        except SessionNotFoundError:
+            # Another user's: refused as load_session refuses it, not answered "not there"
+            if any(session_files_anywhere(self.storage_path, session_id,
+                                          skip_user=self._sanitize_user_id(user_id))):
+                raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}") from None
+            raise
+
         logger.info("Renamed session %s to '%s'", session_id, new_title)
 
     def clear_cache(self) -> None:

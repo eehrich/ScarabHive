@@ -55,6 +55,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Iterator
 
+from agent_system.utils.id import short_hash
+
 PROMPT_CACHE_KEY_AUTO = "auto"
 PREFIX_CHARS = 4096
 
@@ -169,7 +171,7 @@ class CacheBoundaryRegistry:
 
     @staticmethod
     def _digest(text: str) -> str:
-        return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+        return short_hash(text, 16, "replace")
 
     def rungs_for(self, key: str, append_text: str) -> list[int]:
         """Valid rung list for the current append block (else [])."""

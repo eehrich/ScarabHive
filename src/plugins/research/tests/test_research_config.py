@@ -176,7 +176,7 @@ async def test_the_agent_can_still_branch_when_it_is_itself_a_sub_agent(config):
         return_value={"session_id": "nested", "depth": 2, "metadata": {}})
     service.session_manager.save_session = AsyncMock()
     service.session_manager.update_session_metadata = AsyncMock()
-    service.session_manager._session_id_exists_globally = MagicMock(return_value=False)
+    service.session_manager.session_id_exists = MagicMock(return_value=False)
 
     manager = SubAgentManager(service, MagicMock(),
                               max_nesting_depth=int(getattr(sam, "max_nesting_depth")),

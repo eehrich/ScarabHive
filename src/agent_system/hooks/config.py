@@ -3,7 +3,7 @@ Hook configuration and management.
 
 Turns the global ``hooks:`` section of the loaded configuration
 (AgentSystemConfig.hooks) into a HooksConfig. The overrides are applied
-in plugins.discovery.register_plugin_hooks.
+in hooks.plugin_registration.register_plugin_hooks.
 """
 from __future__ import annotations
 

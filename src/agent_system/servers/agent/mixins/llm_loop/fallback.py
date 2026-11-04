@@ -211,7 +211,6 @@ class FallbackMixin:
                 model_health.drop_probe(st.current_llm, run.request_id)
                 error_msg = unsupported_message(st.current_llm, response_format)
                 logger.warning("[%s] %s", self.name, error_msg)
-                run.results.setdefault("errors", []).append(error_msg)
                 yield {"type": "error", "message": error_msg,
                        "error_type": STRUCTURED_OUTPUT_UNSUPPORTED}
                 st.end = StepEnd.RUN
@@ -502,12 +501,13 @@ class FallbackMixin:
         taken = self._take_fallback(run, st)
         if taken:
             fallback_profile, fallback_llm = taken
+            failure = f"Server error {e.status_code}" if e.status_code else "Failure without a status"
             logger.warning(
-                f"[{self.name}] Server error {e.status_code} from {e.model}: {e}. "
+                f"[{self.name}] {failure} from {e.model}: {e}. "
                 f"Switching to fallback profile: {fallback_profile}"
             )
             await run.status_worker.progress(
-                f"Server error {e.status_code}, switching to {fallback_profile}",
+                f"{failure}, switching to {fallback_profile}",
                 meta={"step": st.step + 1, "fallback": fallback_profile}
             )
             # Request-scoped swap when the BASE failed, like its

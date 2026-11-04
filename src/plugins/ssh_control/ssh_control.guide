@@ -277,7 +277,8 @@ run to the end has @{tt}error@{utt} and @{tt}success: false@{utt} and no
 output: "Timed out after 300s", "Unknown machine: x. Available: [...]",
 the connection's failure, or "No connection slot available to ... within
 30.0s" when every connection of the machine stays busy for 30 seconds.
-Stdout and stderr come back whole; a command with a lot of output should
+A foreground answer carries at most 30,000 characters per stream, the
+start of it, and says so (@{tt}truncated@{utt}); a command with a lot of output should
 be cut on the machine (@{tt}| tail -50@{utt}). On a timeout the plugin
 stops waiting and sends no signal: the command may go on running on the
 host.
@@ -506,8 +507,8 @@ build-host: exit 0, 18234 chars", "Uploaded: build-host: app.tar.gz →
 
 Answers are ordinary tool results: appended, nothing earlier changes. The
 plugin has no hook and never touches the prompt. A foreground command's
-output comes back whole, and so does everything a background command has
-buffered (up to 1000 lines per stream) on each @{tt}get_output@{utt} --
+output comes back up to 30,000 characters per stream, and everything a background command has
+buffered (up to 1000 lines per stream) comes back on each @{tt}get_output@{utt} --
 @{tt}clear_buffer: true@{utt} or @{tt}stream@{utt} keep repeated reads
 small.
 

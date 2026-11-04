@@ -1222,7 +1222,7 @@ async def test_a_deleted_session_is_forgotten_only_after_a_save_that_read_it_bef
     below = tool_session_id("S", helper.name)
     await world.manager.create_session(user_id="alice", session_id="S", agent_name="coordinator")
     await world.call(helper, "S", task="first question")
-    gate, blocked, real_find = asyncio.Event(), [], world.manager._find_session_owner_async
+    gate, blocked, real_find = asyncio.Event(), [], world.manager.find_session_owner_async
     real_open = world.service.open_for_run
 
     async def held_up(session_id):
@@ -1231,7 +1231,7 @@ async def test_a_deleted_session_is_forgotten_only_after_a_save_that_read_it_bef
             await gate.wait()
         return await real_find(session_id)
 
-    monkeypatch.setattr(world.manager, "_find_session_owner_async", held_up)
+    monkeypatch.setattr(world.manager, "find_session_owner_async", held_up)
     late = asyncio.ensure_future(world.service.save_session(helper, "alice", below, helper.name, "normal",
                                                             was_new_session=False, after_run=True))
 

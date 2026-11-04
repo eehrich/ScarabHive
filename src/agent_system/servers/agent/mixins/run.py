@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 from ....core.cancellation import get_cancellation_manager
 from ....core.session_presence import SessionBusy, presence_for
 from ....utils.id import short_id
-from ....llm.models import ChatMessage, LLMClient
+from ....llm.models import ChatMessage, LLMClient, task_text as task_text_of
 from ....llm.structured_output import ResponseFormat
 from ....tools.status import (
     status_scope,
@@ -127,22 +127,8 @@ class RunMixin:
                     logger.debug(f"Set session metadata for existing session {session_id} (was missing): user_id={user_id}")
 
         # Handle Union[str, ChatMessage] input
-        initial_message: Optional[ChatMessage] = None
-        task_text: str = ""
-
-        if isinstance(task, ChatMessage):
-            # Extract task text from ChatMessage content for logging/tracking
-            initial_message = task
-            if isinstance(task.content, str):
-                task_text = task.content
-            elif isinstance(task.content, list):
-                # Extract text from content items (Pydantic models, not dicts)
-                text_parts = [getattr(item, "text", "") for item in task.content if hasattr(item, "type") and getattr(item, "type") == "text"]
-                task_text = " ".join(text_parts) if text_parts else "[multimodal input]"
-            else:
-                task_text = "[multimodal input]"
-        else:
-            task_text = task
+        initial_message: Optional[ChatMessage] = task if isinstance(task, ChatMessage) else None
+        task_text = task_text_of(task)  # for logging/tracking
 
         # Create suffixed request IDs for coordinator and worker so their
         # status messages can be correlated separately while still linking
@@ -278,7 +264,7 @@ class RunMixin:
         """
         Core agent execution loop - orchestrates LLM conversation with tool usage.
 
-        Now refactored into three focused phases (see REFACTORING_PLAN.md):
+        Three focused phases (see docs/refactoring_plan.md):
         1. Initialize: _initialize_request_and_conversation() - Setup and context building
         2. Execute: _execute_llm_loop() - Main LLM interaction loop with tool execution
         3. Finalize: _finalize_request() - Cleanup and persistence
@@ -318,7 +304,15 @@ class RunMixin:
         # Try to acquire session lock to prevent parallel requests on same session
         # This prevents race conditions when multiple browser tabs access the same session
         session_lock_timeout = self.timeouts.session_lock_timeout if self.timeouts else 5.0
-        lock_acquired = await self._session_tracker.acquire_session_lock(session_id, request_id, timeout=session_lock_timeout)
+        try:
+            lock_acquired = await self._session_tracker.acquire_session_lock(
+                session_id, request_id, timeout=session_lock_timeout)
+        except BaseException:
+            # Cancelled while waiting (client gone): the request was registered
+            # above and nothing below runs to unregister it.
+            self._request_manager.unregister_active_request(request_id)
+            self._session_tracker.unregister_request(request_id)
+            raise
         if not lock_acquired:
             # Another request is already processing this session
             is_locked, owner = self._session_tracker.check_session_locked(session_id)
@@ -494,11 +488,16 @@ class RunMixin:
                         checkpoint_loop=checkpoint_loop,
                     )
                 finally:
+                    # The run's live state, once nothing runs the session any more:
+                    # now, or when the background job around this run has ended.
+                    self._release_live_state(session_id)
                     # Session presence: after the save, so input still waiting
                     # wakes the session and the woken run finds the whole
                     # conversation on disk -- and in a finally, because a
                     # cancelled save (client gone) must not leave the session
-                    # looking like it still runs.
+                    # looking like it still runs. Called directly: this finally runs under
+                    # the client's cancel, and an await here would be cancelled before the
+                    # release starts (measured: 1 of 30 disconnects released).
                     self._presence_release(request_id)
 
             # Yield final status events and end marker

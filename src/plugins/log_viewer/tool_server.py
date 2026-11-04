@@ -5,7 +5,9 @@ Provides tools for log management and querying.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, TYPE_CHECKING
 
@@ -23,6 +25,10 @@ DEFAULT_LOG_FILES = ['logs/api.log', 'logs/cli.log', 'logs/profiling.log', 'logs
 def _positive_int(value: Any) -> bool:
     """A count a model passed: an int of at least 1 (a bool is no count)."""
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+#: The most lines one tail returns (the panel's limit, endpoints.MAX_ENTRIES, is for people).
+MAX_TAIL_LINES = 2000
 
 
 class LogViewerToolServer(SchemaBasedToolServer):
@@ -67,6 +73,8 @@ class LogViewerToolServer(SchemaBasedToolServer):
         # for a failure and the counts of a success -- and it went out as the
         # error text too, so a failure read as "Completed".
         if "error" in result:
+            # The error shape every tool answers with: callers test status.
+            result.setdefault("status", "error")
             await status.error(str(result["error"]))
         else:
             # Built from what the three handlers really return -- `tool` is
@@ -121,17 +129,29 @@ class LogViewerToolServer(SchemaBasedToolServer):
         if not log_path.exists():
             return {"error": f"Log file {log_file} not found"}
         
-        try:
-            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-                all_lines = f.readlines()
-                tail_lines = all_lines[-lines:]
+        # The answer goes into the model's context: at most MAX_TAIL_LINES,
+        # whatever was asked (lines=10**7 returned the whole log).
+        lines = min(int(lines), MAX_TAIL_LINES)
 
-                return {
-                    "log_file": log_file,
-                    "lines": [line.rstrip('\n\r') for line in tail_lines],
-                    "total_lines": len(all_lines),
-                    "returned_lines": len(tail_lines)
-                }
+        def read_tail() -> tuple[list[str], int]:
+            # Streamed, keeping only the tail: readlines() held the whole log in
+            # memory, and ran on the event loop.
+            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+                total = 0
+                tail: deque[str] = deque(maxlen=lines)
+                for line in f:
+                    total += 1
+                    tail.append(line)
+                return list(tail), total
+
+        try:
+            tail_lines, total_lines = await asyncio.to_thread(read_tail)
+            return {
+                "log_file": log_file,
+                "lines": [line.rstrip('\n\r') for line in tail_lines],
+                "total_lines": total_lines,
+                "returned_lines": len(tail_lines)
+            }
         except Exception as e:
             return {"error": f"Failed to read log file: {str(e)}"}
     

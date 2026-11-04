@@ -92,9 +92,15 @@ Models that use batch processing have `provider: batch` and specify which batch 
 | `max_requests_per_batch` | int | `100` | Max requests per batch (triggers early submission) |
 | `poll_interval_seconds` | float | `10.0` | How often to check batch status |
 | `max_wait_hours` | float | `24.0` | Max time to wait for batch completion |
-| `max_retries` | int | `3` | Retries for server-side cancelled jobs |
+| `max_retries` | int | `3` | Resubmits of a job the provider cancelled or expired, or that hit the local `max_wait_hours` -- the worst-case wait is `max_wait_hours × (max_retries + 1)` |
 | `cancel_on_startup` | bool | `true` | Cancel pending batches on system startup |
 | `fallback_to_sync` | bool | `false` | Fall back to sync API if batch fails |
+
+**Known gap:** `collection_window_seconds`, `max_requests_per_batch`,
+`poll_interval_seconds`, `max_wait_hours` and `max_retries` are read per
+provider but applied globally: one polling loop serves every provider and
+the FIRST configured provider's values win (`queue_manager/core.py`). See
+`docs/refactoring_plan.md`.
 
 #### Model Settings
 

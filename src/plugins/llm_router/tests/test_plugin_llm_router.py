@@ -394,3 +394,34 @@ class TestLLMRouterCLI:
             cli.cli_main(["--message", "ping"])
         assert exit_info.value.code == 2
         assert "--profile" in capsys.readouterr().err
+
+
+class TestRouterHousekeeping:
+    async def test_the_client_built_for_a_call_is_closed(self, mock_system_config, mock_server_config):
+        """A client per call, never closed: each call leaked an SDK connection pool."""
+        from types import SimpleNamespace
+
+        mock_system_config.llm_system = SimpleNamespace(
+            profiles={"test": {"model_ref": "nano"}}, models={"nano": {"provider": "openai_httpx"}})
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
+        client = AsyncMock()
+        client.chat.return_value = "ok"
+        client.model = "m"
+
+        with patch.object(server, "_make_client", return_value=client):
+            await server.call("llm_router_chat", {"message": "hi", "profile": "test", "_status": AsyncMock()})
+
+        client.close.assert_awaited_once()
+
+    def test_providers_are_read_from_model_config_objects(self, mock_system_config, mock_server_config):
+        """The models are LLMModelConfig objects; a dict-only check listed no provider ever."""
+        from types import SimpleNamespace
+
+        from agent_system.config.models import LLMModelConfig
+
+        mock_system_config.llm_system = SimpleNamespace(
+            profiles={}, models={"a": LLMModelConfig(provider="anthropic", model="x"),
+                                 "b": {"provider": "ollama"}})
+        server = LLMRouterServer("llm_router", mock_system_config, mock_server_config)
+
+        assert server.get_template_vars()["available_providers"] == ["anthropic", "ollama"]

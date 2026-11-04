@@ -21,6 +21,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from agent_system.utils.io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 MODES = ("simple", "admin")
@@ -73,17 +75,10 @@ class ViewStore:
         return section if isinstance(section, dict) else {}
 
     def _write(self, data: dict[str, Any]) -> None:
-        """Whole or not at all: a temporary file of its own beside it, then the rename."""
+        """Whole or not at all: a temporary file of its own beside it, then the rename (utils.io)."""
+        text = json.dumps(data, ensure_ascii=False, indent=1)
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            handle, part = tempfile.mkstemp(dir=self.path.parent, prefix=f"{self.path.name}.", suffix=".tmp")
-            try:
-                with os.fdopen(handle, "w", encoding="utf-8") as out:
-                    json.dump(data, out, ensure_ascii=False, indent=1)
-                os.replace(part, self.path)
-            except BaseException:
-                Path(part).unlink(missing_ok=True)
-                raise
+            atomic_write_text(self.path, text, mkdir=True)
         except OSError as exc:
             raise ViewError(f"{self.path} cannot be written: {exc}") from exc
 

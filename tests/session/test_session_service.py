@@ -260,7 +260,7 @@ def session_service_env(tmp_path):
 
 @pytest.mark.asyncio
 async def test_save_session_race_creates_then_falls_back(session_service_env):
-    """When _find_session_owner_async misses a session that already exists,
+    """When find_session_owner_async misses a session that already exists,
     save_session should catch the ValueError from create_session and fall
     back to load-update-save, preserving parent_session."""
     svc, sm = session_service_env
@@ -277,11 +277,11 @@ async def test_save_session_race_creates_then_falls_back(session_service_env):
     session["depth"] = 2
     await sm.save_session(session)
 
-    # Clear cache so _find_session_owner_async has to hit filesystem
+    # Clear cache so find_session_owner_async has to hit filesystem
     sm.clear_cache()
 
-    # Patch _find_session_owner_async to return None (simulating race)
-    original_find = sm._find_session_owner_async
+    # Patch find_session_owner_async to return None (simulating race)
+    original_find = sm.find_session_owner_async
 
     async def mock_find_none(session_id):
         # First call returns None (race), subsequent calls work
@@ -290,9 +290,9 @@ async def test_save_session_race_creates_then_falls_back(session_service_env):
     msgs = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
     agent = _make_mock_agent(msgs)
 
-    with patch.object(sm, '_find_session_owner_async', side_effect=mock_find_none):
+    with patch.object(sm, 'find_session_owner_async', side_effect=mock_find_none):
         # Restore for the retry inside save_session
-        with patch.object(sm, '_find_session_owner_async', wraps=original_find):
+        with patch.object(sm, 'find_session_owner_async', wraps=original_find):
             pass  # We need a different approach
 
     # Better: patch only the FIRST call
@@ -304,7 +304,7 @@ async def test_save_session_race_creates_then_falls_back(session_service_env):
             return None  # First call: miss
         return await original_find(session_id)  # Retry: find it
 
-    with patch.object(sm, '_find_session_owner_async', side_effect=mock_find_first_miss):
+    with patch.object(sm, 'find_session_owner_async', side_effect=mock_find_first_miss):
         result = await svc.save_session(
             agent=agent,
             user_id="user1",

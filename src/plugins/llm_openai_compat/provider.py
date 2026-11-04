@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Optional, TYPE_CHECKING
 
-from plugins.llm_common.api_keys import resolve_api_key
+from plugins.llm_common.api_keys import resolve_api_key, targets_openai
 from plugins.llm_common.model_dialects import affinity_minutes, warn_unwired
 
 from .httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
@@ -180,11 +180,14 @@ def make_batch_backend(cfg: "LLMModelConfig"):
     """
     import os
 
-    # No key-follows-endpoint dance here: the Batch API exists at OpenAI,
-    # not at the gateways this client otherwise talks to, so the key is the
-    # OpenAI one. Returning None on a missing key is the contract — the
-    # caller logs the skip and the models fall back to sync.
-    api_key = cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
+    # The Batch API exists at OpenAI only, so the key sent there must be the
+    # OpenAI one. The model entry's own `api_key` belongs to ITS endpoint: when
+    # base_url names another host (openrouter.ai, a gateway, a local server),
+    # that key is a secret of that host and must not go to api.openai.com.
+    # Returning None on a missing key is the contract -- the caller logs the
+    # skip and the models fall back to sync.
+    own_key = (cfg.api_key or "").strip() if targets_openai(cfg.base_url) else ""
+    api_key = own_key or os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         return None
     from .openai_batch import OpenAIBatchClient

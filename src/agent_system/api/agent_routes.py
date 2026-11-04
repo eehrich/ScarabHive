@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from agent_system import app_state
-from agent_system.api.app_context import AppContext, app_context, registry_of
+from agent_system.api.app_context import AppContext, NotAnAgent, app_context, lookup_agent, registry_of
 # Module level: inside list_agents it would sit in a try/except that
 # skips the server -- an import cycle would then empty the UI dropdown
 # in silence instead of failing loud at start.
@@ -29,22 +29,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _agent_or_error(agent_name: str, *, loud: bool = False) -> tuple[Any, Optional[dict]]:
+def _agent_or_error(request: Request, agent_name: str, *, loud: bool = False) -> tuple[Any, Optional[dict]]:
     """The registered Agent named *agent_name*, or what the allowlist and debug routes answer
     instead: ``(None, {"error": ...})`` -- a 200, not a 404. ``loud``: the system prompt route
     logs a failed lookup as a warning, with its traceback."""
     try:
-        srv = app_state.app_registry.get(agent_name)  # type: ignore[attr-defined]
+        return lookup_agent(request, agent_name), None
+    except NotAnAgent:
+        return None, {"error": "not an agent", "agent": agent_name}
     except Exception as e:
         if loud:
             logger.warning(f"Failed to get agent {agent_name}: {e}", exc_info=True)
         else:
             logger.debug(f"Failed to get agent {agent_name}: {e}")
         return None, {"error": "agent not found", "agent": agent_name}
-    from agent_system.servers.agent.server import Agent as _Agent
-    if not isinstance(srv, _Agent):
-        return None, {"error": "not an agent", "agent": agent_name}
-    return srv, None
 
 
 @router.get("/admin/config")
@@ -224,7 +222,7 @@ async def get_agent_allowed_tools(request: Request, agent_name: str, ctx: AppCon
     An agent the caller may not run answers as one that does not exist: what
     a gated agent can reach is part of what the gate keeps from them.
     """
-    srv, error = _agent_or_error(agent_name)
+    srv, error = _agent_or_error(request, agent_name)
     if error is not None:
         return error
     if await ctx.gate_refuses_caller(request, srv):
@@ -266,19 +264,16 @@ async def get_agent_tools(request: Request, agent_name: str, ctx: AppContext = D
     sentence to show.
     """
     from agent_system.chat_commands import group_tools_by_server
-    from agent_system.servers.agent.server import Agent as _Agent
 
     registry = registry_of(request)
     try:
-        srv = registry.get(agent_name) if registry is not None else None
-    except Exception as e:
-        logger.debug("Failed to get agent %s: %s", agent_name, e)
-        srv = None
-    if srv is None:
-        raise HTTPException(status_code=404, detail=f"agent '{agent_name}' not found")
-    if not isinstance(srv, _Agent):
+        srv = lookup_agent(request, agent_name)
+    except NotAnAgent:
         raise HTTPException(status_code=400,
                             detail=f"'{agent_name}' is a tool server, not an agent")
+    except Exception as e:
+        logger.debug("Failed to get agent %s: %s", agent_name, e)
+        raise HTTPException(status_code=404, detail=f"agent '{agent_name}' not found")
     if await ctx.gate_refuses_caller(request, srv):
         raise HTTPException(status_code=404, detail=f"agent '{agent_name}' not found")
 
@@ -302,7 +297,7 @@ async def get_agent_tools(request: Request, agent_name: str, ctx: AppContext = D
 
 
 @router.get("/agents/debug/{agent_name}/allowed-tools")
-async def get_agent_allowed_tools_debug(agent_name: str):
+async def get_agent_allowed_tools_debug(request: Request, agent_name: str):
     """Return detailed pattern match diagnostics for an agent's allowed tools.
 
     Provides:
@@ -313,7 +308,7 @@ async def get_agent_allowed_tools_debug(agent_name: str):
 
     Note: This endpoint is admin-only (requires admin role).
     """
-    srv, error = _agent_or_error(agent_name)
+    srv, error = _agent_or_error(request, agent_name)
     if error is not None:
         return error
     try:
@@ -389,7 +384,7 @@ async def get_agent_allowed_tools_debug(agent_name: str):
 
 
 @router.get("/agents/debug/{agent_name}/system-prompt")
-async def get_agent_system_prompt(agent_name: str):
+async def get_agent_system_prompt(request: Request, agent_name: str):
     """Return the currently rendered system & tools prompt for the agent.
 
     Renders on demand using the same logic as execution, including:
@@ -399,7 +394,7 @@ async def get_agent_system_prompt(agent_name: str):
 
     Note: This endpoint is admin-only (requires admin role).
     """
-    srv, error = _agent_or_error(agent_name, loud=True)
+    srv, error = _agent_or_error(request, agent_name, loud=True)
     if error is not None:
         return error
     try:

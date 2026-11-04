@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from ...plugins import discover_all_plugins
+from ...utils.text import shorten
 from ..common import colorize, supports_color
 from .table import print_table
 
@@ -77,7 +78,7 @@ def _enabled_cell(enabled: Any) -> str:
 
 def _clipped(text: str) -> str:
     """A description cut to the table's 80 characters."""
-    return text[:77] + "..." if len(text) > 80 else text
+    return shorten(text, 80, ellipsis="...")
 
 
 def _print_plugin_info(args: Any, servers: Dict[str, Any], plugins: Dict[str, Any]) -> None:

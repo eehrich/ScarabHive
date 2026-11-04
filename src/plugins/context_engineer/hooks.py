@@ -48,7 +48,35 @@ from .tool_result_store import ToolResultStore
 logger = logging.getLogger(__name__)
 
 
+def _person_turn_behind_injections(messages: list[dict[str, Any]]) -> int:
+    """Index of the last message behind what plugins appended after it, else -1.
+
+    Skips injected notes (user/developer with ``injected_by``) and an injected
+    tool exchange -- tool_preload appends ``[assistant(injected_by), tool...]``
+    after the person's message, and a walk that stopped at its ``tool`` message
+    never saw the new turn, so ``compact_media_after_user_message`` did not fire
+    on any turn a preload ran.
+    """
+    last = len(messages) - 1
+    while last >= 0:
+        msg = messages[last]
+        if is_injected_note(msg):
+            last -= 1
+            continue
+        if msg.get("role") == "tool":
+            start = last
+            while start >= 0 and messages[start].get("role") == "tool":
+                start -= 1
+            caller = messages[start] if start >= 0 else None
+            if caller is not None and caller.get("role") == "assistant" and caller.get("injected_by"):
+                last = start - 1
+                continue
+        break
+    return last
+
+
 @dataclass
+
 class _HysteresisMark:
     """Where the last run of a rewriting layer left a session.
 
@@ -939,7 +967,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             strategy.summarize = self._summarizer(context, cfg)
 
             # Get actual or estimated token usage (prefer actual from usage_tracker)
-            current_tokens, reading_is_whole = self._read_tokens(context, messages_as_dicts, strategy)
+            # In a thread: the usage tracker's reading is SQLite with a 10 s busy timeout,
+            # which stalled every session on the event loop.
+            current_tokens, reading_is_whole = await asyncio.to_thread(
+                self._read_tokens, context, messages_as_dicts, strategy)
 
             # A new tool result too big for the window (Pre-Layer T) is stored
             # whatever the thresholds and the hysteresis below say. Those decide
@@ -954,7 +985,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 gate_messages = list(messages_as_dicts)
                 for i in arrivals:
                     gate_messages[i] = {**gate_messages[i], "content": ""}
-                gate_tokens = min(current_tokens, self._read_tokens(context, gate_messages, strategy)[0])
+                gate_tokens = min(current_tokens, (await asyncio.to_thread(
+                    self._read_tokens, context, gate_messages, strategy))[0])
 
             # The hysteresis base follows every measurement, including the calls
             # the threshold gate below turns away: taken only on a call that
@@ -998,9 +1030,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # step budget note follows drained input): a note alone is no new
             # turn, and evicting media on it rewrote old messages at the end of
             # every long run.
-            last = len(messages_as_dicts) - 1
-            while last >= 0 and is_injected_note(messages_as_dicts[last]):
-                last -= 1
+            last = _person_turn_behind_injections(messages_as_dicts)
             if last >= 0 and messages_as_dicts[last].get("role") == "user":
                 trigger_event = "user_message"
                 # Note: final_response is detected in post-hooks, not here
@@ -1115,7 +1145,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # _get_session_components (for another session) can't evict and
             # close this session's stores while the compaction is mid-flight
             # on a worker thread (use-after-close).
-            import asyncio
             self._active_compactions.add(session_id)
             try:
                 result = await strategy.compact(
@@ -1213,7 +1242,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # This prevents subsequent hooks (e.g., context_summarizer) from using stale
             # token counts that don't reflect the optimized message list
             if something_compacted:
-                self._invalidate_usage_tracker_session(context, session_id, "context_engineer_compaction")
+                await asyncio.to_thread(  # a SQLite write: off the event loop
+                    self._invalidate_usage_tracker_session, context, session_id, "context_engineer_compaction")
             
             if self.stats_history is not None and something_compacted:
                 self.stats_history.append({
@@ -1376,19 +1406,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 + (f", media_event: {result.media_compacted_after_event}" if result.media_compacted_after_event > 0 else "")
             )
             
-            # NOTE: what persists this compaction is the auto-sync in the
-            # HookIntegrationManager, which writes the same slot after we return
-            # with modified=True and filters system messages correctly (keeping
-            # archived_ref types). The explicit set_compacted_messages() call
-            # below is NOT a safety net for that: on this path the loop clears
-            # the marker right after the hook chain (server.py), so no reader
-            # ever sees what we stage here. It is written for the one case the
-            # auto-sync cannot cover -- a hook that changes context.messages IN
-            # PLACE instead of returning a new list; then the auto-sync has
-            # nothing to notice and this call is the only thing that persists.
-            # No hook does that today. Note that the compact TOOL sets the same
-            # marker on its own path (server.py), and THAT one is read -- do not
-            # let this comment talk you out of that one.
+            # NOTE: as a pre_llm_call hook, what persists this compaction is
+            # the list we return with modified=True: it becomes the run's
+            # messages, and the run saves those. The set_compacted_messages()
+            # call below is not read on that path (the loop clears the marker
+            # right after the hook chain). It is for the compact TOOL, which
+            # reaches this code with the agent attached and whose path DOES
+            # read the marker (server.py) -- keep it for that.
             # Only when something changed. The compact tool reaches this with the
             # agent attached, and a staged history makes the agent rebuild its
             # list after the tool as [system prompt] + staged + tool messages —
@@ -1401,10 +1425,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 #
                 # This used to be a hand-written copy of that rule which knew
                 # only about archived_ref, so it dropped the prune breadcrumb.
-                # It survived by accident: the agent's auto-sync runs afterwards
-                # and overwrote the same slot with the correct list. Ordering is
-                # not a guarantee — a hook that mutates context.messages in
-                # place skips that overwrite and this copy wins.
                 from agent_system.servers.agent.components.hook_integration import (
                     is_compaction_system_message,
                 )

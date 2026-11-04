@@ -230,7 +230,7 @@ hooks:
 async def test_registration_uses_the_hooks_of_its_config(monkeypatch, path):
     """Both registration paths hand the config's overrides on."""
     from agent_system.config.models import AgentSystemConfig
-    from agent_system.plugins import discovery
+    from agent_system.hooks import plugin_registration as discovery
 
     settings = AgentSystemConfig(hooks={"overrides": {"probe.h": {"enabled": False}}})
     server = type("Server", (), {"plugin_schema": {"hooks": [{"name": "h"}]},
@@ -263,7 +263,7 @@ async def test_registration_uses_the_hooks_of_its_config(monkeypatch, path):
 async def test_registration_reports_overrides_that_match_no_hook(monkeypatch, path):
     """Both registration paths check the override keys once all hooks are in."""
     from agent_system.config.models import AgentSystemConfig
-    from agent_system.plugins import discovery
+    from agent_system.hooks import plugin_registration as discovery
 
     settings = AgentSystemConfig()
     registry = type("Registry", (), {"list_servers": lambda self: [],

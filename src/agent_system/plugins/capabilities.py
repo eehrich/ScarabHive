@@ -106,6 +106,14 @@ def on_tool_catalog_changed(callback: Callable[[], Any]) -> None:
         _invalidation_callbacks.append(callback)
 
 
+def remove_tool_catalog_listener(callback: Callable[[], Any]) -> None:
+    """Undo :func:`on_tool_catalog_changed`; unknown callbacks are ignored."""
+    try:
+        _invalidation_callbacks.remove(callback)
+    except ValueError:
+        pass
+
+
 #: Strong references to in-flight invalidation tasks. The event loop only
 #: keeps a weak reference to tasks -- without this set a scheduled
 #: invalidation could be garbage-collected before it ran, leaving the tool

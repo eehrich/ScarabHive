@@ -238,3 +238,10 @@ def test_blocks_and_releases_move_the_version(health):
     assert health.version == start + 1
     health.release(_Client())
     assert health.version == start + 2
+
+
+def test_a_retry_after_far_ahead_does_not_block_for_good(health):
+    from agent_system.llm.model_health import MAX_RETRY_AFTER_BELIEVED
+
+    assert health.block(_Client(), max_pause=HOUR, rate_limit=True, retry_after=1e9) == MAX_RETRY_AFTER_BELIEVED
+    assert health.block(_Client(model="other"), max_pause=HOUR, rate_limit=True, retry_after=7200.0) == 7200.0

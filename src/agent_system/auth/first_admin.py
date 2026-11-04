@@ -90,7 +90,7 @@ def ensure_admin_password(cfg_path: Path, new_password: Callable[[str, frozenset
     update must not touch an admin, whose API key the worker services may hold -- not even one on the
     password the config names, which is the operator's own choice.
     """
-    from agent_system.auth.database import UserDatabase
+    from agent_system.auth.database import UserDatabase, user_db_path
     from agent_system.config.settings import load_settings
 
     changed = [] if changed is None else changed
@@ -98,8 +98,8 @@ def ensure_admin_password(cfg_path: Path, new_password: Callable[[str, frozenset
     if not (auth and auth.enabled):
         return "authentication is off: there is no login to protect"
     refused = frozenset(password for _, password in known_admin_logins(auth))
-    # the path as the API resolves it (app.py: setup_database, a UserDatabase of the same path)
-    users = UserDatabase(Path(auth.database_path) if auth.database_path else None)
+    # the store the API opens (app.py: setup_database, a UserDatabase of the same path)
+    users = UserDatabase(user_db_path(auth.database_path))
     if not users.list_users(limit=1):
         username = auth.default_admin_username
         users.create_user(UserCreate(

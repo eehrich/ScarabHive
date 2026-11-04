@@ -8,10 +8,11 @@ way they use an external server of the mcp_client plugin.
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
 
-from ..tools.base import ToolDef, ToolServerCapability
+from ..tools.base import ToolDef, ToolServerCapability, tool_def_from_function, tool_defs_from_openai
 from . import capabilities
 from .web_adapter import PluginWebInterface, plugin_web_registry
 from .schema_loader import load_schema_from_dir
@@ -64,29 +65,15 @@ class PluginToolAdapter:
         # Handle plugins with get_tools() method (OpenAI function format)
         if hasattr(self.plugin_server, 'get_tools'):
             try:
-                tool_schemas = self.plugin_server.get_tools()
-                for tool_schema in tool_schemas:
-                    if isinstance(tool_schema, dict) and 'function' in tool_schema:
-                        func_def = tool_schema['function']
-                        tool = ToolDef(
-                            name=func_def['name'],
-                            description=func_def.get('description', f'Tool {func_def["name"]}'),
-                            input_schema=func_def.get('parameters', {})
-                        )
-                        tools.append(tool)
+                tools = tool_defs_from_openai(self.plugin_server.get_tools())
             except (NotImplementedError, AttributeError):
                 pass
 
         # Use external schema file if available
         if not tools and self.plugin_schema:
             if 'functions' in self.plugin_schema:
-                for func_def in self.plugin_schema['functions']:
-                    tool = ToolDef(
-                        name=func_def['name'],
-                        description=func_def.get('description', f'Tool {func_def["name"]}'),
-                        input_schema=func_def.get('parameters', {})
-                    )
-                    tools.append(tool)
+                tools = [tool_def_from_function(func_def)
+                         for func_def in self.plugin_schema['functions']]
 
         if not tools and (hasattr(self.plugin_server, 'call')
                           or hasattr(self.plugin_server, 'call_with_status')):
@@ -127,12 +114,24 @@ class PluginToolAdapter:
             raise
 
 
-def _load_plugin_schema(name: str, plugin_server: Any) -> Optional[Dict[str, Any]]:
+def _plugin_dir(factory: Any) -> Optional[Path]:
+    """The directory of the module that defines *factory* (the plugin's folder)."""
+    module = sys.modules.get(getattr(factory, "__module__", None) or "")
+    module_file = getattr(module, "__file__", None)
+    return Path(module_file).resolve().parent if module_file else None
+
+
+def _load_plugin_schema(name: str, plugin_server: Any, factory: Any = None,
+                        plugin_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """The schema of a plugin the registry has just built; None if none is found.
 
     Asked of the server first, then read from ``schema.yaml`` / ``schema.json``
-    in the plugin's directory. register_plugin and register_plugin_simple both
-    load it this way; register_existing_plugin_instance asks the instance only.
+    in the plugin's directory: the folder of the module that defines
+    *factory*, else ``src/plugins/<type>`` / ``plugins/<type>`` below the
+    working directory. The folder is the plugin TYPE's, never the instance
+    name's -- a config agent named ``slovak_tutor`` of type ``basic_agent``
+    has no folder of its own. register_existing_plugin_instance asks the
+    instance only.
     """
     schema = None
     schema_file = None
@@ -148,19 +147,15 @@ def _load_plugin_schema(name: str, plugin_server: Any) -> Optional[Dict[str, Any
 
     # Fallback to file-based loading if server doesn't support schema or failed
     if schema is None:
-        # Try to find schema file in standard locations
-        for plugin_dir in ["src/plugins", "plugins"]:
-            # Standard schema.yaml
-            schema_path = Path(plugin_dir) / name / "schema.yaml"
-            if schema_path.exists():
-                schema_file = schema_path
-                break
-
-            # Standard JSON schema
-            schema_path = Path(plugin_dir) / name / "schema.json"
-            if schema_path.exists():
-                schema_file = schema_path
-                break
+        candidates = []
+        factory_dir = _plugin_dir(factory)
+        if factory_dir is not None:
+            candidates.append(factory_dir)
+        candidates.extend(Path(plugin_dir) / (plugin_type or name)
+                          for plugin_dir in ("src/plugins", "plugins"))
+        schema_file = next((directory / filename for directory in candidates
+                            for filename in ("schema.yaml", "schema.json")
+                            if (directory / filename).exists()), None)
 
         if schema_file:
             try:
@@ -353,7 +348,7 @@ class PluginToolRegistry:
         then did nothing, so anything with a real lifecycle -- the external MCP
         client, with its connections -- could not be a plugin at all.
 
-        Idempotent on purpose. Plugins arrive through three different paths
+        Idempotent on purpose. Plugins arrive through different paths
         (register_plugin, register_plugin_simple, and the synchronous
         register_existing_plugin_instance used by bootstrap), and start_all()
         sweeps up afterwards; hooking each path separately would either miss
@@ -523,7 +518,7 @@ class PluginToolRegistry:
                 pass
 
         # Load schema if available
-        schema = _load_plugin_schema(name, plugin_server)
+        schema = _load_plugin_schema(name, plugin_server, factory, plugin_type)
 
         # Create tool adapter
         tool_adapter = PluginToolAdapter(name, plugin_server, schema)

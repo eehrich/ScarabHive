@@ -391,125 +391,62 @@ class StatusScope:
         self.start_msg = start_msg or "started"
         self.end_msg = end_msg or "completed"
         
-    async def __aenter__(self):
-        # Send START message with error handling
+    async def _publish(self, phase: StatusPhase, message: str, meta: Optional[Dict[str, Any]] = None,
+                       level: str = "info", failure: Optional[str] = None) -> None:
+        """Publish one event of this scope. A publishing failure never breaks
+        the operation that reports it: logged as *failure* when given, else
+        dropped silently."""
         try:
             parent_id, depth_level = _calculate_tree_metadata(self.request_id)
             await self.bus.publish(StatusEvent(
                 server=self.server,
                 request_id=self.request_id,
-                message=self.start_msg,
-                phase=StatusPhase.START,
+                message=message,
+                phase=phase,
+                level=level,
+                meta=meta,
                 parent_id=parent_id,
                 depth_level=depth_level
             ))
         except Exception as e:
-            # Gracefully handle status publishing failures
-            # Don't let status publishing failures break the actual operation
-            import logging
-            logging.getLogger(__name__).warning(f"Failed to publish status START event: {e}")
+            if failure is not None:
+                logger.warning(f"{failure}: {e}")
+
+    async def __aenter__(self):
+        await self._publish(StatusPhase.START, self.start_msg,
+                            failure="Failed to publish status START event")
         self.ended = False
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if not self.ended:
             self.ended = True
-            try:
-                parent_id, depth_level = _calculate_tree_metadata(self.request_id)
-                if exc_type is not None:
-                    # Error occurred - ensure we have a meaningful error message
-                    error_msg = str(exc_val) if exc_val else "Unknown error"
-                    if not error_msg or error_msg.strip() == "":
-                        error_msg = f"{exc_type.__name__} occurred"
-                    
-                    # Build meta with error information
-                    error_meta = {
-                        "error_type": exc_type.__name__
-                    }
-                    
-                    await self.bus.publish(StatusEvent(
-                        server=self.server,
-                        request_id=self.request_id,
-                        message=f"failed: {error_msg}",
-                        phase=StatusPhase.ERROR,
-                        level="error",
-                        meta=error_meta,
-                        parent_id=parent_id,
-                        depth_level=depth_level
-                    ))
-                else:
-                    # Success
-                    await self.bus.publish(StatusEvent(
-                        server=self.server,
-                        request_id=self.request_id,
-                        message=self.end_msg,
-                        phase=StatusPhase.END,
-                        parent_id=parent_id,
-                        depth_level=depth_level
-                    ))
-            except Exception as e:
-                # Gracefully handle status publishing failures
-                # Don't let status publishing failures break the actual operation
-                import logging
-                logging.getLogger(__name__).warning(f"Failed to publish status END event: {e}")
+            if exc_type is not None:
+                # Error occurred - ensure we have a meaningful error message
+                error_msg = str(exc_val) if exc_val else "Unknown error"
+                if not error_msg or error_msg.strip() == "":
+                    error_msg = f"{exc_type.__name__} occurred"
+                await self._publish(StatusPhase.ERROR, f"failed: {error_msg}",
+                                    meta={"error_type": exc_type.__name__}, level="error",
+                                    failure="Failed to publish status END event")
+            else:
+                await self._publish(StatusPhase.END, self.end_msg,
+                                    failure="Failed to publish status END event")
     
     async def progress(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
         """Report a step or progress in the process"""
-        try:
-            parent_id, depth_level = _calculate_tree_metadata(self.request_id)
-            await self.bus.publish(StatusEvent(
-                server=self.server,
-                request_id=self.request_id,
-                message=message,
-                phase=StatusPhase.PROGRESS,
-                meta=meta,
-                parent_id=parent_id,
-                depth_level=depth_level
-            ))
-        except Exception:
-            # Gracefully handle status publishing failures
-            pass
+        await self._publish(StatusPhase.PROGRESS, message, meta)
     
     async def end(self, message: str = "completed", meta: Optional[Dict[str, Any]] = None) -> None:
         """Manually end the scope with a custom message"""
         if not self.ended:
             self.ended = True
-            try:
-                parent_id, depth_level = _calculate_tree_metadata(self.request_id)
-                await self.bus.publish(StatusEvent(
-                    server=self.server,
-                    request_id=self.request_id,
-                    message=message,
-                    phase=StatusPhase.END,
-                    meta=meta,
-                    parent_id=parent_id,
-                    depth_level=depth_level
-                ))
-            except Exception:
-                # Gracefully handle status publishing failures
-                pass
+            await self._publish(StatusPhase.END, message, meta)
         
     async def error(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
         """Report an error in the process"""
         self.ended = True
-        # Same contract as end()/progress(): a status publishing failure must
-        # not break the operation that is reporting it -- this was the only
-        # publish site without the guard.
-        try:
-            parent_id, depth_level = _calculate_tree_metadata(self.request_id)
-            await self.bus.publish(StatusEvent(
-                server=self.server,
-                request_id=self.request_id,
-                message=message,
-                phase=StatusPhase.ERROR,
-                level="error",
-                meta=meta,
-                parent_id=parent_id,
-                depth_level=depth_level
-            ))
-        except Exception:
-            # Gracefully handle status publishing failures
-            pass
+        await self._publish(StatusPhase.ERROR, message, meta, level="error")
 
 
 

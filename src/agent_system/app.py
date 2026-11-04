@@ -282,7 +282,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     logger.info("═" * 80)
 
     # Store config for lazy batch queue manager initialization
-    # This allows LLMFactory to create the manager on first use
+    # This allows get_batch_queue_manager() to create the manager on first use
     from .llm.factory import set_batch_config
     set_batch_config(config)
 
@@ -539,7 +539,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Bootstrap tool servers and plugin registry using InitializationService
     # This handles bootstrap_servers() and session_service injection
-    # Note: Batch queue manager is created lazily by LLMFactory when first needed
+    # Note: Batch queue manager is created lazily by get_batch_queue_manager() when first needed
     registry = ToolServerRegistry()
     if not app_state.tool_integration or not app_state.tool_integration.servers_bootstrapped:
         # Use InitializationService for consistent bootstrap + injection
@@ -646,13 +646,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger.info("Multi-user authentication enabled, initializing auth system...")
 
         # Setup auth database and configuration
-        from .auth.database import setup_database
+        from .auth.database import setup_database, user_db_path
         from .auth.middleware import configure_cors, configure_security_middleware
         from .auth.models import UserCreate, UserRole
-        from pathlib import Path as AuthPath
 
-        # Setup database
-        db_path = AuthPath(config.auth.database_path)
+        # Setup database -- at the path every other reader of the store resolves
+        # (user_db_path): Path("") would have made an empty setting ".".
+        db_path = user_db_path(config.auth.database_path)
         db = setup_database(db_path)
         logger.info(f"User database initialized at: {db_path}")
 

@@ -12,6 +12,9 @@ from .executor import kill_tree, release_job, signal_tree
 
 logger = logging.getLogger(__name__)
 
+#: The longest line a background process's buffer keeps (see read_stream).
+_BUFFERED_LINE_CHARS = 8192
+
 
 class ProcessManager:
     """Manages background processes."""
@@ -125,6 +128,11 @@ class ProcessManager:
                     if not line:
                         break
                     decoded = line.decode('utf-8', errors='replace')
+                    # A buffered line is at most _BUFFERED_LINE_CHARS: lines may
+                    # be 64 KiB pieces, and 1000 of them per stream was 64 MB
+                    # per process held for a tail nobody reads that far.
+                    if len(decoded) > _BUFFERED_LINE_CHARS:
+                        decoded = decoded[:_BUFFERED_LINE_CHARS] + " …[line cut]\n"
                     buffer.append(decoded)
 
                     # Enforce buffer size limit

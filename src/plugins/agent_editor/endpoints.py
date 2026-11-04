@@ -16,7 +16,7 @@ from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
 
 from . import sources
-from plugins.sub_agent_manager.server import agent_allowed
+from agent_system.auth.agent_access import agent_allowed
 
 from .store import (MANAGER_TYPE, PROMPT_SUFFIXES, Snapshot, Store, StoreError, base_of, catalog_for, dump, error_text,
                     hide_environment, jsonable, manager_lists, parent_of, placeholders, quiet_loader, resolve_with,

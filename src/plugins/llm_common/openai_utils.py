@@ -252,3 +252,34 @@ def normalize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         result.append(msg_copy)
     
     return result
+
+
+class ToolRunInjections:
+    """Synthetic user messages that carry a tool result's images, placed AFTER
+    the whole run of tool messages they belong to.
+
+    The Chat Completions wire takes no image in a tool message, so a result's
+    pictures follow it as a user message. Placed right after its own result,
+    a non-last result of PARALLEL calls put a user message between tool
+    messages (tool, user, tool), and the API refused the request: "tool_calls
+    must be followed by tool messages". Held until the run of tool messages
+    ends, the order is stable from one request to the next (cache prefix).
+
+    Use: ``add(result, message_dict)`` for every message in order,
+    ``hold(injection)`` after a tool message, ``flush(result)`` at the end.
+    """
+
+    def __init__(self) -> None:
+        self._pending: List[Dict[str, Any]] = []
+
+    def add(self, result: List[Dict[str, Any]], message: Dict[str, Any]) -> None:
+        if message.get("role") != "tool":
+            self.flush(result)
+        result.append(message)
+
+    def hold(self, injection: Dict[str, Any]) -> None:
+        self._pending.append(injection)
+
+    def flush(self, result: List[Dict[str, Any]]) -> None:
+        result.extend(self._pending)
+        self._pending.clear()

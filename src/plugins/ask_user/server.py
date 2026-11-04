@@ -180,7 +180,9 @@ class AskUserServer(SchemaBasedToolServer):
                 await status.error(status_line(f"not asked, not the model's own call: {text}"))
             return {"status": "error", "error": NOT_OWN_CALL_TEXT, "reason": "not_own_call"}
         if getattr(token, "is_cancelled", False):
-            return {"error": f"Tool '{self.name}' was cancelled.", "cancelled": True,
+            # The one end line of the call, and the error shape of every tool
+            await status.error(status_line("not asked, the run was cancelled already"))
+            return {"status": "error", "error": f"Tool '{self.name}' was cancelled.", "cancelled": True,
                     "forced": bool(getattr(token, "is_forced", False))}
         reporter = reporter_for(str(params.get("_session_id") or ""))
         if not is_read(request_id, self.gone_after_seconds) and reporter is not None and not reporter.ended:
@@ -238,7 +240,7 @@ class AskUserServer(SchemaBasedToolServer):
             return {"status": "success", "choices": list(outcome.choices), "text": outcome.text}
         if outcome == CANCELLED:
             await scope.error(status_line("not answered, the run was cancelled while the question waited"))
-            return {"error": f"Tool '{self.name}' was cancelled.", "cancelled": True,
+            return {"status": "error", "error": f"Tool '{self.name}' was cancelled.", "cancelled": True,
                     "forced": bool(getattr(token, "is_forced", False))}
         if outcome == WROTE:
             await scope.end(status_line("not answered here: the user wrote in the chat instead"))

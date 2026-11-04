@@ -8,6 +8,7 @@ import time as _time
 
 import httpx
 
+from plugins.llm_common.request_end import ending_error as _ending_error
 from agent_system.utils.id import short_id
 
 from agent_system.llm.message_roles import (
@@ -24,16 +25,8 @@ from plugins.llm_common import cancellation
 from plugins.llm_common.model_dialects import (
     reasoning_replay_flags, resolve_reasoning_details_mode,
 )
+from plugins.llm_common.openai_utils import ToolRunInjections
 from . import ollama_utils
-
-
-def _ending_error(error: BaseException) -> str:
-    """The post_llm_response error text for a request that ended by *error*."""
-    if isinstance(error, asyncio.CancelledError):
-        return str(error) or "cancelled"
-    if isinstance(error, GeneratorExit):
-        return "stream abandoned by the caller"
-    return str(error) or type(error).__name__
 
 
 class OllamaNativeAsyncClient(LLMClient):
@@ -103,6 +96,7 @@ class OllamaNativeAsyncClient(LLMClient):
     def _map_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         from agent_system.utils.json_utils import repair_json as _repair_json
         out: list[dict[str, Any]] = []
+        injections = ToolRunInjections()
         opener = conversation_opener(messages)
         may_replay = reasoning_replay_flags(messages, self.reasoning_details_mode)
         for i, m in enumerate(messages):
@@ -164,9 +158,9 @@ class OllamaNativeAsyncClient(LLMClient):
             d = ollama_utils.normalize_message(d)
             if not may_replay[i]:
                 d.pop("thinking", None)
-            out.append(d)
+            injections.add(out, d)
 
-            # A tool's image rides a user message behind the result, as on
+            # A tool's image rides a user message behind the run of results, as on
             # every other route; normalize_message turns its data URLs into
             # `images`. Without this the screenshot never reached the model.
             if m.role == "tool" and m.multimodal_content:
@@ -178,7 +172,8 @@ class OllamaNativeAsyncClient(LLMClient):
                     model_name=self.model,
                     supports_audio=bool(getattr(self.capabilities, "audio_input", False)))
                 if injection:
-                    out.append(ollama_utils.normalize_message(injection))
+                    injections.hold(ollama_utils.normalize_message(injection))
+        injections.flush(out)
         return out
 
     async def _map_messages_async(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
