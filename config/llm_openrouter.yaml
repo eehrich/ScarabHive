@@ -307,6 +307,7 @@ llm_system:
         order:
         - minimax
         allow_fallbacks: false
+      service_tier: null          # no flex here: OpenRouter filters every endpoint out (404 No endpoints found)
       capabilities:
         image_input: true
 
