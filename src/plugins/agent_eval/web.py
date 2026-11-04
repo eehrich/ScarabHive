@@ -33,6 +33,30 @@ class StartRun(BaseModel):
 
 
 
+def spawn_run(suite_path: str, run_id: str, arms: Optional[List[str]], system_config) -> None:
+    """Start a run as the CLI does, in a process of its own that outlives the request and the API."""
+    logs = store.root() / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    args = [sys.executable, "-m", "plugins.agent_eval", "run", suite_path, "--run-id", run_id]
+    for arm in arms or []:
+        args += ["--arm", arm]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PROJECT_ROOT / "src"), env.get("PYTHONPATH")]))
+    # The configuration this API runs on, also when it was named on its command line: the runner and its
+    # agent runs must read the same one -- and store the run where this panel reads it.
+    source = getattr(system_config, "_source_path", None)
+    if source and not env.get("AGENT_CONFIG_PATH"):
+        env["AGENT_CONFIG_PATH"] = str(source)
+    # A group of its own, so it outlives this request and the API; no console window (its own, and through
+    # that one none for every agent run it starts).
+    with open(logs / f"{run_id}.log", "w", encoding="utf-8") as log:
+        proc = subprocess.Popen(args, cwd=PROJECT_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, **GROUP)
+    (logs / f"{run_id}.pid").write_text(str(proc.pid), encoding="utf-8")
+    # Reaped when it ends: a zombie would count as alive and show the run as running for ever.
+    threading.Thread(target=proc.wait, name=f"agent-eval-{run_id}", daemon=True).start()
+
+
 class AgentEvalEndpoints:
     def __init__(self, plugin):
         self.plugin = plugin
@@ -114,26 +138,7 @@ class AgentEvalEndpoints:
         if unknown:
             raise HTTPException(status_code=400, detail=f"unknown arms {unknown}")
         run_id = store.new_run_id()
-        logs = store.root() / "logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        args = [sys.executable, "-m", "plugins.agent_eval", "run", body.suite, "--run-id", run_id]
-        for arm in body.arms or []:
-            args += ["--arm", arm]
-        env = dict(os.environ)
-        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PROJECT_ROOT / "src"), env.get("PYTHONPATH")]))
-        # The configuration this API runs on, also when it was named on its command line: the runner and its
-        # agent runs must read the same one -- and store the run where this panel reads it.
-        source = getattr(self.plugin.system_config, "_source_path", None)
-        if source and not env.get("AGENT_CONFIG_PATH"):
-            env["AGENT_CONFIG_PATH"] = str(source)
-        # A group of its own, so it outlives this request and the API; no console window (its own, and through
-        # that one none for every agent run it starts).
-        with open(logs / f"{run_id}.log", "w", encoding="utf-8") as log:
-            proc = subprocess.Popen(args, cwd=PROJECT_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL, **GROUP)
-        (logs / f"{run_id}.pid").write_text(str(proc.pid), encoding="utf-8")
-        # Reaped when it ends: a zombie would count as alive and show the run as running for ever.
-        threading.Thread(target=proc.wait, name=f"agent-eval-{run_id}", daemon=True).start()
+        spawn_run(body.suite, run_id, body.arms, self.plugin.system_config)
         return {"run_id": run_id}
 
     async def set_baseline(self, request: Request, run_id: str):
