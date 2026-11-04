@@ -28,6 +28,7 @@ import os
 import posixpath
 import re
 import sys
+import threading
 import types
 import weakref
 from dataclasses import dataclass
@@ -117,6 +118,49 @@ def compile_expression(source: str, where: str = "<expression>") -> types.CodeTy
         raise CodeError(where, f"not a Python expression: {exc.msg} ({source.strip()!r})", cause=exc) from None
     except _TOO_DEEP as exc:
         raise CodeError(where, f"not a Python expression: {_TOO_DEEP_MESSAGE}", cause=exc) from None
+
+
+#: What an expression may call and still only read: no builtin here changes its arguments, no method here changes
+#: its object. The list holds the calls machines write; anything else takes the guarded way (Namespace.evaluate).
+_READING_BUILTINS = frozenset({"abs", "all", "any", "bool", "dict", "enumerate", "float", "int", "isinstance", "len",
+                               "list", "max", "min", "range", "repr", "reversed", "round", "set", "sorted", "str",
+                               "sum", "tuple", "zip"})
+_READING_METHODS = frozenset({"capitalize", "count", "endswith", "find", "format", "get", "index", "items", "join",
+                              "keys", "lower", "lstrip", "replace", "rstrip", "split", "splitlines", "startswith",
+                              "strip", "title", "upper", "values"})
+_READING_NODES = (ast.Expression, ast.Name, ast.expr_context, ast.Constant, ast.Attribute, ast.Subscript, ast.Slice,
+                  ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp, ast.List, ast.Tuple, ast.Dict, ast.Set,
+                  ast.JoinedStr, ast.FormattedValue, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
+                  ast.comprehension, ast.Starred, ast.keyword, ast.operator, ast.unaryop, ast.boolop, ast.cmpop)
+
+
+@functools.lru_cache(maxsize=4096)
+def _only_reads(source: str) -> Optional[tuple[frozenset[str], frozenset[str]]]:
+    """(the names it uses, the builtins it calls) of an expression that cannot change what it reads; None for any
+    other. Whether those names mean what they seem to depends on the scope: ``Namespace.evaluate`` asks."""
+    try:
+        tree = ast.parse(source.strip(), mode="eval")
+    except (SyntaxError, ValueError, *_TOO_DEEP):
+        return None
+    names, called = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in _READING_BUILTINS:
+                called.add(node.func.id)
+            elif not (isinstance(node.func, ast.Attribute) and node.func.attr in _READING_METHODS):
+                return None
+        elif isinstance(node, ast.keyword) and node.arg in ("key", None):
+            return None  # calls what it is given, a bound method of ctx's data too: sorted(x, key=ctx.notes.append),
+            # also out of a mapping: sorted(x, **{'key': ctx.notes.append})
+        elif isinstance(node, (ast.Attribute, ast.Subscript)) and not isinstance(node.ctx, ast.Load):
+            return None  # a comprehension's target writes: [0 for ctx.notes[0] in ['x']]
+        elif isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Store) and node.id in _READING_BUILTINS:
+                return None  # a comprehension rebinds the name: [len('x') for len in [ctx.notes.append]]
+            names.add(node.id)
+        elif not isinstance(node, _READING_NODES):
+            return None
+    return frozenset(names), frozenset(called)
 
 
 @functools.lru_cache(maxsize=4096)
@@ -264,7 +308,13 @@ def state_literals(source: str) -> list[tuple[int, int, str]]:
 
 
 def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
-    """Names ``source`` loads that nothing defines, the ``ctx`` fields it touches, impure calls.
+    """Names ``source`` loads that nothing defines, the ``ctx`` fields it touches, impure calls."""
+    return _analysed(source, mode, frozenset(allowed))
+
+
+@functools.lru_cache(maxsize=8192)  # a machine holds hundreds of pieces of code, and every start validates them
+def _analysed(source: str, mode: str, allowed: frozenset[str]) -> NameUse:
+    """``analyse``: frozen, so one answer for all who ask.
 
     Approximate on purpose: it is typo protection, not a type checker. A name
     counts as defined if it is assigned anywhere in the snippet, is an argument,
@@ -652,7 +702,8 @@ class Scope:
     Values are the plain JSON data themselves (``ctx.critique["notes"]``). There
     are no dict methods, so a field named ``items`` or ``keys`` is simply a field.
     A frozen scope refuses top-level writes; nested mutation in read-only code is
-    caught by the engine's hash check (``Namespace.evaluate(readonly=True)``).
+    caught by the engine's hash check (``Namespace.evaluate(readonly=True)``), which
+    code that can only read does not need.
     """
 
     __slots__ = ("_data", "_frozen", "_label")
@@ -749,6 +800,31 @@ def fingerprint(value: Any) -> str:
 
 # ------------------------------------------------------------------- evaluation
 
+_ATOMS = frozenset({str, int, float, bool, type(None)})
+
+
+def _data_copy(value: Any, memo: Optional[dict[int, Any]] = None) -> Any:
+    """An independent copy of plain data; TypeError for anything else in it (deepcopy keeps a bound method, and with it
+    the object it is bound to). A part it holds twice is copied once, as deepcopy does: [[0] * 100] * 100 stays small."""
+    kind = type(value)
+    if kind in _ATOMS:
+        return value
+    memo = {} if memo is None else memo
+    if id(value) in memo:
+        return memo[id(value)]
+    if kind is list:
+        copied = memo[id(value)] = []
+        copied.extend(_data_copy(item, memo) for item in value)
+    elif kind is tuple:
+        copied = memo[id(value)] = tuple(_data_copy(item, memo) for item in value)
+    elif kind is dict:
+        copied = memo[id(value)] = {}
+        copied.update((_data_copy(key, memo), _data_copy(item, memo)) for key, item in value.items())
+    else:
+        raise TypeError(kind.__name__)
+    return copied
+
+
 class Namespace:
     """The code environment of one machine file: its companion module's public names."""
 
@@ -779,8 +855,29 @@ class Namespace:
         env["__builtins__"] = builtins
         return env
 
+    def _reads_only(self, source: str, scope: Mapping[str, Any]) -> bool:
+        """Nothing here can change ctx: no call but reading ones, no name of the companion module (whose objects could
+        do anything, whatever a method is called), no builtin the scope has rebound."""
+        found = _only_reads(source)
+        return found is not None and found[0].isdisjoint(self.public) and found[1].isdisjoint(scope)
+
     def evaluate(self, source: str, scope: Mapping[str, Any], where: str, *, readonly: bool = True) -> Any:
         code = compile_expression(source, where)
+        if readonly and isinstance(scope.get("ctx"), Scope) and self._reads_only(source, scope):
+            # The guard below copies and hashes all of ctx for every expression, seconds on a replay. Code that only
+            # reads needs neither; its answer is copied, as an answer out of the guard's copy never is ctx itself.
+            reading = {**scope, "ctx": Scope(scope["ctx"]._data, frozen=True, label="ctx")}
+            try:
+                value = eval(code, self._globals(reading))  # noqa: S307 -- machine code is trusted (§8.3)
+            except CodeError:
+                raise
+            except Exception as exc:
+                raise _raised(where, source.strip(), exc) from exc
+            try:
+                return _data_copy(value)
+            except (TypeError, RecursionError):
+                pass  # a view, an iterator, a scope, a bound method: tied to what it reads, so to a copy after all
+                # (it ran read-only), on the guarded way
         if readonly and isinstance(scope.get("ctx"), Scope):
             # a copy: a mutation read-only code attempts is refused AND leaves the real ctx untouched
             scope = {**scope, "ctx": Scope(copy.deepcopy(scope["ctx"]._data), frozen=True, label="ctx")}
@@ -863,11 +960,11 @@ def load_module(source: str, filename: str) -> Namespace:
     """
     stem = re.sub(r"\W", "_", posixpath.splitext(posixpath.basename(filename.replace("\\", "/")))[0])
     name = f"stategraph_machine_{next(_MODULE_NUMBERS)}_{stem}"  # no dots: pickle imports the name
-    # the code's file name is this load's own: linecache then gives a traceback this source's lines (the snapshot
+    # the code's file name is this source's own: linecache then gives a traceback this source's lines (the snapshot
     # that runs, not today's file), and two versions of one machine never show each other's
-    shown = f"{name}/{filename}"
+    shown = f"stategraph_source_{hashlib.sha256(source.encode('utf-8')).hexdigest()[:16]}/{filename}"
     try:
-        code = compile(source, shown, "exec")
+        code = _compiled_module(source, shown)
     except SyntaxError as exc:
         raise CodeError(filename, f"companion module does not compile: {exc.msg} (line {exc.lineno})",
                         cause=exc) from None
@@ -877,8 +974,10 @@ def load_module(source: str, filename: str) -> Namespace:
     module.__file__ = filename
     module.__builtins__ = builtins  # type: ignore[attr-defined]
     sys.modules[name] = module
-    linecache.cache[shown] = (len(source), None, source.splitlines(True), shown)  # mtime None: never checked
-    _MODULE_FILES[shown] = filename
+    with _SOURCES_LOCK:
+        _SOURCES_LOADED[shown] = _SOURCES_LOADED.get(shown, 0) + 1
+        linecache.cache[shown] = (len(source), None, source.splitlines(True), shown)  # mtime None: never checked
+        _MODULE_FILES[shown] = filename
     try:
         exec(code, module.__dict__)  # noqa: S102 -- machine code is trusted (§8.3)
     except BaseException as exc:
@@ -894,18 +993,40 @@ def load_module(source: str, filename: str) -> Namespace:
 
 #: The code file names of the loaded companion modules -> their file names in the machine's tree.
 _MODULE_FILES: dict[str, str] = {}
+#: How many loaded modules run each source: the last one gone takes its lines along.
+_SOURCES_LOADED: dict[str, int] = {}
+_SOURCES_LOCK = threading.RLock()  # reentrant: _forget also runs from the garbage collector, on any thread, also in here
+
+
+@functools.lru_cache(maxsize=16)
+def _compiled_module(source: str, shown: str) -> types.CodeType:
+    """One compilation per source: a machine's files share a large companion module, and each load of a run loads it
+    for each of them, holding the GIL for a tenth of a second every time. Every load still executes it anew."""
+    return compile(source, shown, "exec")
 
 
 def _forget(name: str, shown: str) -> None:
     sys.modules.pop(name, None)
-    linecache.cache.pop(shown, None)
-    _MODULE_FILES.pop(shown, None)
+    with _SOURCES_LOCK:
+        left = _SOURCES_LOADED.get(shown, 0) - 1
+        if left > 0:
+            _SOURCES_LOADED[shown] = left
+            return
+        _SOURCES_LOADED.pop(shown, None)
+        linecache.cache.pop(shown, None)
+        _MODULE_FILES.pop(shown, None)
+
+
+@functools.lru_cache(maxsize=16)
+def _scanned_names(source: str) -> tuple[frozenset[str], frozenset[str]]:
+    names, functions = module_names(source)
+    return frozenset(names), frozenset(functions)
 
 
 def scan_module(source: str, filename: str) -> Namespace:
     """The companion module's names for validation, without executing it."""
     try:
-        names, functions = module_names(source)
+        names, functions = _scanned_names(source)
     except SyntaxError as exc:
         raise CodeError(filename, f"companion module does not compile: {exc.msg} (line {exc.lineno})",
                         cause=exc) from None

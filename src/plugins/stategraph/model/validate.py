@@ -448,14 +448,33 @@ def _check_template(fc: _FileContext, value: Any, path: list[Any], bound: Iterab
                        path)
 
 
+#: Schemas found valid: checking one against the meta schema takes ten milliseconds, and machines hold dozens.
+_VALID_SCHEMAS: set[str] = set()
+
+
 def _check_schema(fc: _FileContext, schema: Any, path: list[Any], code: str) -> None:
     """A JSON schema the engine validates against at run time: an invalid one fails every value."""
     if not isinstance(schema, dict):
         return
     try:
+        seen = json.dumps(schema, sort_keys=True)
+    except (TypeError, ValueError):  # not plain JSON (a YAML date): no text tells it from another, so it is not kept
+        seen = None
+    if seen in _VALID_SCHEMAS:
+        return
+    try:
         jsonschema.validators.validator_for(schema).check_schema(schema)  # what jsonschema.validate checks first
     except jsonschema.SchemaError as exc:
         fc.problem("error", code, f"not a valid JSON schema: {exc.message}", path + list(exc.path))
+        return
+    except (AttributeError, TypeError) as exc:  # validator_for reads "$schema" as a string: {"$schema": 5}
+        fc.problem("error", code, f"not a valid JSON schema: $schema is no schema's address ({exc})", path)
+        return
+    if seen is None:
+        return
+    if len(_VALID_SCHEMAS) >= 4096:  # drafts in the editor come and go
+        _VALID_SCHEMAS.clear()
+    _VALID_SCHEMAS.add(seen)
 
 
 # ------------------------------------------------------------------ activities

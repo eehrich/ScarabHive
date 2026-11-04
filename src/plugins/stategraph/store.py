@@ -88,11 +88,19 @@ class FileSources:
     def __init__(self, store: "MachineStore", overrides: Optional[dict[str, str]] = None):
         self.store = store
         self.overrides = dict(overrides or {})
+        self._roots: Optional[list[str]] = None
+
+    def _inside_roots(self, path: str) -> bool:
+        """The store's check, its folders searched once for all files of a load: a search takes thousands of disk
+        looks over the plugin roots, for each file of a machine."""
+        if self._roots is None:
+            self._roots = self.store.real_roots()
+        return self.store.inside_roots(path, self._roots)
 
     def read(self, path: str) -> str:
         if path in self.overrides:
             return self.overrides[path]
-        if not self.store.inside_roots(path):  # python:/imports: never reach files outside the machine roots
+        if not self._inside_roots(path):  # python:/imports: never reach files outside the machine roots
             raise FileNotFoundError(f"{path} (outside the machine roots)")
         try:
             return Path(path).read_text(encoding="utf-8")
@@ -104,7 +112,7 @@ class FileSources:
             path = os.path.normpath(os.path.join(os.path.dirname(base), ref))
             if path in self.overrides:
                 return path
-            if not self.store.inside_roots(path):
+            if not self._inside_roots(path):
                 raise LookupError(f"{ref}: outside the machine roots")
             if Path(path).is_file():
                 return path
@@ -156,11 +164,13 @@ class MachineStore:
             return None
         return next((m for m in self.list() if m.id == machine_id), None)
 
-    def inside_roots(self, path: str | Path) -> bool:
+    def real_roots(self) -> list[str]:
+        return [os.path.realpath(str(d)) for _, d in self.root_dirs()] + [os.path.realpath(w) for w in self.writable]
+
+    def inside_roots(self, path: str | Path, roots: Optional[list[str]] = None) -> bool:
         """Whether a path lies inside one of the machine roots (symlinks resolved)."""
         real = os.path.realpath(str(path))
-        roots = [os.path.realpath(str(d)) for _, d in self.root_dirs()] + [os.path.realpath(w) for w in self.writable]
-        return any(real == root or real.startswith(root + os.sep) for root in roots)
+        return any(real == root or real.startswith(root + os.sep) for root in (self.real_roots() if roots is None else roots))
 
     def is_writable(self, path: Path) -> bool:
         resolved = str(path.resolve())

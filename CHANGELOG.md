@@ -197,6 +197,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- stategraph: starting and resuming a large machine takes milliseconds instead of a second when its files were loaded
+  before. A companion module is compiled once per source, a machine file parsed and walked once per text, a valid JSON
+  schema and a piece of code checked once, and the machine folders searched once per load. Expressions that cannot
+  write no longer copy and hash all of `ctx`. A schema whose `$schema` is no text is a problem, not a crash.
+- On Windows asking whether a process lives no longer holds up the event loop: psutil's `status()` walks every process
+  of the system, and it was asked for a zombie check that cannot hit there.
 - The folder picker's route leaves out a folder it has no right to look at instead of answering 500, and a root inside
   another opens though its name starts with a dot. A plugin can name its setting in the message that no root exists
   (`folders_setting`). The picker's dialog says that a double click opens a folder.

@@ -11,6 +11,8 @@ run started with, not whatever the file says today).
 
 from __future__ import annotations
 
+import copy
+import functools
 import posixpath
 import re
 from dataclasses import dataclass, field
@@ -189,6 +191,31 @@ def parse_yaml(text: str) -> Any:
     return round_trip.load(text)
 
 
+@functools.lru_cache(maxsize=32)
+def _parsed(text: str) -> Any:
+    """A machine file's document, once per text: the round trip takes a tenth of a second for a large file, holding the
+    GIL, and a start or a resume reads the same texts again. Shared: nothing may write to ``LoadedFile.doc`` (an edit
+    parses for itself, yamledit)."""
+    return parse_yaml(text)
+
+
+# What the load walks the document for, once per text as well: ruamel's containers take long to walk.
+
+@functools.lru_cache(maxsize=32)
+def _bounds_of(text: str) -> Optional[str]:
+    return yaml_bounds(_parsed(text))
+
+
+@functools.lru_cache(maxsize=32)
+def _bad_key_of(text: str) -> Optional[list]:
+    return _non_string_keys(_parsed(text), [])
+
+
+@functools.lru_cache(maxsize=32)
+def _plain_of(text: str) -> Any:
+    return to_plain(_parsed(text))
+
+
 #: Bounds of a machine document with its aliases expanded. Everything past parsing -- to_plain, the validator,
 #: ``copy.deepcopy`` of the context, the journal's JSON -- recurses per level and copies per alias.
 MAX_DEPTH = 100
@@ -319,7 +346,7 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
     tree.files[path] = loaded
 
     try:
-        doc = parse_yaml(text)
+        doc = _parsed(text)
     except MarkedYAMLError as exc:
         mark = exc.problem_mark
         tree.add("error", "SG001", f"YAML: {exc.problem or exc}", file=path,
@@ -334,12 +361,12 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
     except Exception as exc:  # ruamel fails in its constructor too: a merge key that names its own anchor
         tree.add("error", "SG001", f"YAML: does not construct ({type(exc).__name__}: {exc})", file=path)
         return loaded
-    too_big = yaml_bounds(doc)
+    too_big = _bounds_of(text)
     if too_big:  # before anything walks it (the editor's graph too)
         tree.add("error", "SG001", too_big, file=path)
         return loaded
     loaded.doc = doc
-    bad_key = _non_string_keys(doc, [])
+    bad_key = _bad_key_of(text)
     if bad_key is not None:
         tree.add("error", "SG001", _bad_key_message(doc, bad_key), file=path, path=dotted(bad_key),
                  line=loaded.line_of(bad_key))
@@ -354,7 +381,7 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
                  f"unknown format version stategraph: {version!r}; this engine reads stategraph: {FORMAT_VERSION}",
                  file=path, path="stategraph", line=loaded.line_of(["stategraph"]) or 1)
         return loaded
-    data = to_plain(doc)
+    data = copy.deepcopy(_plain_of(text))  # a tree's own: its spec holds parts of it
     try:
         loaded.spec = MachineSpec.model_validate(data)
     except ValidationError as exc:

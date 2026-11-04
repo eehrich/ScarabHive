@@ -530,6 +530,9 @@ SG106 warns about the obvious violations.
 - **Read-only code.** Guards, templates, `map`, `error_if`, breakpoint conditions,
   watchpoints and debugger `evaluate` see `ctx` read-only. The engine hashes the canonical
   JSON of `ctx` before and after, and a change raises `guard_failed` ("ctx mutated").
+  Code that cannot write skips copy and hashes: it calls only listed builtins and methods
+  that do not change anything, uses no name of the companion module, and stores nowhere but
+  in a comprehension's plain variable. Its answer comes back as a copy.
 - **Normalisation.** Every value that crosses a boundary is normalised by a canonical JSON
   round trip, which also deep-copies it. That covers:
   - activity results, before they are bound to `out` and journaled, so the live and the
