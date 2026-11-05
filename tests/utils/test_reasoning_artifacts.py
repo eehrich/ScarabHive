@@ -267,3 +267,46 @@ class TestStripForeignReasoningArtifacts:
     def test_a_client_without_a_model_name_strips_nothing(self):
         msgs = self._tagged("small", "small")
         assert strip_foreign_reasoning_artifacts(msgs, None) == 0
+
+
+class TestInvalidationCoversAnthropicThinkingBlocks:
+    """The native Anthropic route keeps its thinking in ``thinking_blocks``, not
+    ``reasoning_details`` -- a mutation invalidates those just the same."""
+
+    @staticmethod
+    def _msgs():
+        def turn(text, call):
+            return {"role": "assistant", "content": "", "tool_calls": [{"id": call}],
+                    "thinking_blocks": [{"type": "thinking", "thinking": text, "signature": "S"}],
+                    "thinking_model": "claude-x"}
+        return [{"role": "user", "content": "hi"}, turn("a", "c1"),
+                {"role": "tool", "tool_call_id": "c1", "content": "r1"}, turn("b", "c2"),
+                {"role": "tool", "tool_call_id": "c2", "content": "r2"}]
+
+    def test_older_blocks_are_stripped_and_the_latest_flagged(self):
+        msgs = self._msgs()
+        assert invalidate_reasoning_artifacts(msgs) == 2
+        assert "thinking_blocks" not in msgs[1] and "thinking_model" not in msgs[1]
+        assert msgs[3]["thinking_blocks"][0]["thinking"] == "b"
+        assert msgs[3][RD_ORPHANED_FLAG] is True
+
+    def test_a_latest_turn_with_only_thinking_blocks_is_flagged(self):
+        msgs = self._msgs()[:4]
+        msgs[1].pop("thinking_blocks")
+        assert invalidate_reasoning_artifacts(msgs) == 1
+        assert msgs[3][RD_ORPHANED_FLAG] is True
+
+    def test_a_model_switch_keeps_the_orphan_flag_while_thinking_blocks_remain(self):
+        """strip_all (model switch) leaves thinking_blocks to the client's model
+        check; clearing the flag there would let an orphaned turn's invalidated
+        blocks travel again once the run switches back."""
+        msgs = self._msgs()
+        invalidate_reasoning_artifacts(msgs)
+        strip_all_reasoning_artifacts(msgs)
+        assert msgs[3][RD_ORPHANED_FLAG] is True
+
+    def test_a_model_switch_still_clears_a_flag_with_nothing_left_to_guard(self):
+        msgs = _msgs()
+        invalidate_reasoning_artifacts(msgs)
+        strip_all_reasoning_artifacts(msgs)
+        assert RD_ORPHANED_FLAG not in msgs[3]

@@ -59,6 +59,7 @@ from agent_system.llm.cache_key import (
     strip_cache_breakpoints,
 )
 from agent_system.utils.json_utils import repair_json
+from agent_system.utils.reasoning_artifacts import RD_ORPHANED_FLAG
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +372,13 @@ class AnthropicAsyncClient(LLMClient):
         """
         blocks = getattr(msg, "thinking_blocks", None)
         if not blocks or not allowed:
+            return []
+        # A history mutation before this turn orphaned it (rd_orphaned, set by
+        # utils/reasoning_artifacts): its blocks are bound to the history before
+        # the edit, so they go -- in every mode (``allowed`` already applied the
+        # mode) and also on a turn still waiting for its tool results, which
+        # Claude models with preserved thinking accept without it.
+        if getattr(msg, RD_ORPHANED_FLAG, None):
             return []
         origin = getattr(msg, "thinking_model", None)
         if origin and origin != self.model:

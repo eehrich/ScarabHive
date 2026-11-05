@@ -1535,8 +1535,8 @@ class TestAnthropicViaOpenRouterCaching:
         partial chain is exactly the 'could not be verified' 400. Later,
         unflagged messages keep theirs (fresh chain).
 
-        A CLOSED turn: an orphaned turn whose tool_calls are still open is the
-        one exception (see test_reasoning_details_prefix_stability.py)."""
+        A CLOSED turn here; an orphaned turn whose tool_calls are still open follows the
+        same rule (see test_reasoning_details_prefix_stability.py)."""
         c = self._rd_client("keep_all")
         msgs = self._rd_two_assistants()
         msgs[1].pop("tool_calls")

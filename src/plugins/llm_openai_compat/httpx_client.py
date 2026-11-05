@@ -858,13 +858,16 @@ class HTTPXOpenAIClient(LLMClient):
         #               partial chain is exactly the "encrypted content could
         #               not be verified" 400. Items generated on LATER turns
         #               (after the reset request ran clean) form a fresh chain
-        #               and are kept. EXCEPT while the flagged turn still has
-        #               tool_calls: invalidate_reasoning_artifacts flags the
-        #               MOST RECENT assistant message, which at a pre_llm_call
-        #               hook is the OPEN tool-use turn — and Anthropic wants
-        #               that turn's thinking echoed back complete, so dropping
-        #               it is the 400 the strip was meant to avoid. The chain
-        #               must travel exactly here.
+        #               and are kept. That includes the OPEN tool-use turn
+        #               (at a pre_llm_call hook the flagged turn is usually
+        #               that one): Claude with preserved thinking binds a block to the
+        #               history it was produced in, so after the edit the
+        #               block is a 400 where Anthropic enforces the check,
+        #               while a tool turn without its thinking is accepted
+        #               (measured 2026-11-05, Sonnet 5.5 via OpenRouter).
+        #               ponytail: Claude without preserved thinking wanted it
+        #               echoed; none is configured -- a declared per-model key
+        #               if one comes back.
         #   keep_last → flag ignored: the latest signature is still required
         #               for the open Gemini tool round-trip; older ones are
         #               stripped here anyway. (Contract of
@@ -878,8 +881,7 @@ class HTTPXOpenAIClient(LLMClient):
             for msg, replay in zip(message_dicts, may_replay):
                 if msg.get("role") != "assistant":
                     continue
-                orphaned = (mode == "keep_all" and msg.get("rd_orphaned")
-                            and not msg.get("tool_calls"))
+                orphaned = mode == "keep_all" and msg.get("rd_orphaned")
                 if not replay or orphaned:
                     msg.pop("reasoning_details", None)
         finally:

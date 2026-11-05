@@ -66,17 +66,17 @@ def test_a_turn_whose_chain_was_broken_by_compaction_goes_without_its_thinking()
     assert not any("rd_orphaned" in message for message in messages), "the flag must never reach the provider"
 
 
-def test_an_orphaned_turn_that_is_still_waiting_for_its_tools_keeps_its_thinking():
-    """The one case where a broken chain must travel anyway.
-
-    invalidate_reasoning_artifacts flags the MOST RECENT assistant message, and at a pre_llm_call
-    hook that message is the OPEN tool-use turn. Anthropic wants that turn's thinking echoed back
-    complete -- stripping it is the very 400 the orphan rule exists to avoid.
+def test_an_orphaned_turn_that_is_still_waiting_for_its_tools_goes_without_its_thinking_too():
+    """invalidate_reasoning_artifacts flags the MOST RECENT assistant message, and at a pre_llm_call
+    hook that message is the OPEN tool-use turn. Claude with preserved thinking binds its thinking to the history before
+    the edit: replaying it is the 400 where Anthropic enforces the check, while a tool turn without
+    its thinking is accepted. So the open turn travels bare like any other orphan.
     """
     messages = turns()
     messages[3]["rd_orphaned"] = True  # the last assistant turn, tool_calls still open
 
     client("some/model", reasoning_details_mode="keep_all")._postprocess_messages_for_provider(messages)
 
-    assert thinking_kept(messages) == [True, True]
+    assert thinking_kept(messages) == [True, False]
+    assert messages[3]["tool_calls"], "the tool calls themselves stay"
     assert not any("rd_orphaned" in message for message in messages), "the flag must never reach the provider"

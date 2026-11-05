@@ -200,12 +200,17 @@ The final message's thinking and redacted_thinking blocks, signatures
 included, are stored verbatim on the assistant message together with the
 model that produced them. They travel back in the order the model emitted
 them, before the text and the tool calls: the API refuses a tool round trip
-whose thinking blocks are missing or changed.
+whose thinking blocks are changed or only partly sent back.
 
 @{bullet}@{tt}reasoning_details_mode@{utt}: @{tt}keep_all@{utt} (default)
 sends every turn's blocks back and keeps the cached prefix byte-identical;
 @{tt}keep_last@{utt} only the latest assistant message's; @{tt}strip@{utt}
 none.
+@{bullet}After a compaction or summary changed the history, the blocks of the
+turns behind the change are dropped: a block is bound to the conversation
+that produced it. That includes a turn still waiting for its tool results:
+Claude with preserved thinking accepts it without its thinking, but not with a block from
+before the change.
 @{bullet}Blocks from another model (a fallback profile answered that turn)
 are dropped: the API would ignore them but bill them as input.
 @{bullet}A plain text turn keeps its blocks only beside non-empty text.

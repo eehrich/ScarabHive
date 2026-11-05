@@ -27,8 +27,9 @@ Every code path that mutates history MUST call
 
 What it does (provider-agnostic — callers don't know which model runs):
 
-1. Strips ``reasoning_details`` from every assistant message EXCEPT the most
-   recent one. The most recent may belong to a still-open tool round-trip whose
+1. Strips ``reasoning_details`` (and ``thinking_blocks``, the native Anthropic
+   route's carrier of the same thing) from every assistant message EXCEPT the
+   most recent one. The most recent may belong to a still-open tool round-trip whose
    Gemini thought signature is REQUIRED on the very next request (stripping it
    risks MALFORMED_FUNCTION_CALL).
 2. Flags the most recent assistant message with ``_rd_orphaned: True`` —
@@ -38,24 +39,23 @@ The provider-aware side lives in the LLM client (config-driven
 ``reasoning_details_mode``, no model-name sniffing):
 
 - ``keep_all``: an ``_rd_orphaned`` message gets its ``reasoning_details``
-  stripped per-request too — completing a clean chain reset. The model
+  (native Anthropic route: its ``thinking_blocks``) stripped per-request
+  too — completing a clean chain reset. The model
   re-reasons once; every item generated afterwards forms a fresh, internally
   consistent chain that verifies again.
-  EXCEPT while that message still carries ``tool_calls``: a turn whose tools
-  have not answered yet is the one the next request continues, and a provider
-  that wants a tool turn's thinking echoed back COMPLETE (Anthropic) refuses a
-  bare one with a 400. Chain reset and echo requirement point in opposite
-  directions here, and the open turn is where the echo wins.
-  Consequence for a model whose chain is ENCRYPTED and verified across turns
-  (the OpenAI reasoning models): on the chat route ``keep_all`` would replay
-  that open turn without its stripped predecessors. Those models round-trip
-  their items verbatim on the Responses route, where the reset stays
-  unconditional — that is where they belong.
-- ``keep_last`` (Gemini): the flag is ignored — the latest signature is kept
-  (needed for the open round-trip; older ones were never round-tripped anyway).
+  That holds for an open tool-use turn as well. Claude models with preserved thinking (Opus, Sonnet, Haiku 5.5, Fable 5.1) bind a thinking
+  block to the history it was produced in (system, tools, every earlier
+  message): after an edit before it, replaying it is a 400 where Anthropic
+  enforces the check, while a tool turn without its thinking is accepted —
+  removing blocks from the end is allowed, from the middle it is not.
+- ``keep_last`` (Gemini on the chat route): the flag is ignored — the latest
+  signature is kept (needed for the open round-trip; older ones were never
+  round-tripped anyway). The native Anthropic client drops an orphaned turn's
+  blocks in every mode.
 
-``_rd_orphaned`` never reaches a provider: the client pops it in its
-message post-processing right before the payload is built.
+``_rd_orphaned`` never reaches a provider: the chat route pops it in its
+message post-processing right before the payload is built; the native
+Anthropic client builds its payload from named fields and never sends it.
 """
 
 from __future__ import annotations
@@ -245,7 +245,11 @@ def strip_all_reasoning_artifacts(messages: list) -> int:
       the session still carries the broken chain. Strip the ORIGINAL message
       objects so the healing persists with the session.
 
-    Also clears any ``rd_orphaned`` flags (obsolete once nothing is left).
+    Also clears ``rd_orphaned`` flags where nothing is left to guard. Anthropic
+    ``thinking_blocks`` stay: the client drops another model's blocks by
+    ``thinking_model`` itself, and after a switch back they still belong to
+    the same history -- except on an orphaned turn, whose flag therefore
+    stays, or its invalidated blocks would travel again.
     Works on dicts and message objects. Returns number of messages touched.
     """
     touched = 0
@@ -254,7 +258,8 @@ def strip_all_reasoning_artifacts(messages: list) -> int:
             continue
         _keep_thinking_text(msg)
         had = _pop(msg, "reasoning_details") is not None
-        had_flag = _pop(msg, RD_ORPHANED_FLAG) is not None
+        had_flag = (not _get(msg, "thinking_blocks")
+                    and _pop(msg, RD_ORPHANED_FLAG) is not None)
         if had or had_flag:
             touched += 1
     if touched:
@@ -321,13 +326,20 @@ def invalidate_reasoning_artifacts(messages: list, start: int = 0) -> int:
         if i < start or _get(msg, "role") != "assistant":
             continue
         if i == last_assistant_idx:
-            if _get(msg, "reasoning_details"):
+            if _get(msg, "reasoning_details") or _get(msg, "thinking_blocks"):
                 _set(msg, RD_ORPHANED_FLAG, True)
                 touched += 1
             continue
         # No rescue here on purpose: this runs after a compaction, whose job
         # is to make the history smaller. See _keep_thinking_text.
-        if _pop(msg, "reasoning_details") is not None:
+        # thinking_blocks are the same artifact on the native Anthropic route:
+        # a block is bound to the conversation that produced it, so an edit
+        # before it invalidates it just the same.
+        had = _pop(msg, "reasoning_details") is not None
+        if _pop(msg, "thinking_blocks") is not None:
+            _pop(msg, "thinking_model")
+            had = True
+        if had:
             touched += 1
 
     if touched:

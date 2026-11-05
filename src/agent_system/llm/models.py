@@ -214,10 +214,11 @@ class ChatMessage(BaseModel):
     # unmodified; a PARTIAL echo is a 400 ("thinking or redacted_thinking
     # blocks in the latest assistant message cannot be modified"), so never
     # filter, dedupe or reorder them. Deliberately NOT reusing
-    # reasoning_details: that list is mutated whole-list by
-    # reasoning_artifacts, is whitelisted into the OpenRouter payload, and its
-    # keep_last mode prunes older entries — all three would corrupt these.
-    # Read only by anthropic_client.
+    # reasoning_details: that list is whitelisted into the OpenRouter payload
+    # and rewritten by the chain repairs there -- both would corrupt these.
+    # A history mutation drops them whole like reasoning_details
+    # (utils/reasoning_artifacts): a block is bound to the conversation
+    # that produced it. Sent only by anthropic_client.
     thinking_blocks: Optional[List[Dict[str, Any]]] = None
     # Model that produced them. Signatures are model-bound: another model
     # ignores them silently but still bills them as input, so replay is

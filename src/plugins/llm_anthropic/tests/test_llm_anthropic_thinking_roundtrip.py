@@ -249,3 +249,73 @@ class TestTransport:
         restored = ChatMessage(**m.model_dump())
         assert restored.thinking_blocks == m.thinking_blocks
         assert restored.thinking_model == "claude-opus-5"
+
+
+class TestHistoryMutationDropsTheBoundBlocks:
+    """A thinking block is bound to the conversation that produced it: an edit
+    before it (compaction, summary) makes it invalid -- a 400 where Anthropic
+    enforces the check. The mutation helper strips the older ones, and this
+    client completes the reset on the orphaned latest turn: dropped, also when
+    that turn still waits for its tools -- Claude with preserved thinking accepts a tool turn
+    without its thinking, but not with a block from before the edit."""
+
+    @staticmethod
+    def _turn(text, tool_call_id=None):
+        return ChatMessage(
+            role="assistant", content=text,
+            tool_calls=([{"id": tool_call_id, "type": "function",
+                          "function": {"name": "f", "arguments": "{}"}}]
+                        if tool_call_id else None),
+            thinking_blocks=[{"type": "thinking", "thinking": text, "signature": "S"}],
+            thinking_model="claude-opus-5")
+
+    @staticmethod
+    def _replayed(client, messages):
+        _system, converted = client._convert_messages(messages)
+        return [b["thinking"] for m in converted if isinstance(m["content"], list)
+                for b in m["content"] if b.get("type") == "thinking"]
+
+    def _history(self, open_tool_turn):
+        last = (self._turn("dann", "t2") if open_tool_turn else self._turn("dann"))
+        history = [ChatMessage(role="user", content="frage (compacted)"),
+                   self._turn("erst", "t1"),
+                   ChatMessage(role="tool", tool_call_id="t1", content="r1"),
+                   last]
+        if open_tool_turn:
+            history.append(ChatMessage(role="tool", tool_call_id="t2", content="r2"))
+        return history
+
+    def test_every_block_behind_the_edit_is_gone_the_open_tool_turn_included(self, client):
+        from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
+        history = self._history(open_tool_turn=True)
+        assert self._replayed(client, history) == ["erst", "dann"], "fixture replays nothing"
+        assert invalidate_reasoning_artifacts(history) == 2
+        assert self._replayed(client, history) == []
+        _system, converted = client._convert_messages(history)
+        assert [b["type"] for b in converted[3]["content"]] == ["text", "tool_use"], \
+            "the open turn keeps its text and tool call, only the thinking goes"
+
+    def test_an_orphaned_finished_turn_loses_its_blocks_too(self, client):
+        from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
+        history = self._history(open_tool_turn=False)
+        invalidate_reasoning_artifacts(history)
+        assert self._replayed(client, history) == []
+
+    def test_turns_before_the_mutation_keep_their_blocks(self, client):
+        """start: what came before the changed spot is unchanged history."""
+        from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
+        history = [ChatMessage(role="user", content="frage"), self._turn("erst"),
+                   ChatMessage(role="user", content="weiter (compacted)"), self._turn("mitte"),
+                   ChatMessage(role="user", content="noch"), self._turn("dann", "t3"),
+                   ChatMessage(role="tool", tool_call_id="t3", content="r3")]
+        invalidate_reasoning_artifacts(history, start=2)
+        assert self._replayed(client, history) == ["erst"]
+
+    def test_the_orphan_rule_holds_in_keep_last_too(self):
+        """keep_last only narrows which turns may replay; an orphaned one may not."""
+        from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
+        keep_last = _built(reasoning_details_mode="keep_last")
+        history = self._history(open_tool_turn=False)
+        assert self._replayed(keep_last, history) == ["dann"], "fixture replays nothing"
+        invalidate_reasoning_artifacts(history)
+        assert self._replayed(keep_last, history) == []
