@@ -71,6 +71,15 @@ def provider_list(monkeypatch):
     monkeypatch.setattr(httpx_client, "_provider_slugs_loaded_at", float("-inf"))
 
 
+@pytest.fixture(autouse=True)
+def model_list(monkeypatch):
+    """The model catalogue, as if loaded just now and empty: no test asks the network."""
+    from plugins.llm_openai_compat import openai_responses_client
+    monkeypatch.setattr(openai_responses_client, "_model_ids", {})
+    monkeypatch.setattr(openai_responses_client, "_model_ids_loaded_at", time.monotonic())
+    return openai_responses_client._model_ids
+
+
 @pytest.fixture
 def published(provider_list, monkeypatch):
     """The list as if loaded just now -- for tests about the order, not the load."""
@@ -371,6 +380,7 @@ class TestTheChatRoute:
         """Three places assemble the streamed assistant message: [DONE] in the
         chunk loop, [DONE] left in the tail buffer, a stream that just ends."""
         client = _httpx()
+        client.set_app_title("scorer_agent")
         chunks = [
             {"id": "c", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "x"},
                                      "finish_reason": None}]},
@@ -407,6 +417,8 @@ class TestTheChatRoute:
         assert sent["provider"]["order"] == AI_STUDIO_ONLY
         assert result["assistant"]["served_by"] == "StreamLake"
         assert lookup.call_args.args == (OPENROUTER, "Google AI Studio", client._verify)
+        # Pinned by its history: the answer is no news about the agent type.
+        assert client.recent_backend() is None
 
 
 class TestTheAgentTypesBackend:
@@ -808,3 +820,203 @@ class TestARunStaysOnTheModelItsAliasResolvedTo:
                    ChatMessage(role="user", content="next")]
         await client.chat_tools(history, [])
         assert sent[0]["model"] == model
+
+
+@pytest.mark.usefixtures("published")
+class TestOnlyTheGatewaysChoiceIsRemembered:
+    """An answer from a backend we pinned says nothing new about the type.
+
+    Measured 03.11.2026: one failover to the second, dearer backend of an
+    ordered entry, and every run of that type held there by its own history
+    stamped it again -- 608 later runs started on it for 17 h instead of one
+    window.
+    """
+
+    def _responses(self, answer):
+        client = OpenAIResponsesClient(model="~deepseek/deepseek-v4-flash-latest", api_key="k",
+                                       base_url=OPENROUTER,
+                                       provider_routing={"order": ["deepinfra/fp8", "streamlake/fp8"],
+                                                         "allow_fallbacks": False},
+                                       ssl_verify=False, max_retries=1, retry_backoff=0.0)
+        client.set_app_title("checker_agent")
+        client._post = AsyncMock(return_value=httpx.Response(
+            200, json={"output": [], "openrouter_metadata": _meta(answer)}))
+        return client
+
+    async def test_a_run_held_on_a_backend_by_its_history_does_not_stamp_it(self):
+        client = self._responses("StreamLake")
+        await client.chat_tools(_history("StreamLake"), [])
+        assert client._post.call_args.args[2]["provider"]["order"] == ["streamlake/fp8"], \
+            "fixture: the call must have been pinned by its history"
+        assert client.recent_backend() is None
+
+    async def test_a_free_choice_is_still_remembered(self):
+        client = self._responses("DeepInfra")
+        await client.chat_tools([ChatMessage(role="user", content="first turn")], [])
+        assert client._post.call_args.args[2]["provider"]["order"] == ["deepinfra/fp8", "streamlake/fp8"]
+        assert client.recent_backend() == "DeepInfra"
+
+    async def test_a_run_started_on_the_types_backend_does_not_stamp_it_again(self, monkeypatch):
+        """The affinity pin itself is ours too: the window must run out."""
+        now = [1000.0]
+        monkeypatch.setattr(backend_affinity.time, "monotonic", lambda: now[0])
+        backend_affinity.remember("checker_agent", "~deepseek/deepseek-v4-flash-latest", "StreamLake")
+        now[0] += 20 * 60
+        client = self._responses("StreamLake")
+        await client.chat_tools([ChatMessage(role="user", content="first turn")], [])
+        assert client._post.call_args.args[2]["provider"]["order"] == ["streamlake/fp8"]
+        now[0] += 15 * 60  # 35 min after the only free choice
+        assert client.recent_backend() is None
+
+    async def test_the_chat_route_does_not_stamp_a_pinned_answer_either(self):
+        client = _httpx()
+        client.set_app_title("scorer_agent")
+        answer = httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}],
+                  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                  "openrouter_metadata": _meta("Google AI Studio")},
+            request=httpx.Request("POST", OPENROUTER + "/chat/completions"))
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=answer)
+            mock_async_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            await client._make_request_non_streaming(_history("Google AI Studio"), tools=[])
+        assert mock_client.post.call_args.kwargs["json"]["provider"]["order"] == AI_STUDIO_ONLY
+        assert client.recent_backend() is None
+
+
+def _walked_down(served="deepseek/deepseek-v4-flash", newest="deepseek/deepseek-v4-flash-20260731",
+                 selected="deepseek/deepseek-v4-flash-20260423"):
+    """An answer the gateway's metadata marks as walked down, as captured 05.11.2026."""
+    return {**_answer(served), "openrouter_metadata": {
+        "requested": "~deepseek/deepseek-v4-flash-latest", "attempt": 2,
+        "endpoints": {"available": [
+            {"provider": "DeepInfra", "model": newest, "selected": selected == newest},
+            {"provider": "DeepInfra", "model": selected, "selected": selected != newest}]},
+        "attempts": [{"provider": "DeepInfra", "model": newest, "status": 429},
+                     {"provider": "DeepInfra", "model": selected, "status": 200}],
+        "pipeline": [{"type": "plugin", "name": "latest-router",
+                      "data": {"resolved_to": newest, "alias": "~deepseek/deepseek-v4-flash-latest"}}]}}
+
+
+class TestAWalkDownIsNotWhereTheRunStays:
+    """A run answered by an older model after a 429 on the newest goes back to the newest."""
+
+    ALIAS = "~deepseek/deepseek-v4-flash-latest"
+
+    async def test_the_next_call_asks_for_the_newest_model_by_its_id(self, model_list):
+        model_list.update({"deepseek/deepseek-v4-flash-20260731": "deepseek/deepseek-v4-flash-0731"})
+        client, sent = TestARunStaysOnTheModelItsAliasResolvedTo()._client(
+            [_walked_down(), _answer("deepseek/deepseek-v4-flash-0731")], model=self.ALIAS)
+        history = [ChatMessage(role="user", content="go")]
+        first = await client.chat_tools(history, [])
+        assert first["assistant"]["reasoning_details"][0]["served_model"] == "deepseek/deepseek-v4-flash", \
+            "the producer of the items stays on record"
+        history += [ChatMessage(role="assistant", content=first["assistant"]["content"],
+                                reasoning_details=first["assistant"]["reasoning_details"]),
+                    ChatMessage(role="user", content="next")]
+        await client.chat_tools(history, [])
+        assert [p["model"] for p in sent] == [self.ALIAS, "deepseek/deepseek-v4-flash-0731"]
+
+    async def test_without_the_catalogue_the_slug_goes_out_as_it_is(self):
+        """The gateway takes a canonical slug too (measured 05.11.2026)."""
+        client, sent = TestARunStaysOnTheModelItsAliasResolvedTo()._client(
+            [_walked_down(), _answer("deepseek/deepseek-v4-flash-0731")], model=self.ALIAS)
+        first = await client.chat_tools([ChatMessage(role="user", content="go")], [])
+        history = [ChatMessage(role="user", content="go"),
+                   ChatMessage(role="assistant", content=first["assistant"]["content"],
+                               reasoning_details=first["assistant"]["reasoning_details"]),
+                   ChatMessage(role="user", content="next")]
+        await client.chat_tools(history, [])
+        assert sent[1]["model"] == "deepseek/deepseek-v4-flash-20260731"
+
+    def test_only_a_rate_limit_counts(self):
+        """After a 5xx the run keeps the model that answered: going back would wait
+        for the timeout again on every turn (the 2026-09-30 Gemini case)."""
+        client, _sent = TestARunStaysOnTheModelItsAliasResolvedTo()._client([], model=self.ALIAS)
+        after_504 = _walked_down()
+        after_504["openrouter_metadata"]["attempts"][0]["status"] = 504
+        block = client._format_response(after_504)["assistant"]["reasoning_details"][0]
+        assert "run_model" not in block
+        assert "run_model" in client._format_response(_walked_down())["assistant"]["reasoning_details"][0], \
+            "fixture: the 429 case must record it"
+
+    def test_an_answer_from_the_newest_model_records_no_run_model(self):
+        client, _sent = TestARunStaysOnTheModelItsAliasResolvedTo()._client([], model=self.ALIAS)
+        same = _walked_down(served="deepseek/deepseek-v4-flash-0731",
+                            selected="deepseek/deepseek-v4-flash-20260731")
+        block = client._format_response(same)["assistant"]["reasoning_details"][0]
+        assert "run_model" not in block
+        plain = client._format_response(_answer("deepseek/deepseek-v4-flash-0731"))
+        assert "run_model" not in plain["assistant"]["reasoning_details"][0]
+
+
+@pytest.mark.usefixtures("published")
+async def test_the_answer_after_a_released_pin_is_remembered():
+    """After a failover, that answer is the gateway's own choice: the one event that moves the memory."""
+    client = OpenAIResponsesClient(model="~google/gemini-flash-latest", api_key="k", base_url=OPENROUTER,
+                                   provider_routing=dict(VERTEX_FIRST), ssl_verify=False,
+                                   max_retries=1, retry_backoff=0.0)
+    client.set_app_title("retry_agent")
+    answers = [httpx.Response(429, text="rate limited"),
+               httpx.Response(200, json={"output": [], "openrouter_metadata": _meta("Google")})]
+    sent = []
+
+    async def post(_client, _url, payload, **_kwargs):
+        sent.append(copy.deepcopy(payload.get("provider")))
+        return answers[len(sent) - 1]
+    client._post = post
+    await client.chat_tools(_history("Google AI Studio"), [])
+    assert sent == [{"order": AI_STUDIO_ONLY, "allow_fallbacks": False}, VERTEX_FIRST], \
+            "fixture: pinned first, released for the retry"
+    assert client.recent_backend() == "Google"
+
+
+async def test_the_model_catalogue_maps_a_canonical_slug_to_its_id(monkeypatch, model_list):
+    """The gateway's own list (GET /models) translates; ids map to themselves."""
+    from plugins.llm_openai_compat import openai_responses_client as rc
+    monkeypatch.setattr(rc, "_model_ids_loaded_at", float("-inf"))
+    listing = httpx.Response(200, json={"data": [
+        {"id": "deepseek/deepseek-v4-flash-0731", "canonical_slug": "deepseek/deepseek-v4-flash-20260731"},
+        {"id": "broken"}, "not a dict"]},
+        request=httpx.Request("GET", OPENROUTER + "/models"))
+    with patch("httpx.AsyncClient") as mock_async_client:
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=listing)
+        mock_async_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        assert await rc._model_id(OPENROUTER, "deepseek/deepseek-v4-flash-20260731", False) \
+            == "deepseek/deepseek-v4-flash-0731"
+        assert await rc._model_id(OPENROUTER, "deepseek/deepseek-v4-flash-0731", False) \
+            == "deepseek/deepseek-v4-flash-0731"
+        assert await rc._model_id(OPENROUTER, "unknown/model", False) == "unknown/model"
+    assert mock_client.get.call_count == 1, "a missing name must not reload within ten minutes"
+
+
+async def test_runs_that_miss_while_the_catalogue_loads_do_not_ask_again(monkeypatch, model_list):
+    """Parallel runs at a reload: one GET /models, the others send the slug as is."""
+    import asyncio
+    from plugins.llm_openai_compat import openai_responses_client as rc
+    monkeypatch.setattr(rc, "_model_ids_loaded_at", float("-inf"))
+    release = asyncio.Event()
+    listing = httpx.Response(200, json={"data": []}, request=httpx.Request("GET", OPENROUTER + "/models"))
+
+    async def slow_get(url):
+        await release.wait()
+        return listing
+
+    with patch("httpx.AsyncClient") as mock_async_client:
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=slow_get)
+        mock_async_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        first = asyncio.create_task(rc._model_id(OPENROUTER, "a/slug-20260731", False))
+        await asyncio.sleep(0)
+        others = [asyncio.create_task(rc._model_id(OPENROUTER, "a/slug-20260731", False)) for _ in range(3)]
+        await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.gather(first, *others)
+    assert results == ["a/slug-20260731"] * 4
+    assert mock_client.get.call_count == 1, "each run that missed during the load asked again"

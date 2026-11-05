@@ -1,10 +1,18 @@
-"""The backend that answered an agent type last, per model.
+"""The backend the gateway last chose for an agent type, per model.
 
 A gateway such as OpenRouter serves one model from several backends, and a
 prompt cache lives on one of them. Within a run the history says which one
 holds it (``served_by`` on the assistant turns). A run's FIRST call has no
 such history, yet its instructions and tools are those of every other run of
-the same agent type, so the backend that answered that type last holds them.
+the same agent type, so the backend that served that type lately holds them.
+
+Only the gateway's own choices are remembered (LLMClient._notify_post_response):
+an answer from a backend WE pinned -- by the run's history or by this very
+affinity -- is no news, and remembering it let one failover to an ordered
+entry's second, dearer backend hold every later run of the type there for 17 h
+(03.11.2026). So the window counts from the last free choice, not from the last
+call; a busy type held on one backend starts its next run unpinned once the
+window is over, which costs the first calls of one window their pin.
 
 Measured on the server on 22.09.2026, first calls of v4/v6 runs (72 h):
 
@@ -33,13 +41,13 @@ _last: dict[tuple[str, str], tuple[str, float]] = {}
 
 
 def remember(agent: str, model: str, backend: str) -> None:
-    """Note that *backend* answered *agent*'s call to *model* just now."""
+    """Note that the gateway chose *backend* for *agent*'s call to *model* just now."""
     _last[(agent, model)] = (backend, time.monotonic())
 
 
 def recent(agent: Optional[str], model: Optional[str],
            window_minutes: Optional[float]) -> Optional[str]:
-    """The backend that answered *agent* on *model* within the window, else None.
+    """The backend chosen for *agent* on *model* within the window, else None.
 
     ``window_minutes`` None means the default; 0 or less turns it off.
     """

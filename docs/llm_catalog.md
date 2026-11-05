@@ -151,11 +151,14 @@ refusal: the healing stays on the same backend, otherwise the replayed history
 fails again.
 
 **The first call of a run** has no assistant turn yet. It starts
-on the backend that last served the **agent type** — regardless of which
+on the backend the gateway last chose for the **agent type** — regardless of which
 instance, which run, which client (`agent_system/llm/backend_affinity.py`,
 key agent name + model, set via `set_app_title`). That is where the
-prompt shared by all runs of the type lies. This only applies within
-`provider_affinity_minutes` after the type's last call (default: the model's
+prompt shared by all runs of the type lies. Only the gateway's own choices
+count: an answer from a backend we pinned (by the run's history or by this
+very memory) does not renew it — that once held every run of a type on an
+entry's second, dearer backend for 17 h after a single failover. This only
+applies within `provider_affinity_minutes` after that choice (default: the model's
 cache duration `prompt_cache_ttl_minutes` — Claude and Gemini 5,
 GPT 30 —, without the 30; `0` = off, per model entry or via `llm_params`
 per agent). After that
@@ -190,7 +193,17 @@ That is why a run stays on the model that answered its last turn.
 That is stored as `served_model` in the replay block. The request names the
 concrete slug, and OpenRouter can no longer step it down (`available=1`).
 This applies to every `~` alias on the Responses route; DeepSeek steps down in the
-same way, after 429s. The Claude aliases run over Chat Completions and are not
+same way, after 429s.
+
+**Except after a step-down caused by a 429:** the gateway reports what the alias
+resolved to and what was tried (`openrouter_metadata`). When the newest model
+was rate-limited and an older one answered, the turn records the newest as
+`run_model`, and the next call asks for it again (translated from the canonical
+slug of the metadata to the model id via `GET /models`). Measured 2026-11-05:
+under a backend pin a rate-limited DeepSeek alias was served by the April model
+for whole runs, 6.7 % of its calls, at a higher price. A rate limit passes in
+seconds; a step-down after a 5xx keeps the old rule, because going back would
+wait for the timeout again on every turn. The Claude aliases run over Chat Completions and are not
 pinned; no step-down was observed there.
 
 A refusal (429, 5xx, 404) sends the retry back to the alias,

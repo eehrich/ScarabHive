@@ -163,8 +163,10 @@ async def routing_pinned_to_last_backend(provider_routing: Optional[dict],
                                          recent_backend: Optional[str] = None) -> Optional[dict]:
     """The known backend as a HARD pin: ``order: [it]``, ``allow_fallbacks: false``.
 
-    That backend holds the prompt cache, and it is the only one that can
-    verify the encrypted reasoning a replay carries. Measured 2026-09-11 with
+    That backend holds the prompt cache, and for a model whose reasoning is
+    encrypted (Gemini's thought signatures) it is the only one that can verify
+    what a replay carries; plain-text reasoning (DeepSeek) any backend takes,
+    there only the cache is at stake. Measured 2026-09-11 with
     two backends configured for one model: the first refused 102 of 102
     histories whose last turn the second had served and accepted 135 of 135
     of its own -- every later turn of such a run paid a 400 and lost the cache.
@@ -179,7 +181,7 @@ async def routing_pinned_to_last_backend(provider_routing: Optional[dict],
     the retry out as the model entry is configured.
 
     Which backend: the latest ``served_by`` of this run's own history, else
-    ``recent_backend`` -- the one that answered the agent type lately
+    ``recent_backend`` -- the one the gateway chose for the agent type lately
     (``LLMClient.recent_backend``), which holds the prompt the type's runs
     share. The run's own turns always win: only they say which backend can
     verify the reasoning they replay.
@@ -1336,7 +1338,7 @@ class HTTPXOpenAIClient(LLMClient):
             await self._notify_post_response({
                 "provider": "openai_httpx", "model": self.model, "url": url,
                 "is_streaming": False, "duration_ms": (_time.time() - _request_start) * 1000,
-                "timestamp_ms": _time.time() * 1000, **info,
+                "timestamp_ms": _time.time() * 1000, "provider_pinned": pinned, **info,
             })
 
         last_exception = None
@@ -1949,7 +1951,7 @@ class HTTPXOpenAIClient(LLMClient):
                 "provider": "openai_httpx", "model": self.model, "url": url,
                 "is_streaming": True,
                 "duration_ms": (_time.time() - _streaming_request_start) * 1000,
-                "timestamp_ms": _time.time() * 1000, **info,
+                "timestamp_ms": _time.time() * 1000, "provider_pinned": pinned, **info,
             })
 
         last_exception: Exception | None = None

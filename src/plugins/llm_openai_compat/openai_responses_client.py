@@ -135,6 +135,73 @@ RESPONSES_ITEMS_TYPE = "reasoning.responses_items"
 RESPONSES_AUDIO_FORMATS = ("mp3", "wav")
 
 
+def _alias_walked_down_from(response_data: dict) -> Optional[str]:
+    """The model the alias resolved to, when a 429 on it let an older one answer.
+
+    The gateway reports all of it in ``openrouter_metadata``: its latest-router
+    names what the alias resolved to, the attempts what was tried, the
+    selected endpoint what answered. Measured 05.11.2026: ``resolved_to
+    ...-20260731``, attempts ``429`` on it and ``200`` on ``...-20260423``.
+    Only a rate limit counts: it passes in seconds, while a walk-down after a
+    5xx (Gemini, a 504 after ~25 s) would cost that wait again on every turn
+    that went back to the newest model. None when nothing of that is there.
+    """
+    meta = response_data.get("openrouter_metadata")
+    if not isinstance(meta, dict):
+        return None
+    resolved = None
+    for step in meta.get("pipeline") or ():
+        data = step.get("data") if isinstance(step, dict) else None
+        if isinstance(data, dict) and isinstance(data.get("resolved_to"), str):
+            resolved = data["resolved_to"]
+    available = (meta.get("endpoints") or {}).get("available") or ()
+    selected = [e.get("model") for e in available
+                if isinstance(e, dict) and e.get("selected") and isinstance(e.get("model"), str)]
+    rate_limited = any(isinstance(a, dict) and a.get("model") == resolved and a.get("status") == 429
+                       for a in meta.get("attempts") or ())
+    if resolved and selected and selected[0] != resolved and rate_limited:
+        return resolved
+    return None
+
+
+# Canonical slug -> model id, as the gateway publishes them (GET /models); every
+# id maps to itself too. The metadata names a model by its canonical slug
+# (``...-20260731``), the answers by its id (``...-0731``), and the replay check
+# compares a turn's model with the one asked for. Process-wide on purpose: it is
+# the gateway's catalogue, not run state.
+_model_ids: dict[str, str] = {}
+_model_ids_loaded_at = float("-inf")
+
+
+async def _model_id(base_url: str, model: str, verify: Any) -> str:
+    """The gateway's id for *model*, which may be a canonical slug.
+
+    Loaded like the provider list: when a name is missing, at most every ten
+    minutes. Until it loads the slug is sent as it is -- the gateway takes it
+    (measured 05.11.2026: asked for ``...-20260731``, answered as ``...-0731``),
+    but for that one call the replay check sees the run's earlier turns as
+    foreign (their ``served_model`` is the id) and rebuilds them; the next call
+    asks for the id the answer carried, and the replay is whole again.
+    """
+    global _model_ids_loaded_at
+    if model not in _model_ids and _time.monotonic() - _model_ids_loaded_at > 600:
+        # Stamped before the request: parallel runs that miss while it is in
+        # flight send their slug as it is instead of each asking again.
+        _model_ids_loaded_at = _time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=10, verify=verify) as client:
+                response = await client.get(f"{base_url.rstrip('/')}/models")
+                response.raise_for_status()
+                for entry in response.json()["data"]:
+                    if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+                        _model_ids[entry["id"]] = entry["id"]
+                        if isinstance(entry.get("canonical_slug"), str):
+                            _model_ids[entry["canonical_slug"]] = entry["id"]
+        except Exception as exc:
+            logger.warning("OpenRouter model list unavailable, slug sent as is: %r", exc)
+    return _model_ids.get(model, model)
+
+
 def _get(msg: Any, key: str, default: Any = None) -> Any:
     """Field access for both dict messages and ChatMessage objects."""
     if isinstance(msg, dict):
@@ -759,6 +826,15 @@ class OpenAIResponsesClient(LLMClient):
         sends the retry to the alias again. A run without a history of its own
         starts at the alias; a continued session stays on its model until that
         refuses.
+
+        EXCEPT when the answering model is older than the one the alias stood
+        for at that request (a walk-down): staying on it kept whole runs on an
+        older and dearer model -- measured 05.11.2026, 6.7 % of one alias's
+        calls, judges and critics among them, held on the one backend the pin
+        allowed while the newest was rate-limited there. Such a turn records
+        the newest model as ``run_model`` and the next call asks for it; a
+        refusal releases the pins as usual. That trades the warm cache of the
+        walk-down model for the newest model -- quality before cost.
         """
         if not (self._is_openrouter and self.model.startswith("~")):
             return self.model
@@ -766,7 +842,7 @@ class OpenAIResponsesClient(LLMClient):
             for block in reversed(_get(msg, "reasoning_details") or []):
                 if (isinstance(block, dict) and block.get("format") == RESPONSES_ITEMS_FORMAT
                         and block.get("model") == self.model):
-                    served = block.get("served_model")
+                    served = block.get("run_model") or block.get("served_model")
                     return served if isinstance(served, str) else self.model
         return self.model
 
@@ -970,6 +1046,10 @@ class OpenAIResponsesClient(LLMClient):
                 # What an alias resolved to (the run stays on it: _run_model).
                 **({"served_model": response_data["model"]}
                    if isinstance(response_data.get("model"), str) else {}),
+                # The newest model the alias stood for, when an older one
+                # answered instead: the run goes back to it (_run_model).
+                **({"run_model": newest}
+                   if (newest := _alias_walked_down_from(response_data)) else {}),
                 "items": output,
             }]
         # Which backend answered: the next request of this run goes back to
@@ -1228,6 +1308,8 @@ class OpenAIResponsesClient(LLMClient):
         # Local, never on self: one client serves parallel runs.
         pinned = provider is not self.provider_routing
         model = self._run_model(messages)
+        if model != self.model:
+            model = await _model_id(self.base_url, model, httpx_verify(self.ssl_verify))
 
         # Refused before the first byte: sending the request without the field would hand back
         # free text as if the provider had constrained it.
@@ -1615,6 +1697,9 @@ class OpenAIResponsesClient(LLMClient):
                         # fields, and "which backend served this call" was not
                         # answerable at all before.
                         "routing": routing,
+                        # Whether WE chose the backend (LLMClient remembers only
+                        # the gateway's own choices for the agent type).
+                        "provider_pinned": pinned,
                         # Chat-shaped usage: session_costs.py & co. read
                         # $.prompt_tokens/$.completion_tokens from the stored
                         # usage_json — the raw Responses shape would yield 0s.

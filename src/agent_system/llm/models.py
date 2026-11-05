@@ -449,9 +449,15 @@ class LLMClient:
         if not response_info.get("error") and response_info.get("duration_ms") is not None:
             self._last_response_duration_ms = response_info.get("duration_ms")
         # Here, not in the hooks: those are wired only while hooks are on.
+        # Only the gateway's own choice: an answer from a backend WE pinned
+        # (the run's history or this very affinity) says nothing new, and
+        # remembering it kept one failover alive for every later run of the
+        # type -- measured 03.11.2026: 608 runs held on the pricier second
+        # backend for 17 h after a single failover.
         backend = (response_info.get("routing") or {}).get("selected")
         if (backend and self.served_agent and response_info.get("model")
-                and not response_info.get("error")):
+                and not response_info.get("error")
+                and not response_info.get("provider_pinned")):
             from .backend_affinity import remember
             remember(self.served_agent, response_info["model"], backend)
         if self._on_post_llm_response:
@@ -565,7 +571,7 @@ class LLMClient:
         self.served_agent = title or None
 
     def recent_backend(self) -> Optional[str]:
-        """The backend that answered this client's agent on its model lately.
+        """The backend the gateway chose for this client's agent on its model lately.
 
         Where a run with no history of its own starts: see backend_affinity.
         """
