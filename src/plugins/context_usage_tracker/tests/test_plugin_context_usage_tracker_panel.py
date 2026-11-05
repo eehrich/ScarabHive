@@ -6,7 +6,7 @@ of the sub-agent ``helper`` in ``s-1-sub`` (model ``m-cheap``, request ``r-1_sub
 ``coder`` (``m-fast``, no cost, no latency); session ``s-3`` with 120 calls of ``bulk`` (more than the history's former default of 100); from a pre-SQLite usage file,
 the all-time totals of ``archivist``, whose calls predate the cache-rate pair. POST /__stub/latencies records 20 calls
 of ``timer`` (``m-p95``, 100 ms to 2 s) in ``s-4``. POST /__stub/call records one more call
-of ``reviewer`` in ``s-1``. With the cookie ``cu_usage=fails`` the usage answer fails, with ``cu_usage=slow`` both
+of ``reviewer`` in ``s-1``, POST /__stub/cli_run a call of ``checker`` in ``s-cli`` and then a coding CLI's run there (no context fill). With the cookie ``cu_usage=fails`` the usage answer fails, with ``cu_usage=slow`` both
 answers take 1.5 s.
 """
 from __future__ import annotations
@@ -85,6 +85,16 @@ def panel_app(tmp_path: Path):
                                         request_id=f"r-4-{i}", latency_ms=100 * i)
         return {}
 
+    @app.post("/__stub/cli_run")
+    async def add_cli_run():
+        plugin.tracker.record_usage("checker-1", "checker", "s-cli", total_tokens=3000, prompt_tokens=2500,
+                                    completion_tokens=500, context_window=10000, model="m-fast", request_id="r-chat")
+        # A subscription run as llm_coding_cli reports it: its counts are summed over the CLI's own model calls.
+        plugin.tracker.record_usage("checker-1", "checker", "s-cli", total_tokens=84496, prompt_tokens=28514,
+                                    completion_tokens=55982, context_window=1048576, model="m-cli",
+                                    request_id="r-cli", reflects_context=False)
+        return {}
+
     registry = PluginWebRegistry()  # the plugin's router and static files, mounted as the app mounts them
     registry.register_web_plugin("context_usage_tracker", plugin)
     registry.apply_to_app(app)
@@ -117,6 +127,7 @@ EXPECTED = [
     'the calls sort by a column, by value and not by the text shown, and keep that order when the table draws anew',
     'the auto refresh runs from the start and brings a new call',
     'keyboard focus stays on its call when the table draws anew, also after the drawer closes',
+    "a coding CLI's run shows no context fill, in the table and in the drawer, and sorts last by it",
     'with no session open the panel says so instead of counting every session',
     'clearing asks first and, confirmed, empties the panel',
     'the chart takes real colours from the theme and a theme change draws it in the new ones',

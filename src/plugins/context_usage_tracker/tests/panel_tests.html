@@ -210,6 +210,7 @@
     select.value = 'reviewer';
     select.dispatchEvent(new Event('change'));
     const reviewerOnly = rows('calls').length === 2 && $('#callsShown').textContent === '2 of 2';
+    const fill = cells(rows('calls')[0])[8];
     rows('calls')[0].click();  // the newest: 0.3¢
     await until('the drawer', () => $('#detail').open);
     const facts = Object.fromEntries([...doc().querySelectorAll('#detailBody dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent]));
@@ -217,7 +218,8 @@
     select.value = '';
     select.dispatchEvent(new Event('change'));
     return marked.length === 1 && marked[0].includes('helper') && reviewerOnly && facts.Agent === 'reviewer'
-      && facts.Cost === '0.3000¢' && facts.Request === 'r-1' && !$('#detail').open;
+      && facts.Cost === '0.3000¢' && facts.Request === 'r-1' && !$('#detail').open
+      && fill === '18.0%' && facts.Context === `${n(1800)} of ${n(10000)} (18.0%)`;
   });
 
   await check('the calls sort by a column, by value and not by the text shown, and keep that order when the table draws anew', async () => {
@@ -265,6 +267,26 @@
     $('#detail').close();
     await sleep(50);
     return kept && focusedKey() === first;
+  });
+
+  await check("a coding CLI's run shows no context fill, in the table and in the drawer, and sorts last by it", async () => {
+    await fetch('/__stub/cli_run', { method: 'POST' });
+    await go('/plugins/context_usage_tracker/?session_id=s-cli');
+    await until('the call and the run', () => statValue('calls') === '2');
+    tab('calls');
+    await until('their rows', () => rows('calls').length === 2);
+    const fills = () => rows('calls').map((row) => cells(row)[8]).join();
+    const newestFirst = fills();  // the run came last
+    headOf('calls', 'Context').click();
+    const oneWay = fills();
+    headOf('calls', 'Context').click();
+    const otherWay = fills();
+    rows('calls').find((row) => cells(row)[8] === '–').click();
+    await until('the drawer', () => $('#detail').open);
+    const facts = Object.fromEntries([...doc().querySelectorAll('#detailBody dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent]));
+    $('#detail [data-close]').click();
+    return newestFirst === '–,30.0%' && oneWay === '30.0%,–' && otherWay === '30.0%,–'
+      && facts.Context === '–' && facts['Total tokens'] === n(84496);
   });
 
   await check('with no session open the panel says so instead of counting every session', async () => {

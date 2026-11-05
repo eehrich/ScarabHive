@@ -334,7 +334,7 @@ function drawCalls() {
       ${cell(call.completion_tokens ?? 0, number(call.completion_tokens))}
       ${cell(call.cached_tokens ?? 0, number(call.cached_tokens))}
       ${cell(call.cache_write_tokens ?? 0, number(call.cache_write_tokens))}
-      ${cell(call.usage_percentage ?? 0, percent(call.usage_percentage), 'pk-num pk-muted')}
+      ${call.context_window ? cell(call.usage_percentage ?? 0, percent(call.usage_percentage), 'pk-num pk-muted') : cell(null, dash)}
       ${cell(call.latency_ms, latency(call.latency_ms))}
       ${cell(call.cost, cost(call.cost, call.cost_is_estimate))}
     </tr>`)}</tbody>
@@ -356,7 +356,8 @@ function openCall(index) {
     ['Total tokens', number(call.total_tokens)], ['Cached (read)', number(call.cached_tokens)],
     ['Cache writes', number(call.cache_write_tokens)], ['Tool definitions', `${number(call.tool_definition_tokens)} tokens`],
     ['Messages', number(call.message_count)], ['Latency', latency(call.latency_ms)],
-    ['Context', `${number(call.total_tokens)} of ${number(call.context_window)} (${percent(call.usage_percentage)})`],
+    // Window 0: a call that carries no conversation (a coding CLI's run, a decision) fills no context.
+    ['Context', call.context_window ? `${number(call.total_tokens)} of ${number(call.context_window)} (${percent(call.usage_percentage)})` : '–'],
     ['Cost', call.cost == null ? '–' : `${call.cost_is_estimate ? '~' : ''}${cents(call.cost, 4)}${call.cost_is_estimate ? ' (estimated, llm_pricing.yaml)' : ''}`],
   ];
   $('detailTitle').textContent = `${call.agent_name} · ${time(call.timestamp)}`;
