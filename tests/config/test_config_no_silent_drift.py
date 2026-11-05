@@ -192,6 +192,34 @@ def test_the_profile_collector_reads_stategraph_do_blocks():
     assert sorted(name for name, _ in found) == ["or-keyed", "or-under-do", "{{ params.model }}"], found
 
 
+def _suite_profiles(data) -> set[str]:
+    """The profiles an agent_eval suite defines in its own ``config.llm_system`` overlay (empty for any other file)."""
+    config = data.get("config") if isinstance(data, dict) else None
+    llm = config.get("llm_system") if isinstance(config, dict) else None
+    profiles = llm.get("profiles") if isinstance(llm, dict) else None
+    return set(profiles) if isinstance(profiles, dict) else set()
+
+
+def _file_profile_references(data, where: str) -> list[tuple[str, str]]:
+    """The profile names one file refers to and does not define itself.
+
+    An agent_eval suite brings profiles of its own in its `config:` overlay; they resolve for that suite's runs
+    only, so they count for references in the same file and nowhere else."""
+    found: list[tuple[str, str]] = []
+    _profile_references(data, where, found, _machine_params(data))
+    own = _suite_profiles(data)
+    return [(name, at) for name, at in found if name not in own]
+
+
+def test_a_suite_s_own_profiles_resolve_only_within_it():
+    suite = {"config": {"llm_system": {"profiles": {"own_cc": {"model_ref": "m"}}}},
+             "arms": {"a": {"agent_config": {"llm_profile": ["own_cc", "or-typo"]}}}}
+    assert [name for name, _ in _file_profile_references(suite, "s")] == ["or-typo"]
+    # Another file naming the suite's profile still has to resolve it.
+    other = {"plugins": {"servers": {"x": {"agent_config": {"llm_profile": ["own_cc"]}}}}}
+    assert [name for name, _ in _file_profile_references(other, "o")] == ["own_cc"]
+
+
 def test_every_profile_reference_resolves():
     from agent_system.config.settings import load_settings
 
@@ -206,7 +234,7 @@ def test_every_profile_reference_resolves():
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError:
             continue
-        _profile_references(data, str(path.relative_to(REPO_ROOT)), references, _machine_params(data))
+        references.extend(_file_profile_references(data, str(path.relative_to(REPO_ROOT))))
 
     # Far over 200 with further plugin roots, ~91 with src/plugins alone.
     assert len(references) >= (200 if PRIVATE_ROOTS else 50), (
