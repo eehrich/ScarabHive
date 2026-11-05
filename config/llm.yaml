@@ -187,10 +187,9 @@ llm_system:
       include_thoughts: false
 
     claude-haiku:
-      extends: claude-opus-thinking
-      thinking_request_shape: budget     # does not support adaptive
-      model: claude-haiku-4-5-20251001
-      context_window: 200000
+      extends: claude-opus-thinking      # adaptive: budget_tokens returns 400 on Haiku 5.5
+      model: claude-haiku-5-5
+      context_window: 100000      # window 1M, but above 100K prompt tokens it costs 5x
       request_timeout: 120
       max_tokens: 8192
       thinking_budget: null
@@ -217,10 +216,9 @@ llm_system:
         json_mode: true
 
     claude-haiku-batch:
-      extends: claude-opus-batch
-      thinking_request_shape: budget     # does not support adaptive
-      model: claude-haiku-4-5-20251001
-      context_window: 200000
+      extends: claude-opus-batch         # adaptive: budget_tokens returns 400 on Haiku 5.5
+      model: claude-haiku-5-5
+      context_window: 100000      # as claude-haiku: above 100K prompt tokens it costs 5x
       max_tokens: 8192
 
     # OpenAI direct. It has no -latest aliases (OpenRouter does), so each
@@ -273,7 +271,7 @@ llm_system:
 
     gpt-sol-batch:
       provider: batch
-      model: gpt-6-sol            # batch is offered for gpt-6-sol, not (yet) for 6.1
+      model: gpt-6.1-sol
       api_key: ${OPENAI_API_KEY}
       batch_provider: openai_httpx
       context_window: 272000      # double price above 272K prompt tokens
@@ -354,7 +352,7 @@ llm_system:
 
     deepseek-chat:
       extends: deepseek-pro
-      model: deepseek-v4-flash
+      model: deepseek-flash       # the listed name; deepseek-v4-flash is an alias of it now
       request_timeout: 240
 
     deepseek-chat-nostream:

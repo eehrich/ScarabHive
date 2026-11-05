@@ -108,11 +108,11 @@ claude-fable-5-1:
   batch_discount: 0.5
 
 # 5.5 — rates of OpenRouter's anthropic endpoint, identical to direct;
-# cache reads 0.20 for both (Sonnet 0.1x input, Opus 0.05x).
+# cache reads are 0.05x input on both (Sonnet 0.10, Opus 0.20).
 claude-sonnet-5-5:
   input: 2.00
   output: 10.00
-  cached_input: 0.20
+  cached_input: 0.10
   cache_write: 0.50
   batch_discount: 0.5
 
@@ -142,6 +142,15 @@ claude-opus-4-5-20251101:
   output: 25.00
   cached_input: 0.50
   cache_write: 1.25
+  batch_discount: 0.5
+
+# Haiku 5.5 — for prompts up to 100K tokens; above, every rate is 5x
+# (0.50 / 2.50 / 0.05), which claude-haiku's context_window keeps out of reach.
+claude-haiku-5-5:
+  input: 0.10
+  output: 0.50
+  cached_input: 0.01
+  cache_write: 0.025
   batch_discount: 0.5
 
 claude-haiku-4-5-20251001:
@@ -438,7 +447,7 @@ anthropic/claude-sonnet-5:
 anthropic/claude-sonnet-5.5:
   input: 2.00
   output: 10.00
-  cached_input: 0.20
+  cached_input: 0.10
   cache_write: 0.50
 
 anthropic/claude-opus-5.5:
@@ -452,7 +461,7 @@ anthropic/claude-opus-5.5:
 "~anthropic/claude-sonnet-latest":
   input: 2.00
   output: 10.00
-  cached_input: 0.20
+  cached_input: 0.10
   cache_write: 0.50
 
 "~anthropic/claude-opus-latest":
@@ -502,13 +511,13 @@ deepseek/deepseek-v4-pro-0813:
   output: 3.614
   cached_input: 0.099
 
-# DeepSeek Pro via OpenRouter, latest alias. Values = provider `deepseek`, the
-# first in order. Both providers have time-of-day discounts; the base price is
-# listed.
+# DeepSeek Pro via OpenRouter, latest alias. Values = provider `alibaba`, the
+# first in order (its us-east-1 endpoint: 0.66 / 1.98 / 0.066). It has a
+# time-of-day discount; the base price is listed.
 "~deepseek/deepseek-pro-latest":
-  input: 0.66
-  output: 1.98
-  cached_input: 0.022
+  input: 0.58
+  output: 1.74
+  cached_input: 0.058
 
 # DeepSeek V4 Pro via OpenRouter — flagship variant
 deepseek/deepseek-v4-pro:
@@ -536,8 +545,8 @@ qwen/qwen3.7-flash:
 
 # Values = akashml fp8, the first in order.
 qwen/qwen3.8-27b:
-  input: 0.25
-  output: 2.20
+  input: 0.225
+  output: 1.98
   cached_input: 0.05
 
 # MiniMax via OpenRouter — cache read = 0.2x of input price. Values = provider
@@ -546,6 +555,14 @@ minimax/minimax-m3:
   input: 0.30
   output: 1.20
   cached_input: 0.06
+
+# MiniMax M3.1 Flash, provider minimax as for M3. Time-of-day tariff: these
+# rates hold 15:00-01:00 UTC; 01:00-15:00 UTC every rate is double
+# (0.15 / 0.60 / 0.015). The off-peak price is listed, as for DeepSeek.
+minimax/minimax-m3.1-flash:
+  input: 0.075
+  output: 0.30
+  cached_input: 0.0075
 
 # GLM Flash via OpenRouter, latest alias. Without provider_routing the rate
 # depends on the provider: usually 0.15/0.50/0.03 (listed) or 0.1124/0.3745/0.0225,

@@ -315,6 +315,24 @@ llm_system:
       extends: openrouter-minimax-m3
       max_tokens: 0
 
+    # A quarter of M3's price. Time-of-day tariff: 01:00-15:00 UTC costs double.
+    openrouter-minimax-m3.1-flash:
+      extends: openrouter-base
+      model: minimax/minimax-m3.1-flash
+      context_window: 1048576     # no price tier; the minimax endpoint's limit
+      provider_routing:
+        order:
+        - minimax
+        allow_fallbacks: false
+      # flex (inherited) is accepted here, unlike on M3, and billed at the standard price
+      capabilities:
+        image_input: true
+        video_input: true
+
+    openrouter-minimax-m3.1-flash-unlimited:
+      extends: openrouter-minimax-m3.1-flash
+      max_tokens: 0
+
     openrouter-glm:
       extends: openrouter-base
       model: z-ai/glm-5.3
@@ -437,6 +455,16 @@ llm_system:
     or-minimax-m3-unlimited:
       model_ref: openrouter-minimax-m3-unlimited
       description: "OpenRouter MiniMax M3 - No output token limit"
+      max_steps: 500
+
+    or-minimax-m3.1-flash:
+      model_ref: openrouter-minimax-m3.1-flash
+      description: "OpenRouter MiniMax M3.1 Flash"
+      max_steps: 500
+
+    or-minimax-m3.1-flash-unlimited:
+      model_ref: openrouter-minimax-m3.1-flash-unlimited
+      description: "OpenRouter MiniMax M3.1 Flash - No output token limit"
       max_steps: 500
 
     or-gpt-pro:
