@@ -165,7 +165,7 @@ The main routes. "auth" means the route exists only with `auth.enabled: true`.
 |------|--------|
 | **Runs** | `POST /run`; `GET`/`POST /events` (SSE); `POST /events/{request_id}/append`; `POST /sessions/{session_id}/append`; `GET /api/requests/{request_id}/status`; `POST /api/requests/{request_id}/cancel` |
 | **Agents and LLMs** | `GET /agents`; `GET /agents/{name}/tools`; `GET /agents/{name}/allowed-tools`; `GET /agents/debug/{name}/allowed-tools`, `GET /agents/debug/{name}/system-prompt` (admin); `GET /llm/profiles` |
-| **Chat commands** | `/chat/commands`, `/chat/resolve`, `/chat/command`, `/chat/vars`, `/chat/undo`, `/chat/checkpoints`, `/chat/rewind`, `/chat/context`, `/chat/transcript`, `/chat/last_answer` |
+| **Chat commands** | `/chat/commands`, `/chat/resolve`, `/chat/command`, `/chat/vars`, `/chat/undo`, `/chat/checkpoints`, `/chat/checkpoints/diff`, `/chat/rewind`, `/chat/context`, `/chat/transcript`, `/chat/last_answer` |
 | **Sessions** | `/api/sessions...` (auth); `POST /sessions`; `/sessions/{session_id}/force_optimize`, `/sessions/force_optimize` |
 | **Auth** (auth) | `POST /auth/login`, `/auth/logout`, `/auth/refresh`, `/auth/register`; `GET`/`PATCH /auth/me`; `/auth/me/preferences`; `POST`/`DELETE /auth/api-key`; `/auth/password-reset...` |
 | **Admin** | `/admin/users...`, `/admin/active-sessions` and `.../{request_id}/cancel`, `/admin/reload-config`, `/admin/system`, `/admin/security/audit` (all auth); `GET /admin/config` |

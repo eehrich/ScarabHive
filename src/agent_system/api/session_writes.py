@@ -413,6 +413,10 @@ def file_rewinder_or_503() -> Any:
     return rewinder
 
 
+#: Set on a 409 from a rewind that files stood in the way of (``overwrite`` would put them back).
+REWIND_REFUSAL_HEADER = "X-Rewind-Refusal"
+
+
 def rewind_refusal(report: dict) -> None:
     """Raise what a rewind that changed nothing -- or not everything -- says."""
     from agent_system.file_rewind import PARTIAL, REFUSED, UNKNOWN_CHECKPOINT
@@ -421,7 +425,11 @@ def rewind_refusal(report: dict) -> None:
     if status == UNKNOWN_CHECKPOINT:
         raise HTTPException(status_code=404, detail=report.get("text") or "No such checkpoint")
     if status == REFUSED:
-        raise HTTPException(status_code=409, detail=report.get("text") or "Files not rewound")
+        # Marked when what stood in the way were files -- changed outside the agent, or not
+        # restorable -- the one refusal ``overwrite`` gets past. A run still going is not.
+        files = bool(report.get("conflicts") or report.get("unrestorable"))
+        raise HTTPException(status_code=409, detail=report.get("text") or "Files not rewound",
+                            headers={REWIND_REFUSAL_HEADER: "files"} if files else None)
     if status == PARTIAL:
         raise HTTPException(status_code=500, detail=report.get("text") or "Files partly rewound")
 

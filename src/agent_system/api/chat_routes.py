@@ -460,6 +460,28 @@ async def chat_checkpoints(request: Request, session_id: str = Query(...),
     return {"session_id": session_id, **listing}
 
 
+@router.get("/chat/checkpoints/diff")
+async def chat_checkpoint_diff(request: Request, session_id: str = Query(...), checkpoint: int = Query(...),
+                               path: str = Query(...), agent_name: Optional[str] = Query(default=None),
+                               ctx: AppContext = Depends(app_context)):
+    """What one checkpoint changed in one of its files, as a unified diff -- the Files panel.
+
+    ``checkpoint`` and ``path`` as /chat/checkpoints lists them. 404 when that
+    checkpoint names no such file. ``diff`` is None when the content on one
+    side was not kept or is binary; ``note`` says which.
+    """
+    current_user = await ctx.enforce_endpoint_security(request)
+    user_id = viewer(current_user)
+    rewinder = file_rewinder_or_503()
+    await _session_agent_for(ctx, request, session_id, user_id, agent_name, current_user)
+    record = await session_record(session_id, user_id)
+    found = await rewinder.diff(user_id=user_id, session_id=session_id, messages=record.get("messages") or [],
+                                checkpoint=checkpoint, path=path)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"Checkpoint {checkpoint} records no change to {path}")
+    return {"session_id": session_id, "checkpoint": checkpoint, **found}
+
+
 @router.post("/chat/rewind")
 async def chat_rewind(request: Request, force: bool = Query(default=False),
                       ctx: AppContext = Depends(app_context)):

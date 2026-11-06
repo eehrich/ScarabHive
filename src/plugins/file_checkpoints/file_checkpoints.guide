@@ -15,7 +15,10 @@ together with its file changes, @{tt}/rewind@{utt} lists the checkpoints of
 a session and @{tt}/rewind <n>@{utt} puts the files back as they were before
 checkpoint n. A rewind never touches a file the agent did not change, and
 refuses when a file was changed by someone else since. The model gets no
-tool: undoing its work is the person's call. It has no panel.
+tool: undoing its work is the person's call. The Files panel (session
+category, offered while this plugin is loaded) lists the checkpoints of the
+open session newest first, shows what each one changed in a file as a diff
+and puts the files back like @{tt}/rewind <n>@{utt}.
 
 @{code}
 For users

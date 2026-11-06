@@ -205,6 +205,27 @@ export function yamlCode(text) {
   return html`${out}`;
 }
 
+/**
+ * A unified diff as lines for <pre class="pk-code pk-code--lines">, numbered as in the new file: a removed line and
+ * the file names carry no number. Only what comes before the first hunk is a file name: inside one, "---" is a
+ * removed line that starts with "--".
+ */
+export function diffLines(diff) {
+  let next = null;
+  return String(diff ?? '').replace(/\n$/, '').split('\n').map((line) => {
+    if (line.startsWith('@@')) {
+      next = Number(/\+(\d+)/.exec(line)?.[1] ?? 1);
+      return html`<span class="pk-code-line pk-code-line--hunk">${line}</span>`;
+    }
+    if (next === null) return html`<span class="pk-code-line pk-code-line--file" data-line="">${line}</span>`;
+    if (line.startsWith('-')) return html`<span class="pk-code-line pk-code-line--del" data-line="">${line}</span>`;
+    if (line.startsWith('\\')) return html`<span class="pk-code-line" data-line="">${line}</span>`;  // "\ No newline at end of file"
+    const number = next;
+    next += 1;
+    return html`<span class="pk-code-line${line.startsWith('+') ? ' pk-code-line--add' : ''}" data-line="${number}">${line}</span>`;
+  });
+}
+
 export function icon(name, { size = '', label = '' } = {}) {
   const cls = size ? ` pk-icon--${escapeHtml(size)}` : '';
   const aria = label ? ` role="img" aria-label="${escapeHtml(label)}"` : ' aria-hidden="true"';
@@ -244,10 +265,11 @@ export function status(name, { label = false, pill = false } = {}) {
 // ------------------------------------------------------------------ api
 
 export class ApiError extends Error {
-  constructor(status, detail) {
+  constructor(status, detail, headers = new Headers()) {
     super(typeof detail === 'string' ? detail : `HTTP ${status}`);
     this.status = status;
     this.detail = detail;
+    this.headers = headers;  // the refusal's own headers, for a server that marks what kind it is
   }
 }
 
@@ -290,7 +312,7 @@ export async function api(path, { method = 'GET', json, body, headers = {}, quie
       let detail = response.statusText;
       try { detail = (await response.json()).detail ?? detail; } catch { /* not JSON */ }
       controller.signal.throwIfAborted();  // abandoned while the body was read: an abort, not an error to show
-      throw new ApiError(response.status, detail);
+      throw new ApiError(response.status, detail, response.headers);
     }
     if (raw) return response;
     const type = response.headers.get('content-type') || '';

@@ -6,7 +6,7 @@ version = "0.1.0"
 description = "Checkpoints for files: records how each file looked before the agent changed it, per turn, so /undo files and /rewind can put it back."
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["hooks"]
+type = ["hooks", "web"]
 category = "security"
 tags = ["hooks", "checkpoints", "rewind", "undo", "files"]
 requires = { agent_system = ">=0.7.0" }

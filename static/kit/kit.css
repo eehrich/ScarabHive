@@ -776,7 +776,8 @@ table[data-pk-select] > tbody > tr[data-id]:focus-visible { outline: 2px solid v
 
 /* Code with line numbers: <pre class="pk-code pk-code--lines"> of a .pk-code-line per line. The number is the line's
    data-line (an empty one shows none: a diff's removed line) or counted; a long line wraps under its own text, not
-   under the numbers. Tones: --hit (a line found or pointed at), --add, --del, --hunk (a diff's @@ head, not counted).
+   under the numbers. Tones: --hit (a line found or pointed at), --add, --del, --hunk (a diff's @@ head, not counted), --file (a
+   diff's file names). diffLines() in panel-kit.js builds them from a unified diff.
    The numbers are drawn, not text: a copy of the block takes the code alone. */
 .pk-code--lines { --pk-gutter: 4ch; counter-reset: pk-line; padding: var(--space-2) 0; white-space: normal; }
 .pk-code-line {
@@ -795,6 +796,7 @@ table[data-pk-select] > tbody > tr[data-id]:focus-visible { outline: 2px solid v
 .pk-code-line--del { color: var(--danger); background: var(--danger-subtle); }
 .pk-code-line--hunk { counter-increment: none; color: var(--info); }
 .pk-code-line--hunk::before { content: none; }
+.pk-code-line--file { color: var(--text-muted); }
 
 /* ------------------------------------------------------------------- steps */
 /* The steps of a process: <ol class="pk-steps"> of <li class="pk-step" data-state> (the steps() macro), each a

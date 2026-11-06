@@ -12,7 +12,7 @@ built, and the surfaces ask for it by capability, the way file tools are
 found by ``file_access_roots()``. No plugin loaded: ``file_rewinder()`` is
 None and every surface says that file checkpoints are off.
 
-What the surfaces rely on is the ``FileRewinder`` protocol below. Both calls
+What the surfaces rely on is the ``FileRewinder`` protocol below. Its calls
 take the conversation as the caller holds it -- the turns a person sees are
 what a checkpoint is named after -- and answer with plain dicts that carry a
 ``text`` rendered for a person, so the terminal and the browser print the
@@ -60,6 +60,12 @@ class FileRewinder(Protocol):
         still lies inside the directories its server allows."""
         ...
 
+    async def diff(self, *, user_id: str, session_id: str, messages: Sequence[Any], checkpoint: int,
+                   path: str) -> Optional[dict]:
+        """What ``checkpoint`` changed in ``path`` (a path its listing names):
+        ``{"path", "change", "diff": unified text or None, "note": why there is
+        none, "truncated": bool}``; None when that checkpoint names no such file."""
+        ...
 
     async def forget(self, *, user_id: str, session_id: str) -> bool:
         """Delete everything recorded for a session -- called when the person

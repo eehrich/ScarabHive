@@ -37,6 +37,20 @@ hooks:
       After such a call: records what it left, so a rewind can tell a file the
       agent changed from one changed outside it since.
 
+# The Files panel (web.py): the checkpoints of the open session newest first, a diff per
+# file, and putting the files back (/rewind <n>). Its data comes from the chat's endpoints.
+web_ui:
+  panel:
+    endpoint: "/plugins/{{ name }}/"
+    title: "Files"
+    description: "What the agent changed in files, per turn, as diffs -- and putting them back"
+    icon: history
+    category: session
+    keywords: [diff, checkpoints, rewind, undo, changes]
+    window: {width: 900, height: 680}
+    contexts:
+      session: "/plugins/{{ name }}/?session_id={session_id}"
+
 # Defaults -- overridable in plugins.yaml (config:). Per agent only the two
 # switches above: every agent of a session writes into the same record.
 config:

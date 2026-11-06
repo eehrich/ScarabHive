@@ -1,7 +1,7 @@
 // Agent Editor: agent definitions edited in a form and written back into the YAML files they came from.
 import {
   api, html, render, icon, confirm, dialog, toast, notice, initTabs, selectTab, setDirty, yamlCode, emptyState, skeleton, placeMenu,
-  keepInSight, scrollerOf,
+  keepInSight, scrollerOf, diffLines,
 } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
@@ -2319,24 +2319,6 @@ function guardYamlTab(event) {
 }
 
 // --------------------------------------------------------------------- actions
-
-/** A file's diff for pk-code--lines, numbered as in the new file: a removed line and the file's names carry no number.
- * Only what comes before the first hunk is a file's name: inside one, "---" is a removed line that starts with "--". */
-function diffLines(diff) {
-  let next = null;
-  return diff.replace(/\n$/, '').split('\n').map((line) => {
-    if (line.startsWith('@@')) {
-      next = Number(/\+(\d+)/.exec(line)?.[1] ?? 1);
-      return html`<span class="pk-code-line pk-code-line--hunk">${line}</span>`;
-    }
-    if (next === null) return html`<span class="pk-code-line ae-diff-file" data-line="">${line}</span>`;
-    if (line.startsWith('-')) return html`<span class="pk-code-line pk-code-line--del" data-line="">${line}</span>`;
-    if (line.startsWith('\\')) return html`<span class="pk-code-line" data-line="">${line}</span>`;  // "\ No newline at end of file"
-    const number = next;
-    next += 1;
-    return html`<span class="pk-code-line${line.startsWith('+') ? ' pk-code-line--add' : ''}" data-line="${number}">${line}</span>`;
-  });
-}
 
 function showDiff({ title, diff, confirmLabel, danger = false, notes = [] }) {
   const box = $('diffDialog');

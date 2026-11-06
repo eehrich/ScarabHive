@@ -1,0 +1,10 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Files{% endblock %}
+{% block toolbar %}<pk-session></pk-session><pk-refresh interval="15"></pk-refresh>{% endblock %}
+{% block content %}
+<div id="filesView" class="pk-stack">
+  <div class="pk-empty">{{ icon('history') }}<div class="pk-empty-title">No session</div><div>The panel follows the session that is open in the chat.</div></div>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}

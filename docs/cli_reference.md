@@ -307,7 +307,9 @@ file looked before the agent changed it via `file_ops` or `media_ops`
 writes the lines for both. The browser goes via `POST /chat/undo` with
 `"files": true`, `GET /chat/checkpoints` and `POST /chat/rewind`; a rejection
 (files changed outside the agent) is a 409 with the list, and
-`/undo files` then leaves the turn in place. Without the plugin both
+`/undo files` then leaves the turn in place. The Files panel shows the same
+checkpoints with a diff per file (`GET /chat/checkpoints/diff`); a 409 that
+overwrite gets past carries `X-Rewind-Refusal: files`. Without the plugin both
 surfaces say that file checkpoints are off. Details:
 `src/plugins/file_checkpoints/README.md`.
 

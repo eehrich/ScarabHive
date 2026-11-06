@@ -48,6 +48,7 @@ from agent_system.services.session_service import is_ephemeral_session
 from agent_system.servers.agent.components.status_forwarding import run_is_live, run_streams
 
 from . import fs
+from .diff import contents as diff_contents, render as diff_render
 from .fs import ABSENT, DIR, FILE, SYMLINK, UNREADABLE, State
 from .store import Change, ForeignJournal, Journal, Turn, is_session_id, journals_older_than
 from .targets import (
@@ -285,6 +286,20 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
         self._awaiting_guard = threading.Lock()
         self._apply_retention()
         register_file_rewinder(self)
+
+    def get_schema_data(self) -> dict:
+        """The schema with ``{{ name }}`` filled in: the catalogue reads the panel's endpoint from it, and the
+        hook base loads the file as it lies."""
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        return load_schema_from_dir(self.plugin_dir, {"name": self.instance_name})
+
+    def get_web_router(self):
+        """The Files panel (web.py)."""
+        from .web import build_router
+        return build_router(self)
+
+    def get_static_assets(self) -> Path:
+        return Path(__file__).parent / "static"
 
     @staticmethod
     def _storage_root(configured: Any) -> Path:
@@ -872,6 +887,33 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
             return await asyncio.to_thread(self._listing, journal, list(messages))
         except ForeignJournal as exc:
             return {"checkpoints": [], "text": f"No file changes can be listed: {exc}."}
+
+    async def diff(self, *, user_id: str, session_id: str, messages: Sequence[Any], checkpoint: int,
+                   path: str) -> Optional[dict]:
+        """What ``checkpoint`` changed in ``path``; None when the listing names no such file there."""
+        journal = Journal(self.root, user_id, session_id)
+        if not journal.exists():
+            return None
+
+        def work() -> Optional[dict]:
+            with self._lock(journal.directory):
+                # A turn with an effective change is always a numbered checkpoint.
+                _, by_turn, _, _ = self._load(journal, list(messages))
+                change = next((c for c in by_turn.get(checkpoint, ()) if c.path == path and _effective(c)), None)
+                if change is None:
+                    return None
+                old, new, note = diff_contents(journal, change.path, change.before, change.after,
+                                               self.max_file_bytes)
+            if change.outside:
+                # A rewind counts this as a conflict; the diff shows it as part of the turn.
+                note = " ".join(filter(None, [note, f"Not all of it is the agent's: {change.outside}."]))
+            return {"path": change.path, "change": _change_label(change.before, change.after),
+                    **diff_render(old, new, note)}   # difflib outside the lock: seconds on a big file
+
+        try:
+            return await asyncio.to_thread(work)
+        except ForeignJournal:
+            return None
 
     def _load(self, journal: Journal, messages: Sequence[Any]):
         """(turns in order with their position, their changes, their untracked calls, numbered checkpoints)."""

@@ -136,6 +136,7 @@ class TestUndoFiles:
 
         assert refused.status_code == 409, refused.text
         assert "b.txt" in refused.json()["detail"]
+        assert refused.headers.get("x-rewind-refusal") == "files", "the one refusal overwrite gets past is not marked"
         assert forced.status_code == 200, forced.text
         assert tree(api.rig.work) == {"a.txt": b"first\r\n"}
         assert await _questions_on_disk(api) == ["first"]
@@ -203,6 +204,20 @@ class TestRewind:
         assert tree(api.rig.work) == {"a.txt": b"original\r\n"}
         assert await _questions_on_disk(api) == ["first", "second"]
 
+    async def test_a_checkpoint_shows_its_diff_per_file(self, api):
+        await _two_turns(api)
+        a = str(api.rig.work / "a.txt")
+
+        async with _client(api.app) as client:
+            shown = await client.get("/chat/checkpoints/diff", timeout=30,
+                                     params={"session_id": SID, "checkpoint": 2, "path": a})
+            other = await client.get("/chat/checkpoints/diff", timeout=30,
+                                     params={"session_id": SID, "checkpoint": 1, "path": str(api.rig.work / "b.txt")})
+
+        assert shown.status_code == 200, shown.text
+        assert "-first\r\n" in shown.json()["diff"] and "+second\r\n" in shown.json()["diff"], shown.json()
+        assert other.status_code == 404, "b.txt is the second checkpoint's, not the first's"
+
     async def test_what_the_request_must_name(self, api):
         await _two_turns(api)
 
@@ -229,6 +244,20 @@ class TestRewind:
             response = await client.post("/chat/rewind", json={"session_id": SID, "checkpoint": 1}, timeout=30)
 
         assert response.status_code == 409, response.text
+        assert "x-rewind-refusal" not in response.headers, "a running session is not a refusal overwrite gets past"
+        assert (api.rig.work / "b.txt").read_text() == "second"
+
+    async def test_a_run_the_record_still_waits_for_is_refused_without_the_files_mark(self, api, monkeypatch):
+        """The plugin's own refusal for a run still going: overwrite would not get past it, so it is not marked."""
+        await _two_turns(api)
+        monkeypatch.setattr(api.rig.plugin, "_live_runs", lambda ident: ["run_still_going"])
+
+        async with _client(api.app) as client:
+            response = await client.post("/chat/rewind", json={"session_id": SID, "checkpoint": 1, "overwrite": True},
+                                         timeout=30)
+
+        assert response.status_code == 409 and "run_still_going" in response.json()["detail"], response.text
+        assert "x-rewind-refusal" not in response.headers
         assert (api.rig.work / "b.txt").read_text() == "second"
 
     async def test_another_users_session_is_refused(self, api, monkeypatch):
@@ -246,8 +275,10 @@ class TestRewind:
             listing = await client.get("/chat/checkpoints", params={"session_id": SID}, timeout=30)
             rewind = await client.post("/chat/rewind", json={"session_id": SID, "checkpoint": 1}, timeout=30)
             undo = await client.post("/chat/undo", json={"session_id": SID, "files": True}, timeout=30)
+            diff = await client.get("/chat/checkpoints/diff", timeout=30,
+                                    params={"session_id": SID, "checkpoint": 1, "path": str(api.rig.work / "a.txt")})
 
-        assert (listing.status_code, rewind.status_code, undo.status_code) == (403, 403, 403)
+        assert (listing.status_code, rewind.status_code, undo.status_code, diff.status_code) == (403, 403, 403, 403)
         assert (api.rig.work / "b.txt").read_text() == "second"
         assert await _questions_on_disk(api) == ["first", "second"]
 
@@ -260,9 +291,11 @@ class TestRewind:
         async with _client(api.app) as client:
             rewind = await client.post("/chat/rewind", json={"session_id": SID, "checkpoint": 1}, timeout=30)
             undo = await client.post("/chat/undo", json={"session_id": SID, "files": True}, timeout=30)
+            diff = await client.get("/chat/checkpoints/diff", timeout=30,
+                                    params={"session_id": SID, "checkpoint": 1, "path": str(api.rig.work / "a.txt")})
             plain = await client.post("/chat/undo", json={"session_id": SID}, timeout=30)
 
-        assert (rewind.status_code, undo.status_code) == (503, 503)
+        assert (rewind.status_code, undo.status_code, diff.status_code) == (503, 503, 503)
         assert "file_checkpoints" in rewind.json()["detail"]
         assert plain.status_code == 200, plain.text
         assert await _questions_on_disk(api) == ["first"], "the 503 undo took the exchange anyway"

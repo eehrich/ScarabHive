@@ -140,4 +140,3 @@ fieldset.ae-skills { display: grid; grid-template-columns: repeat(auto-fit, minm
 
 /* the diff: the kit's numbered lines, its file names muted */
 .ae-diff { max-height: 60vh; }
-.ae-diff-file { color: var(--text-muted); }

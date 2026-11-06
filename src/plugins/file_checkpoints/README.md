@@ -10,8 +10,11 @@ back anyway). Shell commands and similar tools are not recorded, only counted.
 - **Hooks** `record_before_change` (pre_tool_call) and `record_after_change` (post_tool_call) -- record the state
   before and after every file_ops / media_ops write. Off for every agent; an agent switches both on in
   `hooks.overrides`. The coder agent and its sub-agents do.
-- No tool (the model does not see the plugin), no panel. The chat commands work in the terminal chat and the
-  browser.
+- No tool (the model does not see the plugin). The chat commands work in the terminal chat and the browser.
+- **Files panel** (`/plugins/<instance>/`, `web.py`, `static/panel.js`): the checkpoints of the open
+  session newest first, per file the diff of what the checkpoint changed (`GET /chat/checkpoints/diff`) and a
+  button that does `/rewind <n>`. The content after a change is found by its digest -- in the record or on disk;
+  a file changed outside the agent since shows no diff rather than a wrong one.
 
 Enable the `file_checkpoints` instance in `config/plugins.yaml` (settings under `config:`), then switch both hooks
 on for the agents whose changes should be recorded.

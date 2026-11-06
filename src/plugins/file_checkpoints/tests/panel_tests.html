@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Files panel tests</title>
+  <style>body { margin: 0; } iframe { width: 900px; height: 700px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real Files panel against a stub server, loaded on its own (no shell), pinned to a session.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+  frame.src = '/plugins/file_checkpoints/?session_id=s1';
+  await loaded;
+  await until('the checkpoints', () => doc().querySelectorAll('#filesView .pk-card').length === 2);
+
+  const fileRow = (path) => doc().querySelector(`details.fc-file[data-path="${path}"]`);
+  async function answer(label) {
+    const dialog = await until('a question', () => doc().querySelector('dialog.pk-dialog[open]'));
+    const text = dialog.textContent;
+    [...dialog.querySelectorAll('button')].find((b) => b.textContent.trim() === label).click();
+    await until('the question to close', () => !dialog.open);
+    return text;
+  }
+
+  await check('the checkpoints are listed newest first with where they stand', async () => {
+    const titles = [...doc().querySelectorAll('#filesView .pk-card-title')].map((t) => t.textContent);
+    const older = doc().querySelectorAll('#filesView .pk-card')[1].textContent;
+    return titles[0].includes('Checkpoint 5') && titles[0].includes('after turn 1')
+      && titles[1].includes('Checkpoint 3') && titles[1].includes('before turn 1')
+      && older.includes('fix the parser') && older.includes('terminal/execute ×2');
+  });
+
+  await check('a file opened shows its diff with the numbers of the new file', async () => {
+    fileRow('/w/a.txt').open = true;
+    const pre = await until('the diff', () => fileRow('/w/a.txt').querySelector('pre.pk-code--lines'));
+    const del = pre.querySelector('.pk-code-line--del');
+    const add = pre.querySelector('.pk-code-line--add');
+    return del.textContent === '-old line' && del.dataset.line === ''
+      && add.textContent === '+new line' && add.dataset.line === '4'
+      && pre.querySelectorAll('.pk-code-line--file').length === 2;
+  });
+
+  await check('a file without a diff says why', async () => {
+    fileRow('/w/logo.bin').open = true;
+    await until('the note', () => fileRow('/w/logo.bin').textContent.includes('Binary file (0 -> 6 bytes).'));
+    return !fileRow('/w/logo.bin').querySelector('pre');
+  });
+
+  await check('a refresh with nothing new leaves an open diff alone', async () => {
+    const pre = fileRow('/w/a.txt').querySelector('pre.pk-code--lines');
+    const asked = (await (await fetch('/stub/diffs')).json()).length;
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await sleep(500);
+    const again = (await (await fetch('/stub/diffs')).json()).length;
+    return pre && asked === 2 && again === asked && fileRow('/w/a.txt').open
+      && fileRow('/w/a.txt').querySelector('pre.pk-code--lines') === pre;
+  });
+
+  await check('a refusal for a running session offers no overwrite', async () => {
+    doc().querySelector('[data-rewind="5"]').click();
+    await answer('Put back');
+    await until('the refusal', () => doc().body.textContent.includes('Session s1 is running'));
+    await sleep(300);
+    const sent = await (await fetch('/stub/calls')).json();
+    return !doc().querySelector('dialog.pk-dialog[open]') && sent.length === 1 && sent[0].checkpoint === 5;
+  });
+
+  await check('a refused rewind is asked once more and then sent with overwrite', async () => {
+    doc().querySelector('[data-rewind="3"]').click();
+    const first = await answer('Put back');
+    const second = await answer('Overwrite');
+    const calls = await until('both calls', async () => {
+      const sent = await (await fetch('/stub/calls')).json();
+      return sent.length === 3 && sent.slice(1);
+    });
+    return first.includes('since checkpoint 3') && second.includes('changed outside the agent')
+      && calls[0].checkpoint === 3 && calls[0].overwrite === false && calls[1].overwrite === true
+      && calls[1].session_id === 's1';
+  });
+
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>
