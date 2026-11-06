@@ -414,6 +414,18 @@
     return !!messageText(msg).trim();
   }
 
+  /**
+   * How a stored developer note reads; '' for none. A wake (no marker) in
+   * full; a note the run or a hook left -- kept once the model answered it,
+   * a hook's block runs to pages -- in one line, its writer named.
+   * Mirrors chat_actions.note_line (tests/cli/test_chat_render_parity.py).
+   */
+  function noteLine(msg) {
+    const text = messageText(msg).trim();
+    if (!text) return '';
+    return msg.injected_by ? `[note: ${msg.injected_by}] ${oneLine(text, 100)}` : `[note] ${text}`;
+  }
+
   async function sessionMessages() {
     if (!currentSessionId) return null;
     const session = await getJSON('/api/sessions/' + encodeURIComponent(currentSessionId));
@@ -1467,8 +1479,9 @@
       } else if (msg.role === 'developer') {
         // Not a turn anybody took -- the run putting something in front of the
         // model. Same line the terminal prints (tests/cli/test_chat_render_parity.py).
-        if (!text) return;
-        parts.push(plain('\n[note] ' + text));
+        const line = noteLine(msg);
+        if (!line) return;
+        parts.push(plain('\n' + line));
       } else if (msg.role === 'tool') {
         parts.push(plain(toolResultLines(msg, false).join('\n')));
       }
@@ -5100,7 +5113,8 @@
           note.className = 'msg note';
           const pre = document.createElement('pre');
           pre.className = 'note-text';  // the shape every other note in this chat has
-          pre.textContent = `[note] ${messageText(msg)}`;
+          pre.textContent = noteLine(msg);
+          if (msg.injected_by) pre.title = messageText(msg);  // the whole block on hover
           note.appendChild(pre);
           row.appendChild(note);
           chatEl.appendChild(row);

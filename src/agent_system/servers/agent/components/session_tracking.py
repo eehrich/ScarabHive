@@ -39,6 +39,28 @@ def is_volatile_note(msg: object) -> bool:
             and bool(getattr(msg, "injected_by", None)))
 
 
+def answered_history(messages: List[ChatMessage]) -> List[ChatMessage]:
+    """*messages* without the volatile notes no answer of the model follows.
+
+    A note the model answered stays, byte for byte where it stood: the next
+    request of the session then starts with the prefix the last one sent, and
+    the provider's cache reads it back. Dropping every note broke that prefix at
+    the first one on every request (measured: 51 of 54 request boundaries of
+    one agent, a sixth of its prompt tokens uncached). What the model answered
+    is done; the loop's own requests also name their request ("this request
+    has reached its maximum number of steps").
+
+    A note after the last answer was never answered -- "provide your final
+    answer NOW, do NOT use any tools" in front of a run that ended without one
+    -- and resumed, it would be the last instruction the model reads before
+    whatever the person asks next. It goes; it stood at the tail, so the cache
+    loses nothing by it.
+    """
+    last_answer = max((i for i, msg in enumerate(messages) if getattr(msg, "role", None) == "assistant"),
+                      default=-1)
+    return [msg for i, msg in enumerate(messages) if i < last_answer or not is_volatile_note(msg)]
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -365,14 +387,9 @@ class SessionTracker(SessionLocks):
         """
         Set the persisted messages for a session.
 
-        A volatile developer note never goes in. It is what the RUN told the
-        model for THIS call (a budget, a deadline, the state a job reached) and
-        it carries ``injected_by``: it is bound to the moment it was built for
-        and must not outlive the run. Some are rebuilt every call (the step
-        budget) and would pile up stale beside their successors; the one-offs
-        (the continue nudge, a loop warning) would be read on the next resume
-        as an instruction that still holds -- "provide your final answer NOW,
-        do NOT use any tools" is the last thing every capped run adds. A
+        A volatile developer note (what the RUN told the model: a budget, a
+        deadline, the state a job reached; it carries ``injected_by``) goes in
+        once the model answered it, and not before (``answered_history``). A
         developer note WITHOUT that marker was placed deliberately and is kept.
 
         The rule sits HERE, in the one funnel, and not in the caller that
@@ -383,7 +400,7 @@ class SessionTracker(SessionLocks):
             session_id: The session ID
             messages: The messages to persist
         """
-        kept = [msg for msg in messages if not is_volatile_note(msg)]
+        kept = answered_history(messages)
         self._sessions[session_id] = kept
         if kept:
             self._held.add(session_id)

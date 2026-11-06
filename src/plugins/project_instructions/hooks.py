@@ -20,9 +20,10 @@ session, or after ``/vars unset project_instructions``. A sub-agent inherits the
 variable with the parent's context_vars and keeps the parent's version as long
 as it works on the same root.
 
-WHERE it stands: a developer note right behind the leading system messages,
-never stored in the history -- a marked developer note is volatile
-(``session_tracking.is_volatile_note``). Two hooks carry it. The first,
+WHERE it stands: a developer note right behind the leading system messages.
+The session stores it once the model answered it
+(``session_tracking.answered_history``), and every call takes it out and
+puts it back at the same place. Two hooks carry it. The first,
 ``withdraw_project_instructions``, runs before compaction and before every
 other hook that places messages, and takes the note out of the list the loop
 carries from the call before. The second, ``inject_project_instructions``,

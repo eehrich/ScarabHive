@@ -665,3 +665,18 @@ async def test_the_run_checks_in_its_user_s_lane(monkeypatch):
     finally:
         release_request_user("lane-run")
     assert owners and set(owners) == {"bob"}, owners
+
+
+async def test_the_next_request_of_the_session_gets_the_format_again_at_its_tail():
+    """The session keeps the note the model answered; that copy, far back, stood in for the new one."""
+    agent = _agent()
+    fmt = ResponseFormat(schema=SCHEMA, prompt_fallback=True)
+    agent.llm = ScriptedLLM([GOOD], native=False)
+    await _run(agent, fmt)
+    agent.llm = llm = ScriptedLLM([GOOD], native=False)
+    await _run(agent, fmt)
+
+    notes = _notes(llm.calls[0]["messages"], "agent.structured_output")
+    assert len(notes) == 2, f"the old note kept, and a new one at the tail: {notes}"
+    asked = max(i for i, m in enumerate(llm.calls[0]["messages"]) if m.role == "user")
+    assert llm.calls[0]["messages"].index(notes[-1]) > asked, "the format stands only before this request"

@@ -19,7 +19,7 @@ def test_the_last_two_steps_get_a_note():
     last = Agent._step_budget_note(29, 30)
 
     assert "Step 29 of 30" in second_to_last.content and "1 step left" in second_to_last.content
-    assert "step 30 of 30, the last one" in last.content
+    assert "step 30 of 30" in last.content and "the last one" in last.content
     assert "closing tool call" in last.content, "an agent that delivers through a tool is told to answer in prose"
     assert second_to_last.role == last.role == DEVELOPER, (
         "the budget is the RUN talking, not a person asking to wrap up")

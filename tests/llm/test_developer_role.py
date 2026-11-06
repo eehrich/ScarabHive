@@ -404,13 +404,20 @@ def _persisted(messages) -> list[str]:
     return [m.content for m in tracker.get_session_messages("sid")]
 
 
-def test_a_volatile_note_is_not_written_into_the_session():
-    """It is rebuilt for every call. Stored, it would keep the value of the
-    turn it happened to be built on, and the injector would add the next one
-    beside it -- the session filling up with stale budgets."""
+def test_an_unanswered_volatile_note_is_not_written_into_the_session():
+    """No answer of the model follows it: resumed, it would be the last
+    instruction the model reads before whatever the person asks next."""
     contents = _persisted(history())
     assert NOTE not in contents, f"the volatile note was stored: {contents}"
     assert QUESTION in contents, "fixture is vacuous: nothing was stored at all"
+
+
+def test_an_answered_volatile_note_stays_where_it_stood():
+    """The next request starts with the prefix the last one sent; dropped, the
+    note broke the cached prefix at its place on every request."""
+    answered = history() + [ChatMessage(role="assistant", content="Next it is.")]
+    contents = _persisted(answered)
+    assert contents[contents.index(ANSWER) + 1] == NOTE, contents
 
 
 def test_a_note_placed_deliberately_stays_in_the_session():
@@ -420,7 +427,7 @@ def test_a_note_placed_deliberately_stays_in_the_session():
     assert NOTE in _persisted(placed)
 
 
-def test_every_writer_of_session_messages_drops_the_volatile_note():
+def test_every_writer_of_session_messages_drops_the_unanswered_note():
     """The rule sits in the tracker, not in one caller: five places write
     session messages and only one of them filtered anything. Reached through
     the tracker directly, the way the other four reach it."""

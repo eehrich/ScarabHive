@@ -97,6 +97,24 @@ def one_line(value: Any, limit: int = 60) -> str:
     return shorten(" ".join(text.split()), limit)
 
 
+def note_line(message: Any) -> str:
+    """How a stored developer note reads in /history and the restored chat; "" for none.
+
+    A wake (no marker) opens a turn and reads in full. A note the run or a hook
+    left (``injected_by``) is kept once the model answered it, and a hook's
+    block runs to pages: one line, its writer named.
+    """
+    text = message_text(message).strip()
+    if not text:
+        return ""
+    marker = getattr(message, "injected_by", None)
+    return f"[note: {marker}] {one_line(text, NOTE_LINE_LIMIT)}" if marker else f"[note] {text}"
+
+
+#: How much of a marked note /history and the restored chat show.
+NOTE_LINE_LIMIT = 100
+
+
 def last_answer(messages: Sequence[Any]) -> str:
     """``/copy``: the text of the agent's last answer, "" when there is none.
 

@@ -167,7 +167,7 @@ class AnswerMixin:
             # out of the stored transcript and matches it by its configured
             # TEXT (the info tool hands out no injected_by), and the
             # watchdog's judge needs it in the picture. As a volatile note
-            # it would be neither a user turn nor stored at all.
+            # it would be no user turn, and stored only once answered.
             continuation_msg = ChatMessage(
                 role="user",
                 content=hook_metadata.get(

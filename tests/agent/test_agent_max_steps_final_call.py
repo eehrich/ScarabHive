@@ -157,6 +157,14 @@ def _loop_notes(messages):
     return [m for m in messages if (m.injected_by or "").startswith("agent.")]
 
 
+def _unanswered_loop_notes(messages):
+    """The loop's notes behind the session's last answer: no answer of the model
+    follows them. One the model answered stays (the cached prefix of the next
+    request runs through it); one it never answered must not be read on resume."""
+    last = max((i for i, m in enumerate(messages) if m.role == "assistant"), default=-1)
+    return _loop_notes(messages[last + 1:])
+
+
 def _orphans(messages):
     called = {tc["id"] for m in messages if m.role == "assistant" for tc in (m.tool_calls or [])}
     answered = {m.tool_call_id for m in messages if m.role == "tool"}
@@ -354,8 +362,9 @@ async def test_an_empty_final_call_persists_no_continue_nudge():
     markers = [m.injected_by for m in _notes(_LAST_LIVE)]
     assert MAX_STEPS_REQUEST in markers, f"fixture: no max-steps request in {markers}"
     assert "agent.empty_response" not in markers[markers.index(MAX_STEPS_REQUEST):], markers
-    assert not _loop_notes(stored), (
-        f"what the loop added outlived the run: {[m.injected_by for m in _loop_notes(stored)]}")
+    assert not _unanswered_loop_notes(stored), (
+        f"what the loop added outlived the run: {[m.injected_by for m in _unanswered_loop_notes(stored)]}")
+    assert MAX_STEPS_REQUEST not in [m.injected_by for m in stored], "the unanswered demand was kept"
 
 
 @pytest.mark.asyncio
@@ -423,7 +432,7 @@ async def test_a_blank_text_answer_to_the_final_call_leaves_no_blank_assistant()
     # answer left standing. Resumed, that demand would be the last instruction
     # the model reads before whatever the person asks next.
     assert stored[-1].role == "tool", f"the session ends on {stored[-1]!r}"
-    assert not _loop_notes(stored), "the max-steps demand outlived the run"
+    assert not _unanswered_loop_notes(stored), "the max-steps demand outlived the run"
 
 
 @pytest.mark.asyncio

@@ -835,9 +835,9 @@ class TestThroughTheDispatcher:
         ("after_system", "system"), ("end", "user")])
     async def test_every_request_is_a_prefix_of_the_next(self, position, role):
         """Two turns with a tool round each; between the turns the session is
-        saved the way the agent saves it (system prompt rebuilt, volatile notes
-        dropped). These placements must never rewrite an earlier request."""
-        from agent_system.servers.agent.components.session_tracking import is_volatile_note
+        saved the way the agent saves it (system prompt rebuilt, unanswered
+        notes dropped). These placements must never rewrite an earlier request."""
+        from agent_system.servers.agent.components.session_tracking import answered_history
 
         registry = await _registry(("simple_prompt_inject", {
             "prompt_text": "Rules.", "injection_position": position, "role": role}))
@@ -849,12 +849,34 @@ class TestThroughTheDispatcher:
                 msgs = await _call(registry, msgs)
                 requests.append([(m.role, m.content) for m in msgs])
                 msgs = msgs + [ChatMessage(role="assistant", content=f"{step} {turn}")]
-            kept = [m for m in msgs if m.role != "system" and not is_volatile_note(m)]
+            kept = [m for m in answered_history(msgs) if m.role != "system"]
             msgs = [system] + kept + [ChatMessage(role="user", content=f"u{turn + 1}")]
 
         for earlier, later in zip(requests, requests[1:]):
             assert later[:len(earlier)] == earlier, (earlier, later)
         assert [c for _, c in requests[-1]].count("Rules.") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_developer_note_at_the_end_comes_again_behind_each_turn(self):
+        """Saved once answered, the old copy stood in for the next turn's: the
+        reminder ended up far back from the second turn on."""
+        from agent_system.servers.agent.components.session_tracking import answered_history
+
+        registry = await _registry(("simple_prompt_inject", {
+            "prompt_text": "Rules.", "injection_position": "end", "role": "developer"}))
+        system = ChatMessage(role="system", content="sys")
+        msgs = [system, ChatMessage(role="user", content="u1")]
+        requests = []
+        for turn in (1, 2):
+            msgs = await _call(registry, msgs)
+            requests.append([(m.role, m.content) for m in msgs])
+            msgs = msgs + [ChatMessage(role="assistant", content=f"answer {turn}")]
+            msgs = [system] + [m for m in answered_history(msgs) if m.role != "system"] + [
+                ChatMessage(role="user", content=f"u{turn + 1}")]
+        first, second = requests
+        assert second[:len(first)] == first, "the next turn rewrote the earlier request"
+        assert second[-1] == ("developer", "Rules."), second
+        assert [c for _, c in second].count("Rules.") == 2, "the answered copy was not kept"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("position", ["before_last_user", "end", "after_system"])

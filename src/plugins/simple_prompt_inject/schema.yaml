@@ -38,7 +38,8 @@ config:
         with the turn -- the point for a reminder read just before the
         answer --, and each new turn costs the cache from the old copy on.
       - end: appended once and then left alone; a changed text is appended
-        again. A developer copy is not saved, so each turn appends it anew.
+        again. A developer copy is a note of its turn: each turn appends its own,
+        the stored old ones stay where they stood.
       - after_system: right behind the system prompt, as part of the
         instructions, and it stays there. Rewritten only when the rendered text
         changes -- a changing head costs the cache of the whole history, so a

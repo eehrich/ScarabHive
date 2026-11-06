@@ -189,9 +189,10 @@ old copy, which stays. What happens at the next turn depends on the role:
 where it was appended, for good. The most cache-friendly choice after
 @{tt}after_system@{utt} -- but the text stands in the history at the place
 it first appeared, not at the end.
-@{bullet}@{tt}developer@{utt}: a developer note is not saved with the
-session. The next turn appends it anew, behind the new user message, and the
-previous turn is no longer cached from the old copy on.
+@{bullet}@{tt}developer@{utt}: a note of its turn. The next turn appends it
+anew, behind the new user message; the old copy is saved with the session once
+the model answered it and stays where it stood, so the cache keeps everything
+in front of the new one.
 @endnode
 
 @node hook "The hook"

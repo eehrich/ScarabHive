@@ -16,7 +16,7 @@ from typing import Any
 from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
-from agent_system.llm.message_roles import DEVELOPER, SYSTEM, USER, is_input, role_of
+from agent_system.llm.message_roles import DEVELOPER, SYSTEM, USER, is_input, opens_a_turn, role_of
 from agent_system.llm.models import ChatMessage
 from agent_system.servers.agent.components.hook_integration import is_compaction_system_message
 from agent_system.utils.prompt_renderer import strip_prompt_comments
@@ -41,8 +41,8 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
     configured position, marked with ``injected_by``. What repeated calls do
     depends on the position: ``before_last_user`` moves the text with the turn
     and therefore replaces the previous copy, ``end`` appends it once and
-    writes again only when the rendered text changed (a developer copy is
-    dropped when the session is saved, so each turn appends it anew),
+    writes again only when the rendered text changed (a developer copy once
+    per turn: each turn appends one behind its request, the old ones stay),
     ``after_system`` keeps
     it right behind the system prompt and rewrites it there only when the
     rendered text changed. ``task_start`` writes it in front of the task,
@@ -203,7 +203,13 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         elif self.injection_position == "end":
             # Appended and then left alone: an unchanged text written again
             # would move the end of the prompt for nothing, and everything
-            # before it has to be paid for a second time.
+            # before it has to be paid for a second time. A developer copy is
+            # a note of its turn: the next turn appends one of its own behind
+            # the new request; the stored old one stays where it stood.
+            if self.role == DEVELOPER:
+                turn = max((i for i, m in enumerate(messages) if opens_a_turn(m)), default=-1)
+                previous = next((m for m in reversed(messages[turn + 1:])
+                                 if m.injected_by == self.injected_by), None)
             if previous is not None and previous.content == rendered:
                 return HookResult(success=True, modified=False, context=context)
             messages.append(new_msg)

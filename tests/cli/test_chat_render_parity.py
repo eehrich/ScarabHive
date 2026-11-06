@@ -26,6 +26,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from agent_system.chat_actions import note_line  # noqa: E402
 from agent_system.cli_utils.chat import (  # noqa: E402
     _is_real_turn,
     _message_text,
@@ -91,6 +92,15 @@ TURN_SHAPES = {
     "an_answer": {"role": "assistant", "content": "fertig"},
 }
 
+#: How a stored developer note reads: a wake in full, a marked note in one line.
+NOTE_SHAPES = {
+    "woken": TURN_SHAPES["woken"],
+    "a_hooks_block": {"role": "developer", "injected_by": "okf",
+                      "content": "Concepts:\n" + "\n".join(f"- concept {i}: what it means" for i in range(40))},
+    "a_short_note": TURN_SHAPES["note_from_the_run"],
+    "empty": {"role": "developer", "content": "  ", "injected_by": "todo"},
+}
+
 #: The harness. It slices the helpers out of the shipped file and applies them
 #: to the cases this test hands it, so what runs here is the code that ships.
 NODE_HARNESS = r"""
@@ -105,16 +115,19 @@ if (start < 0 || end < 0 || end <= start) {
 const block = source.slice(start, end);
 const window = {};
 const h = new Function('window', block +
-  '\nreturn {messageText, isRealTurn, toolCallLines, toolResultLines};')(window);
+  '\nreturn {messageText, isRealTurn, noteLine, toolCallLines, toolResultLines};')(window);
 
 const cases = JSON.parse(fs.readFileSync(0, 'utf8'));
-const out = { messages: {}, results: {}, calls: {}, turns: {}, shapes: {} };
+const out = { messages: {}, results: {}, calls: {}, turns: {}, shapes: {}, notes: {} };
 for (const [name, content] of Object.entries(cases.messages)) {
   out.messages[name] = h.messageText({ content: content });
   out.turns[name] = h.isRealTurn({ role: 'user', content: content });
 }
 for (const [name, msg] of Object.entries(cases.shapes || {})) {
   out.shapes[name] = h.isRealTurn(msg);
+}
+for (const [name, msg] of Object.entries(cases.notes || {})) {
+  out.notes[name] = h.noteLine(msg);
 }
 for (const [name, content] of Object.entries(cases.results)) {
   out.results[name] = {
@@ -172,6 +185,9 @@ def _python_side() -> dict:
         "shapes": {name: _is_real_turn(_Message(shape["content"], role=shape["role"],
                                                 injected_by=shape.get("injected_by")))
                    for name, shape in TURN_SHAPES.items()},
+        "notes": {name: note_line(_Message(shape["content"], role=shape["role"],
+                                           injected_by=shape.get("injected_by")))
+                  for name, shape in NOTE_SHAPES.items()},
         "results": {name: {"full": result(content, True), "compact": result(content, False)}
                     for name, content in TOOL_RESULTS.items()},
         "calls": {name: {"full": call(payload, True), "compact": call(payload, False)}
@@ -195,7 +211,7 @@ def javascript_side(tmp_path_factory) -> dict:
 
     finished = _run_harness(
         {"messages": MESSAGES, "results": TOOL_RESULTS, "calls": TOOL_CALLS,
-         "shapes": TURN_SHAPES},
+         "shapes": TURN_SHAPES, "notes": NOTE_SHAPES},
         tmp_path_factory.mktemp("parity") / "harness.js")
 
     assert finished.returncode == 0, (
@@ -233,6 +249,15 @@ class TestBothSurfacesRenderTheSame:
                             "scripted_followup": False, "an_answer": False}, \
             "fixture: the Python side itself must answer these five this way"
         assert javascript_side["shapes"] == expected
+
+    def test_a_stored_note(self, javascript_side):
+        """A note is kept once the model answered it, and a hook's block runs
+        to pages: one line on both surfaces, a wake in full."""
+        expected = _python_side()["notes"]
+        assert expected["empty"] == "" and expected["woken"].startswith("[note] You were woken")
+        assert expected["a_hooks_block"].startswith("[note: okf] Concepts:")
+        assert "\n" not in expected["a_hooks_block"]
+        assert javascript_side["notes"] == expected
 
     def test_a_tool_result(self, javascript_side):
         assert javascript_side["results"] == _python_side()["results"]

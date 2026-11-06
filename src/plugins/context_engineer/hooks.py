@@ -1389,10 +1389,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             previous_block = next(
                 (m for m in reversed(new_messages)
                  if getattr(m, "injected_by", None) == _RESTORATION_MARKER), None)
-            # NOT "fresh_block when nothing of ours stands here": the block is
-            # not persisted, so across requests there never is a previous one,
-            # and taking the fresh text there would switch the hysteresis off
-            # entirely. What it holds back is deliberate and measured (see the
+            # NOT "fresh_block when nothing of ours stands here": a request whose
+            # history holds none (a new session, one compacted or stored before
+            # answered notes were kept) would switch the hysteresis off for it.
+            # What it holds back is deliberate and measured (see the
             # paragraph above), and the reason it gives -- do not rewrite the
             # front for a fact that is still readable in its store_fact call --
             # is weaker now that the block sits at the end, but it is not mine
@@ -1404,14 +1404,12 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 # per call invalidated the cache for everything behind it.
                 # An earlier block keeps its place -- what it said was true
                 # when it was written -- and an unchanged one is not written
-                # again at all. It is not persisted with the conversation
-                # either, and the reason is worth naming exactly: what
-                # drops it is `is_volatile_note` in SessionTracker
-                # (session_tracking.py), which needs BOTH the developer role
-                # and `injected_by` -- a marked `user` turn, like debate_forum's
-                # posts, is deliberately kept. The two filters on THIS path
-                # throw away nothing but `role == 'system'`, so they are not
-                # what keeps the copies from piling up.
+                # again at all. Once the model answered it, it is persisted
+                # with the conversation where it stood (session_tracking.
+                # answered_history): the next request then starts with the
+                # prefix this one sent. So across requests, too, a new copy
+                # comes only when the context changed; the old ones stay what
+                # they were when written, until a compaction takes them.
                 new_messages.append(ChatMessage(
                     role=DEVELOPER,
                     content=restoration_context,

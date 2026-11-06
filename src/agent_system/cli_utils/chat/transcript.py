@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from agent_system.chat_actions import (
     last_answer,
     message_text,
+    note_line,
     one_line,
     split_off_last_exchange,
     starts_a_turn,
@@ -170,10 +171,11 @@ def _show_history(ctx: "_ChatContext", renderer: ChatRenderer, payload: str) -> 
             # Not a turn anybody took -- the run putting something in front of
             # the model. Hidden, the history reads as if the agent knew things
             # nobody had told it.
-            if not text:
+            line = note_line(message)
+            if not line:
                 continue
             renderer.println("")
-            renderer.println(f"[note] {text}", color="90")
+            renderer.println(line, color="90")
         elif role == "tool":
             _render_tool_result(renderer, message, full=False)
     renderer.commit()

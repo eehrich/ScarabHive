@@ -217,22 +217,21 @@ class LiveStateMixin:
         """The in-flight messages of a session as a READER should see them.
 
         ``get_live_messages`` hands out the run's own working list: it opens
-        with the rendered system prompt and carries the notes the run wrote for
-        this one call. Persistence drops both -- the prompt is rebuilt per turn
-        from config, a volatile note belongs to the call it was built for -- so
-        a viewer joining a session mid-run must have them dropped too, or the
-        chat shows the agent its own system prompt as a message.
+        with the rendered system prompt and carries the notes the run wrote,
+        the last of them not answered yet. Persistence drops the prompt (it is
+        rebuilt per turn from config) and an unanswered note, so a viewer
+        joining a session mid-run must have them dropped too, or the chat shows
+        the agent its own system prompt as a message.
 
         Both rules are the ones persistence uses, not copies of them: a system
         message that IS conversation (an archived_ref, a prune breadcrumb) stays
-        by ``conversation_messages``, and the volatile notes go by
-        ``is_volatile_note``.
+        by ``conversation_messages``, and the notes by ``answered_history``.
         """
         live = self.get_live_messages(session_id)
         if live is None:
             return None
-        from ..components.session_tracking import is_volatile_note
-        return [msg for msg in conversation_messages(live) if not is_volatile_note(msg)]
+        from ..components.session_tracking import answered_history
+        return answered_history(conversation_messages(live))
 
     def get_live_tools_schema(self: Agent, session_id: Optional[str]) -> Optional[List[Dict[str, Any]]]:
         """Live tool schema for a session, or None if not tracked."""

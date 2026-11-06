@@ -77,9 +77,9 @@ One @{tt}developer@{utt} message marked
 leading system messages (the system prompt, a system block another hook
 keeps there, a compaction notice at the front) and in front of everything
 else -- another hook's reminder and a woken run's wake included. The text is
-shown in @{" What the model sees " link model}. The note is never stored in
-the session history: a marked developer message is dropped when the session
-is saved, and the hook puts it back on every call.
+shown in @{" What the model sees " link model}. The session stores it once
+the model answered it, and every call takes it out and puts it back at the
+same place, so the stored copy never stands twice.
 
 @{h2}When it does nothing
 

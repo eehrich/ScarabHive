@@ -70,9 +70,9 @@ class PersistenceMixin:
             # (archive pointers, the prune breadcrumb). Dropping those loses
             # conversation state for good: the content is in a store, but
             # nothing left in the session says it exists.
-            # Volatile developer notes are dropped one level down, by
-            # set_session_messages: five places write session messages and this
-            # is only one of them.
+            # Unanswered volatile developer notes are dropped one level down,
+            # by set_session_messages: five places write session messages and
+            # this is only one of them.
             conversation_msgs = conversation_messages(messages)
             self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
             logger.debug(f"Persisted session {session_id} ({note}) with {len(conversation_msgs)} messages")

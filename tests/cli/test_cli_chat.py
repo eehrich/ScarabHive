@@ -1994,6 +1994,16 @@ class TestHistoryCommand:
         assert "terminal_execute" in text       # the request
         assert "a.txt" in text                  # the result
 
+    def test_a_stored_hook_note_reads_as_one_line(self):
+        """Kept once the model answered it, a hook's block ran to pages in /history."""
+        note = _Msg("developer", "Concepts:\n" + "\n".join(f"- concept {i}" for i in range(40)))
+        note.injected_by = "okf"
+        r, out = _renderer()
+        _show_history(_ctx_with([_TURN[0], note, _TURN[1]]), r, "1")
+        text = out.getvalue()
+        assert "[note: okf] Concepts:" in text
+        assert "concept 39" not in text, "the whole block was printed"
+
     def test_empty_session_says_so(self, capsys):
         r, _t = _renderer()
         _show_history(_ctx_with([]), r, "")

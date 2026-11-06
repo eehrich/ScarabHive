@@ -125,8 +125,8 @@ class PromptsMixin:
             return ChatMessage(
                 role=DEVELOPER,
                 content=(
-                    f"You have reached the maximum number of steps ({max_steps}). "
-                    "Please provide your final answer NOW based on the information you have gathered. "
+                    f"This request has reached its maximum number of steps ({max_steps}). "
+                    "Please provide your final answer to it NOW based on the information you have gathered. "
                     "Do NOT use any tools in this response - just give me your best answer or summary of what you've accomplished."
                 ),
                 timestamp=datetime.now(timezone.utc),
@@ -136,11 +136,11 @@ class PromptsMixin:
         if max_steps < cls._STEP_BUDGET_NOTE_MIN_STEPS or steps_left >= cls._STEP_BUDGET_NOTE_LAST_STEPS:
             return None
         if steps_left == 0:
-            note = (f"This is step {max_steps} of {max_steps}, the last one. Finish now with what "
+            note = (f"This is step {max_steps} of {max_steps} of this request, the last one. Finish now with what "
                     f"your task requires, the final answer or the closing tool call, using what "
                     f"you have, and say what is still missing.")
         else:
-            note = (f"Step {step + 1} of {max_steps}: {steps_left} step left after this one. "
+            note = (f"Step {step + 1} of {max_steps} of this request: {steps_left} step left after this one. "
                     f"Start wrapping up and do not begin new lines of work.")
         # Marked: hooks that look for the last message a person wrote (OKF seeds,
         # scripted follow-ups, tool preloads, compaction) must not take this one.
