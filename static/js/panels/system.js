@@ -36,7 +36,7 @@ const STATUS = {
   warn: { label: 'Needs attention', badge: 'warn', dot: 'warn' },
   error: { label: 'Problems', badge: 'danger', dot: 'danger' },
 };
-const CHECK_NAMES = { servers: 'Servers', config: 'Agent config', llm: 'LLM rate limits', deploy: 'Deployed code' };
+const CHECK_NAMES = { servers: 'Servers', plugins: 'Plugins', config: 'Agent config', llm: 'LLM rate limits', deploy: 'Deployed code' };
 
 /**
  * Everyone may ask /health: it only says the server answers. The reasons behind a status are
@@ -96,6 +96,9 @@ async function loadOverview() {
   const problems = data.servers.problems;
   $('problemsCard').hidden = !problems.length;
   render($('problems'), problems.map((problem) => html`<li class="pk-mono">${problem}</li>`));
+  const failures = data.servers.load_failures || [];
+  $('loadFailuresCard').hidden = !failures.length;
+  render($('loadFailures'), failures.map((failure) => html`<li class="pk-mono">${failure}</li>`));
   const findings = data.servers.config_findings || [];
   $('findingsCard').hidden = !findings.length;
   render($('findings'), findings.map((finding) => html`<li class="pk-mono">${finding}</li>`));

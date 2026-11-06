@@ -28,6 +28,7 @@ STATUS = {
     "status": "error",
     "checks": [
         {"name": "servers", "level": "error", "detail": "1 configured server(s) did not start: server 'x': boom"},
+        {"name": "plugins", "level": "warn", "detail": "1 plugin(s) did not load: probe_broken: ImportError: x"},
         {"name": "llm", "level": "ok", "detail": "no model is paused"},
         {"name": "deploy", "level": "warn", "detail": "code on disk is bbbbbbbb (later), this process runs aaaaaaaa"},
     ],
@@ -35,7 +36,8 @@ STATUS = {
               "commit_on_disk": None, "started_at": 1757923200, "uptime_seconds": 3700, "python": "3.12.5"},
     "process": {"pid": 42, "memory_mb": 512.5, "threads": 12, "async_tasks": 30},
     "servers": {"declared": 4, "running": 3, "agents": 2, "problems": ["server 'x': failed to start: boom"],
-                "config_findings": ["agent 'lazy_one': LLM config does not resolve"]},
+                "config_findings": ["agent 'lazy_one': LLM config does not resolve"],
+                "load_failures": ["probe_broken: ImportError: No module named 'missing_dep'"]},
     "hooks": {"registered": 10, "enabled": 6},
     "llm_blocked": [],
 }

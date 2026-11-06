@@ -191,6 +191,8 @@ class Runtime:
         #: failed build), one line each -- the start-up policy logs and carries
         #: on, so this is the only record a status page can show.
         self.problems: list[str] = []
+        #: The plugins whose module did not load in this runtime's discovery: name -> why (System panel).
+        self.load_failures: dict[str, str] = {}
         #: validate()'s findings from the last start(): config errors of lazy
         #: agents, which may still run (degraded) or fail again as a problem.
         self.config_findings: list[str] = []
@@ -210,7 +212,7 @@ class Runtime:
         configured = self.config.plugins.plugin_dirs or []
         dirs = [Path(p) for p in configured if p]
         from .plugins import discover_all_plugins
-        self._plugins = discover_all_plugins(dirs=dirs if dirs else None)
+        self._plugins = discover_all_plugins(dirs=dirs if dirs else None, failures=self.load_failures)
 
         if self._plugins:
             logger.info("Discovered plugins: %s", ", ".join(sorted(self._plugins.keys())))
@@ -235,8 +237,11 @@ class Runtime:
                                 merged.type, metadata.get("version") or "",
                                 name, metadata.get("description") or metadata.get("summary") or "")
             elif merged.type != "agent":
-                logger.warning("Unknown server type '%s' for server '%s'", merged.type, name)
-                self.problems.append(f"server '{name}': unknown type '{merged.type}'")
+                cause = self.load_failures.get(merged.type)
+                logger.warning("Unknown server type '%s' for server '%s'%s", merged.type, name,
+                               f" -- its plugin did not load: {cause}" if cause else "")
+                self.problems.append(f"server '{name}': unknown type '{merged.type}'"
+                                     + (f" -- its plugin did not load: {cause}" if cause else ""))
                 continue
 
             self._decls[name] = ServerDecl(

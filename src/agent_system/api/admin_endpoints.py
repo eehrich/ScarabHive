@@ -648,6 +648,7 @@ async def system_status(
     """Health of this process with the reasons behind it (admin only).
 
     ``status`` is the worst of ``checks``: servers that did not start (error),
+    plugins whose module did not load (warn),
     agent config errors found at start (error), LLMs paused after rate limits
     (warn), a checked-out commit newer than the one the process runs (warn).
     ``/health`` stays the plain liveness probe.

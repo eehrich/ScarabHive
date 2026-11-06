@@ -34,7 +34,7 @@ def _root(base: Path, origin: str) -> Path:
 
 @pytest.fixture
 def roots(tmp_path, monkeypatch):
-    monkeypatch.setattr(discovery, "discover_entrypoint_plugins", lambda group: {})
+    monkeypatch.setattr(discovery, "discover_entrypoint_plugins", lambda group, failures=None: {})
     before = set(sys.modules)
     yield _root(tmp_path, "one"), _root(tmp_path, "two")
     for name in [n for n in sys.modules if n not in before or n.startswith(f"plugins.{PROBE}")]:
@@ -85,7 +85,7 @@ def test_a_folder_with_no_plugin_in_the_first_root_blocks_nothing(roots):
 
 def test_a_roots_conftest_is_no_plugin(tmp_path, monkeypatch):
     """A root's tests may have a conftest.py beside its plugins: the app must not run it, and it imports pytest."""
-    monkeypatch.setattr(discovery, "discover_entrypoint_plugins", lambda group: {})
+    monkeypatch.setattr(discovery, "discover_entrypoint_plugins", lambda group, failures=None: {})
     ran = tmp_path / "conftest_ran"
     (tmp_path / "conftest.py").write_text(f"open({str(ran)!r}, 'w').close()\n", encoding="utf-8")
     (tmp_path / "tool.py").write_text("class Tool:\n    pass\n\n\nPLUGIN_FACTORY = Tool\n", encoding="utf-8")

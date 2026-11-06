@@ -43,7 +43,8 @@
     return card.querySelector('.pk-badge--danger')?.textContent.trim() === 'Problems'
       && text.includes('did not start: server')
       && text.includes('Deployed code') && text.includes('bbbbbbbb')
-      && card.querySelectorAll('dt .pk-dot--warn').length === 1;
+      && text.includes('Plugins') && text.includes('did not load: probe_broken')
+      && card.querySelectorAll('dt .pk-dot--warn').length === 2;
   });
 
   await check('an administrator sees the servers that did not start and the counts', async () => {
@@ -54,7 +55,9 @@
       && d.getElementById('problems').textContent.includes("server 'x': failed to start: boom")
       && stats.textContent.includes('3 / 4') && stats.textContent.includes('6 / 10')
       && !d.getElementById('processCard').hidden && d.getElementById('process').textContent.includes('512.5 MB')
-      && !d.getElementById('findingsCard').hidden && d.getElementById('findings').textContent.includes("agent 'lazy_one'");
+      && !d.getElementById('findingsCard').hidden && d.getElementById('findings').textContent.includes("agent 'lazy_one'")
+      && !d.getElementById('loadFailuresCard').hidden
+      && d.getElementById('loadFailures').textContent.includes("probe_broken: ImportError: No module named 'missing_dep'");
   });
 
   await check('anyone else sees that the server answers, not a status without reasons', async () => {
@@ -62,6 +65,7 @@
     await until('the liveness card', () => d.getElementById('statusCard').textContent.includes('Server answers'));
     return d.getElementById('statusCard').textContent.includes('administrators')
       && d.getElementById('problemsCard').hidden && d.getElementById('findingsCard').hidden
+      && d.getElementById('loadFailuresCard').hidden
       && d.getElementById('processCard').hidden
       && !d.getElementById('statusCard').textContent.includes('Problems')
       && d.getElementById('overviewStats').textContent.includes('9.9.9');

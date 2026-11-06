@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 _registered_shared_modules: Dict[str, Set[str]] = {}
 
 
+def _record(failures: dict[str, str] | None, name: str, error: BaseException) -> None:
+    """Note in *failures* (plugin name -> why, one line) that a plugin did not load; logged already."""
+    if failures is None:
+        return
+    text = str(error).strip().splitlines()[0] if str(error).strip() else ""
+    failures[name] = f"{type(error).__name__}: {text}" if text else type(error).__name__
+
+
 def _held_elsewhere(taken: dict[str, str] | None, name: str, root: str) -> bool:
     """Whether another root of the same package name claimed ``name`` earlier in
     this discovery (see _ModuleNames); warned about when so."""
@@ -174,7 +182,8 @@ def _already_loaded(module_name: str, plugin_file: Path):
     return None
 
 
-def discover_plugins(path: Path, taken: dict[str, str] | None = None) -> Dict[str, Callable[..., ToolServer]]:
+def discover_plugins(path: Path, taken: dict[str, str] | None = None,
+                     failures: dict[str, str] | None = None) -> Dict[str, Callable[..., ToolServer]]:
     """Discover plugins in a directory.
 
     Rules:
@@ -257,6 +266,7 @@ def discover_plugins(path: Path, taken: dict[str, str] | None = None) -> Dict[st
                 if not isinstance(e, Exception):
                     raise
                 logger.warning(f"Failed to load plugin module {plugin_file}: {e}", exc_info=True)
+                _record(failures, d.name, e)
                 continue
 
         try:
@@ -266,6 +276,7 @@ def discover_plugins(path: Path, taken: dict[str, str] | None = None) -> Dict[st
                 continue
         except Exception as e:
             logger.warning(f"Plugin {plugin_file} register() failed: {e}", exc_info=True)
+            _record(failures, d.name, e)
             continue
 
         # Try to get factory using the configured factory name from entrypoint
@@ -332,6 +343,7 @@ def discover_plugins(path: Path, taken: dict[str, str] | None = None) -> Dict[st
                 if not isinstance(e, Exception):
                     raise
                 logger.warning(f"Failed to load single-file plugin module {p}: {e}", exc_info=True)
+                _record(failures, p.stem, e)
                 continue
         try:
             if hasattr(mod, "register") and inspect.isfunction(mod.register):
@@ -340,6 +352,7 @@ def discover_plugins(path: Path, taken: dict[str, str] | None = None) -> Dict[st
                 continue
         except Exception as e:
             logger.warning(f"Single-file plugin {p} register() failed: {e}", exc_info=True)
+            _record(failures, p.stem, e)
             continue
         factory = getattr(mod, "PLUGIN_FACTORY", None)
         if factory:
@@ -354,7 +367,8 @@ ENTRYPOINT_GROUP = "agent_system.tool_plugins"
 LEGACY_ENTRYPOINT_GROUP = "agent_system.mcp_plugins"
 
 
-def discover_entrypoint_plugins(group: str = ENTRYPOINT_GROUP) -> Dict[str, Callable[..., ToolServer]]:
+def discover_entrypoint_plugins(group: str = ENTRYPOINT_GROUP,
+                                failures: dict[str, str] | None = None) -> Dict[str, Callable[..., ToolServer]]:
     """Discover plugins exposed via Python entry points.
 
     Entry point group defaults to 'agent_system.tool_plugins'. Each
@@ -424,6 +438,7 @@ def discover_entrypoint_plugins(group: str = ENTRYPOINT_GROUP) -> Dict[str, Call
                     out[name] = factory
             except Exception as e:
                 logger.warning(f"Failed to load entrypoint plugin {ep}: {e}", exc_info=True)
+                _record(failures, getattr(ep, "name", None) or str(ep), e)
                 continue
     except Exception as e:
         # importlib.metadata not available; silently return empty
@@ -483,11 +498,12 @@ class _ModuleNames:
     names -- a plugin package, its submodules -- as one package name must.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, failures: dict[str, str] | None = None) -> None:
         self._taken: dict[str, dict[str, str]] = {}
+        self._failures = failures
 
     def discover(self, path: Path) -> dict[str, Callable[..., ToolServer]]:
-        return discover_plugins(path, taken=self._taken.setdefault(path.name, {}))
+        return discover_plugins(path, taken=self._taken.setdefault(path.name, {}), failures=self._failures)
 
 
 def _add_plugins(plugins: Dict[str, Callable[..., ToolServer]],
@@ -508,13 +524,18 @@ def _add_plugins(plugins: Dict[str, Callable[..., ToolServer]],
                 name, source)
 
 
-def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = ENTRYPOINT_GROUP) -> Dict[str, Callable[..., ToolServer]]:
+def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = ENTRYPOINT_GROUP,
+                         failures: dict[str, str] | None = None) -> Dict[str, Callable[..., ToolServer]]:
     """Discover plugins from filesystem directories and entry points.
 
     dirs: iterable of Path objects to search for filesystem plugins.
     group: entry point group to query for packaged plugins.
+    failures: filled with the plugins of this discovery whose module did not load (name -> why, one
+    line) -- not the ones another root or an entry point provided after all. The runtime keeps them
+    for the System panel and for the "unknown type" of a server whose plugin they are.
     """
     plugins: Dict[str, Callable[..., ToolServer]] = {}
+    collected: dict[str, str] = {}
 
     # Use only explicitly provided `dirs` for filesystem discovery when
     # available. If none are provided, attempt to locate an importable
@@ -523,7 +544,7 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = ENTRYP
     # repository paths while ensuring discoverability in common dev
     # and editable-install setups.
     source_dirs = list(dirs) if dirs else default_plugin_dirs()
-    module_names = _ModuleNames()
+    module_names = _ModuleNames(collected)
     # Normalize each source dir to an absolute Path and discover plugins there.
     for raw in source_dirs:
         try:
@@ -547,7 +568,7 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = ENTRYP
 
     # entry point plugins
     try:
-        eps = discover_entrypoint_plugins(group=group)
+        eps = discover_entrypoint_plugins(group=group, failures=collected)
         _add_plugins(plugins, eps, f"entry point group '{group}'")
     except Exception as e:
         logger.warning(f"Error discovering entrypoint plugins from group '{group}': {e}", exc_info=True)
@@ -576,6 +597,8 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = ENTRYP
         except Exception:
             pass
 
+    if failures is not None:
+        failures.update({name: why for name, why in collected.items() if name not in plugins})
     return plugins
 
 

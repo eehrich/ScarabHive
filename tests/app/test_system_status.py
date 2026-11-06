@@ -175,3 +175,110 @@ def test_validate_findings_are_kept_apart_from_problems(monkeypatch):
 
     assert runtime.config_findings == ["agent 'a': LLM config does not resolve"]
     assert runtime.problems == []
+
+
+async def test_a_plugin_that_did_not_load_says_why_where_its_server_is_missing(tmp_path, monkeypatch):
+    """A plugin whose module fails to import used to leave only "unknown type" behind, the cause in a
+    log warning; one no server used was missing without a word. The panel names both, with the cause."""
+    monkeypatch.setattr(runtime_module, "_in_test_cwd", lambda: False)
+    monkeypatch.setattr(Runtime, "last_started", Runtime.last_started)  # restored after the test
+    _plugin_dir(tmp_path, "probe_unimportable", "", "import no_such_module_anywhere\n")
+    _plugin_dir(tmp_path, "probe_unused_broken", "", "raise ValueError('half written')\n")
+    (tmp_path / "probe_single_broken.py").write_text("raise RuntimeError('single file')\n", encoding="utf-8")
+    runtime = Runtime(_config({"probe_server": ToolServerConfig(type="probe_unimportable", enabled=True)},
+                              plugin_dirs=[str(tmp_path)])).start()
+    monkeypatch.setattr(system_status, "_started", {"at": 1.0, "commit": COMMIT_A})
+    monkeypatch.setattr(system_status, "git_commit", lambda cwd=None: COMMIT_A)
+
+    status = await system_status.collect_system_status()
+
+    problem = next(p for p in runtime.problems if "probe_server" in p)
+    assert "no_such_module_anywhere" in problem, runtime.problems
+    failures = status["servers"]["load_failures"]
+    assert any(f.startswith("probe_unused_broken: ValueError: half written") for f in failures), failures
+    assert any(f.startswith("probe_unimportable: ModuleNotFoundError") for f in failures), failures
+    assert any(f.startswith("probe_single_broken: RuntimeError: single file") for f in failures), failures
+    assert {c["name"]: c["level"] for c in status["checks"]}["plugins"] == "warn"
+
+
+def test_the_failures_belong_to_one_discovery_not_to_the_process(tmp_path):
+    """Kept per run: a plugin fixed (or deleted) since is no failure of the next discovery, and one
+    that another root provides after all is no failure at all."""
+    from agent_system.plugins.discovery import discover_all_plugins
+
+    broken = tmp_path / "first"
+    _plugin_dir(broken, "probe_fixed_later", "", "raise ValueError('not yet')\n")
+    failures = {}
+    discover_all_plugins([broken], failures=failures)
+    assert "probe_fixed_later" in failures, "fixture: the plugin did not fail"
+
+    (broken / "probe_fixed_later" / "plugin.py").write_text(
+        "def PLUGIN_FACTORY(name, system_config, server_config):\n    return None\n", encoding="utf-8")
+    again = {}
+    assert "probe_fixed_later" in discover_all_plugins([broken], failures=again)
+    assert again == {}, again
+
+    _plugin_dir(broken, "probe_deleted_later", "", "raise ValueError('broken')\n")
+    before = {}
+    discover_all_plugins([broken], failures=before)
+    assert "probe_deleted_later" in before, "fixture: the plugin did not fail"
+    import shutil
+    shutil.rmtree(broken / "probe_deleted_later")
+    after = {}
+    discover_all_plugins([broken], failures=after)
+    assert after == {}, "a plugin deleted since is no failure of this discovery"
+
+    good, bad = tmp_path / "good_root", tmp_path / "bad_root"
+    _plugin_dir(good, "probe_twice", "", "def PLUGIN_FACTORY(name, system_config, server_config):\n    return None\n")
+    _plugin_dir(bad, "probe_twice", "", "raise ValueError('the other copy')\n")
+    both = {}
+    assert "probe_twice" in discover_all_plugins([good, bad], failures=both)
+    assert "probe_twice" not in both, both
+
+
+def test_an_entry_point_plugin_that_does_not_load_is_named(monkeypatch):
+    from importlib import metadata
+
+    from agent_system.plugins.discovery import ENTRYPOINT_GROUP, discover_entrypoint_plugins
+
+    class EntryPoint:
+        name, group = "probe_packaged", ENTRYPOINT_GROUP
+
+        def load(self):
+            raise ImportError("No module named 'missing_dependency'")
+
+    class EntryPoints(list):
+        def select(self, group):
+            return [ep for ep in self if ep.group == group]
+
+    monkeypatch.setattr(metadata, "entry_points", lambda: EntryPoints([EntryPoint()]))
+    failures = {}
+    assert discover_entrypoint_plugins(failures=failures) == {}
+    assert failures == {"probe_packaged": "ImportError: No module named 'missing_dependency'"}, failures
+
+
+def test_the_runtimes_discovery_names_a_packaged_plugin_and_a_failing_register(tmp_path, monkeypatch):
+    """Through discover_all_plugins, as the runtime asks: entry points and register() count too."""
+    from importlib import metadata
+
+    from agent_system.plugins.discovery import ENTRYPOINT_GROUP, discover_all_plugins
+
+    class EntryPoint:
+        name, group = "probe_packaged", ENTRYPOINT_GROUP
+
+        def load(self):
+            raise ImportError("No module named 'missing_dependency'")
+
+    class EntryPoints(list):
+        def select(self, group):
+            return [ep for ep in self if ep.group == group]
+
+    monkeypatch.setattr(metadata, "entry_points", lambda: EntryPoints([EntryPoint()]))
+    _plugin_dir(tmp_path, "probe_register_fails", "", "def register():\n    raise KeyError('no name')\n")
+    (tmp_path / "probe_single_register.py").write_text("def register():\n    raise KeyError('nope')\n",
+                                                       encoding="utf-8")
+    failures = {}
+    discover_all_plugins([tmp_path], failures=failures)
+    assert failures.get("probe_packaged", "").startswith("ImportError"), failures
+    assert failures.get("probe_register_fails", "").startswith("KeyError"), failures
+    assert failures.get("probe_single_register", "").startswith("KeyError"), failures

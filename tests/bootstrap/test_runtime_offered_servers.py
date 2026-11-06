@@ -20,7 +20,7 @@ def offering(monkeypatch):
     offers = {}
     real = plugins_package.discover_all_plugins
 
-    def discover(dirs=None):
+    def discover(dirs=None, failures=None):
         found = real(dirs=dirs)
         basic = found["basic_agent"]
 

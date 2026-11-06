@@ -81,7 +81,8 @@ def _check(name: str, level: str, detail: str) -> dict:
 
 def build_checks(*, problems: list[str], blocked: list[dict],
                  commit_at_start: Optional[dict], commit_on_disk: Optional[dict],
-                 config_findings: Optional[list[str]] = None) -> list[dict]:
+                 config_findings: Optional[list[str]] = None,
+                 load_failures: Optional[list[str]] = None) -> list[dict]:
     """The checks behind the overall status, from already collected facts."""
     checks = []
     if problems:
@@ -89,6 +90,12 @@ def build_checks(*, problems: list[str], blocked: list[dict],
                              f"{len(problems)} configured server(s) did not start: " + "; ".join(problems)))
     else:
         checks.append(_check("servers", "ok", "every enabled server started"))
+
+    if load_failures:
+        # A server of such a plugin is in problems already (unknown type, with the cause); one no
+        # server uses is missing quietly -- its tools, hooks or panel are simply not there.
+        checks.append(_check("plugins", "warn",
+                             f"{len(load_failures)} plugin(s) did not load: " + "; ".join(load_failures)))
 
     if config_findings:
         checks.append(_check("config", "error",
@@ -128,7 +135,9 @@ def _servers(runtime: Any) -> dict:
     from ..servers.agent.server import Agent
 
     if runtime is None:
-        return {"declared": 0, "running": 0, "agents": 0, "problems": [], "config_findings": []}
+        return {"declared": 0, "running": 0, "agents": 0, "problems": [], "config_findings": [],
+                "load_failures": []}
+    failures = [f"{name}: {why}" for name, why in sorted(runtime.load_failures.items())]
     names = runtime.registry.list()
     return {
         "declared": len(runtime.declarations()),
@@ -136,6 +145,7 @@ def _servers(runtime: Any) -> dict:
         "agents": sum(isinstance(runtime.registry.get(n), Agent) for n in names),
         "problems": list(runtime.problems),
         "config_findings": list(runtime.config_findings),
+        "load_failures": failures,
     }
 
 
@@ -160,7 +170,8 @@ async def collect_system_status() -> dict:
     blocked = model_health.blocked()
     checks = build_checks(problems=servers["problems"], blocked=blocked,
                           commit_at_start=_started["commit"], commit_on_disk=commit_on_disk,
-                          config_findings=servers["config_findings"])
+                          config_findings=servers["config_findings"],
+                          load_failures=servers["load_failures"])
     return {
         "status": overall(checks),
         "checks": checks,

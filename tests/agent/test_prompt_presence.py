@@ -96,7 +96,7 @@ def _two_dirs_with_one_type(tmp_path, monkeypatch, module):
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir(), b.mkdir()
     found = {a: {"dup": first}, b: {"dup": second}}
-    monkeypatch.setattr(module, "discover_plugins", lambda path, taken=None: found[Path(path)])
+    monkeypatch.setattr(module, "discover_plugins", lambda path, taken=None, failures=None: found[Path(path)])
     return a, b, first
 
 
@@ -104,7 +104,7 @@ def test_discovery_keeps_the_first_source_of_a_type(tmp_path, monkeypatch, caplo
     from agent_system.plugins import discovery
 
     a, b, first = _two_dirs_with_one_type(tmp_path, monkeypatch, discovery)
-    monkeypatch.setattr(discovery, "discover_entrypoint_plugins", lambda group: {})
+    monkeypatch.setattr(discovery, "discover_entrypoint_plugins", lambda group, failures=None: {})
 
     with caplog.at_level(logging.WARNING, logger="agent_system.plugins.discovery"):
         plugins = discovery.discover_all_plugins(dirs=[a, b])
